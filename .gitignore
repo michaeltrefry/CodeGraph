@@ -1,0 +1,20 @@
+# .NET build output
+bin/
+obj/
+
+# NuGet packages
+packages/
+*.nupkg
+
+# IDE
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Test results
+TestResults/
+
+# OS
+.DS_Store
+Thumbs.db

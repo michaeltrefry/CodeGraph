@@ -1,0 +1,6 @@
+@TC.CodeGraphApi_HostAddress = http://localhost:5037
+
+GET {{TC.CodeGraphApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

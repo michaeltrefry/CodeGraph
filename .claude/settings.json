@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Models.Tests reference TC.CodeGraphApi.Models)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Data.Tests reference TC.CodeGraphApi.Data TC.CodeGraphApi.Models)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Services.Tests reference TC.CodeGraphApi.Services TC.CodeGraphApi.Models TC.CodeGraphApi.Data)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Extractors.CSharp.Tests reference TC.CodeGraphApi.Extractors.CSharp TC.CodeGraphApi.Models TC.CodeGraphApi.Services)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Integration.Tests reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp)",
+      "Bash(dotnet build TC.CodeGraphApi.sln)",
+      "Bash(dotnet add TC.CodeGraphApi.Data package Dapper)",
+      "Bash(dotnet add TC.CodeGraphApi.Data package MySqlConnector)",
+      "Bash(dotnet add TC.CodeGraphApi.Data package Microsoft.Extensions.Options)",
+      "Bash(dotnet add TC.CodeGraphApi.Data package Serilog.Extensions.Logging)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Data.Tests package MySqlConnector)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Data.Tests package Microsoft.Extensions.Options)",
+      "Bash(dotnet add ../tests/TC.CodeGraphApi.Data.Tests package Microsoft.Extensions.Logging.Abstractions)",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=mysql;Password=mysql;SslMode=None\" dotnet test ../tests/TC.CodeGraphApi.Data.Tests --verbosity normal)",
+      "Bash(docker ps:*)",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=root;Password=mysql;SslMode=None\" dotnet test ../tests/TC.CodeGraphApi.Data.Tests --verbosity normal)",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=root;Password=admin4321;SslMode=None\" dotnet test ../tests/TC.CodeGraphApi.Data.Tests --verbosity normal)",
+      "Bash(dotnet add:*)",
+      "Bash(CODEGRAPH_MYSQL=\"Server=localhost;Database=codegraph_cli_test;User=root;Password=admin4321;SslMode=None\" dotnet run --project src/TC.CodeGraphApi.Console -- migrate)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet new:*)",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=root;Password=admin4321;SslMode=None\" dotnet test ../tests/TC.CodeGraphApi.Tests --verbosity normal)",
+      "Bash(CODEGRAPH_MYSQL=\"Server=localhost;Database=codegraph_cli_test2;User=root;Password=admin4321;SslMode=None\" dotnet run --project src/TC.CodeGraphApi.Console -- migrate)",
+      "Bash(cp -R /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/tests/TC.CodeGraphApi.Tests /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/src/TC.CodeGraphApi.Tests)",
+      "Bash(cp -R /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/tests/TC.CodeGraphJobs.Tests /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/src/TC.CodeGraphJobs.Tests)",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=root;Password=admin4321;SslMode=None\" dotnet test TC.CodeGraphApi.Tests --verbosity normal)",
+      "Bash(dotnet remove:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet run:*)",
+      "Bash(find ~/.nuget/packages/anthropic -name *.dll -path */net*)",
+      "Bash(dotnet csharp-repl:*)",
+      "Bash(grep \"^Anthropic.Models.Messages.ContentBlock$\")",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=root;Password=admin4321;SslMode=None\" dotnet test src/TC.CodeGraphApi.sln)",
+      "Bash(CODEGRAPH_MYSQL=\"Server=localhost;User=root;Password=admin4321;Database=codegraph;SslMode=None\" dotnet run --project src/TC.CodeGraphApi.Console -- migrate)",
+      "Bash(CODEGRAPH_TEST_MYSQL=\"Server=localhost;User=root;Password=admin4321;SslMode=None\" dotnet test src/TC.CodeGraphApi.sln --filter \"FullyQualifiedName~MySqlGraphStore\")"
+    ]
+  }
+}

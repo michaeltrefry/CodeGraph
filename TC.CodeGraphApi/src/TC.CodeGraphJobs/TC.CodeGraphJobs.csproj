@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\TC.CodeGraphApi.Models\TC.CodeGraphApi.Models.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Data\TC.CodeGraphApi.Data.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Services\TC.CodeGraphApi.Services.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

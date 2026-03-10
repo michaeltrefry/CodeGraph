@@ -189,7 +189,7 @@ If read access to the scheduler database is available, the graph can pull in act
 - Methods, properties, constructors with signatures
 - Inheritance and interface implementations
 - DI registrations (AddScoped/AddTransient/AddSingleton)
-- HTTP route definitions (controller attributes, minimal API)
+- HTTP route definitions (controller attributes)
 - RabbitMQ publishers (ServiceBus.Publish calls + event type)
 - RabbitMQ consumers (Consumer<T> registrations + event type)
 - Event class definitions with queue routing attributes
@@ -370,10 +370,12 @@ Note: `write_repository` permission on the GitLab token is required for committi
 | `Microsoft.Build.Locator` | MSBuild resolution for Roslyn |
 | `Microsoft.SqlServer.TransactSql.ScriptDom` | T-SQL parsing |
 | `ModelContextProtocol` | .NET MCP SDK |
-| `Dapper` | MySQL data access (not EF Core — graph queries are hand-written SQL) |
-| `MySqlConnector` | Async MySQL driver |
+| `Pomelo.EntityFrameworkCore.MySql` | EF Core MySQL provider (CRUD operations) |
+| `Dapper` | MySQL data access (graph traversal, batch operations) |
+| `MySqlConnector` | Async MySQL driver (shared by EF Core and Dapper) |
+| `Autofac` | Dependency injection container |
 | `LibGit2Sharp` | Git clone/pull/log |
-| `Serilog` | Structured logging |
+| `Microsoft.Extensions.Logging` | Logging (ILogger<T>) |
 
 ---
 
@@ -437,7 +439,7 @@ Note: `write_repository` permission on the GitLab token is required for committi
 4. **CODEGRAPH.md in the repos** — Documentation lives next to code, versioned in git, visible in merge requests.
 5. **Direct commits, not MRs** — MRs add friction and would be ignored. Doc updates go straight in.
 6. **Confidence indicators** — "I don't know" is better than a confident wrong answer. Legacy repos will have low-confidence summaries.
-7. **Dapper over EF Core** — Graph queries are hand-written SQL with recursive CTEs.
+7. **EF Core + Dapper hybrid** — EF Core for standard CRUD (matching company convention), Dapper for graph traversal (recursive CTEs) and batch operations.
 8. **MySQL over graph DB** — Company already runs MySQL. Recursive CTEs handle graph traversal.
 9. **Node.js sidecar for TypeScript** — TypeScript compiler API understands Angular natively.
 10. **Shared NuGet qualified names as linking keys** — `TC.OrdersApi.Models.OrderCreatedEvent` is the canonical identifier that connects publishers to consumers across repos.

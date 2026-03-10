@@ -16,7 +16,7 @@ Follows the standard company repository convention (`TC.AppNameApi` pattern), wi
 TC.CodeGraphApi/
 ├── src/
 │   ├── TC.CodeGraphApi.sln
-│   ├── TC.CodeGraphApi/                           # API host, MCP server, DI registration, startup
+│   ├── TC.CodeGraphApi/                           # API host (Startup.cs + Controllers), DI, MCP
 │   │   └── TC.CodeGraphApi.csproj
 │   ├── TC.CodeGraphApi.Console/                   # CLI for manual indexing, queries, admin
 │   │   └── TC.CodeGraphApi.Console.csproj
@@ -39,11 +39,10 @@ TC.CodeGraphApi/
 │       └── TC.CodeGraphApi.Extractors.ColdFusion.csproj
 │
 ├── tests/
-│   ├── TC.CodeGraphApi.Models.Tests/
-│   ├── TC.CodeGraphApi.Data.Tests/
-│   ├── TC.CodeGraphApi.Services.Tests/
-│   ├── TC.CodeGraphApi.Extractors.CSharp.Tests/
-│   └── TC.CodeGraphApi.Integration.Tests/
+│   ├── TC.CodeGraphApi.Tests/                     # All tests — folders mirror src projects
+│   │   └── TC.CodeGraphApi.Tests.csproj           #   Uses xUnit + Shouldly
+│   └── TC.CodeGraphJobs.Tests/
+│       └── TC.CodeGraphJobs.Tests.csproj
 │
 └── sql/
     └── migrations/                                # Sequential plain SQL migration scripts
@@ -75,7 +74,7 @@ TC.CodeGraphJobs                 → Models, Data, Services
 | **Extractors.TypeScript** | `TypeScriptExtractor`, Node.js sidecar scripts |
 | **Extractors.Sql** | `SqlExtractor`, `SqlGraphVisitor` |
 | **Extractors.ColdFusion** | `ColdFusionExtractor` |
-| **Api** | `Program.cs`, DI registration, REST endpoints, startup configuration |
+| **Api** | `Startup.cs`, controllers, DI registration (Autofac), REST endpoints |
 | **Console** | CLI commands: `migrate`, `index`, `index-all`, `analyze`, `mcp`, `stats` |
 | **Jobs** | `RepositorySyncWorker`, scheduled re-indexing tasks |
 
@@ -106,16 +105,13 @@ dotnet new classlib -n TC.CodeGraphJobs -o TC.CodeGraphJobs
 dotnet new classlib -n TC.CodeGraphApi.Extractors.CSharp -o TC.CodeGraphApi.Extractors.CSharp
 
 # Test projects
-cd ../tests
-dotnet new xunit -n TC.CodeGraphApi.Models.Tests -o TC.CodeGraphApi.Models.Tests
-dotnet new xunit -n TC.CodeGraphApi.Data.Tests -o TC.CodeGraphApi.Data.Tests
-dotnet new xunit -n TC.CodeGraphApi.Services.Tests -o TC.CodeGraphApi.Services.Tests
-dotnet new xunit -n TC.CodeGraphApi.Extractors.CSharp.Tests -o TC.CodeGraphApi.Extractors.CSharp.Tests
-dotnet new xunit -n TC.CodeGraphApi.Integration.Tests -o TC.CodeGraphApi.Integration.Tests
+cd ../src
+dotnet new xunit -n TC.CodeGraphApi.Tests -o TC.CodeGraphApi.Tests
+dotnet new xunit -n TC.CodeGraphJobs.Tests -o TC.CodeGraphJobs.Tests
 
 # Add all to solution
 cd ../src
-dotnet sln add **/*.csproj ../tests/**/*.csproj
+dotnet sln add **/*.csproj 
 
 # Wire up project references
 dotnet add TC.CodeGraphApi.Data reference TC.CodeGraphApi.Models
@@ -125,12 +121,13 @@ dotnet add TC.CodeGraphJobs reference TC.CodeGraphApi.Models TC.CodeGraphApi.Dat
 dotnet add TC.CodeGraphApi reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp TC.CodeGraphJobs
 dotnet add TC.CodeGraphApi.Console reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp
 
-# Test project references
-dotnet add ../tests/TC.CodeGraphApi.Models.Tests reference TC.CodeGraphApi.Models
-dotnet add ../tests/TC.CodeGraphApi.Data.Tests reference TC.CodeGraphApi.Data TC.CodeGraphApi.Models
-dotnet add ../tests/TC.CodeGraphApi.Services.Tests reference TC.CodeGraphApi.Services TC.CodeGraphApi.Models TC.CodeGraphApi.Data
-dotnet add ../tests/TC.CodeGraphApi.Extractors.CSharp.Tests reference TC.CodeGraphApi.Extractors.CSharp TC.CodeGraphApi.Models TC.CodeGraphApi.Services
-dotnet add ../tests/TC.CodeGraphApi.Integration.Tests reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp
+# Test project references — single test project references all src projects
+dotnet add TC.CodeGraphApi.Tests reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp TC.CodeGraphApi
+dotnet add TC.CodeGraphJobs.Tests reference TC.CodeGraphJobs TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services
+
+# Add xUnit + Shouldly to test projects
+dotnet add TC.CodeGraphApi.Tests package Shouldly
+dotnet add TC.CodeGraphJobs.Tests package Shouldly
 ```
 
 ### 1.2 — TC.CodeGraphApi.Models
@@ -433,12 +430,188 @@ CREATE TABLE sync_state (
 
 ### 1.4 — TC.CodeGraphApi.Data
 
+Hybrid approach: **EF Core for CRUD**, **Dapper for graph queries**. Matches the pattern used across the company's other repos.
+
 NuGet packages:
-- `Dapper`
-- `MySqlConnector`
+- `Pomelo.EntityFrameworkCore.MySql` (EF Core MySQL provider)
+- `Microsoft.EntityFrameworkCore`
+- `Dapper` (for recursive CTEs, batch upserts, graph traversal)
+- `MySqlConnector` (shared by both EF and Dapper)
 - `System.Text.Json` (for JSON property serialization)
 - `Microsoft.Extensions.Options` (for configuration)
-- `Serilog.Extensions.Logging` (for logging)
+- `Microsoft.Extensions.Logging` (for logging)
+
+#### CodeGraphDbContext
+
+EF Core handles the CRUD entities — projects, summaries, sync state, file hashes. The `nodes` and `edges` tables are also mapped as entities for simple queries, but complex graph operations go through Dapper.
+
+```csharp
+namespace TC.CodeGraphApi.Data;
+
+public class CodeGraphDbContext : DbContext
+{
+    public DbSet<ProjectEntity> Projects => Set<ProjectEntity>();
+    public DbSet<NodeEntity> Nodes => Set<NodeEntity>();
+    public DbSet<EdgeEntity> Edges => Set<EdgeEntity>();
+    public DbSet<CrossRepoEdgeEntity> CrossRepoEdges => Set<CrossRepoEdgeEntity>();
+    public DbSet<FileHashEntity> FileHashes => Set<FileHashEntity>();
+    public DbSet<ProjectSummaryEntity> ProjectSummaries => Set<ProjectSummaryEntity>();
+    public DbSet<SyncStateEntity> SyncStates => Set<SyncStateEntity>();
+    public DbSet<MigrationHistoryEntity> MigrationHistory => Set<MigrationHistoryEntity>();
+
+    public CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : base(options) { }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ProjectEntity>(e =>
+        {
+            e.ToTable("projects");
+            e.HasKey(p => p.Name);
+            e.Property(p => p.Properties).HasColumnType("json");
+        });
+
+        modelBuilder.Entity<NodeEntity>(e =>
+        {
+            e.ToTable("nodes");
+            e.HasKey(n => n.Id);
+            e.HasIndex(n => new { n.Project, n.QualifiedName }).IsUnique();
+            e.HasIndex(n => new { n.Project, n.Label });
+            e.HasIndex(n => new { n.Project, n.Name });
+            e.Property(n => n.Properties).HasColumnType("json");
+        });
+
+        modelBuilder.Entity<EdgeEntity>(e =>
+        {
+            e.ToTable("edges");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => new { x.SourceId, x.TargetId, x.Type }).IsUnique();
+            e.Property(x => x.Properties).HasColumnType("json");
+        });
+
+        modelBuilder.Entity<CrossRepoEdgeEntity>(e =>
+        {
+            e.ToTable("cross_repo_edges");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => new { x.SourceNodeId, x.TargetNodeId, x.Type }).IsUnique();
+            e.Property(x => x.Properties).HasColumnType("json");
+        });
+
+        modelBuilder.Entity<FileHashEntity>(e =>
+        {
+            e.ToTable("file_hashes");
+            e.HasKey(f => new { f.Project, f.RelPath });
+        });
+
+        modelBuilder.Entity<ProjectSummaryEntity>(e =>
+        {
+            e.ToTable("project_summaries");
+            e.HasKey(s => s.Project);
+        });
+
+        modelBuilder.Entity<SyncStateEntity>(e =>
+        {
+            e.ToTable("sync_state");
+            e.HasKey(s => s.Project);
+        });
+
+        modelBuilder.Entity<MigrationHistoryEntity>(e =>
+        {
+            e.ToTable("migration_history");
+            e.HasKey(m => m.Id);
+            e.HasIndex(m => m.ScriptName).IsUnique();
+        });
+    }
+}
+```
+
+#### EF Entity classes
+
+```csharp
+namespace TC.CodeGraphApi.Data;
+
+public class ProjectEntity
+{
+    public string Name { get; set; } = "";
+    public string? RepoUrl { get; set; }
+    public string? LocalPath { get; set; }
+    public string? DefaultBranch { get; set; } = "main";
+    public string? LastCommitSha { get; set; }
+    public DateTime? IndexedAt { get; set; }
+    public string? Language { get; set; }
+    public string? Framework { get; set; }
+    public bool IsFoundational { get; set; }
+    public string? Properties { get; set; }  // JSON string
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class NodeEntity
+{
+    public long Id { get; set; }
+    public string Project { get; set; } = "";
+    public string Label { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string QualifiedName { get; set; } = "";
+    public string FilePath { get; set; } = "";
+    public int StartLine { get; set; }
+    public int EndLine { get; set; }
+    public string? Properties { get; set; }  // JSON string
+}
+
+public class EdgeEntity
+{
+    public long Id { get; set; }
+    public string Project { get; set; } = "";
+    public long SourceId { get; set; }
+    public long TargetId { get; set; }
+    public string Type { get; set; } = "";
+    public string? Properties { get; set; }  // JSON string
+}
+
+public class CrossRepoEdgeEntity
+{
+    public long Id { get; set; }
+    public string SourceProject { get; set; } = "";
+    public string TargetProject { get; set; } = "";
+    public long SourceNodeId { get; set; }
+    public long TargetNodeId { get; set; }
+    public string Type { get; set; } = "";
+    public string? Properties { get; set; }  // JSON string
+}
+
+public class FileHashEntity
+{
+    public string Project { get; set; } = "";
+    public string RelPath { get; set; } = "";
+    public string ContentHash { get; set; } = "";
+}
+
+public class ProjectSummaryEntity
+{
+    public string Project { get; set; } = "";
+    public string Summary { get; set; } = "";
+    public string Confidence { get; set; } = "medium";
+    public string SourceHash { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class SyncStateEntity
+{
+    public string Project { get; set; } = "";
+    public DateTime? LastSyncAt { get; set; }
+    public string? LastCommitSha { get; set; }
+    public string Status { get; set; } = "idle";
+    public string? ErrorMessage { get; set; }
+}
+
+public class MigrationHistoryEntity
+{
+    public int Id { get; set; }
+    public string ScriptName { get; set; } = "";
+    public DateTime AppliedAt { get; set; }
+}
+```
 
 #### IGraphStore interface
 
@@ -447,13 +620,13 @@ namespace TC.CodeGraphApi.Data;
 
 public interface IGraphStore
 {
-    // Projects
+    // Projects (EF Core)
     Task UpsertProjectAsync(string name, string? localPath = null,
         string? repoUrl = null, bool isFoundational = false);
     Task<IReadOnlyList<ProjectInfo>> ListProjectsAsync();
     Task DeleteProjectAsync(string project);
 
-    // Nodes
+    // Nodes — simple queries via EF, batch upsert via Dapper
     Task<long> UpsertNodeAsync(GraphNode node);
     Task<Dictionary<string, long>> UpsertNodeBatchAsync(IReadOnlyList<GraphNode> nodes);
     Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName);
@@ -465,39 +638,39 @@ public interface IGraphStore
         int limit = 50, int offset = 0);
     Task<IReadOnlyList<GraphNode>> FindAllNodesByLabelAsync(NodeLabel label);
 
-    // Edges
+    // Edges — simple queries via EF, batch insert via Dapper
     Task InsertEdgeAsync(GraphEdge edge);
     Task InsertEdgeBatchAsync(IReadOnlyList<GraphEdge> edges);
     Task<IReadOnlyList<GraphEdge>> FindEdgesBySourceAsync(long sourceId, EdgeType? type = null);
     Task<IReadOnlyList<GraphEdge>> FindEdgesByTargetAsync(long targetId, EdgeType? type = null);
     Task<IReadOnlyList<GraphEdge>> FindAllEdgesByTypeAsync(EdgeType type);
 
-    // Cross-repo edges
+    // Cross-repo edges (EF for simple, Dapper for batch)
     Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge);
     Task InsertCrossRepoEdgeBatchAsync(IReadOnlyList<CrossRepoEdge> edges);
     Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(
         string project, EdgeType? type = null);
 
-    // Traversal
+    // Traversal (Dapper — recursive CTEs)
     Task<IReadOnlyList<TraversalEntry>> TraverseAsync(long startNodeId,
         TraceDirection direction, int maxDepth,
         EdgeType[]? edgeFilter = null, double minConfidence = 0);
 
-    // Bulk operations
+    // Bulk operations (Dapper)
     Task DeleteNodesByFileAsync(string project, string filePath);
     Task DeleteNodesByProjectAsync(string project);
 
-    // File hashes (incremental indexing)
+    // File hashes (EF Core)
     Task<Dictionary<string, string>> GetFileHashesAsync(string project);
     Task UpsertFileHashBatchAsync(string project, Dictionary<string, string> hashes);
     Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths);
 
-    // Summaries
+    // Summaries (EF Core)
     Task UpsertProjectSummaryAsync(string project, string summary,
         ConfidenceLevel confidence, string sourceHash);
     Task<ProjectSummary?> GetProjectSummaryAsync(string project);
 
-    // Migrations
+    // Migrations (Dapper — raw SQL execution)
     Task ApplyMigrationsAsync(string migrationsPath);
 }
 ```
@@ -538,9 +711,40 @@ public record ProjectSummary(
 
 #### MySqlGraphStore implementation notes
 
-Key implementation details for the Dapper-based store:
+The store has two data access paths:
 
-**Batch upserts** use multi-row `INSERT ... ON DUPLICATE KEY UPDATE`:
+**EF Core** for CRUD operations — projects, summaries, sync state, file hashes, simple node/edge lookups:
+```csharp
+public async Task<IReadOnlyList<ProjectInfo>> ListProjectsAsync()
+{
+    return await _context.Projects
+        .Select(p => new ProjectInfo(p.Name, p.RepoUrl, p.LocalPath, ...))
+        .ToListAsync();
+}
+
+public async Task UpsertProjectAsync(string name, string? localPath, ...)
+{
+    var existing = await _context.Projects.FindAsync(name);
+    if (existing is null)
+        _context.Projects.Add(new ProjectEntity { Name = name, LocalPath = localPath, ... });
+    else
+    {
+        existing.LocalPath = localPath ?? existing.LocalPath;
+        existing.UpdatedAt = DateTime.UtcNow;
+    }
+    await _context.SaveChangesAsync();
+}
+```
+
+**Dapper** for graph-specific operations — batch upserts, recursive CTE traversal, complex queries.
+
+Access the underlying connection from EF Core's DbContext for Dapper calls:
+```csharp
+private MySqlConnection GetConnection()
+    => (MySqlConnection)_context.Database.GetDbConnection();
+```
+
+**Batch upserts** (Dapper) use multi-row `INSERT ... ON DUPLICATE KEY UPDATE`:
 ```sql
 INSERT INTO nodes (project, label, name, qualified_name, file_path, start_line, end_line, properties)
 VALUES (@Project, @Label, @Name, @QualifiedName, @FilePath, @StartLine, @EndLine, @Properties),
@@ -556,7 +760,7 @@ ON DUPLICATE KEY UPDATE
 
 Batch size: 500 rows per statement (MySQL handles large batches fine, but keep individual statements reasonable).
 
-**JSON properties** are serialized with `System.Text.Json.JsonSerializer.Serialize()` before insert and deserialized on read. Use a custom Dapper type handler:
+**JSON properties** — EF stores them as strings. For Dapper queries, use a custom type handler:
 
 ```csharp
 public class JsonTypeHandler : SqlMapper.TypeHandler<Dictionary<string, object>>
@@ -575,7 +779,7 @@ public class JsonTypeHandler : SqlMapper.TypeHandler<Dictionary<string, object>>
 }
 ```
 
-**Recursive CTE for traversal** (outbound example):
+**Recursive CTE for traversal** (Dapper, outbound example):
 ```sql
 WITH RECURSIVE traversal AS (
     SELECT e.target_id AS node_id, e.source_id AS parent_id,
@@ -598,7 +802,7 @@ JOIN nodes n ON n.id = t.node_id
 ORDER BY t.depth, n.name
 ```
 
-**Migration runner** — simple: read files from `sql/migrations/`, check `migration_history` table, apply unapplied scripts in order:
+**Migration runner** — still plain SQL scripts (not EF migrations). Read files from `sql/migrations/`, check `migration_history` table via Dapper, apply unapplied scripts in order:
 
 ```csharp
 public async Task ApplyMigrationsAsync(string migrationsPath)
@@ -606,7 +810,7 @@ public async Task ApplyMigrationsAsync(string migrationsPath)
     // Ensure migration_history table exists (CREATE TABLE IF NOT EXISTS)
     // Read all .sql files from migrationsPath, sorted by name
     // For each file not in migration_history:
-    //   Execute the SQL
+    //   Execute the SQL via Dapper
     //   Insert into migration_history
     //   Log the migration
 }
@@ -627,7 +831,7 @@ public class CodeGraphStorageOptions
 
 ### 1.5 — Storage Tests
 
-Test against a real MySQL instance (not mocked). Use a test database that gets created/dropped per test run.
+Tests live in `TC.CodeGraphApi.Tests/Data/`. Uses xUnit + Shouldly. Test against a real MySQL instance (not mocked). Use a test database that gets created/dropped per test run.
 
 ```csharp
 public class MySqlGraphStoreTests : IAsyncLifetime
@@ -727,7 +931,7 @@ Discover and catalog local repositories. Walk file systems, detect solution/proj
 NuGet packages:
 - `Microsoft.Extensions.FileSystemGlobbing` (for skip patterns)
 - `System.IO.Hashing` (for XXH3 content hashing)
-- `Serilog`
+- `Microsoft.Extensions.Logging`
 
 #### ICodeExtractor interface
 
@@ -849,14 +1053,14 @@ public class IndexingPipeline
     private readonly IGraphStore _store;
     private readonly IEnumerable<ICodeExtractor> _extractors;
     private readonly IndexingOptions _options;
-    private readonly ILogger _logger;
+    private readonly ILogger<IndexingPipeline> _logger;
 
     public async Task IndexProjectAsync(string projectName, string rootPath,
         FoundationalKnowledge? knowledge = null,
         IReadOnlyList<string>? changedFilesOnly = null,
         CancellationToken ct = default)
     {
-        _logger.Information("Indexing {Project} at {Path}", projectName, rootPath);
+        _logger.LogInformation("Indexing {Project} at {Path}", projectName, rootPath);
         var buffer = new GraphBuffer();
         var context = new ExtractorContext
         {
@@ -872,7 +1076,7 @@ public class IndexingPipeline
         var files = DiscoverFiles(rootPath, changedFilesOnly);
         var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer);
 
-        _logger.Information("Found {Total} files, {Changed} changed",
+        _logger.LogInformation("Found {Total} files, {Changed} changed",
             files.Count, filesToProcess.Count);
 
         // Pass 1: Structural nodes (Project, Folder, File)
@@ -906,7 +1110,7 @@ public class IndexingPipeline
         // Update project metadata
         await _store.UpsertProjectAsync(projectName, localPath: rootPath);
 
-        _logger.Information("Indexed {Project}: {Nodes} nodes, {Edges} edges",
+        _logger.LogInformation("Indexed {Project}: {Nodes} nodes, {Edges} edges",
             projectName, buffer.AllNodes.Count, resolvedEdges.Count);
     }
 
@@ -993,7 +1197,7 @@ public class IndexingPipeline
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Failed to extract {File}", filePath);
+                    _logger.LogWarning(ex, "Failed to extract {File}", filePath);
                     // Continue — don't let one file break the pipeline
                 }
             });
@@ -1190,7 +1394,7 @@ Extract all meaningful code elements from C# repositories using Roslyn's semanti
 NuGet packages:
 - `Microsoft.CodeAnalysis.CSharp.Workspaces`
 - `Microsoft.Build.Locator`
-- `Serilog`
+- `Microsoft.Extensions.Logging`
 
 #### RoslynExtractor
 
@@ -1227,7 +1431,7 @@ namespace TC.CodeGraphApi.Extractors.CSharp;
 
 public class SolutionAnalyzer
 {
-    private readonly ILogger _logger;
+    private readonly ILogger<SolutionAnalyzer> _logger;
 
     static SolutionAnalyzer()
     {
@@ -1240,7 +1444,7 @@ public class SolutionAnalyzer
     {
         using var workspace = MSBuildWorkspace.Create();
         workspace.WorkspaceFailed += (_, e) =>
-            _logger.Warning("Workspace warning: {Message}", e.Diagnostic.Message);
+            _logger.LogWarning("Workspace warning: {Message}", e.Diagnostic.Message);
 
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
         var results = new ConcurrentBag<ExtractionResult>();
@@ -1250,7 +1454,7 @@ public class SolutionAnalyzer
             var compilation = await project.GetCompilationAsync(ct2);
             if (compilation is null)
             {
-                _logger.Warning("Could not compile project {Project}", project.Name);
+                _logger.LogWarning("Could not compile project {Project}", project.Name);
                 return;
             }
 
@@ -1265,7 +1469,7 @@ public class SolutionAnalyzer
                 }
                 catch (Exception ex)
                 {
-                    _logger.Warning(ex, "Failed to analyze {File}",
+                    _logger.LogWarning(ex, "Failed to analyze {File}",
                         syntaxTree.FilePath);
                 }
             }
@@ -1632,11 +1836,11 @@ namespace TC.CodeGraphApi.Services;
 public class CrossRepoLinker
 {
     private readonly IGraphStore _store;
-    private readonly ILogger _logger;
+    private readonly ILogger<CrossRepoLinker> _logger;
 
     public async Task LinkAsync(CancellationToken ct)
     {
-        _logger.Information("Starting cross-repo linking");
+        _logger.LogInformation("Starting cross-repo linking");
 
         // 1. Match HTTP client calls to controller routes
         await LinkHttpRoutesAsync(ct);
@@ -1742,7 +1946,7 @@ public async Task IndexProjectAsync(...)
 }
 ```
 
-### 3.5 — Tests
+### 3.5 — Tests (in TC.CodeGraphApi.Tests/Extractors/)
 
 ```csharp
 public class RoslynExtractorTests
@@ -1902,23 +2106,30 @@ Use the Anthropic API to analyze each repository's code and generate natural lan
 ### 4.1 — TC.CodeGraphApi.Services (Claude Analysis)
 
 NuGet packages:
-- `Anthropic.SDK` (official .NET SDK)
-- `Serilog`
+- `Anthropic` (official Anthropic .NET SDK, v10+)
+- `Microsoft.Extensions.Logging`
 
 #### ICodeAnalyzer interface
 
 ```csharp
 namespace TC.CodeGraphApi.Services;
 
+// ICodeAnalyzer lives at TC.CodeGraphApi.Services/ICodeAnalyzer.cs
+// Analysis record types (below) live at TC.CodeGraphApi.Services/Models/AnalysisTypes.cs
+// These are internal types, not published via NuGet — TC.CodeGraphApi.Models is reserved
+// for public contracts.
+
 public interface ICodeAnalyzer
 {
-    /// Analyze an entire repository and produce a repo-level summary
+    /// Analyze an entire repository and produce a repo-level summary.
+    /// modelOverride allows per-repo model selection (e.g. claude-opus-4-6 for critical repos).
     Task<RepoAnalysis> AnalyzeRepositoryAsync(string projectName,
-        string rootPath, CancellationToken ct = default);
+        string rootPath, string? modelOverride = null, CancellationToken ct = default);
 
     /// Analyze a single project within a repo
     Task<ProjectAnalysis> AnalyzeProjectAsync(string projectName,
-        string projectPath, string repoContext, CancellationToken ct = default);
+        string projectPath, string repoContext, string? modelOverride = null,
+        CancellationToken ct = default);
 
     /// Re-analyze based on a diff (incremental update)
     Task<AnalysisUpdate?> AnalyzeChangesAsync(string projectName,
@@ -1929,6 +2140,7 @@ public interface ICodeAnalyzer
 public record RepoAnalysis(
     string Summary,
     ConfidenceLevel Confidence,
+    string ModelUsed,
     IReadOnlyList<ProjectAnalysis> Projects);
 
 public record ProjectAnalysis(
@@ -1961,6 +2173,10 @@ public record AnalysisUpdate(
 
 #### ClaudeCodeAnalyzer
 
+Uses a two-tier agentic approach: per-project analysis runs in parallel, then an
+orchestrator synthesizes the repo-level summary from the project analyses. This keeps
+each prompt focused and well within token limits.
+
 ```csharp
 namespace TC.CodeGraphApi.Services;
 
@@ -1969,32 +2185,90 @@ public class ClaudeCodeAnalyzer : ICodeAnalyzer
     private readonly AnthropicClient _client;
     private readonly AnalysisOptions _options;
     private readonly IGraphStore _store;
-    private readonly ILogger _logger;
+    private readonly ILogger<ClaudeCodeAnalyzer> _logger;
 
+    /// Orchestrator: discovers projects, fans out per-project analysis in parallel,
+    /// then synthesizes a repo-level summary from the results.
     public async Task<RepoAnalysis> AnalyzeRepositoryAsync(
-        string projectName, string rootPath, CancellationToken ct)
+        string projectName, string rootPath, string? modelOverride = null,
+        CancellationToken ct = default)
     {
-        // 1. Gather context from the graph (already indexed structural data)
-        var nodes = await _store.SearchNodesAsync(projectName, "%");
+        var model = modelOverride ?? _options.Model;
+
+        // 1. Discover project directories (folders containing .csproj files)
+        var projectDirs = DiscoverProjects(rootPath);
+        _logger.LogInformation("Found {Count} projects in {Repo}",
+            projectDirs.Count, projectName);
+
+        // 2. Fan out: analyze each project in parallel
+        var projectTasks = projectDirs.Select(dir =>
+            AnalyzeProjectAsync(
+                Path.GetFileNameWithoutExtension(
+                    Directory.GetFiles(dir, "*.csproj").First()),
+                dir, projectName, model, ct));
+
+        var projectAnalyses = await Task.WhenAll(projectTasks);
+
+        // 3. Synthesize: build repo-level summary from project analyses
+        var repoSummary = await SynthesizeRepoSummaryAsync(
+            projectName, projectAnalyses, model, ct);
+
+        return new RepoAnalysis(
+            repoSummary.Summary,
+            repoSummary.Confidence,
+            model,
+            projectAnalyses.ToList());
+    }
+
+    /// Per-project analysis: reads source files scoped to one project directory,
+    /// pulls graph context for that project, and sends a focused prompt to Claude.
+    public async Task<ProjectAnalysis> AnalyzeProjectAsync(
+        string projectName, string projectPath, string repoContext,
+        string? modelOverride = null, CancellationToken ct = default)
+    {
+        var model = modelOverride ?? _options.Model;
+
+        // 1. Gather graph context for this specific project
+        var nodes = await _store.SearchNodesAsync(repoContext, projectName + ".%");
         var graphContext = BuildGraphContext(nodes);
 
-        // 2. Read key files for the repo
-        var keyFiles = await GatherKeyFiles(rootPath);
+        // 2. Read source files scoped to this project directory only
+        var files = await GatherProjectFiles(projectPath);
 
-        // 3. Build the prompt
-        var prompt = BuildRepoAnalysisPrompt(projectName, graphContext, keyFiles);
+        // 3. Build focused per-project prompt
+        var prompt = BuildProjectAnalysisPrompt(projectName, repoContext,
+            graphContext, files);
 
         // 4. Call Claude
-        var response = await _client.Messages.CreateAsync(new()
+        var response = await _client.Messages.Create(new MessageCreateParams
         {
-            Model = _options.Model,
+            Model = model,
             MaxTokens = _options.MaxTokensPerAnalysis,
-            Messages = [new() { Role = "user", Content = prompt }],
-            System = GetSystemPrompt()
+            Messages = [new() { Role = Role.User, Content = prompt }],
         }, ct);
 
-        // 5. Parse structured response
-        return ParseRepoAnalysis(response.Content);
+        return ParseProjectAnalysis(response.Content);
+    }
+
+    /// Synthesize repo-level summary from per-project analyses.
+    /// Prompt is lightweight — just project summaries + cross-repo edges, no source code.
+    private async Task<(string Summary, ConfidenceLevel Confidence)>
+        SynthesizeRepoSummaryAsync(string projectName,
+            ProjectAnalysis[] projects, string model, CancellationToken ct)
+    {
+        // Gather cross-repo dependency context
+        var crossRepoEdges = await _store.FindCrossRepoEdgesAsync(projectName);
+
+        var prompt = BuildSynthesisPrompt(projectName, projects, crossRepoEdges);
+
+        var response = await _client.Messages.Create(new MessageCreateParams
+        {
+            Model = model,
+            MaxTokens = _options.MaxTokensPerSynthesis,
+            Messages = [new() { Role = Role.User, Content = prompt }],
+        }, ct);
+
+        return ParseRepoSummary(response.Content);
     }
 
     private string GetSystemPrompt() => """
@@ -2017,58 +2291,40 @@ public class ClaudeCodeAnalyzer : ICodeAnalyzer
         Respond in JSON format matching the provided schema.
         """;
 
-    private async Task<IReadOnlyList<(string Path, string Content)>> GatherKeyFiles(
-        string rootPath)
+    /// Reads source files scoped to a single project directory.
+    /// No token budget needed — a single project's files fit comfortably in context.
+    private async Task<IReadOnlyList<(string Path, string Content)>> GatherProjectFiles(
+        string projectPath)
     {
         var files = new List<(string, string)>();
 
-        // Priority files that reveal intent:
-        // 1. Program.cs / Startup.cs — DI registration, middleware, configuration
-        // 2. *Controller.cs — API surface
-        // 3. *Service.cs — Business logic
-        // 4. *Consumer.cs — Event handlers
-        // 5. *.Models/**/*.cs — Public contracts
-        // 6. appsettings.json — Configuration structure (redact secrets)
+        // All .cs files in the project, excluding build output
+        var matcher = new Matcher();
+        matcher.AddInclude("**/*.cs");
+        matcher.AddInclude("appsettings*.json");
+        matcher.AddExclude("bin/**");
+        matcher.AddExclude("obj/**");
 
-        var patterns = new[]
+        foreach (var match in matcher.GetResultsInFullPath(projectPath))
         {
-            ("**/Program.cs", 1),
-            ("**/Startup.cs", 1),
-            ("**/*Controller*.cs", 2),
-            ("**/*Service*.cs", 3),
-            ("**/*Consumer*.cs", 4),
-            ("**/*Handler*.cs", 4),
-            ("**/Models/**/*.cs", 5),
-            ("**/appsettings*.json", 6)
-        };
-
-        foreach (var (pattern, _) in patterns.OrderBy(p => p.Item2))
-        {
-            var matcher = new Matcher();
-            matcher.AddInclude(pattern);
-            foreach (var skip in new[] { "**/bin/**", "**/obj/**" })
-                matcher.AddExclude(skip);
-
-            foreach (var match in matcher.GetResultsInFullPath(rootPath).Take(20))
+            var content = await File.ReadAllTextAsync(match);
+            if (content.Length <= _options.MaxFileSizeKb * 1024)
             {
-                var content = await File.ReadAllTextAsync(match);
-                if (content.Length <= _options.MaxFileSizeKb * 1024)
-                {
-                    var relPath = Path.GetRelativePath(rootPath, match);
-                    files.Add((relPath, content));
-                }
+                var relPath = Path.GetRelativePath(projectPath, match);
+                files.Add((relPath, content));
             }
         }
 
-        // Respect token budget — truncate if total content is too large
-        return TruncateToTokenBudget(files, _options.MaxContextTokens);
+        return files;
     }
 
-    private string BuildRepoAnalysisPrompt(string projectName,
-        string graphContext, IReadOnlyList<(string Path, string Content)> files)
+    private string BuildProjectAnalysisPrompt(string projectName,
+        string repoContext, string graphContext,
+        IReadOnlyList<(string Path, string Content)> files)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# Analyze Repository: {projectName}");
+        sb.AppendLine($"# Analyze Project: {projectName}");
+        sb.AppendLine($"Part of repository: {repoContext}");
         sb.AppendLine();
         sb.AppendLine("## Graph Context (already extracted)");
         sb.AppendLine(graphContext);
@@ -2084,43 +2340,138 @@ public class ClaudeCodeAnalyzer : ICodeAnalyzer
         }
         sb.AppendLine("## Instructions");
         sb.AppendLine("""
-            Analyze this repository and produce:
-            1. A repo-level summary (2-4 paragraphs) describing what this service does
-               in business terms, what it depends on, and what depends on it.
+            Analyze this single project/assembly and produce:
+            1. A summary (1-2 paragraphs) describing what this project does
+               in business terms.
             2. A confidence level (high/medium/low) for your analysis.
-            3. For each project/assembly in the solution, a project-level summary including:
-               - What it does
-               - Its public endpoints (if any) with descriptions
-               - Its services with descriptions
-               - External dependencies (databases, other APIs, message queues)
-               - Database tables it accesses
+            3. Its public endpoints (if any) with route, method, and description.
+            4. Its services with descriptions and DI lifetime.
+            5. External dependencies (databases, other APIs, message queues).
+            6. Database tables it accesses.
 
             Respond as JSON matching this schema:
             {
+              "projectName": "string",
               "summary": "string",
               "confidence": "high|medium|low",
-              "projects": [
-                {
-                  "projectName": "string",
-                  "summary": "string",
-                  "confidence": "high|medium|low",
-                  "endpoints": [
-                    { "route": "string", "httpMethod": "string",
-                      "description": "string",
-                      "requestModel": "string|null",
-                      "responseModel": "string|null" }
-                  ],
-                  "services": [
-                    { "name": "string", "description": "string",
-                      "interfaceName": "string|null", "lifetime": "string" }
-                  ],
-                  "externalDependencies": ["string"],
-                  "databaseTables": ["string"]
-                }
-              ]
+              "endpoints": [
+                { "route": "string", "httpMethod": "string",
+                  "description": "string",
+                  "requestModel": "string|null",
+                  "responseModel": "string|null" }
+              ],
+              "services": [
+                { "name": "string", "description": "string",
+                  "interfaceName": "string|null", "lifetime": "string" }
+              ],
+              "externalDependencies": ["string"],
+              "databaseTables": ["string"]
             }
             """);
         return sb.ToString();
+    }
+
+    private string BuildSynthesisPrompt(string projectName,
+        ProjectAnalysis[] projects,
+        IReadOnlyList<CrossRepoEdge> crossRepoEdges)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"# Synthesize Repository Summary: {projectName}");
+        sb.AppendLine();
+        sb.AppendLine("## Project Analyses");
+        foreach (var p in projects)
+        {
+            sb.AppendLine($"### {p.ProjectName} (confidence: {p.Confidence})");
+            sb.AppendLine(p.Summary);
+            sb.AppendLine();
+        }
+        sb.AppendLine("## Cross-Repository Dependencies");
+        foreach (var edge in crossRepoEdges)
+        {
+            sb.AppendLine($"- {edge.SourceProject} --{edge.Type}--> {edge.TargetProject}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("## Instructions");
+        sb.AppendLine("""
+            Based on the per-project analyses above, write a repo-level summary
+            (2-4 paragraphs) describing:
+            1. What this service does as a whole in business terms.
+            2. How the projects within it work together.
+            3. What it depends on and what depends on it (cross-repo).
+            4. An overall confidence level.
+
+            Respond as JSON: { "summary": "string", "confidence": "high|medium|low" }
+            """);
+        return sb.ToString();
+    }
+
+    /// Incremental re-analysis: given a diff and commit message, determine whether
+    /// the existing summary needs updating. Returns null if the change is trivial
+    /// (e.g. whitespace, comments, test-only) and the summary still holds.
+    public async Task<AnalysisUpdate?> AnalyzeChangesAsync(
+        string projectName, string rootPath, string diff, string commitMessage,
+        string existingSummary, CancellationToken ct = default)
+    {
+        var prompt = BuildChangeAnalysisPrompt(projectName, diff,
+            commitMessage, existingSummary);
+
+        var response = await _client.Messages.Create(new MessageCreateParams
+        {
+            Model = _options.Model,  // always Sonnet for incremental — cost matters
+            MaxTokens = _options.MaxTokensPerSynthesis,
+            Messages = [new() { Role = Role.User, Content = prompt }],
+        }, ct);
+
+        return ParseChangeAnalysis(response.Content);
+    }
+
+    private string BuildChangeAnalysisPrompt(string projectName, string diff,
+        string commitMessage, string existingSummary)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"# Incremental Analysis: {projectName}");
+        sb.AppendLine();
+        sb.AppendLine("## Current Summary");
+        sb.AppendLine(existingSummary);
+        sb.AppendLine();
+        sb.AppendLine($"## Commit Message");
+        sb.AppendLine(commitMessage);
+        sb.AppendLine();
+        sb.AppendLine("## Diff");
+        sb.AppendLine("```diff");
+        sb.AppendLine(diff.Length > 50_000 ? diff[..50_000] + "\n... (truncated)" : diff);
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("## Instructions");
+        sb.AppendLine("""
+            Review this diff against the current summary. Determine:
+            1. Does this change affect the business-level description of the service?
+               (New endpoints, removed features, changed behavior, new dependencies)
+            2. Or is it trivial? (Refactoring, tests, comments, formatting, bug fixes
+               that don't change described behavior)
+
+            If the summary needs updating, respond with:
+            {
+              "needsUpdate": true,
+              "updatedSummary": "the full revised summary",
+              "confidence": "high|medium|low",
+              "changeDescription": "brief description of what changed and why the summary was updated"
+            }
+
+            If the summary is still accurate, respond with:
+            { "needsUpdate": false }
+            """);
+        return sb.ToString();
+    }
+
+    /// Discover project directories by finding .csproj files
+    private IReadOnlyList<string> DiscoverProjects(string rootPath)
+    {
+        return Directory.GetFiles(rootPath, "*.csproj", SearchOption.AllDirectories)
+            .Where(f => !f.Contains("/bin/") && !f.Contains("/obj/"))
+            .Select(Path.GetDirectoryName!)
+            .Distinct()
+            .ToList();
     }
 }
 ```
@@ -2134,9 +2485,9 @@ public class AnalysisOptions
 {
     public string ApiKey { get; set; } = "";
     public string Model { get; set; } = "claude-sonnet-4-6";
-    public int MaxTokensPerAnalysis { get; set; } = 8192;
-    public int MaxContextTokens { get; set; } = 100_000;
-    public int MaxFileSizeKb { get; set; } = 512;
+    public int MaxTokensPerAnalysis { get; set; } = 8192;   // per-project analysis
+    public int MaxTokensPerSynthesis { get; set; } = 4096;  // repo-level synthesis
+    public int MaxFileSizeKb { get; set; } = 512;           // skip files larger than this
 }
 ```
 
@@ -2276,16 +2627,18 @@ public class CodeGraphDocGenerator
 var analyzeCommand = new Command("analyze", "Run Claude analysis on a repository");
 analyzeCommand.AddArgument(new Argument<string>("path", "Path to repository root"));
 analyzeCommand.AddOption(new Option<string>("--name", "Project name"));
+analyzeCommand.AddOption(new Option<string>("--model",
+    "Claude model to use (default: claude-sonnet-4-6, use claude-opus-4-6 for critical repos)"));
 analyzeCommand.AddOption(new Option<bool>("--write-docs",
     "Write CODEGRAPH.md files to the repository"));
-analyzeCommand.SetHandler(async (string path, string? name, bool writeDocs) =>
+analyzeCommand.SetHandler(async (string path, string? name, string? model, bool writeDocs) =>
 {
     var projectName = name ?? Path.GetFileName(path);
     var analyzer = BuildAnalyzer(config);
     var docGenerator = new CodeGraphDocGenerator();
 
-    Console.WriteLine($"Analyzing {projectName} with Claude...");
-    var analysis = await analyzer.AnalyzeRepositoryAsync(projectName, path);
+    Console.WriteLine($"Analyzing {projectName} with {model ?? "claude-sonnet-4-6"}...");
+    var analysis = await analyzer.AnalyzeRepositoryAsync(projectName, path, model);
 
     Console.WriteLine($"Confidence: {analysis.Confidence}");
     Console.WriteLine(analysis.Summary);
@@ -2293,8 +2646,9 @@ analyzeCommand.SetHandler(async (string path, string? name, bool writeDocs) =>
     if (writeDocs)
     {
         // Write repo-level CODEGRAPH.md
-        var inbound = await store.FindCrossRepoEdgesAsync(projectName);
-        var outbound = await store.FindCrossRepoEdgesAsync(projectName);
+        var allEdges = await store.FindCrossRepoEdgesAsync(projectName);
+        var inbound = allEdges.Where(e => e.TargetProject == projectName).ToList();
+        var outbound = allEdges.Where(e => e.SourceProject == projectName).ToList();
         var repoDoc = docGenerator.GenerateRepoDoc(projectName, analysis,
             inbound, outbound);
         await File.WriteAllTextAsync(Path.Combine(path, "CODEGRAPH.md"), repoDoc);
@@ -2314,19 +2668,21 @@ analyzeCommand.SetHandler(async (string path, string? name, bool writeDocs) =>
         Console.WriteLine("CODEGRAPH.md files written.");
     }
 
-    // Store summary in database
+    // Store summary in database (includes which model was used)
     var sourceHash = ComputeRepoHash(path);
     await store.UpsertProjectSummaryAsync(projectName, analysis.Summary,
-        analysis.Confidence, sourceHash);
+        analysis.Confidence, sourceHash, analysis.ModelUsed);
 });
 ```
 
 ### Phase 4 Deliverable
 
 - `dotnet run --project src/TC.CodeGraphApi.Console -- analyze /path/to/repo --write-docs` works
+- `dotnet run --project src/TC.CodeGraphApi.Console -- analyze /path/to/repo --model claude-opus-4-6` for deep analysis of critical repos
 - CODEGRAPH.md files are generated with business-level descriptions
 - Confidence indicators reflect actual analysis quality
-- Summaries are stored in the database for MCP server queries
+- Summaries are stored in the database for MCP server queries, including which model was used
+- `project_summaries.model_used` column tracks Sonnet vs Opus analysis per repo
 
 ---
 
@@ -2389,7 +2745,7 @@ public class CodeGraphMcpServer
 {
     private readonly GraphQueryEngine _query;
     private readonly IGraphStore _store;
-    private readonly ILogger _logger;
+    private readonly ILogger<CodeGraphMcpServer> _logger;
 
     [McpTool("search_graph",
         Description = "Search for services, endpoints, models, events, or any code element by name pattern. Supports filtering by type (class, method, route, event, etc.) and project.")]
@@ -2558,8 +2914,12 @@ var mcpCommand = new Command("mcp", "Start MCP server (stdio transport)");
 mcpCommand.SetHandler(async () =>
 {
     var builder = Host.CreateApplicationBuilder();
-    builder.Services.AddSingleton<IGraphStore>(store);
-    builder.Services.AddSingleton<GraphQueryEngine>();
+    builder.ConfigureContainer(new AutofacServiceProviderFactory(), containerBuilder =>
+    {
+        containerBuilder.RegisterInstance(store).As<IGraphStore>();
+        containerBuilder.RegisterType<GraphQueryEngine>().SingleInstance();
+        containerBuilder.RegisterType<CodeGraphMcpServer>().SingleInstance();
+    });
     builder.Services.AddMcpServer()
         .WithStdioTransport()
         .WithTools<CodeGraphMcpServer>();
@@ -2635,7 +2995,7 @@ Once the proof of concept is validated with TC.Common.ServiceStack, TC.Jarvis, a
     "ApiKey": "",
     "Model": "claude-sonnet-4-6",
     "MaxTokensPerAnalysis": 8192,
-    "MaxContextTokens": 100000,
+    "MaxTokensPerSynthesis": 4096,
     "MaxFileSizeKb": 512
   }
 }
@@ -2651,17 +3011,17 @@ Once the proof of concept is validated with TC.Common.ServiceStack, TC.Jarvis, a
 | 1.2 | Domain model | Models | — | Enums, records, pipeline types |
 | 1.3 | SQL migrations | sql/ | — | Database schema |
 | 1.4 | Storage (Dapper) | Data | 1.2, 1.3 | Working IGraphStore with batch ops and traversal |
-| 1.5 | Storage tests | Data.Tests | 1.4 | Verified storage layer |
+| 1.5 | Storage tests | Tests/Data | 1.4 | Verified storage layer |
 | 2.1 | Pipeline framework | Services | 1.2, 1.4 | GraphBuffer, IndexingPipeline, ICodeExtractor |
 | 2.2 | CLI commands | Console | 2.1 | `migrate`, `index`, `index-all`, `stats` commands |
 | 3.1 | Roslyn extractor | Extractors.CSharp | 2.1 | Classes, methods, calls, DI extraction |
 | 3.2 | NuGet ref extraction | Extractors.CSharp | 2.1 | Package dependency nodes and edges |
 | 3.3 | Cross-repo linker | Services | 3.1, 3.2 | HTTP, messaging, and NuGet cross-repo edges |
 | 3.4 | Solution-level analysis | Extractors.CSharp | 3.1 | Full semantic resolution via MSBuildWorkspace |
-| 3.5 | Extractor tests | Extractors.CSharp.Tests | 3.1-3.4 | Verified extraction accuracy |
+| 3.5 | Extractor tests | Tests/Extractors | 3.1-3.4 | Verified extraction accuracy |
 | 4.1 | Claude analyzer | Services | 1.4 | RepoAnalysis and ProjectAnalysis from Claude |
 | 4.2 | Doc generator | Services | 4.1 | CODEGRAPH.md file generation |
-| 4.3 | Analyze command | Console | 4.1, 4.2 | `analyze --write-docs` command |
+| 4.3 | Analyze command | Console | 4.1, 4.2 | `analyze --write-docs --model` command |
 | 5.1 | Query engine | Services | 1.4 | Search, traversal, data lineage, archival queries |
 | 5.2 | MCP server | Services | 5.1 | 12 MCP tools |
 | 5.3 | MCP hosting | Console | 5.2 | Running MCP server connectable from Claude Code |

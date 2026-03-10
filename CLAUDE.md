@@ -22,7 +22,7 @@ dotnet run --project src/TC.CodeGraphApi.Console -- index /path/to/repo # Index 
 dotnet run --project src/TC.CodeGraphApi.Console -- mcp                 # Start MCP server (stdio)
 dotnet run --project src/TC.CodeGraphApi.Console -- migrate             # Apply DB migrations
 dotnet test                                                             # All tests
-dotnet test tests/TC.CodeGraphApi.Extractors.CSharp.Tests               # Specific test project
+dotnet test tests/TC.CodeGraphApi.Tests                                 # Specific test project
 dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Single test
 ```
 
@@ -34,7 +34,7 @@ dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Singl
 TC.CodeGraphApi/
 ├── src/
 │   ├── TC.CodeGraphApi.sln
-│   ├── TC.CodeGraphApi/                       # API host, DI registration, REST endpoints
+│   ├── TC.CodeGraphApi/                       # API host (Startup.cs + Controllers), DI registration
 │   ├── TC.CodeGraphApi.Console/               # CLI: index, analyze, mcp, migrate, stats
 │   ├── TC.CodeGraphApi.Models/                # Domain model: GraphNode, GraphEdge, enums, contracts
 │   ├── TC.CodeGraphApi.Services/              # Pipeline, query engine, Claude analysis, MCP tools,
@@ -62,10 +62,10 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 ### Key Projects
 
 - **TC.CodeGraphApi.Models** — Graph model: `GraphNode`, `GraphEdge`, node/edge type enums, `ExtractionResult`, pipeline types. No dependencies.
-- **TC.CodeGraphApi.Data** — MySQL via **Dapper** (not EF Core). `IGraphStore`, `MySqlGraphStore`, hand-written SQL with recursive CTEs.
+- **TC.CodeGraphApi.Data** — MySQL via **EF Core** (Pomelo) for CRUD + **Dapper** for graph traversal (recursive CTEs) and batch operations. `IGraphStore`, `MySqlGraphStore`, `CodeGraphDbContext`.
 - **TC.CodeGraphApi.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, Claude analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
 - **TC.CodeGraphApi.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
-- **TC.CodeGraphApi** — ASP.NET minimal API host. REST endpoints, DI registration, startup.
+- **TC.CodeGraphApi** — ASP.NET WebApi host. `Startup.cs` with controllers, Autofac DI registration.
 - **TC.CodeGraphApi.Console** — CLI commands: `index`, `index-all`, `analyze`, `mcp`, `migrate`, `stats`.
 - **TC.CodeGraphJobs** — `RepositorySyncWorker`, scheduled re-indexing tasks.
 
@@ -117,7 +117,7 @@ Claude analyzes each repo's code and generates natural language summaries with *
 
 ## Design Decisions
 
-- **Dapper over EF Core** — Graph queries are hand-written SQL with recursive CTEs
+- **EF Core + Dapper hybrid** — EF Core for CRUD, Dapper for recursive CTEs and batch operations
 - **MySQL over graph DB** — Company already runs MySQL; recursive CTEs handle traversal
 - **Roslyn for C#** — Semantic analysis far exceeds tree-sitter's syntactic parsing
 - **Node.js sidecar for TypeScript** — TypeScript compiler API understands Angular natively
@@ -141,4 +141,5 @@ Claude analyzes each repo's code and generates natural language summaries with *
 - `ModelContextProtocol` — .NET MCP SDK
 - `Dapper` + `MySqlConnector` — MySQL access
 - `LibGit2Sharp` — Git operations
-- `Serilog` — Structured logging
+- `Microsoft.Extensions.Logging` — Logging (ILogger<T>)
+- `Autofac` — Dependency injection container

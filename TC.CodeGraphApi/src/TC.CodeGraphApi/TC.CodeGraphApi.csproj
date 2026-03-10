@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Autofac.Extensions.DependencyInjection" Version="10.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TC.CodeGraphApi.Models\TC.CodeGraphApi.Models.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Data\TC.CodeGraphApi.Data.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Services\TC.CodeGraphApi.Services.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Extractors.CSharp\TC.CodeGraphApi.Extractors.CSharp.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphJobs\TC.CodeGraphJobs.csproj" />
+  </ItemGroup>
+
+</Project>

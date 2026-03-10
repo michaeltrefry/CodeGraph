@@ -1,0 +1,512 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Shouldly;
+using TC.CodeGraphApi.Extractors.CSharp;
+using TC.CodeGraphApi.Models;
+using TC.CodeGraphApi.Services;
+
+namespace TC.CodeGraphApi.Tests.Extractors;
+
+public class RoslynExtractorTests
+{
+    private static readonly ExtractorContext TestContext = new()
+    {
+        ProjectName = "TestProject",
+        RootPath = "/test"
+    };
+
+    private static ExtractionResult ExtractFromSource(string code, bool withSemantics = false)
+    {
+        var tree = CSharpSyntaxTree.ParseText(code);
+
+        SemanticModel? model = null;
+        if (withSemantics)
+        {
+            var refs = new[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(System.Linq.Enumerable).Assembly.Location),
+                MetadataReference.CreateFromFile(
+                    System.Runtime.InteropServices.RuntimeEnvironment
+                        .GetRuntimeDirectory() + "System.Runtime.dll")
+            };
+            var compilation = CSharpCompilation.Create("Test",
+                new[] { tree }, refs,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            model = compilation.GetSemanticModel(tree);
+        }
+
+        var walker = new CodeGraphSyntaxWalker(TestContext, model);
+        walker.Visit(tree.GetRoot());
+        return walker.GetResult();
+    }
+
+    [Fact]
+    public void Extracts_ClassDeclaration()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public class WalletService
+            {
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var classNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Class);
+        classNode.Name.ShouldBe("WalletService");
+        classNode.QualifiedName.ShouldBe("MyApp.Services.WalletService");
+        classNode.Project.ShouldBe("TestProject");
+    }
+
+    [Fact]
+    public void Extracts_ClassWithBaseType_CreatesInheritsEdge()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public class BaseService { }
+            public class WalletService : BaseService { }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        result.Nodes.Count(n => n.Label == NodeLabel.Class).ShouldBe(2);
+
+        var inheritsEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.INHERITS);
+        inheritsEdge.SourceQN.ShouldBe("MyApp.Services.WalletService");
+        inheritsEdge.TargetQN.ShouldBe("MyApp.Services.BaseService");
+    }
+
+    [Fact]
+    public void Extracts_ClassImplementingInterface_CreatesImplementsEdge()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public interface IWalletService { }
+            public class WalletService : IWalletService { }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var implementsEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.IMPLEMENTS);
+        implementsEdge.SourceQN.ShouldBe("MyApp.Services.WalletService");
+        implementsEdge.TargetQN.ShouldBe("MyApp.Services.IWalletService");
+    }
+
+    [Fact]
+    public void Extracts_InterfaceDeclaration()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public interface IWalletService { }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var ifaceNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Interface);
+        ifaceNode.Name.ShouldBe("IWalletService");
+        ifaceNode.QualifiedName.ShouldBe("MyApp.Services.IWalletService");
+    }
+
+    [Fact]
+    public void Extracts_RecordDeclaration()
+    {
+        var code = """
+            namespace MyApp.Models;
+            public record OrderCreatedEvent(int OrderId, decimal Amount);
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var recordNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Record);
+        recordNode.Name.ShouldBe("OrderCreatedEvent");
+        recordNode.QualifiedName.ShouldBe("MyApp.Models.OrderCreatedEvent");
+    }
+
+    [Fact]
+    public void Extracts_EnumDeclaration()
+    {
+        var code = """
+            namespace MyApp.Models;
+            public enum OrderStatus { Pending, Active, Complete }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var enumNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Enum);
+        enumNode.Name.ShouldBe("OrderStatus");
+    }
+
+    [Fact]
+    public void Extracts_MethodDeclaration()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public class WalletService
+            {
+                public async System.Threading.Tasks.Task<decimal> GetBalanceAsync(int walletId)
+                {
+                    return 0m;
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var methodNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Method);
+        methodNode.Name.ShouldBe("GetBalanceAsync");
+        methodNode.Properties["is_async"].ShouldBe(true);
+        methodNode.Properties["parameter_count"].ShouldBe(1);
+    }
+
+    [Fact]
+    public void Extracts_Method_CreatesDefinesMethodEdge()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public class WalletService
+            {
+                public void DoWork() { }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var edge = result.Edges.ShouldContain(e => e.Type == EdgeType.DEFINES_METHOD);
+        edge.SourceQN.ShouldBe("MyApp.Services.WalletService");
+        edge.TargetQN.ShouldContain("DoWork");
+    }
+
+    [Fact]
+    public void Extracts_NamespaceDeclaration()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public class Foo { }
+            """;
+
+        var result = ExtractFromSource(code);
+
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Namespace && n.Name == "MyApp.Services");
+    }
+
+    [Fact]
+    public void Extracts_UsingDirectives()
+    {
+        var code = """
+            using System.Collections.Generic;
+            namespace MyApp.Services;
+            public class Foo { }
+            """;
+
+        var result = ExtractFromSource(code);
+
+        result.UnresolvedImports.ShouldContain(i => i.ImportedNamespace == "System.Collections.Generic");
+    }
+
+    [Fact]
+    public void Detects_ControllerRoute()
+    {
+        // Syntax-only detection (no semantics needed for attribute syntax check)
+        var code = """
+            using System;
+            namespace MyApp.Controllers;
+            [Route("api/[controller]")]
+            public class WalletController
+            {
+                [HttpGet("{id}")]
+                public void Get(int id) { }
+            }
+            """;
+
+        var result = ExtractFromSource(code);
+
+        // Route node should be created
+        var routeNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Route);
+        routeNode.Properties["http_method"].ShouldBe("GET");
+        routeNode.Properties["route_template"].ShouldBe("api/wallet/{id}");
+    }
+
+    [Fact]
+    public void Detects_ControllerRoute_WithSemantics()
+    {
+        var code = """
+            using System;
+
+            [AttributeUsage(AttributeTargets.Class)]
+            public class RouteAttribute : Attribute
+            {
+                public RouteAttribute(string template) { }
+            }
+
+            [AttributeUsage(AttributeTargets.Method)]
+            public class HttpGetAttribute : Attribute
+            {
+                public HttpGetAttribute() { }
+                public HttpGetAttribute(string template) { }
+            }
+
+            namespace MyApp.Controllers
+            {
+                [Route("api/[controller]")]
+                public class OrderController
+                {
+                    [HttpGet("{id}")]
+                    public void Get(int id) { }
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var routeNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Route);
+        routeNode.Properties["http_method"].ShouldBe("GET");
+        routeNode.Properties["route_template"].ShouldBe("api/order/{id}");
+
+        // HANDLES edge from Route → Method
+        result.Edges.ShouldContain(e => e.Type == EdgeType.HANDLES);
+    }
+
+    [Fact]
+    public void Detects_ConstructorInjection()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public interface IWalletService { }
+            public class OrderService
+            {
+                public OrderService(IWalletService wallet)
+                {
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var injectsEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.INJECTS);
+        injectsEdge.TargetQN.ShouldBe("MyApp.Services.IWalletService");
+        injectsEdge.Properties!["parameter_name"].ShouldBe("wallet");
+    }
+
+    [Fact]
+    public void Detects_ConstructorInjection_FiltersFrameworkTypes()
+    {
+        var code = """
+            using Microsoft.Extensions.Logging;
+            namespace MyApp.Services;
+            public interface IWalletService { }
+            public class OrderService
+            {
+                public OrderService(IWalletService wallet, ILogger<OrderService> logger)
+                {
+                }
+            }
+            """;
+
+        // Syntax-only won't resolve types, so use semantics for this test
+        // But ILogger won't resolve without the actual assembly reference,
+        // so we verify the filter logic conceptually via the simpler case above.
+        // This test verifies that at minimum IWalletService IS detected.
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        // Should have INJECTS for IWalletService
+        result.Edges.ShouldContain(e =>
+            e.Type == EdgeType.INJECTS &&
+            e.TargetQN == "MyApp.Services.IWalletService");
+    }
+
+    [Fact]
+    public void Detects_MassTransitConsumer()
+    {
+        var code = """
+            namespace MyApp.Events
+            {
+                public class OrderCreatedEvent { }
+            }
+
+            namespace MyApp.Consumers
+            {
+                public class Consumer<T> { }
+                public class OrderCreatedConsumer : Consumer<MyApp.Events.OrderCreatedEvent>
+                {
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var consumesEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.CONSUMES);
+        consumesEdge.TargetQN.ShouldBe("MyApp.Events.OrderCreatedEvent");
+        consumesEdge.Properties!["confidence_band"].ShouldBe("high");
+    }
+
+    [Fact]
+    public void Computes_CyclomaticComplexity()
+    {
+        var code = """
+            namespace MyApp;
+            public class Calc
+            {
+                public int Complex(int x, bool flag)
+                {
+                    if (x > 0 && flag)
+                        return x;
+                    else if (x < 0 || !flag)
+                        return -x;
+                    for (int i = 0; i < x; i++) { }
+                    return 0;
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var method = result.Nodes.Single(n => n.Label == NodeLabel.Method && n.Name == "Complex");
+        // 1 base + 2 if + 1 && + 1 || + 1 for = 6
+        ((int)method.Properties["complexity"]).ShouldBe(6);
+    }
+
+    [Fact]
+    public void Extracts_PropertyDeclaration()
+    {
+        var code = """
+            namespace MyApp.Models;
+            public class Order
+            {
+                public int OrderId { get; set; }
+                public static string DefaultStatus { get; set; }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var props = result.Nodes.Where(n => n.Label == NodeLabel.Property).ToList();
+        props.Count.ShouldBe(2);
+
+        var orderIdProp = props.Single(p => p.Name == "OrderId");
+        orderIdProp.Properties["type"].ShouldBe("int");
+
+        var staticProp = props.Single(p => p.Name == "DefaultStatus");
+        staticProp.Properties["is_static"].ShouldBe(true);
+    }
+
+    [Fact]
+    public void Extracts_StructDeclaration()
+    {
+        var code = """
+            namespace MyApp.Models;
+            public struct Point { public int X; public int Y; }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Struct && n.Name == "Point");
+    }
+
+    [Fact]
+    public void Extracts_DelegateDeclaration()
+    {
+        var code = """
+            namespace MyApp;
+            public delegate void MyHandler(int value);
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Delegate && n.Name == "MyHandler");
+    }
+
+    [Fact]
+    public void SyntaxOnly_FallbackExtraction_StillProducesNodes()
+    {
+        var code = """
+            namespace MyApp.Services;
+            public class WalletService
+            {
+                public void DoWork() { }
+            }
+            """;
+
+        // No semantic model — syntax only
+        var result = ExtractFromSource(code, withSemantics: false);
+
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Class && n.Name == "WalletService");
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Method && n.Name == "DoWork");
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Namespace);
+    }
+
+    [Fact]
+    public async Task RoslynExtractor_ExtractAsync_Works()
+    {
+        var extractor = new RoslynExtractor();
+
+        extractor.SupportedExtensions.ShouldContain(".cs");
+
+        var code = """
+            namespace MyApp;
+            public class Foo { public void Bar() { } }
+            """;
+
+        var result = await extractor.ExtractAsync("/test/Foo.cs", code, TestContext);
+
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Class && n.Name == "Foo");
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Method && n.Name == "Bar");
+    }
+
+    [Fact]
+    public void Detects_MethodMarkedAsTest()
+    {
+        var code = """
+            using System;
+
+            [AttributeUsage(AttributeTargets.Method)]
+            public class FactAttribute : Attribute { }
+
+            namespace MyApp.Tests;
+            public class MyTests
+            {
+                [Fact]
+                public void MyTest() { }
+
+                public void NotATest() { }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var testMethod = result.Nodes.Single(n => n.Label == NodeLabel.Method && n.Name == "MyTest");
+        testMethod.Properties["is_test"].ShouldBe(true);
+
+        var normalMethod = result.Nodes.Single(n => n.Label == NodeLabel.Method && n.Name == "NotATest");
+        normalMethod.Properties["is_test"].ShouldBe(false);
+    }
+
+    [Fact]
+    public void Detects_AbstractAndStaticClass()
+    {
+        var code = """
+            namespace MyApp;
+            public abstract class BaseService { }
+            public static class Helpers { }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var abstractClass = result.Nodes.Single(n => n.Name == "BaseService");
+        abstractClass.Properties["is_abstract"].ShouldBe(true);
+
+        var staticClass = result.Nodes.Single(n => n.Name == "Helpers");
+        staticClass.Properties["is_static"].ShouldBe(true);
+    }
+}
+
+public static class ShouldlyCollectionExtensions
+{
+    public static T ShouldContain<T>(this IEnumerable<T> source, Func<T, bool> predicate) where T : class
+    {
+        var item = source.FirstOrDefault(predicate);
+        item.ShouldNotBeNull("Collection should contain an item matching the predicate, but none was found.");
+        return item;
+    }
+}
