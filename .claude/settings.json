@@ -41,7 +41,9 @@
       "Bash(head -50 /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/src/TC.CodeGraphJobs/*.cs)",
       "Bash(gtimeout 3 dotnet run --no-build --project src/TC.CodeGraphApi.Console -- mcp)",
       "Bash(perl -e 'alarm 3; exec @ARGV' dotnet run --no-build --project src/TC.CodeGraphApi.Console -- mcp)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(mkdir -p /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/src/TC.CodeGraphApi.Extractors.Sql)",
+      "Bash(mkdir -p /Users/michael/Repos/Codebase-Knowledge-Graph/TC.CodeGraphApi/src/TC.CodeGraphApi.Extractors.ColdFusion)"
     ]
   }
 }

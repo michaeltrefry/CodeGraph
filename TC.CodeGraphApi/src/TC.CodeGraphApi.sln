@@ -21,6 +21,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TC.CodeGraphApi.Tests", "TC
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TC.CodeGraphJobs.Tests", "TC.CodeGraphJobs.Tests\TC.CodeGraphJobs.Tests.csproj", "{8367E705-7F61-416F-9FA9-C360C1D40282}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TC.CodeGraphApi.Extractors.Sql", "TC.CodeGraphApi.Extractors.Sql\TC.CodeGraphApi.Extractors.Sql.csproj", "{C51AE3E3-D309-49A1-BD1E-F6C25BBF7556}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TC.CodeGraphApi.Extractors.ColdFusion", "TC.CodeGraphApi.Extractors.ColdFusion\TC.CodeGraphApi.Extractors.ColdFusion.csproj", "{50DFC1AD-CF56-420A-B75A-88B0C86B742D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -66,5 +70,13 @@ Global
 		{8367E705-7F61-416F-9FA9-C360C1D40282}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8367E705-7F61-416F-9FA9-C360C1D40282}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8367E705-7F61-416F-9FA9-C360C1D40282}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C51AE3E3-D309-49A1-BD1E-F6C25BBF7556}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C51AE3E3-D309-49A1-BD1E-F6C25BBF7556}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C51AE3E3-D309-49A1-BD1E-F6C25BBF7556}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C51AE3E3-D309-49A1-BD1E-F6C25BBF7556}.Release|Any CPU.Build.0 = Release|Any CPU
+		{50DFC1AD-CF56-420A-B75A-88B0C86B742D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{50DFC1AD-CF56-420A-B75A-88B0C86B742D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{50DFC1AD-CF56-420A-B75A-88B0C86B742D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{50DFC1AD-CF56-420A-B75A-88B0C86B742D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
