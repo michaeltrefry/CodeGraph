@@ -16,47 +16,64 @@ CodeGraph is a self-maintaining .NET 9 service that indexes ~620 GitLab reposito
 ## Build & Run Commands
 
 ```bash
-dotnet build CodeGraph.sln                              # Build entire solution
-dotnet run --project src/CodeGraph.Api                  # API host (MCP + sync worker)
-dotnet run --project tools/CodeGraph.Cli                # CLI for manual indexing/queries
-dotnet test                                             # All tests
-dotnet test tests/CodeGraph.Extractors.CSharp.Tests     # Specific test project
-dotnet test --filter "FullyQualifiedName~TestMethodName" # Single test
+dotnet build src/TC.CodeGraphApi.sln                                    # Build entire solution
+dotnet run --project src/TC.CodeGraphApi                                # API host (REST + sync worker)
+dotnet run --project src/TC.CodeGraphApi.Console -- index /path/to/repo # Index a repo via CLI
+dotnet run --project src/TC.CodeGraphApi.Console -- mcp                 # Start MCP server (stdio)
+dotnet run --project src/TC.CodeGraphApi.Console -- migrate             # Apply DB migrations
+dotnet test                                                             # All tests
+dotnet test tests/TC.CodeGraphApi.Extractors.CSharp.Tests               # Specific test project
+dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Single test
 ```
 
 ## Architecture
 
+### Solution Structure (follows company convention)
+
+```
+TC.CodeGraphApi/
+├── src/
+│   ├── TC.CodeGraphApi.sln
+│   ├── TC.CodeGraphApi/                       # API host, DI registration, REST endpoints
+│   ├── TC.CodeGraphApi.Console/               # CLI: index, analyze, mcp, migrate, stats
+│   ├── TC.CodeGraphApi.Models/                # Domain model: GraphNode, GraphEdge, enums, contracts
+│   ├── TC.CodeGraphApi.Services/              # Pipeline, query engine, Claude analysis, MCP tools,
+│   │                                          #   ICodeExtractor interface, cross-repo linker
+│   ├── TC.CodeGraphApi.Data/                  # IGraphStore, MySqlGraphStore, Dapper, migrations
+│   ├── TC.CodeGraphJobs/                   # Background sync worker, scheduled re-indexing
+│   ├── TC.CodeGraphApi.Extractors.CSharp/     # Roslyn extractor (isolated heavy dependency)
+│   ├── TC.CodeGraphApi.Extractors.TypeScript/ # Node.js sidecar (Phase 6+)
+│   ├── TC.CodeGraphApi.Extractors.Sql/        # ScriptDom (Phase 6+)
+│   └── TC.CodeGraphApi.Extractors.ColdFusion/ # Regex (Phase 6+)
+├── tests/
+└── sql/migrations/
+```
+
 ### Dependency Flow
 
 ```
-Domain ← Storage ← Pipeline ← Extractors.*
-                  ← Query
-                  ← GitLab
-                  ← Mcp (uses Query + Storage)
-                  ← Api (hosts everything)
+Models ← Data ← Services ← Extractors.*
+                          ← Api (hosts everything)
+                          ← Jobs
 ```
 
-No references flow upward. Domain has zero dependencies. Extractors depend only on Domain and Pipeline abstractions.
+No references flow upward. Models has zero dependencies. Extractors depend only on Models and Services (for ICodeExtractor interface).
 
 ### Key Projects
 
-- **CodeGraph.Domain** — Graph model: `GraphNode`, `GraphEdge`, node/edge type enums. No dependencies.
-- **CodeGraph.Storage** — MySQL via **Dapper** (not EF Core). Hand-written SQL with recursive CTEs.
-- **CodeGraph.Pipeline** — Multi-pass indexing orchestrator with in-memory `GraphBuffer`, batch-flushed to MySQL. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
-- **CodeGraph.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
-- **CodeGraph.Extractors.TypeScript** — Node.js sidecar using TypeScript compiler API.
-- **CodeGraph.Extractors.Sql** — `ScriptDom` T-SQL parser.
-- **CodeGraph.Extractors.ColdFusion** — Best-effort regex for `.cfm`/`.cfc`.
-- **CodeGraph.Mcp** — MCP server (stdio transport) with tools for search, tracing, data lineage, archival candidates.
-- **CodeGraph.Query** — Graph query engine, recursive CTEs for traversal.
-- **CodeGraph.Api** — ASP.NET minimal API host. Runs MCP server and `RepositorySyncWorker`.
-- **CodeGraph.GitLab** — GitLab API v4 + LibGit2Sharp. Discovery, clone/pull, webhooks, file access.
+- **TC.CodeGraphApi.Models** — Graph model: `GraphNode`, `GraphEdge`, node/edge type enums, `ExtractionResult`, pipeline types. No dependencies.
+- **TC.CodeGraphApi.Data** — MySQL via **Dapper** (not EF Core). `IGraphStore`, `MySqlGraphStore`, hand-written SQL with recursive CTEs.
+- **TC.CodeGraphApi.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, Claude analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
+- **TC.CodeGraphApi.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
+- **TC.CodeGraphApi** — ASP.NET minimal API host. REST endpoints, DI registration, startup.
+- **TC.CodeGraphApi.Console** — CLI commands: `index`, `index-all`, `analyze`, `mcp`, `migrate`, `stats`.
+- **TC.CodeGraphJobs** — `RepositorySyncWorker`, scheduled re-indexing tasks.
 
 ### Core Interfaces
 
-- `ICodeExtractor` — Language extractors implement this. Pipeline dispatches by file extension.
-- `IGraphStore` — Storage abstraction (MySQL/Dapper).
-- `IGitLabService` — Repository discovery, sync, change detection.
+- `ICodeExtractor` (in Services) — Language extractors implement this. Pipeline dispatches by file extension.
+- `IGraphStore` (in Data) — Storage abstraction (MySQL/Dapper).
+- `IGitLabService` (in Services, Phase 6+) — Repository discovery, sync, change detection.
 
 ## Target Codebase Conventions
 
@@ -68,7 +85,7 @@ TC.RepoNameApi.sln
 ├── TC.RepoNameApi.Models/    # Public contracts — published as NuGet package
 ├── TC.RepoNameApi.Services/  # Business logic
 ├── TC.RepoNameApi.Data/      # Data access (EF/Dapper)
-└── TC.RepoNameApiJobs/       # Background jobs (external scheduler)
+└── TC.RepoNameJobs/          # Background jobs (external scheduler)
 ```
 
 **`TC.*.Models` NuGet packages are the canonical linking key across repos.** The qualified type name (e.g., `TC.OrdersApi.Models.OrderCreatedEvent`) connects publishers to consumers across repos.

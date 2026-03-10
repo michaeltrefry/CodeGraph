@@ -10,36 +10,43 @@ This document details the step-by-step implementation plan for the CodeGraph pro
 
 ## Solution Structure
 
+Follows the standard company repository convention (`TC.AppNameApi` pattern), with additional projects for extractors that have isolated heavy dependencies.
+
 ```
-CodeGraph.sln
-│
+TC.CodeGraphApi/
 ├── src/
-│   ├── CodeGraph.Domain/                  # Shared domain model (zero dependencies)
-│   ├── CodeGraph.Storage/                 # MySQL graph storage (Dapper)
-│   ├── CodeGraph.Pipeline/                # Multi-pass indexing orchestrator
-│   ├── CodeGraph.Extractors.CSharp/       # Roslyn-based C# extractor
-│   ├── CodeGraph.Extractors.TypeScript/   # TypeScript/Angular extractor (Phase 6+)
-│   ├── CodeGraph.Extractors.Sql/          # T-SQL extractor (Phase 6+)
-│   ├── CodeGraph.Extractors.ColdFusion/   # ColdFusion extractor (Phase 6+)
-│   ├── CodeGraph.Analysis/                # Claude-powered semantic analysis
-│   ├── CodeGraph.Query/                   # Graph query engine
-│   ├── CodeGraph.Mcp/                     # MCP server (IDE integration)
-│   ├── CodeGraph.GitLab/                  # GitLab API integration (Phase 6+)
-│   └── CodeGraph.Api/                     # REST API + background worker host
+│   ├── TC.CodeGraphApi.sln
+│   ├── TC.CodeGraphApi/                           # API host, MCP server, DI registration, startup
+│   │   └── TC.CodeGraphApi.csproj
+│   ├── TC.CodeGraphApi.Console/                   # CLI for manual indexing, queries, admin
+│   │   └── TC.CodeGraphApi.Console.csproj
+│   ├── TC.CodeGraphApi.Models/                    # Domain model: GraphNode, GraphEdge, enums,
+│   │   └── TC.CodeGraphApi.Models.csproj          #   ExtractionResult, pipeline types, contracts
+│   ├── TC.CodeGraphApi.Services/                  # Pipeline orchestrator, query engine, cross-repo
+│   │   └── TC.CodeGraphApi.Services.csproj        #   linker, Claude analysis, CODEGRAPH.md gen,
+│   │                                              #   ICodeExtractor interface, MCP server tools
+│   ├── TC.CodeGraphApi.Data/                      # IGraphStore, MySqlGraphStore, Dapper, migrations
+│   │   └── TC.CodeGraphApi.Data.csproj
+│   ├── TC.CodeGraphJobs/                       # Background sync worker, scheduled re-indexing
+│   │   └── TC.CodeGraphJobs.csproj
+│   ├── TC.CodeGraphApi.Extractors.CSharp/         # Roslyn-based C# extractor
+│   │   └── TC.CodeGraphApi.Extractors.CSharp.csproj
+│   ├── TC.CodeGraphApi.Extractors.TypeScript/     # Node.js sidecar TS/Angular extractor (Phase 6+)
+│   │   └── TC.CodeGraphApi.Extractors.TypeScript.csproj
+│   ├── TC.CodeGraphApi.Extractors.Sql/            # ScriptDom T-SQL extractor (Phase 6+)
+│   │   └── TC.CodeGraphApi.Extractors.Sql.csproj
+│   └── TC.CodeGraphApi.Extractors.ColdFusion/     # Regex ColdFusion extractor (Phase 6+)
+│       └── TC.CodeGraphApi.Extractors.ColdFusion.csproj
 │
 ├── tests/
-│   ├── CodeGraph.Domain.Tests/
-│   ├── CodeGraph.Storage.Tests/
-│   ├── CodeGraph.Pipeline.Tests/
-│   ├── CodeGraph.Extractors.CSharp.Tests/
-│   ├── CodeGraph.Query.Tests/
-│   └── CodeGraph.Integration.Tests/
-│
-├── tools/
-│   └── CodeGraph.Cli/                     # CLI for manual indexing, queries, admin
+│   ├── TC.CodeGraphApi.Models.Tests/
+│   ├── TC.CodeGraphApi.Data.Tests/
+│   ├── TC.CodeGraphApi.Services.Tests/
+│   ├── TC.CodeGraphApi.Extractors.CSharp.Tests/
+│   └── TC.CodeGraphApi.Integration.Tests/
 │
 └── sql/
-    └── migrations/                        # Sequential plain SQL migration scripts
+    └── migrations/                                # Sequential plain SQL migration scripts
         ├── 001_initial_schema.sql
         ├── 002_add_messaging_nodes.sql
         └── ...
@@ -48,16 +55,29 @@ CodeGraph.sln
 ### Project Dependencies
 
 ```
-CodeGraph.Domain          → (none)
-CodeGraph.Storage         → Domain
-CodeGraph.Pipeline        → Domain, Storage
-CodeGraph.Extractors.*    → Domain, Pipeline
-CodeGraph.Analysis        → Domain, Storage (Anthropic SDK)
-CodeGraph.Query           → Domain, Storage
-CodeGraph.Mcp             → Domain, Query, Storage
-CodeGraph.Api             → All of the above
-CodeGraph.Cli             → All of the above
+TC.CodeGraphApi.Models              → (none)
+TC.CodeGraphApi.Data                → Models
+TC.CodeGraphApi.Services            → Models, Data
+TC.CodeGraphApi.Extractors.*        → Models, Services (for ICodeExtractor interface)
+TC.CodeGraphApi                     → All of the above (host, DI registration)
+TC.CodeGraphApi.Console             → Models, Data, Services, Extractors.*
+TC.CodeGraphJobs                 → Models, Data, Services
 ```
+
+### What Lives Where
+
+| Project | Contains |
+|---------|----------|
+| **Models** | `GraphNode`, `GraphEdge`, `NodeLabel`, `EdgeType`, `ExtractionResult`, `PendingEdge`, `UnresolvedCall`, `ConfidenceLevel`, all shared records/enums |
+| **Data** | `IGraphStore`, `MySqlGraphStore`, Dapper type handlers, migration runner, JSON serialization |
+| **Services** | `ICodeExtractor` interface, `IndexingPipeline`, `GraphBuffer`, `CrossRepoLinker`, `GraphQueryEngine`, `ClaudeCodeAnalyzer`, `CodeGraphDocGenerator`, `CodeGraphMcpServer`, `FoundationalKnowledge` |
+| **Extractors.CSharp** | `RoslynExtractor`, `SolutionAnalyzer`, `CodeGraphSyntaxWalker`, `NuGetReferenceExtractor` |
+| **Extractors.TypeScript** | `TypeScriptExtractor`, Node.js sidecar scripts |
+| **Extractors.Sql** | `SqlExtractor`, `SqlGraphVisitor` |
+| **Extractors.ColdFusion** | `ColdFusionExtractor` |
+| **Api** | `Program.cs`, DI registration, REST endpoints, startup configuration |
+| **Console** | CLI commands: `migrate`, `index`, `index-all`, `analyze`, `mcp`, `stats` |
+| **Jobs** | `RepositorySyncWorker`, scheduled re-indexing tasks |
 
 ---
 
@@ -69,58 +89,58 @@ Define the graph data model and get it persisted in MySQL with efficient batch o
 ### 1.1 — Create Solution and Project Scaffolding
 
 ```bash
-dotnet new sln -n CodeGraph
-mkdir -p src tests tools sql/migrations
+mkdir -p src tests sql/migrations
+cd src
 
-# Core projects
-dotnet new classlib -n CodeGraph.Domain -o src/CodeGraph.Domain
-dotnet new classlib -n CodeGraph.Storage -o src/CodeGraph.Storage
-dotnet new classlib -n CodeGraph.Pipeline -o src/CodeGraph.Pipeline
-dotnet new classlib -n CodeGraph.Extractors.CSharp -o src/CodeGraph.Extractors.CSharp
-dotnet new classlib -n CodeGraph.Analysis -o src/CodeGraph.Analysis
-dotnet new classlib -n CodeGraph.Query -o src/CodeGraph.Query
-dotnet new classlib -n CodeGraph.Mcp -o src/CodeGraph.Mcp
-dotnet new webapi -n CodeGraph.Api -o src/CodeGraph.Api
-dotnet new console -n CodeGraph.Cli -o tools/CodeGraph.Cli
+dotnet new sln -n TC.CodeGraphApi
+
+# Standard layers
+dotnet new webapi -n TC.CodeGraphApi -o TC.CodeGraphApi
+dotnet new console -n TC.CodeGraphApi.Console -o TC.CodeGraphApi.Console
+dotnet new classlib -n TC.CodeGraphApi.Models -o TC.CodeGraphApi.Models
+dotnet new classlib -n TC.CodeGraphApi.Services -o TC.CodeGraphApi.Services
+dotnet new classlib -n TC.CodeGraphApi.Data -o TC.CodeGraphApi.Data
+dotnet new classlib -n TC.CodeGraphJobs -o TC.CodeGraphJobs
+
+# Extractor projects (isolated heavy dependencies)
+dotnet new classlib -n TC.CodeGraphApi.Extractors.CSharp -o TC.CodeGraphApi.Extractors.CSharp
 
 # Test projects
-dotnet new xunit -n CodeGraph.Domain.Tests -o tests/CodeGraph.Domain.Tests
-dotnet new xunit -n CodeGraph.Storage.Tests -o tests/CodeGraph.Storage.Tests
-dotnet new xunit -n CodeGraph.Pipeline.Tests -o tests/CodeGraph.Pipeline.Tests
-dotnet new xunit -n CodeGraph.Extractors.CSharp.Tests -o tests/CodeGraph.Extractors.CSharp.Tests
-dotnet new xunit -n CodeGraph.Query.Tests -o tests/CodeGraph.Query.Tests
-dotnet new xunit -n CodeGraph.Integration.Tests -o tests/CodeGraph.Integration.Tests
+cd ../tests
+dotnet new xunit -n TC.CodeGraphApi.Models.Tests -o TC.CodeGraphApi.Models.Tests
+dotnet new xunit -n TC.CodeGraphApi.Data.Tests -o TC.CodeGraphApi.Data.Tests
+dotnet new xunit -n TC.CodeGraphApi.Services.Tests -o TC.CodeGraphApi.Services.Tests
+dotnet new xunit -n TC.CodeGraphApi.Extractors.CSharp.Tests -o TC.CodeGraphApi.Extractors.CSharp.Tests
+dotnet new xunit -n TC.CodeGraphApi.Integration.Tests -o TC.CodeGraphApi.Integration.Tests
 
 # Add all to solution
-dotnet sln add src/**/*.csproj tests/**/*.csproj tools/**/*.csproj
+cd ../src
+dotnet sln add **/*.csproj ../tests/**/*.csproj
 
 # Wire up project references
-dotnet add src/CodeGraph.Storage reference src/CodeGraph.Domain
-dotnet add src/CodeGraph.Pipeline reference src/CodeGraph.Domain src/CodeGraph.Storage
-dotnet add src/CodeGraph.Extractors.CSharp reference src/CodeGraph.Domain src/CodeGraph.Pipeline
-dotnet add src/CodeGraph.Analysis reference src/CodeGraph.Domain src/CodeGraph.Storage
-dotnet add src/CodeGraph.Query reference src/CodeGraph.Domain src/CodeGraph.Storage
-dotnet add src/CodeGraph.Mcp reference src/CodeGraph.Domain src/CodeGraph.Query src/CodeGraph.Storage
-dotnet add src/CodeGraph.Api reference src/CodeGraph.Domain src/CodeGraph.Storage src/CodeGraph.Pipeline src/CodeGraph.Extractors.CSharp src/CodeGraph.Analysis src/CodeGraph.Query src/CodeGraph.Mcp
-dotnet add tools/CodeGraph.Cli reference src/CodeGraph.Domain src/CodeGraph.Storage src/CodeGraph.Pipeline src/CodeGraph.Extractors.CSharp src/CodeGraph.Analysis src/CodeGraph.Query
+dotnet add TC.CodeGraphApi.Data reference TC.CodeGraphApi.Models
+dotnet add TC.CodeGraphApi.Services reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data
+dotnet add TC.CodeGraphApi.Extractors.CSharp reference TC.CodeGraphApi.Models TC.CodeGraphApi.Services
+dotnet add TC.CodeGraphJobs reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services
+dotnet add TC.CodeGraphApi reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp TC.CodeGraphJobs
+dotnet add TC.CodeGraphApi.Console reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp
 
 # Test project references
-dotnet add tests/CodeGraph.Domain.Tests reference src/CodeGraph.Domain
-dotnet add tests/CodeGraph.Storage.Tests reference src/CodeGraph.Storage src/CodeGraph.Domain
-dotnet add tests/CodeGraph.Pipeline.Tests reference src/CodeGraph.Pipeline src/CodeGraph.Domain src/CodeGraph.Storage
-dotnet add tests/CodeGraph.Extractors.CSharp.Tests reference src/CodeGraph.Extractors.CSharp src/CodeGraph.Domain src/CodeGraph.Pipeline
-dotnet add tests/CodeGraph.Query.Tests reference src/CodeGraph.Query src/CodeGraph.Domain src/CodeGraph.Storage
-dotnet add tests/CodeGraph.Integration.Tests reference src/CodeGraph.Domain src/CodeGraph.Storage src/CodeGraph.Pipeline src/CodeGraph.Extractors.CSharp src/CodeGraph.Analysis src/CodeGraph.Query
+dotnet add ../tests/TC.CodeGraphApi.Models.Tests reference TC.CodeGraphApi.Models
+dotnet add ../tests/TC.CodeGraphApi.Data.Tests reference TC.CodeGraphApi.Data TC.CodeGraphApi.Models
+dotnet add ../tests/TC.CodeGraphApi.Services.Tests reference TC.CodeGraphApi.Services TC.CodeGraphApi.Models TC.CodeGraphApi.Data
+dotnet add ../tests/TC.CodeGraphApi.Extractors.CSharp.Tests reference TC.CodeGraphApi.Extractors.CSharp TC.CodeGraphApi.Models TC.CodeGraphApi.Services
+dotnet add ../tests/TC.CodeGraphApi.Integration.Tests reference TC.CodeGraphApi.Models TC.CodeGraphApi.Data TC.CodeGraphApi.Services TC.CodeGraphApi.Extractors.CSharp
 ```
 
-### 1.2 — CodeGraph.Domain
+### 1.2 — TC.CodeGraphApi.Models
 
 No NuGet dependencies. Pure C# records and enums.
 
 #### NodeLabel enum
 
 ```csharp
-namespace CodeGraph.Domain;
+namespace TC.CodeGraphApi.Models;
 
 public enum NodeLabel
 {
@@ -169,7 +189,7 @@ public enum NodeLabel
 #### EdgeType enum
 
 ```csharp
-namespace CodeGraph.Domain;
+namespace TC.CodeGraphApi.Models;
 
 public enum EdgeType
 {
@@ -217,7 +237,7 @@ public enum EdgeType
 #### GraphNode record
 
 ```csharp
-namespace CodeGraph.Domain;
+namespace TC.CodeGraphApi.Models;
 
 public record GraphNode
 {
@@ -236,7 +256,7 @@ public record GraphNode
 #### GraphEdge record
 
 ```csharp
-namespace CodeGraph.Domain;
+namespace TC.CodeGraphApi.Models;
 
 public record GraphEdge
 {
@@ -252,7 +272,7 @@ public record GraphEdge
 #### CrossRepoEdge record
 
 ```csharp
-namespace CodeGraph.Domain;
+namespace TC.CodeGraphApi.Models;
 
 public record CrossRepoEdge
 {
@@ -269,7 +289,7 @@ public record CrossRepoEdge
 #### Pipeline types (used by extractors)
 
 ```csharp
-namespace CodeGraph.Domain;
+namespace TC.CodeGraphApi.Models;
 
 public record ExtractionResult
 {
@@ -411,7 +431,7 @@ CREATE TABLE sync_state (
 ) ENGINE=InnoDB;
 ```
 
-### 1.4 — CodeGraph.Storage
+### 1.4 — TC.CodeGraphApi.Data
 
 NuGet packages:
 - `Dapper`
@@ -423,7 +443,7 @@ NuGet packages:
 #### IGraphStore interface
 
 ```csharp
-namespace CodeGraph.Storage;
+namespace TC.CodeGraphApi.Data;
 
 public interface IGraphStore
 {
@@ -485,7 +505,7 @@ public interface IGraphStore
 #### Supporting types
 
 ```csharp
-namespace CodeGraph.Storage;
+namespace TC.CodeGraphApi.Data;
 
 public enum TraceDirection { Outbound, Inbound, Both }
 
@@ -595,7 +615,7 @@ public async Task ApplyMigrationsAsync(string migrationsPath)
 #### Configuration
 
 ```csharp
-namespace CodeGraph.Storage;
+namespace TC.CodeGraphApi.Data;
 
 public class CodeGraphStorageOptions
 {
@@ -692,7 +712,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
 
 - `dotnet build` compiles the solution
 - `dotnet test` passes storage tests against a real MySQL instance
-- CLI can apply migrations: `dotnet run --project tools/CodeGraph.Cli -- migrate`
+- CLI can apply migrations: `dotnet run --project src/TC.CodeGraphApi.Console -- migrate`
 - Domain model is complete and ready for extractors
 
 ---
@@ -702,7 +722,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
 ### Goal
 Discover and catalog local repositories. Walk file systems, detect solution/project structures, identify languages, and build the structural skeleton of the graph (Project, Folder, File nodes).
 
-### 2.1 — CodeGraph.Pipeline
+### 2.1 — TC.CodeGraphApi.Services (Pipeline)
 
 NuGet packages:
 - `Microsoft.Extensions.FileSystemGlobbing` (for skip patterns)
@@ -712,7 +732,7 @@ NuGet packages:
 #### ICodeExtractor interface
 
 ```csharp
-namespace CodeGraph.Pipeline;
+namespace TC.CodeGraphApi.Services;
 
 public interface ICodeExtractor
 {
@@ -752,7 +772,7 @@ public class FoundationalKnowledge
 In-memory buffer for accumulating extraction results before batch flush:
 
 ```csharp
-namespace CodeGraph.Pipeline;
+namespace TC.CodeGraphApi.Services;
 
 public class GraphBuffer
 {
@@ -822,7 +842,7 @@ public class GraphBuffer
 #### IndexingPipeline
 
 ```csharp
-namespace CodeGraph.Pipeline;
+namespace TC.CodeGraphApi.Services;
 
 public class IndexingPipeline
 {
@@ -1048,7 +1068,7 @@ public class IndexingPipeline
 #### IndexingOptions
 
 ```csharp
-namespace CodeGraph.Pipeline;
+namespace TC.CodeGraphApi.Services;
 
 public class IndexingOptions
 {
@@ -1066,8 +1086,8 @@ public class IndexingOptions
 ### 2.2 — CLI: Scan and Index Commands
 
 ```csharp
-// tools/CodeGraph.Cli/Program.cs
-// Using System.CommandLine for CLI parsing
+// src/TC.CodeGraphApi.Console/Program.cs
+// Using System.CommandLine for CLI commands
 
 var rootCommand = new RootCommand("CodeGraph CLI");
 
@@ -1156,7 +1176,7 @@ await rootCommand.InvokeAsync(args);
 - File hashing works for incremental indexing
 - Pipeline orchestration framework is in place
 - Foundational repo ordering is implemented
-- `dotnet run --project tools/CodeGraph.Cli -- index /path/to/repo` works
+- `dotnet run --project src/TC.CodeGraphApi.Console -- index /path/to/repo` works
 
 ---
 
@@ -1175,7 +1195,7 @@ NuGet packages:
 #### RoslynExtractor
 
 ```csharp
-namespace CodeGraph.Extractors.CSharp;
+namespace TC.CodeGraphApi.Extractors.CSharp;
 
 public class RoslynExtractor : ICodeExtractor
 {
@@ -1203,7 +1223,7 @@ public class RoslynExtractor : ICodeExtractor
 This is where the real power is — loading full solutions for semantic analysis:
 
 ```csharp
-namespace CodeGraph.Extractors.CSharp;
+namespace TC.CodeGraphApi.Extractors.CSharp;
 
 public class SolutionAnalyzer
 {
@@ -1261,7 +1281,7 @@ public class SolutionAnalyzer
 The main Roslyn walker that extracts everything:
 
 ```csharp
-namespace CodeGraph.Extractors.CSharp;
+namespace TC.CodeGraphApi.Extractors.CSharp;
 
 public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 {
@@ -1582,7 +1602,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 Separate from Roslyn — parse `.csproj` files directly for `<PackageReference>` elements:
 
 ```csharp
-namespace CodeGraph.Extractors.CSharp;
+namespace TC.CodeGraphApi.Extractors.CSharp;
 
 public class NuGetReferenceExtractor
 {
@@ -1607,7 +1627,7 @@ For each `TC.*` package reference, create a `REFERENCES_PACKAGE` edge. This is h
 Runs after all repos are indexed individually:
 
 ```csharp
-namespace CodeGraph.Pipeline;
+namespace TC.CodeGraphApi.Services;
 
 public class CrossRepoLinker
 {
@@ -1870,7 +1890,7 @@ public class CrossRepoLinkerTests
 - Index TC.DomainInventoryApi with full Roslyn semantic analysis
 - Graph contains: classes, methods, calls, DI, routes, consumers, publishers, NuGet refs
 - Cross-repo linking connects shared types across repos
-- CLI: `dotnet run --project tools/CodeGraph.Cli -- index-all /path/to/repos`
+- CLI: `dotnet run --project src/TC.CodeGraphApi.Console -- index-all /path/to/repos`
 
 ---
 
@@ -1879,7 +1899,7 @@ public class CrossRepoLinkerTests
 ### Goal
 Use the Anthropic API to analyze each repository's code and generate natural language documentation with confidence indicators.
 
-### 4.1 — CodeGraph.Analysis
+### 4.1 — TC.CodeGraphApi.Services (Claude Analysis)
 
 NuGet packages:
 - `Anthropic.SDK` (official .NET SDK)
@@ -1888,7 +1908,7 @@ NuGet packages:
 #### ICodeAnalyzer interface
 
 ```csharp
-namespace CodeGraph.Analysis;
+namespace TC.CodeGraphApi.Services;
 
 public interface ICodeAnalyzer
 {
@@ -1942,7 +1962,7 @@ public record AnalysisUpdate(
 #### ClaudeCodeAnalyzer
 
 ```csharp
-namespace CodeGraph.Analysis;
+namespace TC.CodeGraphApi.Services;
 
 public class ClaudeCodeAnalyzer : ICodeAnalyzer
 {
@@ -2108,7 +2128,7 @@ public class ClaudeCodeAnalyzer : ICodeAnalyzer
 #### AnalysisOptions
 
 ```csharp
-namespace CodeGraph.Analysis;
+namespace TC.CodeGraphApi.Services;
 
 public class AnalysisOptions
 {
@@ -2123,7 +2143,7 @@ public class AnalysisOptions
 ### 4.2 — CODEGRAPH.md Generator
 
 ```csharp
-namespace CodeGraph.Analysis;
+namespace TC.CodeGraphApi.Services;
 
 public class CodeGraphDocGenerator
 {
@@ -2303,7 +2323,7 @@ analyzeCommand.SetHandler(async (string path, string? name, bool writeDocs) =>
 
 ### Phase 4 Deliverable
 
-- `dotnet run --project tools/CodeGraph.Cli -- analyze /path/to/repo --write-docs` works
+- `dotnet run --project src/TC.CodeGraphApi.Console -- analyze /path/to/repo --write-docs` works
 - CODEGRAPH.md files are generated with business-level descriptions
 - Confidence indicators reflect actual analysis quality
 - Summaries are stored in the database for MCP server queries
@@ -2315,10 +2335,10 @@ analyzeCommand.SetHandler(async (string path, string? name, bool writeDocs) =>
 ### Goal
 Make the knowledge graph queryable through an MCP server that Claude can use during conversations.
 
-### 5.1 — CodeGraph.Query
+### 5.1 — TC.CodeGraphApi.Services (Query Engine)
 
 ```csharp
-namespace CodeGraph.Query;
+namespace TC.CodeGraphApi.Services;
 
 public class GraphQueryEngine
 {
@@ -2357,13 +2377,13 @@ public class GraphQueryEngine
 }
 ```
 
-### 5.2 — CodeGraph.Mcp
+### 5.2 — TC.CodeGraphApi.Services (MCP Server)
 
 NuGet packages:
 - `ModelContextProtocol`
 
 ```csharp
-namespace CodeGraph.Mcp;
+namespace TC.CodeGraphApi.Services;
 
 public class CodeGraphMcpServer
 {
@@ -2531,7 +2551,7 @@ public class CodeGraphMcpServer
 
 ### 5.3 — MCP Server Hosting
 
-In the CLI for proof of concept (later moves to CodeGraph.Api):
+MCP server runs as a CLI subcommand of the Console project:
 
 ```csharp
 var mcpCommand = new Command("mcp", "Start MCP server (stdio transport)");
@@ -2555,7 +2575,7 @@ MCP client configuration (for Claude Code or other IDE):
   "mcpServers": {
     "codegraph": {
       "command": "dotnet",
-      "args": ["run", "--project", "/path/to/tools/CodeGraph.Cli", "--", "mcp"],
+      "args": ["run", "--project", "/path/to/src/TC.CodeGraphApi.Console", "--", "mcp"],
       "env": {
         "CODEGRAPH_CONNECTION": "Server=localhost;Database=codegraph;..."
       }
@@ -2586,7 +2606,7 @@ Once the proof of concept is validated with TC.Common.ServiceStack, TC.Jarvis, a
 - **SQL extractor** — ScriptDom
 - **ColdFusion extractor** — Regex best-effort
 - **Job scheduler integration** — Read from scheduler database
-- **CodeGraph.Api** — Full REST API + hosted MCP server
+- **TC.CodeGraphApi** — Full REST API + hosted MCP server
 - **Scale to all repos** — Index everything, deprioritize svn_archive
 
 ---
@@ -2625,23 +2645,23 @@ Once the proof of concept is validated with TC.Common.ServiceStack, TC.Jarvis, a
 
 ## Development Order Summary
 
-| Step | What | Depends On | Key Output |
-|------|------|-----------|------------|
-| 1.1 | Solution scaffolding | — | Compiling solution with all project references |
-| 1.2 | Domain model | — | Enums, records, pipeline types |
-| 1.3 | SQL migrations | — | Database schema |
-| 1.4 | Storage (Dapper) | 1.2, 1.3 | Working IGraphStore with batch ops and traversal |
-| 1.5 | Storage tests | 1.4 | Verified storage layer |
-| 2.1 | Pipeline framework | 1.2, 1.4 | GraphBuffer, IndexingPipeline, ICodeExtractor |
-| 2.2 | CLI basics | 2.1 | `migrate`, `index`, `index-all`, `stats` commands |
-| 3.1 | Roslyn extractor | 2.1 | Classes, methods, calls, DI extraction |
-| 3.2 | NuGet ref extraction | 2.1 | Package dependency nodes and edges |
-| 3.3 | Cross-repo linker | 3.1, 3.2 | HTTP, messaging, and NuGet cross-repo edges |
-| 3.4 | Solution-level analysis | 3.1 | Full semantic resolution via MSBuildWorkspace |
-| 3.5 | Extractor tests | 3.1-3.4 | Verified extraction accuracy |
-| 4.1 | Claude analyzer | 1.4 | RepoAnalysis and ProjectAnalysis from Claude |
-| 4.2 | Doc generator | 4.1 | CODEGRAPH.md file generation |
-| 4.3 | CLI analyze command | 4.1, 4.2 | `analyze --write-docs` command |
-| 5.1 | Query engine | 1.4 | Search, traversal, data lineage, archival queries |
-| 5.2 | MCP server | 5.1 | 12 MCP tools |
-| 5.3 | MCP hosting | 5.2 | Running MCP server connectable from Claude Code |
+| Step | What | Project | Depends On | Key Output |
+|------|------|---------|-----------|------------|
+| 1.1 | Solution scaffolding | All | — | Compiling solution with all project references |
+| 1.2 | Domain model | Models | — | Enums, records, pipeline types |
+| 1.3 | SQL migrations | sql/ | — | Database schema |
+| 1.4 | Storage (Dapper) | Data | 1.2, 1.3 | Working IGraphStore with batch ops and traversal |
+| 1.5 | Storage tests | Data.Tests | 1.4 | Verified storage layer |
+| 2.1 | Pipeline framework | Services | 1.2, 1.4 | GraphBuffer, IndexingPipeline, ICodeExtractor |
+| 2.2 | CLI commands | Console | 2.1 | `migrate`, `index`, `index-all`, `stats` commands |
+| 3.1 | Roslyn extractor | Extractors.CSharp | 2.1 | Classes, methods, calls, DI extraction |
+| 3.2 | NuGet ref extraction | Extractors.CSharp | 2.1 | Package dependency nodes and edges |
+| 3.3 | Cross-repo linker | Services | 3.1, 3.2 | HTTP, messaging, and NuGet cross-repo edges |
+| 3.4 | Solution-level analysis | Extractors.CSharp | 3.1 | Full semantic resolution via MSBuildWorkspace |
+| 3.5 | Extractor tests | Extractors.CSharp.Tests | 3.1-3.4 | Verified extraction accuracy |
+| 4.1 | Claude analyzer | Services | 1.4 | RepoAnalysis and ProjectAnalysis from Claude |
+| 4.2 | Doc generator | Services | 4.1 | CODEGRAPH.md file generation |
+| 4.3 | Analyze command | Console | 4.1, 4.2 | `analyze --write-docs` command |
+| 5.1 | Query engine | Services | 1.4 | Search, traversal, data lineage, archival queries |
+| 5.2 | MCP server | Services | 5.1 | 12 MCP tools |
+| 5.3 | MCP hosting | Console | 5.2 | Running MCP server connectable from Claude Code |
