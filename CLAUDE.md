@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 CodeGraph is a self-maintaining .NET 9 service that indexes ~620 GitLab repositories into a queryable knowledge graph (MySQL) with natural language documentation. It produces two outputs: a structural graph of all connections between services, and generated CODEGRAPH.md files committed to each repo describing business intent. An MCP server lets Claude act as the domain expert for the entire codebase.
 
 **The full architecture spec is in `CodeGraph-Architecture.md`. Read it before making structural decisions.**
+**The detailed implementation plan is in `CodeGraph-Implementation.md`. Follow it for build order and code patterns.**
 
 ## Core Design Principle
 
