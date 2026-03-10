@@ -10,6 +10,7 @@
     <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.3" />
+    <PackageReference Include="ModelContextProtocol" Version="1.1.0" />
     <PackageReference Include="System.IO.Hashing" Version="10.0.3" />
   </ItemGroup>
 

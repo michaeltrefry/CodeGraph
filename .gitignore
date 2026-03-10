@@ -15,6 +15,9 @@ packages/
 # Test results
 TestResults/
 
+# Environment / secrets
+.env
+
 # OS
 .DS_Store
 Thumbs.db

@@ -2,6 +2,8 @@ using System.IO.Hashing;
 using System.Text;
 using Anthropic;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TC.CodeGraphApi.Data;
@@ -32,6 +34,8 @@ switch (command)
         return await RunStats();
     case "analyze":
         return await RunAnalyze(args);
+    case "mcp":
+        return await RunMcp();
     default:
         Console.Error.WriteLine($"Unknown command: {command}");
         PrintUsage();
@@ -313,6 +317,47 @@ async Task<int> RunAnalyze(string[] args)
     }
 }
 
+async Task<int> RunMcp()
+{
+    var connectionString = GetConnectionString();
+    var store = BuildStore(connectionString);
+    var pipeline = BuildPipeline(store);
+    var queryEngine = new GraphQueryEngine(store, loggerFactory.CreateLogger<GraphQueryEngine>());
+
+    var builder = Host.CreateApplicationBuilder();
+
+    // Suppress all console logging so only MCP JSON goes to stdout
+    builder.Logging.ClearProviders();
+
+    builder.Services.AddSingleton<IGraphStore>(store);
+    builder.Services.AddSingleton(queryEngine);
+    builder.Services.AddSingleton(pipeline);
+
+    builder.Services.AddMcpServer(options =>
+    {
+        options.ServerInfo = new()
+        {
+            Name = "codegraph",
+            Version = "1.0.0"
+        };
+    })
+    .WithStdioServerTransport()
+    .WithTools<CodeGraphMcpServer>();
+
+    var host = builder.Build();
+
+    try
+    {
+        await host.RunAsync();
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "MCP server failed");
+        return 1;
+    }
+}
+
 // --- Helpers ---
 
 string GetConnectionString()
@@ -417,6 +462,7 @@ void PrintUsage()
             --name <name>                 Project name (defaults to directory name)
             --model <model>               Claude model (default: claude-sonnet-4-6)
             --write-docs                  Write CODEGRAPH.md files to the repository
+          mcp                           Start MCP server (stdio transport)
           stats                         Show graph statistics
 
         Environment Variables:
