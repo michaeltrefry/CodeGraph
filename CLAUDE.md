@@ -17,9 +17,7 @@ CodeGraph is a self-maintaining .NET 9 service that indexes ~620 GitLab reposito
 
 ```bash
 dotnet build src/TC.CodeGraphApi.sln                                    # Build entire solution
-dotnet run --project src/TC.CodeGraphApi                                # API host (REST + sync worker)
-dotnet run --project src/TC.CodeGraphApi.Console -- index /path/to/repo # Index a repo via CLI
-dotnet run --project src/TC.CodeGraphApi.Console -- mcp                 # Start MCP server (stdio)
+dotnet run --project src/TC.CodeGraphApi                                # API host (REST + MCP + sync worker)
 dotnet run --project src/TC.CodeGraphApi.Console -- migrate             # Apply DB migrations
 dotnet test                                                             # All tests
 dotnet test tests/TC.CodeGraphApi.Tests                                 # Specific test project
@@ -34,17 +32,18 @@ dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Singl
 TC.CodeGraphApi/
 ├── src/
 │   ├── TC.CodeGraphApi.sln
-│   ├── TC.CodeGraphApi/                       # API host (Startup.cs + Controllers), DI registration
-│   ├── TC.CodeGraphApi.Console/               # CLI: index, analyze, mcp, migrate, stats
+│   ├── TC.CodeGraphApi/                       # API host (Startup.cs + Controllers + MCP), DI registration
+│   ├── TC.CodeGraphApi.Console/               # CLI: migrate
 │   ├── TC.CodeGraphApi.Models/                # Domain model: GraphNode, GraphEdge, enums, contracts
 │   ├── TC.CodeGraphApi.Services/              # Pipeline, query engine, Claude analysis, MCP tools,
 │   │                                          #   ICodeExtractor interface, cross-repo linker
-│   ├── TC.CodeGraphApi.Data/                  # IGraphStore, MySqlGraphStore, Dapper, migrations
-│   ├── TC.CodeGraphJobs/                   # Background sync worker, scheduled re-indexing
+│   ├── TC.CodeGraphApi.Data/                  # IGraphStore, MySqlGraphStore, Dapper, EF Core entities
+│   ├── TC.CodeGraphJobs/                      # Background sync worker, scheduled re-indexing
 │   ├── TC.CodeGraphApi.Extractors.CSharp/     # Roslyn extractor (isolated heavy dependency)
 │   ├── TC.CodeGraphApi.Extractors.TypeScript/ # Node.js sidecar (Phase 6+)
 │   ├── TC.CodeGraphApi.Extractors.Sql/        # ScriptDom (Phase 6+)
 │   └── TC.CodeGraphApi.Extractors.ColdFusion/ # Regex (Phase 6+)
+├── CodeGraphWeb/                              # Angular frontend (port 4200)
 ├── tests/
 └── sql/migrations/
 ```
@@ -65,8 +64,8 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 - **TC.CodeGraphApi.Data** — MySQL via **EF Core** (Pomelo) for CRUD + **Dapper** for graph traversal (recursive CTEs) and batch operations. `IGraphStore`, `MySqlGraphStore`, `CodeGraphDbContext`.
 - **TC.CodeGraphApi.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, Claude analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
 - **TC.CodeGraphApi.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
-- **TC.CodeGraphApi** — ASP.NET WebApi host. `Startup.cs` with controllers, Autofac DI registration.
-- **TC.CodeGraphApi.Console** — CLI commands: `index`, `index-all`, `analyze`, `mcp`, `migrate`, `stats`.
+- **TC.CodeGraphApi** — ASP.NET WebApi host. `Startup.cs` with controllers, Autofac DI registration. Hosts the MCP server (HTTP transport).
+- **TC.CodeGraphApi.Console** — CLI utility for running database migrations.
 - **TC.CodeGraphJobs** — `RepositorySyncWorker`, scheduled re-indexing tasks.
 
 ### Core Interfaces
@@ -110,6 +109,21 @@ Project, Namespace, File, Class, Interface, Method, Route, Service, Event, Queue
 ### Key Edge Types
 
 CALLS, HTTP_CALLS, PUBLISHES, CONSUMES, INJECTS, IMPLEMENTS, INHERITS, QUERIES, REFERENCES_PACKAGE, HANDLES, FILE_CHANGES_WITH
+
+## Conventions Wiki
+
+Database-backed wiki for team conventions and standards (patterns, abstractions, coding standards). Managed through the Angular UI and served to Claude via MCP tools.
+
+- **DB tables**: `convention_pages` (current content + revision counter), `convention_revisions` (full snapshot per edit)
+- **API**: `ConventionsController` — CRUD at `/api/conventions/{slug}`, revision history at `/api/conventions/{slug}/revisions`
+- **MCP tools**: `list_conventions` and `get_convention` query the database (not the filesystem)
+- **UI**: Angular pages at `/conventions` (list), `/conventions/new` (create), `/conventions/:slug` (view/edit/history)
+
+## Angular Frontend (CodeGraphWeb/)
+
+Standalone Angular app at `CodeGraphWeb/` served on port 4200. Uses signals, lazy-loaded routes, and calls the API at `localhost:5037`.
+
+Key pages: Repositories, Graph (d3 visualization), Ask (streaming AI chat), Conventions (wiki).
 
 ## CODEGRAPH.md Generation
 

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(pwsh -c \"ls ''D:\\\\repos\\\\TC.CodeGraphApi\\\\src''\")",
-      "Bash(npm install:*)",
-      "Bash(npm ls:*)"
-    ]
-  }
-}

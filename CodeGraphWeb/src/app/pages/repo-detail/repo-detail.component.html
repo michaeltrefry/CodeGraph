@@ -1,0 +1,479 @@
+<div class="page">
+  <div class="breadcrumb">
+    <a routerLink="/repos">Repositories</a> / {{ name() }}
+  </div>
+
+  @if (loading()) { <div class="loading">Loading…</div> }
+
+  @if (detail(); as d) {
+    <!-- Header -->
+    <div class="repo-header">
+      <div class="repo-title">
+        <h1>{{ d.project.name }}</h1>
+        @if (d.project.isFoundational) {
+          <span class="badge badge-foundational">foundational</span>
+        }
+        @if (d.project.language) {
+          <span class="badge">{{ d.project.language }}</span>
+        }
+      </div>
+
+      <div class="repo-actions">
+        @if (showDeleteConfirm()) {
+          <span class="delete-confirm-text">Delete all data for this repo?</span>
+          <button class="btn-delete-confirm" (click)="deleteRepo()" [disabled]="deleting()">
+            {{ deleting() ? 'Deleting…' : 'Yes, delete' }}
+          </button>
+          <button class="btn-delete-cancel" (click)="cancelDelete()">Cancel</button>
+        } @else {
+          <button class="btn-delete" (click)="confirmDelete()">Delete from graph</button>
+        }
+      </div>
+
+      <div class="repo-meta">
+        @if (d.project.sourceGroup) {
+          <div><span class="meta-label">Group:</span> {{ d.project.sourceGroup }}</div>
+        }
+        @if (d.project.repoUrl) {
+          <div><span class="meta-label">Repo URL:</span> {{ d.project.repoUrl }}</div>
+        }
+        <div class="indexed-row">
+          <span><span class="meta-label">Last indexed:</span> {{ formatDate(d.project.indexedAt) }}</span>
+          @if (reAnalyzing()) {
+            <span class="batch-spinner"></span>
+          } @else if (isBatchInProgress()) {
+            <span class="batch-status batch-status-submitted">
+              Analysis in progress · submitted {{ formatDate(batchStatus()!.submittedAt) }}
+            </span>
+          } @else if (batchStatus(); as b) {
+            @if (b.status === 'completed') {
+              <span class="batch-status batch-status-completed">
+                Analysis completed {{ formatDate(b.completedAt) }}
+              </span>
+            } @else if (b.status === 'failed') {
+              <span class="batch-status batch-status-failed">Analysis failed</span>
+            }
+            <button class="btn-reanalyze" (click)="reAnalyze()">Re-analyze</button>
+          } @else {
+            <button class="btn-reanalyze" (click)="reAnalyze()">Re-analyze</button>
+          }
+        </div>
+        @if (d.project.lastCommitSha) {
+          <div><span class="meta-label">Commit:</span> {{ formatCommit(d.project.lastCommitSha) }}</div>
+        }
+      </div>
+    </div>
+
+    <!-- Summary -->
+    @if (d.summary) {
+      <div class="card">
+        <div class="card-header">
+          <h2>Summary</h2>
+          <span class="confidence-badge"
+                [style.background]="confidenceColors[d.summary.confidence]">
+            {{ d.summary.confidence }} confidence
+          </span>
+        </div>
+        <div class="summary-text markdown-body" [innerHTML]="renderMarkdown(d.summary.summary)"></div>
+        <div class="summary-meta">
+          Updated {{ formatDate(d.summary.updatedAt) }}
+          @if (d.summary.modelUsed) { · {{ d.summary.modelUsed }} }
+        </div>
+      </div>
+    }
+
+    <!-- Health Analysis -->
+    @if (health(); as h) {
+      <div class="card health-card">
+        <div class="card-header">
+          <h2>
+            Codebase Health
+            @if (h.repoHealth) {
+              <span class="health-score-badge"
+                    [style.background]="healthColor(h.repoHealth.overallHealth)">
+                {{ h.repoHealth.overallHealth.toFixed(1) }}/10 · {{ healthLabel(h.repoHealth.overallHealth) }}
+              </span>
+            }
+          </h2>
+        </div>
+
+        <div class="health-body">
+            <!-- Repo-level stats -->
+            @if (h.repoHealth) {
+              <div class="health-stats">
+                <div class="health-stat">
+                  <span class="stat-value">{{ h.repoHealth.totalFiles }}</span>
+                  <span class="stat-label">Files analyzed</span>
+                </div>
+                <div class="health-stat">
+                  <span class="stat-value stat-warning">{{ h.repoHealth.hotspotCount }}</span>
+                  <span class="stat-label">Hotspots</span>
+                </div>
+                <div class="health-stat">
+                  <span class="stat-value stat-danger">{{ h.repoHealth.alertCount }}</span>
+                  <span class="stat-label">Alerts</span>
+                </div>
+              </div>
+            }
+
+            <!-- Security Score -->
+            @if (h.securitySummary; as secSum) {
+                <div class="security-section">
+                  <div class="security-header">
+                    <h3 class="security-title">
+                      Security
+                      <span class="health-score-badge small"
+                            [style.background]="healthColor(secSum.securityScore)">
+                        {{ secSum.securityScore.toFixed(1) }}/10
+                      </span>
+                    </h3>
+                    <div class="severity-pills">
+                      @if (secSum.criticalCount > 0) {
+                        <span class="severity-pill severity-critical">{{ secSum.criticalCount }} critical</span>
+                      }
+                      @if (secSum.highCount > 0) {
+                        <span class="severity-pill severity-high">{{ secSum.highCount }} high</span>
+                      }
+                      @if (secSum.mediumCount > 0) {
+                        <span class="severity-pill severity-medium">{{ secSum.mediumCount }} medium</span>
+                      }
+                      @if (secSum.lowCount > 0) {
+                        <span class="severity-pill severity-low">{{ secSum.lowCount }} low</span>
+                      }
+                      @if (secSum.criticalCount === 0 && secSum.highCount === 0 && secSum.mediumCount === 0 && secSum.lowCount === 0) {
+                        <span class="severity-pill severity-none">No findings</span>
+                      }
+                    </div>
+                  </div>
+
+                  @if (security(); as secDetail) {
+                    @if (secDetail.findings.length > 0) {
+                      <div class="health-details-toggle clickable" (click)="toggleSecurity()">
+                        <span>{{ securityOpen() ? 'Hide' : 'Show' }} {{ secDetail.findings.length }} findings</span>
+                        <span class="expand-icon">{{ securityOpen() ? '▲' : '▼' }}</span>
+                      </div>
+
+                      @if (securityOpen()) {
+                        <div class="security-findings">
+                          @for (cat of ['secret', 'vulnerable_package', 'attack_surface']; track cat) {
+                            @let catFindings = securityFindings(cat);
+                            @if (catFindings.length > 0) {
+                              <h4 class="findings-category">
+                                @switch (cat) {
+                                  @case ('secret') { Embedded Secrets }
+                                  @case ('vulnerable_package') { Vulnerable Packages }
+                                  @case ('attack_surface') { Attack Surface }
+                                }
+                                <span class="findings-count">({{ catFindings.length }})</span>
+                              </h4>
+                              @for (f of catFindings; track $index) {
+                                <div class="finding-item">
+                                  <span class="severity-badge" [style.background]="severityColor(f.severity)">
+                                    {{ f.severity }}
+                                  </span>
+                                  <div class="finding-detail">
+                                    <span class="finding-title">{{ f.title }}</span>
+                                    <span class="finding-desc">{{ f.description }}</span>
+                                    @if (f.filePath) {
+                                      <span class="finding-location clickable" (click)="navigateToFinding($event, f.filePath!, f.lineNumber ?? undefined)">{{ f.filePath }}@if (f.lineNumber) {:{{ f.lineNumber }}}</span>
+                                    }
+                                    @if (f.advisory) {
+                                      <a class="finding-advisory" [href]="f.advisory" target="_blank" rel="noopener">Advisory</a>
+                                    }
+                                  </div>
+                                </div>
+                              }
+                            }
+                          }
+                        </div>
+                      }
+                    }
+                  }
+                </div>
+            }
+
+            <!-- Top hotspots table (always visible) -->
+              @if (h.topHotspots.length > 0) {
+                <h3 class="health-section-title">Top Hotspots</h3>
+                <table class="inner-table">
+                  <thead>
+                    <tr>
+                      <th>File</th>
+                      <th>
+                        Health
+                        <span class="th-info" title="Composite score (1-10). Combines churn, complexity, coupling, knowledge risk, and lint signals. Below 4.0 = hotspot, below 2.5 = alert.">&#9432;</span>
+                      </th>
+                      <th>
+                        Churn
+                        <span class="th-info" title="Number of commits touching this file in the last 90 days. High churn + low health = likely source of bugs.">&#9432;</span>
+                      </th>
+                      <th>
+                        Complexity
+                        <span class="th-info" title="Structural complexity score (0-100) based on nesting depth, deep-nesting lines, function length, and branch density.">&#9432;</span>
+                      </th>
+                      <th>
+                        Truck Factor
+                        <span class="th-info" title="Minimum number of authors covering >50% of commits. A value of 1 means a single person owns the file — a knowledge risk.">&#9432;</span>
+                      </th>
+                      <th>
+                        Trust
+                        <span class="th-info" title="Trust score (0-1). Combines code stability (low churn = trustworthy) and lint quality (Roslyn for C#, ESLint for TS/JS). Higher = more reliable.">&#9432;</span>
+                      </th>
+                      <th>
+                        Risk
+                        <span class="th-info" title="ROI-ranked priority score. Factors in health, churn, coupling centrality, and whether the file is core vs test code.">&#9432;</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (f of h.topHotspots; track f.filePath) {
+                      <tr>
+                        <td class="mono hotspot-path">{{ f.filePath }}</td>
+                        <td>
+                          <span class="health-score-inline" [style.color]="healthColor(f.healthScore)">
+                            {{ f.healthScore.toFixed(1) }}
+                          </span>
+                        </td>
+                        <td>{{ f.changes }}</td>
+                        <td>{{ f.complexityScore }}/100</td>
+                        <td>
+                          @if (f.truckFactor === 1) {
+                            <span class="truck-factor-warning">{{ f.truckFactor }}</span>
+                          } @else {
+                            {{ f.truckFactor }}
+                          }
+                        </td>
+                        <td>
+                          <span class="trust-score" [style.color]="trustColor(f.trustScore)">
+                            {{ f.trustScore.toFixed(2) }}
+                          </span>
+                        </td>
+                        <td>{{ f.riskScore.toFixed(0) }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              }
+
+            <!-- Expand/collapse details toggle -->
+            <div class="health-details-toggle clickable" (click)="toggleHealthDetails()">
+              <span>{{ healthDetailsOpen() ? 'Hide' : 'Show' }} details</span>
+              <span class="expand-icon">{{ healthDetailsOpen() ? '▲' : '▼' }}</span>
+            </div>
+
+            @if (healthDetailsOpen()) {
+              <!-- Repo-level AI analysis -->
+              @for (a of h.analyses; track a.dotnetProject ?? '__repo__') {
+                @if (!a.dotnetProject) {
+                  <div class="health-analysis-text">
+                    <div class="health-analysis-header">
+                      <span class="health-analysis-label">AI Health Assessment</span>
+                      <span class="confidence-badge"
+                            [style.background]="confidenceColors[a.confidence]">
+                        {{ a.confidence }}
+                      </span>
+                    </div>
+                    <div class="health-analysis-content markdown-body" [innerHTML]="renderMarkdown(a.analysis)"></div>
+                    <div class="summary-meta">
+                      Updated {{ formatDate(a.updatedAt) }}
+                      @if (a.modelUsed) { · {{ a.modelUsed }} }
+                    </div>
+                  </div>
+                }
+              }
+
+              <!-- Per-project health -->
+              @if (h.projectHealths.length > 0) {
+                <h3 class="health-section-title">Project Health</h3>
+                @for (ph of h.projectHealths; track ph.dotnetProject) {
+                  <div class="analysis-item">
+                    <div class="analysis-header" (click)="toggleHealthAnalysis(ph.dotnetProject ?? '')">
+                      <span class="analysis-title">{{ ph.dotnetProject }}</span>
+                      <span class="health-score-badge small"
+                            [style.background]="healthColor(ph.overallHealth)">
+                        {{ ph.overallHealth.toFixed(1) }}
+                      </span>
+                      @if (ph.hotspotCount > 0) {
+                        <span class="health-count-badge">{{ ph.hotspotCount }} hotspots</span>
+                      }
+                      <span class="expand-icon">
+                        {{ expandedHealthAnalysis() === ph.dotnetProject ? '▲' : '▼' }}
+                      </span>
+                    </div>
+
+                    @if (expandedHealthAnalysis() === ph.dotnetProject) {
+                      <div class="analysis-body">
+                        <!-- Per-project AI analysis -->
+                        @for (a of h.analyses; track a.dotnetProject ?? '__repo__') {
+                          @if (a.dotnetProject === ph.dotnetProject) {
+                            <div class="health-analysis-content markdown-body" [innerHTML]="renderMarkdown(a.analysis)"></div>
+                            <div class="summary-meta">
+                              @if (a.modelUsed) { {{ a.modelUsed }} · }
+                              {{ a.confidence }} confidence
+                            </div>
+                          }
+                        }
+                      </div>
+                    }
+                  </div>
+                }
+              }
+            }
+          </div>
+      </div>
+    }
+
+    <!-- Projects (merged solution projects + analyses) -->
+    @if (d.analyses.length > 0) {
+      <div class="card">
+        <h2>Projects</h2>
+        @for (analysis of d.analyses; track analysis.projectName) {
+          <div class="analysis-item">
+            <div class="analysis-header" (click)="toggleAnalysis(analysis.projectName)">
+              @if (getDotnetProject(analysis.projectName); as proj) {
+                <a class="analysis-title project-link"
+                   [routerLink]="['/repos', name(), 'nodes']"
+                   [queryParams]="{ dotnetProject: proj.name }"
+                   (click)="$event.stopPropagation()">
+                  {{ analysis.projectName }}
+                </a>
+                <span class="project-node-count">{{ proj.total }} nodes</span>
+              } @else {
+                <span class="analysis-title">{{ analysis.projectName }}</span>
+              }
+              <span class="confidence-badge"
+                    [style.background]="confidenceColors[analysis.confidence]">
+                {{ analysis.confidence }}
+              </span>
+              <span class="expand-icon">
+                {{ expandedAnalysis() === analysis.projectName ? '▲' : '▼' }}
+              </span>
+            </div>
+
+            @if (expandedAnalysis() === analysis.projectName) {
+              <div class="analysis-body">
+                <div class="markdown-body" [innerHTML]="renderMarkdown(analysis.summary)"></div>
+
+                <!-- Node label breakdown from solution projects -->
+                @if (getDotnetProject(analysis.projectName); as proj) {
+                  <div class="project-tile-labels">
+                    @for (lbl of proj.labels; track lbl[0]) {
+                      <a [routerLink]="['/repos', name(), 'nodes']"
+                         [queryParams]="{ dotnetProject: proj.name, label: lbl[0] }"
+                         class="project-label-tag project-label-link">
+                        {{ labelIcons[lbl[0]] || '•' }} {{ lbl[0] }} ({{ lbl[1] }})
+                      </a>
+                    }
+                  </div>
+                }
+
+                @if (analysis.endpoints?.length) {
+                  <h4>Endpoints</h4>
+                  <table class="inner-table">
+                    <thead><tr><th>Method</th><th>Route</th><th>Description</th></tr></thead>
+                    <tbody>
+                      @for (ep of analysis.endpoints; track ep.route) {
+                        <tr>
+                          <td><span class="http-method http-{{ep.httpMethod.toLowerCase()}}">{{ ep.httpMethod }}</span></td>
+                          <td class="mono">{{ ep.route }}</td>
+                          <td>{{ ep.description }}</td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                }
+
+                @if (analysis.services?.length) {
+                  <h4>Services</h4>
+                  <table class="inner-table">
+                    <thead><tr><th>Name</th><th>Interface</th><th>Lifetime</th><th>Description</th></tr></thead>
+                    <tbody>
+                      @for (svc of analysis.services; track svc.name) {
+                        <tr>
+                          <td>{{ svc.name }}</td>
+                          <td class="mono">{{ svc.interfaceName || '—' }}</td>
+                          <td>{{ svc.lifetime }}</td>
+                          <td>{{ svc.description }}</td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                }
+
+                @if (analysis.databaseTables?.length) {
+                  <h4>Database Tables</h4>
+                  <div class="tag-list">
+                    @for (t of analysis.databaseTables; track t) {
+                      <span class="tag">{{ t }}</span>
+                    }
+                  </div>
+                }
+
+                @if (analysis.externalDependencies?.length) {
+                  <h4>External Dependencies</h4>
+                  <div class="tag-list">
+                    @for (d of analysis.externalDependencies; track d) {
+                      <span class="tag">{{ d }}</span>
+                    }
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    }
+
+    <!-- Dependencies -->
+    <div class="deps-row">
+      <div class="card deps-card">
+        <h2>Inbound ({{ d.inboundEdgeCount }} edges from {{ d.inboundProjects.length }} repos)</h2>
+        @if (d.inboundProjects.length > 0) {
+          <ul class="dep-list">
+            @for (p of d.inboundProjects; track p) {
+              <li><a [routerLink]="['/repos', p]" class="project-link">{{ p }}</a></li>
+            }
+          </ul>
+        } @else {
+          <p class="empty-msg">No inbound dependencies.</p>
+        }
+      </div>
+      <div class="card deps-card">
+        <h2>Outbound ({{ d.outboundEdgeCount }} edges to {{ d.outboundProjects.length }} repos)</h2>
+        @if (d.outboundProjects.length > 0) {
+          <ul class="dep-list">
+            @for (p of d.outboundProjects; track p) {
+              <li><a [routerLink]="['/repos', p]" class="project-link">{{ p }}</a></li>
+            }
+          </ul>
+        } @else {
+          <p class="empty-msg">No outbound dependencies.</p>
+        }
+      </div>
+    </div>
+
+    <!-- Node type browser -->
+    <div class="card">
+      <h2>Browse by Node Type</h2>
+      <div class="label-grid">
+        @for (entry of nodeLabelEntries(); track entry[0]) {
+          <a [routerLink]="['/repos', name(), 'nodes']"
+             [queryParams]="{ label: entry[0] }"
+             class="label-tile">
+            <span class="label-icon">{{ labelIcons[entry[0]] || '•' }}</span>
+            <span class="label-name">{{ entry[0] }}</span>
+            <span class="label-count">{{ entry[1] }}</span>
+          </a>
+        }
+      </div>
+    </div>
+
+    <!-- README -->
+    @if (readme(); as readmeContent) {
+      <div class="card readme-card">
+        <h2>README</h2>
+        <div class="markdown-body" [innerHTML]="renderMarkdown(readmeContent)"></div>
+      </div>
+    }
+  }
+</div>

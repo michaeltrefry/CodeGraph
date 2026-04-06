@@ -2,6 +2,9 @@
 bin/
 obj/
 
+# Local Cache
+*.cache
+
 # NuGet packages
 packages/
 *.nupkg
@@ -14,10 +17,28 @@ packages/
 
 # Test results
 TestResults/
-
+*-Debug.json
 # Environment / secrets
 .env
+appsettings.Development.json
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Node
+node_modules/
+
+# Scratch / temp files
+build.log
+build_exit.txt
+build_minimal.txt
+build_minimal_exit.txt
+build_out.txt
+build_output.txt
+ls_output.txt
+run_build.sh
+tools/reflect/out.txt
+tools/reflect/ps_out.txt
+*.log
+consul/
