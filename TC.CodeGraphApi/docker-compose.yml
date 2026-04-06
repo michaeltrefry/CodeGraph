@@ -18,6 +18,7 @@ services:
       - CODEGRAPH_EMBEDDING_MODEL=${CODEGRAPH_EMBEDDING_MODEL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ANALYSIS_MODEL=${ANALYSIS_MODEL:-claude-sonnet-4-6}
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
       - CODEGRAPH_TS_PORT=${CODEGRAPH_TS_PORT:-3100}
       - CODEGRAPH_MAX_PARALLEL_ANALYSES=${CODEGRAPH_MAX_PARALLEL_ANALYSES:-3}
       - GITLAB_BASEURL=${GITLAB_BASEURL}
@@ -29,9 +30,29 @@ services:
     volumes:
       - D:\repos\cache:/repos/cache
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       neo4j:
         condition: service_healthy
         required: false
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   neo4j:
@@ -66,5 +87,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  rabbitmq_data:
   neo4j_data:
   neo4j_logs:

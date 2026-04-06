@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
+    <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="10.*" />
+    <PackageReference Include="MassTransit" Version="8.*" />
+    <PackageReference Include="FuzzySharp" Version="2.0.2" />
+<PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.3" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0" />
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="1.0.3" />
+    <PackageReference Include="ModelContextProtocol" Version="1.1.0" />
+    <PackageReference Include="System.IO.Hashing" Version="10.0.3" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodeGraph.Tests" />
+  </ItemGroup>
+
+</Project>
