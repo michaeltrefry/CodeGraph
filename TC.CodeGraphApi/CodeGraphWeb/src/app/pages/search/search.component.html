@@ -1,0 +1,40 @@
+<div class="search-page">
+  <h1>Search results for "{{ query() }}"</h1>
+
+  @if (loading()) {
+    <div class="loading">Searching...</div>
+  } @else if (results().length === 0) {
+    <div class="empty">No results found for "{{ query() }}"</div>
+  } @else {
+    <p class="result-count">{{ total() }} result{{ total() === 1 ? '' : 's' }} found</p>
+
+    <div class="results">
+      @for (item of results(); track item.nodeId ?? item.name) {
+        <a [routerLink]="getLink(item)" class="result-card">
+          <div class="result-header">
+            <span class="result-icon">{{ getIcon(item) }}</span>
+            <span class="result-name">{{ item.name }}</span>
+            <span class="result-type">{{ getTypeLabel(item) }}</span>
+            @if (item.project && item.type !== 'repository') {
+              <span class="result-project">{{ item.project }}</span>
+            }
+          </div>
+          @if (item.description) {
+            <div class="result-desc">{{ item.description }}</div>
+          }
+          @if (item.qualifiedName && item.qualifiedName !== item.name) {
+            <div class="result-qualified">{{ item.qualifiedName }}</div>
+          }
+        </a>
+      }
+    </div>
+
+    @if (totalPages > 1) {
+      <div class="pagination">
+        <button [disabled]="page() <= 1" (click)="goToPage(page() - 1)">Previous</button>
+        <span>Page {{ page() }} of {{ totalPages }}</span>
+        <button [disabled]="page() >= totalPages" (click)="goToPage(page() + 1)">Next</button>
+      </div>
+    }
+  }
+</div>

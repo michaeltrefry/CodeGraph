@@ -1,10 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
-  <ItemGroup>
-    <ProjectReference Include="..\TC.CodeGraphApi.Models\TC.CodeGraphApi.Models.csproj" />
-    <ProjectReference Include="..\TC.CodeGraphApi.Data\TC.CodeGraphApi.Data.csproj" />
-    <ProjectReference Include="..\TC.CodeGraphApi.Services\TC.CodeGraphApi.Services.csproj" />
-  </ItemGroup>
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -12,4 +6,29 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Autofac.Extensions.DependencyInjection" Version="10.0.0" />
+<PackageReference Include="TC.Common.TcServiceStack" Version="13.4.18" />
+    <PackageReference Include="TC.Jarvis.ApiDocumentation" Version="3.0.9" />
+    <PackageReference Include="TC.Jarvis.ApiDocumentation.TcApi" Version="3.0.9" />
+    <PackageReference Include="TC.JobUtilities" Version="8.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TC.CodeGraphApi.Models\TC.CodeGraphApi.Models.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Data\TC.CodeGraphApi.Data.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Services\TC.CodeGraphApi.Services.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Data.Neo4j\TC.CodeGraphApi.Data.Neo4j.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="bin\publish\**">
+      <PackagePath>content/</PackagePath>
+      <Pack>true</Pack>
+    </Content>
+    <None Include="wwwroot\**\*;**\*.cshtml">
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+    <None Remove="*.cache" />
+  </ItemGroup>
 </Project>

@@ -93,7 +93,7 @@ public class CrossRepoLinkerTests
         var walletProject = _store.AddNode(new GraphNode
         {
             Project = "TC.WalletApi",
-            Label = NodeLabel.Project,
+            Label = NodeLabel.Repository,
             Name = "TC.WalletApi",
             QualifiedName = "TC.WalletApi"
         });

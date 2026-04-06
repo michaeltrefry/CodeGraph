@@ -1,22 +1,17 @@
-using System.IO.Hashing;
-using System.Text;
-using Anthropic;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using TC.CodeGraphApi.Data;
+using TC.CodeGraphApi.Data.Neo4j;
 using TC.CodeGraphApi.Models;
-using TC.CodeGraphApi.Services;
-using TC.CodeGraphApi.Services.Models;
+using TC.CodeGraphApi.Services.Embeddings;
+
+LoadDotEnv();
 
 using var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
 var logger = loggerFactory.CreateLogger("TC.CodeGraphApi.Console");
 
 if (args.Length == 0)
 {
-    PrintUsage();
     return 1;
 }
 
@@ -26,334 +21,256 @@ switch (command)
 {
     case "migrate":
         return await RunMigrate(args);
-    case "index":
-        return await RunIndex(args);
-    case "index-all":
-        return await RunIndexAll(args);
-    case "stats":
-        return await RunStats();
-    case "analyze":
-        return await RunAnalyze(args);
-    case "mcp":
-        return await RunMcp();
+    case "migrate-to-neo4j":
+        return await RunMigrateToNeo4j();
     default:
         Console.Error.WriteLine($"Unknown command: {command}");
-        PrintUsage();
+        Console.Error.WriteLine("Available commands: migrate, migrate-to-neo4j");
         return 1;
 }
 
 async Task<int> RunMigrate(string[] args)
 {
-    var connectionString = GetConnectionString();
+    var provider = Environment.GetEnvironmentVariable("CODEGRAPH_PROVIDER") ?? "mysql";
 
-    var migrationsPath = args.Length > 1
-        ? args[1]
-        : Path.Combine(FindRepoRoot(), "TC.CodeGraphApi", "sql", "migrations");
-
-    logger.LogInformation("Applying migrations from {Path}", migrationsPath);
-    logger.LogInformation("Using connection: {Server}", RedactConnectionString(connectionString));
-
-    var store = BuildStore(connectionString);
-
-    try
+    if (provider.Equals("neo4j", StringComparison.OrdinalIgnoreCase))
     {
-        await store.ApplyMigrationsAsync(migrationsPath);
-        logger.LogInformation("Migrations complete");
-        return 0;
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Migration failed");
-        return 1;
-    }
-}
+        var migrationsPath = args.Length > 1
+            ? args[1]
+            : Path.Combine(FindRepoRoot(), "cypher", "migrations");
 
-async Task<int> RunIndex(string[] args)
-{
-    if (args.Length < 2)
-    {
-        Console.Error.WriteLine("Usage: index <path> [--name <name>] [--foundational]");
-        return 1;
-    }
+        logger.LogInformation("Applying Neo4j migrations from {Path}", migrationsPath);
 
-    var path = Path.GetFullPath(args[1]);
-    if (!Directory.Exists(path))
-    {
-        Console.Error.WriteLine($"Directory not found: {path}");
-        return 1;
-    }
-
-    string? name = null;
-    var foundational = false;
-
-    for (var i = 2; i < args.Length; i++)
-    {
-        switch (args[i])
+        var store = BuildNeo4jStore();
+        try
         {
-            case "--name" when i + 1 < args.Length:
-                name = args[++i];
-                break;
-            case "--foundational":
-                foundational = true;
-                break;
+            await store.ApplyMigrationsAsync(migrationsPath);
+            logger.LogInformation("Neo4j migrations complete");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Neo4j migration failed");
+            return 1;
         }
     }
-
-    var projectName = name ?? Path.GetFileName(path);
-    var connectionString = GetConnectionString();
-    var store = BuildStore(connectionString);
-    var pipeline = BuildPipeline(store);
-
-    try
+    else
     {
-        if (foundational)
-            await store.UpsertProjectAsync(projectName, localPath: path, isFoundational: true);
+        var connectionString = GetConnectionString();
 
-        await pipeline.IndexProjectAsync(projectName, path);
-        Console.WriteLine($"Indexed {projectName}: check database for results.");
-        return 0;
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Index failed for {Project}", projectName);
-        return 1;
+        var migrationsPath = args.Length > 1
+            ? args[1]
+            : Path.Combine(FindRepoRoot(), "sql", "migrations");
+
+        logger.LogInformation("Applying migrations from {Path}", migrationsPath);
+        logger.LogInformation("Using connection: {Server}", RedactConnectionString(connectionString));
+
+        var store = BuildMySqlStore(connectionString);
+
+        try
+        {
+            await store.ApplyMigrationsAsync(migrationsPath);
+            logger.LogInformation("Migrations complete");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Migration failed");
+            return 1;
+        }
     }
 }
 
-async Task<int> RunIndexAll(string[] args)
+async Task<int> RunMigrateToNeo4j()
 {
-    if (args.Length < 2)
-    {
-        Console.Error.WriteLine("Usage: index-all <base-path>");
-        return 1;
-    }
-
-    var basePath = Path.GetFullPath(args[1]);
-    if (!Directory.Exists(basePath))
-    {
-        Console.Error.WriteLine($"Directory not found: {basePath}");
-        return 1;
-    }
+    logger.LogInformation("Migrating data from MySQL to Neo4j...");
 
     var connectionString = GetConnectionString();
-    var store = BuildStore(connectionString);
-    var pipeline = BuildPipeline(store);
-
-    var foundationalRepos = GetFoundationalRepos();
+    var mysqlStore = BuildMySqlStore(connectionString);
+    var neo4jStore = BuildNeo4jStore();
 
     try
     {
-        // Step 1: Index foundational repos first
-        foreach (var foundational in foundationalRepos)
+        // Step 1: Apply Neo4j schema migrations
+        logger.LogInformation("Step 1: Applying Neo4j schema...");
+        var cypherPath = Path.Combine(FindRepoRoot(), "cypher", "migrations");
+        await neo4jStore.ApplyMigrationsAsync(cypherPath);
+
+        // Step 2: Migrate repositories
+        logger.LogInformation("Step 2: Migrating repositories...");
+        var repos = await mysqlStore.ListRepositoriesAsync();
+        foreach (var repo in repos)
         {
-            var path = Path.Combine(basePath, foundational);
-            if (!Directory.Exists(path))
+            await neo4jStore.UpsertRepositoryAsync(new RepositoryEntity
             {
-                Console.WriteLine($"SKIP (not found): {foundational}");
-                continue;
-            }
-            Console.WriteLine($"Indexing foundational: {foundational}");
-            await store.UpsertProjectAsync(foundational, localPath: path, isFoundational: true);
-            await pipeline.IndexProjectAsync(foundational, path);
+                Name = repo.Name,
+                RepoUrl = repo.RepoUrl,
+                GitLabGroup = repo.GitLabGroup,
+                LocalPath = repo.LocalPath,
+                LastCommitSha = repo.LastCommitSha,
+                IndexedAt = repo.IndexedAt,
+                Language = repo.Language,
+                Framework = repo.Framework,
+                IsFoundational = repo.IsFoundational
+            });
         }
+        logger.LogInformation("Migrated {Count} repositories", repos.Count);
 
-        // Step 2: Build foundational knowledge from indexed framework repos
-        var knowledge = await BuildFoundationalKnowledge(store);
-
-        // Step 3: Index remaining repos
-        var repoDirs = Directory.GetDirectories(basePath)
-            .Where(d => !foundationalRepos.Contains(Path.GetFileName(d)))
-            .OrderBy(d => d);
-        foreach (var repoDir in repoDirs)
+        // Step 3: Migrate nodes (batch by project)
+        logger.LogInformation("Step 3: Migrating nodes...");
+        var totalNodes = 0;
+        foreach (var repo in repos)
         {
-            var projectName = Path.GetFileName(repoDir);
-            Console.WriteLine($"Indexing: {projectName}");
-            await pipeline.IndexProjectAsync(projectName, repoDir, knowledge: knowledge);
+            var nodes = await mysqlStore.SearchNodesAsync(repo.Name, "", limit: 100000);
+            if (nodes.Count == 0) continue;
+            await neo4jStore.UpsertNodeBatchAsync(nodes);
+            totalNodes += nodes.Count;
+            logger.LogInformation("  {Project}: {Count} nodes", repo.Name, nodes.Count);
         }
+        logger.LogInformation("Migrated {Count} total nodes", totalNodes);
 
-        Console.WriteLine("Index-all complete.");
-        return 0;
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Index-all failed");
-        return 1;
-    }
-}
-
-async Task<int> RunStats()
-{
-    var connectionString = GetConnectionString();
-    var store = BuildStore(connectionString);
-
-    try
-    {
-        var projects = await store.ListProjectsAsync();
-        Console.WriteLine($"Projects: {projects.Count}");
-        Console.WriteLine();
-
-        foreach (var project in projects.OrderBy(p => p.Name))
+        // Step 4: Migrate edges (batch by project, single query per project)
+        logger.LogInformation("Step 4: Migrating edges...");
+        var totalEdges = 0;
+        foreach (var repo in repos)
         {
-            Console.WriteLine($"  {project.Name}{(project.IsFoundational ? " [foundational]" : "")}");
-        }
-        Console.WriteLine();
+            var edgeEntities = await mysqlStore.GetAllEdgesByProjectAsync(repo.Name);
+            if (edgeEntities.Count == 0) continue;
 
-        // Node counts by label
-        Console.WriteLine("Nodes by label:");
-        foreach (var label in Enum.GetValues<NodeLabel>())
-        {
-            var nodes = await store.FindAllNodesByLabelAsync(label);
-            if (nodes.Count > 0)
-                Console.WriteLine($"  {label,-20} {nodes.Count,8:N0}");
-        }
-        Console.WriteLine();
-
-        // Edge counts by type
-        Console.WriteLine("Edges by type:");
-        foreach (var edgeType in Enum.GetValues<EdgeType>())
-        {
-            var edges = await store.FindAllEdgesByTypeAsync(edgeType);
-            if (edges.Count > 0)
-                Console.WriteLine($"  {edgeType,-20} {edges.Count,8:N0}");
-        }
-
-        return 0;
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Stats failed");
-        return 1;
-    }
-}
-
-async Task<int> RunAnalyze(string[] args)
-{
-    if (args.Length < 2)
-    {
-        Console.Error.WriteLine("Usage: analyze <path> [--name <name>] [--model <model>] [--write-docs]");
-        return 1;
-    }
-
-    var path = Path.GetFullPath(args[1]);
-    if (!Directory.Exists(path))
-    {
-        Console.Error.WriteLine($"Directory not found: {path}");
-        return 1;
-    }
-
-    string? name = null;
-    string? model = null;
-    var writeDocs = false;
-
-    for (var i = 2; i < args.Length; i++)
-    {
-        switch (args[i])
-        {
-            case "--name" when i + 1 < args.Length:
-                name = args[++i];
-                break;
-            case "--model" when i + 1 < args.Length:
-                model = args[++i];
-                break;
-            case "--write-docs":
-                writeDocs = true;
-                break;
-        }
-    }
-
-    var projectName = name ?? Path.GetFileName(path);
-    var connectionString = GetConnectionString();
-    var store = BuildStore(connectionString);
-    var analyzer = BuildAnalyzer(store);
-    var docGenerator = new CodeGraphDocGenerator();
-
-    try
-    {
-        Console.WriteLine($"Analyzing {projectName} with {model ?? "claude-sonnet-4-6"}...");
-        var analysis = await analyzer.AnalyzeRepositoryAsync(projectName, path, model);
-
-        Console.WriteLine($"Confidence: {analysis.Confidence}");
-        Console.WriteLine($"Model: {analysis.ModelUsed}");
-        Console.WriteLine();
-        Console.WriteLine(analysis.Summary);
-
-        if (writeDocs)
-        {
-            // Write repo-level CODEGRAPH.md
-            var allEdges = await store.FindCrossRepoEdgesAsync(projectName);
-            var inbound = allEdges.Where(e => e.TargetProject == projectName).ToList();
-            var outbound = allEdges.Where(e => e.SourceProject == projectName).ToList();
-            var repoDoc = docGenerator.GenerateRepoDoc(projectName, analysis,
-                inbound, outbound);
-            await File.WriteAllTextAsync(Path.Combine(path, "CODEGRAPH.md"), repoDoc);
-
-            // Write project-level CODEGRAPH.md files
-            foreach (var project in analysis.Projects)
+            var edges = edgeEntities.Select(e => new GraphEdge
             {
-                var projectPath = FindProjectDirectory(path, project.ProjectName);
-                if (projectPath is not null)
+                Id = e.Id,
+                Project = e.Project,
+                SourceId = e.SourceId,
+                TargetId = e.TargetId,
+                Type = Enum.Parse<EdgeType>(e.Type),
+                Properties = new Dictionary<string, object>()
+            }).ToList();
+
+            await neo4jStore.InsertEdgeBatchAsync(edges);
+            totalEdges += edges.Count;
+            logger.LogInformation("  {Project}: {Count} edges", repo.Name, edges.Count);
+        }
+        logger.LogInformation("Migrated {Count} total edges", totalEdges);
+
+        // Step 5: Migrate cross-repo edges
+        logger.LogInformation("Step 5: Migrating cross-repo edges...");
+        var crossRepoEdges = await mysqlStore.GetAllCrossRepoEdgesAsync();
+        if (crossRepoEdges.Count > 0)
+        {
+            await neo4jStore.InsertCrossRepoEdgeBatchAsync(crossRepoEdges);
+        }
+        logger.LogInformation("Migrated {Count} cross-repo edges", crossRepoEdges.Count);
+
+        // Step 6: Migrate sync state
+        logger.LogInformation("Step 6: Migrating sync state & file hashes...");
+        foreach (var repo in repos)
+        {
+            var syncState = await mysqlStore.GetSyncStateAsync(repo.Name);
+            if (syncState is not null)
+                await neo4jStore.UpsertSyncStateAsync(syncState);
+
+            var fileHashes = await mysqlStore.GetFileHashesAsync(repo.Name);
+            if (fileHashes.Count > 0)
+                await neo4jStore.UpsertFileHashBatchAsync(repo.Name, fileHashes);
+        }
+
+        // Step 7: Migrate analysis data
+        logger.LogInformation("Step 7: Migrating analysis data...");
+        foreach (var repo in repos)
+        {
+            var summary = await mysqlStore.GetRepositorySummaryAsync(repo.Name);
+            if (summary is not null)
+                await neo4jStore.UpsertRepositorySummaryAsync(
+                    summary.Project, summary.Summary, summary.Confidence, summary.SourceHash, summary.ModelUsed);
+
+            var analyses = await mysqlStore.GetProjectAnalysesAsync(repo.Name);
+            foreach (var analysis in analyses)
+                await neo4jStore.UpsertProjectAnalysisAsync(repo.Name, analysis);
+        }
+
+        // Step 8: Migrate health data
+        logger.LogInformation("Step 8: Migrating health & security data...");
+        foreach (var repo in repos)
+        {
+            var healthSummaries = await mysqlStore.GetProjectHealthSummariesAsync(repo.Name);
+            foreach (var hs in healthSummaries)
+                await neo4jStore.UpsertProjectHealthSummaryAsync(hs);
+
+            var healthAnalyses = await mysqlStore.GetProjectHealthAnalysesAsync(repo.Name);
+            foreach (var ha in healthAnalyses)
+                await neo4jStore.UpsertProjectHealthAnalysisAsync(ha);
+
+            var secFindings = await mysqlStore.GetSecurityFindingsAsync(repo.Name);
+            if (secFindings.Count > 0)
+                await neo4jStore.UpsertSecurityFindingsBatchAsync(repo.Name, secFindings.ToList());
+
+            var secSummary = await mysqlStore.GetProjectSecuritySummaryAsync(repo.Name);
+            if (secSummary is not null)
+                await neo4jStore.UpsertProjectSecuritySummaryAsync(secSummary);
+
+            var fileMetrics = await mysqlStore.GetFileMetricsAsync(repo.Name);
+            if (fileMetrics.Count > 0)
+                await neo4jStore.UpsertFileMetricsBatchAsync(repo.Name, fileMetrics.ToList());
+        }
+
+        // Step 9: Migrate clusters
+        logger.LogInformation("Step 9: Migrating clusters...");
+        var clusters = await mysqlStore.GetRepoClustersAsync();
+        if (clusters.Count > 0)
+            await neo4jStore.ReplaceRepoClustersAsync(clusters.ToList());
+
+        // Step 10: Migrate exclusion rules
+        logger.LogInformation("Step 10: Migrating exclusion rules...");
+        var exclusions = await mysqlStore.ListExclusionRulesAsync();
+        foreach (var rule in exclusions)
+            await neo4jStore.CreateExclusionRuleAsync(rule);
+
+        // Step 11: Generate embeddings for existing nodes
+        logger.LogInformation("Step 11: Generating embeddings...");
+        var storageOpts = BuildNeo4jStorageOptions();
+        var embeddingService = new OnnxEmbeddingService(storageOpts, loggerFactory.CreateLogger<OnnxEmbeddingService>());
+        if (embeddingService.IsAvailable)
+        {
+            var sessionFactory = new Neo4jSessionFactory(storageOpts);
+            var vectorStore = new Neo4jVectorStore(sessionFactory);
+            var semanticSearch = new SemanticSearchService(vectorStore, neo4jStore, embeddingService,
+                loggerFactory.CreateLogger<SemanticSearchService>());
+
+            var totalEmbeddings = 0;
+            foreach (var repo in repos)
+            {
+                var nodes = await neo4jStore.SearchNodesAsync(repo.Name, "", limit: 100000);
+                if (nodes.Count == 0) continue;
+
+                // Single batch query for all node analyses instead of N+1
+                var nodeIds = nodes.Select(n => n.Id).ToList();
+                var analyses = await neo4jStore.GetNodeAnalysesBatchAsync(nodeIds);
+
+                var items = nodes.Select(n =>
                 {
-                    var projectDoc = docGenerator.GenerateProjectDoc(project);
-                    await File.WriteAllTextAsync(
-                        Path.Combine(projectPath, "CODEGRAPH.md"), projectDoc);
-                }
-            }
+                    analyses.TryGetValue(n.Id, out var analysis);
+                    return (node: n, description: analysis?.Description);
+                }).ToList();
 
-            Console.WriteLine();
-            Console.WriteLine("CODEGRAPH.md files written.");
+                await semanticSearch.IndexNodeBatchAsync(items);
+                totalEmbeddings += items.Count;
+                logger.LogInformation("  {Project}: {Count} embeddings", repo.Name, items.Count);
+            }
+            logger.LogInformation("Generated {Count} total embeddings", totalEmbeddings);
+        }
+        else
+        {
+            logger.LogWarning("No ONNX embedding model configured — skipping embedding generation. " +
+                "Set CODEGRAPH_EMBEDDING_MODEL to an .onnx file path to enable.");
         }
 
-        // Store summary in database
-        var sourceHash = ComputeRepoHash(path);
-        await store.UpsertProjectSummaryAsync(projectName, analysis.Summary,
-            analysis.Confidence, sourceHash, analysis.ModelUsed);
-
+        logger.LogInformation("Migration complete! All data has been transferred from MySQL to Neo4j.");
         return 0;
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "Analysis failed for {Project}", projectName);
-        return 1;
-    }
-}
-
-async Task<int> RunMcp()
-{
-    var connectionString = GetConnectionString();
-    var store = BuildStore(connectionString);
-    var pipeline = BuildPipeline(store);
-    var queryEngine = new GraphQueryEngine(store, loggerFactory.CreateLogger<GraphQueryEngine>());
-
-    var builder = Host.CreateApplicationBuilder();
-
-    // Suppress all console logging so only MCP JSON goes to stdout
-    builder.Logging.ClearProviders();
-
-    builder.Services.AddSingleton<IGraphStore>(store);
-    builder.Services.AddSingleton(queryEngine);
-    builder.Services.AddSingleton(pipeline);
-
-    builder.Services.AddMcpServer(options =>
-    {
-        options.ServerInfo = new()
-        {
-            Name = "codegraph",
-            Version = "1.0.0"
-        };
-    })
-    .WithStdioServerTransport()
-    .WithTools<CodeGraphMcpServer>();
-
-    var host = builder.Build();
-
-    try
-    {
-        await host.RunAsync();
-        return 0;
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "MCP server failed");
+        logger.LogError(ex, "Migration to Neo4j failed");
         return 1;
     }
 }
@@ -364,13 +281,13 @@ string GetConnectionString()
     => Environment.GetEnvironmentVariable("CODEGRAPH_MYSQL")
        ?? "Server=localhost;Database=codegraph;User=root;Password=;SslMode=None";
 
-MySqlGraphStore BuildStore(string connectionString)
+MySqlGraphStore BuildMySqlStore(string connectionString)
 {
-    var storageOptions = Options.Create(new CodeGraphStorageOptions
+    var storageOptions = new CodeGraphStorageOptions
     {
         ConnectionString = connectionString,
-        MigrationsPath = Path.Combine(FindRepoRoot(), "TC.CodeGraphApi", "sql", "migrations")
-    });
+        MigrationsPath = Path.Combine(FindRepoRoot(), "sql", "migrations")
+    };
 
     var serverVersion = ServerVersion.AutoDetect(connectionString);
     var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
@@ -381,94 +298,60 @@ MySqlGraphStore BuildStore(string connectionString)
     return new MySqlGraphStore(context, storageOptions, loggerFactory.CreateLogger<MySqlGraphStore>());
 }
 
-IndexingPipeline BuildPipeline(IGraphStore store)
+CodeGraphStorageOptions BuildNeo4jStorageOptions() => new()
 {
-    var options = Options.Create(new IndexingOptions());
-    // No extractors registered yet — Phase 3 adds the Roslyn extractor
-    var extractors = Enumerable.Empty<ICodeExtractor>();
-    return new IndexingPipeline(store, extractors, options, loggerFactory.CreateLogger<IndexingPipeline>());
+    Provider = "neo4j",
+    Neo4jUri = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_URI") ?? "bolt://localhost:7687",
+    Neo4jUsername = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_USER") ?? "neo4j",
+    Neo4jPassword = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_PASSWORD") ?? "codegraph",
+    Neo4jDatabase = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_DATABASE"),
+    Neo4jMigrationsPath = Path.Combine(FindRepoRoot(), "cypher", "migrations"),
+    EmbeddingModelPath = Environment.GetEnvironmentVariable("CODEGRAPH_EMBEDDING_MODEL"),
+    EmbeddingDimensions = int.TryParse(Environment.GetEnvironmentVariable("CODEGRAPH_EMBEDDING_DIMENSIONS"), out var d) ? d : 384
+};
+
+Neo4jGraphStore BuildNeo4jStore()
+{
+    var storageOptions = BuildNeo4jStorageOptions();
+    var factory = new Neo4jSessionFactory(storageOptions);
+    return new Neo4jGraphStore(factory, storageOptions, loggerFactory.CreateLogger<Neo4jGraphStore>());
 }
 
-ClaudeCodeAnalyzer BuildAnalyzer(IGraphStore store)
+void LoadDotEnv()
 {
-    // AnthropicClient reads ANTHROPIC_API_KEY from environment by default
-    var client = new AnthropicClient();
-    var options = Options.Create(new AnalysisOptions());
-    return new ClaudeCodeAnalyzer(client, options, store,
-        loggerFactory.CreateLogger<ClaudeCodeAnalyzer>());
-}
+    var path = GetEnvFile();
+    if (path == null) return;
 
-string? FindProjectDirectory(string repoRoot, string projectName)
-{
-    // Look for a directory containing a .csproj matching the project name
-    var csprojFiles = Directory.GetFiles(repoRoot, $"{projectName}.csproj",
-        SearchOption.AllDirectories);
-    return csprojFiles.Length > 0 ? Path.GetDirectoryName(csprojFiles[0]) : null;
-}
-
-string ComputeRepoHash(string rootPath)
-{
-    // Hash all source files to detect changes since last analysis
-    var hash = new XxHash64();
-    var files = Directory.GetFiles(rootPath, "*.cs", SearchOption.AllDirectories)
-        .Where(f => !f.Contains("/bin/") && !f.Contains("/obj/"))
-        .OrderBy(f => f);
-
-    foreach (var file in files)
+    foreach (var line in File.ReadAllLines(path))
     {
-        var bytes = Encoding.UTF8.GetBytes(File.ReadAllText(file));
-        hash.Append(bytes);
+        var trimmed = line.Trim();
+        if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+
+        var eq = trimmed.IndexOf('=');
+        if (eq <= 0) continue;
+
+        var key = trimmed[..eq].Trim();
+        var value = trimmed[(eq + 1)..].Trim();
+
+        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+            value = value[1..^1];
+
+        Environment.SetEnvironmentVariable(key, value);
     }
-
-    return Convert.ToHexString(hash.GetCurrentHash()).ToLowerInvariant();
 }
 
-/// <summary>
-/// Build foundational knowledge from already-indexed framework repos.
-/// Phase 2 stub — returns empty knowledge. Phase 3 will populate from Roslyn analysis.
-/// </summary>
-Task<FoundationalKnowledge> BuildFoundationalKnowledge(IGraphStore store)
+string? GetEnvFile()
 {
-    // TODO: Phase 3 — query the graph for foundational patterns
-    return Task.FromResult(new FoundationalKnowledge());
-}
-
-/// <summary>
-/// Foundational repos that must be indexed first (framework/shared libraries).
-/// </summary>
-HashSet<string> GetFoundationalRepos()
-{
-    // TODO: Load from configuration
-    return
-    [
-        "TC.Common.ServiceStack",
-        "TC.Common.ServiceBus",
-        "TC.Common.Models"
-    ];
-}
-
-void PrintUsage()
-{
-    Console.WriteLine("""
-        Usage: TC.CodeGraphApi.Console <command> [options]
-
-        Commands:
-          migrate [path]                Apply database migrations (default: sql/migrations/)
-          index <path> [options]        Index a local repository
-            --name <name>                 Project name (defaults to directory name)
-            --foundational                Mark as foundational repo
-          index-all <base-path>         Index all repos under a directory
-          analyze <path> [options]      Run Claude analysis on a repository
-            --name <name>                 Project name (defaults to directory name)
-            --model <model>               Claude model (default: claude-sonnet-4-6)
-            --write-docs                  Write CODEGRAPH.md files to the repository
-          mcp                           Start MCP server (stdio transport)
-          stats                         Show graph statistics
-
-        Environment Variables:
-          CODEGRAPH_MYSQL               MySQL connection string
-          ANTHROPIC_API_KEY             Anthropic API key (required for analyze)
-        """);
+    var dir = Directory.GetCurrentDirectory();
+    var path = Path.Combine(dir, ".env");
+    while (!File.Exists(path))
+    {
+        var parent = Directory.GetParent(dir);
+        if (parent == null || !parent.Exists) break;
+        dir = parent.FullName;
+        path = Path.Combine(dir, ".env");
+    }
+    return !File.Exists(path) ? null : path;
 }
 
 string FindRepoRoot()

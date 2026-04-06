@@ -5,10 +5,10 @@ namespace TC.CodeGraphApi.Extractors.CSharp;
 
 public class NuGetReferenceExtractor : INuGetReferenceExtractor
 {
-    public IReadOnlyList<(string PackageName, string Version)> ExtractFromProject(
-        string csprojPath)
+    public IReadOnlyList<(string PackageName, string Version)> ExtractFromProjectXml(
+        string csprojXml)
     {
-        var doc = XDocument.Load(csprojPath);
+        var doc = XDocument.Parse(csprojXml);
         return doc.Descendants("PackageReference")
             .Select(pr => (
                 PackageName: pr.Attribute("Include")?.Value ?? "",

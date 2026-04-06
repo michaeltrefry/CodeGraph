@@ -14,14 +14,14 @@ public class ColdFusionExtractorTests
         RootPath = "/test"
     };
 
-    private static ExtractionResult ExtractCfm(string content, string fileName = "page.cfm")
+    private static async Task<ExtractionResult> ExtractCfmAsync(string content, string fileName = "page.cfm")
     {
         var extractor = new ColdFusionExtractor(NullLogger<ColdFusionExtractor>.Instance);
-        return extractor.ExtractAsync($"/test/{fileName}", content, TestContext).Result;
+        return await extractor.ExtractAsync($"/test/{fileName}", content, TestContext);
     }
 
     [Fact]
-    public void SupportedExtensions_IncludesCfmAndCfc()
+    public async Task SupportedExtensions_IncludesCfmAndCfc()
     {
         var extractor = new ColdFusionExtractor(NullLogger<ColdFusionExtractor>.Instance);
         extractor.SupportedExtensions.ShouldContain(".cfm");
@@ -31,7 +31,7 @@ public class ColdFusionExtractorTests
     // ── Component extraction ──────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfcComponent_WithNameAttribute()
+    public async Task Extracts_CfcComponent_WithNameAttribute()
     {
         var cfc = """
             <cfcomponent name="OrderService" extends="BaseService">
@@ -40,7 +40,7 @@ public class ColdFusionExtractorTests
             </cfcomponent>
             """;
 
-        var result = ExtractCfm(cfc, "OrderService.cfc");
+        var result = await ExtractCfmAsync(cfc, "OrderService.cfc");
 
         var component = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Component);
         component.Name.ShouldBe("OrderService");
@@ -53,7 +53,7 @@ public class ColdFusionExtractorTests
     }
 
     [Fact]
-    public void Extracts_CfcComponent_WithoutNameAttribute_UsesFilename()
+    public async Task Extracts_CfcComponent_WithoutNameAttribute_UsesFilename()
     {
         var cfc = """
             <cfcomponent>
@@ -62,14 +62,14 @@ public class ColdFusionExtractorTests
             </cfcomponent>
             """;
 
-        var result = ExtractCfm(cfc, "UserManager.cfc");
+        var result = await ExtractCfmAsync(cfc, "UserManager.cfc");
 
         var component = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Component);
         component.Name.ShouldBe("UserManager");
     }
 
     [Fact]
-    public void Extracts_CfScriptComponent()
+    public async Task Extracts_CfScriptComponent()
     {
         var cfc = """
             component extends="BaseComponent" {
@@ -80,7 +80,7 @@ public class ColdFusionExtractorTests
             }
             """;
 
-        var result = ExtractCfm(cfc, "MyComponent.cfc");
+        var result = await ExtractCfmAsync(cfc, "MyComponent.cfc");
 
         var component = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Component);
         component.Name.ShouldBe("MyComponent");
@@ -93,7 +93,7 @@ public class ColdFusionExtractorTests
     // ── Function extraction ───────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfFunctionTag()
+    public async Task Extracts_CfFunctionTag()
     {
         var cfc = """
             <cfcomponent name="OrderService">
@@ -104,7 +104,7 @@ public class ColdFusionExtractorTests
             </cfcomponent>
             """;
 
-        var result = ExtractCfm(cfc, "OrderService.cfc");
+        var result = await ExtractCfmAsync(cfc, "OrderService.cfc");
 
         var functions = result.Nodes.Where(n => n.Label == NodeLabel.Function).ToList();
         functions.Count.ShouldBe(2);
@@ -118,7 +118,7 @@ public class ColdFusionExtractorTests
     }
 
     [Fact]
-    public void Extracts_CfScriptFunction()
+    public async Task Extracts_CfScriptFunction()
     {
         var cfc = """
             component {
@@ -132,7 +132,7 @@ public class ColdFusionExtractorTests
             }
             """;
 
-        var result = ExtractCfm(cfc, "Person.cfc");
+        var result = await ExtractCfmAsync(cfc, "Person.cfc");
 
         var functions = result.Nodes.Where(n => n.Label == NodeLabel.Function).ToList();
         functions.Count.ShouldBe(2);
@@ -141,7 +141,7 @@ public class ColdFusionExtractorTests
     }
 
     [Fact]
-    public void Creates_DefinesMethodEdge_ForComponentFunctions()
+    public async Task Creates_DefinesMethodEdge_ForComponentFunctions()
     {
         var cfc = """
             <cfcomponent name="OrderService">
@@ -150,7 +150,7 @@ public class ColdFusionExtractorTests
             </cfcomponent>
             """;
 
-        var result = ExtractCfm(cfc, "OrderService.cfc");
+        var result = await ExtractCfmAsync(cfc, "OrderService.cfc");
 
         result.Edges.ShouldContain(e =>
             e.Type == EdgeType.DEFINES_METHOD &&
@@ -161,13 +161,13 @@ public class ColdFusionExtractorTests
     // ── cfinvoke ──────────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfInvoke()
+    public async Task Extracts_CfInvoke()
     {
         var cfm = """
             <cfinvoke component="com.myapp.OrderService" method="getOrder" returnvariable="order">
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         result.Edges.ShouldContain(e =>
             e.Type == EdgeType.CALLS &&
@@ -180,7 +180,7 @@ public class ColdFusionExtractorTests
     // ── createObject ──────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CreateObject()
+    public async Task Extracts_CreateObject()
     {
         var cfm = """
             <cfscript>
@@ -188,7 +188,7 @@ public class ColdFusionExtractorTests
             </cfscript>
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         result.Edges.ShouldContain(e =>
             e.Type == EdgeType.USES_TYPE &&
@@ -198,7 +198,7 @@ public class ColdFusionExtractorTests
     // ── cfhttp ────────────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfHttp()
+    public async Task Extracts_CfHttp()
     {
         var cfm = """
             <cfhttp url="https://api.example.com/orders" method="POST">
@@ -206,7 +206,7 @@ public class ColdFusionExtractorTests
             </cfhttp>
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         var route = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Route);
         route.Properties["http_method"].ShouldBe("POST");
@@ -217,13 +217,13 @@ public class ColdFusionExtractorTests
     }
 
     [Fact]
-    public void Extracts_CfHttp_DefaultsToGet()
+    public async Task Extracts_CfHttp_DefaultsToGet()
     {
         var cfm = """
             <cfhttp url="https://api.example.com/status">
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         var route = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Route);
         route.Properties["http_method"].ShouldBe("GET");
@@ -232,7 +232,7 @@ public class ColdFusionExtractorTests
     // ── cfquery ───────────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfQuery_TableReferences()
+    public async Task Extracts_CfQuery_TableReferences()
     {
         var cfm = """
             <cfquery name="qOrders" datasource="myDB">
@@ -243,7 +243,7 @@ public class ColdFusionExtractorTests
             </cfquery>
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         var queryEdges = result.Edges.Where(e => e.Type == EdgeType.QUERIES).ToList();
         queryEdges.ShouldContain(e => e.TargetQN == "TestProject.Orders");
@@ -251,7 +251,7 @@ public class ColdFusionExtractorTests
     }
 
     [Fact]
-    public void CfQuery_SkipsSqlKeywords()
+    public async Task CfQuery_SkipsSqlKeywords()
     {
         var cfm = """
             <cfquery name="q">
@@ -259,7 +259,7 @@ public class ColdFusionExtractorTests
             </cfquery>
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         var queryEdges = result.Edges.Where(e => e.Type == EdgeType.QUERIES).ToList();
         queryEdges.ShouldContain(e => e.TargetQN == "TestProject.Orders");
@@ -271,7 +271,7 @@ public class ColdFusionExtractorTests
     // ── cfinclude ─────────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfInclude()
+    public async Task Extracts_CfInclude()
     {
         var cfm = """
             <cfinclude template="/includes/header.cfm">
@@ -279,7 +279,7 @@ public class ColdFusionExtractorTests
             <cfinclude template="/includes/footer.cfm">
             """;
 
-        var result = ExtractCfm(cfm);
+        var result = await ExtractCfmAsync(cfm);
 
         var importEdges = result.Edges.Where(e => e.Type == EdgeType.IMPORTS).ToList();
         importEdges.Count.ShouldBe(2);
@@ -290,7 +290,7 @@ public class ColdFusionExtractorTests
     // ── Complex CFC ───────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_ComplexCfc_WithMultiplePatterns()
+    public async Task Extracts_ComplexCfc_WithMultiplePatterns()
     {
         var cfc = """
             <cfcomponent name="OrderProcessor" extends="BaseProcessor">
@@ -313,7 +313,7 @@ public class ColdFusionExtractorTests
             </cfcomponent>
             """;
 
-        var result = ExtractCfm(cfc, "OrderProcessor.cfc");
+        var result = await ExtractCfmAsync(cfc, "OrderProcessor.cfc");
 
         // Component
         result.Nodes.ShouldContain(n => n.Label == NodeLabel.Component && n.Name == "OrderProcessor");
@@ -338,7 +338,7 @@ public class ColdFusionExtractorTests
     // ── CFM template (not CFC) ────────────────────────────────────
 
     [Fact]
-    public void Extracts_CfmTemplate_WithoutComponent()
+    public async Task Extracts_CfmTemplate_WithoutComponent()
     {
         var cfm = """
             <cfquery name="qProducts" datasource="appDB">
@@ -350,7 +350,7 @@ public class ColdFusionExtractorTests
             </cfoutput>
             """;
 
-        var result = ExtractCfm(cfm, "products.cfm");
+        var result = await ExtractCfmAsync(cfm, "products.cfm");
 
         // No component node (it's a .cfm, not .cfc)
         result.Nodes.ShouldNotContain(n => n.Label == NodeLabel.Component);

@@ -1,0 +1,176 @@
+<div class="page">
+  <div class="page-header">
+    <h1>Blast Radius Analysis</h1>
+    <p class="subtitle">Analyze the impact of changing a code element across the graph</p>
+  </div>
+
+  <!-- Search form -->
+  <div class="card search-card">
+    <div class="search-row">
+      <div class="field">
+        <label for="project">Project</label>
+        <app-typeahead
+          [searchFn]="searchProjects"
+          [placeholder]="'e.g. TC.OrdersApi'"
+          [minChars]="2"
+          [ngModel]="projectName()"
+          (ngModelChange)="projectName.set($event)"
+          (selected)="onProjectSelected($event)"
+          />
+      </div>
+      <div class="field field-wide">
+        <label for="node">Node name or qualified name</label>
+        <app-typeahead
+          [searchFn]="searchNodes"
+          [placeholder]="'e.g. OrderService.CreateOrder'"
+          [minChars]="2"
+          [ngModel]="nodeName()"
+          (ngModelChange)="nodeName.set($event)"
+          (selected)="onNodeSelected($event)"
+          />
+      </div>
+      <div class="field field-narrow">
+        <label for="depth">Depth</label>
+        <select id="depth" [ngModel]="depth()" (ngModelChange)="depth.set(+$event)">
+          <option [value]="1">1</option>
+          <option [value]="2">2</option>
+          <option [value]="3">3</option>
+          <option [value]="4">4</option>
+          <option [value]="5">5</option>
+        </select>
+      </div>
+      <button class="analyze-btn" (click)="analyze()" [disabled]="loading() || !nodeName() || !projectName()">
+        {{ loading() ? 'Analyzing...' : 'Analyze' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  @if (loading()) {
+    <div class="loading">Traversing dependency graph...</div>
+  }
+
+  <!-- Error -->
+  @if (error()) {
+    <div class="card error-card">{{ error() }}</div>
+  }
+
+  <!-- Results -->
+  @if (report(); as r) {
+    <!-- Summary cards -->
+    <div class="summary-row">
+      <div class="summary-card">
+        <span class="summary-value">{{ r.summary.totalAffected }}</span>
+        <span class="summary-label">Affected Nodes</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-value">{{ r.summary.affectedProjects.length }}</span>
+        <span class="summary-label">Projects</span>
+      </div>
+      @for (risk of riskLevels; track risk) {
+        <div class="summary-card" [style.border-color]="riskColor(risk)">
+          <span class="summary-value" [style.color]="riskColor(risk)">{{ riskCount(risk) }}</span>
+          <span class="summary-label">{{ risk }}</span>
+        </div>
+      }
+    </div>
+
+    <!-- Changed nodes -->
+    @if (r.changedNodes.length > 0) {
+      <div class="card">
+        <h3 class="section-title">Changed Nodes</h3>
+        @for (n of r.changedNodes; track n.nodeId) {
+          <div class="node-item changed">
+            <span class="node-icon">{{ icon(n.label) }}</span>
+            <a [routerLink]="['/nodes', n.nodeId]" class="node-name">{{ n.name }}</a>
+            <span class="badge badge-gray">{{ n.label }}</span>
+            <a [routerLink]="['/repos', n.project]" class="node-project">{{ n.project }}</a>
+          </div>
+        }
+      </div>
+    }
+
+    <!-- Risk groups -->
+    @for (risk of riskLevels; track risk) {
+      @let nodes = nodesForRisk(risk);
+      @if (nodes.length > 0) {
+        <div class="card risk-group" [style.border-left-color]="riskColor(risk)">
+          <div class="risk-header" (click)="toggleGroup(risk)">
+            <span class="risk-indicator" [style.background]="riskColor(risk)">{{ risk | uppercase }}</span>
+            <span class="risk-count">{{ nodes.length }} node{{ nodes.length === 1 ? '' : 's' }}</span>
+            <span class="toggle-icon">{{ isExpanded(risk) ? '\u25BC' : '\u25B6' }}</span>
+          </div>
+          @if (isExpanded(risk)) {
+            <div class="risk-nodes">
+              @for (n of nodes; track n.nodeId) {
+                <div class="node-item" [style.background]="riskBg(risk)">
+                  <div class="node-main">
+                    <span class="node-icon">{{ icon(n.label) }}</span>
+                    <a [routerLink]="['/nodes', n.nodeId]" class="node-name">{{ n.name }}</a>
+                    <span class="badge badge-gray">{{ n.label }}</span>
+                    <span class="hop-badge">hop {{ n.depth }}</span>
+                    <span class="edge-badge">{{ n.edgeType }}</span>
+                    @if (n.project !== projectName()) {
+                      <span class="cross-project-badge">{{ n.project }}</span>
+                    }
+                  </div>
+                  @if (n.riskFactors.length > 0) {
+                    <div class="risk-factors">
+                      @for (f of n.riskFactors; track f) {
+                        <span class="factor">{{ f }}</span>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          }
+        </div>
+      }
+    }
+
+    <!-- Cross-repo impact -->
+    @if (r.crossRepoImpacts.length > 0) {
+      <div class="card">
+        <h3 class="section-title">Cross-Repo Impact</h3>
+        <table class="detail-table">
+          <thead>
+            <tr>
+              <td>Source</td>
+              <td>Target</td>
+              <td>Edge Type</td>
+              <td>Affected</td>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of r.crossRepoImpacts; track c.sourceProject + c.targetProject) {
+              <tr>
+                <td><a [routerLink]="['/repos', c.sourceProject]">{{ c.sourceProject }}</a></td>
+                <td><a [routerLink]="['/repos', c.targetProject]">{{ c.targetProject }}</a></td>
+                <td><code>{{ c.edgeType }}</code></td>
+                <td>{{ c.affectedNodeCount }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+
+    <!-- Affected projects list -->
+    @if (r.summary.affectedProjects.length > 1) {
+      <div class="card">
+        <h3 class="section-title">All Affected Projects</h3>
+        <div class="project-chips">
+          @for (p of r.summary.affectedProjects; track p) {
+            <a [routerLink]="['/repos', p]" class="badge badge-blue project-chip">{{ p }}</a>
+          }
+        </div>
+      </div>
+    }
+  }
+
+  <!-- Empty state -->
+  @if (searched() && !loading() && !report() && !error()) {
+    <div class="empty">No impact data found.</div>
+  }
+</div>

@@ -9,12 +9,14 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="DotNetEnv" Version="3.1.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.3" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="MySqlConnector" Version="2.5.0" />
     <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
     <PackageReference Include="Shouldly" Version="4.3.0" />
+    <PackageReference Include="TC.Common.TcServiceStack.Queue.Mock" Version="13.4.12" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
@@ -30,6 +32,8 @@
     <ProjectReference Include="..\TC.CodeGraphApi.Extractors.CSharp\TC.CodeGraphApi.Extractors.CSharp.csproj" />
     <ProjectReference Include="..\TC.CodeGraphApi.Extractors.Sql\TC.CodeGraphApi.Extractors.Sql.csproj" />
     <ProjectReference Include="..\TC.CodeGraphApi.Extractors.ColdFusion\TC.CodeGraphApi.Extractors.ColdFusion.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Extractors.Ansible\TC.CodeGraphApi.Extractors.Ansible.csproj" />
+    <ProjectReference Include="..\TC.CodeGraphApi.Extractors.Terraform\TC.CodeGraphApi.Extractors.Terraform.csproj" />
     <ProjectReference Include="..\TC.CodeGraphApi\TC.CodeGraphApi.csproj" />
   </ItemGroup>
 

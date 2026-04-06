@@ -1,0 +1,132 @@
+using Shouldly;
+using TC.CodeGraphApi.Models;
+using TC.CodeGraphApi.Services;
+
+namespace TC.CodeGraphApi.Tests.Services;
+
+public class GraphBufferTests
+{
+    [Fact]
+    public void FindByName_ReturnsMatchingNodes()
+    {
+        var buffer = new GraphBuffer();
+
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "OrderService", QualifiedName = "P.OrderService"
+        });
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "OrderService", QualifiedName = "P.Other.OrderService"
+        });
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "WalletService", QualifiedName = "P.WalletService"
+        });
+
+        var results = buffer.FindByName("OrderService");
+        results.Count.ShouldBe(2);
+        results.ShouldAllBe(n => n.Name == "OrderService");
+    }
+
+    [Fact]
+    public void FindByName_ReturnsEmpty_WhenNoMatch()
+    {
+        var buffer = new GraphBuffer();
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "Foo", QualifiedName = "P.Foo"
+        });
+
+        var results = buffer.FindByName("Bar");
+        results.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void FindByQN_ReturnsCorrectNode()
+    {
+        var buffer = new GraphBuffer();
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "Foo", QualifiedName = "P.Foo"
+        });
+
+        buffer.FindByQN("P.Foo").ShouldNotBeNull();
+        buffer.FindByQN("P.Bar").ShouldBeNull();
+    }
+
+    [Fact]
+    public void AddNode_OverwritesByQN()
+    {
+        var buffer = new GraphBuffer();
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "Foo", QualifiedName = "P.Foo"
+        });
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Interface,
+            Name = "Foo", QualifiedName = "P.Foo"
+        });
+
+        buffer.AllNodes.Count.ShouldBe(1);
+        buffer.FindByQN("P.Foo")!.Label.ShouldBe(NodeLabel.Interface);
+    }
+
+    [Fact]
+    public void Clear_RemovesEverything()
+    {
+        var buffer = new GraphBuffer();
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "Foo", QualifiedName = "P.Foo"
+        });
+        buffer.AddEdge(new PendingEdge("P.Foo", "P.Bar", EdgeType.CALLS));
+        buffer.AddFileHash("file.cs", "abc123");
+
+        buffer.Clear();
+
+        buffer.AllNodes.ShouldBeEmpty();
+        buffer.AllPendingEdges.ShouldBeEmpty();
+        buffer.AllFileHashes.ShouldBeEmpty();
+        buffer.FindByName("Foo").ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void ResolveEdges_MapsQNsToIds()
+    {
+        var buffer = new GraphBuffer();
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "Src", QualifiedName = "P.Src"
+        });
+        buffer.AddNode(new GraphNode
+        {
+            Project = "P", Label = NodeLabel.Class,
+            Name = "Tgt", QualifiedName = "P.Tgt"
+        });
+        buffer.AddEdge(new PendingEdge("P.Src", "P.Tgt", EdgeType.CALLS));
+        buffer.AddEdge(new PendingEdge("P.Src", "P.Missing", EdgeType.CALLS));
+
+        var qnToId = new Dictionary<string, long>
+        {
+            ["P.Src"] = 1,
+            ["P.Tgt"] = 2
+        };
+
+        var resolved = buffer.ResolveEdges("P", qnToId);
+
+        resolved.Count.ShouldBe(1);
+        resolved[0].SourceId.ShouldBe(1);
+        resolved[0].TargetId.ShouldBe(2);
+        resolved[0].Type.ShouldBe(EdgeType.CALLS);
+    }
+}

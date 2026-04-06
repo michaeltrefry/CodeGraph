@@ -1,0 +1,22 @@
+<div class="shell">
+  <nav class="navbar">
+    <a class="nav-brand" routerLink="/">CodeGraph</a>
+    <div class="nav-links">
+      <a routerLink="/repos" routerLinkActive="active">Repositories</a>
+      <a routerLink="/graph" routerLinkActive="active">Graph</a>
+      <a routerLink="/clusters" routerLinkActive="active">Clusters</a>
+      <a routerLink="/impact" routerLinkActive="active">Impact</a>
+      <a routerLink="/ask" routerLinkActive="active">Ask</a>
+      <a routerLink="/wiki" routerLinkActive="active">Wiki</a>
+      <a routerLink="/admin" routerLinkActive="active">Admin</a>
+    </div>
+    <div class="nav-right">
+      <app-nav-search />
+      <a class="nav-auth-btn" routerLink="/admin">Sign In</a>
+    </div>
+  </nav>
+  <main class="content">
+    <router-outlet />
+  </main>
+  <app-chat-sidebar />
+</div>

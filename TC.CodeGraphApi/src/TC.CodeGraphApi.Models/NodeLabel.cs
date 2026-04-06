@@ -3,7 +3,8 @@ namespace TC.CodeGraphApi.Models;
 public enum NodeLabel
 {
     // Structural
-    Project,
+    Repository,
+    DotnetProject,
     Namespace,
     Folder,
     File,
@@ -40,5 +41,19 @@ public enum NodeLabel
     Job,
 
     // Package
-    NuGetPackage
+    NuGetPackage,
+
+    // Ansible / IaC
+    Playbook,
+    Role,
+    AnsibleTask,
+    AnsibleHandler,
+    AnsibleVariable,
+
+    // Terraform / IaC
+    TerraformResource,
+    TerraformModule,
+    TerraformVariable,
+    TerraformOutput,
+    TerraformDataSource
 }
