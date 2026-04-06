@@ -499,6 +499,262 @@ public class RoslynExtractorTests
         var staticClass = result.Nodes.Single(n => n.Name == "Helpers");
         staticClass.Properties["is_static"].ShouldBe(true);
     }
+
+    // ── Messaging Extraction Enhancements ────────────────────────────────
+
+    [Fact]
+    public void Detects_ServiceBusEventAttribute_RoutingMetadata()
+    {
+        var code = """
+            using System;
+
+            [AttributeUsage(AttributeTargets.Class)]
+            public class TcServiceBusEventAttribute : Attribute
+            {
+                public TcServiceBusEventAttribute(string queueName, string exchangeName, string virtualHost) { }
+            }
+
+            namespace MyApp.Events
+            {
+                [TcServiceBusEvent("order-created-queue", "order-exchange", "/orders")]
+                public class OrderCreatedEvent
+                {
+                    public int OrderId { get; set; }
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        // Class node should have routing metadata
+        var classNode = result.Nodes.Single(n => n.Label == NodeLabel.Class && n.Name == "OrderCreatedEvent");
+        classNode.Properties["queue_name"].ShouldBe("order-created-queue");
+        classNode.Properties["exchange_name"].ShouldBe("order-exchange");
+        classNode.Properties["virtual_host"].ShouldBe("/orders");
+        classNode.Properties["is_service_bus_event"].ShouldBe(true);
+
+        // Queue node should be created
+        var queueNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Queue);
+        queueNode.Name.ShouldBe("order-created-queue");
+        queueNode.Properties["queue_name"].ShouldBe("order-created-queue");
+
+        // Exchange node should be created
+        var exchangeNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Exchange);
+        exchangeNode.Name.ShouldBe("order-exchange");
+
+        // ROUTED_TO edge: Event → Queue
+        var routedToEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.ROUTED_TO);
+        routedToEdge.SourceQN.ShouldBe("MyApp.Events.OrderCreatedEvent");
+        routedToEdge.TargetQN.ShouldContain("order-created-queue");
+
+        // BOUND_TO edge: Queue → Exchange
+        var boundToEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.BOUND_TO);
+        boundToEdge.TargetQN.ShouldContain("order-exchange");
+    }
+
+    [Fact]
+    public void Detects_ServiceBusEventAttribute_NamedArguments()
+    {
+        var code = """
+            using System;
+
+            [AttributeUsage(AttributeTargets.Class)]
+            public class TcServiceBusEventAttribute : Attribute
+            {
+                public TcServiceBusEventAttribute() { }
+                public string QueueName { get; set; }
+                public string ExchangeName { get; set; }
+                public string VirtualHost { get; set; }
+                public string RoutingKey { get; set; }
+            }
+
+            namespace MyApp.Events
+            {
+                [TcServiceBusEvent(QueueName = "payment-queue", RoutingKey = "payment.completed")]
+                public class PaymentCompletedEvent { }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var classNode = result.Nodes.Single(n => n.Label == NodeLabel.Class && n.Name == "PaymentCompletedEvent");
+        classNode.Properties["queue_name"].ShouldBe("payment-queue");
+        classNode.Properties["routing_key"].ShouldBe("payment.completed");
+
+        // Queue node should be created
+        result.Nodes.ShouldContain(n => n.Label == NodeLabel.Queue && n.Name == "payment-queue");
+    }
+
+    [Fact]
+    public void Detects_EventMessageFields()
+    {
+        var code = """
+            namespace MyApp.Events
+            {
+                public class OrderCreatedEvent
+                {
+                    public int OrderId { get; set; }
+                    public string CustomerName { get; set; }
+                    public decimal Amount { get; set; }
+                    private string InternalNote { get; set; }
+                    public static int Counter { get; set; }
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var classNode = result.Nodes.Single(n => n.Label == NodeLabel.Class && n.Name == "OrderCreatedEvent");
+        classNode.Properties.ShouldContainKey("fields");
+
+        var fields = (List<Dictionary<string, object>>)classNode.Properties["fields"];
+        // Should have 3 public non-static properties (not InternalNote, not Counter)
+        fields.Count.ShouldBe(3);
+        fields.ShouldContain(f => (string)f["name"] == "OrderId" && (string)f["type"] == "int");
+        fields.ShouldContain(f => (string)f["name"] == "CustomerName" && (string)f["type"] == "string");
+        fields.ShouldContain(f => (string)f["name"] == "Amount" && (string)f["type"] == "decimal");
+    }
+
+    [Fact]
+    public void Detects_EventMessageFields_WithDomainType_CreatesCarriesFieldEdge()
+    {
+        var code = """
+            namespace TC.Orders.Models
+            {
+                public class OrderLineItem
+                {
+                    public int ProductId { get; set; }
+                }
+
+                public class OrderCreatedEvent
+                {
+                    public int OrderId { get; set; }
+                    public TC.Orders.Models.OrderLineItem LineItem { get; set; }
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        // Should have CARRIES_FIELD edge from Event to the domain type
+        var carriesFieldEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.CARRIES_FIELD);
+        carriesFieldEdge.SourceQN.ShouldBe("TC.Orders.Models.OrderCreatedEvent");
+        carriesFieldEdge.TargetQN.ShouldBe("TC.Orders.Models.OrderLineItem");
+        carriesFieldEdge.Properties!["field_name"].ShouldBe("LineItem");
+    }
+
+    [Fact]
+    public void Detects_ConsumerRegistration_AddConsumer()
+    {
+        var code = """
+            namespace MyApp.Consumers
+            {
+                public class Consumer<T> { }
+                public class OrderCreatedConsumer : Consumer<object> { }
+            }
+
+            namespace MyApp
+            {
+                public interface IBusRegistrationConfigurator
+                {
+                    void AddConsumer<T>();
+                }
+
+                public class Startup
+                {
+                    public void ConfigureServices(IBusRegistrationConfigurator cfg)
+                    {
+                        cfg.AddConsumer<MyApp.Consumers.OrderCreatedConsumer>();
+                    }
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var registersEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.REGISTERS);
+        registersEdge.TargetQN.ShouldBe("MyApp.Consumers.OrderCreatedConsumer");
+        registersEdge.Properties!["registration_pattern"].ShouldBe("AddConsumer<T>");
+        registersEdge.Properties["confidence_band"].ShouldBe("high");
+    }
+
+    [Fact]
+    public void Detects_ConsumerConfigMetadata()
+    {
+        var code = """
+            using System;
+
+            [AttributeUsage(AttributeTargets.Class)]
+            public class ConcurrencyLimitAttribute : Attribute
+            {
+                public ConcurrencyLimitAttribute(int limit) { }
+            }
+
+            [AttributeUsage(AttributeTargets.Class)]
+            public class PrefetchCountAttribute : Attribute
+            {
+                public PrefetchCountAttribute(int count) { }
+            }
+
+            namespace MyApp.Consumers
+            {
+                public class Consumer<T> { }
+
+                [ConcurrencyLimit(10)]
+                [PrefetchCount(20)]
+                public class OrderCreatedConsumer : Consumer<object>
+                {
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var classNode = result.Nodes.Single(n =>
+            n.Label == NodeLabel.Class && n.Name == "OrderCreatedConsumer");
+        classNode.Properties["concurrency_limit"].ShouldBe(10);
+        classNode.Properties["prefetch_count"].ShouldBe(20);
+    }
+
+    [Fact]
+    public void Detects_ServiceBusPublish_CreatesPublishesEdge()
+    {
+        var code = """
+            namespace MyApp.Events
+            {
+                public class OrderShippedEvent { }
+            }
+
+            namespace MyApp.Services
+            {
+                public interface ITcServiceBus
+                {
+                    void Publish<T>(T message);
+                }
+
+                public class OrderService
+                {
+                    private readonly ITcServiceBus _serviceBus;
+
+                    public OrderService(ITcServiceBus serviceBus)
+                    {
+                        _serviceBus = serviceBus;
+                    }
+
+                    public void ShipOrder()
+                    {
+                        _serviceBus.Publish(new MyApp.Events.OrderShippedEvent());
+                    }
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code, withSemantics: true);
+
+        var publishesEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.PUBLISHES);
+        publishesEdge.TargetQN.ShouldBe("MyApp.Events.OrderShippedEvent");
+        publishesEdge.Properties!["confidence_band"].ShouldBe("high");
+    }
 }
 
 public static class ShouldlyCollectionExtensions

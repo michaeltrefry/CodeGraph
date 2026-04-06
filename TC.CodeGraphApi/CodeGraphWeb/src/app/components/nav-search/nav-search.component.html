@@ -1,0 +1,47 @@
+<div class="search-container">
+  <div class="search-input-wrap">
+    <svg class="search-icon" viewBox="0 0 20 20" fill="currentColor">
+      <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
+    </svg>
+    <input
+      #searchInput
+      type="text"
+      placeholder="Search repos, projects, nodes..."
+      [value]="query()"
+      (input)="onInput(searchInput.value)"
+      (keydown)="onKeydown($event)"
+      (blur)="onBlur()"
+      (focus)="onFocus()"
+    />
+    @if (loading()) {
+      <span class="spinner"></span>
+    }
+  </div>
+
+  @if (showDropdown()) {
+    <div class="dropdown">
+      @for (item of results(); track item.nodeId ?? item.name; let i = $index) {
+        <div
+          class="dropdown-item"
+          [class.active]="i === activeIndex()"
+          (mousedown)="selectItem(item)">
+          <span class="item-icon">{{ getIcon(item) }}</span>
+          <div class="item-content">
+            <div class="item-name">
+              {{ item.name }}
+              <span class="item-type">{{ getTypeLabel(item) }}</span>
+            </div>
+            @if (item.description) {
+              <div class="item-desc">{{ item.description }}</div>
+            }
+          </div>
+        </div>
+      }
+      @if (totalResults() > results().length) {
+        <div class="dropdown-footer" (mousedown)="submitSearch()">
+          View all {{ totalResults() }} results
+        </div>
+      }
+    </div>
+  }
+</div>

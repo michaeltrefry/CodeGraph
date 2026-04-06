@@ -1,0 +1,77 @@
+<!-- Toggle button -->
+<button class="chat-toggle" (click)="toggle()" [class.has-context]="!!chatContext.context()">
+  @if (open()) {
+    <span class="toggle-icon">✕</span>
+  } @else {
+    <span class="toggle-icon">💬</span>
+  }
+</button>
+
+<!-- Sidebar panel -->
+<div class="sidebar-panel" [class.open]="open()">
+  <div class="sidebar-header">
+    <h3>Ask CodeGraph</h3>
+    <div class="header-actions">
+      @if (messages().length > 0) {
+        <button class="btn-clear" (click)="clear()" title="Clear chat">Clear</button>
+      }
+    </div>
+  </div>
+
+  @if (chatContext.context(); as ctx) {
+    <div class="context-bar">
+      <span class="context-icon">📍</span>
+      <span class="context-label">{{ ctx.label }}</span>
+      <span class="context-detail">{{ ctx.detail }}</span>
+    </div>
+  }
+
+  <div class="sidebar-messages">
+    @for (msg of messages(); track $index) {
+      <div class="msg" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
+        @if (msg.role === 'user') {
+          <div class="msg-text user-text">{{ msg.chunks[0]?.text }}</div>
+        } @else {
+          @for (chunk of msg.chunks; track $index) {
+            @if (chunk.isToolUse) {
+              <div class="tool-badge">{{ chunk.text }}</div>
+            } @else {
+              <div class="msg-text" [innerHTML]="renderMarkdown(chunk.text)"></div>
+            }
+          }
+          @if (!msg.done && !msg.error) {
+            <span class="cursor">▋</span>
+          }
+          @if (msg.error) {
+            <div class="error-msg">{{ msg.error }}</div>
+          }
+        }
+      </div>
+    }
+    <div #messagesEnd></div>
+  </div>
+
+  <div class="sidebar-input">
+    <textarea
+      class="input-box"
+      [value]="question()"
+      (input)="question.set($any($event.target).value)"
+      (keydown)="onKeydown($event)"
+      placeholder="Ask about this page…"
+      [disabled]="streaming()"
+      rows="2">
+    </textarea>
+    <div class="input-actions">
+      @if (streaming()) {
+        <button class="btn-stop" (click)="stop()">Stop</button>
+      } @else {
+        <button class="btn-send" (click)="send()" [disabled]="!question().trim()">Send</button>
+      }
+    </div>
+  </div>
+</div>
+
+<!-- Backdrop -->
+@if (open()) {
+  <div class="sidebar-backdrop" (click)="toggle()"></div>
+}

@@ -6,4 +6,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="TC.Jarvis.ServiceRegistry.Models.Unified" Version="3.0.2" />
+  </ItemGroup>
+
+
+
 </Project>

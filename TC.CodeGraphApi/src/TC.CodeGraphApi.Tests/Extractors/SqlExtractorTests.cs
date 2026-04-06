@@ -14,14 +14,14 @@ public class SqlExtractorTests
         RootPath = "/test"
     };
 
-    private static ExtractionResult ExtractSql(string sql)
+    private static async Task<ExtractionResult> ExtractSqlAsync(string sql)
     {
         var extractor = new SqlExtractor(NullLogger<SqlExtractor>.Instance);
-        return extractor.ExtractAsync("/test/schema.sql", sql, TestContext).Result;
+        return await extractor.ExtractAsync("/test/schema.sql", sql, TestContext);
     }
 
     [Fact]
-    public void SupportedExtensions_IncludesSql()
+    public async Task SupportedExtensions_IncludesSql()
     {
         var extractor = new SqlExtractor(NullLogger<SqlExtractor>.Instance);
         extractor.SupportedExtensions.ShouldContain(".sql");
@@ -30,7 +30,7 @@ public class SqlExtractorTests
     // ── CREATE TABLE ──────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CreateTable()
+    public async Task Extracts_CreateTable()
     {
         var sql = """
             CREATE TABLE dbo.Orders (
@@ -41,7 +41,7 @@ public class SqlExtractorTests
             );
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var table = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Table);
         table.Name.ShouldBe("dbo.Orders");
@@ -54,7 +54,7 @@ public class SqlExtractorTests
     }
 
     [Fact]
-    public void Extracts_CreateTable_WithTableLevelPrimaryKey()
+    public async Task Extracts_CreateTable_WithTableLevelPrimaryKey()
     {
         var sql = """
             CREATE TABLE Customers (
@@ -64,7 +64,7 @@ public class SqlExtractorTests
             );
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var table = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Table);
         var columns = (List<Dictionary<string, object>>)table.Properties["columns"];
@@ -73,7 +73,7 @@ public class SqlExtractorTests
     }
 
     [Fact]
-    public void Extracts_CreateTable_WithInlineForeignKey()
+    public async Task Extracts_CreateTable_WithInlineForeignKey()
     {
         var sql = """
             CREATE TABLE Orders (
@@ -82,7 +82,7 @@ public class SqlExtractorTests
             );
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var fkEdge = result.Edges.ShouldContain(e =>
             e.Type == EdgeType.QUERIES && e.Properties != null &&
@@ -92,7 +92,7 @@ public class SqlExtractorTests
     }
 
     [Fact]
-    public void Extracts_CreateTable_WithTableLevelForeignKey()
+    public async Task Extracts_CreateTable_WithTableLevelForeignKey()
     {
         var sql = """
             CREATE TABLE OrderItems (
@@ -104,7 +104,7 @@ public class SqlExtractorTests
             );
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var fkEdges = result.Edges.Where(e =>
             e.Type == EdgeType.QUERIES && e.Properties != null &&
@@ -118,7 +118,7 @@ public class SqlExtractorTests
     // ── CREATE VIEW ───────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CreateView_WithTableReferences()
+    public async Task Extracts_CreateView_WithTableReferences()
     {
         var sql = """
             CREATE VIEW dbo.vwOrderSummary AS
@@ -127,7 +127,7 @@ public class SqlExtractorTests
             INNER JOIN Customers c ON o.CustomerId = c.CustomerId;
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var view = result.Nodes.ShouldContain(n => n.Label == NodeLabel.View);
         view.Name.ShouldBe("dbo.vwOrderSummary");
@@ -144,7 +144,7 @@ public class SqlExtractorTests
     // ── CREATE PROCEDURE ──────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CreateProcedure()
+    public async Task Extracts_CreateProcedure()
     {
         var sql = """
             CREATE PROCEDURE dbo.uspGetOrder
@@ -159,7 +159,7 @@ public class SqlExtractorTests
             END;
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var proc = result.Nodes.ShouldContain(n => n.Label == NodeLabel.StoredProcedure);
         proc.Name.ShouldBe("dbo.uspGetOrder");
@@ -178,7 +178,7 @@ public class SqlExtractorTests
     }
 
     [Fact]
-    public void Extracts_ProcedureCallingProcedure()
+    public async Task Extracts_ProcedureCallingProcedure()
     {
         var sql = """
             CREATE PROCEDURE dbo.uspProcessOrder
@@ -190,7 +190,7 @@ public class SqlExtractorTests
             END;
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         result.Edges.ShouldContain(e =>
             e.Type == EdgeType.CALLS &&
@@ -201,7 +201,7 @@ public class SqlExtractorTests
     // ── CREATE FUNCTION ───────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CreateFunction()
+    public async Task Extracts_CreateFunction()
     {
         var sql = """
             CREATE FUNCTION dbo.fnGetOrderTotal(@OrderId INT)
@@ -214,7 +214,7 @@ public class SqlExtractorTests
             END;
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var func = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Function);
         func.Name.ShouldBe("dbo.fnGetOrderTotal");
@@ -225,13 +225,13 @@ public class SqlExtractorTests
     // ── CREATE INDEX ──────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_CreateIndex()
+    public async Task Extracts_CreateIndex()
     {
         var sql = """
             CREATE UNIQUE INDEX IX_Orders_CustomerId ON Orders(CustomerId, CreatedDate);
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var indexEdge = result.Edges.ShouldContain(e =>
             e.Type == EdgeType.DEFINES &&
@@ -246,14 +246,14 @@ public class SqlExtractorTests
     // ── ALTER TABLE ───────────────────────────────────────────────
 
     [Fact]
-    public void Extracts_AlterTable_AddForeignKey()
+    public async Task Extracts_AlterTable_AddForeignKey()
     {
         var sql = """
             ALTER TABLE Orders ADD CONSTRAINT FK_Orders_Customers
                 FOREIGN KEY (CustomerId) REFERENCES Customers(CustomerId);
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var fkEdge = result.Edges.ShouldContain(e =>
             e.Type == EdgeType.QUERIES &&
@@ -267,7 +267,7 @@ public class SqlExtractorTests
     // ── Multiple objects in one file ──────────────────────────────
 
     [Fact]
-    public void Extracts_MultipleObjects_FromSingleFile()
+    public async Task Extracts_MultipleObjects_FromSingleFile()
     {
         var sql = """
             CREATE TABLE Customers (
@@ -294,7 +294,7 @@ public class SqlExtractorTests
             END;
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         result.Nodes.Count(n => n.Label == NodeLabel.Table).ShouldBe(2);
         result.Nodes.Count(n => n.Label == NodeLabel.View).ShouldBe(1);
@@ -304,7 +304,7 @@ public class SqlExtractorTests
     // ── Temp tables and variables should be skipped ────────────────
 
     [Fact]
-    public void Skips_TempTables_InProcedureBody()
+    public async Task Skips_TempTables_InProcedureBody()
     {
         var sql = """
             CREATE PROCEDURE dbo.uspReport
@@ -315,7 +315,7 @@ public class SqlExtractorTests
             END;
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         // Should have QUERIES edge to Orders but NOT to #TempOrders
         var queryEdges = result.Edges.Where(e => e.Type == EdgeType.QUERIES).ToList();
@@ -326,7 +326,7 @@ public class SqlExtractorTests
     // ── Schema handling ───────────────────────────────────────────
 
     [Fact]
-    public void Handles_SchemaQualifiedNames()
+    public async Task Handles_SchemaQualifiedNames()
     {
         var sql = """
             CREATE TABLE dbo.Inventory (
@@ -335,7 +335,7 @@ public class SqlExtractorTests
             );
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         var table = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Table);
         table.Name.ShouldBe("dbo.Inventory");
@@ -345,7 +345,7 @@ public class SqlExtractorTests
     // ── Graceful handling of parse errors ──────────────────────────
 
     [Fact]
-    public void Handles_PartiallyInvalidSql_GracefullyExtractsWhatItCan()
+    public async Task Handles_PartiallyInvalidSql_GracefullyExtractsWhatItCan()
     {
         var sql = """
             CREATE TABLE ValidTable (Id INT PRIMARY KEY);
@@ -353,7 +353,7 @@ public class SqlExtractorTests
             CREATE TABLE AnotherValidTable (Id INT PRIMARY KEY);
             """;
 
-        var result = ExtractSql(sql);
+        var result = await ExtractSqlAsync(sql);
 
         // Should still extract what it can
         result.Nodes.Count.ShouldBeGreaterThan(0);

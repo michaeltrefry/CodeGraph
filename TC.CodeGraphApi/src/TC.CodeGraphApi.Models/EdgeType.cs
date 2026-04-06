@@ -6,6 +6,7 @@ public enum EdgeType
     CONTAINS_FILE,
     CONTAINS_FOLDER,
     CONTAINS_NAMESPACE,
+    CONTAINS_PROJECT,
 
     // Definitions
     DEFINES,
@@ -27,6 +28,10 @@ public enum EdgeType
     // Messaging
     PUBLISHES,
     CONSUMES,
+    ROUTED_TO,
+    BOUND_TO,
+    REGISTERS,
+    CARRIES_FIELD,
 
     // Packages
     REFERENCES_PACKAGE,
@@ -39,5 +44,15 @@ public enum EdgeType
     FILE_CHANGES_WITH,
 
     // Jobs
-    SCHEDULES
+    SCHEDULES,
+
+    // Ansible / IaC
+    INCLUDES_ROLE,
+    NOTIFIES_HANDLER,
+    DEPLOYS,
+    CONFIGURES,
+
+    // Terraform / IaC
+    INCLUDES_MODULE,
+    DEPENDS_ON
 }

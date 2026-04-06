@@ -1,7 +1,7 @@
 using Dapper;
+using DotNetEnv;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using MySqlConnector;
 using Shouldly;
 using TC.CodeGraphApi.Data;
@@ -16,6 +16,15 @@ namespace TC.CodeGraphApi.Tests.Data;
 /// </summary>
 public class MySqlGraphStoreTests : IAsyncLifetime
 {
+    private static readonly string RepoRoot = FindRepoRoot();
+
+    static MySqlGraphStoreTests()
+    {
+        var envPath = Path.Combine(RepoRoot, ".env");
+        if (File.Exists(envPath))
+            Env.Load(envPath);
+    }
+
     private MySqlGraphStore _store = null!;
     private CodeGraphDbContext _context = null!;
     private string _adminConnStr = null!;
@@ -23,7 +32,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     private const string TestDb = "codegraph_test";
 
     private static readonly string MigrationsPath = Path.Combine(
-        FindRepoRoot(), "TC.CodeGraphApi", "sql", "migrations");
+        RepoRoot, "sql", "migrations");
 
     public async Task InitializeAsync()
     {
@@ -50,11 +59,11 @@ public class MySqlGraphStoreTests : IAsyncLifetime
 
         _context = new CodeGraphDbContext(dbOptions);
 
-        var storageOptions = Options.Create(new CodeGraphStorageOptions
+        var storageOptions = new CodeGraphStorageOptions
         {
             ConnectionString = _testConnStr,
             BatchSize = 100
-        });
+        };
 
         _store = new MySqlGraphStore(_context, storageOptions, NullLogger<MySqlGraphStore>.Instance);
         await _store.ApplyMigrationsAsync(MigrationsPath);
@@ -77,15 +86,15 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     [Fact]
     public async Task UpsertProject_InsertsAndUpdates()
     {
-        await _store.UpsertProjectAsync("TestProject", localPath: "/tmp/test");
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = "TestProject", LocalPath = "/tmp/test" });
 
-        var projects = await _store.ListProjectsAsync();
+        var projects = await _store.ListRepositoriesAsync();
         var project = projects.ShouldContain(p => p.Name == "TestProject");
         project.LocalPath.ShouldBe("/tmp/test");
 
         // Update
-        await _store.UpsertProjectAsync("TestProject", repoUrl: "https://git.example.com/test");
-        projects = await _store.ListProjectsAsync();
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = "TestProject", RepoUrl = "https://git.example.com/test" });
+        projects = await _store.ListRepositoriesAsync();
         project = projects.ShouldContain(p => p.Name == "TestProject");
         project.RepoUrl.ShouldBe("https://git.example.com/test");
         project.LocalPath.ShouldBe("/tmp/test"); // preserved
@@ -95,7 +104,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task DeleteProject_CascadesEverything()
     {
         var project = "CascadeTest";
-        await _store.UpsertProjectAsync(project, localPath: "/tmp/cascade");
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project, LocalPath = "/tmp/cascade" });
 
         var nodeA = MakeNode(project, "ClassA", NodeLabel.Class);
         var nodeB = MakeNode(project, "ClassB", NodeLabel.Class);
@@ -114,7 +123,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
             ["file.cs"] = "abc123"
         });
 
-        await _store.DeleteProjectAsync(project);
+        await _store.DeleteRepositoryAsync(project);
 
         var nodes = await _store.FindNodesByLabelAsync(project, NodeLabel.Class);
         nodes.ShouldBeEmpty();
@@ -129,7 +138,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task UpsertNode_InsertsNewNode()
     {
         var project = "NodeTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var node = MakeNode(project, "MyClass", NodeLabel.Class);
         var id = await _store.UpsertNodeAsync(node);
@@ -146,7 +155,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task UpsertNode_UpdatesExistingNode()
     {
         var project = "NodeUpdateTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var node = MakeNode(project, "MyClass", NodeLabel.Class, startLine: 10);
         await _store.UpsertNodeAsync(node);
@@ -164,7 +173,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task UpsertNodeBatch_ReturnsQualifiedNameToIdMapping()
     {
         var project = "BatchNodeTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var nodes = Enumerable.Range(0, 100)
             .Select(i => MakeNode(project, $"Class{i}", NodeLabel.Class))
@@ -181,7 +190,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task FindNodesByName_ReturnsMatchingNodes()
     {
         var project = "FindByNameTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         await _store.UpsertNodeBatchAsync([
             MakeNode(project, "OrderService", NodeLabel.Class),
@@ -197,7 +206,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task SearchNodes_MatchesPattern()
     {
         var project = "SearchTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         await _store.UpsertNodeBatchAsync([
             MakeNode(project, "OrderService", NodeLabel.Class),
@@ -218,7 +227,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task InsertEdgeBatch_CreatesEdges()
     {
         var project = "EdgeBatchTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var nodeA = MakeNode(project, "ClassA", NodeLabel.Class);
         var nodeB = MakeNode(project, "ClassB", NodeLabel.Class);
@@ -244,7 +253,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task Traverse_Outbound_FollowsCallChain()
     {
         var project = "TraverseOutTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var nodes = new[] { "A", "B", "C", "D" }
             .Select(n => MakeNode(project, $"Class{n}", NodeLabel.Class))
@@ -279,7 +288,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task Traverse_Inbound_FindsCallers()
     {
         var project = "TraverseInTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var nodeA = MakeNode(project, "CallerA", NodeLabel.Method);
         var nodeB = MakeNode(project, "CallerB", NodeLabel.Method);
@@ -305,7 +314,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task Traverse_WithEdgeFilter_OnlyFollowsSpecifiedTypes()
     {
         var project = "TraverseFilterTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var nodeA = MakeNode(project, "ClassA", NodeLabel.Class);
         var nodeB = MakeNode(project, "ClassB", NodeLabel.Class);
@@ -333,7 +342,7 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task FileHashes_IncrementalTracking()
     {
         var project = "HashTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
         var hashes = new Dictionary<string, string>
         {
@@ -367,20 +376,20 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     public async Task ProjectSummary_UpsertAndRetrieve()
     {
         var project = "SummaryTest";
-        await _store.UpsertProjectAsync(project);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
 
-        await _store.UpsertProjectSummaryAsync(project,
+        await _store.UpsertRepositorySummaryAsync(project,
             "This service handles order processing.", ConfidenceLevel.High, "hash123");
 
-        var summary = await _store.GetProjectSummaryAsync(project);
+        var summary = await _store.GetRepositorySummaryAsync(project);
         summary.ShouldNotBeNull();
         summary.Summary.ShouldBe("This service handles order processing.");
         summary.Confidence.ShouldBe(ConfidenceLevel.High);
 
         // Update
-        await _store.UpsertProjectSummaryAsync(project,
+        await _store.UpsertRepositorySummaryAsync(project,
             "Updated summary.", ConfidenceLevel.Medium, "hash456");
-        summary = await _store.GetProjectSummaryAsync(project);
+        summary = await _store.GetRepositorySummaryAsync(project);
         summary.ShouldNotBeNull();
         summary.Summary.ShouldBe("Updated summary.");
         summary.Confidence.ShouldBe(ConfidenceLevel.Medium);
@@ -393,8 +402,8 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     {
         var projA = "CrossRepoA";
         var projB = "CrossRepoB";
-        await _store.UpsertProjectAsync(projA);
-        await _store.UpsertProjectAsync(projB);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = projA });
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = projB });
 
         var nodeA = MakeNode(projA, "PublisherService", NodeLabel.Class);
         var nodeB = MakeNode(projB, "ConsumerService", NodeLabel.Class);
@@ -426,8 +435,8 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     {
         await _store.ApplyMigrationsAsync(MigrationsPath);
 
-        await _store.UpsertProjectAsync("MigrationIdempotentTest");
-        var projects = await _store.ListProjectsAsync();
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = "MigrationIdempotentTest" });
+        var projects = await _store.ListRepositoriesAsync();
         projects.ShouldContain(p => p.Name == "MigrationIdempotentTest");
     }
 
@@ -448,7 +457,10 @@ public class MySqlGraphStoreTests : IAsyncLifetime
     private static string FindRepoRoot()
     {
         var dir = AppContext.BaseDirectory;
-        while (dir is not null && !Directory.Exists(Path.Combine(dir, ".git")))
+        while (dir is not null &&
+               !Directory.Exists(Path.Combine(dir, ".git")) &&
+               !File.Exists(Path.Combine(dir, ".env")) &&
+               !File.Exists(Path.Combine(dir, "TC.CodeGraphApi.sln")))
             dir = Directory.GetParent(dir)?.FullName;
         return dir ?? throw new InvalidOperationException("Cannot find repo root");
     }

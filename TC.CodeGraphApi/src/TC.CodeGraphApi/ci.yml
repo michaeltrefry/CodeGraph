@@ -1,0 +1,55 @@
+.proj_api_vars:
+  variables:
+    PROJ_PATH: src/TC.CodeGraphApi
+    DOTNETAPP_PORT: 5037
+
+.proj_api_dependencies:
+  - $PROJ_PATH/**/*
+  - src/TC.CodeGraphApi.Data/**/*
+  - src/TC.CodeGraphApi.Models/**/*
+  - src/TC.CodeGraphApi.Services/**/*
+
+.proj_api_rules:
+  rules:
+    - changes: !reference [.proj_api_dependencies]
+
+.proj_api:
+  extends:
+    - .proj_api_vars
+    - .proj_api_rules
+
+preversion_api:
+  extends:
+    - .preversion_app_template
+    - .proj_api_vars
+
+version_api:
+  extends:
+    - .version_template
+    - .proj_api
+
+package_api:
+  extends:
+    - .package_app_linux_template
+    - .proj_api
+
+deploy_api:
+  extends:
+    - .deploy
+    - .proj_api_vars
+  rules:
+    - if: '$CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH'
+      changes: !reference ['.proj_api_dependencies']
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH'
+      changes: !reference ['.proj_api_dependencies']
+      when: on_success
+  trigger:
+    include: "${PROJ_PATH}/deploy.yml"
+    strategy: depend
+
+proget_scan_api:
+  extends:
+    - .proget
+    - .proj_api_vars

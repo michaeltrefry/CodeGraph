@@ -1,0 +1,177 @@
+import { Component, inject, signal, ElementRef, ViewChild } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { ApiService } from '../../core/api.service';
+
+interface MessageChunk {
+  text: string;
+  isToolUse?: boolean;
+}
+
+interface Message {
+  role: 'user' | 'assistant';
+  chunks: MessageChunk[];
+  toolsUsed: string[];
+  done: boolean;
+  error?: string;
+}
+
+@Component({
+  selector: 'app-ask',
+  imports: [FormsModule],
+  templateUrl: './ask.component.html',
+  styleUrl: './ask.component.scss'
+})
+export class AskComponent {
+  @ViewChild('messagesEnd') private messagesEnd!: ElementRef;
+
+  private api = inject(ApiService);
+
+  question = signal('');
+  messages = signal<Message[]>([]);
+  streaming = signal(false);
+  private abortController: AbortController | null = null;
+
+  async send() {
+    const q = this.question().trim();
+    if (!q || this.streaming()) return;
+
+    this.messages.update(msgs => [...msgs, {
+      role: 'user',
+      chunks: [{ text: q }],
+      toolsUsed: [],
+      done: true
+    }]);
+
+    const assistantMsg: Message = {
+      role: 'assistant',
+      chunks: [],
+      toolsUsed: [],
+      done: false
+    };
+
+    this.messages.update(msgs => [...msgs, assistantMsg]);
+    this.question.set('');
+    this.streaming.set(true);
+    this.scheduleScroll();
+
+    this.abortController = new AbortController();
+
+    // Build history from completed messages (exclude the current user + assistant pair)
+    const allMsgs = this.messages();
+    const history = allMsgs.slice(0, -2)
+      .filter(m => m.done)
+      .map(m => ({
+        role: m.role,
+        content: m.role === 'assistant'
+          ? m.chunks.filter(c => !c.isToolUse).map(c => c.text).join('')
+          : m.chunks.map(c => c.text).join('')
+      }));
+
+    let eventCount = 0;
+    let textLength = 0;
+    try {
+      for await (const event of this.api.ask(q, this.abortController.signal, undefined, history.length ? history : undefined)) {
+        eventCount++;
+        if (event.type === 'text') {
+          textLength += event.content.length;
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            const lastChunk = last.chunks[last.chunks.length - 1];
+            const newChunks = lastChunk && !lastChunk.isToolUse
+              ? [...last.chunks.slice(0, -1), { ...lastChunk, text: lastChunk.text + event.content }]
+              : [...last.chunks, { text: event.content }];
+            return [...msgs.slice(0, -1), { ...last, chunks: newChunks }];
+          });
+          this.scheduleScroll();
+        } else if (event.type === 'tool_use') {
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            return [...msgs.slice(0, -1), {
+              ...last,
+              toolsUsed: [...last.toolsUsed, event.content],
+              chunks: [...last.chunks, { text: `🔧 ${event.content}`, isToolUse: true }]
+            }];
+          });
+          this.scheduleScroll();
+        } else if (event.type === 'done') {
+          console.log(`[Ask] Stream done — ${eventCount} events, ${textLength} chars of text, chunks:`,
+            this.messages().at(-1)?.chunks.length);
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            return [...msgs.slice(0, -1), { ...last, done: true }];
+          });
+          break;
+        } else if (event.type === 'error') {
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            return [...msgs.slice(0, -1), { ...last, error: event.content, done: true }];
+          });
+          break;
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Ask] Stream error after ${eventCount} events, ${textLength} text chars:`, err);
+      if (err?.name !== 'AbortError') {
+        this.messages.update(msgs => {
+          const last = msgs[msgs.length - 1];
+          return [...msgs.slice(0, -1), { ...last, error: String(err), done: true }];
+        });
+      }
+    } finally {
+      console.log(`[Ask] Stream finally — ${eventCount} events received, ${textLength} text chars`);
+      this.streaming.set(false);
+      this.abortController = null;
+    }
+  }
+
+  stop() {
+    this.abortController?.abort();
+  }
+
+  onKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      this.send();
+    }
+  }
+
+  private scrollPending = false;
+
+  private scheduleScroll() {
+    if (this.scrollPending) return;
+    this.scrollPending = true;
+    requestAnimationFrame(() => {
+      this.scrollPending = false;
+      this.scrollToBottom();
+    });
+  }
+
+  private scrollToBottom() {
+    try {
+      this.messagesEnd?.nativeElement?.scrollIntoView({ behavior: 'instant' });
+    } catch { /* ignore */ }
+  }
+
+  fullText(msg: Message): string {
+    return msg.chunks.filter(c => !c.isToolUse).map(c => c.text).join('');
+  }
+
+  renderMarkdown(text: string): string {
+    // Basic markdown → HTML (no dependency needed for this level of formatting)
+    const escaped = text
+      .replace(/```([\s\S]*?)```/g, (_m, code) => `<pre><code>${this.esc(code)}</code></pre>`)
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+      .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^- (.+)$/gm, '<li>$1</li>')
+      .replace(/\n\n/g, '<br><br>')
+      .replace(/\n/g, '<br>');
+    return escaped;
+  }
+
+  private esc(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+}

@@ -1,0 +1,223 @@
+@import 'highlight.js/styles/github.css';
+
+/* Global styles */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  color: #111827;
+  background: #f9fafb;
+  line-height: 1.5;
+}
+
+a { color: #2563eb; text-decoration: none; &:hover { text-decoration: underline; } }
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; line-height: 1.3; }
+
+/* Shared page layout */
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.page-header {
+  margin-bottom: 24px;
+  h1 { font-size: 22px; margin-bottom: 4px; }
+}
+
+/* Cards */
+.card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 16px;
+
+  a { color: #2563eb; }
+  .sep { color: #d1d5db; }
+  .current { color: #374151; font-weight: 500; }
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+
+  &.badge-blue   { background: #dbeafe; color: #1e40af; }
+  &.badge-green  { background: #dcfce7; color: #166534; }
+  &.badge-purple { background: #ede9fe; color: #5b21b6; }
+  &.badge-yellow { background: #fef9c3; color: #854d0e; }
+  &.badge-gray   { background: #f3f4f6; color: #4b5563; }
+  &.badge-red    { background: #fee2e2; color: #991b1b; }
+}
+
+.cross-project-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  font-size: 11px;
+  color: #92400e;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  justify-content: center;
+
+  button {
+    padding: 6px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+    font-size: 13px;
+    color: #374151;
+
+    &:hover:not(:disabled) { background: #f3f4f6; }
+    &:disabled { opacity: 0.4; cursor: default; }
+    &.active { background: #2563eb; color: white; border-color: #2563eb; }
+  }
+
+  .page-info { font-size: 13px; color: #6b7280; }
+}
+
+/* Utility */
+.loading {
+  text-align: center;
+  color: #9ca3af;
+  padding: 48px;
+  font-size: 14px;
+}
+
+.empty {
+  text-align: center;
+  color: #9ca3af;
+  padding: 48px;
+  font-size: 14px;
+}
+
+.btn-small {
+  padding: 5px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  font-size: 12px;
+  color: #374151;
+
+  &:hover { background: #f3f4f6; }
+}
+
+/* Detail table */
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f3f4f6;
+    vertical-align: top;
+
+    &:first-child {
+      width: 180px;
+      color: #6b7280;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+  }
+
+  tr:last-child td { border-bottom: none; }
+}
+
+/* Edge groups */
+.edge-group {
+  margin-bottom: 20px;
+
+  .edge-group-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #9ca3af;
+    margin-bottom: 8px;
+  }
+}
+
+.edge-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+
+  &:last-child { border-bottom: none; }
+
+  .edge-label { font-size: 12px; color: #6b7280; min-width: 90px; }
+}
+
+/* Section headers */
+.section-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9ca3af;
+  margin: 0 0 12px;
+}
+
+/* Confidence indicator */
+.confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+
+  &.high   { background: #dcfce7; color: #166534; }
+  &.medium { background: #fef9c3; color: #854d0e; }
+  &.low    { background: #fee2e2; color: #991b1b; }
+}
+
+code {
+  font-family: 'Consolas', 'Fira Code', monospace;
+  font-size: 12px;
+  background: #f3f4f6;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #374151;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+}

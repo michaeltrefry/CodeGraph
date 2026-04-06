@@ -1,0 +1,77 @@
+<div class="ask-page">
+  <div class="ask-header">
+    <h1>Ask about the Codebase</h1>
+    <p class="subtitle">
+      Ask natural language questions about repositories, services, events, data flow, and dependencies.
+    </p>
+  </div>
+
+  @if (messages().length > 0) {
+    <div class="messages">
+      @for (msg of messages(); track $index) {
+        <div class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
+          <div class="message-role">{{ msg.role === 'user' ? 'You' : 'Assistant' }}</div>
+          <div class="message-body">
+            @if (msg.role === 'user') {
+              <p>{{ msg.chunks[0]?.text }}</p>
+            } @else {
+              @for (chunk of msg.chunks; track $index) {
+                @if (chunk.isToolUse) {
+                  <div class="tool-use">{{ chunk.text }}</div>
+                } @else {
+                  <div class="text-chunk" [innerHTML]="renderMarkdown(chunk.text)"></div>
+                }
+              }
+              @if (!msg.done && !msg.error) {
+                <span class="cursor">▋</span>
+              }
+              @if (msg.error) {
+                <div class="error-msg">Error: {{ msg.error }}</div>
+              }
+            }
+          </div>
+        </div>
+      }
+      <div #messagesEnd></div>
+    </div>
+  } @else {
+    <div class="empty-state">
+      <div class="suggestions">
+        <p class="suggestions-title">Try asking:</p>
+        <button class="suggestion" (click)="question.set('What services handle domain availability checks?')">
+          What services handle domain availability checks?
+        </button>
+        <button class="suggestion" (click)="question.set('Which repos have no inbound dependencies and could be archived?')">
+          Which repos have no inbound dependencies and could be archived?
+        </button>
+        <button class="suggestion" (click)="question.set('What consumes domain expiry events?')">
+          What consumes domain expiry events?
+        </button>
+        <button class="suggestion" (click)="question.set('Show me the call path for PlaceBid')">
+          Show me the call path for PlaceBid
+        </button>
+      </div>
+    </div>
+  }
+
+  <div class="input-area">
+    <textarea
+      class="input-box"
+      [value]="question()"
+      (input)="question.set($any($event.target).value)"
+      (keydown)="onKeydown($event)"
+      placeholder="Ask about services, events, data flow, dependencies…"
+      [disabled]="streaming()"
+      rows="3">
+    </textarea>
+    <div class="input-actions">
+      @if (streaming()) {
+        <button class="btn-stop" (click)="stop()">Stop</button>
+      } @else {
+        <button class="btn-send" (click)="send()" [disabled]="!question().trim()">
+          Send ↵
+        </button>
+      }
+    </div>
+  </div>
+</div>

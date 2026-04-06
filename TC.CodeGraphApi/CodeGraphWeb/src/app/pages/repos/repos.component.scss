@@ -1,0 +1,51 @@
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.search-box {
+  width: 320px;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.group-typeahead {
+  width: 220px;
+}
+
+.repo-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 16px;
+
+  th {
+    text-align: left;
+    padding: 10px 12px;
+    background: #f9fafb;
+    border-bottom: 2px solid #e5e7eb;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: #6b7280;
+  }
+
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f3f4f6;
+    vertical-align: middle;
+  }
+
+  tr:hover td {
+    background: #f9fafb;
+  }
+}
+
+.repo-link {
+  font-weight: 500;
+  color: #2563eb;
+  text-decoration: none;
+  &:hover { text-decoration: underline; }
+}

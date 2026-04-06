@@ -1,0 +1,126 @@
+<div class="page">
+  <div class="breadcrumb">
+    <a routerLink="/repos">Repositories</a>
+    <span class="sep">/</span>
+    <a [routerLink]="['/repos', projectName()]">{{ projectName() }}</a>
+    @if (dotnetProject()) {
+      <span class="sep">/</span>
+      <a [routerLink]="['/repos', projectName(), 'nodes']"
+         [queryParams]="{ dotnetProject: dotnetProject() }">{{ dotnetProject() }}</a>
+    }
+    @if (label()) {
+      <span class="sep">/</span>
+      <span class="current">{{ icon() }} {{ pluralize(label()) }}</span>
+    }
+  </div>
+
+  <h1>
+    @if (label()) { <span>{{ icon() }} {{ pluralize(label()) }}</span> }
+    @else { <span>Nodes</span> }
+    in {{ dotnetProject() || projectName() }}
+  </h1>
+
+  @if (loading()) {
+    <div class="loading">Loading…</div>
+  } @else {
+    <div class="meta">{{ total() }} nodes</div>
+  }
+
+  @if (analysis(); as a) {
+    <div class="analysis-card">
+      <div class="analysis-summary">{{ a.summary }}</div>
+      <div class="analysis-meta">
+        <span class="confidence-pill"
+              [style.background]="confidenceColors[a.confidence]">
+          {{ a.confidence }} confidence
+        </span>
+        @if (a.endpoints?.length) {
+          <span class="analysis-stat">{{ a.endpoints!.length }} endpoints</span>
+        }
+        @if (a.services?.length) {
+          <span class="analysis-stat">{{ a.services!.length }} services</span>
+        }
+        @if (a.databaseTables?.length) {
+          <span class="analysis-stat">{{ a.databaseTables!.length }} tables</span>
+        }
+      </div>
+    </div>
+  }
+
+  @for (section of sections(); track section.label) {
+    <div class="section">
+      <div class="section-header" (click)="toggleSection(section.label)">
+        <span class="section-expand">{{ isSectionExpanded(section.label) ? '▼' : '▶' }}</span>
+        <span class="section-icon">{{ section.icon }}</span>
+        <span class="section-label">{{ pluralize(section.label) }}</span>
+        <span class="section-count">{{ section.containers.length + section.standalone.length }}</span>
+        @if (section.containers.length > 0 && isSectionExpanded(section.label)) {
+          <button class="expand-all-btn" (click)="expandAllInSection(section, $event)">
+            expand all
+          </button>
+        }
+      </div>
+
+      @if (isSectionExpanded(section.label)) {
+        <div class="section-body">
+          <!-- Container nodes (Class, Interface, etc.) with nested members -->
+          @for (container of section.containers; track container.node.id) {
+            <div class="container-node">
+              <div class="container-header" (click)="toggleContainer(container.node.id)">
+                @if (container.members.length > 0) {
+                  <span class="container-expand">{{ isContainerExpanded(container.node.id) ? '▼' : '▶' }}</span>
+                }
+                <a [routerLink]="['/nodes', container.node.id]"
+                   class="container-name"
+                   (click)="$event.stopPropagation()">
+                  {{ container.node.name }}
+                </a>
+                @if (container.members.length > 0) {
+                  <span class="member-count">{{ container.members.length }} members</span>
+                }
+                @if (container.node.description) {
+                  <span class="container-desc">{{ container.node.description }}</span>
+                }
+              </div>
+
+              @if (isContainerExpanded(container.node.id) && container.members.length > 0) {
+                <div class="member-list">
+                  @for (member of container.members; track member.id) {
+                    <a [routerLink]="['/nodes', member.id]" class="member-row">
+                      <span class="member-icon">{{ memberIcon(member.label) }}</span>
+                      <span class="member-label-tag">{{ member.label }}</span>
+                      <span class="member-name">{{ member.name }}</span>
+                      @if (hasProperties(member)) {
+                        <span class="member-prop">{{ topProp(member) }}</span>
+                      }
+                    </a>
+                  }
+                </div>
+              }
+            </div>
+          }
+
+          <!-- Standalone nodes (not nested under a container) -->
+          @for (node of section.standalone; track node.id) {
+            <a [routerLink]="['/nodes', node.id]" class="node-card">
+              <div class="node-name">{{ node.name }}</div>
+              @if (node.qualifiedName !== node.name) {
+                <div class="node-qn">{{ node.qualifiedName }}</div>
+              }
+              @if (node.description) {
+                <div class="node-desc">{{ node.description }}</div>
+              }
+              @if (hasProperties(node)) {
+                <div class="node-prop">{{ topProp(node) }}</div>
+              }
+            </a>
+          }
+        </div>
+      }
+    </div>
+  } @empty {
+    @if (!loading()) {
+      <div class="empty">No nodes found.</div>
+    }
+  }
+</div>

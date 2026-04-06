@@ -1,0 +1,13 @@
+**/.git
+**/bin
+**/obj
+**/node_modules
+**/dist
+!tools/ts-extractor/dist
+**/.vs
+**/.idea
+**/.vscode
+*.md
+.env
+.claude/
+.mcp.json

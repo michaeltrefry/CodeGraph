@@ -1,0 +1,70 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    ports:
+      - "5037:5037"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Staging
+      - TC_COLOCATION=Office
+      - CODEGRAPH_PROVIDER=${CODEGRAPH_PROVIDER:-mysql}
+      - CODEGRAPH_MYSQL=Server=host.docker.internal;Port=3306;Database=codegraph;User=root;Password=${MYSQL_ROOT_PASSWORD:-admin4321};AllowUserVariables=true;UseAffectedRows=false;SslMode=None
+      - CODEGRAPH_NEO4J_URI=bolt://neo4j:7687
+      - CODEGRAPH_NEO4J_USER=${NEO4J_USER:-neo4j}
+      - CODEGRAPH_NEO4J_PASSWORD=${NEO4J_PASSWORD:-codegraph}
+      - CODEGRAPH_NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      - CODEGRAPH_EMBEDDING_MODEL=${CODEGRAPH_EMBEDDING_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANALYSIS_MODEL=${ANALYSIS_MODEL:-claude-sonnet-4-6}
+      - CODEGRAPH_TS_PORT=${CODEGRAPH_TS_PORT:-3100}
+      - CODEGRAPH_MAX_PARALLEL_ANALYSES=${CODEGRAPH_MAX_PARALLEL_ANALYSES:-3}
+      - GITLAB_BASEURL=${GITLAB_BASEURL}
+      - GITLAB_PRIVATETOKEN=${GITLAB_PRIVATETOKEN}
+      - GITLAB_REPOSCACHEPATH=/repos/cache
+      - GITLAB_EXCLUDEDGROUPS=${GITLAB_EXCLUDEDGROUPS:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - D:\repos\cache:/repos/cache
+    depends_on:
+      neo4j:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.26-community
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-codegraph}
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=512m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./CodeGraphWeb
+      dockerfile: Dockerfile
+    ports:
+      - "4200:4200"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

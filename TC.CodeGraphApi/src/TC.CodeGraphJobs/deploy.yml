@@ -1,0 +1,47 @@
+include:
+  - project: 'Development.Infrastructure/gitlab-ci-files'
+    ref: master
+    file: '/dotnet_build/deploy.yml'
+
+variables:
+  CLUSTER_TAG: "SvcJob"
+
+inventory_stage:
+  extends:
+    - .tag_inventory_stage
+  variables:
+    DEPLOY_COUNT: 1
+
+inventory_prod:
+  extends:
+    - .tag_inventory_prod
+  variables:
+    DEPLOY_COUNT: 2
+
+deploy_stage:
+  dependencies:
+    - inventory_stage
+  extends:
+    - .deploy_linux_net8.0
+    - .deploy_stage
+
+remove_stage:
+  extends:
+    - .tag_remove_stage
+  needs:
+    - inventory_stage
+    - deploy_stage
+
+deploy_prod:
+  extends:
+    - .deploy_linux_net8.0
+    - .deploy_prod
+  dependencies:
+    - inventory_prod
+
+remove_prod:
+  extends:
+    - .tag_remove_prod
+  needs:
+    - inventory_prod
+    - deploy_prod
