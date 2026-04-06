@@ -1,13 +1,13 @@
 .proj_jobs_vars:
   variables:
-    PROJ_PATH: src/TC.CodeGraphJobs
+    PROJ_PATH: src/CodeGraph.Jobs
     DOTNETAPP_PORT: 5038
 
 .proj_jobs_dependencies:
   - $PROJ_PATH/**/*
-  - src/TC.CodeGraphApi.Data/**/*
-  - src/TC.CodeGraphApi.Models/**/*
-  - src/TC.CodeGraphApi.Services/**/*
+  - src/CodeGraph.Data/**/*
+  - src/CodeGraph.Models/**/*
+  - src/CodeGraph.Services/**/*
 
 .proj_jobs_rules:
   rules:

@@ -15,4 +15,4 @@ for i in $(seq 1 30); do
 done
 
 # Start the .NET application
-exec dotnet TC.CodeGraphApi.dll
+exec dotnet CodeGraph.dll

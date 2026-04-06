@@ -3,28 +3,28 @@ WORKDIR /src
 
 # Copy NuGet config and solution for restore
 COPY nuget.docker.config nuget.config
-COPY TC.CodeGraphApi.sln .
-COPY src/TC.CodeGraphApi/TC.CodeGraphApi.csproj src/TC.CodeGraphApi/
-COPY src/TC.CodeGraphApi.Console/TC.CodeGraphApi.Console.csproj src/TC.CodeGraphApi.Console/
-COPY src/TC.CodeGraphApi.Models/TC.CodeGraphApi.Models.csproj src/TC.CodeGraphApi.Models/
-COPY src/TC.CodeGraphApi.Services/TC.CodeGraphApi.Services.csproj src/TC.CodeGraphApi.Services/
-COPY src/TC.CodeGraphApi.Data/TC.CodeGraphApi.Data.csproj src/TC.CodeGraphApi.Data/
-COPY src/TC.CodeGraphApi.Data.Neo4j/TC.CodeGraphApi.Data.Neo4j.csproj src/TC.CodeGraphApi.Data.Neo4j/
-COPY src/TC.CodeGraphJobs/TC.CodeGraphJobs.csproj src/TC.CodeGraphJobs/
-COPY src/TC.CodeGraphApi.Extractors.CSharp/TC.CodeGraphApi.Extractors.CSharp.csproj src/TC.CodeGraphApi.Extractors.CSharp/
-COPY src/TC.CodeGraphApi.Extractors.TypeScript/TC.CodeGraphApi.Extractors.TypeScript.csproj src/TC.CodeGraphApi.Extractors.TypeScript/
-COPY src/TC.CodeGraphApi.Extractors.Sql/TC.CodeGraphApi.Extractors.Sql.csproj src/TC.CodeGraphApi.Extractors.Sql/
-COPY src/TC.CodeGraphApi.Extractors.ColdFusion/TC.CodeGraphApi.Extractors.ColdFusion.csproj src/TC.CodeGraphApi.Extractors.ColdFusion/
-COPY src/TC.CodeGraphApi.Extractors.Ansible/TC.CodeGraphApi.Extractors.Ansible.csproj src/TC.CodeGraphApi.Extractors.Ansible/
-COPY src/TC.CodeGraphApi.Extractors.Terraform/TC.CodeGraphApi.Extractors.Terraform.csproj src/TC.CodeGraphApi.Extractors.Terraform/
-COPY src/TC.CodeGraphApi.Tests/TC.CodeGraphApi.Tests.csproj src/TC.CodeGraphApi.Tests/
-COPY src/TC.CodeGraphJobs.Tests/TC.CodeGraphJobs.Tests.csproj src/TC.CodeGraphJobs.Tests/
+COPY CodeGraph.sln .
+COPY src/CodeGraph/CodeGraph.csproj src/CodeGraph/
+COPY src/CodeGraph.Console/CodeGraph.Console.csproj src/CodeGraph.Console/
+COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
+COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
+COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
+COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+COPY src/CodeGraph.Jobs/CodeGraph.Jobs.csproj src/CodeGraph.Jobs/
+COPY src/CodeGraph.Extractors.CSharp/CodeGraph.Extractors.CSharp.csproj src/CodeGraph.Extractors.CSharp/
+COPY src/CodeGraph.Extractors.TypeScript/CodeGraph.Extractors.TypeScript.csproj src/CodeGraph.Extractors.TypeScript/
+COPY src/CodeGraph.Extractors.Sql/CodeGraph.Extractors.Sql.csproj src/CodeGraph.Extractors.Sql/
+COPY src/CodeGraph.Extractors.ColdFusion/CodeGraph.Extractors.ColdFusion.csproj src/CodeGraph.Extractors.ColdFusion/
+COPY src/CodeGraph.Extractors.Ansible/CodeGraph.Extractors.Ansible.csproj src/CodeGraph.Extractors.Ansible/
+COPY src/CodeGraph.Extractors.Terraform/CodeGraph.Extractors.Terraform.csproj src/CodeGraph.Extractors.Terraform/
+COPY src/CodeGraph.Tests/CodeGraph.Tests.csproj src/CodeGraph.Tests/
+COPY src/CodeGraph.Jobs.Tests/CodeGraph.Jobs.Tests.csproj src/CodeGraph.Jobs.Tests/
 
 RUN dotnet restore
 
 # Copy everything and publish
 COPY src/ src/
-RUN dotnet publish src/TC.CodeGraphApi/TC.CodeGraphApi.csproj -c Release -o /app/publish --no-restore
+RUN dotnet publish src/CodeGraph/CodeGraph.csproj -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS runtime
 WORKDIR /app

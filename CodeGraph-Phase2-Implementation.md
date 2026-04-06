@@ -3,8 +3,8 @@
 This document details the implementation plan for Phase 2 of CodeGraph. Phase 1 produced a working proof of concept: a synchronous CLI-driven pipeline that indexes repositories into a MySQL graph and generates CODEGRAPH.md files via direct Claude API calls.
 
 Phase 2 makes the system production-ready by introducing:
-1. **Job-triggered processing** — TC.CodeGraphJobs becomes a WebApi host invoked by the central job manager
-2. **RabbitMQ messaging** — jobs publish messages; consumers in TC.CodeGraphApi do the work
+1. **Job-triggered processing** — CodeGraph.Jobs becomes a WebApi host invoked by the central job manager
+2. **RabbitMQ messaging** — jobs publish messages; consumers in CodeGraph do the work
 3. **Anthropic Batches API** — async batch analysis replaces synchronous per-project calls (~50% cheaper)
 4. **Graph-driven richer analysis** — Claude analyzes graph structure (not source code), producing class/method descriptions with confidence levels
 
@@ -18,7 +18,7 @@ Phase 2 makes the system production-ready by introducing:
 
 | Component | Phase 1 | Phase 2 |
 |---|---|---|
-| TC.CodeGraphJobs | BackgroundService (auto-discovery) | WebApi host with controller + jobs |
+| CodeGraph.Jobs | BackgroundService (auto-discovery) | WebApi host with controller + jobs |
 | Analysis trigger | CLI `analyze` command | Job publishes messages, consumers process |
 | Claude API usage | Synchronous per-project calls | Async Batches API, one batch per repo |
 | Claude input | Raw source code | Graph nodes + edges (token-efficient) |
@@ -31,7 +31,7 @@ Phase 2 makes the system production-ready by introducing:
 - `IndexingPipeline` — unchanged, still runs Roslyn/SQL/TS extractors
 - `MySqlGraphStore` / `IGraphStore` — unchanged
 - `GraphQueryEngine` / `GraphAssistant` / MCP server — unchanged
-- `TC.CodeGraphApi.Console` — unchanged (CLI still useful for local dev)
+- `CodeGraph.Console` — unchanged (CLI still useful for local dev)
 - All extractor projects — unchanged
 
 ---
@@ -95,7 +95,7 @@ CREATE TABLE node_analysis (
 
 ## Phase 2.2 — New Entities and Models
 
-### 2.2.1 — DB Entities (TC.CodeGraphApi.Data/Entities.cs)
+### 2.2.1 — DB Entities (CodeGraph.Data/Entities.cs)
 
 Add to `Entities.cs`:
 
@@ -134,15 +134,15 @@ public class NodeAnalysisEntity
 }
 ```
 
-### 2.2.2 — Message Contract (TC.CodeGraphApi.Models)
+### 2.2.2 — Message Contract (CodeGraph.Models)
 
-Add new file `TC.CodeGraphApi.Models/Messages/ProcessRepository.cs`:
+Add new file `CodeGraph.Models/Messages/ProcessRepository.cs`:
 
 ```csharp
-namespace TC.CodeGraphApi.Models.Messages;
+namespace CodeGraph.Models.Messages;
 
 /// <summary>
-/// Published by ProcessRepositoriesJob. Consumed by ProcessRepositoryConsumer in TC.CodeGraphApi.
+/// Published by ProcessRepositoriesJob. Consumed by ProcessRepositoryConsumer in CodeGraph.
 /// Instructs the consumer to index and/or analyze a single repository.
 /// </summary>
 public class ProcessRepository
@@ -167,12 +167,12 @@ public class ProcessRepository
 }
 ```
 
-### 2.2.3 — Analysis Result Types (TC.CodeGraphApi.Services/Models)
+### 2.2.3 — Analysis Result Types (CodeGraph.Services/Models)
 
 Add to `AnalysisTypes.cs`:
 
 ```csharp
-namespace TC.CodeGraphApi.Services.Models;
+namespace CodeGraph.Services.Models;
 
 /// <summary>Claude's parsed response for a single class batch request.</summary>
 public record ClassAnalysisResult(
@@ -214,7 +214,7 @@ Task UpsertSyncStateAsync(SyncStateEntity state, CancellationToken ct = default)
 
 ---
 
-## Phase 2.4 — Batch Analysis Service (TC.CodeGraphApi.Services)
+## Phase 2.4 — Batch Analysis Service (CodeGraph.Services)
 
 ### Goal
 New service that builds and submits Anthropic batch requests from graph data, and processes completed batch results.
@@ -222,7 +222,7 @@ New service that builds and submits Anthropic batch requests from graph data, an
 ### 2.4.1 — IBatchAnalysisService
 
 ```csharp
-namespace TC.CodeGraphApi.Services;
+namespace CodeGraph.Services;
 
 public interface IBatchAnalysisService
 {
@@ -301,15 +301,15 @@ Use "low" confidence if relationships are sparse.
 
 ---
 
-## Phase 2.5 — Consumer (TC.CodeGraphApi/Consumers)
+## Phase 2.5 — Consumer (CodeGraph/Consumers)
 
 ### Goal
 Receive `ProcessRepository` messages and orchestrate indexing and batch submission.
 
-Create `TC.CodeGraphApi/Consumers/ProcessRepositoryConsumer.cs`:
+Create `CodeGraph/Consumers/ProcessRepositoryConsumer.cs`:
 
 ```csharp
-namespace TC.CodeGraphApi.Consumers;
+namespace CodeGraph.Consumers;
 
 public class ProcessRepositoryConsumer : TcConsumer<ProcessRepository, ProcessRepositoryConsumer>
 {
@@ -384,14 +384,14 @@ public class ProcessRepositoryConsumer : TcConsumer<ProcessRepository, ProcessRe
 }
 ```
 
-Register the consumer in `TC.CodeGraphApi/Startup.cs` alongside existing MassTransit/RabbitMQ configuration.
+Register the consumer in `CodeGraph/Startup.cs` alongside existing MassTransit/RabbitMQ configuration.
 
 ---
 
-## Phase 2.6 — TC.CodeGraphJobs Conversion
+## Phase 2.6 — CodeGraph.Jobs Conversion
 
 ### Goal
-Convert TC.CodeGraphJobs from a BackgroundService worker host to a WebApi host with controller-based job triggering. Remove `RepositorySyncWorker`.
+Convert CodeGraph.Jobs from a BackgroundService worker host to a WebApi host with controller-based job triggering. Remove `RepositorySyncWorker`.
 
 ### 2.6.1 — Project Changes
 
@@ -433,7 +433,7 @@ app.Run();
 ### 2.6.2 — ProcessRepositoriesJob
 
 ```csharp
-namespace TC.CodeGraphJobs.Jobs;
+namespace CodeGraph.Jobs.Jobs;
 
 /// <summary>
 /// Reads a list of repositories from StartJob.Args and publishes one
@@ -491,7 +491,7 @@ public class ProcessRepositoriesJob(
 ### 2.6.3 — ProcessBatchResultsJob
 
 ```csharp
-namespace TC.CodeGraphJobs.Jobs;
+namespace CodeGraph.Jobs.Jobs;
 
 /// <summary>
 /// Polls Anthropic Batches API for completed batches and stores results.
@@ -518,7 +518,7 @@ public class ProcessBatchResultsJob(
 ### 2.6.4 — JobsController
 
 ```csharp
-namespace TC.CodeGraphJobs.Controllers;
+namespace CodeGraph.Jobs.Controllers;
 
 public class JobsController(ILogger<JobsController> logger, IJobRunner runner)
     : JobExecutionController(logger, runner)
@@ -549,7 +549,7 @@ public class JobsController(ILogger<JobsController> logger, IJobRunner runner)
 
 ## Phase 2.7 — DI Registration
 
-### TC.CodeGraphApi/Startup.cs additions
+### CodeGraph/Startup.cs additions
 
 ```csharp
 // Existing registrations remain. Add:
@@ -559,7 +559,7 @@ builder.RegisterType<BatchAnalysisService>().As<IBatchAnalysisService>().Instanc
 // Add ProcessRepositoryConsumer to the consumer registration block
 ```
 
-### TC.CodeGraphApi.Data additions
+### CodeGraph.Data additions
 
 Register new Dapper type handlers and ensure `AnalysisBatchEntity`, `AnalysisBatchRequestEntity`, `NodeAnalysisEntity` are mapped in `MySqlGraphStore`.
 
@@ -569,14 +569,14 @@ Register new Dapper type handlers and ensure `AnalysisBatchEntity`, `AnalysisBat
 
 | Step | Task |
 |---|---|
-| 1 | Apply migrations 005 + 006 (`dotnet run --project TC.CodeGraphApi.Console -- migrate`) |
-| 2 | Add `ProcessRepository` message to `TC.CodeGraphApi.Models` |
-| 3 | Add new entities to `TC.CodeGraphApi.Data/Entities.cs` |
+| 1 | Apply migrations 005 + 006 (`dotnet run --project CodeGraph.Console -- migrate`) |
+| 2 | Add `ProcessRepository` message to `CodeGraph.Models` |
+| 3 | Add new entities to `CodeGraph.Data/Entities.cs` |
 | 4 | Implement new `IGraphStore` methods in `MySqlGraphStore` |
-| 5 | Implement `BatchAnalysisService` in `TC.CodeGraphApi.Services` |
-| 6 | Add `ProcessRepositoryConsumer` to `TC.CodeGraphApi/Consumers/` |
-| 7 | Register consumer + `IBatchAnalysisService` in `TC.CodeGraphApi/Startup.cs` |
-| 8 | Convert `TC.CodeGraphJobs` to WebApi host; remove `RepositorySyncWorker` |
+| 5 | Implement `BatchAnalysisService` in `CodeGraph.Services` |
+| 6 | Add `ProcessRepositoryConsumer` to `CodeGraph/Consumers/` |
+| 7 | Register consumer + `IBatchAnalysisService` in `CodeGraph/Startup.cs` |
+| 8 | Convert `CodeGraph.Jobs` to WebApi host; remove `RepositorySyncWorker` |
 | 9 | Add `ProcessRepositoriesJob`, `ProcessBatchResultsJob`, `JobsController` |
 | 10 | Build and test end-to-end with 2–3 local repos via Swagger |
 
@@ -584,7 +584,7 @@ Register new Dapper type handlers and ensure `AnalysisBatchEntity`, `AnalysisBat
 
 ## Testing Approach
 
-**Manual smoke test via Swagger** (`TC.CodeGraphJobs`):
+**Manual smoke test via Swagger** (`CodeGraph.Jobs`):
 ```json
 POST /ProcessRepositoriesJob
 {

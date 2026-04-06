@@ -16,11 +16,11 @@ CodeGraph is a self-maintaining .NET 9 service that indexes ~620 GitLab reposito
 ## Build & Run Commands
 
 ```bash
-dotnet build src/TC.CodeGraphApi.sln                                    # Build entire solution
-dotnet run --project src/TC.CodeGraphApi                                # API host (REST + MCP + sync worker)
-dotnet run --project src/TC.CodeGraphApi.Console -- migrate             # Apply DB migrations
+dotnet build src/CodeGraph.sln                                    # Build entire solution
+dotnet run --project src/CodeGraph                                # API host (REST + MCP + sync worker)
+dotnet run --project src/CodeGraph.Console -- migrate             # Apply DB migrations
 dotnet test                                                             # All tests
-dotnet test tests/TC.CodeGraphApi.Tests                                 # Specific test project
+dotnet test tests/CodeGraph.Tests                                 # Specific test project
 dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Single test
 ```
 
@@ -29,20 +29,20 @@ dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Singl
 ### Solution Structure (follows company convention)
 
 ```
-TC.CodeGraphApi/
+CodeGraph/
 ├── src/
-│   ├── TC.CodeGraphApi.sln
-│   ├── TC.CodeGraphApi/                       # API host (Startup.cs + Controllers + MCP), DI registration
-│   ├── TC.CodeGraphApi.Console/               # CLI: migrate
-│   ├── TC.CodeGraphApi.Models/                # Domain model: GraphNode, GraphEdge, enums, contracts
-│   ├── TC.CodeGraphApi.Services/              # Pipeline, query engine, Claude analysis, MCP tools,
+│   ├── CodeGraph.sln
+│   ├── CodeGraph/                       # API host (Startup.cs + Controllers + MCP), DI registration
+│   ├── CodeGraph.Console/               # CLI: migrate
+│   ├── CodeGraph.Models/                # Domain model: GraphNode, GraphEdge, enums, contracts
+│   ├── CodeGraph.Services/              # Pipeline, query engine, Claude analysis, MCP tools,
 │   │                                          #   ICodeExtractor interface, cross-repo linker
-│   ├── TC.CodeGraphApi.Data/                  # IGraphStore, MySqlGraphStore, Dapper, EF Core entities
-│   ├── TC.CodeGraphJobs/                      # Background sync worker, scheduled re-indexing
-│   ├── TC.CodeGraphApi.Extractors.CSharp/     # Roslyn extractor (isolated heavy dependency)
-│   ├── TC.CodeGraphApi.Extractors.TypeScript/ # Node.js sidecar (Phase 6+)
-│   ├── TC.CodeGraphApi.Extractors.Sql/        # ScriptDom (Phase 6+)
-│   └── TC.CodeGraphApi.Extractors.ColdFusion/ # Regex (Phase 6+)
+│   ├── CodeGraph.Data/                  # IGraphStore, MySqlGraphStore, Dapper, EF Core entities
+│   ├── CodeGraph.Jobs/                      # Background sync worker, scheduled re-indexing
+│   ├── CodeGraph.Extractors.CSharp/     # Roslyn extractor (isolated heavy dependency)
+│   ├── CodeGraph.Extractors.TypeScript/ # Node.js sidecar (Phase 6+)
+│   ├── CodeGraph.Extractors.Sql/        # ScriptDom (Phase 6+)
+│   └── CodeGraph.Extractors.ColdFusion/ # Regex (Phase 6+)
 ├── CodeGraphWeb/                              # Angular frontend (port 4200)
 ├── tests/
 └── sql/migrations/
@@ -60,13 +60,13 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 
 ### Key Projects
 
-- **TC.CodeGraphApi.Models** — Graph model: `GraphNode`, `GraphEdge`, node/edge type enums, `ExtractionResult`, pipeline types. No dependencies.
-- **TC.CodeGraphApi.Data** — MySQL via **EF Core** (Pomelo) for CRUD + **Dapper** for graph traversal (recursive CTEs) and batch operations. `IGraphStore`, `MySqlGraphStore`, `CodeGraphDbContext`.
-- **TC.CodeGraphApi.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, Claude analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
-- **TC.CodeGraphApi.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
-- **TC.CodeGraphApi** — ASP.NET WebApi host. `Startup.cs` with controllers, Autofac DI registration. Hosts the MCP server (HTTP transport).
-- **TC.CodeGraphApi.Console** — CLI utility for running database migrations.
-- **TC.CodeGraphJobs** — `RepositorySyncWorker`, scheduled re-indexing tasks.
+- **CodeGraph.Models** — Graph model: `GraphNode`, `GraphEdge`, node/edge type enums, `ExtractionResult`, pipeline types. No dependencies.
+- **CodeGraph.Data** — MySQL via **EF Core** (Pomelo) for CRUD + **Dapper** for graph traversal (recursive CTEs) and batch operations. `IGraphStore`, `MySqlGraphStore`, `CodeGraphDbContext`.
+- **CodeGraph.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, Claude analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
+- **CodeGraph.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
+- **CodeGraph** — ASP.NET WebApi host. `Startup.cs` with controllers, Autofac DI registration. Hosts the MCP server (HTTP transport).
+- **CodeGraph.Console** — CLI utility for running database migrations.
+- **CodeGraph.Jobs** — `RepositorySyncWorker`, scheduled re-indexing tasks.
 
 ### Core Interfaces
 

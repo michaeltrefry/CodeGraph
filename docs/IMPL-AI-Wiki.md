@@ -32,64 +32,64 @@ INSERT INTO admin_users (username, created_at) VALUES ('mtrefry', NOW());
 Add entity classes and DbSet registrations.
 
 **Files to modify:**
-- `src/TC.CodeGraphApi.Data/Entities.cs` — add `AdminUserEntity`, `SettingsOverrideEntity`
-- `src/TC.CodeGraphApi.Data/CodeGraphDbContext.cs` — add `DbSet<AdminUserEntity>`, `DbSet<SettingsOverrideEntity>`, fluent config
+- `src/CodeGraph.Data/Entities.cs` — add `AdminUserEntity`, `SettingsOverrideEntity`
+- `src/CodeGraph.Data/CodeGraphDbContext.cs` — add `DbSet<AdminUserEntity>`, `DbSet<SettingsOverrideEntity>`, fluent config
 
 ### 1.3 — Configuration Classes
 
 Add `AuthOptions` and `WikiOptions` to settings.
 
 **Files to create/modify:**
-- `src/TC.CodeGraphApi.Services/Configuration/CodeGraphServiceSettings.cs` — add `WikiOptions` and `AuthOptions` properties
-- `src/TC.CodeGraphApi.Services/Configuration/WikiOptions.cs` — new file
-- `src/TC.CodeGraphApi.Services/Configuration/AuthOptions.cs` — new file
+- `src/CodeGraph.Services/Configuration/CodeGraphServiceSettings.cs` — add `WikiOptions` and `AuthOptions` properties
+- `src/CodeGraph.Services/Configuration/WikiOptions.cs` — new file
+- `src/CodeGraph.Services/Configuration/AuthOptions.cs` — new file
 
 ### 1.4 — API JWT Bearer Authentication
 
 Wire up ASP.NET JWT bearer middleware. Use `AuthOptions.Authority` for OIDC discovery.
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` — add `AddAuthentication().AddJwtBearer()`, configure from `AuthOptions`
+- `src/CodeGraph/Startup.cs` — add `AddAuthentication().AddJwtBearer()`, configure from `AuthOptions`
 
 ### 1.5 — Admin Role Middleware
 
 Create an authorization policy that checks `admin_users` table. Use ASP.NET `IAuthorizationHandler` with a custom `AdminRequirement`.
 
 **Files to create:**
-- `src/TC.CodeGraphApi/Auth/AdminRequirement.cs` — `IAuthorizationRequirement`
-- `src/TC.CodeGraphApi/Auth/AdminAuthorizationHandler.cs` — checks username against `admin_users` table
+- `src/CodeGraph/Auth/AdminRequirement.cs` — `IAuthorizationRequirement`
+- `src/CodeGraph/Auth/AdminAuthorizationHandler.cs` — checks username against `admin_users` table
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` — register `AdminAuthorizationHandler`, add `"Admin"` policy
+- `src/CodeGraph/Startup.cs` — register `AdminAuthorizationHandler`, add `"Admin"` policy
 
 ### 1.6 — Settings Override Service
 
 Service to load settings from DB and merge over Consul config. Single-row upsert pattern.
 
 **Files to create:**
-- `src/TC.CodeGraphApi.Services/ISettingsService.cs` — interface: `GetEffectiveSettingsAsync()`, `UpdateOverridesAsync(json, username)`
-- `src/TC.CodeGraphApi.Services/SettingsService.cs` — loads `TcConfiguration<CodeGraphServiceSettings>`, merges `settings_overrides` JSON on top, excludes ConnectionString on GET
+- `src/CodeGraph.Services/ISettingsService.cs` — interface: `GetEffectiveSettingsAsync()`, `UpdateOverridesAsync(json, username)`
+- `src/CodeGraph.Services/SettingsService.cs` — loads `TcConfiguration<CodeGraphServiceSettings>`, merges `settings_overrides` JSON on top, excludes ConnectionString on GET
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` — register `ISettingsService`
+- `src/CodeGraph/Startup.cs` — register `ISettingsService`
 
 ### 1.7 — Admin Users Service
 
 CRUD for the `admin_users` table. Also used by the authorization handler in 1.5.
 
 **Files to create:**
-- `src/TC.CodeGraphApi.Services/IAdminUserService.cs` — `ListAsync()`, `AddAsync(username)`, `RemoveAsync(username)`, `IsAdminAsync(username)`
-- `src/TC.CodeGraphApi.Services/AdminUserService.cs`
+- `src/CodeGraph.Services/IAdminUserService.cs` — `ListAsync()`, `AddAsync(username)`, `RemoveAsync(username)`, `IsAdminAsync(username)`
+- `src/CodeGraph.Services/AdminUserService.cs`
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` — register `IAdminUserService`
+- `src/CodeGraph/Startup.cs` — register `IAdminUserService`
 
 ### 1.8 — Admin API Endpoints (Settings, Users, MCP Regenerate)
 
 Extend `AdminController` with new endpoints. All require `[Authorize(Policy = "Admin")]`.
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Controllers/AdminController.cs` — add:
+- `src/CodeGraph/Controllers/AdminController.cs` — add:
   - `GET /api/admin/settings` → returns effective settings JSON (no ConnectionString)
   - `PUT /api/admin/settings` → updates `settings_overrides`
   - `GET /api/admin/admins` → list admin usernames
@@ -165,28 +165,28 @@ Migrate data:
 ### 2.2 — EF Core Entities & DbContext
 
 **Files to modify:**
-- `src/TC.CodeGraphApi.Data/Entities.cs` — add `WikiSectionEntity`, `WikiPageEntity`, `WikiRevisionEntity`, `WikiAttachmentEntity`
-- `src/TC.CodeGraphApi.Data/CodeGraphDbContext.cs` — add DbSets, remove ConventionPages/ConventionRevisions DbSets, add fluent config (unique constraints, cascades, indexes)
+- `src/CodeGraph.Data/Entities.cs` — add `WikiSectionEntity`, `WikiPageEntity`, `WikiRevisionEntity`, `WikiAttachmentEntity`
+- `src/CodeGraph.Data/CodeGraphDbContext.cs` — add DbSets, remove ConventionPages/ConventionRevisions DbSets, add fluent config (unique constraints, cascades, indexes)
 
 ### 2.3 — Request/Response Models
 
 **Files to create:**
-- `src/TC.CodeGraphApi.Models/Requests/WikiPageRequest.cs` — title, content, parentId?, slug?, sortOrder?
-- `src/TC.CodeGraphApi.Models/Requests/WikiSectionRequest.cs` — title, description?, icon?, sortOrder?, allowUserPages?
-- `src/TC.CodeGraphApi.Models/Requests/WikiPageMoveRequest.cs` — newParentId?, newSectionId?, sortOrder?
-- `src/TC.CodeGraphApi.Models/Responses/WikiResponses.cs` — `WikiSectionResponse`, `WikiPageResponse`, `WikiPageListItem`, `WikiTreeNode`, `WikiRevisionListItem`, `WikiRevisionResponse`, `WikiAttachmentResponse`
+- `src/CodeGraph.Models/Requests/WikiPageRequest.cs` — title, content, parentId?, slug?, sortOrder?
+- `src/CodeGraph.Models/Requests/WikiSectionRequest.cs` — title, description?, icon?, sortOrder?, allowUserPages?
+- `src/CodeGraph.Models/Requests/WikiPageMoveRequest.cs` — newParentId?, newSectionId?, sortOrder?
+- `src/CodeGraph.Models/Responses/WikiResponses.cs` — `WikiSectionResponse`, `WikiPageResponse`, `WikiPageListItem`, `WikiTreeNode`, `WikiRevisionListItem`, `WikiRevisionResponse`, `WikiAttachmentResponse`
 
 ### 2.4 — Wiki Service
 
 Core business logic for sections, pages, revisions, and tree navigation.
 
 **Files to create:**
-- `src/TC.CodeGraphApi.Services/IWikiService.cs` — interface covering:
+- `src/CodeGraph.Services/IWikiService.cs` — interface covering:
   - Sections: `ListSectionsAsync()`, `GetSectionTreeAsync(sectionSlug)`
   - Pages: `GetPageAsync(sectionSlug, path)`, `CreatePageAsync(sectionSlug, parentPath?, request)`, `UpdatePageAsync(sectionSlug, path, request)`, `DeletePageAsync(sectionSlug, path)`, `MovePageAsync(sectionSlug, path, moveRequest)`
   - Revisions: `GetRevisionsAsync(sectionSlug, path)`, `GetRevisionAsync(sectionSlug, path, revision)`
   - Admin: `CreateSectionAsync(request)`, `UpdateSectionAsync(id, request)`, `DeleteSectionAsync(id)`
-- `src/TC.CodeGraphApi.Services/WikiService.cs` — implementation
+- `src/CodeGraph.Services/WikiService.cs` — implementation
   - Path resolution: split `path` string into slug segments, walk `wiki_pages` from root
   - Depth enforcement: reject creates that would exceed level 4
   - Revision tracking: insert into `wiki_revisions` on every update
@@ -194,21 +194,21 @@ Core business logic for sections, pages, revisions, and tree navigation.
   - Section rules: respect `allow_user_pages` flag, block delete on `is_system` sections
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` — register `IWikiService`
+- `src/CodeGraph/Startup.cs` — register `IWikiService`
 
 ### 2.5 — Attachment Service
 
 **Files to create:**
-- `src/TC.CodeGraphApi.Services/IAttachmentService.cs` — `ListAsync(pageId)`, `UploadAsync(pageId, file, username)`, `GetAsync(attachmentId)`, `DeleteAsync(attachmentId)`, `DeleteAllForPageAsync(pageId)` (best-effort file cleanup)
-- `src/TC.CodeGraphApi.Services/AttachmentService.cs` — filesystem storage under `WikiOptions.AttachmentStoragePath/{pageId}/{filename}`
+- `src/CodeGraph.Services/IAttachmentService.cs` — `ListAsync(pageId)`, `UploadAsync(pageId, file, username)`, `GetAsync(attachmentId)`, `DeleteAsync(attachmentId)`, `DeleteAllForPageAsync(pageId)` (best-effort file cleanup)
+- `src/CodeGraph.Services/AttachmentService.cs` — filesystem storage under `WikiOptions.AttachmentStoragePath/{pageId}/{filename}`
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` — register `IAttachmentService`
+- `src/CodeGraph/Startup.cs` — register `IAttachmentService`
 
 ### 2.6 — Wiki Controller
 
 **Files to create:**
-- `src/TC.CodeGraphApi/Controllers/WikiController.cs` — all routes from PRD Section 6:
+- `src/CodeGraph/Controllers/WikiController.cs` — all routes from PRD Section 6:
   - Read routes: no auth
   - Write routes: `[Authorize]`
   - Extracts `username` from JWT claims for author field
@@ -217,7 +217,7 @@ Core business logic for sections, pages, revisions, and tree navigation.
 ### 2.7 — Admin Section Endpoints
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Controllers/AdminController.cs` — add section CRUD endpoints:
+- `src/CodeGraph/Controllers/AdminController.cs` — add section CRUD endpoints:
   - `GET /api/admin/sections`
   - `POST /api/admin/sections`
   - `PUT /api/admin/sections/{id}`
@@ -228,25 +228,25 @@ Core business logic for sections, pages, revisions, and tree navigation.
 Update `list_conventions` and `get_convention` to query `wiki_pages` where section = "conventions" instead of the old `convention_pages` table.
 
 **Files to modify:**
-- `src/TC.CodeGraphApi.Services/Assistant/CodeGraphMcpServer.cs` — update both tool methods to use `IWikiService` or query `wiki_pages` directly
+- `src/CodeGraph.Services/Assistant/CodeGraphMcpServer.cs` — update both tool methods to use `IWikiService` or query `wiki_pages` directly
 
 ### 2.9 — Remove Convention System
 
 Delete old convention code. Clean break as specified in PRD.
 
 **Files to delete:**
-- `src/TC.CodeGraphApi/Controllers/ConventionsController.cs`
-- `src/TC.CodeGraphApi.Services/ConventionService.cs`
-- `src/TC.CodeGraphApi.Services/IConventionService.cs`
-- `src/TC.CodeGraphApi.Models/Messages/ConventionUpdated.cs`
-- `src/TC.CodeGraphApi/Consumers/ConventionUpdatedConsumer.cs`
-- `src/TC.CodeGraphApi.Models/Requests/ConventionRequest.cs`
-- `src/TC.CodeGraphApi.Models/Responses/ConventionResponse.cs` (or whatever files hold `ConventionListItem`, `ConventionDetailResponse`, etc.)
+- `src/CodeGraph/Controllers/ConventionsController.cs`
+- `src/CodeGraph.Services/ConventionService.cs`
+- `src/CodeGraph.Services/IConventionService.cs`
+- `src/CodeGraph.Models/Messages/ConventionUpdated.cs`
+- `src/CodeGraph/Consumers/ConventionUpdatedConsumer.cs`
+- `src/CodeGraph.Models/Requests/ConventionRequest.cs`
+- `src/CodeGraph.Models/Responses/ConventionResponse.cs` (or whatever files hold `ConventionListItem`, `ConventionDetailResponse`, etc.)
 
 **Files to modify:**
-- `src/TC.CodeGraphApi.Data/Entities.cs` — remove `ConventionPageEntity`, `ConventionRevisionEntity`
-- `src/TC.CodeGraphApi.Data/CodeGraphDbContext.cs` — remove convention DbSets
-- `src/TC.CodeGraphApi/Startup.cs` — remove `IConventionService` registration, remove `ConventionUpdatedConsumer` MassTransit registration
+- `src/CodeGraph.Data/Entities.cs` — remove `ConventionPageEntity`, `ConventionRevisionEntity`
+- `src/CodeGraph.Data/CodeGraphDbContext.cs` — remove convention DbSets
+- `src/CodeGraph/Startup.cs` — remove `IConventionService` registration, remove `ConventionUpdatedConsumer` MassTransit registration
 
 ### Phase 2 Verification
 
@@ -358,8 +358,8 @@ Replace manual regex rendering with `marked` (already in package.json) + `highli
 Enumerate registered MCP tools and their metadata (name, description, parameters).
 
 **Files to create:**
-- `src/TC.CodeGraphApi.Services/IMcpDocService.cs` — `RegenerateAsync()`, `GetToolMetadataAsync()`
-- `src/TC.CodeGraphApi.Services/McpDocService.cs` — implementation:
+- `src/CodeGraph.Services/IMcpDocService.cs` — `RegenerateAsync()`, `GetToolMetadataAsync()`
+- `src/CodeGraph.Services/McpDocService.cs` — implementation:
   - Reflects on `[McpServerTool]` attributes in `CodeGraphMcpServer` to extract tool name, description, parameters
   - Alternatively: introspect the MCP server's tool registry if the SDK exposes it
 
@@ -373,15 +373,15 @@ For each tool:
 5. Set author to "system" for auto-generated content
 
 **Files to modify:**
-- `src/TC.CodeGraphApi.Services/McpDocService.cs` — the core logic above
+- `src/CodeGraph.Services/McpDocService.cs` — the core logic above
 
 ### 4.3 — Startup Hook & Admin Endpoint
 
 Run auto-generation on startup and on admin request.
 
 **Files to modify:**
-- `src/TC.CodeGraphApi/Startup.cs` (or `Program.cs`) — call `IMcpDocService.RegenerateAsync()` during app startup (after DB is ready)
-- `src/TC.CodeGraphApi/Controllers/AdminController.cs` — add `POST /api/admin/mcp/regenerate` endpoint
+- `src/CodeGraph/Startup.cs` (or `Program.cs`) — call `IMcpDocService.RegenerateAsync()` during app startup (after DB is ready)
+- `src/CodeGraph/Controllers/AdminController.cs` — add `POST /api/admin/mcp/regenerate` endpoint
 
 ### 4.4 — Section Lockdown
 
@@ -462,14 +462,14 @@ Verify MassTransit no longer registers `ConventionUpdatedConsumer`. Clean up any
 | Phase | Path | Description |
 |-------|------|-------------|
 | 1 | `sql/migrations/005_admin_foundation.sql` | admin_users + settings_overrides tables |
-| 1 | `src/TC.CodeGraphApi.Services/Configuration/WikiOptions.cs` | Attachment and wiki settings |
-| 1 | `src/TC.CodeGraphApi.Services/Configuration/AuthOptions.cs` | OAuth2/JWT config |
-| 1 | `src/TC.CodeGraphApi/Auth/AdminRequirement.cs` | Authorization requirement |
-| 1 | `src/TC.CodeGraphApi/Auth/AdminAuthorizationHandler.cs` | Checks admin_users table |
-| 1 | `src/TC.CodeGraphApi.Services/ISettingsService.cs` | Settings service interface |
-| 1 | `src/TC.CodeGraphApi.Services/SettingsService.cs` | Settings merge logic |
-| 1 | `src/TC.CodeGraphApi.Services/IAdminUserService.cs` | Admin user CRUD interface |
-| 1 | `src/TC.CodeGraphApi.Services/AdminUserService.cs` | Admin user CRUD |
+| 1 | `src/CodeGraph.Services/Configuration/WikiOptions.cs` | Attachment and wiki settings |
+| 1 | `src/CodeGraph.Services/Configuration/AuthOptions.cs` | OAuth2/JWT config |
+| 1 | `src/CodeGraph/Auth/AdminRequirement.cs` | Authorization requirement |
+| 1 | `src/CodeGraph/Auth/AdminAuthorizationHandler.cs` | Checks admin_users table |
+| 1 | `src/CodeGraph.Services/ISettingsService.cs` | Settings service interface |
+| 1 | `src/CodeGraph.Services/SettingsService.cs` | Settings merge logic |
+| 1 | `src/CodeGraph.Services/IAdminUserService.cs` | Admin user CRUD interface |
+| 1 | `src/CodeGraph.Services/AdminUserService.cs` | Admin user CRUD |
 | 1 | `CodeGraphWeb/src/app/core/auth.service.ts` | OAuth2 PKCE flow |
 | 1 | `CodeGraphWeb/src/app/core/auth.interceptor.ts` | Bearer token interceptor |
 | 1 | `CodeGraphWeb/src/app/core/admin.guard.ts` | Admin route guard |
@@ -479,15 +479,15 @@ Verify MassTransit no longer registers `ConventionUpdatedConsumer`. Clean up any
 | 1 | `CodeGraphWeb/src/app/pages/admin/admin-users.component.ts` | Admin user management |
 | 1 | `CodeGraphWeb/src/app/pages/admin/admin-operations.component.ts` | Operations UI |
 | 2 | `sql/migrations/006_wiki.sql` | Wiki tables + convention migration |
-| 2 | `src/TC.CodeGraphApi.Models/Requests/WikiPageRequest.cs` | Page request DTO |
-| 2 | `src/TC.CodeGraphApi.Models/Requests/WikiSectionRequest.cs` | Section request DTO |
-| 2 | `src/TC.CodeGraphApi.Models/Requests/WikiPageMoveRequest.cs` | Move request DTO |
-| 2 | `src/TC.CodeGraphApi.Models/Responses/WikiResponses.cs` | All wiki response DTOs |
-| 2 | `src/TC.CodeGraphApi.Services/IWikiService.cs` | Wiki CRUD interface |
-| 2 | `src/TC.CodeGraphApi.Services/WikiService.cs` | Wiki business logic |
-| 2 | `src/TC.CodeGraphApi.Services/IAttachmentService.cs` | Attachment interface |
-| 2 | `src/TC.CodeGraphApi.Services/AttachmentService.cs` | Filesystem attachment logic |
-| 2 | `src/TC.CodeGraphApi/Controllers/WikiController.cs` | All wiki REST routes |
+| 2 | `src/CodeGraph.Models/Requests/WikiPageRequest.cs` | Page request DTO |
+| 2 | `src/CodeGraph.Models/Requests/WikiSectionRequest.cs` | Section request DTO |
+| 2 | `src/CodeGraph.Models/Requests/WikiPageMoveRequest.cs` | Move request DTO |
+| 2 | `src/CodeGraph.Models/Responses/WikiResponses.cs` | All wiki response DTOs |
+| 2 | `src/CodeGraph.Services/IWikiService.cs` | Wiki CRUD interface |
+| 2 | `src/CodeGraph.Services/WikiService.cs` | Wiki business logic |
+| 2 | `src/CodeGraph.Services/IAttachmentService.cs` | Attachment interface |
+| 2 | `src/CodeGraph.Services/AttachmentService.cs` | Filesystem attachment logic |
+| 2 | `src/CodeGraph/Controllers/WikiController.cs` | All wiki REST routes |
 | 3 | `CodeGraphWeb/src/app/pages/wiki/wiki-layout.component.ts` | Wiki shell with sidebar |
 | 3 | `CodeGraphWeb/src/app/pages/wiki/wiki-layout.component.html` | Layout template |
 | 3 | `CodeGraphWeb/src/app/pages/wiki/wiki-sidebar.component.ts` | Recursive nav tree |
@@ -498,30 +498,30 @@ Verify MassTransit no longer registers `ConventionUpdatedConsumer`. Clean up any
 | 3 | `CodeGraphWeb/src/app/pages/wiki/wiki-revisions.component.ts` | Revision history |
 | 3 | `CodeGraphWeb/src/app/shared/markdown.component.ts` | Markdown renderer |
 | 3 | `CodeGraphWeb/src/app/pages/admin/admin-sections.component.ts` | Section management |
-| 4 | `src/TC.CodeGraphApi.Services/IMcpDocService.cs` | MCP doc gen interface |
-| 4 | `src/TC.CodeGraphApi.Services/McpDocService.cs` | Auto-generation logic |
+| 4 | `src/CodeGraph.Services/IMcpDocService.cs` | MCP doc gen interface |
+| 4 | `src/CodeGraph.Services/McpDocService.cs` | Auto-generation logic |
 
 ### Files to Delete (Phase 2)
 
 | Path | Reason |
 |------|--------|
-| `src/TC.CodeGraphApi/Controllers/ConventionsController.cs` | Replaced by WikiController |
-| `src/TC.CodeGraphApi.Services/ConventionService.cs` | Replaced by WikiService |
-| `src/TC.CodeGraphApi.Services/IConventionService.cs` | Replaced by IWikiService |
-| `src/TC.CodeGraphApi.Models/Messages/ConventionUpdated.cs` | Event removed per PRD |
-| `src/TC.CodeGraphApi/Consumers/ConventionUpdatedConsumer.cs` | Consumer removed per PRD |
+| `src/CodeGraph/Controllers/ConventionsController.cs` | Replaced by WikiController |
+| `src/CodeGraph.Services/ConventionService.cs` | Replaced by WikiService |
+| `src/CodeGraph.Services/IConventionService.cs` | Replaced by IWikiService |
+| `src/CodeGraph.Models/Messages/ConventionUpdated.cs` | Event removed per PRD |
+| `src/CodeGraph/Consumers/ConventionUpdatedConsumer.cs` | Consumer removed per PRD |
 | Convention request/response models | Replaced by wiki models |
 
 ### Key Files Modified Across Phases
 
 | Path | Phases | Changes |
 |------|--------|---------|
-| `src/TC.CodeGraphApi/Startup.cs` | 1, 2, 4 | Auth, DI registrations, MCP doc startup hook |
-| `src/TC.CodeGraphApi.Data/Entities.cs` | 1, 2 | Add wiki entities, remove convention entities |
-| `src/TC.CodeGraphApi.Data/CodeGraphDbContext.cs` | 1, 2 | Add/remove DbSets |
-| `src/TC.CodeGraphApi/Controllers/AdminController.cs` | 1, 2, 4 | Settings, users, sections, MCP regenerate |
-| `src/TC.CodeGraphApi.Services/Configuration/CodeGraphServiceSettings.cs` | 1 | Add WikiOptions, AuthOptions |
-| `src/TC.CodeGraphApi.Services/Assistant/CodeGraphMcpServer.cs` | 2 | Repoint convention tools |
+| `src/CodeGraph/Startup.cs` | 1, 2, 4 | Auth, DI registrations, MCP doc startup hook |
+| `src/CodeGraph.Data/Entities.cs` | 1, 2 | Add wiki entities, remove convention entities |
+| `src/CodeGraph.Data/CodeGraphDbContext.cs` | 1, 2 | Add/remove DbSets |
+| `src/CodeGraph/Controllers/AdminController.cs` | 1, 2, 4 | Settings, users, sections, MCP regenerate |
+| `src/CodeGraph.Services/Configuration/CodeGraphServiceSettings.cs` | 1 | Add WikiOptions, AuthOptions |
+| `src/CodeGraph.Services/Assistant/CodeGraphMcpServer.cs` | 2 | Repoint convention tools |
 | `CodeGraphWeb/src/app/core/api.service.ts` | 1, 3 | Add wiki & admin API methods |
 | `CodeGraphWeb/src/app/core/models.ts` | 3 | Add wiki models, remove convention models |
 | `CodeGraphWeb/src/app/app.routes.ts` | 1, 3 | Auth callback, admin routes, wiki routes |
