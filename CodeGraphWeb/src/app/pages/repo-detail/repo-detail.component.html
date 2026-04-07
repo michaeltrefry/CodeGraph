@@ -58,6 +58,9 @@
             <button class="btn-reanalyze" (click)="reAnalyze()">Re-analyze</button>
           }
         </div>
+        @if (batchProviderSummary(); as summary) {
+          <div><span class="meta-label">Analysis batch:</span> {{ summary }}</div>
+        }
         @if (d.project.lastCommitSha) {
           <div><span class="meta-label">Commit:</span> {{ formatCommit(d.project.lastCommitSha) }}</div>
         }

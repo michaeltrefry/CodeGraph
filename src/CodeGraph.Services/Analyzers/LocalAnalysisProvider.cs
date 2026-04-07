@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Models;
@@ -148,9 +149,29 @@ public class LocalAnalysisProvider(
 
     private string BuildUrl(string path)
     {
-        var baseUrl = options.Local.BaseUrl.TrimEnd('/');
+        var baseUrl = NormalizeBaseUrl(options.Local.BaseUrl).TrimEnd('/');
         var relative = path.StartsWith("/") ? path : $"/{path}";
         return $"{baseUrl}{relative}";
+    }
+
+    internal static string NormalizeBaseUrl(string baseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            return baseUrl;
+
+        var runningInContainer = string.Equals(
+            Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!runningInContainer)
+            return baseUrl;
+
+        return Regex.Replace(
+            baseUrl,
+            @"^http://(localhost|127\.0\.0\.1)(?=[:/]|$)",
+            "http://host.docker.internal",
+            RegexOptions.IgnoreCase);
     }
 
     private sealed class LocalChatCompletionRequest

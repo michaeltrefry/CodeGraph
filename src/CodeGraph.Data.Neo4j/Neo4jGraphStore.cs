@@ -63,10 +63,10 @@ public partial class Neo4jGraphStore(
             await tx.RunAsync("""
                 MERGE (r:Repository {name: $name})
                 ON CREATE SET r.createdAt = $now
-                SET r.repoUrl = $repoUrl,
-                    r.sourceGroup = $sourceGroup,
-                    r.localPath = $localPath,
-                    r.defaultBranch = $defaultBranch,
+                SET r.repoUrl = COALESCE($repoUrl, r.repoUrl),
+                    r.sourceGroup = COALESCE($sourceGroup, r.sourceGroup),
+                    r.localPath = COALESCE($localPath, r.localPath),
+                    r.defaultBranch = COALESCE($defaultBranch, r.defaultBranch),
                     r.lastCommitSha = COALESCE($lastCommitSha, r.lastCommitSha),
                     r.indexedAt = $now,
                     r.language = COALESCE($language, r.language),

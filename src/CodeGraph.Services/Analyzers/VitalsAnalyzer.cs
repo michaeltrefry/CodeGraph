@@ -2,9 +2,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using Anthropic;
-using Anthropic.Exceptions;
-using Anthropic.Models.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -14,7 +11,7 @@ namespace CodeGraph.Services.Analyzers;
 
 public class VitalsAnalyzer(
     IGraphStore store,
-    AnthropicClient anthropic,
+    IAnalysisProviderRegistry providerRegistry,
     IOptions<AnalysisOptions> analysisOptionsAccessor,
     IFileSystem fileSystem,
     ILintRunner lintRunner,
@@ -181,7 +178,6 @@ public class VitalsAnalyzer(
             return;
         }
 
-        var model = analysisOptions.Model;
         var now = DateTime.UtcNow;
 
         // Load security summary for inclusion in health prompts
@@ -201,16 +197,16 @@ public class VitalsAnalyzer(
 
             try
             {
-                var response = await CallClaudeAsync(prompt, model, ct);
-                if (!string.IsNullOrWhiteSpace(response))
+                var response = await CallAnalysisAsync(prompt, ct);
+                if (response is not null && !string.IsNullOrWhiteSpace(response.Text))
                 {
                     await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
                     {
                         Project = projectName,
                         DotnetProject = summary.DotnetProject,
-                        Analysis = response,
+                        Analysis = response.Text,
                         Confidence = summary.OverallHealth < 4.0 ? "high" : "medium",
-                        ModelUsed = model,
+                        ModelUsed = response.ModelUsed,
                         CreatedAt = now,
                         UpdatedAt = now
                     });
@@ -235,16 +231,16 @@ public class VitalsAnalyzer(
 
             try
             {
-                var response = await CallClaudeAsync(prompt, model, ct);
-                if (!string.IsNullOrWhiteSpace(response))
+                var response = await CallAnalysisAsync(prompt, ct);
+                if (response is not null && !string.IsNullOrWhiteSpace(response.Text))
                 {
                     await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
                     {
                         Project = projectName,
                         DotnetProject = null,
-                        Analysis = response,
+                        Analysis = response.Text,
                         Confidence = repoSummary.OverallHealth < 4.0 ? "high" : "medium",
-                        ModelUsed = model,
+                        ModelUsed = response.ModelUsed,
                         CreatedAt = now,
                         UpdatedAt = now
                     });
@@ -366,38 +362,20 @@ public class VitalsAnalyzer(
         }
     }
 
-    private async Task<string?> CallClaudeAsync(string prompt, string model, CancellationToken ct)
+    private async Task<AnalysisTextResponse?> CallAnalysisAsync(string prompt, CancellationToken ct)
     {
-        const int maxRetries = 3;
-        var delay = TimeSpan.FromSeconds(15);
+        var provider = providerRegistry.GetProvider();
+        var response = await provider.ExecuteAsync(
+            new AnalysisPrompt(
+                SystemPrompt: "You are a software architecture and code health analyst. " +
+                              "Return concise, practical prose grounded in the provided metrics.",
+                UserPrompt: prompt),
+            new AnalysisRequestOptions(
+                Model: null,
+                MaxTokens: 1024),
+            ct);
 
-        for (int attempt = 0; ; attempt++)
-        {
-            try
-            {
-                var response = await anthropic.Messages.Create(new MessageCreateParams
-                {
-                    Model = model,
-                    MaxTokens = 1024,
-                    Messages = [new MessageParam { Role = "user", Content = prompt }]
-                }, ct);
-
-                foreach (var block in response.Content)
-                {
-                    if (block.TryPickText(out var textBlock) &&
-                        !string.IsNullOrWhiteSpace(textBlock.Text))
-                        return textBlock.Text;
-                }
-                return null;
-            }
-            catch (AnthropicRateLimitException) when (attempt < maxRetries)
-            {
-                logger.LogWarning("Rate limit — retrying in {Delay}s ({Attempt}/{Max})",
-                    delay.TotalSeconds, attempt + 1, maxRetries);
-                await Task.Delay(delay, ct);
-                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 60));
-            }
-        }
+        return string.IsNullOrWhiteSpace(response.Text) ? null : response;
     }
 
     // --- Git Analysis Methods ---

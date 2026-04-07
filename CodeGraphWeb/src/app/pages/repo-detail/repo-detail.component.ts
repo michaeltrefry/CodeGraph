@@ -204,7 +204,26 @@ export class RepoDetailComponent implements OnInit {
   }
 
   isBatchInProgress(): boolean {
-    return this.batchStatus()?.status === 'submitted';
+    const status = this.batchStatus()?.status?.toLowerCase();
+    return !!status && status !== 'completed' && status !== 'failed';
+  }
+
+  batchProviderSummary(): string | null {
+    const batch = this.batchStatus();
+    if (!batch) return null;
+
+    const parts = [
+      batch.providerName,
+      this.formatExecutionMode(batch.executionMode),
+      batch.includeAllSource ? 'all source' : 'convention source'
+    ];
+
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  private formatExecutionMode(mode?: string): string {
+    if (!mode) return 'unknown mode';
+    return mode.replace(/_/g, ' ');
   }
 
   formatDate(d?: string) {

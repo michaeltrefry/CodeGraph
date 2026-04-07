@@ -23,8 +23,8 @@ services:
       CodeGraph__AnalysisOptions__Gemini__BaseUrl: ${CodeGraph__AnalysisOptions__Gemini__BaseUrl:-https://generativelanguage.googleapis.com/v1beta}
       CodeGraph__AnalysisOptions__Gemini__Model: ${CodeGraph__AnalysisOptions__Gemini__Model:-gemini-2.5-flash}
       CodeGraph__AnalysisOptions__Local__ApiKey: ${CodeGraph__AnalysisOptions__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://host.docker.internal:1234/v1}
-      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-qwen3}
+      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://model-runner.docker.internal/engines/v1}
+      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-ai/gemma4:31B}
       CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
@@ -42,7 +42,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${CODEGRAPH_DOCKER_REPOS_CACHE_MOUNT:-./.cache/repos}:/repos/.cache
+      - repos_cache:/repos/.cache
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -79,8 +79,8 @@ services:
       - NEO4J_server_memory_heap_max__size=1G
       - NEO4J_server_memory_pagecache_size=512m
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - ${CODEGRAPH_DOCKER_NEO4J_DATA_MOUNT:-./.cache/neo4j/data}:/data
+      - ${CODEGRAPH_DOCKER_NEO4J_LOGS_MOUNT:-./.cache/neo4j/logs}:/logs
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -101,6 +101,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  repos_cache:
   rabbitmq_data:
-  neo4j_data:
-  neo4j_logs:

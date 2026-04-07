@@ -174,6 +174,20 @@ A personal knowledge graph for storing and querying memories across assistant co
 | `store_memory` | Store structured entities and relationships |
 | `query_memory` | Semantic search across the memory graph |
 
+### Migrating Legacy MemoryGraph Data
+
+If you have memories stored in the older `MemoryGraph` project, use the one-off migration tool in [`tools/memory-migration/`](./tools/memory-migration):
+
+```bash
+# Dry-run against the old Docker volume
+./tools/memory-migration/run-memorygraph-migration.sh --source-username michael
+
+# Apply the migration into the current CodeGraph Neo4j
+./tools/memory-migration/run-memorygraph-migration.sh --source-username michael --apply
+```
+
+The wrapper script starts a temporary Neo4j container against the old `memorygraph_neo4j_data` Docker volume, then runs a dry-run or import into the current CodeGraph memory graph. The migration is dry-run by default and aborts if overlapping target ids are detected, unless you explicitly allow that.
+
 ## Prerequisites
 
 - [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)

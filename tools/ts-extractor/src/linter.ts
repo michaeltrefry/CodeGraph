@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 
 export interface LintProjectRequest {
@@ -22,6 +23,68 @@ interface EslintJsonEntry {
   errorCount: number;
   warningCount: number;
   messages?: unknown[];
+}
+
+const SKIP_DIRS = new Set([
+  'node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.git', '.angular', 'cypress', 'e2e'
+]);
+
+const LINTABLE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+
+function hasEslintConfig(repoPath: string): boolean {
+  const configFiles = [
+    'eslint.config.js',
+    'eslint.config.mjs',
+    'eslint.config.cjs',
+    '.eslintrc',
+    '.eslintrc.js',
+    '.eslintrc.cjs',
+    '.eslintrc.json',
+    '.eslintrc.yml',
+    '.eslintrc.yaml',
+  ];
+
+  for (const file of configFiles) {
+    if (fs.existsSync(path.join(repoPath, file)))
+      return true;
+  }
+
+  const packageJsonPath = path.join(repoPath, 'package.json');
+  if (!fs.existsSync(packageJsonPath))
+    return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as { eslintConfig?: unknown };
+    return !!pkg.eslintConfig;
+  } catch {
+    return false;
+  }
+}
+
+function findLintableFiles(repoPath: string): string[] {
+  const results: string[] = [];
+
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name))
+          walk(path.join(dir, entry.name));
+        continue;
+      }
+
+      const ext = path.extname(entry.name);
+      if (!LINTABLE_EXTENSIONS.has(ext))
+        continue;
+
+      if (entry.name.endsWith('.d.ts') || entry.name.endsWith('.spec.ts'))
+        continue;
+
+      results.push(path.join(dir, entry.name));
+    }
+  };
+
+  walk(repoPath);
+  return results;
 }
 
 function parseEslintOutput(jsonOutput: string, repoPath: string): FileLintResult[] {
@@ -49,11 +112,25 @@ export function lintProject(repoPath: string, files?: string[]): LintProjectResp
   const diagnostics: string[] = [];
 
   try {
-    const target = files && files.length > 0
-      ? files.map(f => `"${f}"`).join(' ')
-      : '.';
+    if (!hasEslintConfig(repoPath)) {
+      diagnostics.push('ESLint skipped: no config found in repo root');
+      return { results: [], diagnostics };
+    }
 
-    const cmd = `npx eslint --format json ${target}`;
+    const requestedFiles = files && files.length > 0
+      ? files.map(f => path.isAbsolute(f) ? f : path.join(repoPath, f))
+      : findLintableFiles(repoPath);
+
+    if (requestedFiles.length === 0) {
+      diagnostics.push('ESLint skipped: no lintable JS/TS source files found');
+      return { results: [], diagnostics };
+    }
+
+    const target = requestedFiles
+      .map(f => `"${path.relative(repoPath, f).replace(/\\/g, '/')}"`)
+      .join(' ');
+
+    const cmd = `npx --no-install eslint --format json --no-error-on-unmatched-pattern ${target}`;
     diagnostics.push(`Running: ${cmd} in ${repoPath}`);
 
     const stdout = execSync(cmd, {
@@ -79,6 +156,10 @@ export function lintProject(repoPath: string, files?: string[]): LintProjectResp
 
     // ESLint not installed, no config, timeout, etc. — graceful degradation
     const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('could not determine executable to run') || message.includes('command not found')) {
+      diagnostics.push('ESLint skipped: eslint is not installed in this repo');
+      return { results: [], diagnostics };
+    }
     if (message.includes('ETIMEDOUT') || message.includes('timeout')) {
       diagnostics.push('ESLint timed out after 30s');
     } else {

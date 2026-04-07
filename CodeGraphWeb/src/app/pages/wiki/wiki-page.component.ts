@@ -26,7 +26,13 @@ import { environment } from '../../../environments/environment';
           <h1>{{ page()!.title }}</h1>
           <div class="page-header-actions">
             <button class="primary" (click)="createSiblingPage()">New Page</button>
-            <button class="primary" (click)="createChildPage()">New Child Page</button>
+            <button
+              class="primary"
+              (click)="createChildPage()"
+              [disabled]="!canCreateChildPage()"
+              [title]="childPageDisabledReason()">
+              New Child Page
+            </button>
           </div>
         </div>
         <div class="page-meta">
@@ -296,9 +302,18 @@ export class WikiPageComponent implements OnInit {
   }
 
   createChildPage(): void {
+    if (!this.canCreateChildPage()) return;
     const section = this.sectionSlug();
     const path = this.pagePath();
     this.router.navigate(['/wiki', section, ...path.split('/'), '_new']);
+  }
+
+  canCreateChildPage(): boolean {
+    return (this.page()?.depth ?? 0) < 3;
+  }
+
+  childPageDisabledReason(): string {
+    return this.canCreateChildPage() ? 'Create a child page' : 'Maximum wiki depth reached';
   }
 
   deletePage(): void {

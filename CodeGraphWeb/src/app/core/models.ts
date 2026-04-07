@@ -450,7 +450,10 @@ export const RISK_BG_COLORS: Record<RiskLevel, string> = {
 export interface AnalysisBatchStatus {
   id: number;
   repo: string;
-  anthropicBatchId: string;
+  providerBatchId: string;
+  providerName: string;
+  executionMode: string;
+  includeAllSource: boolean;
   status: string;
   requestCount: number;
   completedCount: number;
@@ -477,7 +480,7 @@ export interface SearchResultItem {
 }
 
 export const NODE_LABELS = [
-  'Project', 'Namespace', 'Folder', 'File',
+  'Repository', 'DotnetProject', 'Project', 'Namespace', 'Folder', 'File',
   'Class', 'Interface', 'Enum', 'Struct', 'Record',
   'Function', 'Method', 'Property', 'Constructor', 'Delegate',
   'Route', 'Service', 'Table', 'View', 'StoredProcedure',
@@ -489,7 +492,7 @@ export const NODE_LABELS = [
 export type NodeLabel = typeof NODE_LABELS[number];
 
 export const LABEL_ICONS: Record<string, string> = {
-  Project: '📦', Namespace: '📂', Folder: '📁', File: '📄',
+  Repository: '📦', DotnetProject: '🧱', Project: '📦', Namespace: '📂', Folder: '📁', File: '📄',
   Class: '🔷', Interface: '🔶', Enum: '🔢', Struct: '🔷', Record: '🔷',
   Function: '⚡', Method: '⚡', Property: '🔑', Constructor: '🏗️', Delegate: '⚡',
   Route: '🌐', Service: '⚙️', Table: '🗃️', View: '👁️', StoredProcedure: '🗃️',

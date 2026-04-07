@@ -40,12 +40,12 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
 
     /// <summary>
     /// Provider-specific fetch logic (e.g., token URL rewriting).
-    /// Default: git fetch + reset --hard origin/HEAD.
+    /// Default: git fetch + reset --hard to the remote's default branch.
     /// </summary>
     protected virtual async Task FetchAsync(string repoPath, CancellationToken ct)
     {
         await RunGitAsync(repoPath, "fetch origin", ct);
-        await RunGitAsync(repoPath, "reset --hard origin/HEAD", ct);
+        await ResetToFetchedHeadAsync(repoPath, ct);
     }
 
     protected async Task CloneAsync(string cloneUrl, string targetPath, CancellationToken ct)
@@ -99,5 +99,64 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
 
         if (!string.IsNullOrWhiteSpace(stderr))
             logger.LogDebug("git {Args} stderr: {StdErr}", arguments, stderr);
+    }
+
+    protected async Task ResetToFetchedHeadAsync(string repoPath, CancellationToken ct)
+    {
+        var remoteHeadRef = (await RunGitOutputAsync(
+            repoPath,
+            "symbolic-ref --quiet --short refs/remotes/origin/HEAD",
+            ct)).Trim();
+
+        if (!string.IsNullOrWhiteSpace(remoteHeadRef))
+        {
+            await RunGitAsync(repoPath, $"reset --hard {remoteHeadRef}", ct);
+            return;
+        }
+
+        var currentBranch = (await RunGitOutputAsync(
+            repoPath,
+            "branch --show-current",
+            ct)).Trim();
+
+        if (!string.IsNullOrWhiteSpace(currentBranch))
+        {
+            var remoteBranchRef = $"origin/{currentBranch}";
+            if (await RefExistsAsync(repoPath, remoteBranchRef, ct))
+            {
+                await RunGitAsync(repoPath, $"reset --hard {remoteBranchRef}", ct);
+                return;
+            }
+        }
+
+        foreach (var candidate in new[] { "origin/main", "origin/master" })
+        {
+            if (await RefExistsAsync(repoPath, candidate, ct))
+            {
+                await RunGitAsync(repoPath, $"reset --hard {candidate}", ct);
+                return;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Unable to determine fetched HEAD for repository at '{repoPath}'.");
+    }
+
+    private async Task<bool> RefExistsAsync(string repoPath, string gitRef, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo("git", $"rev-parse --verify {gitRef}")
+        {
+            WorkingDirectory = repoPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to start git rev-parse --verify {gitRef}");
+
+        await proc.WaitForExitAsync(ct);
+        return proc.ExitCode == 0;
     }
 }

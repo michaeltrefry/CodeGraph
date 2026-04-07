@@ -1,5 +1,7 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -99,8 +101,104 @@ public class GitLabRepoProvider(
             return localPath;
         }
 
+        repoUrl = await ResolveRepoUrlAsync(repoName, repoUrl, ct);
         return await EnsureCachedAsync(repoName, repoUrl, ToCloneUrl, ct);
     }
+
+    internal async Task<string?> ResolveRepoUrlAsync(string repoName, string? repoUrl, CancellationToken ct = default)
+    {
+        if (!string.IsNullOrWhiteSpace(repoUrl))
+            return repoUrl;
+
+        var discovered = await TrySearchProjectsAsync(repoName, ct);
+        var resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: false);
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            logger.LogInformation("Resolved missing GitLab repo URL for {Repo} via search", repoName);
+            return resolved;
+        }
+
+        discovered = await DiscoverProjectsAsync(ct);
+        resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: true);
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            logger.LogInformation("Resolved missing GitLab repo URL for {Repo} via discovery", repoName);
+            return resolved;
+        }
+
+        logger.LogWarning("Unable to resolve GitLab repo URL for {Repo}", repoName);
+        return null;
+    }
+
+    private async Task<List<DiscoveredProject>> TrySearchProjectsAsync(string repoName, CancellationToken ct)
+    {
+        try
+        {
+            return await SearchProjectsAsync(repoName, ct);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+        {
+            logger.LogWarning(
+                "GitLab search returned {StatusCode} for {Repo}; falling back to repository discovery",
+                ex.StatusCode, repoName);
+            return [];
+        }
+    }
+
+    private static string? ResolveExactMatchUrl(string repoName, IEnumerable<DiscoveredProject> projects, bool allowPartial)
+    {
+        var normalizedRepoName = NormalizeRepoName(repoName);
+        var exactMatches = FindDistinctUrls(projects,
+            p => p.Name.Equals(repoName, StringComparison.OrdinalIgnoreCase));
+        if (exactMatches.Count > 0)
+            return ResolveSingleUrl(repoName, exactMatches);
+
+        var normalizedMatches = FindDistinctUrls(projects,
+            p => NormalizeRepoName(p.Name).Equals(normalizedRepoName, StringComparison.Ordinal));
+        if (normalizedMatches.Count > 0)
+            return ResolveSingleUrl(repoName, normalizedMatches);
+
+        if (!allowPartial)
+            return null;
+
+        var partialMatches = FindDistinctUrls(projects,
+            p =>
+            {
+                var normalizedName = NormalizeRepoName(p.Name);
+                var normalizedPath = NormalizeRepoName(p.PathWithNamespace);
+                return normalizedName.Contains(normalizedRepoName, StringComparison.Ordinal)
+                    || normalizedRepoName.Contains(normalizedName, StringComparison.Ordinal)
+                    || normalizedPath.Contains(normalizedRepoName, StringComparison.Ordinal);
+            });
+        if (partialMatches.Count > 0)
+            return ResolveSingleUrl(repoName, partialMatches);
+
+        return null;
+    }
+
+    private static string ResolveSingleUrl(string repoName, List<string> matches)
+    {
+        return matches.Count switch
+        {
+            1 => matches[0],
+            _ => throw new InvalidOperationException(
+                $"Multiple remote URLs found for repository '{repoName}'.")
+        };
+    }
+
+    private static List<string> FindDistinctUrls(IEnumerable<DiscoveredProject> projects,
+        Func<DiscoveredProject, bool> predicate)
+    {
+        return projects
+            .Where(predicate)
+            .Select(p => p.HttpUrlToRepo)
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string NormalizeRepoName(string repoName) =>
+        Regex.Replace(repoName, "[^A-Za-z0-9]+", "").ToLowerInvariant();
 
     protected override async Task FetchAsync(string repoPath, CancellationToken ct)
     {
@@ -116,7 +214,7 @@ public class GitLabRepoProvider(
         }
 
         await RunGitAsync(repoPath, "fetch origin", ct);
-        await RunGitAsync(repoPath, "reset --hard origin/HEAD", ct);
+        await ResetToFetchedHeadAsync(repoPath, ct);
     }
 
     internal string ToCloneUrl(string url)

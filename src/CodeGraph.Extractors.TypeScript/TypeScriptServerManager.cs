@@ -25,6 +25,8 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
     private DateTime _lastUsedUtc = DateTime.MinValue;
     private CancellationTokenSource? _idleCts;
     private int _activeRequests;
+    private readonly Queue<string> _recentOutput = new();
+    private const int MaxRecentOutputLines = 40;
 
     public TypeScriptServerManager(int port, ILogger logger)
     {
@@ -52,12 +54,27 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
             return true;
         }
 
+        // If another sidecar instance is already bound to the port, reuse it.
+        if (await IsServerResponsiveAsync(ct))
+        {
+            _available = true;
+            TouchLastUsed();
+            return true;
+        }
+
         await _startLock.WaitAsync(ct);
         try
         {
             // Double-check after acquiring lock
             if (_available && IsProcessAlive())
             {
+                TouchLastUsed();
+                return true;
+            }
+
+            if (await IsServerResponsiveAsync(ct))
+            {
+                _available = true;
                 TouchLastUsed();
                 return true;
             }
@@ -147,6 +164,15 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
 
             return dict;
         }
+        catch (HttpRequestException ex) when (ex.InnerException is HttpIOException)
+        {
+            _available = false;
+            _logger.LogWarning(
+                "ESLint request failed because the TypeScript extractor disconnected while handling {RepoPath}. " +
+                "Process alive: {Alive}. Recent output: {RecentOutput}",
+                repoPath, IsProcessAlive(), string.Join(" | ", _recentOutput));
+            return new Dictionary<string, LintResult>();
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "ESLint request failed for {RepoPath}", repoPath);
@@ -229,13 +255,41 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
             return false;
         }
 
+        _process.EnableRaisingEvents = true;
+        _process.Exited += (_, _) =>
+        {
+            try
+            {
+                _logger.LogWarning(
+                    "TypeScript extractor process exited with code {ExitCode}. Recent output: {RecentOutput}",
+                    _process?.ExitCode,
+                    string.Join(" | ", _recentOutput));
+            }
+            catch
+            {
+                _logger.LogWarning("TypeScript extractor process exited.");
+            }
+        };
+
         // Forward sidecar stderr to our logger so timing/diagnostic output is visible
         _process.ErrorDataReceived += (_, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
-                _logger.LogDebug("ts-extractor: {Line}", e.Data);
+            {
+                RecordOutput(e.Data);
+                _logger.LogInformation("ts-extractor: {Line}", e.Data);
+            }
         };
         _process.BeginErrorReadLine();
+        _process.OutputDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+            {
+                RecordOutput(e.Data);
+                _logger.LogDebug("ts-extractor: {Line}", e.Data);
+            }
+        };
+        _process.BeginOutputReadLine();
 
         // Kill child when .NET process exits
         AppDomain.CurrentDomain.ProcessExit += (_, _) => KillProcess();
@@ -262,9 +316,23 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
 
         _logger.LogWarning(
             "TypeScript extractor server did not become ready within 10 seconds. " +
-            "TypeScript/Angular files will be skipped.");
+            "TypeScript/Angular files will be skipped. Recent output: {RecentOutput}",
+            string.Join(" | ", _recentOutput));
         KillProcess();
         return false;
+    }
+
+    private async Task<bool> IsServerResponsiveAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await _http.GetAsync("/health", ct);
+            return resp.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void KillProcess()
@@ -272,6 +340,16 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         try { _process?.Kill(entireProcessTree: true); }
         catch { /* best effort */ }
         _process = null;
+    }
+
+    private void RecordOutput(string line)
+    {
+        lock (_recentOutput)
+        {
+            _recentOutput.Enqueue(line);
+            while (_recentOutput.Count > MaxRecentOutputLines)
+                _recentOutput.Dequeue();
+        }
     }
 
     private static string? FindExecutable(string name)

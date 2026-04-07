@@ -23,6 +23,12 @@ interface OperationResult {
         <h3>Process Repos</h3>
         <p>Publish ProcessRepository messages for specific repos. One repo path per line.</p>
         <textarea [(ngModel)]="repoList" rows="4" placeholder="orders-api&#10;billing-service&#10;..."></textarea>
+        <div class="options-grid">
+          <label><input type="checkbox" [(ngModel)]="processShouldIndex" /> Index</label>
+          <label><input type="checkbox" [(ngModel)]="processShouldAnalyze" /> Analyze</label>
+          <label><input type="checkbox" [(ngModel)]="processSkipIfUpToDate" /> Skip up-to-date</label>
+          <label><input type="checkbox" [(ngModel)]="processIncludeAllSource" /> Include all source</label>
+        </div>
         <button (click)="runProcessRepos()" [disabled]="running()">Process</button>
       </div>
 
@@ -48,6 +54,13 @@ interface OperationResult {
         <h3>Discover</h3>
         <p>Discover repositories from the configured source provider and index new ones.</p>
         <input type="text" [(ngModel)]="discoverFilter" placeholder="Regex filter (optional)" />
+        <input type="number" [(ngModel)]="discoverLimit" min="1" placeholder="Limit (optional)" />
+        <div class="options-grid">
+          <label><input type="checkbox" [(ngModel)]="discoverShouldIndex" /> Index</label>
+          <label><input type="checkbox" [(ngModel)]="discoverShouldAnalyze" /> Analyze</label>
+          <label><input type="checkbox" [(ngModel)]="discoverSkipIfUpToDate" /> Skip up-to-date</label>
+          <label><input type="checkbox" [(ngModel)]="discoverIncludeAllSource" /> Include all source</label>
+        </div>
         <button (click)="runDiscover()" [disabled]="running()">Run</button>
       </div>
 
@@ -85,6 +98,19 @@ interface OperationResult {
       background: #f9fafb; color: #111827; font-family: inherit; font-size: 0.85rem;
       resize: vertical;
     }
+    .options-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.4rem 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.82rem;
+      color: #374151;
+    }
+    .options-grid label {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
     button {
       padding: 0.4rem 1rem; border-radius: 6px; border: none;
       background: #2563eb; color: white; cursor: pointer;
@@ -102,8 +128,17 @@ export class AdminOperationsComponent {
   running = signal(false);
   result = signal<OperationResult | null>(null);
   discoverFilter = '';
+  discoverLimit: number | null = null;
   batchRepo = '';
   repoList = '';
+  processShouldIndex = true;
+  processShouldAnalyze = true;
+  processSkipIfUpToDate = true;
+  processIncludeAllSource = false;
+  discoverShouldIndex = true;
+  discoverShouldAnalyze = true;
+  discoverSkipIfUpToDate = true;
+  discoverIncludeAllSource = false;
 
   async confirmAndRun(endpoint: string, message: string): Promise<void> {
     if (!confirm(message)) return;
@@ -133,7 +168,13 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      const body = { repos: lines };
+      const body = {
+        repos: lines,
+        shouldIndex: this.processShouldIndex,
+        shouldAnalyze: this.processShouldAnalyze,
+        skipIfUpToDate: this.processSkipIfUpToDate,
+        includeAllSource: this.processIncludeAllSource
+      };
       const res = await firstValueFrom(this.http.post(`${API}/settings/processRepos`, body));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
@@ -147,7 +188,14 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      const body = this.discoverFilter ? { namePattern: this.discoverFilter } : {};
+      const body: Record<string, string | number | boolean> = {
+        shouldIndex: this.discoverShouldIndex,
+        shouldAnalyze: this.discoverShouldAnalyze,
+        skipIfUpToDate: this.discoverSkipIfUpToDate,
+        includeAllSource: this.discoverIncludeAllSource
+      };
+      if (this.discoverFilter.trim()) body['namePattern'] = this.discoverFilter.trim();
+      if (this.discoverLimit && this.discoverLimit > 0) body['limit'] = this.discoverLimit;
       const res = await firstValueFrom(this.http.post(`${API}/settings/discover`, body));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {

@@ -69,6 +69,10 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/wiki/wiki-page-new.component').then(m => m.WikiPageNewComponent)
       },
       {
+        path: ':section/:path1/:path2/:path3/_new',
+        loadComponent: () => import('./pages/wiki/wiki-page-new.component').then(m => m.WikiPageNewComponent)
+      },
+      {
         path: ':section/:path1/:path2/:path3',
         loadComponent: () => import('./pages/wiki/wiki-page.component').then(m => m.WikiPageComponent)
       },

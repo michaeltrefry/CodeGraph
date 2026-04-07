@@ -16,6 +16,7 @@ const MEMBER_LABELS = new Set([
 
 /** Display order for label sections */
 const SECTION_ORDER: string[] = [
+  'Repository', 'DotnetProject',
   'Class', 'Interface', 'Enum', 'Struct', 'Record',
   'Component', 'Module',
   'Route', 'Service', 'Event', 'Queue', 'Exchange', 'Job',

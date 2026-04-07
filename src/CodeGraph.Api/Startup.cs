@@ -237,7 +237,7 @@ public static class Startup
         app.UseCors();
         app.UseRouting();
         app.MapControllers();
-        app.MapMcp();
+        app.MapMcp("/mcp");
     }
 
     public static async Task InitializeAsync(IServiceProvider services)
