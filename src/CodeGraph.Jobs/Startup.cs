@@ -35,6 +35,8 @@ public static class Startup
         // Data stores (Neo4j)
         services.AddSingleton<Neo4jSessionFactory>();
         services.AddSingleton<IGraphStore, Neo4jGraphStore>();
+        services.AddSingleton<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
+            ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
         services.AddSingleton<IFileSystem, LocalFileSystem>();
 
         services.AddSingleton<AnthropicCircuitBreaker>();

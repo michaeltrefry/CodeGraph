@@ -44,6 +44,7 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
     /// </summary>
     protected virtual async Task FetchAsync(string repoPath, CancellationToken ct)
     {
+        await EnsureOriginFetchRefspecAsync(repoPath, ct);
         await RunGitAsync(repoPath, "fetch origin", ct);
         await ResetToFetchedHeadAsync(repoPath, ct);
     }
@@ -138,8 +139,51 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
             }
         }
 
+        if (!await RepositoryHasAnyCommitsAsync(repoPath, ct))
+        {
+            logger.LogInformation(
+                "Repository at {RepoPath} has no fetched commits yet; skipping reset to fetched HEAD",
+                repoPath);
+            return;
+        }
+
         throw new InvalidOperationException(
             $"Unable to determine fetched HEAD for repository at '{repoPath}'.");
+    }
+
+    private async Task<bool> RepositoryHasAnyCommitsAsync(string repoPath, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo("git", "rev-parse --verify HEAD")
+        {
+            WorkingDirectory = repoPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start git rev-parse --verify HEAD");
+
+        await proc.WaitForExitAsync(ct);
+        return proc.ExitCode == 0;
+    }
+
+    protected async Task EnsureOriginFetchRefspecAsync(string repoPath, CancellationToken ct)
+    {
+        var existing = (await RunGitOutputAsync(
+            repoPath,
+            "config --get-all remote.origin.fetch",
+            ct)).Trim();
+
+        if (!string.IsNullOrWhiteSpace(existing))
+            return;
+
+        const string defaultRefspec = "+refs/heads/*:refs/remotes/origin/*";
+        logger.LogInformation(
+            "Repository at {RepoPath} is missing remote.origin.fetch; restoring default fetch refspec",
+            repoPath);
+        await RunGitAsync(repoPath, $"config remote.origin.fetch \"{defaultRefspec}\"", ct);
     }
 
     private async Task<bool> RefExistsAsync(string repoPath, string gitRef, CancellationToken ct)

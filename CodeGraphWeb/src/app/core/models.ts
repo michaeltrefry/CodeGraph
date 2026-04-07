@@ -13,6 +13,59 @@ export interface ProjectInfo {
   properties?: Record<string, unknown>;
 }
 
+export interface DatabaseIndexIssue {
+  name: string;
+  type: string;
+  state: string;
+  entityType: string;
+  labelsOrTypes: string[];
+  properties: string[];
+  failureMessage?: string;
+}
+
+export interface DatabaseDuplicateGroup {
+  category: string;
+  key: string;
+  count: number;
+  sampleValues: string[];
+}
+
+export interface DatabaseHealthResponse {
+  status: 'healthy' | 'warning' | 'critical';
+  capturedAt: string;
+  constraintCount: number;
+  expectedConstraintCount: number;
+  missingConstraints: string[];
+  indexCount: number;
+  expectedIndexCount: number;
+  missingIndexes: string[];
+  offlineIndexes: DatabaseIndexIssue[];
+  duplicateGroups: DatabaseDuplicateGroup[];
+}
+
+export interface DotnetSdkSupportInfo {
+  version: string;
+  channel: string;
+  displayName: string;
+  supportStatus: 'supported' | 'out_of_support' | 'unknown';
+  supportEndedOn?: string;
+  isPinnedByGlobalJson: boolean;
+}
+
+export interface DotnetTargetFrameworkSupportInfo {
+  moniker: string;
+  displayName: string;
+  supportStatus: 'supported' | 'out_of_support' | 'mixed' | 'not_applicable' | 'os_lifecycle' | 'unknown';
+  supportEndedOn?: string;
+}
+
+export interface DotnetSupportInfo {
+  overallStatus: 'supported' | 'out_of_support' | 'mixed' | 'unknown';
+  summary: string;
+  sdk?: DotnetSdkSupportInfo;
+  targetFrameworks: DotnetTargetFrameworkSupportInfo[];
+}
+
 export interface ProjectSummary {
   project: string;
   summary: string;
@@ -180,6 +233,7 @@ export interface FileMetrics {
 
 export interface ProjectDetailResponse {
   project: ProjectInfo;
+  dotnetSupport?: DotnetSupportInfo;
   summary?: ProjectSummary;
   analyses: StoredProjectAnalysis[];
   nodeCounts: Record<string, number>;

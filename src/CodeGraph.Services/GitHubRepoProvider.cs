@@ -280,6 +280,7 @@ public class GitHubRepoProvider(
             }
         }
 
+        await EnsureOriginFetchRefspecAsync(repoPath, ct);
         await RunGitAsync(repoPath, "fetch origin", ct);
         await ResetToFetchedHeadAsync(repoPath, ct);
     }

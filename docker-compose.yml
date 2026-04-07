@@ -13,7 +13,8 @@ services:
       CodeGraph__StorageOptions__Neo4jPassword: ${CodeGraph__StorageOptions__Neo4jPassword:-codegraph}
       CodeGraph__StorageOptions__Neo4jDatabase: ${CodeGraph__StorageOptions__Neo4jDatabase:-neo4j}
       CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
-      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-anthropic}
+      CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
+      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
@@ -23,8 +24,11 @@ services:
       CodeGraph__AnalysisOptions__Gemini__BaseUrl: ${CodeGraph__AnalysisOptions__Gemini__BaseUrl:-https://generativelanguage.googleapis.com/v1beta}
       CodeGraph__AnalysisOptions__Gemini__Model: ${CodeGraph__AnalysisOptions__Gemini__Model:-gemini-2.5-flash}
       CodeGraph__AnalysisOptions__Local__ApiKey: ${CodeGraph__AnalysisOptions__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://model-runner.docker.internal/engines/v1}
-      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-ai/gemma4:31B}
+      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://host.docker.internal:1234/v1}
+      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-}
+      CodeGraph__AnalysisOptions__Local__TimeoutSeconds: ${CodeGraph__AnalysisOptions__Local__TimeoutSeconds:-300}
+      CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests:-1}
+      CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts:-3}
       CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
@@ -43,6 +47,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - repos_cache:/repos/.cache
+      - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./llm/models}:/Users/michael/Repos/llm/models
     depends_on:
       rabbitmq:
         condition: service_healthy

@@ -11,6 +11,7 @@ namespace CodeGraph.Api.Controllers;
 [Route("api/settings")]
 public class SettingsController(
     IAdminService adminService,
+    IDbHealthStore dbHealthStore,
     IExclusionService exclusionService,
     IWikiService wikiService,
     IMcpDocService mcpDocService) : Controller
@@ -99,6 +100,12 @@ public class SettingsController(
         {
             return BadRequest($"Invalid regex pattern: {ex.Message}");
         }
+    }
+
+    [HttpGet("db-health")]
+    public async Task<ActionResult<DatabaseHealthResponse>> GetDatabaseHealth()
+    {
+        return Ok(await dbHealthStore.GetDatabaseHealthAsync());
     }
 
     // ── Section management ──

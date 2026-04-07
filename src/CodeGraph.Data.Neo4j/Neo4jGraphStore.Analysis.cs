@@ -333,7 +333,11 @@ public partial class Neo4jGraphStore
             ["customId"] = r.CustomId,
             ["nodeId"] = r.NodeId,
             ["nodeLabel"] = r.NodeLabel,
+            ["requestPayloadJson"] = r.RequestPayloadJson,
             ["status"] = r.Status,
+            ["attemptCount"] = r.AttemptCount,
+            ["responseText"] = r.ResponseText,
+            ["modelUsed"] = r.ModelUsed,
             ["completedAt"] = (object?)r.CompletedAt
         }).ToList();
 
@@ -347,7 +351,11 @@ public partial class Neo4jGraphStore
                     customId: r.customId,
                     nodeId: r.nodeId,
                     nodeLabel: r.nodeLabel,
+                    requestPayloadJson: r.requestPayloadJson,
                     status: r.status,
+                    attemptCount: r.attemptCount,
+                    responseText: r.responseText,
+                    modelUsed: r.modelUsed,
                     completedAt: r.completedAt
                 })
                 """,
@@ -389,6 +397,20 @@ public partial class Neo4jGraphStore
         });
     }
 
+    public async Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId)
+    {
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                "MATCH (b:AnalysisBatch {providerBatchId: $providerBatchId}) RETURN b ORDER BY b.submittedAt DESC LIMIT 1",
+                new { providerBatchId });
+            if (await cursor.FetchAsync())
+                return MapAnalysisBatchNode(cursor.Current["b"].As<INode>());
+            return null;
+        });
+    }
+
     public async Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt)
     {
         await using var session = sessionFactory.GetSession();
@@ -404,16 +426,21 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task UpdateBatchRequestStatusAsync(string customId, string status, DateTime completedAt)
+    public async Task UpdateBatchRequestStateAsync(long batchId, string customId, string status, int attemptCount,
+        string? responseText, string? modelUsed, DateTime? completedAt)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
-                MATCH (br:AnalysisBatchRequest {customId: $customId})
-                SET br.status = $status, br.completedAt = $completedAt
+                MATCH (br:AnalysisBatchRequest {batchId: $batchId, customId: $customId})
+                SET br.status = $status,
+                    br.attemptCount = $attemptCount,
+                    br.responseText = $responseText,
+                    br.modelUsed = $modelUsed,
+                    br.completedAt = $completedAt
                 """,
-                new { customId, status, completedAt });
+                new { batchId, customId, status, attemptCount, responseText = (object?)responseText, modelUsed = (object?)modelUsed, completedAt = (object?)completedAt });
         });
     }
 
@@ -436,7 +463,11 @@ public partial class Neo4jGraphStore
                     CustomId = node["customId"].As<string>(),
                     NodeId = node.Properties.ContainsKey("nodeId") ? node["nodeId"].As<long?>() : null,
                     NodeLabel = node["nodeLabel"].As<string>(),
+                    RequestPayloadJson = node.Properties.ContainsKey("requestPayloadJson") ? node["requestPayloadJson"].As<string?>() : null,
                     Status = node["status"].As<string>(),
+                    AttemptCount = node.Properties.ContainsKey("attemptCount") ? node["attemptCount"].As<int>() : 0,
+                    ResponseText = node.Properties.ContainsKey("responseText") ? node["responseText"].As<string?>() : null,
+                    ModelUsed = node.Properties.ContainsKey("modelUsed") ? node["modelUsed"].As<string?>() : null,
                     CompletedAt = GetDateTimeOrNull(node, "completedAt")
                 });
             }

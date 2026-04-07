@@ -17,10 +17,12 @@ public class ApiStartupInitializationTests
     {
         var lifecycle = new List<string>();
         var migrationRunner = new RecordingMigrationRunner(lifecycle);
+        var wikiSectionSeedService = new RecordingWikiSectionSeedService(lifecycle);
         var exclusionService = new RecordingExclusionService(lifecycle);
         var services = new ServiceCollection();
 
         services.AddSingleton<IMigrationRunner>(migrationRunner);
+        services.AddSingleton<IWikiSectionSeedService>(wikiSectionSeedService);
         services.AddSingleton<IExclusionService>(exclusionService);
         services.AddSingleton<IHostEnvironment>(new TestHostEnvironment
         {
@@ -41,7 +43,7 @@ public class ApiStartupInitializationTests
 
         migrationRunner.AppliedPaths.ShouldBe([Path.GetFullPath(Path.Combine("/repo", "Migrations"))]);
         exclusionService.SeededGroups.ShouldBe([["foo", "bar"]]);
-        lifecycle.ShouldBe(["migrate", "seed"]);
+        lifecycle.ShouldBe(["migrate", "wiki", "seed"]);
     }
 
     private sealed class RecordingMigrationRunner(List<string> lifecycle) : IMigrationRunner
@@ -52,6 +54,18 @@ public class ApiStartupInitializationTests
         {
             lifecycle.Add("migrate");
             AppliedPaths.Add(migrationsPath);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingWikiSectionSeedService(List<string> lifecycle) : IWikiSectionSeedService
+    {
+        public int Calls { get; private set; }
+
+        public Task EnsureDefaultSectionsAsync()
+        {
+            Calls++;
+            lifecycle.Add("wiki");
             return Task.CompletedTask;
         }
     }

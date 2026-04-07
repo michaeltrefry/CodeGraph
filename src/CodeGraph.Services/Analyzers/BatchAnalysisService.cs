@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Models.Exceptions;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Messaging;
@@ -75,9 +76,13 @@ public partial class BatchAnalysisService(
             // custom_id: alphanumeric/hyphens/underscores only, max 64 chars
             var customId = SanitizeCustomId($"proj_{repoName}_{projectName}");
 
+            var requestPayload = new AnalysisBatchRequestPayload(
+                new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, prompt),
+                new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerAnalysis));
+
             batchRequests.Add(new AnalysisBatchRequestItem(
                 customId,
-                new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, prompt)));
+                requestPayload.Prompt));
 
             batchRequestEntities.Add(new AnalysisBatchRequestEntity
             {
@@ -85,6 +90,7 @@ public partial class BatchAnalysisService(
                 CustomId = customId,
                 NodeId = null,
                 NodeLabel = projectName, // Store full project name for result processing
+                RequestPayloadJson = JsonSerializer.Serialize(requestPayload, CamelOpts),
                 Status = "pending"
             });
         }
@@ -202,7 +208,7 @@ public partial class BatchAnalysisService(
             foreach (var result in results)
             {
                 var projectName = projectNameByCustomId.GetValueOrDefault(result.CustomId, result.CustomId);
-                await ProcessBatchResultAsync(result, pending.Repo, pending.ProviderBatchId, projectName);
+                await ProcessBatchResultAsync(result, pending.Id, pending.Repo, pending.ProviderBatchId, projectName, attemptCount: 1);
                 completed++;
             }
 
@@ -283,9 +289,13 @@ public partial class BatchAnalysisService(
             nodesByProject["unknown"] = orphanNodes;
 
         var repoPath = (await store.GetRepositoryByName(pending.Repo))?.LocalPath;
+        var maxAttempts = Math.Max(1, options.Local.DirectFallbackMaxAttempts);
+        var hasPendingRetries = false;
+        var pendingRetryCount = 0;
 
         foreach (var request in remainingRequests)
         {
+            var nextAttempt = request.AttemptCount + 1;
             AnalysisBatchItemResult result;
             if (!nodesByProject.TryGetValue(request.NodeLabel, out var projectNodes))
             {
@@ -317,6 +327,17 @@ public partial class BatchAnalysisService(
                         response.Text,
                         response.ModelUsed);
                 }
+                catch (RetryableAnalysisException ex) when (nextAttempt < maxAttempts)
+                {
+                    logger.LogWarning(ex,
+                        "Direct fallback analysis transient failure for batch {Id} request {CustomId} on {Repo}; will retry later (attempt {Attempt}/{MaxAttempts})",
+                        pending.ProviderBatchId, request.CustomId, pending.Repo, nextAttempt, maxAttempts);
+                    await store.UpdateBatchRequestStateAsync(pending.Id, request.CustomId, "pending", nextAttempt,
+                        responseText: null, modelUsed: null, completedAt: null);
+                    hasPendingRetries = true;
+                    pendingRetryCount++;
+                    continue;
+                }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, "Direct fallback analysis failed for batch {Id} request {CustomId} on {Repo}",
@@ -325,8 +346,16 @@ public partial class BatchAnalysisService(
                 }
             }
 
-            await ProcessBatchResultAsync(result, pending.Repo, pending.ProviderBatchId, request.NodeLabel);
+            await ProcessBatchResultAsync(result, pending.Id, pending.Repo, pending.ProviderBatchId, request.NodeLabel, nextAttempt);
             completed++;
+        }
+
+        if (hasPendingRetries)
+        {
+            await store.UpdateBatchStatusAsync(pending.Id, "submitted", completed, completedAt: null);
+            logger.LogInformation("Batch {Id}: {Count} request(s) still pending retry",
+                pending.ProviderBatchId, pendingRetryCount);
+            return;
         }
 
         await store.UpdateBatchStatusAsync(pending.Id, "completed", completed, DateTime.UtcNow);
@@ -345,14 +374,16 @@ public partial class BatchAnalysisService(
         }
     }
 
-    private async Task ProcessBatchResultAsync(AnalysisBatchItemResult result, string repoName, string batchId, string projectName)
+    private async Task ProcessBatchResultAsync(AnalysisBatchItemResult result, long batchRecordId, string repoName,
+        string batchId, string projectName, int attemptCount)
     {
         if (!string.Equals(result.Status, "succeeded", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(result.Text))
         {
             logger.LogWarning("Batch {BatchId} request {CustomId} did not succeed: {Type}",
                 batchId, result.CustomId, result.Status);
-            await store.UpdateBatchRequestStatusAsync(result.CustomId, "errored", DateTime.UtcNow);
+            await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "errored", attemptCount,
+                responseText: null, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
             return;
         }
 
@@ -368,7 +399,8 @@ public partial class BatchAnalysisService(
             {
                 logger.LogWarning("Batch {BatchId} request {CustomId}: truncated JSON could not be repaired",
                     batchId, result.CustomId);
-                await store.UpdateBatchRequestStatusAsync(result.CustomId, "errored", DateTime.UtcNow);
+                await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "errored", attemptCount,
+                    responseText: result.Text, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
                 return;
             }
 
@@ -423,7 +455,8 @@ public partial class BatchAnalysisService(
         logger.LogInformation("Stored project summary for {Project}, {NodeCount} node descriptions for {Repo}",
             projectName, nodeCount, repoName);
 
-        await store.UpdateBatchRequestStatusAsync(result.CustomId, "succeeded", DateTime.UtcNow);
+        await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "succeeded", attemptCount,
+            responseText: result.Text, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
     }
 
     /// <summary>

@@ -14,7 +14,7 @@ public class JobsStartupProviderRegistrationTests
     [InlineData("openai", "openai")]
     [InlineData("gemini", "gemini")]
     [InlineData("local", "local")]
-    public void ConfigureServices_RegistersRequestedAnalysisProvider(string defaultProvider, string expectedProvider)
+    public async Task ConfigureServices_RegistersRequestedAnalysisProvider(string defaultProvider, string expectedProvider)
     {
         var services = new ServiceCollection();
 
@@ -29,7 +29,7 @@ public class JobsStartupProviderRegistrationTests
 
         Startup.ConfigureServices(services, configuration);
 
-        using var provider = services.BuildServiceProvider();
+        await using var provider = services.BuildServiceProvider();
         var registry = provider.GetRequiredService<IAnalysisProviderRegistry>();
 
         registry.GetProvider().ProviderName.ShouldBe(expectedProvider);

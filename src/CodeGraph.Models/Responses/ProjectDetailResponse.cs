@@ -2,6 +2,7 @@ namespace CodeGraph.Models.Responses;
 
 public record ProjectDetailResponse(
     ProjectListItem Project,
+    DotnetSupportInfo? DotnetSupport,
     ProjectSummaryResponse? Summary,
     IReadOnlyList<ProjectAnalysisResponse> Analyses,
     Dictionary<string, int> NodeCounts,

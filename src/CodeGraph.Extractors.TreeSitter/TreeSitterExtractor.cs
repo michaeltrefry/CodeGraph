@@ -152,7 +152,16 @@ public class TreeSitterExtractor : ICodeExtractor
                         props["superclass"] = superclass;
                 }
 
-                nodes.Add(makeNode(qn, name, spec.ClassLabel, props));
+                var startLine = (int)node.StartPosition.Row + 1;
+                var endLine = (int)node.EndPosition.Row + 1;
+
+                var graphNode = makeNode(qn, name, spec.ClassLabel, props) with
+                {
+                    StartLine = startLine,
+                    EndLine = endLine
+                };
+
+                nodes.Add(graphNode);
                 edges.Add(new PendingEdge(parentQN, qn, EdgeType.DEFINES));
 
                 // Recurse into the class body with this class as the enclosing context

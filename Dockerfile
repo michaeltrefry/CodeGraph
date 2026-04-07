@@ -30,6 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     printf '#!/bin/sh\nmono /usr/local/bin/nuget.exe "$@"\n' > /usr/local/bin/nuget && \
     chmod +x /usr/local/bin/nuget
 
+# .NET Core 2.1 SDK depends on OpenSSL 1.1, which is no longer shipped in the
+# base Debian 12 image. Install the compatibility package from Debian 11 so
+# exact global.json pins like 2.1.802 can still restore/analyze older repos.
+RUN echo "deb http://deb.debian.org/debian bullseye main" > /etc/apt/sources.list.d/bullseye-libssl.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libssl1.1 && \
+    rm -f /etc/apt/sources.list.d/bullseye-libssl.list && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install .NET Framework reference assemblies so Roslyn can analyze legacy Framework projects.
 # 1) Restore the ref-assemblies NuGet package into the global cache
 # 2) Place a Directory.Build.props at /repos/.cache so MSBuild picks up FrameworkPathOverride
@@ -46,6 +55,7 @@ COPY docker/Directory.Build.props /repos/.cache/Directory.Build.props
 RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
     chmod +x /tmp/dotnet-install.sh && \
+    /tmp/dotnet-install.sh --version 2.1.802 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 6.0 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 7.0 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet && \

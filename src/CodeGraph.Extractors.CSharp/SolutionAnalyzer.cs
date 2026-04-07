@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
+using CodeGraph.Services.Metadata;
 
 namespace CodeGraph.Extractors.CSharp;
 
@@ -203,7 +204,8 @@ public class SolutionAnalyzer : ISolutionAnalyzer
     {
         var csprojFiles = Directory.GetFiles(solutionDir, "*.csproj", SearchOption.AllDirectories);
         var framework = DetectFrameworkFromCsproj(csprojFiles);
-        return new ProjectMetadata("C#", framework);
+        var dotnetSupport = DotnetSupportInspector.InspectRepository(solutionDir);
+        return new ProjectMetadata("C#", framework, dotnetSupport);
     }
 
     private static string? DetectFrameworkFromCsproj(string[] csprojFiles)

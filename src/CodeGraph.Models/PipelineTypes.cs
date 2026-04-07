@@ -17,7 +17,10 @@ public record ExtractionResult
 /// <summary>
 /// Language/framework metadata detected by an extractor.
 /// </summary>
-public record ProjectMetadata(string Language, string? Framework);
+public record ProjectMetadata(
+    string Language,
+    string? Framework,
+    DotnetSupportInfo? DotnetSupport = null);
 
 /// <summary>
 /// Edge where target is a qualified name (not yet resolved to a node ID).

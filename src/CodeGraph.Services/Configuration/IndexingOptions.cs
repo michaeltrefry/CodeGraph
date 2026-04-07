@@ -20,6 +20,7 @@ public class IndexingOptions
     public string[] SkipPatterns { get; set; } =
     [
         "**/bin/**", "**/obj/**", "**/node_modules/**",
+        "**/build/**", "**/managed_components/**", "**/.cache/**",
         "**/wwwroot/lib/**", "**/*.min.js", "**/.git/**",
         "**/packages/**", "**/TestResults/**"
     ];

@@ -302,8 +302,8 @@ public partial class Neo4jGraphStore
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync("""
-                MATCH (r:Repository)
+            var cursor = await tx.RunAsync($$"""
+                MATCH (r:{{RepositoryMetadataLabel}})
                 WHERE NOT EXISTS {
                     MATCH (e:CrossRepoEdge)
                     WHERE e.sourceProject = r.name OR e.targetProject = r.name

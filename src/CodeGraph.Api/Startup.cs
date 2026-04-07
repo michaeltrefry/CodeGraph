@@ -65,6 +65,8 @@ public static class Startup
         services.AddTransient<IMigrationRunner>(sp => sp.GetRequiredService<IGraphStore>());
         services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
+        services.AddTransient<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
+            ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
         services.AddTransient<IVectorStore, Neo4jVectorStore>();
         services.AddTransient<IWikiStore, Neo4jWikiStore>();
         services.AddTransient<IMemoryGraphStore, Neo4jMemoryGraphStore>();
@@ -82,7 +84,7 @@ public static class Startup
         services.AddTransient<ISolutionAnalyzer, SolutionAnalyzer>();
 
         // TypeScript/Angular analysis (Node.js sidecar)
-        services.AddTransient(sp => new TypeScriptServerManager(
+        services.AddSingleton(sp => new TypeScriptServerManager(
             port: sp.GetRequiredService<IOptions<CodeGraphServiceSettings>>().Value.TsPort,
             sp.GetRequiredService<ILoggerFactory>().CreateLogger<TypeScriptServerManager>()));
         services.AddTransient<ITypeScriptAnalyzer, TypeScriptProjectAnalyzer>();
@@ -126,6 +128,7 @@ public static class Startup
         services.AddTransient<IProjectQueryService, ProjectQueryService>();
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IWikiService, WikiService>();
+        services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<IGraphOverviewService, GraphOverviewService>();
@@ -180,6 +183,7 @@ public static class Startup
 
                 cfg.ReceiveEndpoint("analysis-batch-submitted", e =>
                 {
+                    e.ConcurrentMessageLimit = 1;
                     e.UseMessageRetry(retry => retry
                         .Incremental(3, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10))
                         .Ignore<BatchNotReadyException>());
@@ -227,7 +231,8 @@ public static class Startup
         })
         .WithHttpTransport()
         .WithTools<CodeGraphMcpServer>()
-        .WithTools<MemoryMcpServer>();
+        .WithTools<MemoryMcpServer>()
+        .WithResources<CodeGraphMcpResources>();
     }
 
     public static void Configure(WebApplication app)
@@ -250,6 +255,9 @@ public static class Startup
         var migrationRunner = serviceProvider.GetRequiredService<IMigrationRunner>();
         var migrationsPath = ResolveMigrationsPath(hostEnvironment.ContentRootPath, storageOptions.Neo4jMigrationsPath);
         await migrationRunner.ApplyMigrationsAsync(migrationsPath);
+
+        var wikiSectionSeedService = serviceProvider.GetRequiredService<IWikiSectionSeedService>();
+        await wikiSectionSeedService.EnsureDefaultSectionsAsync();
 
         var exclusionService = serviceProvider.GetRequiredService<IExclusionService>();
         var repoSourceOptions = serviceProvider.GetRequiredService<IOptions<RepositorySourceOptions>>().Value;

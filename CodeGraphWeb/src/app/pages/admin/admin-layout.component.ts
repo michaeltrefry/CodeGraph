@@ -10,6 +10,7 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
       <nav class="admin-nav">
         <h2>Settings</h2>
         <a routerLink="/settings/operations" routerLinkActive="active">Operations</a>
+        <a routerLink="/settings/db-health" routerLinkActive="active">DB Health</a>
         <a routerLink="/settings/sections" routerLinkActive="active">Sections</a>
         <a routerLink="/settings/exclusions" routerLinkActive="active">Exclusions</a>
       </nav>

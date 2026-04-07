@@ -22,8 +22,10 @@ public interface IAnalysisStore
     Task CreateBatchRequestsAsync(IEnumerable<AnalysisBatchRequestEntity> requests);
     Task<IReadOnlyList<StoredAnalysisBatch>> GetPendingBatchesAsync(string? repo = null);
     Task<StoredAnalysisBatch?> GetLatestBatchAsync(string repo);
+    Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId);
     Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt);
-    Task UpdateBatchRequestStatusAsync(string customId, string status, DateTime completedAt);
+    Task UpdateBatchRequestStateAsync(long batchId, string customId, string status, int attemptCount,
+        string? responseText, string? modelUsed, DateTime? completedAt);
     Task<IReadOnlyList<AnalysisBatchRequestEntity>> GetBatchRequestsAsync(long batchId);
 
     // Node analysis results
