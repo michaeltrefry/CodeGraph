@@ -11,7 +11,6 @@ public class CodeGraphServiceSettings
     public IndexingOptions IndexingOptions { get; set; } = new();
     public ConsumerOptions ConsumerOptions { get; set; } = new();
     public WikiOptions WikiOptions { get; set; } = new();
-    public AuthOptions AuthOptions { get; set; } = new();
     public RabbitMqOptions RabbitMqOptions { get; set; } = new();
 }
 

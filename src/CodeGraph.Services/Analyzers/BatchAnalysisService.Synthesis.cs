@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -27,59 +28,31 @@ public partial class BatchAnalysisService
         logger.LogInformation("Synthesizing repo summary for {Repo} from {Count} project analyses",
             repoName, projectAnalyses.Count);
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"You are synthesizing a repository-level summary for '{repoName}' from individual project analyses.");
-        sb.AppendLine("Each project below has already been analyzed. Combine them into a cohesive 2-4 sentence repository summary.");
-        sb.AppendLine();
-        foreach (var pa in projectAnalyses)
+        var projects = projectAnalyses.Select(pa =>
+            new ProjectAnalysis(pa.ProjectName, pa.Summary, pa.Confidence,
+                pa.Endpoints, pa.Services,
+                pa.ExternalDependencies, pa.DatabaseTables)).ToList();
+        var crossRepoEdges = await store.FindCrossRepoEdgesAsync(repoName);
+        var promptText = AnalysisPromptBuilder.BuildRepoSynthesisPrompt(
+            repoName, projects, crossRepoEdges, summaryPropertyName: "repoSummary");
+        var provider = providerRegistry.GetProvider();
+        AnalysisTextResponse response;
+        try
         {
-            sb.AppendLine($"### {pa.ProjectName} (confidence: {pa.Confidence})");
-            sb.AppendLine(pa.Summary);
-            sb.AppendLine();
+            response = await provider.ExecuteAsync(
+                new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, promptText),
+                new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerSynthesis),
+                ct);
         }
-
-        sb.AppendLine("""
-            Respond with JSON only (no markdown fences):
-            {
-              "repoSummary": "2-4 sentence description of the repository's business purpose and architecture",
-              "confidence": "high|medium|low"
-            }
-            """);
-
-        var synthesisRequest = new
+        catch (Exception ex)
         {
-            model = options.Model,
-            max_tokens = options.MaxTokensPerSynthesis,
-            messages = new[] { new { role = "user", content = sb.ToString() } }
-        };
-
-        var http = httpClientFactory.CreateClient();
-        using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Post, options.MessagesApiUrl, synthesisRequest), ct);
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            logger.LogError("Synthesis API call failed for {Repo}: {Status} {Body}",
-                repoName, (int)response.StatusCode, errorBody);
-            return;
-        }
-
-        var msgResponse = await response.Content.ReadFromJsonAsync<BatchResultMessage>(SnakeOpts, ct);
-        var text = msgResponse?.Content
-            .Where(c => c.Type == "text")
-            .Select(c => c.Text)
-            .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            logger.LogWarning("Synthesis returned empty response for {Repo}", repoName);
+            logger.LogError(ex, "Synthesis API call failed for {Repo}", repoName);
             return;
         }
 
         try
         {
-            using var doc = JsonDocument.Parse(text.StripCodeFences());
+            using var doc = JsonDocument.Parse(response.Text.NormalizeJsonResponse());
             var summary = doc.RootElement.GetProperty("repoSummary").GetString();
             var confStr = doc.RootElement.GetProperty("confidence").GetString() ?? "medium";
             var confidence = confStr.TryParseEnum<ConfidenceLevel>() ?? ConfidenceLevel.Medium;
@@ -87,7 +60,7 @@ public partial class BatchAnalysisService
             if (!string.IsNullOrWhiteSpace(summary))
             {
                 await store.UpsertRepositorySummaryAsync(repoName, summary, confidence,
-                    sourceHash: batchId, modelUsed: msgResponse?.Model);
+                    sourceHash: batchId, modelUsed: response.ModelUsed);
                 logger.LogInformation("Synthesized and stored repo summary for {Repo} (confidence: {Confidence})",
                     repoName, confidence);
             }
@@ -104,9 +77,7 @@ public partial class BatchAnalysisService
     /// </summary>
     public async Task WriteCodeGraphDocsAsync(string repoName, CancellationToken ct)
     {
-        var repos = await store.ListRepositoriesAsync();
-        var repoInfo = repos.FirstOrDefault(r =>
-            string.Equals(r.Name, repoName, StringComparison.OrdinalIgnoreCase));
+        var repoInfo = await store.GetRepositoryByName(repoName);
 
         if (repoInfo?.LocalPath is null || !fileSystem.DirectoryExists(repoInfo.LocalPath))
         {
@@ -116,6 +87,7 @@ public partial class BatchAnalysisService
 
         var docGenerator = new CodeGraphDocGenerator();
         var projectAnalyses = await store.GetProjectAnalysesAsync(repoName);
+        var generatedFiles = new List<string>();
 
         // Per-project CODEGRAPH.md files
         foreach (var pa in projectAnalyses)
@@ -129,8 +101,9 @@ public partial class BatchAnalysisService
                 pa.ExternalDependencies, pa.DatabaseTables);
 
             var projectDoc = docGenerator.GenerateProjectDoc(projectAnalysis);
-            await File.WriteAllTextAsync(
-                Path.Combine(projectDir, "CODEGRAPH.md"), projectDoc, ct);
+            var projectDocPath = Path.Combine(projectDir, "CODEGRAPH.md");
+            await File.WriteAllTextAsync(projectDocPath, projectDoc, ct);
+            generatedFiles.Add(projectDocPath);
             logger.LogDebug("Wrote {Project}/CODEGRAPH.md", pa.ProjectName);
         }
 
@@ -152,10 +125,14 @@ public partial class BatchAnalysisService
             var outbound = crossRepoEdges.Where(e => e.SourceProject == repoName).ToList();
 
             var repoDoc = docGenerator.GenerateRepoDoc(repoName, repoAnalysis, inbound, outbound);
-            await File.WriteAllTextAsync(
-                Path.Combine(repoInfo.LocalPath, "CODEGRAPH.md"), repoDoc, ct);
+            var repoDocPath = Path.Combine(repoInfo.LocalPath, "CODEGRAPH.md");
+            await File.WriteAllTextAsync(repoDocPath, repoDoc, ct);
+            generatedFiles.Add(repoDocPath);
             logger.LogInformation("Wrote {Repo}/CODEGRAPH.md", repoName);
         }
+
+        if (generatedFiles.Count > 0)
+            await PublishGeneratedDocsAsync(repoInfo.LocalPath, generatedFiles, ct);
     }
 
     /// <summary>
@@ -177,5 +154,73 @@ public partial class BatchAnalysisService
             return Path.GetDirectoryName(csprojFiles[0]);
 
         return null;
+    }
+
+    private async Task PublishGeneratedDocsAsync(string repoRoot, IReadOnlyList<string> generatedFiles, CancellationToken ct)
+    {
+        if (!options.AutoCommitDocs)
+            return;
+
+        var relativeFiles = generatedFiles
+            .Select(path => Path.GetRelativePath(repoRoot, path).Replace('\\', '/'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (relativeFiles.Count == 0)
+            return;
+
+        await RunGitAsync(repoRoot, BuildGitPathCommand("add", relativeFiles), ct);
+
+        var stagedChanges = await TryRunGitAsync(repoRoot, BuildGitPathCommand("diff --cached --name-only --", relativeFiles), ct);
+        if (string.IsNullOrWhiteSpace(stagedChanges))
+        {
+            logger.LogInformation("Generated CODEGRAPH.md files for {RepoRoot} produced no staged changes", repoRoot);
+            return;
+        }
+
+        await RunGitAsync(repoRoot, $"commit -m \"{EscapeGitArgument(options.AutoCommitMessage)}\"", ct);
+
+        if (options.AutoPushDocs)
+            await RunGitAsync(repoRoot, "push origin HEAD", ct);
+    }
+
+    private async Task<string> TryRunGitAsync(string repoRoot, string arguments, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo("git", arguments)
+        {
+            WorkingDirectory = repoRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to start git {arguments}");
+
+        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"git {arguments} failed with exit code {proc.ExitCode}: {stderr}");
+
+        return stdout;
+    }
+
+    private async Task RunGitAsync(string repoRoot, string arguments, CancellationToken ct)
+    {
+        _ = await TryRunGitAsync(repoRoot, arguments, ct);
+    }
+
+    private static string BuildGitPathCommand(string prefix, IReadOnlyList<string> paths)
+    {
+        var escapedPaths = paths.Select(EscapeGitArgument);
+        return $"{prefix} {string.Join(" ", escapedPaths)}";
+    }
+
+    private static string EscapeGitArgument(string value)
+    {
+        return $"\"{value.Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
     }
 }

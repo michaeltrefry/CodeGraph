@@ -24,7 +24,7 @@ public record AnalysisUpdate(
     ConfidenceLevel Confidence,
     string ChangeDescription);
 
-/// <summary>Claude's parsed response for a repo-level batch request.</summary>
+/// <summary>Parsed response for a repo-level batch request.</summary>
 public record RepoAnalysisResult(
     string RepoSummary,
     string Confidence,
@@ -41,7 +41,7 @@ public record NodeAnalysisItem(
     string Description,
     string Confidence);
 
-/// <summary>Claude's parsed response for a per-project batch request.</summary>
+/// <summary>Parsed response for a per-project batch request.</summary>
 public record ProjectAnalysisResult(
     string ProjectSummary,
     string Confidence,

@@ -64,11 +64,11 @@ Create an authorization policy that checks `admin_users` table. Use ASP.NET `IAu
 
 ### 1.6 — Settings Override Service
 
-Service to load settings from DB and merge over Consul config. Single-row upsert pattern.
+Service to load settings from DB and merge over the bound app settings. Single-row upsert pattern.
 
 **Files to create:**
 - `src/CodeGraph.Services/ISettingsService.cs` — interface: `GetEffectiveSettingsAsync()`, `UpdateOverridesAsync(json, username)`
-- `src/CodeGraph.Services/SettingsService.cs` — loads `TcConfiguration<CodeGraphServiceSettings>`, merges `settings_overrides` JSON on top, excludes ConnectionString on GET
+- `src/CodeGraph.Services/SettingsService.cs` — loads `CodeGraphServiceSettings`, merges `settings_overrides` JSON on top, excludes ConnectionString on GET
 
 **Files to modify:**
 - `src/CodeGraph/Startup.cs` — register `ISettingsService`
@@ -549,7 +549,7 @@ Phase 1 ──→ Phase 2 ──→ Phase 3 ──→ Phase 5
 | Risk | Mitigation |
 |------|------------|
 | IdentityServer token claim names don't match expectations | Pre-flight SQL queries in PRD Section 16; decode JWT at jwt.io to verify claims |
-| Consul config conflicts with DB overrides | Settings merge is additive; DB wins on overlap. Clear documentation in admin UI. |
+| Base config conflicts with DB overrides | Settings merge is additive; DB wins on overlap. Clear documentation in admin UI. |
 | Path-based routing collisions with reserved words (`_new`, `revisions`, `attachments`) | Use `_new` as special slug (disallow in page creation); revisions/attachments are sub-routes, not page slugs |
 | Large tree performance for deeply nested sections | Trees are per-section; 4-level max depth limits total nodes. Lazy-load children if needed later. |
 | MCP tool reflection may not expose parameter metadata | Fallback: parse XML doc comments or hardcode tool descriptions |

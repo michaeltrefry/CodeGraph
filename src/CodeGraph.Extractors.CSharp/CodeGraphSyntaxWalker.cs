@@ -56,6 +56,18 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
         "AddKeyedScoped", "AddKeyedTransient", "AddKeyedSingleton"
     };
 
+    private static readonly string[] ExternalNamespacePrefixes =
+    [
+        "System",
+        "Microsoft",
+        "Newtonsoft",
+        "MassTransit",
+        "Autofac",
+        "Serilog",
+        "Neo4j",
+        "Anthropic"
+    ];
+
     /// <summary>
     /// Optional override for the file path when SyntaxTree.FilePath is empty
     /// (common with older non-SDK .csproj projects loaded via MSBuildWorkspace).
@@ -701,15 +713,11 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
             fields.Add(fieldInfo);
 
-            // If the field type is a known domain type (TC.* namespace), create CARRIES_FIELD edge
-            var fieldTypeNs = prop.Type.ContainingNamespace?.ToDisplayString() ?? "";
             var underlyingType = UnwrapCollectionType(prop.Type);
-            var underlyingNs = underlyingType?.ContainingNamespace?.ToDisplayString() ?? "";
 
-            if ((fieldTypeNs.StartsWith("TC.") || underlyingNs.StartsWith("TC.")) &&
-                underlyingType is not null)
+            if (IsLinkableDomainType(underlyingType))
             {
-                _edges.Add(new PendingEdge(classQN, underlyingType.ToDisplayString(),
+                _edges.Add(new PendingEdge(classQN, underlyingType!.ToDisplayString(),
                     EdgeType.CARRIES_FIELD,
                     new()
                     {
@@ -757,6 +765,20 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         // Not a collection, return the type itself if it's a domain type
         return type;
+    }
+
+    private static bool IsLinkableDomainType(ITypeSymbol? type)
+    {
+        if (type is null || type.SpecialType != SpecialType.None)
+            return false;
+
+        var ns = type.ContainingNamespace?.ToDisplayString();
+        if (string.IsNullOrWhiteSpace(ns))
+            return false;
+
+        return !ExternalNamespacePrefixes.Any(prefix =>
+            ns.Equals(prefix, StringComparison.OrdinalIgnoreCase) ||
+            ns.StartsWith($"{prefix}.", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Services.Configuration;
@@ -23,7 +24,7 @@ public partial class IndexingPipeline
     public IndexingPipeline(
         IGraphStore store,
         IEnumerable<ICodeExtractor> extractors,
-        IndexingOptions options,
+        IOptions<IndexingOptions> optionsAccessor,
         IFileSystem fileSystem,
         ILogger<IndexingPipeline> logger,
         ISolutionAnalyzer? solutionAnalyzer = null,
@@ -32,7 +33,7 @@ public partial class IndexingPipeline
     {
         _store = store;
         _extractors = extractors;
-        _options = options;
+        _options = optionsAccessor.Value;
         _fileSystem = fileSystem;
         _logger = logger;
         _solutionAnalyzer = solutionAnalyzer;

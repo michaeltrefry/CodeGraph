@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using MassTransit;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Data.Neo4j;
 using CodeGraph.Jobs.Jobs;
@@ -15,8 +16,9 @@ public static class Startup
 {
     public const int Port = 5038;
 
-    public static void ConfigureServices(IServiceCollection services, CodeGraphServiceSettings appSettings)
+    public static void ConfigureServices(IServiceCollection services, IConfiguration configuration)
     {
+        services.AddCodeGraphOptions(configuration);
         services.AddHttpClient();
 
         services.AddMvc()
@@ -30,27 +32,27 @@ public static class Startup
 
         services.AddControllers();
 
-        // Settings
-        services.AddSingleton(appSettings);
-        services.AddSingleton(appSettings.StorageOptions);
-        services.AddSingleton(appSettings.AnalysisOptions);
-        services.AddSingleton(appSettings.RepositorySource);
-
         // Data stores (Neo4j)
-        services.AddSingleton(new Neo4jSessionFactory(appSettings.StorageOptions));
+        services.AddSingleton<Neo4jSessionFactory>();
         services.AddSingleton<IGraphStore, Neo4jGraphStore>();
+        services.AddSingleton<IFileSystem, LocalFileSystem>();
 
         services.AddSingleton<AnthropicCircuitBreaker>();
+        services.AddSingleton<IAnalysisModelProvider, AnthropicAnalysisProvider>();
+        services.AddSingleton<IAnalysisModelProvider, OpenAiAnalysisProvider>();
+        services.AddSingleton<IAnalysisModelProvider, GeminiAnalysisProvider>();
+        services.AddSingleton<IAnalysisModelProvider, LocalAnalysisProvider>();
+        services.AddSingleton<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddSingleton<IBatchAnalysisService, BatchAnalysisService>();
 
         // Messaging
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
 
-        var rabbitOptions = appSettings.RabbitMqOptions;
         services.AddMassTransit(x =>
         {
             x.UsingRabbitMq((context, cfg) =>
             {
+                var rabbitOptions = context.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
                 cfg.Host(rabbitOptions.Host, "/", h =>
                 {
                     h.Username(rabbitOptions.Username);
@@ -71,7 +73,7 @@ public static class Startup
         services.AddTransient<IExclusionService, ExclusionService>();
         services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
-        RegisterRepoProvider(services, appSettings.RepositorySource);
+        RegisterRepoProvider(services);
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         services.AddTransient<CrossRepoLinker>();
@@ -85,20 +87,17 @@ public static class Startup
         app.MapControllers();
     }
 
-    private static void RegisterRepoProvider(IServiceCollection services, RepositorySourceOptions options)
+    private static void RegisterRepoProvider(IServiceCollection services)
     {
-        switch (options.Provider)
+        services.AddTransient<IRepoProvider>(sp =>
         {
-            case RepositorySourceProvider.GitHub:
-                services.AddTransient<IRepoProvider, GitHubRepoProvider>();
-                break;
-            case RepositorySourceProvider.Folder:
-                services.AddTransient<IRepoProvider, FolderRepoProvider>();
-                break;
-            case RepositorySourceProvider.GitLab:
-            default:
-                services.AddTransient<IRepoProvider, GitLabRepoProvider>();
-                break;
-        }
+            var options = sp.GetRequiredService<IOptions<RepositorySourceOptions>>().Value;
+            return options.Provider switch
+            {
+                RepositorySourceProvider.GitHub => sp.GetRequiredService<GitHubRepoProvider>(),
+                RepositorySourceProvider.Folder => sp.GetRequiredService<FolderRepoProvider>(),
+                _ => sp.GetRequiredService<GitLabRepoProvider>()
+            };
+        });
     }
 }

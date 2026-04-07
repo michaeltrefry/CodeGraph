@@ -5,8 +5,6 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodeGraph.Api", "src\CodeGraph.Api\CodeGraph.Api.csproj", "{ABDA1D4F-2F29-452E-A6D0-C505C4774C85}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodeGraph.Console", "src\CodeGraph.Console\CodeGraph.Console.csproj", "{D4DE8D3C-D970-4006-B981-B8E69A90783C}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodeGraph.Models", "src\CodeGraph.Models\CodeGraph.Models.csproj", "{61C7BD16-342F-4324-AA69-C11BF8B085C5}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CodeGraph.Services", "src\CodeGraph.Services\CodeGraph.Services.csproj", "{05E38123-93BB-4ACC-90EE-8C628A955F6A}"
@@ -34,6 +32,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 		.claude\settings.json = .claude\settings.json
 		.claude\settings.local.json = .claude\settings.local.json
 		.gitignore = .gitignore
+		.env = .env
 		CLAUDE.md = CLAUDE.md
 		docker-compose.yml = docker-compose.yml
 		nuget.config = nuget.config
@@ -63,18 +62,6 @@ Global
 		{ABDA1D4F-2F29-452E-A6D0-C505C4774C85}.Release|x64.Build.0 = Release|Any CPU
 		{ABDA1D4F-2F29-452E-A6D0-C505C4774C85}.Release|x86.ActiveCfg = Release|Any CPU
 		{ABDA1D4F-2F29-452E-A6D0-C505C4774C85}.Release|x86.Build.0 = Release|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Debug|x64.Build.0 = Debug|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Debug|x86.Build.0 = Debug|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Release|Any CPU.Build.0 = Release|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Release|x64.ActiveCfg = Release|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Release|x64.Build.0 = Release|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Release|x86.ActiveCfg = Release|Any CPU
-		{D4DE8D3C-D970-4006-B981-B8E69A90783C}.Release|x86.Build.0 = Release|Any CPU
 		{61C7BD16-342F-4324-AA69-C11BF8B085C5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{61C7BD16-342F-4324-AA69-C11BF8B085C5}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{61C7BD16-342F-4324-AA69-C11BF8B085C5}.Debug|x64.ActiveCfg = Debug|Any CPU

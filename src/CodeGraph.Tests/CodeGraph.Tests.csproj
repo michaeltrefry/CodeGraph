@@ -30,6 +30,7 @@
     <ProjectReference Include="..\CodeGraph.Extractors.Sql\CodeGraph.Extractors.Sql.csproj" />
     <ProjectReference Include="..\CodeGraph.Extractors.TreeSitter\CodeGraph.Extractors.TreeSitter.csproj" />
     <ProjectReference Include="..\CodeGraph.Api\CodeGraph.Api.csproj" />
+    <ProjectReference Include="..\CodeGraph.Jobs\CodeGraph.Jobs.csproj" />
   </ItemGroup>
 
 </Project>

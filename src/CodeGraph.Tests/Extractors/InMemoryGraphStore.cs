@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models;
 
@@ -437,6 +438,18 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<SyncStateEntity?> GetSyncStateAsync(string project) =>
         Task.FromResult(_syncStates.GetValueOrDefault(project));
 
+    public Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects)
+    {
+        var result = new Dictionary<string, SyncStateEntity>(StringComparer.OrdinalIgnoreCase);
+        foreach (var project in projects)
+        {
+            if (_syncStates.TryGetValue(project, out var state))
+                result[project] = state;
+        }
+
+        return Task.FromResult<IReadOnlyDictionary<string, SyncStateEntity>>(result);
+    }
+
     public Task UpsertSyncStateAsync(SyncStateEntity state)
     {
         _syncStates[state.Project] = state;
@@ -446,25 +459,52 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     // ── Graph context for batch analysis ────────────────────────────────
 
     public Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string project) =>
-        Task.FromResult<IReadOnlyList<NodeEntity>>([]);
+        Task.FromResult<IReadOnlyList<NodeEntity>>(
+            _nodes
+                .Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                    && n.Label is NodeLabel.Class or NodeLabel.Interface)
+                .Select(MapNodeEntity)
+                .ToList());
 
     public Task<IReadOnlyList<NodeEntity>> GetChildNodesAsync(long parentNodeId) =>
-        Task.FromResult<IReadOnlyList<NodeEntity>>([]);
+        Task.FromResult<IReadOnlyList<NodeEntity>>(
+            _edges
+                .Where(e => e.SourceId == parentNodeId &&
+                    e.Type is EdgeType.DEFINES or EdgeType.DEFINES_METHOD)
+                .Join(_nodes,
+                    e => e.TargetId,
+                    n => n.Id,
+                    (_, n) => MapNodeEntity(n))
+                .ToList());
 
     public Task<IReadOnlyList<EdgeEntity>> GetOutboundEdgesAsync(long nodeId) =>
-        Task.FromResult<IReadOnlyList<EdgeEntity>>([]);
+        Task.FromResult<IReadOnlyList<EdgeEntity>>(
+            _edges.Where(e => e.SourceId == nodeId).Select(MapEdgeEntity).ToList());
 
     public Task<IReadOnlyList<EdgeEntity>> GetInboundEdgesAsync(long nodeId) =>
-        Task.FromResult<IReadOnlyList<EdgeEntity>>([]);
+        Task.FromResult<IReadOnlyList<EdgeEntity>>(
+            _edges.Where(e => e.TargetId == nodeId).Select(MapEdgeEntity).ToList());
 
     public Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project) =>
-        Task.FromResult<IReadOnlyList<NodeEntity>>([]);
+        Task.FromResult<IReadOnlyList<NodeEntity>>(
+            _nodes
+                .Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+                .Select(MapNodeEntity)
+                .ToList());
 
     public Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project) =>
-        Task.FromResult<IReadOnlyList<EdgeEntity>>([]);
+        Task.FromResult<IReadOnlyList<EdgeEntity>>(
+            _edges
+                .Where(e => e.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+                .Select(MapEdgeEntity)
+                .ToList());
 
     public Task<IReadOnlyList<EdgeEntity>> GetEdgesForNodesAsync(IReadOnlyList<long> nodeIds) =>
-        Task.FromResult<IReadOnlyList<EdgeEntity>>([]);
+        Task.FromResult<IReadOnlyList<EdgeEntity>>(
+            _edges
+                .Where(e => nodeIds.Contains(e.SourceId) || nodeIds.Contains(e.TargetId))
+                .Select(MapEdgeEntity)
+                .ToList());
 
     // ── Analysis batch tracking ──────────────────────────────────────────
 
@@ -489,7 +529,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         Task.FromResult<IReadOnlyList<StoredAnalysisBatch>>(
             _batches
                 .Where(b => b.Status == "submitted" && (repo is null || b.Repo == repo))
-                .Select(b => new StoredAnalysisBatch(b.Id, b.Repo, b.AnthropicBatchId, b.Status,
+                .Select(b => new StoredAnalysisBatch(b.Id, b.Repo, b.ProviderBatchId, b.ProviderName, b.ExecutionMode, b.IncludeAllSource, b.Status,
                     b.RequestCount, b.CompletedCount, b.SubmittedAt, b.CompletedAt))
                 .ToList());
 
@@ -501,7 +541,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .FirstOrDefault();
         return Task.FromResult(batch is null
             ? null
-            : new StoredAnalysisBatch(batch.Id, batch.Repo, batch.AnthropicBatchId, batch.Status,
+            : new StoredAnalysisBatch(batch.Id, batch.Repo, batch.ProviderBatchId, batch.ProviderName, batch.ExecutionMode, batch.IncludeAllSource, batch.Status,
                 batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt));
     }
 
@@ -531,9 +571,37 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<IReadOnlyList<AnalysisBatchRequestEntity>> GetBatchRequestsAsync(long batchId)
     {
         IReadOnlyList<AnalysisBatchRequestEntity> result = _batchRequests
-            .Where(r => r.BatchId == batchId).ToList();
+            .Where(r => r.BatchId == batchId)
+            .OrderBy(r => r.Sequence)
+            .ThenBy(r => r.CustomId, StringComparer.Ordinal)
+            .ToList();
         return Task.FromResult(result);
     }
+
+    private static NodeEntity MapNodeEntity(GraphNode node) => new()
+    {
+        Id = node.Id,
+        Project = node.Project,
+        DotnetProject = node.DotnetProject,
+        Label = node.Label.ToString(),
+        Name = node.Name,
+        QualifiedName = node.QualifiedName,
+        FilePath = node.FilePath,
+        StartLine = node.StartLine,
+        EndLine = node.EndLine,
+        Properties = node.Properties.Count == 0 ? null : JsonSerializer.Serialize(node.Properties),
+        DoNotTrust = node.DoNotTrust
+    };
+
+    private static EdgeEntity MapEdgeEntity(GraphEdge edge) => new()
+    {
+        Id = edge.Id,
+        Project = edge.Project,
+        SourceId = edge.SourceId,
+        TargetId = edge.TargetId,
+        Type = edge.Type.ToString(),
+        Properties = edge.Properties.Count == 0 ? null : JsonSerializer.Serialize(edge.Properties)
+    };
 
     // ── Node analysis results ────────────────────────────────────────────
 

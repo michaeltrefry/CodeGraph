@@ -8,12 +8,10 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
   template: `
     <div class="admin-layout">
       <nav class="admin-nav">
-        <h2>Admin</h2>
-        <a routerLink="/admin/operations" routerLinkActive="active">Operations</a>
-        <a routerLink="/admin/settings" routerLinkActive="active">Settings</a>
-        <a routerLink="/admin/users" routerLinkActive="active">Users</a>
-        <a routerLink="/admin/sections" routerLinkActive="active">Sections</a>
-        <a routerLink="/admin/exclusions" routerLinkActive="active">Exclusions</a>
+        <h2>Settings</h2>
+        <a routerLink="/settings/operations" routerLinkActive="active">Operations</a>
+        <a routerLink="/settings/sections" routerLinkActive="active">Sections</a>
+        <a routerLink="/settings/exclusions" routerLinkActive="active">Exclusions</a>
       </nav>
       <div class="admin-content">
         <router-outlet />

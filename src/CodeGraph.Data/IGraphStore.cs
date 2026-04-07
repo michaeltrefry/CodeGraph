@@ -72,6 +72,7 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IMigrationRunner
 
     // Sync state
     Task<SyncStateEntity?> GetSyncStateAsync(string project);
+    Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects);
     Task UpsertSyncStateAsync(SyncStateEntity state);
     Task DeleteSyncStateAsync(string project);
 

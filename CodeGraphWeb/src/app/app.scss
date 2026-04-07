@@ -54,25 +54,6 @@
   margin-left: auto;
 }
 
-.nav-user {
-  font-size: 13px;
-  color: #a78bfa;
-  font-weight: 500;
-}
-
-.nav-auth-btn {
-  padding: 4px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(167,139,250,0.4);
-  background: transparent;
-  color: #d1d5db;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s;
-
-  &:hover { background: rgba(167,139,250,0.2); color: white; }
-}
-
 .content {
   flex: 1;
   display: flex;

@@ -11,7 +11,7 @@ public class DiscoverRepositoriesJobTests
     {
         var adminService = new RecordingAdminService
         {
-            NextDiscoverResponse = new DiscoverResponse(10, 8, 6, 3, 2, ["TC.OrdersApi"])
+            NextDiscoverResponse = new DiscoverResponse(10, 8, 6, 3, 2, ["Orders.Api"])
         };
         var job = new TestDiscoverRepositoriesJob(adminService);
 

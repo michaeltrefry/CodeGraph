@@ -7,5 +7,5 @@ namespace CodeGraph.Models.Messages;
 public class AnalysisSynthesisCompleted
 {
     public string RepoName { get; set; } = "";
-    public string AnthropicBatchId { get; set; } = "";
+    public string ProviderBatchId { get; set; } = "";
 }

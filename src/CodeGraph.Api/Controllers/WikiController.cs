@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
-using CodeGraph.Api.Auth;
+using Microsoft.Extensions.Options;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
@@ -12,8 +12,9 @@ namespace CodeGraph.Api.Controllers;
 public class WikiController(
     IWikiService wikiService,
     IAttachmentService attachmentService,
-    WikiOptions wikiOptions) : Controller
+    IOptions<WikiOptions> wikiOptionsAccessor) : Controller
 {
+    private readonly WikiOptions wikiOptions = wikiOptionsAccessor.Value;
     // ── Sections ──
 
     [HttpGet("sections")]
@@ -65,7 +66,7 @@ public class WikiController(
     [HttpPost("{section}")]
     public async Task<ActionResult<WikiPageListItem>> CreatePage(string section, [FromBody] WikiPageRequest request)
     {
-        var username = request.Author ?? User.GetUsername() ?? "anonymous";
+        var username = request.Author ?? Request.Headers["X-Author"].FirstOrDefault() ?? "anonymous";
 
         if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Content))
             return BadRequest("Title and content are required.");
@@ -83,7 +84,7 @@ public class WikiController(
         // Attachment upload
         if (path.EndsWith("/attachments"))
         {
-            var username = Request.Headers["X-Author"].FirstOrDefault() ?? User.GetUsername() ?? "anonymous";
+            var username = Request.Headers["X-Author"].FirstOrDefault() ?? "anonymous";
             var pagePath = path[..^"/attachments".Length];
             var page = await wikiService.GetPageAsync(section, pagePath);
             if (page is null) return NotFound();
@@ -114,7 +115,7 @@ public class WikiController(
         if (request is null || string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Content))
             return BadRequest("Title and content are required.");
 
-        var childUsername = request.Author ?? User.GetUsername() ?? "anonymous";
+        var childUsername = request.Author ?? Request.Headers["X-Author"].FirstOrDefault() ?? "anonymous";
         var result = await wikiService.CreateChildPageAsync(section, path, request, childUsername);
         if (result is null)
             return Conflict("Page already exists, max depth exceeded, or section does not allow user pages.");
@@ -125,7 +126,7 @@ public class WikiController(
     [HttpPut("{section}/{**path}")]
     public async Task<ActionResult<WikiPageListItem>> UpdatePage(string section, string path, [FromBody] WikiPageRequest request)
     {
-        var username = request.Author ?? User.GetUsername() ?? "anonymous";
+        var username = request.Author ?? Request.Headers["X-Author"].FirstOrDefault() ?? "anonymous";
 
         if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Content))
             return BadRequest("Title and content are required.");

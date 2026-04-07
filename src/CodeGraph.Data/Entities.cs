@@ -107,7 +107,10 @@ public class AnalysisBatchEntity
 {
     public long Id { get; set; }
     public string Repo { get; set; } = "";
-    public string AnthropicBatchId { get; set; } = "";
+    public string ProviderBatchId { get; set; } = "";
+    public string ProviderName { get; set; } = "anthropic";
+    public string ExecutionMode { get; set; } = "native_batch";
+    public bool IncludeAllSource { get; set; }
     public string Status { get; set; } = "submitted";
     public int RequestCount { get; set; }
     public int CompletedCount { get; set; }
@@ -119,6 +122,7 @@ public class AnalysisBatchRequestEntity
 {
     public long Id { get; set; }
     public long BatchId { get; set; }
+    public int Sequence { get; set; }
     public string CustomId { get; set; } = "";
     public long? NodeId { get; set; }
     public string NodeLabel { get; set; } = "";
@@ -315,21 +319,6 @@ public class WikiAttachmentEntity
     public long SizeBytes { get; set; }
     public string UploadedBy { get; set; } = "";
     public DateTime CreatedAt { get; set; }
-}
-
-public class AdminUserEntity
-{
-    public long Id { get; set; }
-    public string Username { get; set; } = "";
-    public DateTime CreatedAt { get; set; }
-}
-
-public class SettingsOverrideEntity
-{
-    public long Id { get; set; }
-    public string SettingsJson { get; set; } = "";
-    public string UpdatedBy { get; set; } = "";
-    public DateTime UpdatedAt { get; set; }
 }
 
 public class ExclusionRuleEntity

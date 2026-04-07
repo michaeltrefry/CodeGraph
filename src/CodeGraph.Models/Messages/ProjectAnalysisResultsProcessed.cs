@@ -7,6 +7,6 @@ namespace CodeGraph.Models.Messages;
 public class ProjectAnalysisResultsProcessed
 {
     public string RepoName { get; set; } = "";
-    public string AnthropicBatchId { get; set; } = "";
+    public string ProviderBatchId { get; set; } = "";
     public int CompletedCount { get; set; }
 }

@@ -619,7 +619,7 @@ public class RoslynExtractorTests
     public void Detects_EventMessageFields_WithDomainType_CreatesCarriesFieldEdge()
     {
         var code = """
-            namespace TC.Orders.Models
+            namespace Orders.Models
             {
                 public class OrderLineItem
                 {
@@ -629,7 +629,7 @@ public class RoslynExtractorTests
                 public class OrderCreatedEvent
                 {
                     public int OrderId { get; set; }
-                    public TC.Orders.Models.OrderLineItem LineItem { get; set; }
+                    public Orders.Models.OrderLineItem LineItem { get; set; }
                 }
             }
             """;
@@ -638,8 +638,8 @@ public class RoslynExtractorTests
 
         // Should have CARRIES_FIELD edge from Event to the domain type
         var carriesFieldEdge = result.Edges.ShouldContain(e => e.Type == EdgeType.CARRIES_FIELD);
-        carriesFieldEdge.SourceQN.ShouldBe("TC.Orders.Models.OrderCreatedEvent");
-        carriesFieldEdge.TargetQN.ShouldBe("TC.Orders.Models.OrderLineItem");
+        carriesFieldEdge.SourceQN.ShouldBe("Orders.Models.OrderCreatedEvent");
+        carriesFieldEdge.TargetQN.ShouldBe("Orders.Models.OrderLineItem");
         carriesFieldEdge.Properties!["field_name"].ShouldBe("LineItem");
     }
 

@@ -1,10 +1,16 @@
 # Vitals Integration Plan: Codebase Health Metrics for CodeGraph
 
+This draft predates the repository rename/restructure and the move to Neo4j-backed storage. Where legacy names appear below, map them as follows:
+
+- `TC.CodeGraphApi.*` -> `CodeGraph.*`
+- `MySqlGraphStore` -> `Neo4jGraphStore`
+- provider-specific "Claude" wording -> the configured analysis provider/model
+
 ## Context
 
-[Vitals](https://github.com/tejas-chopra/vitals) is a codebase health analysis tool that computes churn, complexity, co-change coupling, knowledge risk, and composite health scores from git history and structural analysis. Currently a Python-based Claude Code plugin (~1,900 lines), we want to port its metrics into CodeGraph as an optional analysis step.
+[Vitals](https://github.com/tejas-chopra/vitals) is a codebase health analysis tool that computes churn, complexity, co-change coupling, knowledge risk, and composite health scores from git history and structural analysis. Currently a Python-based coding-agent plugin (~1,900 lines), we want to port its metrics into CodeGraph as an optional analysis step.
 
-**Goal:** After indexing a repository, optionally compute vitals-style metrics per file, store them in a new `file_metrics` table, and feed them into the Claude batch analysis prompts so Claude can factor health signals into its descriptions.
+**Goal:** After indexing a repository, optionally compute vitals-style metrics per file, store them in graph-backed metrics storage, and feed them into repository-analysis prompts so the selected model can factor health signals into its descriptions.
 
 **Scope:** All project types already supported by CodeGraph — .NET (Framework 4.5 through .NET 10), Angular/Node, ColdFusion, SQL.
 

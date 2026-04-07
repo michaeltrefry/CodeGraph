@@ -132,12 +132,9 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})
-                WHERE n.label IN ['Class', 'Interface']
-                AND (
-                    EXISTS { MATCH (e:EdgeRecord {sourceId: n.appId}) }
-                    OR EXISTS { MATCH (e:EdgeRecord {targetId: n.appId}) }
-                )
+                MATCH (n:CodeNode:Type {project: $project})
+                WHERE (n:Class OR n:Interface)
+                  AND EXISTS { MATCH (n)-[]-(:CodeNode) }
                 RETURN n ORDER BY n.name
                 """,
                 new { project });
@@ -154,8 +151,7 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (e:EdgeRecord {sourceId: $parentNodeId, type: 'DEFINES'})
-                MATCH (n:CodeNode {appId: e.targetId})
+                MATCH (:CodeNode {appId: $parentNodeId})-[:DEFINES|DEFINES_METHOD]->(n:CodeNode)
                 RETURN n ORDER BY n.label, n.name
                 """,
                 new { parentNodeId });
@@ -172,14 +168,20 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (e:EdgeRecord {sourceId: $nodeId})
-                WHERE NOT e.type IN ['DEFINES', 'CONTAINS_FILE', 'CONTAINS_FOLDER', 'CONTAINS_NAMESPACE']
-                RETURN e ORDER BY e.type
+                MATCH (source:CodeNode {appId: $nodeId})-[e]->(target:CodeNode)
+                WHERE NOT type(e) IN ['DEFINES', 'DEFINES_METHOD', 'CONTAINS_FILE', 'CONTAINS_FOLDER', 'CONTAINS_NAMESPACE', 'CONTAINS_PROJECT']
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
+                ORDER BY type
                 """,
                 new { nodeId });
             var results = new List<EdgeEntity>();
             await foreach (var record in cursor)
-                results.Add(MapEdgeNodeToEntity(record["e"].As<INode>()));
+                results.Add(MapEdgeRecordToEntity(record));
             return results;
         });
     }
@@ -190,14 +192,20 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (e:EdgeRecord {targetId: $nodeId})
-                WHERE NOT e.type IN ['DEFINES', 'CONTAINS_FILE', 'CONTAINS_FOLDER', 'CONTAINS_NAMESPACE']
-                RETURN e ORDER BY e.type
+                MATCH (source:CodeNode)-[e]->(target:CodeNode {appId: $nodeId})
+                WHERE NOT type(e) IN ['DEFINES', 'DEFINES_METHOD', 'CONTAINS_FILE', 'CONTAINS_FOLDER', 'CONTAINS_NAMESPACE', 'CONTAINS_PROJECT']
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
+                ORDER BY type
                 """,
                 new { nodeId });
             var results = new List<EdgeEntity>();
             await foreach (var record in cursor)
-                results.Add(MapEdgeNodeToEntity(record["e"].As<INode>()));
+                results.Add(MapEdgeRecordToEntity(record));
             return results;
         });
     }
@@ -223,11 +231,20 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (e:EdgeRecord {project: $project}) RETURN e",
+                """
+                MATCH (source:CodeNode {project: $project})-[e]->(target:CodeNode)
+                WHERE coalesce(e.project, source.project) = $project
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
+                """,
                 new { project });
             var results = new List<EdgeEntity>();
             await foreach (var record in cursor)
-                results.Add(MapEdgeNodeToEntity(record["e"].As<INode>()));
+                results.Add(MapEdgeRecordToEntity(record));
             return results;
         });
     }
@@ -239,14 +256,19 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (e:EdgeRecord)
-                WHERE e.sourceId IN $nodeIds OR e.targetId IN $nodeIds
-                RETURN e
+                MATCH (source:CodeNode)-[e]->(target:CodeNode)
+                WHERE source.appId IN $nodeIds OR target.appId IN $nodeIds
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
                 """,
                 new { nodeIds });
             var results = new List<EdgeEntity>();
             await foreach (var record in cursor)
-                results.Add(MapEdgeNodeToEntity(record["e"].As<INode>()));
+                results.Add(MapEdgeRecordToEntity(record));
             return results;
         });
     }
@@ -266,7 +288,10 @@ public partial class Neo4jGraphStore
                 CREATE (b:AnalysisBatch {
                     appId: newId,
                     repo: $repo,
-                    anthropicBatchId: $anthropicBatchId,
+                    providerBatchId: $providerBatchId,
+                    providerName: $providerName,
+                    executionMode: $executionMode,
+                    includeAllSource: $includeAllSource,
                     status: $status,
                     requestCount: $requestCount,
                     completedCount: $completedCount,
@@ -278,7 +303,10 @@ public partial class Neo4jGraphStore
                 new
                 {
                     repo = batch.Repo,
-                    anthropicBatchId = batch.AnthropicBatchId,
+                    providerBatchId = batch.ProviderBatchId,
+                    providerName = batch.ProviderName,
+                    executionMode = batch.ExecutionMode,
+                    includeAllSource = batch.IncludeAllSource,
                     status = batch.Status,
                     requestCount = batch.RequestCount,
                     completedCount = batch.CompletedCount,
@@ -301,6 +329,7 @@ public partial class Neo4jGraphStore
         var items = requestList.Select(r => new Dictionary<string, object?>
         {
             ["batchId"] = r.BatchId,
+            ["sequence"] = r.Sequence,
             ["customId"] = r.CustomId,
             ["nodeId"] = r.NodeId,
             ["nodeLabel"] = r.NodeLabel,
@@ -314,6 +343,7 @@ public partial class Neo4jGraphStore
                 UNWIND $items AS r
                 CREATE (br:AnalysisBatchRequest {
                     batchId: r.batchId,
+                    sequence: r.sequence,
                     customId: r.customId,
                     nodeId: r.nodeId,
                     nodeLabel: r.nodeLabel,
@@ -393,7 +423,7 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (br:AnalysisBatchRequest {batchId: $batchId}) RETURN br",
+                "MATCH (br:AnalysisBatchRequest {batchId: $batchId}) RETURN br ORDER BY coalesce(br.sequence, 0), br.customId",
                 new { batchId });
             var results = new List<AnalysisBatchRequestEntity>();
             await foreach (var record in cursor)
@@ -402,6 +432,7 @@ public partial class Neo4jGraphStore
                 results.Add(new AnalysisBatchRequestEntity
                 {
                     BatchId = node["batchId"].As<long>(),
+                    Sequence = node.Properties.ContainsKey("sequence") ? node["sequence"].As<int>() : 0,
                     CustomId = node["customId"].As<string>(),
                     NodeId = node.Properties.ContainsKey("nodeId") ? node["nodeId"].As<long?>() : null,
                     NodeLabel = node["nodeLabel"].As<string>(),
@@ -496,7 +527,7 @@ public partial class Neo4jGraphStore
         Id = node["appId"].As<long>(),
         Project = node["project"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
-        Label = node["label"].As<string>(),
+        Label = GetNodeLabel(node).ToString(),
         Name = node["name"].As<string>(),
         QualifiedName = node["qualifiedName"].As<string>(),
         FilePath = GetStringOrNull(node, "filePath") ?? "",
@@ -505,20 +536,23 @@ public partial class Neo4jGraphStore
         Properties = GetStringOrNull(node, "properties")
     };
 
-    private static EdgeEntity MapEdgeNodeToEntity(INode node) => new()
+    private static EdgeEntity MapEdgeRecordToEntity(IRecord record) => new()
     {
-        Id = node.Properties.ContainsKey("appId") ? node["appId"].As<long>() : 0,
-        Project = node["project"].As<string>(),
-        SourceId = node["sourceId"].As<long>(),
-        TargetId = node["targetId"].As<long>(),
-        Type = node["type"].As<string>(),
-        Properties = GetStringOrNull(node, "properties")
+        Id = GetRelationshipId(record),
+        Project = record["project"].As<string>(),
+        SourceId = record["sourceId"].As<long>(),
+        TargetId = record["targetId"].As<long>(),
+        Type = record["type"].As<string>(),
+        Properties = record["properties"].As<string?>()
     };
 
     private static StoredAnalysisBatch MapAnalysisBatchNode(INode node) => new(
         node["appId"].As<long>(),
         node["repo"].As<string>(),
-        node["anthropicBatchId"].As<string>(),
+        node["providerBatchId"].As<string>(),
+        GetStringOrNull(node, "providerName") ?? "anthropic",
+        GetStringOrNull(node, "executionMode") ?? "native_batch",
+        node.Properties.ContainsKey("includeAllSource") && node["includeAllSource"].As<bool>(),
         node["status"].As<string>(),
         node["requestCount"].As<int>(),
         node["completedCount"].As<int>(),

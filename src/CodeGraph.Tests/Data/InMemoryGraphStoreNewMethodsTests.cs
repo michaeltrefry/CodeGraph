@@ -1,4 +1,5 @@
 using Shouldly;
+using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Tests.Extractors;
 
@@ -126,5 +127,28 @@ public class InMemoryGraphStoreNewMethodsTests
         var result = await _store.SearchNodesAsync("P", "");
 
         result.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task GetSyncStatesAsync_ReturnsOnlyRequestedMatches()
+    {
+        await _store.UpsertSyncStateAsync(new SyncStateEntity
+        {
+            Project = "P1",
+            LastCommitSha = "abc",
+            Status = "idle"
+        });
+        await _store.UpsertSyncStateAsync(new SyncStateEntity
+        {
+            Project = "P2",
+            LastCommitSha = "def",
+            Status = "idle"
+        });
+
+        var result = await _store.GetSyncStatesAsync(["P2", "Missing"]);
+
+        result.Count.ShouldBe(1);
+        result.ShouldContainKey("P2");
+        result["P2"].LastCommitSha.ShouldBe("def");
     }
 }

@@ -11,7 +11,7 @@
         <label for="project">Project</label>
         <app-typeahead
           [searchFn]="searchProjects"
-          [placeholder]="'e.g. TC.OrdersApi'"
+          [placeholder]="'e.g. orders-api'"
           [minChars]="2"
           [ngModel]="projectName()"
           (ngModelChange)="projectName.set($event)"

@@ -41,4 +41,3 @@ run_build.sh
 tools/reflect/out.txt
 tools/reflect/ps_out.txt
 *.log
-consul/

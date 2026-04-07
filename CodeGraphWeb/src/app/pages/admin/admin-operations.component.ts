@@ -22,7 +22,7 @@ interface OperationResult {
       <div class="op-card">
         <h3>Process Repos</h3>
         <p>Publish ProcessRepository messages for specific repos. One repo path per line.</p>
-        <textarea [(ngModel)]="repoList" rows="4" placeholder="TC.OrdersApi&#10;TC.ShippingApi&#10;..."></textarea>
+        <textarea [(ngModel)]="repoList" rows="4" placeholder="orders-api&#10;billing-service&#10;..."></textarea>
         <button (click)="runProcessRepos()" [disabled]="running()">Process</button>
       </div>
 
@@ -46,7 +46,7 @@ interface OperationResult {
 
       <div class="op-card">
         <h3>Discover</h3>
-        <p>Discover all GitLab projects and index new ones.</p>
+        <p>Discover repositories from the configured source provider and index new ones.</p>
         <input type="text" [(ngModel)]="discoverFilter" placeholder="Regex filter (optional)" />
         <button (click)="runDiscover()" [disabled]="running()">Run</button>
       </div>
@@ -114,7 +114,7 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      const res = await firstValueFrom(this.http.post(`${API}/admin/${endpoint}`, {}));
+      const res = await firstValueFrom(this.http.post(`${API}/settings/${endpoint}`, {}));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -134,7 +134,7 @@ export class AdminOperationsComponent {
     this.result.set(null);
     try {
       const body = { repos: lines };
-      const res = await firstValueFrom(this.http.post(`${API}/admin/processRepos`, body));
+      const res = await firstValueFrom(this.http.post(`${API}/settings/processRepos`, body));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -147,8 +147,8 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      const body = this.discoverFilter ? { filter: this.discoverFilter } : {};
-      const res = await firstValueFrom(this.http.post(`${API}/admin/discover`, body));
+      const body = this.discoverFilter ? { namePattern: this.discoverFilter } : {};
+      const res = await firstValueFrom(this.http.post(`${API}/settings/discover`, body));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -161,7 +161,7 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      let url = `${API}/admin/processBatchAnalysis`;
+      let url = `${API}/settings/processBatchAnalysis`;
       if (this.batchRepo) url += `?repo=${encodeURIComponent(this.batchRepo)}`;
       const res = await firstValueFrom(this.http.post(url, {}));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });

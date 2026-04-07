@@ -1,20 +1,14 @@
 using System.Net;
-using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
 
 namespace CodeGraph.Api;
 
 public class Program
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
-
-        // Bind settings from appsettings.json (+ env vars, user secrets, etc.)
-        var appSettings = new CodeGraphServiceSettings();
-        builder.Configuration.GetSection("CodeGraph").Bind(appSettings);
-
-        Startup.ConfigureServices(builder.Services, appSettings);
+        Startup.ConfigureServices(builder.Services, builder.Configuration);
 
         builder.WebHost
             .UseContentRoot(Directory.GetCurrentDirectory())
@@ -24,7 +18,8 @@ public class Program
             });
 
         var app = builder.Build();
-        Startup.Configure(app, appSettings);
+        Startup.Configure(app);
+        await Startup.InitializeAsync(app.Services);
 
         // Generate MCP documentation on startup (best-effort)
         _ = Task.Run(async () =>
@@ -42,6 +37,6 @@ public class Program
             }
         });
 
-        app.Run();
+        await app.RunAsync();
     }
 }

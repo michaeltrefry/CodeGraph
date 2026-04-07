@@ -2,17 +2,18 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services;
 
 public class GitHubRepoProvider(
-    RepositorySourceOptions sourceOptions,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     HttpClient httpClient,
     IExclusionService exclusionService,
     ILogger<GitHubRepoProvider> logger)
-    : RepoProviderBase(sourceOptions.ReposCachePath, logger), IRepoProvider
+    : RepoProviderBase(sourceOptionsAccessor.Value.ReposCachePath, logger), IRepoProvider
 {
-    private readonly GitHubSourceOptions _github = sourceOptions.GitHub;
+    private readonly GitHubSourceOptions _github = sourceOptionsAccessor.Value.GitHub;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

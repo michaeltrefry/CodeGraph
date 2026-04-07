@@ -233,10 +233,10 @@ public class CrossRepoLinker
         var projects = await _store.ListRepositoriesAsync();
         var projectNames = projects.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Map TC.* package names to project names
-        // Convention: TC.OrdersApi.Models package → TC.OrdersApi project
+        // Map package names to project names when the stripped package name resolves
+        // to another indexed repository.
         var packageToProject = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pkg in nugetNodes.Where(n => n.Name.StartsWith("TC.", StringComparison.OrdinalIgnoreCase)))
+        foreach (var pkg in nugetNodes)
         {
             var candidateProject = DerivProjectFromPackage(pkg.Name);
             if (candidateProject is not null && projectNames.Contains(candidateProject))
@@ -359,33 +359,29 @@ public class CrossRepoLinker
     }
 
     /// <summary>
-    /// Resolve target project for a gateway call. service_name from [TcServiceDto] is always
-    /// the Api project name without "TC." prefix (e.g., "DomainBlacklistApi" → "TC.DomainBlacklistApi").
-    /// Falls back to namespace-based derivation from the DTO type.
+    /// Resolve target project for a gateway call.
+    /// Prefer an exact service-name match, then fall back to namespace-based derivation
+    /// from the DTO type.
     /// </summary>
     private static string? ResolveGatewayTargetProject(
         string? serviceName, string dtoTypeQN, HashSet<string> projectNames)
     {
-        // service_name is always the project name without "TC." prefix
-        if (serviceName is not null)
-        {
-            var candidate = $"TC.{serviceName}";
-            if (projectNames.Contains(candidate))
-                return candidate;
-        }
+        if (serviceName is not null && projectNames.Contains(serviceName))
+            return serviceName;
 
         // Fall back to namespace convention
-        return DerivProjectFromDtoType(dtoTypeQN, projectNames);
+        return DeriveProjectFromDtoType(dtoTypeQN, projectNames);
     }
 
     /// <summary>
     /// Derive project name from a request DTO type's namespace.
-    /// TC.OrdersApi.Models.GetOrderRequest → TC.OrdersApi
+    /// Example: OrdersApi.Models.GetOrderRequest -> OrdersApi
     /// </summary>
-    private static string? DerivProjectFromDtoType(string dtoTypeQN, HashSet<string> projectNames)
+    private static string? DeriveProjectFromDtoType(string dtoTypeQN, HashSet<string> projectNames)
     {
-        // Walk up the namespace: TC.OrdersApi.Models.GetOrderRequest
-        // Try: TC.OrdersApi.Models → strip .Models → TC.OrdersApi
+        // Walk up the namespace segments and try progressively broader candidates.
+        // Example: OrdersApi.Models.GetOrderRequest
+        // then OrdersApi.Models -> strip .Models -> OrdersApi
         var parts = dtoTypeQN.Split('.');
         for (var i = parts.Length - 1; i >= 2; i--)
         {
@@ -411,8 +407,8 @@ public class CrossRepoLinker
 
     /// <summary>
     /// Derive project name from a NuGet package name.
-    /// TC.OrdersApi.Models → TC.OrdersApi
-    /// TC.Common.ServiceStack → TC.Common.ServiceStack (if it's a project)
+    /// Example:
+    /// OrdersApi.Models -> OrdersApi
     /// </summary>
     private static string? DerivProjectFromPackage(string packageName)
     {

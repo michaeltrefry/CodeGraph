@@ -30,7 +30,7 @@ public partial class BatchAnalysisService
 
         foreach (var e in relevantEdges)
         {
-            if (e.Type == "DEFINES")
+            if (e.Type is "DEFINES" or "DEFINES_METHOD")
             {
                 if (!childrenByParent.TryGetValue(e.SourceId, out var children))
                 {
@@ -156,7 +156,7 @@ public partial class BatchAnalysisService
         if (nodeProps.TryGetValue("base_types", out var bt) && bt is string baseTypes && !string.IsNullOrWhiteSpace(baseTypes))
             sb.AppendLine($"  Base types: {baseTypes}");
 
-        // Members (children via DEFINES)
+        // Members (children via DEFINES / DEFINES_METHOD)
         if (childrenByParent.TryGetValue(node.Id, out var childEdges))
         {
             var children = childEdges

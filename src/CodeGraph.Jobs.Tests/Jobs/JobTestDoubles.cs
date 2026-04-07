@@ -15,7 +15,7 @@ internal sealed class TestProcessRepositoriesJob(IMessageBus messageBus)
 }
 
 internal sealed class TestProcessBatchResultsJob(IBatchAnalysisService batchService)
-    : ProcessBatchResultsJob(batchService, NullLogger<ProcessBatchResultsJob>.Instance)
+    : ProcessBatchResultsJob(batchService)
 {
     public Task InvokeAsync(StartJob startJob) => ExecuteAsync(startJob);
 }

@@ -2,17 +2,18 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services;
 
 public class GitLabRepoProvider(
-    RepositorySourceOptions sourceOptions,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     HttpClient httpClient,
     IExclusionService exclusionService,
     ILogger<GitLabRepoProvider> logger)
-    : RepoProviderBase(sourceOptions.ReposCachePath, logger), IRepoProvider
+    : RepoProviderBase(sourceOptionsAccessor.Value.ReposCachePath, logger), IRepoProvider
 {
-    private readonly GitLabSourceOptions _gitLab = sourceOptions.GitLab;
+    private readonly GitLabSourceOptions _gitLab = sourceOptionsAccessor.Value.GitLab;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

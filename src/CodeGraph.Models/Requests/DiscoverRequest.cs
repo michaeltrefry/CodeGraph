@@ -8,8 +8,8 @@ public class DiscoverRequest
     public bool IncludeAllSource { get; set; }
 
     /// <summary>
-    /// Regex pattern to filter discovered repos by name (e.g., "^TC\." for all TC repos,
-    /// "TC\.Account" for account-related repos). Case-insensitive. Null = no filter.
+    /// Regex pattern to filter discovered repos by name (e.g., "^orders-" for all order repos,
+    /// "billing" for billing-related repos). Case-insensitive. Null = no filter.
     /// </summary>
     public string? NamePattern { get; set; }
 

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Numerics.Tensors;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Microsoft.ML.Tokenizers;
@@ -22,9 +23,9 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
     private bool _initialized;
     private readonly object _lock = new();
 
-    public OnnxEmbeddingService(CodeGraphStorageOptions options, ILogger<OnnxEmbeddingService> logger)
+    public OnnxEmbeddingService(IOptions<CodeGraphStorageOptions> optionsAccessor, ILogger<OnnxEmbeddingService> logger)
     {
-        _options = options;
+        _options = optionsAccessor.Value;
         _logger = logger;
     }
 

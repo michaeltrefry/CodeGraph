@@ -25,7 +25,7 @@ RETURN p.name, c.name
 - Lower token cost (tool name + 1 param vs multi-line query string)
 - No syntax errors (structured parameters vs string parsing)
 - Encodes domain knowledge (edge type selection, cross-repo joins, confidence filtering)
-- Claude already knows how to use MCP tools; Cypher is another thing to get right
+- LLM agents already know how to use MCP tools; Cypher is another thing to get right
 - Our graph has domain-specific semantics (PUBLISHES, CONSUMES, HTTP_CALLS) that purpose-built tools handle better than generic traversal
 
 **Verdict for agents: Don't bother.** The MCP tools are the right interface. Adding Cypher would give agents more ways to get the same answers, with more opportunities to write broken queries.
@@ -39,7 +39,7 @@ Where a query language shines is **ad-hoc questions that no one anticipated**:
 - "Show me the shortest path between ServiceA and ServiceB" (pathfinding)
 - "Find all nodes with no inbound edges except from their own project" (isolation detection)
 
-These are valid questions but infrequent. The current answer is: ask Claude via the Ask endpoint, and Claude chains MCP tool calls to answer. That works but is slow and token-expensive for complex graph queries.
+These are valid questions but infrequent. The current answer is: ask via the Ask endpoint, and the model chains MCP tool calls to answer. That works but is slow and token-expensive for complex graph queries.
 
 ## Middle Ground: Structured Query Endpoint (Not Cypher)
 
@@ -51,7 +51,7 @@ Instead of implementing a query language parser, consider a **structured query A
 {
   "match": {
     "nodeType": "Class",
-    "project": "TC.OrdersApi",
+    "project": "OrdersApi",
     "namePattern": ".*Service$"
   },
   "traverse": {
@@ -78,7 +78,7 @@ This gives power users composability without a parser. It's also trivially expos
 advanced_graph_query(
   node_type: "Class",
   name_pattern: ".*Service$",
-  project: "TC.OrdersApi",
+  project: "OrdersApi",
   traverse_direction: "inbound",
   edge_types: ["CALLS", "HTTP_CALLS"],
   max_depth: 2,
@@ -93,22 +93,21 @@ Same capability, no string parsing, agent-friendly parameters.
 
 1. **Don't implement Cypher.** The parser is non-trivial, and the primary consumers (Claude agents) are better served by structured tools.
 2. **Consider an `advanced_query` MCP tool** if the existing tools prove too rigid for real-world questions. Wait until there are concrete examples of questions the current tools can't answer efficiently.
-3. **If a query language ever becomes necessary**, consider exposing MySQL directly via a read-only query tool with a pre-built view layer — the data is already in MySQL, and SQL is a query language Claude knows well.
+3. **If a query language ever becomes necessary**, consider exposing a constrained read-only Neo4j/Cypher tool with a pre-built safety layer rather than inventing a second query language.
 
-## The SQL Escape Hatch
+## The Neo4j Escape Hatch
 
-Worth noting: the graph is in MySQL. A `run_graph_sql` MCP tool that executes read-only SQL against a set of pre-defined views could be more useful than Cypher:
+Worth noting: the graph is in Neo4j. A constrained `run_graph_cypher` MCP tool that executes read-only traversals against a curated allowlist could be more useful than inventing a separate DSL:
 
-```sql
-SELECT p.name, COUNT(*) as inbound_deps
-FROM cross_repo_edges e
-JOIN graph_nodes p ON e.target_project = p.name
-GROUP BY p.name
-ORDER BY inbound_deps DESC
+```cypher
+MATCH (source:Project)-[r]->(target:Project)
+WHERE source <> target
+RETURN target.name AS project, count(r) AS inboundDeps
+ORDER BY inboundDeps DESC
 LIMIT 10
 ```
 
-Claude is excellent at writing SQL. The data is already there. This might be the pragmatic answer if ad-hoc queries become a real need.
+The model is already good at writing Cypher. If ad-hoc traversal becomes a real need, this is likely the pragmatic answer.
 
 ## Open Questions
 

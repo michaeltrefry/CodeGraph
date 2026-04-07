@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models.Messages;
 using CodeGraph.Models.Responses;
@@ -17,9 +18,10 @@ public class ProjectService(
     IMessageBus messageBus,
     IRepoProvider repoProvider,
     IndexingPipeline pipeline,
-    IndexingOptions indexingOptions,
+    IOptions<IndexingOptions> indexingOptionsAccessor,
     ILogger<ProjectService> logger) : IProjectService
 {
+    private readonly IndexingOptions indexingOptions = indexingOptionsAccessor.Value;
     // Shared across all transient instances to limit concurrent repo processing.
     // Initialized lazily from config on first use.
     private static SemaphoreSlim? _repoSemaphore;

@@ -5,8 +5,7 @@ using CodeGraph.Services.Memory;
 namespace CodeGraph.Api.Consumers;
 
 public class StoreMemoryConsumer(
-    MemoryService memoryService,
-    ILogger<StoreMemoryConsumer> logger) : IConsumer<StoreMemory>
+    MemoryService memoryService) : IConsumer<StoreMemory>
 {
     public async Task Consume(ConsumeContext<StoreMemory> context)
     {

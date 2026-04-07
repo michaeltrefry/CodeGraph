@@ -1,5 +1,11 @@
 # CodeGraph Refactoring Plan: Performance & Clean Code
 
+This plan was drafted before the repository rename/restructure and before the storage layer moved off the old MySQL-backed shape. Where legacy names appear below, map them as follows:
+
+- `TC.CodeGraphApi.*` -> `CodeGraph.*`
+- `MySqlGraphStore` -> `Neo4jGraphStore`
+- `ClaudeCodeAnalyzer` -> the former direct-analysis stack that has since been removed
+
 ## Context
 
 CodeGraph indexes ~620 repositories into a MySQL knowledge graph. The API and batch analysis services have grown organically and now contain **N+1 query patterns**, **full-table scans loaded into memory**, **long methods violating SRP**, **overly broad exception handling**, and **near-zero test coverage** on the largest service classes (BatchAnalysisService at 940 lines, IndexingPipeline at 518 lines). This plan addresses performance bottlenecks first, then code quality, then test gaps.

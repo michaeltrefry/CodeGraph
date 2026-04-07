@@ -5,7 +5,7 @@ using CodeGraph.Models.Messages;
 namespace CodeGraph.Api.Consumers;
 
 /// <summary>
-/// Cascading cleanup when a repository is removed from GitLab.
+/// Cascading cleanup when a repository is removed from the configured source provider.
 /// Deletes nodes, edges, analysis records, cross-repo links, and vitals data.
 /// </summary>
 public class RepositoryRemovedConsumer(

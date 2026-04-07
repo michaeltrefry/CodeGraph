@@ -12,11 +12,11 @@ public class RepositorySourceOptions
     /// <summary>
     /// Which provider to use for repository discovery and cloning.
     /// </summary>
-    public RepositorySourceProvider Provider { get; set; } = RepositorySourceProvider.GitLab;
+    public RepositorySourceProvider Provider { get; set; } = RepositorySourceProvider.Folder;
 
     /// <summary>
     /// Local directory where repos are cloned/cached.
-    /// Each repo gets a subdirectory named after the repo (e.g. {ReposCachePath}/TC.OrdersApi).
+    /// Each repo gets a subdirectory named after the repo (e.g. {ReposCachePath}/orders-api).
     /// Used by GitLab and GitHub providers.
     /// </summary>
     public string ReposCachePath { get; set; } = "";
@@ -73,7 +73,7 @@ public class FolderSourceOptions
 {
     /// <summary>
     /// Root directory containing repository directories.
-    /// Each immediate subdirectory that contains a .git folder is treated as a repo.
+    /// Any nested directory that contains a .git folder is treated as a repo.
     /// </summary>
     public string RootPath { get; set; } = "";
 }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Neo4j.Driver;
 using CodeGraph.Models;
 
@@ -7,10 +8,44 @@ namespace CodeGraph.Data.Neo4j;
 
 public partial class Neo4jGraphStore(
     Neo4jSessionFactory sessionFactory,
-    CodeGraphStorageOptions options,
+    IOptions<CodeGraphStorageOptions> optionsAccessor,
     ILogger<Neo4jGraphStore> logger)
     : IGraphStore, IExclusionStore
 {
+    private readonly CodeGraphStorageOptions options = optionsAccessor.Value;
+    private static readonly string[] AllCodeNodeSpecificLabels = Enum.GetNames<NodeLabel>();
+    private static readonly HashSet<string> PromotedNodePropertyKeys =
+    [
+        "signature",
+        "return_type",
+        "is_async",
+        "is_entry_point",
+        "complexity",
+        "http_method",
+        "route_template",
+        "handler",
+        "queue_name",
+        "exchange_name",
+        "message_name",
+        "lifetime",
+        "interface",
+        "implementation",
+        "extractor",
+        "confidence_band",
+        "inferred"
+    ];
+    private static readonly HashSet<string> PromotedEdgePropertyKeys =
+    [
+        "confidence",
+        "confidence_band",
+        "extractor",
+        "inferred",
+        "source_repo",
+        "target_repo",
+        "url_pattern",
+        "http_method"
+    ];
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -191,6 +226,41 @@ public partial class Neo4jGraphStore(
         });
     }
 
+    public async Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects)
+    {
+        if (projects.Count == 0)
+            return new Dictionary<string, SyncStateEntity>(StringComparer.OrdinalIgnoreCase);
+
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH (s:SyncState)
+                WHERE s.project IN $projects
+                RETURN s
+                """,
+                new { projects });
+
+            var results = new Dictionary<string, SyncStateEntity>(StringComparer.OrdinalIgnoreCase);
+            await foreach (var record in cursor)
+            {
+                var node = record["s"].As<INode>();
+                var entity = new SyncStateEntity
+                {
+                    Project = node["project"].As<string>(),
+                    LastSyncAt = GetDateTimeOrNull(node, "lastSyncAt"),
+                    LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
+                    Status = node["status"].As<string>(),
+                    ErrorMessage = GetStringOrNull(node, "errorMessage")
+                };
+                results[entity.Project] = entity;
+            }
+
+            return (IReadOnlyDictionary<string, SyncStateEntity>)results;
+        });
+    }
+
     public async Task UpsertSyncStateAsync(SyncStateEntity state)
     {
         await using var session = sessionFactory.GetSession();
@@ -303,7 +373,7 @@ public partial class Neo4jGraphStore(
         Id = node["appId"].As<long>(),
         Project = node["project"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
-        Label = Enum.Parse<NodeLabel>(node["label"].As<string>()),
+        Label = GetNodeLabel(node),
         Name = node["name"].As<string>(),
         QualifiedName = node["qualifiedName"].As<string>(),
         FilePath = GetStringOrNull(node, "filePath") ?? "",
@@ -315,7 +385,7 @@ public partial class Neo4jGraphStore(
 
     internal static GraphEdge MapEdgeRecord(IRecord record) => new()
     {
-        Id = record["id"].As<long>(),
+        Id = GetRelationshipId(record),
         Project = record["project"].As<string>(),
         SourceId = record["sourceId"].As<long>(),
         TargetId = record["targetId"].As<long>(),
@@ -354,6 +424,166 @@ public partial class Neo4jGraphStore(
     {
         if (string.IsNullOrEmpty(json)) return default;
         return JsonSerializer.Deserialize<T>(json, JsonOptions);
+    }
+
+    internal static string GetCodeNodeMatchPattern(string alias, NodeLabel? label = null)
+        => label is null
+            ? $"({alias}:CodeNode)"
+            : $"({alias}:CodeNode{GetCodeNodeSetLabels(label.Value)})";
+
+    internal static string GetCodeNodeSetLabels(NodeLabel label)
+        => string.Concat(GetCodeNodeLabels(label).Select(static l => $":{l}"));
+
+    internal static Dictionary<string, object> ExtractPromotedNodeProperties(Dictionary<string, object>? props)
+        => ExtractPromotedProperties(props, PromotedNodePropertyKeys);
+
+    internal static Dictionary<string, object> ExtractPromotedEdgeProperties(Dictionary<string, object>? props)
+        => ExtractPromotedProperties(props, PromotedEdgePropertyKeys);
+
+    private static Dictionary<string, object> ExtractPromotedProperties(
+        Dictionary<string, object>? props,
+        HashSet<string> allowedKeys)
+    {
+        var promoted = new Dictionary<string, object>(StringComparer.Ordinal);
+        if (props is null || props.Count == 0)
+            return promoted;
+
+        foreach (var (key, value) in props)
+        {
+            if (!allowedKeys.Contains(key))
+                continue;
+
+            if (TryConvertNeo4jScalar(value, out var converted))
+                promoted[key] = converted;
+        }
+
+        return promoted;
+    }
+
+    private static bool TryConvertNeo4jScalar(object? value, out object converted)
+    {
+        switch (value)
+        {
+            case null:
+                converted = "";
+                return false;
+            case string s:
+                converted = s;
+                return true;
+            case bool b:
+                converted = b;
+                return true;
+            case byte or sbyte or short or ushort or int or uint or long:
+                converted = value;
+                return true;
+            case ulong ul when ul <= long.MaxValue:
+                converted = (long)ul;
+                return true;
+            case float f:
+                converted = (double)f;
+                return true;
+            case double d:
+                converted = d;
+                return true;
+            case decimal m:
+                converted = (double)m;
+                return true;
+            default:
+                converted = "";
+                return false;
+        }
+    }
+
+    private static IReadOnlyList<string> GetCodeNodeLabels(NodeLabel label)
+    {
+        var labels = new List<string>();
+
+        switch (label)
+        {
+            case NodeLabel.Repository:
+            case NodeLabel.DotnetProject:
+            case NodeLabel.Namespace:
+            case NodeLabel.Folder:
+            case NodeLabel.File:
+                labels.Add("Structural");
+                break;
+
+            case NodeLabel.Class:
+            case NodeLabel.Interface:
+            case NodeLabel.Enum:
+            case NodeLabel.Struct:
+            case NodeLabel.Record:
+            case NodeLabel.Delegate:
+                labels.Add("Type");
+                break;
+
+            case NodeLabel.Function:
+            case NodeLabel.Method:
+            case NodeLabel.Property:
+            case NodeLabel.Constructor:
+                labels.Add("Member");
+                break;
+
+            case NodeLabel.Route:
+            case NodeLabel.Service:
+            case NodeLabel.Job:
+                labels.Add("Integration");
+                break;
+
+            case NodeLabel.Event:
+            case NodeLabel.Queue:
+            case NodeLabel.Exchange:
+                labels.Add("Messaging");
+                break;
+
+            case NodeLabel.Table:
+            case NodeLabel.View:
+            case NodeLabel.StoredProcedure:
+                labels.Add("Storage");
+                break;
+
+            case NodeLabel.Component:
+            case NodeLabel.Module:
+                labels.Add("Frontend");
+                break;
+
+            case NodeLabel.NuGetPackage:
+                labels.Add("Package");
+                break;
+        }
+
+        labels.Add(label.ToString());
+        return labels;
+    }
+
+    private static NodeLabel GetNodeLabel(INode node)
+    {
+        if (node.Properties.TryGetValue("label", out var labelValue) &&
+            labelValue is not null &&
+            Enum.TryParse<NodeLabel>(labelValue.As<string>(), out var propertyLabel))
+        {
+            return propertyLabel;
+        }
+
+        foreach (var label in AllCodeNodeSpecificLabels)
+        {
+            if (node.Labels.Contains(label) && Enum.TryParse<NodeLabel>(label, out var inferred))
+                return inferred;
+        }
+
+        throw new InvalidOperationException(
+            $"Unable to infer CodeNode label for node {node.ElementId}.");
+    }
+
+    private static long GetRelationshipId(IRecord record)
+    {
+        if (record.Keys.Contains("id"))
+            return record["id"].As<long>();
+
+        if (record.Keys.Contains("elementId"))
+            return record["elementId"].As<string>().GetHashCode();
+
+        return 0;
     }
 
     internal static List<List<T>> Chunk<T>(IReadOnlyList<T> source, int chunkSize)

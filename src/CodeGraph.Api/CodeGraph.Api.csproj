@@ -8,7 +8,6 @@
 
   <ItemGroup>
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.*" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="7.2.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.1.0" />
@@ -29,6 +28,11 @@
     <Content Include="bin\publish\**">
       <PackagePath>content/</PackagePath>
       <Pack>true</Pack>
+    </Content>
+    <None Remove="Migrations\**\*.cypher" />
+    <Content Include="Migrations\**\*.cypher">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
     <None Include="wwwroot\**\*;**\*.cshtml">
       <CopyToPublishDirectory>Always</CopyToPublishDirectory>

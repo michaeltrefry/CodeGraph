@@ -134,7 +134,7 @@ export class AdminExclusionsComponent implements OnInit {
 
   async load(): Promise<void> {
     try {
-      const rules = await firstValueFrom(this.http.get<ExclusionRule[]>(`${API}/admin/exclusions`));
+      const rules = await firstValueFrom(this.http.get<ExclusionRule[]>(`${API}/settings/exclusions`));
       this.rules.set(rules);
     } catch (err: any) {
       this.error.set(err.message || 'Failed to load exclusion rules');
@@ -147,7 +147,7 @@ export class AdminExclusionsComponent implements OnInit {
     if (!this.newTargetValue.trim()) { this.error.set('Target value is required.'); return; }
 
     try {
-      await firstValueFrom(this.http.post(`${API}/admin/exclusions`, {
+      await firstValueFrom(this.http.post(`${API}/settings/exclusions`, {
         targetType: this.newTargetType,
         targetValue: this.newTargetValue.trim(),
         exclusionType: this.newExclusionType,
@@ -167,7 +167,7 @@ export class AdminExclusionsComponent implements OnInit {
     this.error.set('');
     this.success.set('');
     try {
-      await firstValueFrom(this.http.delete(`${API}/admin/exclusions/${rule.id}`));
+      await firstValueFrom(this.http.delete(`${API}/settings/exclusions/${rule.id}`));
       this.success.set(`Removed exclusion for "${rule.targetValue}".`);
       await this.load();
     } catch (err: any) {

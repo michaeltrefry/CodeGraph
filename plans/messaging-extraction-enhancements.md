@@ -18,9 +18,9 @@
 - Add edges: `Event --ROUTED_TO--> Queue`, `Queue --BOUND_TO--> Exchange` (may need new edge types)
 
 **Key files:**
-- `src/TC.CodeGraphApi.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — extraction logic
-- `src/TC.CodeGraphApi.Models/NodeLabel.cs` — already has Queue/Exchange
-- `src/TC.CodeGraphApi.Models/EdgeType.cs` — may need new edge types
+- `src/CodeGraph.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — extraction logic
+- `src/CodeGraph.Models/Enums/NodeLabel.cs` — already has Queue/Exchange
+- `src/CodeGraph.Models/Enums/EdgeType.cs` — may need new edge types
 
 **Estimated scope:** Medium. Attribute extraction is straightforward; startup configuration parsing is harder since it's often lambda-based.
 
@@ -37,7 +37,7 @@
 - Also check for `[TcServiceBusCommand]` and similar attribute variants
 
 **Key files:**
-- `src/TC.CodeGraphApi.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — add attribute inspection in `VisitClassDeclaration`
+- `src/CodeGraph.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — add attribute inspection in `VisitClassDeclaration`
 - Reference the foundational repo `TC.Common.ServiceStack` for the canonical attribute definitions
 
 **Estimated scope:** Small-Medium. Attribute extraction via Roslyn is well-understood; the main work is cataloging which attributes exist across the foundational repos.
@@ -55,8 +55,8 @@
 - Consider adding `CARRIES_FIELD` edges from Event to referenced model types if the field type is a known domain type
 
 **Key files:**
-- `src/TC.CodeGraphApi.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — property extraction when visiting event classes
-- `src/TC.CodeGraphApi.Services/Pipeline/IndexingPipeline.Resolution.cs` — enrich stub nodes when the real event class is later indexed
+- `src/CodeGraph.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — property extraction when visiting event classes
+- `src/CodeGraph.Services/Pipeline/IndexingPipeline.Resolution.cs` — enrich stub nodes when the real event class is later indexed
 
 **Estimated scope:** Medium. Property extraction is simple; the interesting part is deciding how deep to go (nested types? collections of domain types?).
 
@@ -75,8 +75,8 @@
 - Flag consumer classes that exist but aren't registered (dead code detection)
 
 **Key files:**
-- `src/TC.CodeGraphApi.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — detect registration calls
-- `src/TC.CodeGraphApi.Models/EdgeType.cs` — may need `REGISTERS` edge type
+- `src/CodeGraph.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — detect registration calls
+- `src/CodeGraph.Models/Enums/EdgeType.cs` — may need `REGISTERS` edge type
 
 **Estimated scope:** Medium-Hard. Registration patterns vary significantly across repos and MassTransit versions. Start with the most common patterns and iterate.
 
@@ -93,7 +93,7 @@
 - This enables operational queries: "which consumers have no retry policy?" or "which consumers have high concurrency?"
 
 **Key files:**
-- `src/TC.CodeGraphApi.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — attribute + fluent config extraction
+- `src/CodeGraph.Extractors.CSharp/CodeGraphSyntaxWalker.cs` — attribute + fluent config extraction
 - Consumer class nodes already exist; just need richer properties
 
 **Estimated scope:** Small-Medium. Attribute extraction is easy; fluent configuration parsing is moderate.

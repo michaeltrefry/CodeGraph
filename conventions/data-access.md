@@ -1,8 +1,8 @@
 # Data Access Conventions
 
-All services use **MySQL** with a hybrid ORM approach.
+All services in the target codebase (~620 repos) use **MySQL** with a hybrid ORM approach. CodeGraph itself uses **Neo4j** for its knowledge graph.
 
-## Hybrid Pattern
+## Target Repo Pattern (what CodeGraph indexes)
 
 - **EF Core** (via Pomelo MySQL provider) — CRUD operations, migrations, entity tracking
 - **Dapper** — Complex queries, recursive CTEs, batch operations, performance-critical reads
@@ -28,7 +28,7 @@ public class OrderRepository : IOrderRepository
 }
 ```
 
-## MySQL-Specific SQL
+## MySQL-Specific SQL (target repos)
 
 - `ON DUPLICATE KEY UPDATE` (not `ON CONFLICT`)
 - `JSON_MERGE_PATCH()` (not `json_patch()`)

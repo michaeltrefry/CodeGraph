@@ -2,7 +2,7 @@
 
 ## Idea
 
-Run Louvain community detection across the entire cross-repo graph to automatically discover **service clusters** — groups of repos that are tightly coupled and effectively function as a single system. This complements per-repo Claude analysis with a deterministic, graph-math view of architecture.
+Run Louvain community detection across the entire cross-repo graph to automatically discover **service clusters** — groups of repos that are tightly coupled and effectively function as a single system. This complements per-repo LLM-generated analysis with a deterministic, graph-math view of architecture.
 
 ## What It Would Reveal
 
@@ -74,9 +74,9 @@ CREATE TABLE repo_clusters (
 - `get_cluster_detail` — repos in a cluster, internal vs external edges, coupling metrics
 - Enhance `get_architecture` to include cluster membership
 
-### Bonus: Claude-Named Clusters
+### Bonus: LLM-Named Clusters
 
-After Louvain identifies clusters, pass the member repos + their CODEGRAPH.md summaries to Claude and ask it to name the cluster (e.g., "Order Fulfillment Domain", "Authentication & Identity", "Shared Infrastructure"). Deterministic clustering + semantic naming.
+After Louvain identifies clusters, pass the member repos + their `CODEGRAPH.md` summaries to the configured analysis model and ask it to name the cluster (e.g., "Order Fulfillment Domain", "Authentication & Identity", "Shared Infrastructure"). Deterministic clustering plus semantic naming.
 
 ## Open Questions
 

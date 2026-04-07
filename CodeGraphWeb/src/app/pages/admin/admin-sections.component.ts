@@ -111,7 +111,7 @@ export class AdminSectionsComponent implements OnInit {
 
   async load(): Promise<void> {
     try {
-      const sections = await firstValueFrom(this.http.get<WikiSection[]>(`${API}/admin/sections`));
+      const sections = await firstValueFrom(this.http.get<WikiSection[]>(`${API}/settings/sections`));
       this.sections.set(sections);
     } catch (err: any) {
       this.error.set(err.message || 'Failed to load sections');
@@ -123,7 +123,7 @@ export class AdminSectionsComponent implements OnInit {
     if (!this.newTitle.trim()) { this.error.set('Title is required.'); return; }
 
     try {
-      await firstValueFrom(this.http.post(`${API}/admin/sections`, {
+      await firstValueFrom(this.http.post(`${API}/settings/sections`, {
         title: this.newTitle.trim(),
         icon: this.newIcon.trim() || null,
         allowUserPages: this.newAllowUserPages,
@@ -142,7 +142,7 @@ export class AdminSectionsComponent implements OnInit {
   async remove(section: WikiSection): Promise<void> {
     if (!confirm(`Delete section "${section.title}" and all its pages?`)) return;
     try {
-      await firstValueFrom(this.http.delete(`${API}/admin/sections/${section.id}`));
+      await firstValueFrom(this.http.delete(`${API}/settings/sections/${section.id}`));
       await this.load();
     } catch (err: any) {
       this.error.set(err.error || err.message || 'Failed to delete section');

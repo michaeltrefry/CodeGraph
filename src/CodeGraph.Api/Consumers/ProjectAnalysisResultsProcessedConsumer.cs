@@ -22,8 +22,8 @@ public class ProjectAnalysisResultsProcessedConsumer(
         try
         {
             logger.LogInformation("Synthesizing repo summary for {Repo} (batch {BatchId})",
-                message.RepoName, message.AnthropicBatchId);
-            await batchService.SynthesizeRepoSummaryAsync(message.RepoName, message.AnthropicBatchId, ct);
+                message.RepoName, message.ProviderBatchId);
+            await batchService.SynthesizeRepoSummaryAsync(message.RepoName, message.ProviderBatchId, ct);
         }
         catch (Exception ex)
         {
@@ -34,7 +34,7 @@ public class ProjectAnalysisResultsProcessedConsumer(
         await messageBus.PublishAsync(new AnalysisSynthesisCompleted
         {
             RepoName = message.RepoName,
-            AnthropicBatchId = message.AnthropicBatchId
+            ProviderBatchId = message.ProviderBatchId
         });
     }
 }

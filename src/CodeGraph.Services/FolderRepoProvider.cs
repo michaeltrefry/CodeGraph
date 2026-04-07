@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services;
 
@@ -9,12 +10,12 @@ namespace CodeGraph.Services;
 /// No cloning or fetching — repos are used in place. Optionally fetches if the repo has a remote.
 /// </summary>
 public class FolderRepoProvider(
-    RepositorySourceOptions sourceOptions,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     IExclusionService exclusionService,
     ILogger<FolderRepoProvider> logger)
     : IRepoProvider
 {
-    private readonly FolderSourceOptions _folder = sourceOptions.Folder;
+    private readonly FolderSourceOptions _folder = sourceOptionsAccessor.Value.Folder;
 
     public async Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
     {
@@ -25,12 +26,9 @@ public class FolderRepoProvider(
         var results = new List<DiscoveredProject>();
         var id = 0;
 
-        foreach (var dir in Directory.EnumerateDirectories(_folder.RootPath))
+        foreach (var dir in EnumerateRepositoryDirectories(ct))
         {
             ct.ThrowIfCancellationRequested();
-
-            if (!Directory.Exists(Path.Combine(dir, ".git")))
-                continue;
 
             var name = Path.GetFileName(dir);
             var sourceGroup = GetFolderGroup(dir);
@@ -77,6 +75,10 @@ public class FolderRepoProvider(
         if (Directory.Exists(Path.Combine(candidatePath, ".git")))
             return Task.FromResult(candidatePath);
 
+        var nestedMatch = TryFindRepositoryByName(repoName);
+        if (nestedMatch is not null)
+            return Task.FromResult(nestedMatch);
+
         // repoUrl may be a local path from discovery
         if (!string.IsNullOrWhiteSpace(repoUrl) && Directory.Exists(repoUrl))
             return Task.FromResult(repoUrl);
@@ -94,6 +96,57 @@ public class FolderRepoProvider(
     {
         var relative = Path.GetRelativePath(_folder.RootPath, Path.GetDirectoryName(repoDir)!);
         return relative == "." ? null : relative.Replace('\\', '/');
+    }
+
+    private IEnumerable<string> EnumerateRepositoryDirectories(CancellationToken ct)
+    {
+        var pending = new Stack<string>();
+        pending.Push(_folder.RootPath);
+
+        while (pending.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var current = pending.Pop();
+            IEnumerable<string> children;
+            try
+            {
+                children = Directory.EnumerateDirectories(current);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                if (Directory.Exists(Path.Combine(child, ".git")))
+                {
+                    yield return child;
+                    continue;
+                }
+
+                pending.Push(child);
+            }
+        }
+    }
+
+    private string? TryFindRepositoryByName(string repoName)
+    {
+        var matches = EnumerateRepositoryDirectories(CancellationToken.None)
+            .Where(path => Path.GetFileName(path).Equals(repoName, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+
+        return matches.Count switch
+        {
+            0 => null,
+            1 => matches[0],
+            _ => throw new InvalidOperationException(
+                $"Repository '{repoName}' is ambiguous under '{_folder.RootPath}'. Pass an explicit path instead.")
+        };
     }
 
     private async Task<string> GetDefaultBranchAsync(string repoPath, CancellationToken ct)

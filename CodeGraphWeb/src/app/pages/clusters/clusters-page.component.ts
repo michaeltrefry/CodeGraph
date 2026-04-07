@@ -223,7 +223,7 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
   getClusterLabel(cluster: ClusterInfo): string {
     if (cluster.label) return cluster.label;
     const name = this.clusterNameMap().get(cluster.clusterId);
-    if (name) return name.replace(/^TC\./, '').replace(/Api$/, '');
+    if (name) return name;
     return `Cluster ${cluster.clusterId}`;
   }
 
@@ -418,7 +418,7 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
 
     // Labels
     nodeG.append('text')
-      .text(d => d.id.replace(/^TC\./, '').replace(/Api$/, ''))
+      .text(d => d.id)
       .attr('dy', d => d.radius + 12)
       .attr('text-anchor', 'middle')
       .attr('font-size', '10px')

@@ -227,7 +227,7 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
       .attr('stroke-width', 1.5);
 
     nodeG.append('text')
-      .text(d => d.id.replace(/^TC\./, '').replace(/Api$/, ''))
+      .text(d => d.id)
       .attr('dy', d => d.radius + 12)
       .attr('text-anchor', 'middle')
       .attr('font-size', '10px')

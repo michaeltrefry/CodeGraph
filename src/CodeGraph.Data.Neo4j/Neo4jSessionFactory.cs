@@ -1,4 +1,5 @@
 using Neo4j.Driver;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 
 namespace CodeGraph.Data.Neo4j;
@@ -12,8 +13,9 @@ public sealed class Neo4jSessionFactory : IAsyncDisposable
     private readonly IDriver _driver;
     private readonly string? _database;
 
-    public Neo4jSessionFactory(CodeGraphStorageOptions options)
+    public Neo4jSessionFactory(IOptions<CodeGraphStorageOptions> optionsAccessor)
     {
+        var options = optionsAccessor.Value;
         _driver = GraphDatabase.Driver(
             options.Neo4jUri ?? "bolt://localhost:7687",
             AuthTokens.Basic(

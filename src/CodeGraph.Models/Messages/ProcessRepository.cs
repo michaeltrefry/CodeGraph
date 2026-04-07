@@ -2,7 +2,7 @@ namespace CodeGraph.Models.Messages;
 
 public class ProcessRepository
 {
-    /// <summary>Short repo name, e.g. "TC.OrdersApi"</summary>
+    /// <summary>Short repo name, e.g. "orders-api"</summary>
     public string Name { get; set; } = "";
 
     /// <summary>Absolute local path to the repository root. Optional if RepoUrl is set.</summary>

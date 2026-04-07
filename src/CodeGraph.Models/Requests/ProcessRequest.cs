@@ -7,9 +7,9 @@ public class ProcessRequest
 {
     /// <summary>
     /// Repo entries:
-    ///   "TC.OrdersApi"                                          — name only (resolved via cache or stored repo_url)
-    ///   "TC.OrdersApi::C:\repos\TC.OrdersApi"                   — explicit local path
-    ///   "TC.OrdersApi::https://gitlab.tcdevops.com/Group/Repo"  — explicit GitLab URL
+    ///   "orders-api"                                 — name only (resolved via cache or stored repo_url)
+    ///   "orders-api::C:\repos\orders-api"            — explicit local path
+    ///   "orders-api::https://example.com/orders-api" — explicit remote URL
     /// </summary>
     public List<string> Repos { get; set; } = [];
 
@@ -19,7 +19,7 @@ public class ProcessRequest
 
     /// <summary>
     /// Include source code for all classes in analysis, not just convention-matched ones.
-    /// Use for repos that don't follow the TC.* project structure.
+    /// Use for repos that do not follow the usual controller/service/consumer conventions.
     /// </summary>
     public bool IncludeAllSource { get; set; }
 }

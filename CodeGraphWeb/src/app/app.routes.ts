@@ -81,28 +81,15 @@ export const routes: Routes = [
   // Redirect old convention URLs
   { path: 'conventions', redirectTo: 'wiki/conventions', pathMatch: 'full' },
   { path: 'conventions/:slug', redirectTo: 'wiki/conventions/:slug' },
-  // Auth
+  // Settings
   {
-    path: 'auth/callback',
-    loadComponent: () => import('./pages/auth-callback/auth-callback.component').then(m => m.AuthCallbackComponent)
-  },
-  // Admin
-  {
-    path: 'admin',
+    path: 'settings',
     loadComponent: () => import('./pages/admin/admin-layout.component').then(m => m.AdminLayoutComponent),
     children: [
       { path: '', redirectTo: 'operations', pathMatch: 'full' },
       {
         path: 'operations',
         loadComponent: () => import('./pages/admin/admin-operations.component').then(m => m.AdminOperationsComponent)
-      },
-      {
-        path: 'settings',
-        loadComponent: () => import('./pages/admin/admin-settings.component').then(m => m.AdminSettingsComponent)
-      },
-      {
-        path: 'users',
-        loadComponent: () => import('./pages/admin/admin-users.component').then(m => m.AdminUsersComponent)
       },
       {
         path: 'sections',
@@ -113,5 +100,7 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/admin/admin-exclusions.component').then(m => m.AdminExclusionsComponent)
       }
     ]
-  }
+  },
+  { path: 'admin', redirectTo: 'settings', pathMatch: 'full' },
+  { path: 'admin/:path', redirectTo: 'settings/:path' }
 ];

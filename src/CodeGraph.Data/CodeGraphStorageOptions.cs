@@ -9,7 +9,7 @@ public class CodeGraphStorageOptions
     public string Neo4jUsername { get; set; } = "neo4j";
     public string Neo4jPassword { get; set; } = "";
     public string? Neo4jDatabase { get; set; }
-    public string Neo4jMigrationsPath { get; set; } = "cypher/migrations";
+    public string Neo4jMigrationsPath { get; set; } = "Migrations";
 
     // Embeddings
     public string? EmbeddingModelPath { get; set; }

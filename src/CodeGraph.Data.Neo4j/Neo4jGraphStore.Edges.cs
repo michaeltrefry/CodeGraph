@@ -12,21 +12,7 @@ public partial class Neo4jGraphStore
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
-            // Store edges as separate EdgeRecord nodes linked to source/target
-            // This approach avoids the need for dynamic relationship types
-            await tx.RunAsync("""
-                MERGE (e:EdgeRecord {sourceId: $sourceId, targetId: $targetId, type: $type})
-                SET e.project = $project,
-                    e.properties = $properties
-                """,
-                new
-                {
-                    project = edge.Project,
-                    sourceId = edge.SourceId,
-                    targetId = edge.TargetId,
-                    type = edge.Type.ToString(),
-                    properties = SerializeJson(edge.Properties)
-                });
+            await UpsertRelationshipAsync(tx, edge.Type, [BuildEdgeParams(edge)]);
         });
     }
 
@@ -36,32 +22,20 @@ public partial class Neo4jGraphStore
 
         await using var session = sessionFactory.GetSession();
 
-        // Smaller batches for Neo4j — large UNWIND+MERGE transactions are expensive
         const int neo4jBatchSize = 100;
 
         foreach (var batch in Chunk(edges, neo4jBatchSize))
         {
             ct.ThrowIfCancellationRequested();
 
-            var edgeParams = batch.Select(e => new Dictionary<string, object?>
+            foreach (var group in batch.GroupBy(e => e.Type))
             {
-                ["project"] = e.Project,
-                ["sourceId"] = e.SourceId,
-                ["targetId"] = e.TargetId,
-                ["type"] = e.Type.ToString(),
-                ["properties"] = SerializeJson(e.Properties)
-            }).ToList();
-
-            await session.ExecuteWriteAsync(async tx =>
-            {
-                await tx.RunAsync("""
-                    UNWIND $edges AS e
-                    MERGE (edge:EdgeRecord {sourceId: e.sourceId, targetId: e.targetId, type: e.type})
-                    SET edge.project = e.project,
-                        edge.properties = e.properties
-                    """,
-                    new { edges = edgeParams });
-            });
+                var edgeParams = group.Select(BuildEdgeParams).ToList();
+                await session.ExecuteWriteAsync(async tx =>
+                {
+                    await UpsertRelationshipAsync(tx, group.Key, edgeParams);
+                });
+            }
         }
     }
 
@@ -72,19 +46,30 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cypher = type is null
-                ? "MATCH (e:EdgeRecord {sourceId: $sourceId}) RETURN e"
-                : "MATCH (e:EdgeRecord {sourceId: $sourceId, type: $type}) RETURN e";
+                ? """
+                    MATCH (source:CodeNode {appId: $sourceId})-[e]->(target:CodeNode)
+                    RETURN elementId(e) AS elementId,
+                           coalesce(e.project, source.project) AS project,
+                           source.appId AS sourceId,
+                           target.appId AS targetId,
+                           type(e) AS type,
+                           e.properties AS properties
+                    """
+                : $@"
+                    MATCH (source:CodeNode {{appId: $sourceId}})-[e:{type}]->(target:CodeNode)
+                    RETURN elementId(e) AS elementId,
+                           coalesce(e.project, source.project) AS project,
+                           source.appId AS sourceId,
+                           target.appId AS targetId,
+                           type(e) AS type,
+                           e.properties AS properties
+                    ";
 
-            var parameters = new Dictionary<string, object?> { ["sourceId"] = sourceId };
-            if (type is not null) parameters["type"] = type.Value.ToString();
+            var cursor = await tx.RunAsync(cypher, new { sourceId });
 
-            var cursor = await tx.RunAsync(cypher, parameters);
             var results = new List<GraphEdge>();
             await foreach (var record in cursor)
-            {
-                var node = record["e"].As<INode>();
-                results.Add(MapEdgeNode(node));
-            }
+                results.Add(MapEdgeRecord(record));
             return results;
         });
     }
@@ -96,19 +81,30 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cypher = type is null
-                ? "MATCH (e:EdgeRecord {targetId: $targetId}) RETURN e"
-                : "MATCH (e:EdgeRecord {targetId: $targetId, type: $type}) RETURN e";
+                ? """
+                    MATCH (source:CodeNode)-[e]->(target:CodeNode {appId: $targetId})
+                    RETURN elementId(e) AS elementId,
+                           coalesce(e.project, source.project) AS project,
+                           source.appId AS sourceId,
+                           target.appId AS targetId,
+                           type(e) AS type,
+                           e.properties AS properties
+                    """
+                : $@"
+                    MATCH (source:CodeNode)-[e:{type}]->(target:CodeNode {{appId: $targetId}})
+                    RETURN elementId(e) AS elementId,
+                           coalesce(e.project, source.project) AS project,
+                           source.appId AS sourceId,
+                           target.appId AS targetId,
+                           type(e) AS type,
+                           e.properties AS properties
+                    ";
 
-            var parameters = new Dictionary<string, object?> { ["targetId"] = targetId };
-            if (type is not null) parameters["type"] = type.Value.ToString();
+            var cursor = await tx.RunAsync(cypher, new { targetId });
 
-            var cursor = await tx.RunAsync(cypher, parameters);
             var results = new List<GraphEdge>();
             await foreach (var record in cursor)
-            {
-                var node = record["e"].As<INode>();
-                results.Add(MapEdgeNode(node));
-            }
+                results.Add(MapEdgeRecord(record));
             return results;
         });
     }
@@ -121,18 +117,27 @@ public partial class Neo4jGraphStore
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            var cypher = types is { Length: > 0 }
-                ? "MATCH (e:EdgeRecord) WHERE e.targetId IN $targetIds AND e.type IN $types RETURN e"
-                : "MATCH (e:EdgeRecord) WHERE e.targetId IN $targetIds RETURN e";
+            var cypher = """
+                MATCH (source:CodeNode)-[e]->(target:CodeNode)
+                WHERE target.appId IN $targetIds
+                  AND ($types IS NULL OR type(e) IN $types)
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
+                """;
 
-            var parameters = new Dictionary<string, object?> { ["targetIds"] = targetIds.ToList() };
-            if (types is { Length: > 0 })
-                parameters["types"] = types.Select(t => t.ToString()).ToList();
+            var cursor = await tx.RunAsync(cypher, new
+            {
+                targetIds = targetIds.ToList(),
+                types = types is { Length: > 0 } ? types.Select(t => t.ToString()).ToList() : null
+            });
 
-            var cursor = await tx.RunAsync(cypher, parameters);
             var results = new List<GraphEdge>();
             await foreach (var record in cursor)
-                results.Add(MapEdgeNode(record["e"].As<INode>()));
+                results.Add(MapEdgeRecord(record));
             return results;
         });
     }
@@ -143,12 +148,21 @@ public partial class Neo4jGraphStore
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            var cursor = await tx.RunAsync(
-                "MATCH (e:EdgeRecord {type: $type}) RETURN e",
-                new { type = type.ToString() });
+            var cypher = $@"
+                MATCH (source:CodeNode)-[e:{type}]->(target:CodeNode)
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
+                ";
+
+            var cursor = await tx.RunAsync(cypher);
+
             var results = new List<GraphEdge>();
             await foreach (var record in cursor)
-                results.Add(MapEdgeNode(record["e"].As<INode>()));
+                results.Add(MapEdgeRecord(record));
             return results;
         });
     }
@@ -160,7 +174,7 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (e:EdgeRecord) RETURN e.type AS type, count(e) AS count");
+                "MATCH (:CodeNode)-[e]->(:CodeNode) RETURN type(e) AS type, count(e) AS count");
             var result = new Dictionary<EdgeType, int>();
             await foreach (var record in cursor)
             {
@@ -179,9 +193,8 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (e:EdgeRecord {type: 'CALLS'})
-                MATCH (n:CodeNode {project: $project, appId: e.targetId})
-                WITH e.targetId AS targetId, count(e) AS cnt
+                MATCH (:CodeNode)-[e:CALLS]->(n:CodeNode {project: $project})
+                WITH n.appId AS targetId, count(e) AS cnt
                 WHERE cnt >= $minFanIn
                 RETURN targetId, cnt
                 """,
@@ -328,12 +341,10 @@ public partial class Neo4jGraphStore
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            var edgeFilterClause = edgeFilter is { Length: > 0 }
-                ? "AND e.type IN $edgeTypes"
-                : "";
-            var edgeTypes = edgeFilter?.Select(ef => ef.ToString()).ToList();
+            var edgeTypes = edgeFilter is { Length: > 0 }
+                ? edgeFilter.Select(ef => ef.ToString()).ToList()
+                : null;
 
-            // BFS traversal: expand one hop at a time from application side
             var allResults = new List<TraversalEntry>();
             var currentFrontier = new HashSet<long> { startNodeId };
             var allVisited = new HashSet<long> { startNodeId };
@@ -342,51 +353,13 @@ public partial class Neo4jGraphStore
             {
                 if (currentFrontier.Count == 0) break;
 
-                var frontierList = currentFrontier.ToList();
-                string whereClause = direction switch
+                var hopCursor = await tx.RunAsync(BuildTraversalCypher(direction), new
                 {
-                    TraceDirection.Outbound => "e.sourceId IN $frontier",
-                    TraceDirection.Inbound => "e.targetId IN $frontier",
-                    TraceDirection.Both => "(e.sourceId IN $frontier OR e.targetId IN $frontier)",
-                    _ => throw new ArgumentOutOfRangeException(nameof(direction))
-                };
+                    frontier = currentFrontier.ToList(),
+                    visited = allVisited.ToList(),
+                    edgeTypes
+                });
 
-                string selectNodeId = direction switch
-                {
-                    TraceDirection.Outbound => "e.targetId",
-                    TraceDirection.Inbound => "e.sourceId",
-                    TraceDirection.Both =>
-                        "CASE WHEN e.sourceId IN $frontier THEN e.targetId ELSE e.sourceId END",
-                    _ => throw new ArgumentOutOfRangeException(nameof(direction))
-                };
-
-                string selectParentId = direction switch
-                {
-                    TraceDirection.Outbound => "e.sourceId",
-                    TraceDirection.Inbound => "e.targetId",
-                    TraceDirection.Both =>
-                        "CASE WHEN e.sourceId IN $frontier THEN e.sourceId ELSE e.targetId END",
-                    _ => throw new ArgumentOutOfRangeException(nameof(direction))
-                };
-
-                var hopCypher =
-                    "MATCH (e:EdgeRecord) " +
-                    "WHERE " + whereClause + " " + edgeFilterClause + " " +
-                    "WITH DISTINCT " + selectNodeId + " AS nodeId, e.type AS edgeType, " +
-                    selectParentId + " AS parentNodeId, e.properties AS edgeProperties " +
-                    "WHERE NOT nodeId IN $visited " +
-                    "MATCH (n:CodeNode {appId: nodeId}) " +
-                    "RETURN n, edgeType, parentNodeId, edgeProperties " +
-                    "ORDER BY n.name";
-
-                var parameters = new Dictionary<string, object?>
-                {
-                    ["frontier"] = frontierList,
-                    ["visited"] = allVisited.ToList()
-                };
-                if (edgeTypes is not null) parameters["edgeTypes"] = edgeTypes;
-
-                var hopCursor = await tx.RunAsync(hopCypher, parameters);
                 var nextFrontier = new HashSet<long>();
 
                 await foreach (var record in hopCursor)
@@ -469,19 +442,77 @@ public partial class Neo4jGraphStore
 
     // ── Edge Helpers ──────────────────────────────────────────────────────
 
-    private static GraphEdge MapEdgeNode(INode node)
+    private static async Task UpsertRelationshipAsync(
+        IAsyncQueryRunner tx,
+        EdgeType type,
+        IReadOnlyList<Dictionary<string, object?>> edges)
     {
-        var id = node.Properties.ContainsKey("appId") ? node["appId"].As<long>() : node.ElementId.GetHashCode();
-        return new()
-        {
-            Id = id,
-            Project = node["project"].As<string>(),
-            SourceId = node["sourceId"].As<long>(),
-            TargetId = node["targetId"].As<long>(),
-            Type = Enum.Parse<EdgeType>(node["type"].As<string>()),
-            Properties = DeserializeJson(GetStringOrNull(node, "properties")) ?? new()
-        };
+        var relationshipType = type.ToString();
+        var cypher = $@"
+            UNWIND $edges AS e
+            MATCH (source:CodeNode {{appId: e.sourceId}})
+            MATCH (target:CodeNode {{appId: e.targetId}})
+            MERGE (source)-[rel:{relationshipType}]->(target)
+            SET rel.project = e.project,
+                rel.properties = e.properties
+            SET rel += e.promotedProperties
+            ";
+
+        await tx.RunAsync(cypher,
+            new { edges });
     }
+
+    private static Dictionary<string, object?> BuildEdgeParams(GraphEdge edge) => new()
+    {
+        ["project"] = edge.Project,
+        ["sourceId"] = edge.SourceId,
+        ["targetId"] = edge.TargetId,
+        ["properties"] = SerializeJson(edge.Properties),
+        ["promotedProperties"] = ExtractPromotedEdgeProperties(edge.Properties)
+    };
+
+    private static string BuildTraversalCypher(TraceDirection direction) => direction switch
+    {
+        TraceDirection.Outbound => """
+            MATCH (source:CodeNode)-[e]->(target:CodeNode)
+            WHERE source.appId IN $frontier
+              AND NOT (target.appId IN $visited)
+              AND ($edgeTypes IS NULL OR type(e) IN $edgeTypes)
+            RETURN target AS n,
+                   type(e) AS edgeType,
+                   source.appId AS parentNodeId,
+                   e.properties AS edgeProperties
+            ORDER BY n.name
+            """,
+
+        TraceDirection.Inbound => """
+            MATCH (source:CodeNode)-[e]->(target:CodeNode)
+            WHERE target.appId IN $frontier
+              AND NOT (source.appId IN $visited)
+              AND ($edgeTypes IS NULL OR type(e) IN $edgeTypes)
+            RETURN source AS n,
+                   type(e) AS edgeType,
+                   target.appId AS parentNodeId,
+                   e.properties AS edgeProperties
+            ORDER BY n.name
+            """,
+
+        TraceDirection.Both => """
+            MATCH (source:CodeNode)-[e]->(target:CodeNode)
+            WHERE (source.appId IN $frontier OR target.appId IN $frontier)
+              AND ($edgeTypes IS NULL OR type(e) IN $edgeTypes)
+            WITH DISTINCT
+                CASE WHEN source.appId IN $frontier THEN target ELSE source END AS n,
+                type(e) AS edgeType,
+                CASE WHEN source.appId IN $frontier THEN source.appId ELSE target.appId END AS parentNodeId,
+                e.properties AS edgeProperties
+            WHERE NOT (n.appId IN $visited)
+            RETURN n, edgeType, parentNodeId, edgeProperties
+            ORDER BY n.name
+            """,
+
+        _ => throw new ArgumentOutOfRangeException(nameof(direction), direction, null)
+    };
 
     private static CrossRepoEdge MapCrossRepoEdgeNode(INode node)
     {
@@ -497,5 +528,4 @@ public partial class Neo4jGraphStore
             Properties = DeserializeJson(GetStringOrNull(node, "properties")) ?? new()
         };
     }
-
 }

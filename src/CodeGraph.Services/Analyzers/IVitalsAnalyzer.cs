@@ -9,7 +9,7 @@ public interface IVitalsAnalyzer
     Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default);
 
     /// <summary>
-    /// Sends vitals metrics to Claude for interpretation and stores the analysis
+    /// Sends vitals metrics to the configured analysis model for interpretation and stores the analysis
     /// in project_health_analyses. Call after ComputeMetricsAsync.
     /// </summary>
     Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default);

@@ -48,7 +48,7 @@ public class SecurityAnalyzerTests
         var finding = Find(result, "secret", "AWS");
         finding.ShouldNotBeNull();
         finding.Severity.ShouldBe("critical");
-        finding.FilePath.ShouldContain("config.cs");
+        finding!.FilePath!.ShouldContain("config.cs");
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public class SecurityAnalyzerTests
         var finding = Find(result, "secret", "Hardcoded Password");
         finding.ShouldNotBeNull();
         finding.Severity.ShouldBe("high");
-        finding.FilePath.ShouldContain("login.cs");
+        finding!.FilePath!.ShouldContain("login.cs");
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -157,7 +157,7 @@ public class SecurityAnalyzerTests
     public async Task IgnoresInterfaceMethodSignatures()
     {
         _files.AddFile("src/IEncryptDecrypt.cs", """
-            namespace TC.Common.Encryption
+            namespace Example.Common.Encryption
             {
                 public interface IEncryptDecrypt
                 {
@@ -432,7 +432,7 @@ public class SecurityAnalyzerTests
 
         var findings = result.Findings.Where(f => f.Title.Contains("Hardcoded Password")).ToList();
         findings.Count.ShouldBe(1);
-        findings[0].FilePath.ShouldContain(".cs");
+        findings[0].FilePath!.ShouldContain(".cs");
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -457,7 +457,7 @@ public class SecurityAnalyzerTests
         var finding = Find(result, "attack_surface", "SQL injection");
         finding.ShouldNotBeNull();
         finding.Severity.ShouldBe("high");
-        finding.FilePath.ShouldContain("Repo.cs");
+        finding!.FilePath!.ShouldContain("Repo.cs");
     }
 
     [Fact]

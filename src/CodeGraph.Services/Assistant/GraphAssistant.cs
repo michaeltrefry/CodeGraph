@@ -4,6 +4,7 @@ using System.Text.Json;
 using Anthropic;
 using Anthropic.Models.Messages;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Services.Configuration;
@@ -20,10 +21,12 @@ public partial class GraphAssistant(
     GraphQueryEngine query,
     IGraphStore store,
     IWikiStore wikiStore,
-    RepositorySourceOptions sourceOptions,
-    AnalysisOptions options,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor,
+    IOptions<AnalysisOptions> optionsAccessor,
     ILogger<GraphAssistant> logger)
 {
+    private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
+    private readonly AnalysisOptions options = optionsAccessor.Value;
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true
@@ -238,7 +241,7 @@ public partial class GraphAssistant(
 
     private static string GetSystemPrompt() => """
         You are an expert assistant for a codebase knowledge graph covering 620+ repositories
-        at a domain name reseller and auctioneer (HugeDomains.com, DropCatch.com, NameBright.com).
+        across a large multi-repository software ecosystem.
 
         You have access to tools that query the structural graph of all repositories.
         Use them to answer questions about service dependencies, API endpoints, events,
@@ -246,11 +249,8 @@ public partial class GraphAssistant(
         For health questions, use get_project_health (single repo) or get_fleet_health (all repos).
         When you need to see actual code, use read_node_source (by node ID) or get_code_snippet (by file path).
 
-        Business context:
-        - Drop catching: competing to register expiring domains at the moment they're deleted
-        - Domain valuation: AI-augmented scoring before purchase decisions
-        - EPP: Extensible Provisioning Protocol for registry communication
-        - TC.*.Models NuGet packages are the canonical cross-repo linking keys
+        Shared internal contracts, event schemas, and package references are often important
+        cross-repository linking keys.
 
         When answering, cite specific repositories, node names, and edge types.
         Be specific and concrete — use the data from the graph, not guesses.

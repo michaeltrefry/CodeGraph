@@ -70,8 +70,8 @@ public class AdminService(
             var message = new ProcessRepository
             {
                 Name             = project.Name,
-                Path             = project.LocalPath,
-                RepoUrl        = project.RepoUrl,
+                Path             = project.LocalPath ?? "",
+                RepoUrl          = project.RepoUrl,
                 ShouldIndex      = true,
                 ShouldAnalyze    = false,
                 SkipIfUpToDate   = false
@@ -132,13 +132,11 @@ public class AdminService(
         if (skipIfUpToDate && limit.HasValue)
         {
             var allProjects = await graphStore.ListRepositoriesAsync();
-            alreadySynced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var p in allProjects)
-            {
-                var sync = await graphStore.GetSyncStateAsync(p.Name);
-                if (sync?.LastCommitSha is not null)
-                    alreadySynced.Add(p.Name);
-            }
+            var syncStates = await graphStore.GetSyncStatesAsync(allProjects.Select(p => p.Name).ToList());
+            alreadySynced = syncStates
+                .Where(kvp => kvp.Value.LastCommitSha is not null)
+                .Select(kvp => kvp.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
 
         var published = new List<string>();

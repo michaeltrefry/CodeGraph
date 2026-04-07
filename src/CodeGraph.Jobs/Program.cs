@@ -8,11 +8,7 @@ public class Program
     public static void Main(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
-
-        var appSettings = new CodeGraphServiceSettings();
-        builder.Configuration.GetSection("CodeGraph").Bind(appSettings);
-
-        Startup.ConfigureServices(builder.Services, appSettings);
+        Startup.ConfigureServices(builder.Services, builder.Configuration);
 
         builder.WebHost
             .UseContentRoot(Directory.GetCurrentDirectory())

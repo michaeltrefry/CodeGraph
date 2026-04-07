@@ -1,7 +1,7 @@
 namespace CodeGraph.Data;
 
 /// <summary>
-/// Applies SQL migration scripts to the database.
+/// Applies pending schema migration scripts to the backing store.
 /// </summary>
 public interface IMigrationRunner
 {

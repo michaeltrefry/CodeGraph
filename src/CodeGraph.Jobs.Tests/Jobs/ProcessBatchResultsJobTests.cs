@@ -15,12 +15,12 @@ public class ProcessBatchResultsJobTests
         {
             Args = new Dictionary<string, string>
             {
-                ["repo"] = "TC.OrdersApi"
+                ["repo"] = "Orders.Api"
             }
         });
 
         batchService.ProcessCompletedCalls.ShouldBe(1);
-        batchService.ProcessedRepo.ShouldBe("TC.OrdersApi");
+        batchService.ProcessedRepo.ShouldBe("Orders.Api");
     }
 
     [Fact]

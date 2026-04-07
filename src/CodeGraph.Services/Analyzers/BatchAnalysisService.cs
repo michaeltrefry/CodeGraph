@@ -15,25 +15,23 @@ namespace CodeGraph.Services.Analyzers;
 
 public partial class BatchAnalysisService(
     IGraphStore store,
-    IHttpClientFactory httpClientFactory,
-    AnthropicCircuitBreaker circuitBreaker,
+    IAnalysisProviderRegistry providerRegistry,
     IMessageBus messageBus,
     IExclusionService exclusionService,
-    AnalysisOptions options,
+    IOptions<AnalysisOptions> optionsAccessor,
     IFileSystem fileSystem,
     ILogger<BatchAnalysisService> logger)
     : IBatchAnalysisService
 {
-    private string BaseUrl => options.BatchApiBaseUrl;
-    private string AnthropicVersion => options.AnthropicVersion;
-
+    private readonly AnalysisOptions options = optionsAccessor.Value;
     private static readonly HashSet<string> StructuralEdgeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "DEFINES", "CONTAINS_FILE", "CONTAINS_FOLDER", "CONTAINS_NAMESPACE"
+        "DEFINES", "DEFINES_METHOD", "CONTAINS_FILE", "CONTAINS_FOLDER", "CONTAINS_NAMESPACE", "CONTAINS_PROJECT"
     };
 
     private static readonly JsonSerializerOptions CamelOpts = CodeGraphJsonDefaults.CamelCase;
-    private static readonly JsonSerializerOptions SnakeOpts = CodeGraphJsonDefaults.SnakeCase;
+    private const string NativeBatchExecutionMode = "native_batch";
+    private const string DirectFallbackExecutionMode = "direct_fallback";
 
     public async Task SubmitAnalysisBatchAsync(string repoName, string? repoPath = null,
         bool includeAllSource = false, CancellationToken ct = default)
@@ -67,8 +65,9 @@ public partial class BatchAnalysisService(
             includeAllSource ? " (all source)" : "");
 
         var nodeById = allNodes.ToDictionary(n => n.Id);
-        var batchRequests = new List<BatchRequest>();
+        var batchRequests = new List<AnalysisBatchRequestItem>();
         var batchRequestEntities = new List<AnalysisBatchRequestEntity>();
+        var provider = providerRegistry.GetProvider();
 
         foreach (var (projectName, projectNodes) in nodesByProject)
         {
@@ -76,19 +75,13 @@ public partial class BatchAnalysisService(
             // custom_id: alphanumeric/hyphens/underscores only, max 64 chars
             var customId = SanitizeCustomId($"proj_{repoName}_{projectName}");
 
-            batchRequests.Add(new BatchRequest
-            {
-                CustomId = customId,
-                Params = new BatchRequestParams
-                {
-                    Model = options.Model,
-                    MaxTokens = options.MaxTokensPerAnalysis,
-                    Messages = [new BatchMessage { Role = "user", Content = prompt }]
-                }
-            });
+            batchRequests.Add(new AnalysisBatchRequestItem(
+                customId,
+                new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, prompt)));
 
             batchRequestEntities.Add(new AnalysisBatchRequestEntity
             {
+                Sequence = batchRequestEntities.Count,
                 CustomId = customId,
                 NodeId = null,
                 NodeLabel = projectName, // Store full project name for result processing
@@ -96,27 +89,28 @@ public partial class BatchAnalysisService(
             });
         }
 
-        logger.LogInformation("Submitting {Count} per-project request(s) to Anthropic for {Repo}",
-            batchRequests.Count, repoName);
+        var executionMode = provider.Capabilities.SupportsBatch
+            ? NativeBatchExecutionMode
+            : DirectFallbackExecutionMode;
 
-        var http = httpClientFactory.CreateClient();
-        using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Post, BaseUrl, new { requests = batchRequests }), ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            logger.LogError("Anthropic batch submission failed {Status}: {Body}",
-                (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
-        }
+        var providerBatchId = provider.Capabilities.SupportsBatch
+            ? (await provider.SubmitBatchAsync(
+                batchRequests,
+                new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerAnalysis),
+                ct)).BatchId
+            : CreateDirectFallbackBatchId(provider.ProviderName, repoName);
 
-        var created = await response.Content.ReadFromJsonAsync<BatchCreatedResponse>(SnakeOpts, ct)
-            ?? throw new InvalidOperationException("Anthropic returned null batch response");
+        logger.LogInformation(
+            "Queued {Count} per-project analysis request(s) for {Repo} via {Provider} ({Mode})",
+            batchRequests.Count, repoName, provider.ProviderName, executionMode);
 
         var batchEntity = new AnalysisBatchEntity
         {
             Repo = repoName,
-            AnthropicBatchId = created.Id,
+            ProviderBatchId = providerBatchId,
+            ProviderName = provider.ProviderName,
+            ExecutionMode = executionMode,
+            IncludeAllSource = includeAllSource,
             Status = "submitted",
             RequestCount = batchRequests.Count,
             CompletedCount = 0,
@@ -129,14 +123,14 @@ public partial class BatchAnalysisService(
             entity.BatchId = batchId;
         await store.CreateBatchRequestsAsync(batchRequestEntities);
 
-        logger.LogInformation("Batch {AnthropicBatchId} submitted for {Repo} ({Count} projects)",
-            created.Id, repoName, batchRequests.Count);
+        logger.LogInformation("Batch {ProviderBatchId} submitted via {Provider} for {Repo} ({Count} projects, {Mode})",
+            providerBatchId, provider.ProviderName, repoName, batchRequests.Count, executionMode);
 
         // Schedule a delayed check for batch completion
         await messageBus.PublishAsync(new AnalysisBatchSubmitted
         {
             RepoName = repoName,
-            AnthropicBatchId = created.Id,
+            ProviderBatchId = providerBatchId,
             RequestCount = batchRequests.Count
         });
     }
@@ -152,58 +146,68 @@ public partial class BatchAnalysisService(
 
         logger.LogInformation("Checking {Count} pending batch(es)", pendingBatches.Count);
 
-        var http = httpClientFactory.CreateClient();
-
         foreach (var pending in pendingBatches)
         {
-            using var statusResponse = await circuitBreaker.ExecuteAsync(http,
-                () => CreateRequest(HttpMethod.Get, $"{BaseUrl}/{pending.AnthropicBatchId}"), ct);
-            if (!statusResponse.IsSuccessStatusCode)
+            var provider = providerRegistry.GetProvider(pending.ProviderName);
+            if (string.Equals(pending.ExecutionMode, DirectFallbackExecutionMode, StringComparison.OrdinalIgnoreCase))
             {
-                logger.LogError("Failed to retrieve batch results for {Id} on repo {Repo}: {Status}", pending.AnthropicBatchId, pending.Repo, statusResponse.StatusCode);
+                await ProcessDirectFallbackBatchAsync(pending, provider, ct);
+                continue;
+            }
+
+            AnalysisBatchStatusResult status;
+            try
+            {
+                status = await provider.GetBatchStatusAsync(pending.ProviderBatchId, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to retrieve batch results for {Id} on repo {Repo}",
+                    pending.ProviderBatchId, pending.Repo);
                 await store.UpdateBatchStatusAsync(pending.Id, "failed", 0, DateTime.UtcNow);
                 continue;
             }
 
-            var status = await statusResponse.Content.ReadFromJsonAsync<BatchStatusResponse>(SnakeOpts, ct);
-            if (status?.ProcessingStatus != "ended")
+            if (!status.IsCompleted)
             {
                 logger.LogDebug("Batch {Id} status: {Status} — skipping",
-                    pending.AnthropicBatchId, status?.ProcessingStatus);
+                    pending.ProviderBatchId, status.ProcessingStatus);
                 continue;
             }
 
             logger.LogInformation("Batch {Id} completed, processing results for {Repo}",
-                pending.AnthropicBatchId, pending.Repo);
+                pending.ProviderBatchId, pending.Repo);
 
             // Load batch requests to map customId → project name
             var batchRequests = await store.GetBatchRequestsAsync(pending.Id);
             var projectNameByCustomId = batchRequests.ToDictionary(r => r.CustomId, r => r.NodeLabel);
 
             int completed = 0;
-
-            using var resultsResponse = await circuitBreaker.ExecuteAsync(http,
-                () => CreateRequest(HttpMethod.Get, $"{BaseUrl}/{pending.AnthropicBatchId}/results"), ct);
-            resultsResponse.EnsureSuccessStatusCode();
-
-            await using var stream = await resultsResponse.Content.ReadAsStreamAsync(ct);
-            using var reader = new StreamReader(stream);
-
-            while (!reader.EndOfStream)
+            IReadOnlyList<AnalysisBatchItemResult> results;
+            try
             {
-                var line = await reader.ReadLineAsync(ct);
-                if (string.IsNullOrWhiteSpace(line)) continue;
+                results = await provider.GetBatchResultsAsync(
+                    pending.ProviderBatchId,
+                    batchRequests.Select(r => r.CustomId).ToList(),
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to download batch result lines for {Id} on repo {Repo}",
+                    pending.ProviderBatchId, pending.Repo);
+                await store.UpdateBatchStatusAsync(pending.Id, "failed", 0, DateTime.UtcNow);
+                continue;
+            }
 
-                var result = JsonSerializer.Deserialize<BatchResultLine>(line, SnakeOpts);
-                if (result is null) continue;
-
+            foreach (var result in results)
+            {
                 var projectName = projectNameByCustomId.GetValueOrDefault(result.CustomId, result.CustomId);
-                await ProcessBatchResultAsync(result, pending.Repo, pending.AnthropicBatchId, projectName);
+                await ProcessBatchResultAsync(result, pending.Repo, pending.ProviderBatchId, projectName);
                 completed++;
             }
 
             await store.UpdateBatchStatusAsync(pending.Id, "completed", completed, DateTime.UtcNow);
-            logger.LogInformation("Batch {Id}: {Count} result(s) stored", pending.AnthropicBatchId, completed);
+            logger.LogInformation("Batch {Id}: {Count} result(s) stored", pending.ProviderBatchId, completed);
 
             // Publish event to trigger synthesis and doc generation asynchronously
             if (completed > 0)
@@ -211,7 +215,7 @@ public partial class BatchAnalysisService(
                 await messageBus.PublishAsync(new ProjectAnalysisResultsProcessed
                 {
                     RepoName = pending.Repo,
-                    AnthropicBatchId = pending.AnthropicBatchId,
+                    ProviderBatchId = pending.ProviderBatchId,
                     CompletedCount = completed
                 });
                 logger.LogInformation("Published ProjectAnalysisResultsProcessed for {Repo}", pending.Repo);
@@ -219,24 +223,135 @@ public partial class BatchAnalysisService(
         }
     }
 
-    private async Task ProcessBatchResultAsync(BatchResultLine result, string repoName, string batchId, string projectName)
+    private async Task ProcessDirectFallbackBatchAsync(
+        StoredAnalysisBatch pending,
+        IAnalysisModelProvider provider,
+        CancellationToken ct)
     {
-        if (result.Result?.Type != "succeeded" || result.Result.Message is null)
+        logger.LogInformation(
+            "Running direct-fallback analysis for batch {Id} on {Repo} via {Provider}",
+            pending.ProviderBatchId, pending.Repo, provider.ProviderName);
+
+        var batchRequests = await store.GetBatchRequestsAsync(pending.Id);
+        if (batchRequests.Count == 0)
         {
-            logger.LogWarning("Batch {BatchId} request {CustomId} did not succeed: {Type}",
-                batchId, result.CustomId, result.Result?.Type);
-            await store.UpdateBatchRequestStatusAsync(result.CustomId, "errored", DateTime.UtcNow);
+            logger.LogWarning("Batch {Id} for {Repo} has no stored requests", pending.ProviderBatchId, pending.Repo);
+            await store.UpdateBatchStatusAsync(pending.Id, "failed", 0, DateTime.UtcNow);
             return;
         }
 
-        var text = result.Result.Message.Content
-            .Where(c => c.Type == "text")
-            .Select(c => c.Text)
-            .FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+        var remainingRequests = batchRequests
+            .Where(r => string.Equals(r.Status, "pending", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var completed = batchRequests.Count - remainingRequests.Count;
 
-        if (string.IsNullOrWhiteSpace(text))
+        if (remainingRequests.Count == 0)
         {
-            logger.LogWarning("Batch {BatchId} request {CustomId}: empty response", batchId, result.CustomId);
+            await store.UpdateBatchStatusAsync(pending.Id, "completed", completed, DateTime.UtcNow);
+            if (completed > 0)
+            {
+                await messageBus.PublishAsync(new ProjectAnalysisResultsProcessed
+                {
+                    RepoName = pending.Repo,
+                    ProviderBatchId = pending.ProviderBatchId,
+                    CompletedCount = completed
+                });
+                logger.LogInformation("Published ProjectAnalysisResultsProcessed for {Repo}", pending.Repo);
+            }
+            return;
+        }
+
+        var allNodes = await store.GetAllNodesByProjectAsync(pending.Repo);
+        if (allNodes.Count == 0)
+        {
+            logger.LogWarning("Batch {Id} for {Repo} cannot be replayed because no nodes were found",
+                pending.ProviderBatchId, pending.Repo);
+            await store.UpdateBatchStatusAsync(pending.Id, "failed", completed, DateTime.UtcNow);
+            return;
+        }
+
+        var nodeIds = allNodes.Select(n => n.Id).ToList();
+        var allEdges = await store.GetEdgesForNodesAsync(nodeIds);
+        var nodeById = allNodes.ToDictionary(n => n.Id);
+        var nodesByProject = allNodes
+            .GroupBy(n => GetDotnetProject(n))
+            .Where(g => !string.IsNullOrEmpty(g.Key))
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var orphanNodes = allNodes.Where(n => string.IsNullOrEmpty(GetDotnetProject(n))).ToList();
+        if (orphanNodes.Count > 0 && nodesByProject.Count == 0)
+            nodesByProject["unknown"] = orphanNodes;
+
+        var repoPath = (await store.GetRepositoryByName(pending.Repo))?.LocalPath;
+
+        foreach (var request in remainingRequests)
+        {
+            AnalysisBatchItemResult result;
+            if (!nodesByProject.TryGetValue(request.NodeLabel, out var projectNodes))
+            {
+                logger.LogWarning("Batch {Id} request {CustomId} could not find project group {Project}",
+                    pending.ProviderBatchId, request.CustomId, request.NodeLabel);
+                result = new AnalysisBatchItemResult(request.CustomId, "errored", null, null);
+            }
+            else
+            {
+                try
+                {
+                    var prompt = await BuildProjectPromptAsync(
+                        pending.Repo,
+                        request.NodeLabel,
+                        projectNodes,
+                        allEdges,
+                        nodeById,
+                        repoPath,
+                        pending.IncludeAllSource);
+
+                    var response = await provider.ExecuteAsync(
+                        new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, prompt),
+                        new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerAnalysis),
+                        ct);
+
+                    result = new AnalysisBatchItemResult(
+                        request.CustomId,
+                        "succeeded",
+                        response.Text,
+                        response.ModelUsed);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Direct fallback analysis failed for batch {Id} request {CustomId} on {Repo}",
+                        pending.ProviderBatchId, request.CustomId, pending.Repo);
+                    result = new AnalysisBatchItemResult(request.CustomId, "errored", null, null);
+                }
+            }
+
+            await ProcessBatchResultAsync(result, pending.Repo, pending.ProviderBatchId, request.NodeLabel);
+            completed++;
+        }
+
+        await store.UpdateBatchStatusAsync(pending.Id, "completed", completed, DateTime.UtcNow);
+        logger.LogInformation("Batch {Id}: {Count} direct-fallback result(s) stored",
+            pending.ProviderBatchId, completed);
+
+        if (completed > 0)
+        {
+            await messageBus.PublishAsync(new ProjectAnalysisResultsProcessed
+            {
+                RepoName = pending.Repo,
+                ProviderBatchId = pending.ProviderBatchId,
+                CompletedCount = completed
+            });
+            logger.LogInformation("Published ProjectAnalysisResultsProcessed for {Repo}", pending.Repo);
+        }
+    }
+
+    private async Task ProcessBatchResultAsync(AnalysisBatchItemResult result, string repoName, string batchId, string projectName)
+    {
+        if (!string.Equals(result.Status, "succeeded", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(result.Text))
+        {
+            logger.LogWarning("Batch {BatchId} request {CustomId} did not succeed: {Type}",
+                batchId, result.CustomId, result.Status);
             await store.UpdateBatchRequestStatusAsync(result.CustomId, "errored", DateTime.UtcNow);
             return;
         }
@@ -244,11 +359,11 @@ public partial class BatchAnalysisService(
         ProjectAnalysisResult? parsed;
         try
         {
-            parsed = JsonSerializer.Deserialize<ProjectAnalysisResult>(text.StripCodeFences(), CamelOpts);
+            parsed = JsonSerializer.Deserialize<ProjectAnalysisResult>(result.Text.NormalizeJsonResponse(), CamelOpts);
         }
         catch (JsonException)
         {
-            parsed = TryRepairTruncatedProjectJson(text);
+            parsed = TryRepairTruncatedProjectJson(result.Text);
             if (parsed is null)
             {
                 logger.LogWarning("Batch {BatchId} request {CustomId}: truncated JSON could not be repaired",
@@ -263,7 +378,7 @@ public partial class BatchAnalysisService(
 
         if (parsed is null) return;
 
-        var model = result.Result.Message.Model;
+        var model = result.ModelUsed ?? options.Model;
 
         // Store per-project summary
         if (!string.IsNullOrWhiteSpace(parsed.ProjectSummary))
@@ -312,8 +427,8 @@ public partial class BatchAnalysisService(
     }
 
     /// <summary>
-    /// Sanitize a custom_id for the Anthropic Batch API: alphanumeric, hyphens,
-    /// underscores only, max 64 characters. Truncates with a hash suffix if too long.
+    /// Sanitize a provider request id: alphanumeric, hyphens, underscores only, max 64 characters.
+    /// Truncates with a hash suffix if too long.
     /// </summary>
     private static string SanitizeCustomId(string raw)
     {
@@ -326,20 +441,11 @@ public partial class BatchAnalysisService(
         return sanitized[..(64 - 9)] + "_" + hash;
     }
 
-    private HttpRequestMessage CreateRequest(HttpMethod method, string url, object? body = null)
+    private static string CreateDirectFallbackBatchId(string providerName, string repoName)
     {
-        var apiKey = options.ApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey))
-            apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY") ?? "";
-
-        var request = new HttpRequestMessage(method, url);
-        request.Headers.Add("x-api-key", apiKey);
-        request.Headers.Add("anthropic-version", AnthropicVersion);
-
-        if (body is not null)
-            request.Content = JsonContent.Create(body, options: SnakeOpts);
-
-        return request;
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+        var seed = $"{providerName}_{repoName}_{timestamp}";
+        return SanitizeCustomId($"direct_{seed}_{Guid.NewGuid():N}");
     }
 
     /// <summary>
@@ -351,7 +457,7 @@ public partial class BatchAnalysisService(
     {
         try
         {
-            var json = text.StripCodeFences();
+            var json = text.NormalizeJsonResponse();
 
             var lastCompleteObject = json.LastIndexOf("},", StringComparison.Ordinal);
             if (lastCompleteObject < 0)

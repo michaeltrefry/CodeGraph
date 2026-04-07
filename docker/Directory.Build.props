@@ -3,7 +3,7 @@
     Provides FrameworkPathOverride for legacy .NET Framework projects loaded by
     Roslyn MSBuildWorkspace.  The NuGet reference-assemblies package is restored
     during the Docker build; this file makes MSBuild use it automatically for
-    any repo cloned under /repos/cache/.
+    any repo cloned under /repos/.cache/.
   -->
   <PropertyGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework' Or '$(TargetFramework)' == '' Or $(TargetFramework.StartsWith('net4'))">
     <FrameworkPathOverride Condition="Exists('$(NuGetPackageRoot)/microsoft.netframework.referenceassemblies.net472/1.0.3/build/.NETFramework/v4.7.2')">$(NuGetPackageRoot)/microsoft.netframework.referenceassemblies.net472/1.0.3/build/.NETFramework/v4.7.2</FrameworkPathOverride>

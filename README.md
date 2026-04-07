@@ -1,6 +1,6 @@
 # CodeGraph
 
-A self-maintaining .NET 9 service that indexes GitLab repositories into a queryable knowledge graph backed by Neo4j, with a personal memory graph for Claude. It produces two outputs: a structural graph of all connections between services, and generated `CODEGRAPH.md` files committed to each repo describing business intent. An MCP server lets Claude act as the domain expert for the entire codebase.
+A self-maintaining .NET 9 service that indexes source repositories into a queryable knowledge graph backed by Neo4j, with a personal memory graph for conversational tooling. It produces two outputs: a structural graph of code and service relationships, and generated `CODEGRAPH.md` files that describe each repository in plain language. An MCP server lets compatible clients query the graph as a domain expert for the indexed codebase.
 
 ## Core Principle
 
@@ -10,14 +10,14 @@ A self-maintaining .NET 9 service that indexes GitLab repositories into a querya
 
 - **Knowledge Graph Indexing** — Extracts classes, methods, routes, events, queues, jobs, tables, and their relationships from source code into a Neo4j graph
 - **Multi-Language Extraction** — C# (Roslyn semantic analysis), TypeScript/Angular (Node.js sidecar), T-SQL (ScriptDom), Tree-sitter (multi-language fallback)
-- **Claude-Powered Analysis** — Anthropic Batches API generates natural language summaries with confidence indicators for every project
+- **AI-Powered Analysis** — Anthropic Batches API generates natural language summaries with confidence indicators for every project
 - **Cross-Repo Linking** — Connects HTTP calls, MassTransit events, and NuGet package references across repositories
 - **Codebase Health Metrics** — Tracks file churn, cyclomatic complexity, truck factor, coupling centrality, and risk scores
 - **Event-Driven Pipeline** — Asynchronous processing via MassTransit consumers with independent failure isolation and automatic retry
 - **Memory Graph** — Personal knowledge graph stored in Neo4j with vector search, fuzzy entity matching, conflict detection, and relationship traversal — accessible via MCP tools and REST API
-- **MCP Server** — 20+ tools for Claude to query the graph, trace call paths, find consumers/publishers, explore architecture, check health, analyze impact, detect clusters, store/query memory, and read conventions
+- **MCP Server** — 20+ tools for compatible assistants to query the graph, trace call paths, find consumers/publishers, explore architecture, check health, analyze impact, detect clusters, store/query memory, and read conventions
 - **REST API** — Full query interface for projects, nodes, edges, graph overview, health data, search, memory, and wiki
-- **Angular Dashboard** — Browse repositories, explore the graph, view health hotspots, ask questions via streaming Claude chat, and manage the wiki
+- **Angular Dashboard** — Browse repositories, explore the graph, view health hotspots, ask questions via streaming chat, and manage the wiki
 - **Hierarchical Wiki** — Multi-section wiki with nested pages (up to 3 levels), file attachments, raw content support, revision history, admin-managed sections, and MCP integration
 - **Global Search** — Unified search across repositories and nodes with relevance ranking
 - **Service Cluster Detection** — Louvain community detection algorithm discovers tightly-coupled repository groups from the cross-repo dependency graph, with edge-type weighting, bridge repo identification, and D3.js cluster visualization
@@ -31,13 +31,12 @@ CodeGraph/
 ├── src/
 │   ├── CodeGraph.Api/                         # ASP.NET Core API host, controllers, consumers, DI
 │   │   └── Consumers/                         # MassTransit event consumers
-│   ├── CodeGraph.Console/                     # CLI: migrate
 │   ├── CodeGraph.Models/                      # Domain model, request/response DTOs (zero dependencies)
 │   │   ├── Messages/                          # MassTransit event messages
 │   │   ├── Memory/                            # Memory graph models (entities, relationships, observations)
 │   │   ├── Requests/                          # API request models
 │   │   └── Responses/                         # API response models
-│   ├── CodeGraph.Services/                    # All business logic, query engine, Claude analysis, MCP tools
+│   ├── CodeGraph.Services/                    # All business logic, query engine, AI analysis, MCP tools
 │   │   └── Memory/                            # Memory normalization, retrieval, embedding services
 │   ├── CodeGraph.Data/                        # Store interfaces (IGraphStore, IMemoryGraphStore, etc.)
 │   ├── CodeGraph.Data.Neo4j/                  # Neo4j implementations of all store interfaces
@@ -50,9 +49,7 @@ CodeGraph/
 │   ├── CodeGraph.Tests/                       # Unit tests (xUnit + Shouldly)
 │   └── CodeGraph.Jobs.Tests/                  # Job-specific tests
 ├── CodeGraphWeb/                              # Angular dashboard
-├── cypher/migrations/                         # Neo4j schema migrations
-├── CodeGraph-Architecture.md                  # Detailed system design
-└── CodeGraph-Implementation.md                # Build order and code patterns
+└── src/CodeGraph.Api/Migrations/              # Neo4j schema migrations bundled with the API
 ```
 
 ### Dependency Flow
@@ -73,14 +70,14 @@ Controllers are thin — they handle HTTP concerns (validation, status codes) an
 |---|---|---|
 | `ProjectsController` | `IProjectQueryService` | Project listing, detail, health metrics, hotspots, nodes, readme, impact analysis, batch status |
 | `ProjectsController` | `IProjectService` | Re-analysis orchestration (index + analyze pipeline) |
-| `AdminController` | `IAdminService` | Repo processing, re-indexing, cross-repo linking, GitLab discovery |
+| `AdminController` | `IAdminService` | Repo processing, re-indexing, cross-repo linking, and repository discovery |
 | `WikiController` | `IWikiService` | Hierarchical wiki with sections, nested pages, attachments, revisions |
 | `GraphController` | `IGraphOverviewService` | Cross-repo graph overview aggregation |
 | `NodesController` | `INodeQueryService` | Node detail with edge resolution, search |
 | `SearchController` | `ISearchService` | Unified search across repositories and nodes |
 | `ClustersController` | `ICommunityDetectionService` | Service cluster detection, cluster graph, cluster detail |
 | `MemoryController` | `MemoryService` | Memory graph store, query, entity detail |
-| `AskController` | `GraphAssistant` | Streaming Claude chat with graph tools |
+| `AskController` | `GraphAssistant` | Streaming assistant chat with graph tools |
 
 **Request/response models** live in `CodeGraph.Models` under `Requests/` and `Responses/`. Response models are simple POCOs — data entities are mapped to response DTOs in the service layer, never exposed through controllers.
 
@@ -91,22 +88,23 @@ All persistent storage uses **Neo4j**. The `CodeGraph.Data` project defines stor
 | Store | Responsibility |
 |-------|----------------|
 | `IGraphStore` | Code nodes, edges, cross-repo edges, repositories, sync state, file hashes |
-| `IAnalysisStore` | Claude analysis batches, project analyses, repo summaries |
+| `IAnalysisStore` | AI analysis batches, project analyses, repo summaries |
 | `IMetricsStore` | File-level health metrics, project health summaries |
 | `IMemoryGraphStore` | Memory entities, relationships, observations, vector/text search |
 | `IWikiStore` | Wiki sections, pages, revisions, attachments |
-| `IAdminStore` | Admin users, settings overrides, exclusion rules |
+| `IAdminStore` | Admin users and exclusion rules |
 | `IVectorStore` | Embedding storage and vector similarity search |
 | `IMigrationRunner` | Schema migration execution |
 
 ### Schema Migrations
 
-Located in `cypher/migrations/` — consolidated into two files:
+Located in `src/CodeGraph.Api/Migrations/` and copied into API publish output:
 
 | Migration | Description |
 |-----------|-------------|
 | `001_schema.cypher` | All constraints, indexes, fulltext indexes, vector indexes, wiki schema, and memory graph schema |
 | `002_wiki_seed_sections.cypher` | Seed default wiki sections (general, conventions, skills, agents, mcp-documentation) |
+| `003_analysis_batch_provider_batch_id_backfill.cypher` | Backfill `providerBatchId` on legacy analysis batch records |
 
 ## Event-Driven Pipeline
 
@@ -119,7 +117,7 @@ ProcessRepository (message)
 ProcessRepositoryConsumer
   └─→ Index repo → publish RepositoryIndexingCompleted
                         ├─→ CrossRepoLinker (incremental linking)
-                        ├─→ VitalsAnalyzer (health metrics + Claude analysis)
+                        ├─→ VitalsAnalyzer (health metrics + AI analysis)
                         └─→ BatchAnalysisService (submit to Anthropic)
                                 └─→ publish AnalysisBatchSubmitted
                                         │
@@ -138,18 +136,18 @@ ProcessRepositoryConsumer
 
 | Message | Consumer | Trigger |
 |---------|----------|---------|
-| `ProcessRepository` | `ProcessRepositoryConsumer` | Admin API, scheduled jobs, GitLab discovery |
+| `ProcessRepository` | `ProcessRepositoryConsumer` | Admin API, scheduled jobs, repository discovery |
 | `RepositoryIndexingCompleted` | `RepositoryIndexingCompletedConsumer` | After successful indexing |
 | `AnalysisBatchSubmitted` | `AnalysisBatchSubmittedConsumer` | After Anthropic batch submission |
 | `ProjectAnalysisResultsProcessed` | `ProjectAnalysisResultsProcessedConsumer` | After batch results stored |
 | `AnalysisSynthesisCompleted` | `AnalysisSynthesisCompletedConsumer` | After repo-level synthesis |
 | `ConventionUpdated` | `ConventionUpdatedConsumer` | Wiki page created/updated |
-| `RepositoryRemoved` | `RepositoryRemovedConsumer` | Repo removed from GitLab (cascading cleanup) |
+| `RepositoryRemoved` | `RepositoryRemovedConsumer` | Repo removed from the configured source provider (cascading cleanup) |
 | `StoreMemory` | `StoreMemoryConsumer` | Memory graph store request (from MCP or API) |
 
 ## Memory Graph
 
-A personal knowledge graph for storing and querying memories across Claude conversations. Entities, relationships, and observations are stored in Neo4j with vector embeddings for semantic search.
+A personal knowledge graph for storing and querying memories across assistant conversations. Entities, relationships, and observations are stored in Neo4j with vector embeddings for semantic search.
 
 ### Features
 
@@ -182,8 +180,8 @@ A personal knowledge graph for storing and querying memories across Claude conve
 - Neo4j 5.x (with vector index support)
 - RabbitMQ (for MassTransit event-driven pipeline)
 - [Node.js 18+](https://nodejs.org/) (for Angular dashboard and TypeScript extractor)
-- An [Anthropic API key](https://console.anthropic.com/) (for Claude analysis features)
-- GitLab instance with API access (for repo discovery and sync)
+- An [Anthropic API key](https://console.anthropic.com/) (for AI analysis features)
+- A configured repository source: GitHub, GitLab, or a local folder root
 
 ## Quick Start
 
@@ -193,15 +191,15 @@ Key settings in `appsettings.json`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `Neo4j:Uri` | `bolt://localhost:7687` | Neo4j connection URI |
-| `Neo4j:Username` | `neo4j` | Neo4j username |
-| `Neo4j:Password` | — | Neo4j password |
-| `CodeGraph:Analysis:Model` | claude-sonnet-4-6 | Claude model for analysis |
-| `CodeGraph:Indexing:FoundationalRepos` | TC.Common.ServiceStack, etc. | Framework repos indexed first |
-| `CodeGraph:GitLab:BaseUrl` | — | GitLab instance URL |
-| `CodeGraph:GitLab:PrivateToken` | — | GitLab PAT (read_api, read_repository, write_repository) |
-| `CodeGraph:GitLab:ReposCachePath` | — | Local cache for cloned repos |
-| `CODEGRAPH_TS_PORT` | 3100 | TypeScript extractor sidecar port |
+| `CodeGraph:StorageOptions:Neo4jUri` | `bolt://localhost:7687` | Neo4j connection URI |
+| `CodeGraph:StorageOptions:Neo4jUsername` | `neo4j` | Neo4j username |
+| `CodeGraph:StorageOptions:Neo4jPassword` | — | Neo4j password |
+| `CodeGraph:AnalysisOptions:Model` | `claude-sonnet-4-6` | Default analysis model |
+| `CodeGraph:IndexingOptions:FoundationalRepos` | — | Repositories to index first during bootstrap |
+| `CodeGraph:RepositorySource:Provider` | `Folder` | Source provider: Folder, GitHub, or GitLab |
+| `CodeGraph:RepositorySource:ReposCachePath` | `~/repos/.cache` | Local cache for cloned remote repos |
+| `CodeGraph:RepositorySource:Folder:RootPath` | `~/repos/` | Local folder root used by the folder provider |
+| `CodeGraph:TsPort` | `3100` | TypeScript extractor sidecar port |
 
 ### 2. Build & Run
 
@@ -209,10 +207,8 @@ Key settings in `appsettings.json`:
 # Build the solution
 dotnet build CodeGraph.sln
 
-# Apply Neo4j schema migrations
-dotnet run --project src/CodeGraph.Console -- migrate
-
 # Start the API server (http://localhost:5037)
+# Pending Neo4j migrations are applied automatically at startup.
 dotnet run --project src/CodeGraph.Api
 
 # Start the Angular dashboard (http://localhost:4200)
@@ -277,7 +273,7 @@ cd CodeGraphWeb && npm install && npm start
 
 | Method | Route | Description |
 |--------|-------|-------------|
-| POST | `/api/ask` | SSE stream — Claude conversation with graph tools |
+| POST | `/api/ask` | SSE stream — assistant conversation with graph tools |
 
 ### Wiki
 
@@ -305,11 +301,11 @@ cd CodeGraphWeb && npm install && npm start
 | POST | `/api/admin/reIndexAll` | Re-index all repos |
 | POST | `/api/admin/link` | Run cross-repo linking |
 | POST | `/api/admin/processBatchAnalysis` | Process completed Anthropic batches |
-| POST | `/api/admin/discover` | Auto-discover repos from GitLab |
+| POST | `/api/admin/discover` | Auto-discover repos from the configured source provider |
 
 ## MCP Server
 
-The MCP server is hosted within the API project via HTTP transport at `http://localhost:5037`. Add to your Claude configuration:
+The MCP server is hosted within the API project via HTTP transport at `http://localhost:5037`. Add it to your MCP client configuration:
 
 ```json
 {
@@ -329,7 +325,7 @@ The MCP server is hosted within the API project via HTTP transport at `http://lo
 | `get_graph_schema` | Describe node/edge types and properties |
 | `list_projects` | List all indexed repositories |
 | `search_graph` | Search by name pattern, node type, project |
-| `get_service_summary` | Claude analysis summary for a service |
+| `get_service_summary` | AI analysis summary for a service |
 | `trace_call_path` | Trace inbound/outbound calls and dependencies |
 | `trace_data_lineage` | Follow a model through publishers/consumers |
 | `find_consumers` | What consumes this event/model/endpoint |
@@ -337,7 +333,7 @@ The MCP server is hosted within the API project via HTTP transport at `http://lo
 | `get_architecture` | Architecture overview and dependency analysis |
 | `find_archival_candidates` | Repos with no inbound/outbound dependencies |
 | `get_code_snippet` | Read source code from a repository |
-| `get_project_health` | Health scores, hotspots, and Claude analysis per project |
+| `get_project_health` | Health scores, hotspots, and AI analysis per project |
 | `get_fleet_health` | Fleet-wide health overview, repos ranked by score |
 | `read_node_source` | Read source code for a node with surrounding context |
 | `list_conventions` | List all convention pages from the wiki |
@@ -380,11 +376,11 @@ The MCP server is hosted within the API project via HTTP transport at `http://lo
 The `CodeGraphWeb/` directory contains an Angular application with:
 
 - **Repository list** — Browse all indexed repos with search and pagination
-- **Repository detail** — Node counts, health scores, Claude analysis, dependency graph
+- **Repository detail** — Node counts, health scores, AI analysis, dependency graph
 - **Node browser** — Filter by type, project, search pattern
 - **Node detail** — View edges, cross-repo connections
 - **Graph visualization** — D3.js interactive dependency graph
-- **Ask Claude** — Streaming chat interface backed by Claude + graph tools
+- **Ask** — Streaming chat interface backed by the assistant + graph tools
 - **Wiki** — Multi-section hierarchical wiki with sidebar navigation, tree view, inline editing, file attachments, raw content editors, and revision history
 - **Health dashboard** — Hotspots, risk scores, file metrics with rendered markdown analysis
 - **Service clusters** — D3.js force-directed cluster visualization with color-coded groups, bridge repo highlighting, and cluster detail panel
@@ -423,7 +419,7 @@ Tests use **xUnit** with **Shouldly** assertions and include an `InMemoryGraphSt
 | Node.js sidecar for TypeScript | TypeScript compiler API understands Angular natively |
 | Direct commits, not MRs | MRs add friction and would be ignored — self-maintaining |
 | Confidence indicators | "I don't know" is better than a confident wrong answer |
-| NuGet qualified names as linking keys | Canonical cross-repo identifiers (e.g. `TC.OrdersApi.Models.OrderCreatedEvent`) |
+| NuGet qualified names as linking keys | Canonical cross-repo identifiers (e.g. `OrdersApi.Models.OrderCreatedEvent`) |
 | Foundational-first indexing | Framework repos (ServiceStack, ServiceBus) analyzed first to provide context for all other repos |
 | Anthropic Batches API | 50% cost reduction for bulk analysis across hundreds of repos |
 | Event-driven pipeline | Independent failure isolation — linking failures don't block analysis, vitals failures don't block indexing |

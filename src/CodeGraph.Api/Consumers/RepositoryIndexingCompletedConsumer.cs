@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using MassTransit;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services;
@@ -19,8 +20,10 @@ public class RepositoryIndexingCompletedConsumer(
     ISecurityAnalyzer securityAnalyzer,
     IBatchAnalysisService batchService,
     IGraphStore graphStore,
+    IOptions<IndexingOptions> indexingOptionsAccessor,
     ILogger<RepositoryIndexingCompletedConsumer> logger) : IConsumer<RepositoryIndexingCompleted>
 {
+    private readonly IndexingOptions indexingOptions = indexingOptionsAccessor.Value;
     public async Task Consume(ConsumeContext<RepositoryIndexingCompleted> context)
     {
         var message = context.Message;
@@ -40,15 +43,18 @@ public class RepositoryIndexingCompletedConsumer(
         }
 
         // 1.5. Re-run community detection (Louvain clustering)
-        try
+        if (indexingOptions.DetectCommunitiesAfterIndexing)
         {
-            var sw = Stopwatch.StartNew();
-            await communityDetection.DetectCommunitiesAsync(ct);
-            logger.LogInformation("[Timing] Community detection for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "[{Repo}] Community detection failed — continuing", message.Name);
+            try
+            {
+                var sw = Stopwatch.StartNew();
+                await communityDetection.DetectCommunitiesAsync(ct);
+                logger.LogInformation("[Timing] Community detection for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "[{Repo}] Community detection failed — continuing", message.Name);
+            }
         }
 
         // 2. Compute vitals metrics and health analysis

@@ -36,7 +36,7 @@ public class CrossRepoLinkerTests
             Project = "ProjectA",
             Label = NodeLabel.Record,
             Name = "OrderCreatedEvent",
-            QualifiedName = "TC.Orders.Models.OrderCreatedEvent"
+            QualifiedName = "Orders.Messages.OrderCreatedEvent"
         });
 
         _store.AddEdge(new GraphEdge
@@ -56,13 +56,13 @@ public class CrossRepoLinkerTests
             QualifiedName = "ProjectB.OrderCreatedConsumer"
         });
 
-        // Consumer's event node (same QN — shared via TC.*.Models)
+        // Consumer's event node (same QN shared across repos)
         var eventNodeB = _store.AddNode(new GraphNode
         {
             Project = "ProjectB",
             Label = NodeLabel.Record,
             Name = "OrderCreatedEvent",
-            QualifiedName = "TC.Orders.Models.OrderCreatedEvent"
+            QualifiedName = "Orders.Messages.OrderCreatedEvent"
         });
 
         _store.AddEdge(new GraphEdge
@@ -80,36 +80,36 @@ public class CrossRepoLinkerTests
         crossEdge.SourceProject.ShouldBe("ProjectA");
         crossEdge.TargetProject.ShouldBe("ProjectB");
         crossEdge.Type.ShouldBe(EdgeType.PUBLISHES);
-        crossEdge.Properties["event_type"].ShouldBe("TC.Orders.Models.OrderCreatedEvent");
+        crossEdge.Properties["event_type"].ShouldBe("Orders.Messages.OrderCreatedEvent");
     }
 
     [Fact]
     public async Task Links_NuGetPackage_ToSourceProject()
     {
-        _store.AddProject("TC.OrdersApi");
-        _store.AddProject("TC.WalletApi");
+        _store.AddProject("OrdersApi");
+        _store.AddProject("WalletApi");
 
-        // TC.WalletApi references TC.OrdersApi.Models package
+        // WalletApi references OrdersApi.Models package
         var walletProject = _store.AddNode(new GraphNode
         {
-            Project = "TC.WalletApi",
+            Project = "WalletApi",
             Label = NodeLabel.Repository,
-            Name = "TC.WalletApi",
-            QualifiedName = "TC.WalletApi"
+            Name = "WalletApi",
+            QualifiedName = "WalletApi"
         });
 
         var nugetNode = _store.AddNode(new GraphNode
         {
-            Project = "TC.WalletApi",
+            Project = "WalletApi",
             Label = NodeLabel.NuGetPackage,
-            Name = "TC.OrdersApi.Models",
-            QualifiedName = "nuget:TC.OrdersApi.Models",
+            Name = "OrdersApi.Models",
+            QualifiedName = "nuget:OrdersApi.Models",
             Properties = new() { ["version"] = "1.2.3" }
         });
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "TC.WalletApi",
+            Project = "WalletApi",
             SourceId = walletProject,
             TargetId = nugetNode,
             Type = EdgeType.REFERENCES_PACKAGE,
@@ -120,10 +120,52 @@ public class CrossRepoLinkerTests
 
         _store.CrossEdges.Count.ShouldBe(1);
         var crossEdge = _store.CrossEdges[0];
-        crossEdge.SourceProject.ShouldBe("TC.WalletApi");
-        crossEdge.TargetProject.ShouldBe("TC.OrdersApi");
+        crossEdge.SourceProject.ShouldBe("WalletApi");
+        crossEdge.TargetProject.ShouldBe("OrdersApi");
         crossEdge.Type.ShouldBe(EdgeType.REFERENCES_PACKAGE);
-        crossEdge.Properties["package_name"].ShouldBe("TC.OrdersApi.Models");
+        crossEdge.Properties["package_name"].ShouldBe("OrdersApi.Models");
+    }
+
+    [Fact]
+    public async Task Links_NonTc_NuGetPackage_ToSourceProject()
+    {
+        _store.AddProject("OrdersApi");
+        _store.AddProject("WalletApi");
+
+        var walletProject = _store.AddNode(new GraphNode
+        {
+            Project = "WalletApi",
+            Label = NodeLabel.Repository,
+            Name = "WalletApi",
+            QualifiedName = "WalletApi"
+        });
+
+        var nugetNode = _store.AddNode(new GraphNode
+        {
+            Project = "WalletApi",
+            Label = NodeLabel.NuGetPackage,
+            Name = "OrdersApi.Contracts",
+            QualifiedName = "nuget:OrdersApi.Contracts",
+            Properties = new() { ["version"] = "2.0.0" }
+        });
+
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "WalletApi",
+            SourceId = walletProject,
+            TargetId = nugetNode,
+            Type = EdgeType.REFERENCES_PACKAGE,
+            Properties = new() { ["version"] = "2.0.0" }
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.Count.ShouldBe(1);
+        var crossEdge = _store.CrossEdges[0];
+        crossEdge.SourceProject.ShouldBe("WalletApi");
+        crossEdge.TargetProject.ShouldBe("OrdersApi");
+        crossEdge.Type.ShouldBe(EdgeType.REFERENCES_PACKAGE);
+        crossEdge.Properties["package_name"].ShouldBe("OrdersApi.Contracts");
     }
 
     [Fact]
@@ -175,6 +217,57 @@ public class CrossRepoLinkerTests
         crossEdge.SourceProject.ShouldBe("ProjectB");
         crossEdge.TargetProject.ShouldBe("ProjectA");
         crossEdge.Type.ShouldBe(EdgeType.HTTP_CALLS);
+    }
+
+    [Fact]
+    public async Task Links_GatewayCalls_UsingExactServiceName_Only()
+    {
+        _store.AddProject("OrdersApi");
+        _store.AddProject("GatewayApi");
+
+        var ordersRoute = _store.AddNode(new GraphNode
+        {
+            Project = "OrdersApi",
+            Label = NodeLabel.Route,
+            Name = "GET api/orders/{id}",
+            QualifiedName = "route:OrdersApi:GET:api/orders/{id}",
+            Properties = new()
+            {
+                ["http_method"] = "GET",
+                ["route_template"] = "api/orders/{id}"
+            }
+        });
+
+        var gatewayCaller = _store.AddNode(new GraphNode
+        {
+            Project = "GatewayApi",
+            Label = NodeLabel.Method,
+            Name = "GetOrder",
+            QualifiedName = "GatewayApi.Controllers.OrdersController.GetOrder"
+        });
+
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "GatewayApi",
+            SourceId = gatewayCaller,
+            TargetId = ordersRoute,
+            Type = EdgeType.HTTP_CALLS,
+            Properties = new()
+            {
+                ["gateway_call"] = true,
+                ["service_name"] = "OrdersApi",
+                ["request_dto"] = "OrdersApi.Models.GetOrderRequest"
+            }
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.Count.ShouldBe(1);
+        var crossEdge = _store.CrossEdges[0];
+        crossEdge.SourceProject.ShouldBe("GatewayApi");
+        crossEdge.TargetProject.ShouldBe("OrdersApi");
+        crossEdge.Type.ShouldBe(EdgeType.HTTP_CALLS);
+        crossEdge.Properties["request_dto"].ShouldBe("OrdersApi.Models.GetOrderRequest");
     }
 
     [Fact]

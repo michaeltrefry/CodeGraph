@@ -196,57 +196,6 @@ export class ApiService {
     return this.http.delete<void>(`${API}/wiki/attachments/${id}`);
   }
 
-  // Admin — settings
-  async getAdminSettingsRaw(): Promise<string> {
-    const res = await fetch(`${API}/admin/settings`, {
-      headers: this.authHeaders()
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.text();
-  }
-
-  async updateAdminSettings(json: string): Promise<void> {
-    const res = await fetch(`${API}/admin/settings`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-      body: json
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  }
-
-  async listAdminsAsync(): Promise<string[]> {
-    const res = await fetch(`${API}/admin/admins`, {
-      headers: this.authHeaders()
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  }
-
-  async addAdminAsync(username: string): Promise<void> {
-    const res = await fetch(`${API}/admin/admins`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-      body: JSON.stringify({ username })
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `HTTP ${res.status}`);
-    }
-  }
-
-  async removeAdminAsync(username: string): Promise<void> {
-    const res = await fetch(`${API}/admin/admins/${encodeURIComponent(username)}`, {
-      method: 'DELETE',
-      headers: this.authHeaders()
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  }
-
-  private authHeaders(): Record<string, string> {
-    const token = sessionStorage.getItem('cg_token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
   // Ask — returns an AsyncGenerator over SSE events
   async *ask(question: string, signal?: AbortSignal, context?: string, history?: { role: string; content: string }[]): AsyncGenerator<AssistantEvent> {
     const body: Record<string, unknown> = { question };

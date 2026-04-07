@@ -81,7 +81,7 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>(), []),
 
         MakeTool("get_project_health",
-            "Get health scores, file-level hotspots, and Claude-generated health analysis for a repository. Shows overall health (1-10), hotspot files, and per-project breakdowns.",
+            "Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files, and per-project breakdowns.",
             new Dictionary<string, JsonElement>
             {
                 ["project"]     = Prop("string", "Project/repository name"),
@@ -122,11 +122,11 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>(), []),
 
         MakeTool("list_conventions",
-            "List all available company convention documents. These describe patterns, abstractions, and standards used across all repositories.",
+            "List all available convention documents. These describe patterns, abstractions, and standards used across the indexed repositories.",
             new Dictionary<string, JsonElement>(), []),
 
         MakeTool("get_convention",
-            "Read a company convention document by slug. Conventions describe patterns like gateway calls, messaging, project structure, and other standards. Call list_conventions first to see available documents.",
+            "Read a convention document by slug. Conventions describe patterns like gateway calls, messaging, project structure, and other standards. Call list_conventions first to see available documents.",
             new Dictionary<string, JsonElement>
             {
                 ["name"] = Prop("string", "Convention slug (e.g., 'gateway-pattern', 'messaging-pattern')")

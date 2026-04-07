@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
@@ -7,9 +8,10 @@ namespace CodeGraph.Services;
 
 public class AttachmentService(
     IWikiStore store,
-    WikiOptions wikiOptions,
+    IOptions<WikiOptions> wikiOptionsAccessor,
     ILogger<AttachmentService> logger) : IAttachmentService
 {
+    private readonly WikiOptions wikiOptions = wikiOptionsAccessor.Value;
     public async Task<IReadOnlyList<WikiAttachmentResponse>> ListAsync(long pageId)
     {
         var attachments = await store.ListAttachmentsAsync(pageId);

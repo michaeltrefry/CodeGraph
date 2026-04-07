@@ -27,7 +27,7 @@ public class ProcessRepositoriesJobTests
         {
             Args = new Dictionary<string, string>
             {
-                ["repos"] = "TC.OrdersApi::https://gitlab.tcdevops.com/group/TC.OrdersApi;TC.BillingApi::C:\\repos\\TC.BillingApi;TC.UsersApi",
+                ["repos"] = "Orders.Api::https://gitlab.example.com/group/orders-api;Billing.Api::C:\\repos\\Billing.Api;Users.Api",
                 ["shouldIndex"] = "false",
                 ["shouldAnalyze"] = "true",
                 ["skipIfUpToDate"] = "false"
@@ -37,20 +37,20 @@ public class ProcessRepositoriesJobTests
         messageBus.PublishedMessages.Count.ShouldBe(3);
 
         var gitLabRepo = messageBus.PublishedMessages[0].ShouldBeOfType<ProcessRepository>();
-        gitLabRepo.Name.ShouldBe("TC.OrdersApi");
-        gitLabRepo.RepoUrl.ShouldBe("https://gitlab.tcdevops.com/group/TC.OrdersApi");
+        gitLabRepo.Name.ShouldBe("Orders.Api");
+        gitLabRepo.RepoUrl.ShouldBe("https://gitlab.example.com/group/orders-api");
         string.IsNullOrEmpty(gitLabRepo.Path).ShouldBeTrue();
         gitLabRepo.ShouldIndex.ShouldBeFalse();
         gitLabRepo.ShouldAnalyze.ShouldBeTrue();
         gitLabRepo.SkipIfUpToDate.ShouldBeFalse();
 
         var localRepo = messageBus.PublishedMessages[1].ShouldBeOfType<ProcessRepository>();
-        localRepo.Name.ShouldBe("TC.BillingApi");
-        localRepo.Path.ShouldBe("C:\\repos\\TC.BillingApi");
+        localRepo.Name.ShouldBe("Billing.Api");
+        localRepo.Path.ShouldBe("C:\\repos\\Billing.Api");
         localRepo.RepoUrl.ShouldBeNull();
 
         var nameOnlyRepo = messageBus.PublishedMessages[2].ShouldBeOfType<ProcessRepository>();
-        nameOnlyRepo.Name.ShouldBe("TC.UsersApi");
+        nameOnlyRepo.Name.ShouldBe("Users.Api");
         string.IsNullOrEmpty(nameOnlyRepo.Path).ShouldBeTrue();
         nameOnlyRepo.RepoUrl.ShouldBeNull();
     }

@@ -29,13 +29,13 @@ The codebase already has the pattern: `ProcessRepository` message → `ProcessRe
 
 ## 2. Decouple Vitals Computation from Indexing
 
-**Current state:** `ProjectService.ProcessRepositoryCore()` runs vitals computation synchronously after indexing (lines 122-136). If vitals fails (git operations, Claude call), the entire ProcessRepository consumer fails.
+**Current state:** `ProjectService.ProcessRepositoryCore()` runs vitals computation synchronously after indexing (lines 122-136). If vitals fails (git operations or downstream model-provider work), the entire ProcessRepository consumer fails.
 
 **Change:** The `RepositoryIndexingCompleted` message from item 1 can also trigger vitals computation via a second consumer, completely independent of cross-repo linking.
 
 **Consumer:** `ComputeVitalsConsumer` — calls `VitalsAnalyzer.AnalyzeAsync()` for the indexed repo.
 
-**Why it matters:** Vitals runs 4 parallel git operations + a Claude call. That's too much to couple to the indexing consumer's success/failure. Independent retry means a transient Claude API failure doesn't re-trigger the entire indexing pipeline.
+**Why it matters:** Vitals runs several git-heavy operations and may feed into downstream analysis prompts. That's too much to couple to the indexing consumer's success/failure. Independent retry means a transient provider failure doesn't re-trigger the entire indexing pipeline.
 
 **Files:**
 - `ProjectService.cs` — remove direct vitals call, rely on the event from item 1
@@ -45,14 +45,14 @@ The codebase already has the pattern: `ProcessRepository` message → `ProcessRe
 
 ## 3. Decouple Analysis Submission from Indexing
 
-**Current state:** `ProjectService` submits analysis to the Anthropic Batch API synchronously within the ProcessRepository consumer (lines 139-158). A slow or failed submission blocks the consumer.
+**Current state:** `ProjectService` submits repository analysis synchronously within the ProcessRepository consumer (lines 139-158). A slow or failed provider submission blocks the consumer.
 
-**Change:** Publish an event after indexing; a separate consumer handles batch submission to Anthropic.
+**Change:** Publish an event after indexing; a separate consumer handles provider batch submission or direct fallback orchestration.
 
 **Message:** Reuse `RepositoryIndexingCompleted` or a dedicated `AnalysisRequested { RepositoryName, Priority }`
 **Consumer:** Calls `BatchAnalysisService.SubmitBatchAsync()` with circuit breaker protection.
 
-**Why it matters:** Anthropic API availability shouldn't determine whether indexing "succeeds." Submission can retry independently with backoff. Also enables priority-based submission (urgent repos first).
+**Why it matters:** Analysis-provider availability shouldn't determine whether indexing "succeeds." Submission can retry independently with backoff. Also enables priority-based submission (urgent repos first).
 
 **Files:**
 - `ProjectService.cs` — remove direct analysis submission
@@ -66,10 +66,10 @@ The codebase already has the pattern: `ProcessRepository` message → `ProcessRe
 
 **Change:** After per-project results are stored, publish an event. A consumer handles synthesis independently.
 
-**Message:** `ProjectAnalysisResultsProcessed { RepositoryName, AnthropicBatchId, ProcessedProjectCount }`
+**Message:** `ProjectAnalysisResultsProcessed { RepositoryName, ProviderBatchId, ProcessedProjectCount }`
 **Consumer:** Calls `SynthesizeRepoSummaryAsync()` with independent retry.
 
-**Why it matters:** Per-project analysis results have immediate value for queries and the UI. Synthesis (a separate Claude call) shouldn't gate their availability. If synthesis fails, project-level insights are still accessible.
+**Why it matters:** Per-project analysis results have immediate value for queries and the UI. Synthesis (a separate provider call) shouldn't gate their availability. If synthesis fails, project-level insights are still accessible.
 
 **Files:**
 - `BatchAnalysisService.cs` — publish event after storing results (~line 192)
@@ -116,9 +116,9 @@ The codebase already has the pattern: `ProcessRepository` message → `ProcessRe
 
 ## 7. Repository Removed → Cascading Cleanup
 
-**Current state:** No automated cleanup when a repo disappears from GitLab. Orphaned nodes, edges, analysis records, and cross-repo links persist indefinitely.
+**Current state:** No automated cleanup when a repo disappears from the configured repository source. Orphaned nodes, edges, analysis records, and cross-repo links persist indefinitely.
 
-**Change:** When the sync worker detects a repo no longer exists in GitLab, publish a removal event.
+**Change:** When the sync worker detects a repo no longer exists in the configured repository source, publish a removal event.
 
 **Message:** `RepositoryRemoved { RepositoryName, RemovedAt }`
 **Consumer:** Deletes nodes, edges, analysis records, cross-repo edges, and optionally removes the CODEGRAPH.md commit.
@@ -146,7 +146,7 @@ ProcessRepository → Index → publish RepositoryIndexingCompleted
                                 ├─→ CrossRepoLinkingConsumer
                                 └─→ AnalysisRequestedConsumer → Submit Batch
                                                                     │
-                                        [Anthropic completes batch] │
+                                    [Provider completes batch/direct run] │
                                                                     ▼
                                               ProcessBatchResults → publish ProjectAnalysisResultsProcessed
                                                                         └─→ SynthesisConsumer → publish AnalysisSynthesisCompleted
@@ -174,8 +174,8 @@ Items 1-3 can ship together since they all key off `RepositoryIndexingCompleted`
 
 ## Shared Infrastructure Notes
 
-- All messages go in `TC.CodeGraphApi.Models/Messages/` (Models has zero dependencies — ideal for message contracts)
-- All consumers go in `TC.CodeGraphApi/Consumers/` or `TC.CodeGraphJobs/Consumers/` depending on whether they should run in the API host or the jobs worker
+- All messages go in `src/CodeGraph.Models/Messages/` (Models has zero dependencies — ideal for message contracts)
+- All consumers go in `src/CodeGraph.Api/Consumers/` or `src/CodeGraph.Jobs/Consumers/` depending on whether they should run in the API host or the jobs worker
 - Register consumers in `Startup.cs` via MassTransit's `AddConsumer<T>()`
-- Use `AnthropicCircuitBreaker` (already exists) for consumers that call Claude
+- Use provider-specific resilience/circuit-breaker policies for consumers that call external analysis backends
 - Consider idempotency: consumers should handle duplicate messages gracefully (use `IndexedAt`/`CompletedAt` timestamps as dedup keys)

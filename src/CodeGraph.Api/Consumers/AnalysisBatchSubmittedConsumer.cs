@@ -6,7 +6,7 @@ using CodeGraph.Services.Analyzers;
 namespace CodeGraph.Api.Consumers;
 
 /// <summary>
-/// Checks an Anthropic batch for completion. If the batch isn't done yet,
+/// Checks a queued analysis batch for completion. If the batch isn't done yet,
 /// throws BatchNotReadyException to trigger delayed redelivery via MassTransit.
 /// </summary>
 public class AnalysisBatchSubmittedConsumer(
@@ -22,20 +22,20 @@ public class AnalysisBatchSubmittedConsumer(
         await batchService.ProcessCompletedBatchesAsync(message.RepoName, ct);
 
         var pending = await store.GetPendingBatchesAsync(message.RepoName);
-        var stillPending = pending.Any(b => b.AnthropicBatchId == message.AnthropicBatchId);
+        var stillPending = pending.Any(b => b.ProviderBatchId == message.ProviderBatchId);
 
         if (stillPending)
         {
             logger.LogInformation(
                 "Batch {BatchId} for {Repo} still processing — will retry via redelivery",
-                message.AnthropicBatchId, message.RepoName);
+                message.ProviderBatchId, message.RepoName);
 
             throw new BatchNotReadyException(
-                $"Batch {message.AnthropicBatchId} for {message.RepoName} is still processing");
+                $"Batch {message.ProviderBatchId} for {message.RepoName} is still processing");
         }
 
         logger.LogInformation("Batch {BatchId} for {Repo} completed and processed",
-            message.AnthropicBatchId, message.RepoName);
+            message.ProviderBatchId, message.RepoName);
     }
 }
 

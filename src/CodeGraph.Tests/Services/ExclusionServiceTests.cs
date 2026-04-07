@@ -22,34 +22,34 @@ public class ExclusionServiceTests
     [Fact]
     public async Task NoRules_ReturnsNull()
     {
-        var result = await _service.GetExclusionTypeAsync("TC.SomeApi", "services/some-group");
+        var result = await _service.GetExclusionTypeAsync("Sample.Api", "services/some-group");
         result.ShouldBeNull();
     }
 
     [Fact]
     public async Task RepoRule_MatchesExactName()
     {
-        await _service.CreateRuleAsync("repository", "TC.SomeApi", "complete", null, "test");
+        await _service.CreateRuleAsync("repository", "Sample.Api", "complete", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("TC.SomeApi", "services/some-group");
+        var result = await _service.GetExclusionTypeAsync("Sample.Api", "services/some-group");
         result.ShouldBe("complete");
     }
 
     [Fact]
     public async Task RepoRule_IsCaseInsensitive()
     {
-        await _service.CreateRuleAsync("repository", "tc.someapi", "no_analysis", null, "test");
+        await _service.CreateRuleAsync("repository", "sample.api", "no_analysis", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("TC.SomeApi", null);
+        var result = await _service.GetExclusionTypeAsync("Sample.Api", null);
         result.ShouldBe("no_analysis");
     }
 
     [Fact]
     public async Task RepoRule_DoesNotMatchDifferentRepo()
     {
-        await _service.CreateRuleAsync("repository", "TC.SomeApi", "complete", null, "test");
+        await _service.CreateRuleAsync("repository", "Sample.Api", "complete", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("TC.OtherApi", "services/some-group");
+        var result = await _service.GetExclusionTypeAsync("Other.Api", "services/some-group");
         result.ShouldBeNull();
     }
 
@@ -103,10 +103,10 @@ public class ExclusionServiceTests
     public async Task RepoRule_TakesPrecedenceOverGroupRule()
     {
         await _service.CreateRuleAsync("group", "services", "complete", null, "test");
-        await _service.CreateRuleAsync("repository", "TC.ImportantApi", "no_analysis", null, "test");
+        await _service.CreateRuleAsync("repository", "Important.Api", "no_analysis", null, "test");
 
         // Repo is in excluded group, but has its own repo-level rule
-        var result = await _service.GetExclusionTypeAsync("TC.ImportantApi", "services/important");
+        var result = await _service.GetExclusionTypeAsync("Important.Api", "services/important");
         result.ShouldBe("no_analysis");
     }
 
@@ -116,7 +116,7 @@ public class ExclusionServiceTests
     public async Task CreateAndListRules()
     {
         await _service.CreateRuleAsync("group", "old-svn", "complete", "Legacy repos", "admin");
-        await _service.CreateRuleAsync("repository", "TC.TestApi", "no_analysis", null, "admin");
+        await _service.CreateRuleAsync("repository", "Test.Api", "no_analysis", null, "admin");
 
         var rules = await _service.ListRulesAsync();
         rules.Count.ShouldBe(2);
@@ -212,7 +212,7 @@ public class ExclusionServiceTests
     [Fact]
     public async Task SeedFromConfig_SkipsIfRulesAlreadyExist()
     {
-        await _service.CreateRuleAsync("repository", "TC.SomeApi", "complete", null, "admin");
+        await _service.CreateRuleAsync("repository", "Sample.Api", "complete", null, "admin");
 
         await _service.SeedFromConfigAsync(["old-svn-repos", "utilities"]);
 

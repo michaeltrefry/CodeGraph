@@ -98,7 +98,7 @@ CREATE TABLE impact_snapshots (
 - **Health metrics** — use churn/coupling/truck factor as severity modifiers
 - **Cross-repo linker** — follow cross-repo edges during traversal
 - **Claude analysis** — include business context in the report ("this affects the payment processing pipeline")
-- **Ask Claude** — "what's the impact of changing the Order model?" triggers impact analysis tool
+- **Ask in chat** — "what's the impact of changing the Order model?" triggers impact analysis tool
 
 ## Potential Uses
 

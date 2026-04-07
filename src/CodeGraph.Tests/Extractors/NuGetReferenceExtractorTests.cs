@@ -13,14 +13,14 @@ public class NuGetReferenceExtractorTests
         var refs = _extractor.ExtractFromProjectXml("""
             <Project Sdk="Microsoft.NET.Sdk">
               <ItemGroup>
-                <PackageReference Include="TC.OrdersApi.Models" Version="1.2.3" />
+                <PackageReference Include="OrdersApi.Models" Version="1.2.3" />
                 <PackageReference Include="Dapper" Version="2.1.0" />
               </ItemGroup>
             </Project>
             """);
 
         refs.Count.ShouldBe(2);
-        refs.ShouldContain(r => r.PackageName == "TC.OrdersApi.Models" && r.Version == "1.2.3");
+        refs.ShouldContain(r => r.PackageName == "OrdersApi.Models" && r.Version == "1.2.3");
         refs.ShouldContain(r => r.PackageName == "Dapper" && r.Version == "2.1.0");
     }
 

@@ -15,7 +15,10 @@ public record DiscoverResponse(
 public record AnalysisBatchResponse(
     long Id,
     string Repo,
-    string AnthropicBatchId,
+    string ProviderBatchId,
+    string ProviderName,
+    string ExecutionMode,
+    bool IncludeAllSource,
     string Status,
     int RequestCount,
     int CompletedCount,

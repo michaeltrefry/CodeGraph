@@ -9,8 +9,9 @@ public partial class Neo4jGraphStore
 
     public async Task ApplyMigrationsAsync(string migrationsPath)
     {
-        // For Neo4j, use the cypher migrations path instead
-        var cypherPath = options.Neo4jMigrationsPath;
+        var cypherPath = string.IsNullOrWhiteSpace(migrationsPath)
+            ? options.Neo4jMigrationsPath
+            : migrationsPath;
         if (!Directory.Exists(cypherPath))
         {
             logger.LogWarning("Neo4j migrations path {Path} does not exist, skipping", cypherPath);

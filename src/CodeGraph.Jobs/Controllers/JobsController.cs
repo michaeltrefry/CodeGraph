@@ -8,7 +8,7 @@ namespace CodeGraph.Jobs.Controllers;
 public class JobsController(IJobRunner runner) : ControllerBase
 {
     /// <summary>
-    /// Discover all GitLab repositories and publish downstream processing messages.
+    /// Discover repositories from the configured source provider and publish downstream processing messages.
     /// </summary>
     [HttpPost(nameof(DiscoverRepositoriesJob))]
     public StartJobResult DiscoverRepositories([FromBody] StartJob? request)

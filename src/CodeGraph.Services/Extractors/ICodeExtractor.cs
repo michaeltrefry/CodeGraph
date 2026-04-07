@@ -18,7 +18,7 @@ public class ExtractorContext
     public required string RootPath { get; init; }
 
     /// <summary>
-    /// The actual .csproj project name (e.g. "TC.OrdersApi.Services").
+    /// The actual .csproj project name (e.g. "Orders.ServiceDefaults").
     /// Set by SolutionAnalyzer per Roslyn project. Null when running outside solution analysis.
     /// </summary>
     public string? DotnetProject { get; init; }

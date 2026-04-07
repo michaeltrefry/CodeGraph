@@ -15,11 +15,12 @@ namespace CodeGraph.Services.Analyzers;
 public class VitalsAnalyzer(
     IGraphStore store,
     AnthropicClient anthropic,
-    AnalysisOptions analysisOptions,
+    IOptions<AnalysisOptions> analysisOptionsAccessor,
     IFileSystem fileSystem,
     ILintRunner lintRunner,
     ILogger<VitalsAnalyzer> logger) : IVitalsAnalyzer
 {
+    private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".cs", ".ts", ".tsx", ".js", ".jsx", ".cfm", ".cfc", ".sql", ".vue", ".py", ".java"

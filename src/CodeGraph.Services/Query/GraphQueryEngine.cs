@@ -220,7 +220,7 @@ public class GraphQueryEngine
     }
 
     /// <summary>
-    /// Get health summary, hotspot files, and Claude analysis for a project.
+    /// Get health summary, hotspot files, and AI analysis for a project.
     /// </summary>
     public async Task<ProjectHealthReport> GetProjectHealthAsync(string project, int topHotspots = 10)
     {

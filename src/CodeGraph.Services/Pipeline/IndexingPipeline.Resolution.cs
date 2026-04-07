@@ -5,6 +5,20 @@ namespace CodeGraph.Services.Pipeline;
 
 public partial class IndexingPipeline
 {
+    private static readonly string[] ExternalNamespacePrefixes =
+    [
+        "System.",
+        "Microsoft.",
+        "Newtonsoft.",
+        "MassTransit.",
+        "Autofac.",
+        "Serilog.",
+        "Npgsql.",
+        "RabbitMQ.",
+        "Neo4j.",
+        "Anthropic."
+    ];
+
     /// <summary>
     /// Resolve import statements to namespace/type nodes.
     /// Phase 2 stub — full resolution happens when extractors populate UnresolvedImports.
@@ -55,8 +69,8 @@ public partial class IndexingPipeline
     /// For edges whose target doesn't exist in the buffer, create stub nodes so the edges
     /// survive resolution and reach the database. For cross-repo edge types (PUBLISHES,
     /// CONSUMES, HTTP_CALLS, etc.) all missing targets get stubs. For CALLS, INJECTS,
-    /// INHERITS, and IMPLEMENTS, only targets in TC.* namespaces get stubs (to avoid
-    /// creating stubs for framework/System types).
+    /// INHERITS, and IMPLEMENTS, only targets that look like application types get stubs
+    /// (to avoid creating stubs for framework/System types).
     /// </summary>
     private void CreateStubNodesForExternalTargets(string projectName, GraphBuffer buffer)
     {
@@ -67,7 +81,7 @@ public partial class IndexingPipeline
             EdgeType.ROUTED_TO, EdgeType.BOUND_TO, EdgeType.REGISTERS
         };
 
-        // These edge types only get stubs when the target looks like an internal type (TC.*)
+        // These edge types only get stubs when the target looks like an internal type
         var conditionalStubEdgeTypes = new HashSet<EdgeType>
         {
             EdgeType.CALLS, EdgeType.INJECTS, EdgeType.INHERITS,
@@ -87,12 +101,8 @@ public partial class IndexingPipeline
             if (buffer.FindByQN(pending.TargetQN) is not null)
                 continue;
 
-            // For conditional types, only create stubs for internal (TC.*) targets
-            if (isConditionalStub)
-            {
-                if (!pending.TargetQN.StartsWith("TC."))
-                    continue;
-            }
+            if (isConditionalStub && !LooksLikeApplicationType(pending.TargetQN))
+                continue;
 
             var (label, name) = pending.Type switch
             {
@@ -137,5 +147,14 @@ public partial class IndexingPipeline
 
         if (stubCount > 0)
             _logger.LogInformation("Created {Count} stub node(s) for external edge targets", stubCount);
+    }
+
+    private static bool LooksLikeApplicationType(string qualifiedName)
+    {
+        if (string.IsNullOrWhiteSpace(qualifiedName) || !qualifiedName.Contains('.'))
+            return false;
+
+        return !ExternalNamespacePrefixes.Any(prefix =>
+            qualifiedName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }
 }

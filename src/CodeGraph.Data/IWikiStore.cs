@@ -2,7 +2,7 @@ namespace CodeGraph.Data;
 
 /// <summary>
 /// Storage abstraction for wiki sections, pages, revisions, and attachments.
-/// Implementations exist for MySQL (EF Core) and Neo4j (Cypher).
+/// Implementations exist in CodeGraph.Data.Neo4j (Cypher).
 /// </summary>
 public interface IWikiStore
 {

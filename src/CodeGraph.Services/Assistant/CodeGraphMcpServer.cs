@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Text;
-using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Models.Responses;
@@ -17,11 +17,11 @@ public class CodeGraphMcpServer(
     GraphQueryEngine query,
     IGraphStore store,
     IWikiStore wikiStore,
-    RepositorySourceOptions sourceOptions,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     ICommunityDetectionService communityDetection,
-    IImpactAnalysisService impactAnalysis,
-    ILogger<CodeGraphMcpServer> logger)
+    IImpactAnalysisService impactAnalysis)
 {
+    private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
 
     [McpServerTool(Name = "get_graph_schema"),
      Description("Describe the available node types, edge types, and their properties in the knowledge graph.")]
@@ -331,7 +331,7 @@ public class CodeGraphMcpServer(
     }
 
     [McpServerTool(Name = "get_project_health"),
-     Description("Get health scores, file-level hotspots, and Claude-generated health analysis for a repository. Shows overall health (1-10), hotspot files (high churn + complexity), and per-project breakdowns.")]
+     Description("Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files (high churn + complexity), and per-project breakdowns.")]
     public async Task<string> GetProjectHealth(
         [Description("Project/repository name")] string project,
         [Description("Number of top hotspot files to return (default 10)")] int topHotspots = 10)
@@ -378,7 +378,7 @@ public class CodeGraphMcpServer(
 
         if (report.Analyses.Count > 0)
         {
-            sb.AppendLine("## Claude Analysis\n");
+            sb.AppendLine("## AI Analysis\n");
             foreach (var a in report.Analyses)
             {
                 if (!string.IsNullOrEmpty(a.DotnetProject))

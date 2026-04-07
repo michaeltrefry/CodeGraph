@@ -6,9 +6,15 @@ public class IndexingOptions
 
     /// <summary>
     /// Maximum number of repositories processed concurrently.
-    /// Limits resource consumption (MySQL connections, disk I/O, Roslyn workspaces).
+    /// Limits resource consumption (Neo4j connections, disk I/O, Roslyn workspaces).
     /// </summary>
     public int MaxParallelRepos { get; set; } = 4;
+
+    /// <summary>
+    /// Recompute fleet-wide communities after each repository finishes indexing.
+    /// Disable during bulk ingestion to avoid rerunning Louvain on every repo.
+    /// </summary>
+    public bool DetectCommunitiesAfterIndexing { get; set; } = false;
 
     public int MaxFileSizeKb { get; set; } = 512;
     public string[] SkipPatterns { get; set; } =

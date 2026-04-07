@@ -1,9 +1,9 @@
 using System.Text.Json.Serialization;
 using Anthropic;
-using CodeGraph.Api.Auth;
 using CodeGraph.Api.Consumers;
 using MassTransit;
-using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Data.Neo4j;
 using CodeGraph.Extractors.CSharp;
@@ -28,14 +28,10 @@ public static class Startup
 {
     public const int Port = 5037;
 
-    public static void ConfigureServices(IServiceCollection services, CodeGraphServiceSettings appSettings)
+    public static void ConfigureServices(IServiceCollection services, IConfiguration configuration)
     {
-        // Auth
-        services.AddSingleton<IAuthorizationHandler, AdminAuthorizationHandler>();
-        services.AddAuthorization(opts =>
-        {
-            opts.AddPolicy("Admin", p => p.AddRequirements(new AdminRequirement()));
-        });
+        services.AddCodeGraphOptions(configuration);
+
         services.AddHttpClient();
 
         services
@@ -59,28 +55,18 @@ public static class Startup
             {
                 Title = "CodeGraph API",
                 Version = "v1",
-                Description = "Knowledge graph indexing and query API for ~620 GitLab repositories"
+                Description = "Knowledge graph indexing and query API for source repositories"
             });
         });
 
-        // Settings — singleton options objects
-        services.AddSingleton(appSettings);
-        services.AddSingleton(appSettings.StorageOptions);
-        services.AddSingleton(appSettings.AnalysisOptions);
-        services.AddSingleton(appSettings.RepositorySource);
-        services.AddSingleton(appSettings.IndexingOptions);
-        services.AddSingleton(appSettings.WikiOptions);
-        services.AddSingleton(appSettings.AuthOptions);
-        services.AddSingleton(appSettings.ConsumerOptions);
-
         // Data stores (Neo4j)
-        services.AddSingleton(new Neo4jSessionFactory(appSettings.StorageOptions));
+        services.AddSingleton<Neo4jSessionFactory>();
         services.AddTransient<IGraphStore, Neo4jGraphStore>();
+        services.AddTransient<IMigrationRunner>(sp => sp.GetRequiredService<IGraphStore>());
         services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
         services.AddTransient<IVectorStore, Neo4jVectorStore>();
         services.AddTransient<IWikiStore, Neo4jWikiStore>();
-        services.AddTransient<IAdminStore, Neo4jAdminStore>();
         services.AddTransient<IMemoryGraphStore, Neo4jMemoryGraphStore>();
 
         // Embeddings + semantic search
@@ -96,8 +82,9 @@ public static class Startup
         services.AddTransient<ISolutionAnalyzer, SolutionAnalyzer>();
 
         // TypeScript/Angular analysis (Node.js sidecar)
-        services.AddTransient(_ => new TypeScriptServerManager(port: appSettings.TsPort,
-            _.GetRequiredService<ILoggerFactory>().CreateLogger<TypeScriptServerManager>()));
+        services.AddTransient(sp => new TypeScriptServerManager(
+            port: sp.GetRequiredService<IOptions<CodeGraphServiceSettings>>().Value.TsPort,
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<TypeScriptServerManager>()));
         services.AddTransient<ITypeScriptAnalyzer, TypeScriptProjectAnalyzer>();
 
         // Lint / Trust scoring
@@ -126,17 +113,18 @@ public static class Startup
         services.AddTransient<ICommunityDetectionService, CommunityDetectionService>();
         services.AddTransient<IImpactAnalysisService, ImpactAnalysisService>();
 
-        // Claude analyzer
+        // AI analyzer
         services.AddSingleton(_ => new AnthropicClient());
         services.AddSingleton<AnthropicCircuitBreaker>();
-        services.AddTransient<ICodeAnalyzer, ClaudeCodeAnalyzer>();
+        services.AddSingleton<IAnalysisModelProvider, AnthropicAnalysisProvider>();
+        services.AddSingleton<IAnalysisModelProvider, OpenAiAnalysisProvider>();
+        services.AddSingleton<IAnalysisModelProvider, GeminiAnalysisProvider>();
+        services.AddSingleton<IAnalysisModelProvider, LocalAnalysisProvider>();
+        services.AddSingleton<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
-        RegisterRepoProvider(services, appSettings.RepositorySource);
         services.AddTransient<IProjectService, ProjectService>();
         services.AddTransient<IProjectQueryService, ProjectQueryService>();
         services.AddTransient<IAdminService, AdminService>();
-        services.AddTransient<IAdminUserService, AdminUserService>();
-        services.AddTransient<ISettingsService, SettingsService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
@@ -146,6 +134,7 @@ public static class Startup
         services.AddTransient<IExclusionService, ExclusionService>();
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
+        RegisterRepoProvider(services);
 
         // Memory graph
         services.AddTransient<MemoryNormalizationService>();
@@ -156,7 +145,6 @@ public static class Startup
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
 
         // MassTransit + RabbitMQ
-        var rabbitOptions = appSettings.RabbitMqOptions;
         services.AddMassTransit(x =>
         {
             x.AddConsumer<ProcessRepositoryConsumer>();
@@ -169,13 +157,14 @@ public static class Startup
 
             x.UsingRabbitMq((context, cfg) =>
             {
+                var rabbitOptions = context.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
                 cfg.Host(rabbitOptions.Host, "/", h =>
                 {
                     h.Username(rabbitOptions.Username);
                     h.Password(rabbitOptions.Password);
                 });
 
-                var consumerOptions = appSettings.ConsumerOptions;
+                var consumerOptions = context.GetRequiredService<IOptions<ConsumerOptions>>().Value;
 
                 cfg.ReceiveEndpoint("process-repository", e =>
                 {
@@ -241,37 +230,51 @@ public static class Startup
         .WithTools<MemoryMcpServer>();
     }
 
-    public static void Configure(WebApplication app, CodeGraphServiceSettings appSettings)
+    public static void Configure(WebApplication app)
     {
         app.UseSwagger();
         app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "CodeGraph API v1"));
         app.UseCors();
         app.UseRouting();
-        app.UseAuthorization();
         app.MapControllers();
         app.MapMcp();
-
-        // Seed exclusion rules from config on first run
-        using var scope = app.Services.CreateScope();
-        var exclusionService = scope.ServiceProvider.GetRequiredService<IExclusionService>();
-        var repoSourceOptions = scope.ServiceProvider.GetRequiredService<RepositorySourceOptions>();
-        Task.Run(() => exclusionService.SeedFromConfigAsync(repoSourceOptions.ExcludedGroups)).GetAwaiter().GetResult();
     }
 
-    private static void RegisterRepoProvider(IServiceCollection services, RepositorySourceOptions options)
+    public static async Task InitializeAsync(IServiceProvider services)
     {
-        switch (options.Provider)
+        using var scope = services.CreateScope();
+        var serviceProvider = scope.ServiceProvider;
+
+        var hostEnvironment = serviceProvider.GetRequiredService<IHostEnvironment>();
+        var storageOptions = serviceProvider.GetRequiredService<IOptions<CodeGraphStorageOptions>>().Value;
+        var migrationRunner = serviceProvider.GetRequiredService<IMigrationRunner>();
+        var migrationsPath = ResolveMigrationsPath(hostEnvironment.ContentRootPath, storageOptions.Neo4jMigrationsPath);
+        await migrationRunner.ApplyMigrationsAsync(migrationsPath);
+
+        var exclusionService = serviceProvider.GetRequiredService<IExclusionService>();
+        var repoSourceOptions = serviceProvider.GetRequiredService<IOptions<RepositorySourceOptions>>().Value;
+        await exclusionService.SeedFromConfigAsync(repoSourceOptions.ExcludedGroups);
+    }
+
+    private static void RegisterRepoProvider(IServiceCollection services)
+    {
+        services.AddTransient<IRepoProvider>(sp =>
         {
-            case RepositorySourceProvider.GitHub:
-                services.AddTransient<IRepoProvider, GitHubRepoProvider>();
-                break;
-            case RepositorySourceProvider.Folder:
-                services.AddTransient<IRepoProvider, FolderRepoProvider>();
-                break;
-            case RepositorySourceProvider.GitLab:
-            default:
-                services.AddTransient<IRepoProvider, GitLabRepoProvider>();
-                break;
-        }
+            var options = sp.GetRequiredService<IOptions<RepositorySourceOptions>>().Value;
+            return options.Provider switch
+            {
+                RepositorySourceProvider.GitHub => sp.GetRequiredService<GitHubRepoProvider>(),
+                RepositorySourceProvider.Folder => sp.GetRequiredService<FolderRepoProvider>(),
+                _ => sp.GetRequiredService<GitLabRepoProvider>()
+            };
+        });
+    }
+
+    private static string ResolveMigrationsPath(string contentRootPath, string migrationsPath)
+    {
+        if (Path.IsPathRooted(migrationsPath))
+            return migrationsPath;
+
+        return Path.GetFullPath(Path.Combine(contentRootPath, migrationsPath));
     }
 }

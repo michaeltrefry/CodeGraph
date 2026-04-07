@@ -67,7 +67,7 @@ public class ProjectsController(
         return Ok(await queryService.GetHotspotsAsync(name, top));
     }
 
-    // GET /api/projects/{name}/nodes?label=Method&dotnetProject=TC.OrdersApi.Services&page=1&pageSize=50
+    // GET /api/projects/{name}/nodes?label=Method&dotnetProject=Orders.Services&page=1&pageSize=50
     [HttpGet("{name}/nodes")]
     public async Task<ActionResult<NodeListResponse>> Nodes(
         string name,

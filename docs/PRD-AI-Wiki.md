@@ -205,7 +205,7 @@ Simple list of admin usernames. Any authenticated user not in this table is a re
 | `updated_by` | VARCHAR(200) | OAuth username |
 | `updated_at` | DATETIME | |
 
-Single-row table. Stores admin-edited settings as JSON. Merged over Consul-provided `TcConfiguration<CodeGraphServiceSettings>` at runtime. Only one row exists (upsert on save).
+Single-row table. Stores admin-edited settings as JSON. Merged over the bound `CodeGraphServiceSettings` at runtime. Only one row exists (upsert on save).
 
 ### Tables to Drop
 
@@ -359,7 +359,7 @@ Upgrade from current basic regex rendering to a proper library (e.g., `ngx-markd
 - Displays in a JSON editor (e.g., `ngx-json-editor` or `monaco-editor` with JSON mode).
 - **ConnectionString is excluded** from both GET and PUT — never exposed to the UI.
 - Save sends `PUT /api/admin/settings` with the full JSON. API validates and applies.
-- Settings are persisted to the `settings_overrides` DB table and merged over Consul-provided `TcConfiguration<CodeGraphServiceSettings>` at runtime. This avoids fighting Consul for config management while still allowing runtime changes through the UI.
+- Settings are persisted to the `settings_overrides` DB table and merged over the bound `CodeGraphServiceSettings` at runtime, while still allowing runtime changes through the UI.
 
 ### Section Management (`/admin/sections`)
 
@@ -514,7 +514,7 @@ public class AuthOptions
 
 | # | Question | Decision |
 |---|----------|----------|
-| 1 | Settings persistence | DB table (`settings_overrides`). JSON merged over Consul's `TcConfiguration<CodeGraphServiceSettings>` at runtime. |
+| 1 | Settings persistence | DB table (`settings_overrides`). JSON merged over the bound `CodeGraphServiceSettings` at runtime. |
 | 2 | Attachment cleanup on page delete | Synchronous, best-effort. Log errors but don't block deletion. Orphaned files can be cleaned later. |
 | 3 | Admin bootstrap | `admin_users` table with manual insert. No auto-promotion. |
 | 4 | ConventionUpdated event | Remove entirely. No use case for WikiPageUpdated either. |

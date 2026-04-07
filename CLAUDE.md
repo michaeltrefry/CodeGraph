@@ -1,13 +1,12 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
 ## Project Overview
 
-CodeGraph is a self-maintaining .NET 9 service that indexes ~620 GitLab repositories into a queryable knowledge graph (MySQL) with natural language documentation. It produces two outputs: a structural graph of all connections between services, and generated CODEGRAPH.md files committed to each repo describing business intent. An MCP server lets Claude act as the domain expert for the entire codebase.
+CodeGraph is a self-maintaining .NET 9 service that indexes source repositories into a queryable knowledge graph (Neo4j) with natural language documentation. It produces two outputs: a structural graph of code and service relationships, and generated CODEGRAPH.md files committed to each repo describing business intent. An MCP server lets Claude act as the domain expert for the indexed codebase.
 
-**The full architecture spec is in `CodeGraph-Architecture.md`. Read it before making structural decisions.**
-**The detailed implementation plan is in `CodeGraph-Implementation.md`. Follow it for build order and code patterns.**
+Use this file and the repository README as the current architecture guide. The older `CodeGraph-Architecture.md` and `CodeGraph-Implementation.md` references are no longer authoritative in this checkout.
 
 ## Core Design Principle
 
@@ -16,36 +15,35 @@ CodeGraph is a self-maintaining .NET 9 service that indexes ~620 GitLab reposito
 ## Build & Run Commands
 
 ```bash
-dotnet build src/CodeGraph.sln                                    # Build entire solution
-dotnet run --project src/CodeGraph                                # API host (REST + MCP + sync worker)
-dotnet run --project src/CodeGraph.Console -- migrate             # Apply DB migrations
-dotnet test                                                             # All tests
-dotnet test tests/CodeGraph.Tests                                 # Specific test project
-dotnet test --filter "FullyQualifiedName~TestMethodName"                 # Single test
+dotnet build CodeGraph.sln                              # Build entire solution
+dotnet run --project src/CodeGraph.Api                  # API host (REST + MCP)
+dotnet run --project src/CodeGraph.Console -- migrate   # Apply DB migrations
+dotnet test CodeGraph.sln                               # All tests
+dotnet test src/CodeGraph.Tests                         # Specific test project
+dotnet test --filter "FullyQualifiedName~TestMethodName"
 ```
 
 ## Architecture
 
-### Solution Structure (follows company convention)
+### Solution Structure
 
 ```
 CodeGraph/
 ├── src/
-│   ├── CodeGraph.sln
-│   ├── CodeGraph/                       # API host (Startup.cs + Controllers + MCP), DI registration
+│   ├── CodeGraph.Api/                   # API host (Startup.cs + Controllers + MCP), DI registration
 │   ├── CodeGraph.Console/               # CLI: migrate
 │   ├── CodeGraph.Models/                # Domain model: GraphNode, GraphEdge, enums, contracts
-│   ├── CodeGraph.Services/              # Pipeline, query engine, Claude analysis, MCP tools,
+│   ├── CodeGraph.Services/              # Pipeline, query engine, AI analysis, MCP tools,
 │   │                                          #   ICodeExtractor interface, cross-repo linker
-│   ├── CodeGraph.Data/                  # IGraphStore, MySqlGraphStore, Dapper, EF Core entities
-│   ├── CodeGraph.Jobs/                      # Background sync worker, scheduled re-indexing
+│   ├── CodeGraph.Data/                  # IGraphStore and store interfaces
+│   ├── CodeGraph.Data.Neo4j/            # Neo4j implementations (Neo4jGraphStore, Cypher)
+│   ├── CodeGraph.Jobs/                  # Background jobs and scheduled re-indexing
 │   ├── CodeGraph.Extractors.CSharp/     # Roslyn extractor (isolated heavy dependency)
 │   ├── CodeGraph.Extractors.TypeScript/ # Node.js sidecar (Phase 6+)
 │   ├── CodeGraph.Extractors.Sql/        # ScriptDom (Phase 6+)
-│   └── CodeGraph.Extractors.ColdFusion/ # Regex (Phase 6+)
-├── CodeGraphWeb/                              # Angular frontend (port 4200)
-├── tests/
-└── sql/migrations/
+│   └── CodeGraph.Extractors.TreeSitter/ # Multi-language fallback extractor
+├── CodeGraphWeb/                        # Angular frontend (port 4200)
+└── cypher/migrations/
 ```
 
 ### Dependency Flow
@@ -61,22 +59,23 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 ### Key Projects
 
 - **CodeGraph.Models** — Graph model: `GraphNode`, `GraphEdge`, node/edge type enums, `ExtractionResult`, pipeline types. No dependencies.
-- **CodeGraph.Data** — MySQL via **EF Core** (Pomelo) for CRUD + **Dapper** for graph traversal (recursive CTEs) and batch operations. `IGraphStore`, `MySqlGraphStore`, `CodeGraphDbContext`.
-- **CodeGraph.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, Claude analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
+- **CodeGraph.Data** — Store interfaces (`IGraphStore`, `IWikiStore`, etc.) and shared entities. No database dependency.
+- **CodeGraph.Data.Neo4j** — Neo4j implementations of all store interfaces via the Neo4j .NET driver and Cypher queries.
+- **CodeGraph.Services** — Pipeline orchestrator, `GraphBuffer`, `ICodeExtractor` interface, query engine, AI analysis, CODEGRAPH.md generation, MCP server tools, cross-repo linker. Bootstrap order: foundational repos first, then application repos, then cross-repo linking.
 - **CodeGraph.Extractors.CSharp** — Roslyn `SemanticModel` via `MSBuildWorkspace`. Extracts types, calls, DI, MassTransit patterns, NuGet refs.
-- **CodeGraph** — ASP.NET WebApi host. `Startup.cs` with controllers, Autofac DI registration. Hosts the MCP server (HTTP transport).
+- **CodeGraph.Api** — ASP.NET Web API host. `Startup.cs` with controllers and DI registration. Hosts the MCP server (HTTP transport).
 - **CodeGraph.Console** — CLI utility for running database migrations.
 - **CodeGraph.Jobs** — `RepositorySyncWorker`, scheduled re-indexing tasks.
 
 ### Core Interfaces
 
 - `ICodeExtractor` (in Services) — Language extractors implement this. Pipeline dispatches by file extension.
-- `IGraphStore` (in Data) — Storage abstraction (MySQL/Dapper).
-- `IGitLabService` (in Services, Phase 6+) — Repository discovery, sync, change detection.
+- `IGraphStore` (in Data) — Storage abstraction. Implemented by `Neo4jGraphStore` in Data.Neo4j.
+- `IRepoProvider` (in Services) — Repository discovery and local materialization via folder, GitHub, or GitLab sources.
 
-## Target Codebase Conventions
+## Legacy Codebase Conventions
 
-The ~620 repos follow a consistent C# structure:
+Many of the originally indexed repos followed a consistent C# structure:
 
 ```
 TC.RepoNameApi.sln
@@ -87,7 +86,7 @@ TC.RepoNameApi.sln
 └── TC.RepoNameJobs/          # Background jobs (external scheduler)
 ```
 
-**`TC.*.Models` NuGet packages are the canonical linking key across repos.** The qualified type name (e.g., `TC.OrdersApi.Models.OrderCreatedEvent`) connects publishers to consumers across repos.
+Legacy `TC.*.Models` NuGet packages are still important linking keys when indexing that ecosystem, but newer repositories do not need to follow that naming convention.
 
 ### Four Communication Channels
 
@@ -112,7 +111,7 @@ CALLS, HTTP_CALLS, PUBLISHES, CONSUMES, INJECTS, IMPLEMENTS, INHERITS, QUERIES, 
 
 ## Conventions Wiki
 
-Database-backed wiki for team conventions and standards (patterns, abstractions, coding standards). Managed through the Angular UI and served to Claude via MCP tools.
+Database-backed wiki for conventions and standards (patterns, abstractions, coding standards). Managed through the Angular UI and served via MCP tools.
 
 - **DB tables**: `convention_pages` (current content + revision counter), `convention_revisions` (full snapshot per edit)
 - **API**: `ConventionsController` — CRUD at `/api/conventions/{slug}`, revision history at `/api/conventions/{slug}/revisions`
@@ -127,33 +126,24 @@ Key pages: Repositories, Graph (d3 visualization), Ask (streaming AI chat), Conv
 
 ## CODEGRAPH.md Generation
 
-Claude analyzes each repo's code and generates natural language summaries with **confidence indicators** (high/medium/low). These are committed directly to repos — no MRs. Updated via CI when code changes, using diffs and commit messages to determine if revision is needed.
+The configured analysis model generates natural language summaries with **confidence indicators** (high/medium/low). These are committed directly to repos — no MRs. Updated via CI when code changes, using diffs and commit messages to determine if revision is needed.
 
 ## Design Decisions
 
-- **EF Core + Dapper hybrid** — EF Core for CRUD, Dapper for recursive CTEs and batch operations
-- **MySQL over graph DB** — Company already runs MySQL; recursive CTEs handle traversal
+- **Neo4j graph database** — Native graph storage with Cypher queries for traversal and pattern matching
 - **Roslyn for C#** — Semantic analysis far exceeds tree-sitter's syntactic parsing
 - **Node.js sidecar for TypeScript** — TypeScript compiler API understands Angular natively
 - **Direct commits, not MRs** — MRs add friction and would be ignored
 - **Confidence indicators** — "I don't know" is better than a confident wrong answer
 - **Shared NuGet qualified names as linking keys** — Canonical cross-repo identifiers
-- **On-demand source reading** — Graph and docs answer most questions; Claude reads source from GitLab for deep dives
-
-## MySQL-Specific SQL Notes
-
-- `ON DUPLICATE KEY UPDATE` (not `ON CONFLICT`)
-- `JSON_MERGE_PATCH()` (not `json_patch()`)
-- `LIKE CONCAT('%', ?)` (not `LIKE '%' || ?`)
-- `BIGINT AUTO_INCREMENT PRIMARY KEY` (not `INTEGER PRIMARY KEY AUTOINCREMENT`)
-- No bind variable limit (batch sizes can be larger than SQLite's 999)
+- **On-demand source reading** — Graph and docs answer most questions; Claude reads source from the local repo checkout for deep dives
 
 ## Key NuGet Packages
 
 - `Microsoft.CodeAnalysis.CSharp.Workspaces` + `Microsoft.Build.Locator` — Roslyn
 - `Microsoft.SqlServer.TransactSql.ScriptDom` — T-SQL parsing
 - `ModelContextProtocol` — .NET MCP SDK
-- `Dapper` + `MySqlConnector` — MySQL access
+- `Neo4j.Driver` — Neo4j .NET driver
 - `LibGit2Sharp` — Git operations
 - `Microsoft.Extensions.Logging` — Logging (ILogger<T>)
 - `Autofac` — Dependency injection container

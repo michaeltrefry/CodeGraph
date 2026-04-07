@@ -13,17 +13,19 @@ public partial class Neo4jGraphStore
     {
         var nodeName = node.Name.Length > 1000 ? node.Name[..1000] : node.Name;
         var nodeQualifiedName = node.QualifiedName.Length > 1000 ? node.QualifiedName[..1000] : node.QualifiedName;
+        var nodeLabels = GetCodeNodeSetLabels(node.Label);
+        var promotedProperties = ExtractPromotedNodeProperties(node.Properties);
 
         await using var session = sessionFactory.GetSession();
 
         return await session.ExecuteWriteAsync(async tx =>
         {
-            var cursor = await tx.RunAsync("""
-                MERGE (seq:Sequence {name: 'node_id'})
+            var cypher = $@"
+                MERGE (seq:Sequence {{name: 'node_id'}})
                 ON CREATE SET seq.value = 0
                 SET seq.value = seq.value + 1
                 WITH seq.value AS newId
-                MERGE (n:CodeNode {project: $project, qualifiedName: $qualifiedName})
+                MERGE (n:CodeNode {{project: $project, qualifiedName: $qualifiedName}})
                 ON CREATE SET n.appId = newId
                 SET n.label = $label,
                     n.name = $name,
@@ -31,9 +33,14 @@ public partial class Neo4jGraphStore
                     n.filePath = $filePath,
                     n.startLine = $startLine,
                     n.endLine = $endLine,
-                    n.properties = $properties
+                    n.properties = $properties,
+                    n.doNotTrust = $doNotTrust
+                SET n += $promotedProperties
+                SET n{nodeLabels}
                 RETURN n.appId AS appId
-                """,
+                ";
+
+            var cursor = await tx.RunAsync(cypher,
                 new
                 {
                     project = node.Project,
@@ -44,7 +51,9 @@ public partial class Neo4jGraphStore
                     filePath = node.FilePath,
                     startLine = node.StartLine,
                     endLine = node.EndLine,
-                    properties = SerializeJson(node.Properties)
+                    properties = SerializeJson(node.Properties),
+                    doNotTrust = node.DoNotTrust,
+                    promotedProperties
                 });
 
             await cursor.FetchAsync();
@@ -80,62 +89,86 @@ public partial class Neo4jGraphStore
         logger.LogInformation("[Timing] Neo4j sequence allocation: {ElapsedMs}ms", seqSw.ElapsedMilliseconds);
 
         // Use smaller batches for Neo4j — large UNWIND+MERGE transactions are expensive
+        var preparedNodes = nodes.Select((n, i) => new PreparedNodeWrite(
+            n.Project,
+            n.DotnetProject,
+            n.Label,
+            n.Name.Length > 1000 ? n.Name[..1000] : n.Name,
+            n.QualifiedName.Length > 1000 ? n.QualifiedName[..1000] : n.QualifiedName,
+            n.FilePath,
+            n.StartLine,
+            n.EndLine,
+            SerializeJson(n.Properties),
+            ExtractPromotedNodeProperties(n.Properties),
+            n.DoNotTrust,
+            totalStartId + i + 1)).ToList();
+
         const int neo4jBatchSize = 100;
         var batchNum = 0;
 
-        foreach (var batch in Chunk(nodes, neo4jBatchSize))
+        foreach (var batch in Chunk(preparedNodes, neo4jBatchSize))
         {
             ct.ThrowIfCancellationRequested();
             batchNum++;
             var batchSw = Stopwatch.StartNew();
 
-            var batchStartId = totalStartId;
-            var batchResult = await session.ExecuteWriteAsync(async tx =>
+            var batchResult = new List<(string qn, long id)>();
+
+            foreach (var group in batch.GroupBy(n => n.Label))
             {
-                var nodeParams = batch.Select((n, i) => new Dictionary<string, object?>
+                var nodeLabels = GetCodeNodeSetLabels(group.Key);
+                var nodeParams = group.Select(n => new Dictionary<string, object?>
                 {
                     ["project"] = n.Project,
                     ["dotnetProject"] = n.DotnetProject,
                     ["label"] = n.Label.ToString(),
-                    ["name"] = n.Name.Length > 1000 ? n.Name[..1000] : n.Name,
-                    ["qualifiedName"] = n.QualifiedName.Length > 1000 ? n.QualifiedName[..1000] : n.QualifiedName,
+                    ["name"] = n.Name,
+                    ["qualifiedName"] = n.QualifiedName,
                     ["filePath"] = n.FilePath,
                     ["startLine"] = n.StartLine,
                     ["endLine"] = n.EndLine,
-                    ["properties"] = SerializeJson(n.Properties),
-                    ["idx"] = i
+                    ["properties"] = n.PropertiesJson,
+                    ["promotedProperties"] = n.PromotedProperties,
+                    ["doNotTrust"] = n.DoNotTrust,
+                    ["appId"] = n.AppId
                 }).ToList();
 
-                var resultCursor = await tx.RunAsync("""
-                    UNWIND $nodes AS n
-                    MERGE (node:CodeNode {project: n.project, qualifiedName: n.qualifiedName})
-                    ON CREATE SET node.appId = $startId + n.idx + 1
-                    SET node.label = n.label,
-                        node.name = n.name,
-                        node.dotnetProject = n.dotnetProject,
-                        node.filePath = n.filePath,
-                        node.startLine = n.startLine,
-                        node.endLine = n.endLine,
-                        node.properties = n.properties
-                    RETURN node.qualifiedName AS qualifiedName, node.appId AS appId
-                    """,
-                    new { nodes = nodeParams, startId = batchStartId });
-
-                var pairs = new List<(string qn, long id)>();
-                await foreach (var record in resultCursor)
+                var groupResult = await session.ExecuteWriteAsync(async tx =>
                 {
-                    pairs.Add((record["qualifiedName"].As<string>(), record["appId"].As<long>()));
-                }
-                return pairs;
-            });
+                    var cypher = $@"
+                        UNWIND $nodes AS n
+                        MERGE (node:CodeNode {{project: n.project, qualifiedName: n.qualifiedName}})
+                        ON CREATE SET node.appId = n.appId
+                        SET node.label = n.label,
+                            node.name = n.name,
+                            node.dotnetProject = n.dotnetProject,
+                            node.filePath = n.filePath,
+                            node.startLine = n.startLine,
+                            node.endLine = n.endLine,
+                            node.properties = n.properties,
+                            node.doNotTrust = n.doNotTrust
+                        SET node += n.promotedProperties
+                        SET node{nodeLabels}
+                        RETURN node.qualifiedName AS qualifiedName, node.appId AS appId
+                        ";
+
+                    var resultCursor = await tx.RunAsync(cypher,
+                        new { nodes = nodeParams });
+
+                    var pairs = new List<(string qn, long id)>();
+                    await foreach (var record in resultCursor)
+                        pairs.Add((record["qualifiedName"].As<string>(), record["appId"].As<long>()));
+                    return pairs;
+                });
+
+                batchResult.AddRange(groupResult);
+            }
 
             logger.LogInformation("[Timing] Neo4j node batch {BatchNum} ({BatchSize} nodes): {ElapsedMs}ms",
                 batchNum, batch.Count, batchSw.ElapsedMilliseconds);
 
             foreach (var (qn, id) in batchResult)
                 result[qn] = id;
-
-            totalStartId += batch.Count;
         }
 
         return result;
@@ -194,8 +227,8 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project, label: $label}) RETURN n LIMIT $limit",
-                new { project, label = label.ToString(), limit });
+                $"MATCH {GetCodeNodeMatchPattern("n", label)} WHERE n.project = $project RETURN n LIMIT $limit",
+                new { project, limit });
             var results = new List<GraphNode>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNode(record["n"].As<INode>()));
@@ -243,7 +276,7 @@ public partial class Neo4jGraphStore
             }
             else
             {
-                cypher = "MATCH (n:CodeNode)";
+                cypher = $"MATCH {GetCodeNodeMatchPattern("n", label)}";
             }
 
             var whereAdded = false;
@@ -259,7 +292,7 @@ public partial class Neo4jGraphStore
                 AddWhere("n.project = $project");
                 parameters["project"] = project;
             }
-            if (label is not null)
+            if (label is not null && useFulltext)
             {
                 AddWhere("n.label = $label");
                 parameters["label"] = label.Value.ToString();
@@ -320,7 +353,7 @@ public partial class Neo4jGraphStore
             }
             else
             {
-                cypher = "MATCH (n:CodeNode)";
+                cypher = $"MATCH {GetCodeNodeMatchPattern("n", label)}";
             }
 
             var whereAdded = false;
@@ -336,7 +369,7 @@ public partial class Neo4jGraphStore
                 AddWhere("n.project = $project");
                 parameters["project"] = project;
             }
-            if (label is not null)
+            if (label is not null && useFulltext)
             {
                 AddWhere("n.label = $label");
                 parameters["label"] = label.Value.ToString();
@@ -378,8 +411,8 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {label: $label}) RETURN n LIMIT $limit",
-                new { label = label.ToString(), limit });
+                $"MATCH {GetCodeNodeMatchPattern("n", label)} RETURN n LIMIT $limit",
+                new { limit });
             var results = new List<GraphNode>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNode(record["n"].As<INode>()));
@@ -513,4 +546,18 @@ public partial class Neo4jGraphStore
             deleted += batchDeleted;
         } while (batchDeleted > 0);
     }
+
+    private sealed record PreparedNodeWrite(
+        string Project,
+        string? DotnetProject,
+        NodeLabel Label,
+        string Name,
+        string QualifiedName,
+        string FilePath,
+        int StartLine,
+        int EndLine,
+        string? PropertiesJson,
+        Dictionary<string, object> PromotedProperties,
+        bool DoNotTrust,
+        long AppId);
 }

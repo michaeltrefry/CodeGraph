@@ -1,4 +1,5 @@
 using CodeGraph.Data;
+using Microsoft.Extensions.Options;
 using CodeGraph.Models;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
@@ -6,8 +7,11 @@ using CodeGraph.Services.Extensions;
 
 namespace CodeGraph.Services.Query;
 
-public class ProjectQueryService(IGraphStore store, RepositorySourceOptions sourceOptions) : IProjectQueryService
+public class ProjectQueryService(
+    IGraphStore store,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor) : IProjectQueryService
 {
+    private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     public async Task<ProjectListResponse> ListAsync(string? search, string? group, int page, int pageSize)
     {
         // Run filtered query and group list in parallel — both at the store layer
@@ -195,7 +199,8 @@ public class ProjectQueryService(IGraphStore store, RepositorySourceOptions sour
         new(e.Id, e.Project, e.DotnetProject, e.Analysis, e.Confidence, e.ModelUsed, e.CreatedAt, e.UpdatedAt);
 
     internal static AnalysisBatchResponse MapBatch(StoredAnalysisBatch b) =>
-        new(b.Id, b.Repo, b.AnthropicBatchId, b.Status, b.RequestCount, b.CompletedCount, b.SubmittedAt, b.CompletedAt);
+        new(b.Id, b.Repo, b.ProviderBatchId, b.ProviderName, b.ExecutionMode, b.IncludeAllSource,
+            b.Status, b.RequestCount, b.CompletedCount, b.SubmittedAt, b.CompletedAt);
 
     internal static ProjectSecuritySummary MapSecuritySummary(ProjectSecuritySummaryEntity e) =>
         new(e.SecurityScore, e.CriticalCount, e.HighCount, e.MediumCount, e.LowCount, e.ComputedAt);

@@ -3,7 +3,7 @@ using CodeGraph.Services;
 namespace CodeGraph.Jobs.Jobs;
 
 /// <summary>
-/// Discovers all GitLab repositories and triggers processing via the admin service.
+/// Discovers repositories from the configured source provider and triggers processing via the admin service.
 /// </summary>
 public class DiscoverRepositoriesJob(
     IAdminService adminService,

@@ -1,4 +1,5 @@
 using CodeGraph.Data;
+using Microsoft.Extensions.Options;
 using CodeGraph.Models;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
@@ -6,8 +7,12 @@ using CodeGraph.Services.Extensions;
 
 namespace CodeGraph.Services.Query;
 
-public class NodeQueryService(IGraphStore store, IFileSystem fileSystem, RepositorySourceOptions sourceOptions) : INodeQueryService
+public class NodeQueryService(
+    IGraphStore store,
+    IFileSystem fileSystem,
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor) : INodeQueryService
 {
+    private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private static readonly Dictionary<string, string> ExtensionToLanguage = new(StringComparer.OrdinalIgnoreCase)
     {
         [".cs"] = "csharp",
