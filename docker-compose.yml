@@ -17,6 +17,20 @@ services:
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__Provider: ${CodeGraph__AnalysisOptions__Assistant__Provider:-anthropic}
+      CodeGraph__AnalysisOptions__Assistant__Model: ${CodeGraph__AnalysisOptions__Assistant__Model:-}
+      CodeGraph__AnalysisOptions__Assistant__MaxTokens: ${CodeGraph__AnalysisOptions__Assistant__MaxTokens:-10000}
+      CodeGraph__AnalysisOptions__Assistant__MaxTurns: ${CodeGraph__AnalysisOptions__Assistant__MaxTurns:-10}
+      CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__Anthropic__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__Anthropic__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__Project: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Project:-}
+      CodeGraph__AnalysisOptions__Assistant__Local__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__Local__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath:-}
       CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__OpenAi__BaseUrl:-https://api.openai.com/v1}
       CodeGraph__AnalysisOptions__OpenAi__Model: ${CodeGraph__AnalysisOptions__OpenAi__Model:-gpt-5}
@@ -71,6 +85,20 @@ services:
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__Provider: ${CodeGraph__AnalysisOptions__Assistant__Provider:-anthropic}
+      CodeGraph__AnalysisOptions__Assistant__Model: ${CodeGraph__AnalysisOptions__Assistant__Model:-}
+      CodeGraph__AnalysisOptions__Assistant__MaxTokens: ${CodeGraph__AnalysisOptions__Assistant__MaxTokens:-10000}
+      CodeGraph__AnalysisOptions__Assistant__MaxTurns: ${CodeGraph__AnalysisOptions__Assistant__MaxTurns:-10}
+      CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__Anthropic__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__Anthropic__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization:-}
+      CodeGraph__AnalysisOptions__Assistant__OpenAi__Project: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Project:-}
+      CodeGraph__AnalysisOptions__Assistant__Local__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__Local__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath:-}
       CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__OpenAi__BaseUrl:-https://api.openai.com/v1}
       CodeGraph__AnalysisOptions__OpenAi__Model: ${CodeGraph__AnalysisOptions__OpenAi__Model:-gpt-5}

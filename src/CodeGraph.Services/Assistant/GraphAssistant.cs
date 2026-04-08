@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Anthropic;
@@ -6,6 +8,7 @@ using Anthropic.Models.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
+using CodeGraph.Models;
 using CodeGraph.Models.Requests;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Query;
@@ -17,7 +20,8 @@ namespace CodeGraph.Services.Assistant;
 /// codebase by running an agent loop with read-only graph query tools.
 /// </summary>
 public partial class GraphAssistant(
-    AnthropicClient client,
+    AnthropicClient anthropicClient,
+    IHttpClientFactory httpClientFactory,
     GraphQueryEngine query,
     IGraphStore store,
     IWikiStore wikiStore,
@@ -42,6 +46,34 @@ public partial class GraphAssistant(
         IReadOnlyList<ChatMessage>? history = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        var provider = ResolveAssistantProvider();
+
+        switch (provider)
+        {
+            case "anthropic":
+                await foreach (var e in AskWithAnthropicAsync(question, context, history, ct))
+                    yield return e;
+                yield break;
+
+            case "openai":
+            case "local":
+                await foreach (var e in AskWithOpenAiCompatibleAsync(provider, question, context, history, ct))
+                    yield return e;
+                yield break;
+
+            default:
+                throw new InvalidOperationException(
+                    $"Assistant provider '{provider}' is not supported. Supported providers: anthropic, openai, local");
+        }
+    }
+
+    private async IAsyncEnumerable<AssistantEvent> AskWithAnthropicAsync(
+        string question,
+        string? context,
+        IReadOnlyList<ChatMessage>? history,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var client = CreateConfiguredAnthropicClient();
         var userMessage = string.IsNullOrWhiteSpace(context)
             ? question
             : $"[Context: {context}]\n\n{question}";
@@ -62,14 +94,16 @@ public partial class GraphAssistant(
 
         messages.Add(new MessageParam { Role = Role.User, Content = userMessage });
 
-        var tools = BuildTools();
+        var tools = BuildAnthropicTools();
         bool exhaustedTurns = false;
+        bool hasUsedTool = false;
 
-        for (int turn = 0; turn < options.AssistantMaxTurns; turn++)
+        for (int turn = 0; turn < options.Assistant.MaxTurns; turn++)
         {
             logger.LogInformation("Agent turn {Turn}/{MaxTurns} — sending {MessageCount} messages to Claude",
-                turn + 1, options.AssistantMaxTurns, messages.Count);
+                turn + 1, options.Assistant.MaxTurns, messages.Count);
             var turnSw = System.Diagnostics.Stopwatch.StartNew();
+            var allowTextStreaming = hasUsedTool;
 
             var textSb = new StringBuilder();
             var toolUseList = new List<PendingToolUse>();
@@ -78,8 +112,8 @@ public partial class GraphAssistant(
             int streamEventCount = 0;
             await foreach (var e in client.Messages.CreateStreaming(new MessageCreateParams
             {
-                Model = options.Model,
-                MaxTokens = options.AssistantMaxTokens,
+                Model = ResolveAssistantModel("anthropic"),
+                MaxTokens = options.Assistant.MaxTokens,
                 System = GetSystemPrompt(),
                 Messages = messages,
                 Tools = tools
@@ -103,7 +137,8 @@ public partial class GraphAssistant(
                     if (cbDelta.Delta.TryPickText(out var td))
                     {
                         textSb.Append(td.Text);
-                        yield return new AssistantEvent("text", td.Text);
+                        if (allowTextStreaming)
+                            yield return new AssistantEvent("text", td.Text);
                     }
                     else if (cbDelta.Delta.TryPickInputJSON(out var ij) && current is not null)
                     {
@@ -122,10 +157,27 @@ public partial class GraphAssistant(
             // No tool calls → final answer already streamed
             if (toolUseList.Count == 0)
             {
+                if (!hasUsedTool)
+                {
+                    logger.LogWarning("Turn {Turn} returned no tool calls before grounding; retrying with explicit tool requirement", turn + 1);
+                    messages.Add(new MessageParam
+                    {
+                        Role = Role.User,
+                        Content = GetToolRequirementReminder()
+                    });
+                    exhaustedTurns = false;
+                    continue;
+                }
+
                 logger.LogInformation("Turn {Turn} — no tool calls, breaking (final answer: {TextLen} chars)", turn + 1, textSb.Length);
                 exhaustedTurns = false;
                 break;
             }
+
+            if (!allowTextStreaming && textSb.Length > 0)
+                yield return new AssistantEvent("text", textSb.ToString());
+
+            hasUsedTool = true;
             logger.LogInformation("Turn {Turn} — {ToolCount} tool calls, continuing loop", turn + 1, toolUseList.Count);
 
             // Build assistant turn message
@@ -174,6 +226,9 @@ public partial class GraphAssistant(
             exhaustedTurns = true;
         }
 
+        if (!hasUsedTool)
+            throw new InvalidOperationException("Assistant did not call any tools. The configured provider may not support tool calling for the Ask workflow.");
+
         if (exhaustedTurns)
         {
             logger.LogInformation("Max turns exhausted — forcing synthesis with {MessageCount} messages", messages.Count);
@@ -185,8 +240,8 @@ public partial class GraphAssistant(
 
             await foreach (var e in client.Messages.CreateStreaming(new MessageCreateParams
             {
-                Model = options.Model,
-                MaxTokens = options.AssistantMaxTokens,
+                Model = ResolveAssistantModel("anthropic"),
+                MaxTokens = options.Assistant.MaxTokens,
                 System = GetSystemPrompt(),
                 Messages = messages
             }, ct))
@@ -196,6 +251,154 @@ public partial class GraphAssistant(
                     yield return new AssistantEvent("text", td.Text);
                 }
             }
+        }
+
+        yield return new AssistantEvent("done", "");
+    }
+
+    private async IAsyncEnumerable<AssistantEvent> AskWithOpenAiCompatibleAsync(
+        string provider,
+        string question,
+        string? context,
+        IReadOnlyList<ChatMessage>? history,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var userMessage = string.IsNullOrWhiteSpace(context)
+            ? question
+            : $"[Context: {context}]\n\n{question}";
+
+        var messages = new List<OpenAiChatMessage>();
+        if (history is { Count: > 0 })
+        {
+            foreach (var msg in history)
+            {
+                messages.Add(new OpenAiChatMessage
+                {
+                    Role = msg.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) ? "assistant" : "user",
+                    Content = msg.Content
+                });
+            }
+        }
+
+        messages.Add(new OpenAiChatMessage
+        {
+            Role = "user",
+            Content = userMessage
+        });
+
+        var tools = BuildOpenAiTools();
+        var http = httpClientFactory.CreateClient();
+        var maxTurns = options.Assistant.MaxTurns;
+        bool exhaustedTurns = false;
+        bool hasUsedTool = false;
+
+        for (int turn = 0; turn < maxTurns; turn++)
+        {
+            logger.LogInformation("Agent turn {Turn}/{MaxTurns} — sending {MessageCount} messages to {Provider}",
+                turn + 1, maxTurns, messages.Count, provider);
+
+            var completion = await CompleteOpenAiCompatibleTurnAsync(http, provider, messages, tools, ct);
+            var choice = completion.Choices.FirstOrDefault()
+                ?? throw new InvalidOperationException($"{provider} returned no assistant choices");
+            var assistantMessage = choice.Message
+                ?? throw new InvalidOperationException($"{provider} returned an empty assistant message");
+
+            if (assistantMessage.ToolCalls is not { Count: > 0 })
+            {
+                if (!hasUsedTool)
+                {
+                    logger.LogWarning("{Provider} assistant turn {Turn} returned no tool calls before grounding; retrying with explicit tool requirement",
+                        provider, turn + 1);
+                    messages.Add(new OpenAiChatMessage
+                    {
+                        Role = "user",
+                        Content = GetToolRequirementReminder()
+                    });
+                    exhaustedTurns = false;
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(assistantMessage.Content))
+                    yield return new AssistantEvent("text", assistantMessage.Content);
+
+                exhaustedTurns = false;
+                break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(assistantMessage.Content))
+                yield return new AssistantEvent("text", assistantMessage.Content);
+
+            hasUsedTool = true;
+            foreach (var toolCall in assistantMessage.ToolCalls)
+                yield return new AssistantEvent("tool_use", toolCall.Function?.Name ?? "unknown_tool");
+
+            messages.Add(new OpenAiChatMessage
+            {
+                Role = "assistant",
+                Content = assistantMessage.Content,
+                ToolCalls = assistantMessage.ToolCalls
+                    .Select(toolCall => new OpenAiToolCall
+                    {
+                        Id = toolCall.Id,
+                        Type = toolCall.Type,
+                        Function = toolCall.Function is null
+                            ? null
+                            : new OpenAiToolFunction
+                            {
+                                Name = toolCall.Function.Name,
+                                Arguments = toolCall.Function.Arguments
+                            }
+                    })
+                    .ToList()
+            });
+
+            foreach (var toolCall in assistantMessage.ToolCalls)
+            {
+                var toolName = toolCall.Function?.Name ?? "unknown_tool";
+                var inputJson = string.IsNullOrWhiteSpace(toolCall.Function?.Arguments)
+                    ? "{}"
+                    : toolCall.Function!.Arguments!;
+
+                string result;
+                try
+                {
+                    var input = JsonSerializer.Deserialize<JsonElement>(inputJson);
+                    result = await ExecuteToolAsync(toolName, input, ct);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or ArgumentException)
+                {
+                    logger.LogWarning(ex, "Tool {Tool} failed while executing assistant turn", toolName);
+                    result = $"Tool error: {ex.Message}";
+                }
+
+                messages.Add(new OpenAiChatMessage
+                {
+                    Role = "tool",
+                    ToolCallId = toolCall.Id,
+                    Content = result
+                });
+            }
+
+            exhaustedTurns = true;
+        }
+
+        if (!hasUsedTool)
+            throw new InvalidOperationException("Assistant did not call any tools. The configured provider may not support tool calling for the Ask workflow.");
+
+        if (exhaustedTurns)
+        {
+            logger.LogInformation("Max turns exhausted for {Provider} assistant — forcing synthesis", provider);
+
+            messages.Add(new OpenAiChatMessage
+            {
+                Role = "user",
+                Content = "You've gathered enough information. Please synthesize everything you've found and provide a comprehensive answer to the original question. Do not call any more tools."
+            });
+
+            var completion = await CompleteOpenAiCompatibleTurnAsync(http, provider, messages, tools: null, ct);
+            var finalMessage = completion.Choices.FirstOrDefault()?.Message;
+            if (!string.IsNullOrWhiteSpace(finalMessage?.Content))
+                yield return new AssistantEvent("text", finalMessage.Content);
         }
 
         yield return new AssistantEvent("done", "");
@@ -254,9 +457,217 @@ public partial class GraphAssistant(
 
         When answering, cite specific repositories, node names, and edge types.
         Be specific and concrete — use the data from the graph, not guesses.
+        You must call at least one tool before providing any substantive answer to the user.
         """;
 
+    private static string GetToolRequirementReminder() =>
+        "Before answering, you must call at least one tool to ground your response in repository data. Do not answer from general knowledge alone.";
+
+    private IAnthropicClient CreateConfiguredAnthropicClient()
+    {
+        var client = anthropicClient;
+        var apiKey = FirstNonEmpty(options.Assistant.Anthropic.ApiKey, options.Anthropic.ApiKey);
+        var baseUrl = FirstNonEmpty(options.Assistant.Anthropic.BaseUrl, TryGetAnthropicBaseUrl(options.Anthropic.MessagesApiUrl));
+
+        if (string.IsNullOrWhiteSpace(apiKey) && string.IsNullOrWhiteSpace(baseUrl))
+            return client;
+
+        return client.WithOptions(config => config with
+        {
+            APIKey = string.IsNullOrWhiteSpace(apiKey) ? config.APIKey : apiKey,
+            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? config.BaseUrl : new Uri(baseUrl)
+        });
+    }
+
+    private async Task<OpenAiChatCompletionResponse> CompleteOpenAiCompatibleTurnAsync(
+        HttpClient http,
+        string provider,
+        IReadOnlyList<OpenAiChatMessage> messages,
+        IReadOnlyList<OpenAiToolDefinition>? tools,
+        CancellationToken ct)
+    {
+        var request = CreateOpenAiCompatibleRequest(provider, messages, tools);
+        using var response = await http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException($"Status Code: {response.StatusCode} {errorBody}");
+        }
+
+        return await response.Content.ReadFromJsonAsync<OpenAiChatCompletionResponse>(CodeGraphJsonDefaults.SnakeCase, ct)
+            ?? throw new InvalidOperationException($"{provider} returned a null assistant response");
+    }
+
+    private HttpRequestMessage CreateOpenAiCompatibleRequest(
+        string provider,
+        IReadOnlyList<OpenAiChatMessage> messages,
+        IReadOnlyList<OpenAiToolDefinition>? tools)
+    {
+        var providerOptions = ResolveOpenAiCompatibleOptions(provider);
+        var url = BuildOpenAiCompatibleUrl(providerOptions);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, url);
+        if (!string.IsNullOrWhiteSpace(providerOptions.ApiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", providerOptions.ApiKey);
+        if (!string.IsNullOrWhiteSpace(providerOptions.Organization))
+            request.Headers.Add("OpenAI-Organization", providerOptions.Organization);
+        if (!string.IsNullOrWhiteSpace(providerOptions.Project))
+            request.Headers.Add("OpenAI-Project", providerOptions.Project);
+
+        var body = new OpenAiChatCompletionRequest
+        {
+            Model = ResolveAssistantModel(provider),
+            MaxCompletionTokens = options.Assistant.MaxTokens,
+            Messages = BuildOpenAiCompatibleMessages(messages),
+            Tools = tools?.ToList()
+        };
+
+        request.Content = JsonContent.Create(body, options: CodeGraphJsonDefaults.SnakeCase);
+        return request;
+    }
+
+    private List<OpenAiChatMessage> BuildOpenAiCompatibleMessages(IReadOnlyList<OpenAiChatMessage> messages)
+    {
+        var result = new List<OpenAiChatMessage>(messages.Count + 1)
+        {
+            new()
+            {
+                Role = "system",
+                Content = GetSystemPrompt()
+            }
+        };
+
+        result.AddRange(messages.Select(message => new OpenAiChatMessage
+        {
+            Role = message.Role,
+            Content = message.Content,
+            ToolCallId = message.ToolCallId,
+            ToolCalls = message.ToolCalls
+        }));
+
+        return result;
+    }
+
+    private AssistantOpenAiCompatibleOptions ResolveOpenAiCompatibleOptions(string provider)
+    {
+        return provider switch
+        {
+            "openai" => new AssistantOpenAiCompatibleOptions
+            {
+                ApiKey = FirstNonEmpty(options.Assistant.OpenAi.ApiKey, options.OpenAi.ApiKey),
+                BaseUrl = FirstNonEmpty(options.Assistant.OpenAi.BaseUrl, options.OpenAi.BaseUrl),
+                ChatCompletionsPath = FirstNonEmpty(options.Assistant.OpenAi.ChatCompletionsPath, options.OpenAi.ChatCompletionsPath),
+                Organization = FirstNonEmpty(options.Assistant.OpenAi.Organization, options.OpenAi.Organization),
+                Project = FirstNonEmpty(options.Assistant.OpenAi.Project, options.OpenAi.Project)
+            },
+            "local" => new AssistantOpenAiCompatibleOptions
+            {
+                ApiKey = FirstNonEmpty(options.Assistant.Local.ApiKey, options.Local.ApiKey),
+                BaseUrl = FirstNonEmpty(options.Assistant.Local.BaseUrl, options.Local.BaseUrl),
+                ChatCompletionsPath = FirstNonEmpty(options.Assistant.Local.ChatCompletionsPath, options.Local.ChatCompletionsPath)
+            },
+            _ => throw new InvalidOperationException($"Unsupported OpenAI-compatible assistant provider '{provider}'")
+        };
+    }
+
+    private string BuildOpenAiCompatibleUrl(AssistantOpenAiCompatibleOptions providerOptions)
+    {
+        var baseUrl = providerOptions.BaseUrl.TrimEnd('/');
+        var path = string.IsNullOrWhiteSpace(providerOptions.ChatCompletionsPath)
+            ? "/chat/completions"
+            : providerOptions.ChatCompletionsPath;
+        var relative = path.StartsWith("/") ? path : $"/{path}";
+        return $"{baseUrl}{relative}";
+    }
+
+    private string ResolveAssistantProvider() =>
+        string.IsNullOrWhiteSpace(options.Assistant.Provider)
+            ? "anthropic"
+            : options.Assistant.Provider.Trim().ToLowerInvariant();
+
+    private string ResolveAssistantModel(string provider) =>
+        FirstNonEmpty(
+            options.Assistant.Model,
+            provider switch
+            {
+                "openai" => options.OpenAi.Model,
+                "local" => options.Local.Model,
+                _ => null
+            },
+            options.Model);
+
+    private static string? TryGetAnthropicBaseUrl(string? messagesApiUrl)
+    {
+        if (string.IsNullOrWhiteSpace(messagesApiUrl) || !Uri.TryCreate(messagesApiUrl, UriKind.Absolute, out var uri))
+            return null;
+
+        return uri.GetLeftPart(UriPartial.Authority);
+    }
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+
     private sealed record PendingToolUse(string Id, string Name, StringBuilder Input);
+
+    private sealed class OpenAiChatCompletionRequest
+    {
+        public string Model { get; set; } = "";
+        public int? MaxCompletionTokens { get; set; }
+        public List<OpenAiChatMessage> Messages { get; set; } = [];
+        public List<OpenAiToolDefinition>? Tools { get; set; }
+    }
+
+    private sealed class OpenAiChatCompletionResponse
+    {
+        public string? Model { get; set; }
+        public List<OpenAiChatCompletionChoice> Choices { get; set; } = [];
+    }
+
+    private sealed class OpenAiChatCompletionChoice
+    {
+        public OpenAiChatMessage? Message { get; set; }
+    }
+
+    private sealed class OpenAiChatMessage
+    {
+        public string Role { get; set; } = "";
+        public string? Content { get; set; }
+        public string? ToolCallId { get; set; }
+        public List<OpenAiToolCall>? ToolCalls { get; set; }
+    }
+
+    private sealed class OpenAiToolCall
+    {
+        public string Id { get; set; } = "";
+        public string Type { get; set; } = "function";
+        public OpenAiToolFunction? Function { get; set; }
+    }
+
+    private sealed class OpenAiToolFunction
+    {
+        public string? Name { get; set; }
+        public string? Arguments { get; set; }
+    }
+
+    private sealed class OpenAiToolDefinition
+    {
+        public string Type { get; set; } = "function";
+        public OpenAiFunctionDefinition Function { get; set; } = new();
+    }
+
+    private sealed class OpenAiFunctionDefinition
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public OpenAiFunctionParameters Parameters { get; set; } = new();
+    }
+
+    private sealed class OpenAiFunctionParameters
+    {
+        public string Type { get; set; } = "object";
+        public Dictionary<string, JsonElement> Properties { get; set; } = [];
+        public List<string> Required { get; set; } = [];
+    }
 }
 
 public record AssistantEvent(string Type, string Content);

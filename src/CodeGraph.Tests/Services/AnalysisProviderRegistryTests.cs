@@ -58,6 +58,19 @@ public class AnalysisProviderRegistryTests
         options.Anthropic.Version.ShouldBe("2026-01-01");
     }
 
+    [Fact]
+    public void LegacyAssistantProperties_ProxyNestedAssistantOptions()
+    {
+        var options = new AnalysisOptions
+        {
+            AssistantMaxTokens = 4321,
+            AssistantMaxTurns = 7
+        };
+
+        options.Assistant.MaxTokens.ShouldBe(4321);
+        options.Assistant.MaxTurns.ShouldBe(7);
+    }
+
     private sealed class FakeProvider(string name) : IAnalysisModelProvider
     {
         public string ProviderName => name;

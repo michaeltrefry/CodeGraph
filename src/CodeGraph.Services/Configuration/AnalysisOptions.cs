@@ -9,11 +9,21 @@ public class AnalysisOptions
     public int MaxFileSizeKb { get; set; } = 1024;
     public int MaxParallelAnalyses { get; set; } = 5;
 
-    /// <summary>Max tokens for streaming assistant responses.</summary>
-    public int AssistantMaxTokens { get; set; } = 10000;
+    public AssistantOptions Assistant { get; set; } = new();
 
-    /// <summary>Max agent loop turns for the streaming assistant.</summary>
-    public int AssistantMaxTurns { get; set; } = 10;
+    /// <summary>Legacy compatibility shim for existing assistant token bindings.</summary>
+    public int AssistantMaxTokens
+    {
+        get => Assistant.MaxTokens;
+        set => Assistant.MaxTokens = value;
+    }
+
+    /// <summary>Legacy compatibility shim for existing assistant turn bindings.</summary>
+    public int AssistantMaxTurns
+    {
+        get => Assistant.MaxTurns;
+        set => Assistant.MaxTurns = value;
+    }
 
     /// <summary>
     /// Maximum characters of source code to include in a batch analysis prompt.
@@ -75,6 +85,32 @@ public class AnthropicAnalysisProviderOptions
     public string BatchApiBaseUrl { get; set; } = "https://api.anthropic.com/v1/messages/batches";
     public string MessagesApiUrl { get; set; } = "https://api.anthropic.com/v1/messages";
     public string Version { get; set; } = "2023-06-01";
+}
+
+public class AssistantOptions
+{
+    public string Provider { get; set; } = "anthropic";
+    public string Model { get; set; } = "";
+    public int MaxTokens { get; set; } = 10000;
+    public int MaxTurns { get; set; } = 10;
+    public AssistantAnthropicOptions Anthropic { get; set; } = new();
+    public AssistantOpenAiCompatibleOptions OpenAi { get; set; } = new();
+    public AssistantOpenAiCompatibleOptions Local { get; set; } = new();
+}
+
+public class AssistantAnthropicOptions
+{
+    public string ApiKey { get; set; } = "";
+    public string BaseUrl { get; set; } = "";
+}
+
+public class AssistantOpenAiCompatibleOptions
+{
+    public string ApiKey { get; set; } = "";
+    public string BaseUrl { get; set; } = "";
+    public string ChatCompletionsPath { get; set; } = "";
+    public string? Organization { get; set; }
+    public string? Project { get; set; }
 }
 
 public class OpenAiAnalysisProviderOptions
