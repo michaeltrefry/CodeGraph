@@ -1,0 +1,26 @@
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# Copy NuGet config and project files for restore
+COPY nuget.docker.config nuget.config
+COPY CodeGraph.sln .
+COPY src/CodeGraph.Jobs/CodeGraph.Jobs.csproj src/CodeGraph.Jobs/
+COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
+COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
+COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
+COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+
+RUN dotnet restore src/CodeGraph.Jobs/CodeGraph.Jobs.csproj
+
+# Copy everything and publish
+COPY src/ src/
+RUN dotnet publish src/CodeGraph.Jobs/CodeGraph.Jobs.csproj -c Release -o /app/publish --no-restore
+
+FROM mcr.microsoft.com/dotnet/runtime:9.0 AS runtime
+WORKDIR /app
+
+COPY --from=build /app/publish .
+
+ENV DOTNET_ENVIRONMENT=Staging
+
+ENTRYPOINT ["dotnet", "CodeGraph.Jobs.dll"]

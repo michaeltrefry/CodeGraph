@@ -1,41 +1,10 @@
-using Microsoft.Extensions.Logging.Abstractions;
+using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
-using CodeGraph.Services.Messaging;
-using CodeGraph.Jobs.Jobs;
 
 namespace CodeGraph.Jobs.Tests.Jobs;
-
-internal sealed class TestProcessRepositoriesJob(IMessageBus messageBus)
-    : ProcessRepositoriesJob(messageBus, NullLogger<ProcessRepositoriesJob>.Instance)
-{
-    public Task InvokeAsync(StartJob startJob) => ExecuteAsync(startJob);
-}
-
-internal sealed class TestProcessBatchResultsJob(IBatchAnalysisService batchService)
-    : ProcessBatchResultsJob(batchService)
-{
-    public Task InvokeAsync(StartJob startJob) => ExecuteAsync(startJob);
-}
-
-internal sealed class TestDiscoverRepositoriesJob(IAdminService adminService)
-    : DiscoverRepositoriesJob(adminService, NullLogger<DiscoverRepositoriesJob>.Instance)
-{
-    public Task InvokeAsync(StartJob startJob) => ExecuteAsync(startJob);
-}
-
-internal sealed class RecordingMessageBus : IMessageBus
-{
-    public List<object> PublishedMessages { get; } = [];
-
-    public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class
-    {
-        PublishedMessages.Add(message);
-        return Task.CompletedTask;
-    }
-}
 
 internal sealed class RecordingBatchAnalysisService : IBatchAnalysisService
 {
@@ -52,6 +21,13 @@ internal sealed class RecordingBatchAnalysisService : IBatchAnalysisService
         return Task.CompletedTask;
     }
 
+    public Task ProcessCompletedBatchAsync(string repoName, string providerBatchId, CancellationToken ct = default)
+    {
+        ProcessedRepo = repoName;
+        ProcessCompletedCalls++;
+        return Task.CompletedTask;
+    }
+
     public Task SynthesizeRepoSummaryAsync(string repoName, string batchId, CancellationToken ct) => Task.CompletedTask;
 
     public Task WriteCodeGraphDocsAsync(string repoName, CancellationToken ct) => Task.CompletedTask;
@@ -61,6 +37,9 @@ internal sealed class RecordingAdminService : IAdminService
 {
     public DiscoverRequest? LastDiscoverRequest { get; private set; }
     public DiscoverResponse NextDiscoverResponse { get; set; } = new(0, 0, 0, 0, 0, []);
+    public int ReIndexAllCalls { get; private set; }
+    public int DetectCommunitiesCalls { get; private set; }
+    public int LinkAndDetectCalls { get; private set; }
 
     public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request)
     {
@@ -69,9 +48,153 @@ internal sealed class RecordingAdminService : IAdminService
     }
 
     public Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request) => throw new NotSupportedException();
-    public Task<ProcessReposResponse> ReIndexAllAsync() => throw new NotSupportedException();
+
+    public Task<ProcessReposResponse> ReIndexAllAsync()
+    {
+        ReIndexAllCalls++;
+        return Task.FromResult(new ProcessReposResponse([], 0));
+    }
+
     public Task LinkAsync(CancellationToken ct) => throw new NotSupportedException();
-    public Task DetectCommunitiesAsync(CancellationToken ct) => throw new NotSupportedException();
-    public Task LinkAndDetectAsync(CancellationToken ct) => throw new NotSupportedException();
+
+    public Task DetectCommunitiesAsync(CancellationToken ct)
+    {
+        DetectCommunitiesCalls++;
+        return Task.CompletedTask;
+    }
+
+    public Task LinkAndDetectAsync(CancellationToken ct)
+    {
+        LinkAndDetectCalls++;
+        return Task.CompletedTask;
+    }
+
     public Task ProcessBatchAnalysisAsync(string? repo) => throw new NotSupportedException();
+}
+
+internal sealed class RecordingMcpDocService : IMcpDocService
+{
+    public int Calls { get; private set; }
+
+    public Task RegenerateAsync()
+    {
+        Calls++;
+        return Task.CompletedTask;
+    }
+}
+
+internal sealed class InMemoryJobScheduleStore : IJobScheduleStore
+{
+    private readonly List<JobScheduleEntity> _items = [];
+    private long _nextId = 1;
+
+    public Task<IReadOnlyList<JobScheduleEntity>> ListSchedulesAsync() =>
+        Task.FromResult<IReadOnlyList<JobScheduleEntity>>(_items.OrderBy(x => x.Name).ToList());
+
+    public Task<JobScheduleEntity?> GetScheduleByIdAsync(long id) =>
+        Task.FromResult(_items.FirstOrDefault(x => x.Id == id)?.Clone());
+
+    public Task<JobScheduleEntity?> GetScheduleByNameAsync(string name) =>
+        Task.FromResult(_items.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase))?.Clone());
+
+    public Task<JobScheduleEntity> CreateScheduleAsync(JobScheduleEntity entity)
+    {
+        var clone = entity.Clone();
+        clone.Id = _nextId++;
+        _items.Add(clone);
+        return Task.FromResult(clone.Clone());
+    }
+
+    public Task UpdateScheduleAsync(JobScheduleEntity entity)
+    {
+        var index = _items.FindIndex(x => x.Id == entity.Id);
+        if (index >= 0)
+            _items[index] = entity.Clone();
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteScheduleAsync(long id)
+    {
+        _items.RemoveAll(x => x.Id == id);
+        return Task.CompletedTask;
+    }
+
+    public Task<JobScheduleEntity?> TryAcquireDueScheduleAsync(DateTime utcNow, string leaseOwner, TimeSpan leaseDuration, CancellationToken ct = default)
+    {
+        var schedule = _items
+            .Where(x => x.IsEnabled && x.NextRunUtc <= utcNow && (x.LeaseExpiresUtc is null || x.LeaseExpiresUtc <= utcNow))
+            .OrderBy(x => x.NextRunUtc)
+            .FirstOrDefault();
+
+        return Task.FromResult(Acquire(schedule, utcNow, leaseOwner, leaseDuration));
+    }
+
+    public Task<JobScheduleEntity?> TryAcquireScheduleAsync(long id, DateTime utcNow, string leaseOwner, TimeSpan leaseDuration, CancellationToken ct = default)
+    {
+        var schedule = _items.FirstOrDefault(x => x.Id == id);
+        return Task.FromResult(Acquire(schedule, utcNow, leaseOwner, leaseDuration));
+    }
+
+    public Task MarkRunStartedAsync(long id, DateTime startedAtUtc, string leaseOwner, CancellationToken ct = default)
+    {
+        var schedule = _items.First(x => x.Id == id);
+        schedule.LastRunStartedUtc = startedAtUtc;
+        schedule.LastRunStatus = "running";
+        schedule.LastError = null;
+        schedule.UpdatedAtUtc = startedAtUtc;
+        return Task.CompletedTask;
+    }
+
+    public Task MarkRunCompletedAsync(long id, DateTime completedAtUtc, DateTime? nextRunUtc, string status, string? error, string leaseOwner, CancellationToken ct = default)
+    {
+        var schedule = _items.First(x => x.Id == id);
+        schedule.LastRunCompletedUtc = completedAtUtc;
+        schedule.LastRunStatus = status;
+        schedule.LastError = error;
+        if (nextRunUtc.HasValue)
+            schedule.NextRunUtc = nextRunUtc.Value;
+        schedule.LeaseAcquiredUtc = null;
+        schedule.LeaseOwner = null;
+        schedule.LeaseExpiresUtc = null;
+        schedule.UpdatedAtUtc = completedAtUtc;
+        return Task.CompletedTask;
+    }
+
+    private static JobScheduleEntity? Acquire(JobScheduleEntity? schedule, DateTime utcNow, string leaseOwner, TimeSpan leaseDuration)
+    {
+        if (schedule is null)
+            return null;
+        if (schedule.LeaseExpiresUtc is not null && schedule.LeaseExpiresUtc > utcNow)
+            return null;
+
+        schedule.LeaseOwner = leaseOwner;
+        schedule.LeaseAcquiredUtc = utcNow;
+        schedule.LeaseExpiresUtc = utcNow.Add(leaseDuration);
+        schedule.UpdatedAtUtc = utcNow;
+        return schedule.Clone();
+    }
+}
+
+internal static class JobScheduleEntityCloneExtensions
+{
+    public static JobScheduleEntity Clone(this JobScheduleEntity entity) => new()
+    {
+        Id = entity.Id,
+        Name = entity.Name,
+        JobType = entity.JobType,
+        IsEnabled = entity.IsEnabled,
+        CronExpression = entity.CronExpression,
+        TimeZoneId = entity.TimeZoneId,
+        ArgsJson = entity.ArgsJson,
+        NextRunUtc = entity.NextRunUtc,
+        LastRunStartedUtc = entity.LastRunStartedUtc,
+        LastRunCompletedUtc = entity.LastRunCompletedUtc,
+        LastRunStatus = entity.LastRunStatus,
+        LastError = entity.LastError,
+        LeaseAcquiredUtc = entity.LeaseAcquiredUtc,
+        LeaseOwner = entity.LeaseOwner,
+        LeaseExpiresUtc = entity.LeaseExpiresUtc,
+        CreatedAtUtc = entity.CreatedAtUtc,
+        UpdatedAtUtc = entity.UpdatedAtUtc
+    };
 }

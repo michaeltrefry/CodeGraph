@@ -22,6 +22,7 @@
     <ProjectReference Include="..\CodeGraph.Extractors.TypeScript\CodeGraph.Extractors.TypeScript.csproj" />
     <ProjectReference Include="..\CodeGraph.Extractors.TreeSitter\CodeGraph.Extractors.TreeSitter.csproj" />
     <ProjectReference Include="..\CodeGraph.Data.Neo4j\CodeGraph.Data.Neo4j.csproj" />
+    <ProjectReference Include="..\CodeGraph.Jobs\CodeGraph.Jobs.csproj" />
   </ItemGroup>
 
   <ItemGroup>

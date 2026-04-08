@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using CodeGraph.Jobs;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
@@ -11,6 +12,7 @@ namespace CodeGraph.Api.Controllers;
 [Route("api/settings")]
 public class SettingsController(
     IAdminService adminService,
+    IJobScheduleService jobScheduleService,
     IDbHealthStore dbHealthStore,
     IExclusionService exclusionService,
     IWikiService wikiService,
@@ -106,6 +108,97 @@ public class SettingsController(
     public async Task<ActionResult<DatabaseHealthResponse>> GetDatabaseHealth()
     {
         return Ok(await dbHealthStore.GetDatabaseHealthAsync());
+    }
+
+    // ── Embedded job schedules ──
+
+    [HttpGet("schedules")]
+    public async Task<ActionResult<IReadOnlyList<JobScheduleResponse>>> ListSchedules()
+    {
+        return Ok(await jobScheduleService.ListAsync());
+    }
+
+    [HttpGet("schedules/{id:long}")]
+    public async Task<ActionResult<JobScheduleResponse>> GetSchedule(long id)
+    {
+        var schedule = await jobScheduleService.GetAsync(id);
+        return schedule is null ? NotFound() : Ok(schedule);
+    }
+
+    [HttpPost("schedules")]
+    public async Task<ActionResult<JobScheduleResponse>> CreateSchedule([FromBody] CreateJobScheduleRequest request)
+    {
+        try
+        {
+            var created = await jobScheduleService.CreateAsync(request);
+            return Ok(created);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    [HttpPut("schedules/{id:long}")]
+    public async Task<ActionResult<JobScheduleResponse>> UpdateSchedule(long id, [FromBody] UpdateJobScheduleRequest request)
+    {
+        try
+        {
+            var updated = await jobScheduleService.UpdateAsync(id, request);
+            return updated is null ? NotFound() : Ok(updated);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    [HttpDelete("schedules/{id:long}")]
+    public async Task<ActionResult> DeleteSchedule(long id)
+    {
+        return await jobScheduleService.DeleteAsync(id) ? NoContent() : NotFound();
+    }
+
+    [HttpPost("schedules/{id:long}/run")]
+    public async Task<ActionResult<JobExecutionResponse>> RunScheduleNow(long id)
+    {
+        try
+        {
+            var result = await jobScheduleService.RunNowAsync(id, HttpContext.RequestAborted);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(ex.Message);
+        }
+    }
+
+    [HttpPost("schedules/{id:long}/enable")]
+    public async Task<ActionResult<JobScheduleResponse>> EnableSchedule(long id)
+    {
+        try
+        {
+            var updated = await jobScheduleService.SetEnabledAsync(id, true);
+            return updated is null ? NotFound() : Ok(updated);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    [HttpPost("schedules/{id:long}/disable")]
+    public async Task<ActionResult<JobScheduleResponse>> DisableSchedule(long id)
+    {
+        try
+        {
+            var updated = await jobScheduleService.SetEnabledAsync(id, false);
+            return updated is null ? NotFound() : Ok(updated);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
     }
 
     // ── Section management ──

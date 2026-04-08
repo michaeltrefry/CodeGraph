@@ -3,20 +3,17 @@ using CodeGraph.Jobs.Jobs;
 
 namespace CodeGraph.Jobs.Tests.Jobs;
 
-public class ProcessBatchResultsJobTests
+public class ProcessBatchAnalysisJobTests
 {
     [Fact]
     public async Task ForwardsRepoArgumentToBatchService()
     {
         var batchService = new RecordingBatchAnalysisService();
-        var job = new TestProcessBatchResultsJob(batchService);
+        var job = new ProcessBatchAnalysisJob(batchService);
 
-        await job.InvokeAsync(new StartJob
+        await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest
         {
-            Args = new Dictionary<string, string>
-            {
-                ["repo"] = "Orders.Api"
-            }
+            Repo = "Orders.Api"
         });
 
         batchService.ProcessCompletedCalls.ShouldBe(1);
@@ -27,9 +24,9 @@ public class ProcessBatchResultsJobTests
     public async Task MissingRepoArgument_ProcessesAllBatches()
     {
         var batchService = new RecordingBatchAnalysisService();
-        var job = new TestProcessBatchResultsJob(batchService);
+        var job = new ProcessBatchAnalysisJob(batchService);
 
-        await job.InvokeAsync(new StartJob { Args = [] });
+        await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest());
 
         batchService.ProcessCompletedCalls.ShouldBe(1);
         batchService.ProcessedRepo.ShouldBeNull();

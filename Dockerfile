@@ -9,6 +9,7 @@ COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
 COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
 COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
 COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+COPY src/CodeGraph.Jobs/CodeGraph.Jobs.csproj src/CodeGraph.Jobs/
 COPY src/CodeGraph.Extractors.CSharp/CodeGraph.Extractors.CSharp.csproj src/CodeGraph.Extractors.CSharp/
 COPY src/CodeGraph.Extractors.TypeScript/CodeGraph.Extractors.TypeScript.csproj src/CodeGraph.Extractors.TypeScript/
 COPY src/CodeGraph.Extractors.Sql/CodeGraph.Extractors.Sql.csproj src/CodeGraph.Extractors.Sql/
