@@ -16,6 +16,7 @@ public partial class BatchAnalysisService
         IReadOnlyList<NodeEntity> projectNodes,
         IReadOnlyList<EdgeEntity> allRepoEdges,
         Dictionary<long, NodeEntity> nodeById,
+        IAnalysisModelProvider provider,
         string? repoPath = null,
         bool includeAllSource = false)
     {
@@ -63,7 +64,8 @@ public partial class BatchAnalysisService
 
         var repo = await store.GetRepositoryByName(repoName);
         var promptStyle = DeterminePromptStyle(projectNodes, repo?.Language);
-        var describableNodes = SelectDescribableNodesForPrompt(projectNodes, outboundBySource, promptStyle);
+        var promptBudget = GetPromptBudget(provider, promptStyle);
+        var describableNodes = SelectDescribableNodesForPrompt(projectNodes, outboundBySource, promptStyle, promptBudget);
 
         var sb = new StringBuilder();
 
@@ -106,6 +108,7 @@ public partial class BatchAnalysisService
                         var crossProject = !projectNodeIds.Contains(e.TargetId);
                         return crossProject ? $"{tn.QualifiedName} [ext]" : tn.QualifiedName;
                     }).ToList();
+                    targets = LimitRelationshipTargets(targets, promptBudget.MaxRelationshipTargetsPerType);
                     sb.AppendLine($"  {group.Key} → {string.Join(", ", targets)}");
                 }
             }
@@ -121,6 +124,7 @@ public partial class BatchAnalysisService
                         var crossProject = !projectNodeIds.Contains(e.SourceId);
                         return crossProject ? $"{sn.QualifiedName} [ext]" : sn.QualifiedName;
                     }).ToList();
+                    sources = LimitRelationshipTargets(sources, promptBudget.MaxRelationshipTargetsPerType);
                     sb.AppendLine($"  ← {group.Key} from: {string.Join(", ", sources)}");
                 }
             }
@@ -138,7 +142,8 @@ public partial class BatchAnalysisService
             repoPath,
             includeAllSource,
             secretFiles,
-            promptStyle);
+            promptStyle,
+            promptBudget.MaxSourceChars);
         if (sourceSection is not null)
             sb.Append(sourceSection);
 
@@ -270,12 +275,11 @@ public partial class BatchAnalysisService
         string? repoPath,
         bool includeAllSource,
         HashSet<string> secretFiles,
-        PromptStyle promptStyle)
+        PromptStyle promptStyle,
+        int maxChars)
     {
         if (string.IsNullOrWhiteSpace(repoPath) || !fileSystem.DirectoryExists(repoPath))
             return null;
-
-        var maxChars = options.MaxSourceChars;
 
         // When includeAllSource is set, prioritize high-signal classes first then include
         // everything else. This way the most important code fills the budget first.
@@ -551,7 +555,8 @@ public partial class BatchAnalysisService
     private static List<NodeEntity> SelectDescribableNodesForPrompt(
         IReadOnlyList<NodeEntity> projectNodes,
         Dictionary<long, List<EdgeEntity>> outboundBySource,
-        PromptStyle promptStyle)
+        PromptStyle promptStyle,
+        PromptBudget promptBudget)
     {
         if (promptStyle == PromptStyle.CStyle)
         {
@@ -598,8 +603,38 @@ public partial class BatchAnalysisService
 
         return projectNodes
             .Where(n => n.Label is "Class" or "Interface")
-            .OrderBy(n => n.QualifiedName, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(n => IsHighSignalNode(n, outboundBySource, promptStyle))
+            .ThenByDescending(n => outboundBySource.TryGetValue(n.Id, out var edges) ? edges.Count : 0)
+            .ThenBy(n => n.QualifiedName, StringComparer.OrdinalIgnoreCase)
+            .Take(promptBudget.MaxPromptNodes ?? int.MaxValue)
             .ToList();
+    }
+
+    private PromptBudget GetPromptBudget(IAnalysisModelProvider provider, PromptStyle promptStyle)
+    {
+        if (!string.Equals(provider.ProviderName, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PromptBudget(options.MaxSourceChars, MaxPromptNodes: null, MaxRelationshipTargetsPerType: null);
+        }
+
+        var localMaxNodes = Math.Max(1, options.Local.MaxPromptNodes);
+        if (promptStyle == PromptStyle.CStyle)
+            localMaxNodes = Math.Max(localMaxNodes, MaxCStyleFunctionsInPrompt + MaxCStyleStructsInPrompt);
+
+        return new PromptBudget(
+            MaxSourceChars: Math.Max(1, options.Local.MaxSourceChars),
+            MaxPromptNodes: localMaxNodes,
+            MaxRelationshipTargetsPerType: Math.Max(1, options.Local.MaxRelationshipTargetsPerType));
+    }
+
+    private static List<string> LimitRelationshipTargets(List<string> items, int? maxItems)
+    {
+        if (maxItems is null || items.Count <= maxItems.Value)
+            return items;
+
+        var limited = items.Take(maxItems.Value).ToList();
+        limited.Add($"... (+{items.Count - maxItems.Value} more)");
+        return limited;
     }
 
     private static int GetCNodePriority(NodeEntity node, Dictionary<long, List<EdgeEntity>> outboundBySource)
@@ -689,4 +724,9 @@ public partial class BatchAnalysisService
         ObjectOriented,
         CStyle
     }
+
+    private sealed record PromptBudget(
+        int MaxSourceChars,
+        int? MaxPromptNodes,
+        int? MaxRelationshipTargetsPerType);
 }

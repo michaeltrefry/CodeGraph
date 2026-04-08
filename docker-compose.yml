@@ -30,6 +30,9 @@ services:
       CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests:-1}
       CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts:-3}
       CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
+      CodeGraph__AnalysisOptions__Local__MaxSourceChars: ${CodeGraph__AnalysisOptions__Local__MaxSourceChars:-32000}
+      CodeGraph__AnalysisOptions__Local__MaxPromptNodes: ${CodeGraph__AnalysisOptions__Local__MaxPromptNodes:-80}
+      CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType:-8}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -56,7 +59,7 @@ services:
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:4-management
+    image: ${CODEGRAPH_DOCKER_RABBITMQ_IMAGE:-masstransit/rabbitmq}
     ports:
       - "5672:5672"
       - "15672:15672"

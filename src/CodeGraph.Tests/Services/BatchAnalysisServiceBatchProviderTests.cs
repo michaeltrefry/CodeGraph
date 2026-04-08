@@ -3,7 +3,6 @@ using Microsoft.Extensions.Options;
 using Shouldly;
 using CodeGraph.Data;
 using CodeGraph.Models;
-using CodeGraph.Models.Exceptions;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
@@ -13,10 +12,10 @@ using CodeGraph.Tests.Extractors;
 
 namespace CodeGraph.Tests.Services;
 
-public class BatchAnalysisServiceDirectFallbackTests
+public class BatchAnalysisServiceBatchProviderTests
 {
     [Fact]
-    public async Task ProcessCompletedBatches_UsesDirectFallback_ForNonBatchProviders()
+    public async Task ProcessCompletedBatches_UsesBatchProviderResults()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -35,7 +34,7 @@ public class BatchAnalysisServiceDirectFallbackTests
             FilePath = "OrderService.cs"
         });
 
-        var provider = new RecordingDirectOnlyProvider(nodeId);
+        var provider = new RecordingBatchProvider(nodeId);
         var registry = new SingleProviderRegistry(provider);
         var messageBus = new RecordingMessageBus();
         var service = new BatchAnalysisService(
@@ -48,12 +47,11 @@ public class BatchAnalysisServiceDirectFallbackTests
             NullLogger<BatchAnalysisService>.Instance);
 
         await service.SubmitAnalysisBatchAsync("demo-repo");
-
-        provider.ExecuteCalls.ShouldBe(0);
-
         await service.ProcessCompletedBatchesAsync("demo-repo");
 
-        provider.ExecuteCalls.ShouldBe(1);
+        provider.SubmitCalls.ShouldBe(1);
+        provider.StatusCalls.ShouldBe(1);
+        provider.ResultsCalls.ShouldBe(1);
         (await store.GetPendingBatchesAsync("demo-repo")).ShouldBeEmpty();
         (await store.GetProjectAnalysesAsync("demo-repo")).Count.ShouldBe(1);
         messageBus.PublishedMessages.OfType<AnalysisBatchSubmitted>().Count().ShouldBe(1);
@@ -61,7 +59,7 @@ public class BatchAnalysisServiceDirectFallbackTests
     }
 
     [Fact]
-    public async Task ProcessCompletedBatches_IncludesDefinesMethodChildren_InPrompt()
+    public async Task SubmitAnalysisBatch_IncludesDefinesMethodChildren_InPrompt()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -104,28 +102,25 @@ public class BatchAnalysisServiceDirectFallbackTests
             Type = EdgeType.DEFINES_METHOD
         });
 
-        var provider = new RecordingDirectOnlyProvider(classId);
-        var registry = new SingleProviderRegistry(provider);
-        var messageBus = new RecordingMessageBus();
+        var provider = new RecordingBatchProvider(classId);
         var service = new BatchAnalysisService(
             store,
-            registry,
-            messageBus,
+            new SingleProviderRegistry(provider),
+            new RecordingMessageBus(),
             new NoOpExclusionService(),
             Options.Create(new AnalysisOptions { DefaultProvider = "local" }),
             new LocalFileSystem(),
             NullLogger<BatchAnalysisService>.Instance);
 
         await service.SubmitAnalysisBatchAsync("demo-repo");
-        await service.ProcessCompletedBatchesAsync("demo-repo");
 
-        provider.LastPrompt.ShouldNotBeNull();
-        provider.LastPrompt.ShouldContain("Methods:");
-        provider.LastPrompt.ShouldContain("async Task ProcessOrder()");
+        provider.LastSubmittedPrompt.ShouldNotBeNull();
+        provider.LastSubmittedPrompt.ShouldContain("Methods:");
+        provider.LastSubmittedPrompt.ShouldContain("async Task ProcessOrder()");
     }
 
     [Fact]
-    public async Task ProcessCompletedBatches_ForCRepo_PrefersOwnedFirmwareFunctions_OverVendoredComponents()
+    public async Task SubmitAnalysisBatch_ForCRepo_PrefersOwnedFirmwareFunctions_OverVendoredComponents()
     {
         var repoPath = Path.Combine(Path.GetTempPath(), $"codegraph-c-prompt-{Guid.NewGuid():N}");
         var firstPartyFile = Path.Combine(repoPath, "src/Display-Board/main/managers/display_manager.c");
@@ -181,26 +176,23 @@ public class BatchAnalysisServiceDirectFallbackTests
                 Properties = new() { ["return_type"] = "void" }
             });
 
-            var provider = new RecordingDirectOnlyProvider(firstPartyNodeId);
-            var registry = new SingleProviderRegistry(provider);
-            var messageBus = new RecordingMessageBus();
+            var provider = new RecordingBatchProvider(firstPartyNodeId);
             var service = new BatchAnalysisService(
                 store,
-                registry,
-                messageBus,
+                new SingleProviderRegistry(provider),
+                new RecordingMessageBus(),
                 new NoOpExclusionService(),
                 Options.Create(new AnalysisOptions { DefaultProvider = "local", MaxSourceChars = 4000 }),
                 new LocalFileSystem(),
                 NullLogger<BatchAnalysisService>.Instance);
 
             await service.SubmitAnalysisBatchAsync("demo-repo", repoPath, includeAllSource: true);
-            await service.ProcessCompletedBatchesAsync("demo-repo");
 
-            provider.LastPrompt.ShouldNotBeNull();
-            provider.LastPrompt.ShouldContain("[Function] demo-repo.display_manager_tick");
-            provider.LastPrompt.ShouldContain("display_manager.c");
-            provider.LastPrompt.ShouldNotContain("demo-repo.protoc_codegen_pass");
-            provider.LastPrompt.ShouldNotContain("c_message.cc");
+            provider.LastSubmittedPrompt.ShouldNotBeNull();
+            provider.LastSubmittedPrompt.ShouldContain("[Function] demo-repo.display_manager_tick");
+            provider.LastSubmittedPrompt.ShouldContain("display_manager.c");
+            provider.LastSubmittedPrompt.ShouldNotContain("demo-repo.protoc_codegen_pass");
+            provider.LastSubmittedPrompt.ShouldNotContain("c_message.cc");
         }
         finally
         {
@@ -210,7 +202,7 @@ public class BatchAnalysisServiceDirectFallbackTests
     }
 
     [Fact]
-    public async Task ProcessCompletedBatches_RetriesTransientDirectFallbackFailures_OnLaterPass()
+    public async Task SubmitAnalysisBatch_ForLocalProvider_LimitsObjectOrientedPromptNodeCount()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -219,7 +211,17 @@ public class BatchAnalysisServiceDirectFallbackTests
             LocalPath = null
         });
 
-        var nodeId = await store.UpsertNodeAsync(new GraphNode
+        await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = "demo-repo",
+            DotnetProject = "Demo.Project",
+            Label = NodeLabel.Class,
+            Name = "OrdersController",
+            QualifiedName = "Demo.Project.OrdersController",
+            FilePath = "OrdersController.cs"
+        });
+
+        var serviceId = await store.UpsertNodeAsync(new GraphNode
         {
             Project = "demo-repo",
             DotnetProject = "Demo.Project",
@@ -229,20 +231,51 @@ public class BatchAnalysisServiceDirectFallbackTests
             FilePath = "OrderService.cs"
         });
 
-        var provider = new FlakyDirectOnlyProvider(nodeId);
-        var registry = new SingleProviderRegistry(provider);
-        var messageBus = new RecordingMessageBus();
+        await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = "demo-repo",
+            DotnetProject = "Demo.Project",
+            Label = NodeLabel.Class,
+            Name = "HelperUtility",
+            QualifiedName = "Demo.Project.HelperUtility",
+            FilePath = "HelperUtility.cs"
+        });
+
+        for (var i = 0; i < 5; i++)
+        {
+            var targetId = await store.UpsertNodeAsync(new GraphNode
+            {
+                Project = "demo-repo",
+                DotnetProject = "Demo.Project",
+                Label = NodeLabel.Interface,
+                Name = $"Dependency{i}",
+                QualifiedName = $"Demo.Project.Dependency{i}",
+                FilePath = $"Dependency{i}.cs"
+            });
+
+            await store.InsertEdgeAsync(new GraphEdge
+            {
+                Project = "demo-repo",
+                SourceId = serviceId,
+                TargetId = targetId,
+                Type = EdgeType.CALLS
+            });
+        }
+
+        var provider = new RecordingBatchProvider(1, providerName: "local");
         var service = new BatchAnalysisService(
             store,
-            registry,
-            messageBus,
+            new SingleProviderRegistry(provider),
+            new RecordingMessageBus(),
             new NoOpExclusionService(),
             Options.Create(new AnalysisOptions
             {
                 DefaultProvider = "local",
                 Local = new LocalAnalysisProviderOptions
                 {
-                    DirectFallbackMaxAttempts = 3
+                    MaxPromptNodes = 2,
+                    MaxRelationshipTargetsPerType = 4,
+                    MaxSourceChars = 16000
                 }
             }),
             new LocalFileSystem(),
@@ -250,39 +283,54 @@ public class BatchAnalysisServiceDirectFallbackTests
 
         await service.SubmitAnalysisBatchAsync("demo-repo");
 
-        await service.ProcessCompletedBatchesAsync("demo-repo");
-
-        provider.ExecuteCalls.ShouldBe(1);
-        (await store.GetPendingBatchesAsync("demo-repo")).Count.ShouldBe(1);
-        (await store.GetBatchRequestsAsync(1)).Single().Status.ShouldBe("pending");
-        (await store.GetBatchRequestsAsync(1)).Single().AttemptCount.ShouldBe(1);
-        messageBus.PublishedMessages.OfType<ProjectAnalysisResultsProcessed>().ShouldBeEmpty();
-
-        await service.ProcessCompletedBatchesAsync("demo-repo");
-
-        provider.ExecuteCalls.ShouldBe(2);
-        (await store.GetPendingBatchesAsync("demo-repo")).ShouldBeEmpty();
-        (await store.GetProjectAnalysesAsync("demo-repo")).Count.ShouldBe(1);
-        messageBus.PublishedMessages.OfType<ProjectAnalysisResultsProcessed>().Count().ShouldBe(1);
+        provider.LastSubmittedPrompt.ShouldNotBeNull();
+        provider.LastSubmittedPrompt.ShouldContain("Demo.Project.OrdersController");
+        provider.LastSubmittedPrompt.ShouldContain("Demo.Project.OrderService");
+        provider.LastSubmittedPrompt.ShouldNotContain("Demo.Project.HelperUtility");
+        provider.LastSubmittedPrompt!.Split("[Class] ", StringSplitOptions.None).Length.ShouldBe(3);
     }
 
-    private sealed class RecordingDirectOnlyProvider(long nodeId) : IAnalysisModelProvider
+    private sealed class RecordingBatchProvider(long nodeId, string providerName = "local") : IAnalysisModelProvider
     {
-        public int ExecuteCalls { get; private set; }
-        public string? LastPrompt { get; private set; }
+        public int SubmitCalls { get; private set; }
+        public int StatusCalls { get; private set; }
+        public int ResultsCalls { get; private set; }
+        public string? LastSubmittedPrompt { get; private set; }
 
-        public string ProviderName => "local";
+        public string ProviderName => providerName;
 
         public AnalysisProviderCapabilities Capabilities { get; } =
-            new(SupportsBatch: false, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: false);
+            new(SupportsBatch: true, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: false);
 
         public Task<AnalysisTextResponse> ExecuteAsync(
             AnalysisPrompt prompt,
             AnalysisRequestOptions request,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<AnalysisBatchSubmissionResult> SubmitBatchAsync(
+            IReadOnlyList<AnalysisBatchRequestItem> items,
+            AnalysisRequestOptions request,
             CancellationToken ct = default)
         {
-            ExecuteCalls++;
-            LastPrompt = prompt.UserPrompt;
+            SubmitCalls++;
+            LastSubmittedPrompt = items.Single().Prompt.UserPrompt;
+            return Task.FromResult(new AnalysisBatchSubmissionResult("batch_1", "submitted"));
+        }
+
+        public Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default)
+        {
+            StatusCalls++;
+            return Task.FromResult(new AnalysisBatchStatusResult(batchId, "completed", IsCompleted: true));
+        }
+
+        public Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
+            string batchId,
+            IReadOnlyList<string>? requestIds = null,
+            CancellationToken ct = default)
+        {
+            ResultsCalls++;
+            var customId = requestIds?.Single() ?? "req_1";
             var json =
                 $$"""
                   {
@@ -293,69 +341,10 @@ public class BatchAnalysisServiceDirectFallbackTests
                     ]
                   }
                   """;
-            return Task.FromResult(new AnalysisTextResponse(json, "qwen3", ProviderName));
+            return Task.FromResult<IReadOnlyList<AnalysisBatchItemResult>>([
+                new AnalysisBatchItemResult(customId, "succeeded", json, "qwen3")
+            ]);
         }
-
-        public Task<AnalysisBatchSubmissionResult> SubmitBatchAsync(
-            IReadOnlyList<AnalysisBatchRequestItem> items,
-            AnalysisRequestOptions request,
-            CancellationToken ct = default) =>
-            throw new NotSupportedException();
-
-        public Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default) =>
-            throw new NotSupportedException();
-
-        public Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
-            string batchId,
-            IReadOnlyList<string>? requestIds = null,
-            CancellationToken ct = default) =>
-            throw new NotSupportedException();
-    }
-
-    private sealed class FlakyDirectOnlyProvider(long nodeId) : IAnalysisModelProvider
-    {
-        public int ExecuteCalls { get; private set; }
-        public string ProviderName => "local";
-
-        public AnalysisProviderCapabilities Capabilities { get; } =
-            new(SupportsBatch: false, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: false);
-
-        public Task<AnalysisTextResponse> ExecuteAsync(
-            AnalysisPrompt prompt,
-            AnalysisRequestOptions request,
-            CancellationToken ct = default)
-        {
-            ExecuteCalls++;
-            if (ExecuteCalls == 1)
-                throw new RetryableAnalysisException("LM Studio queue timeout");
-
-            var json =
-                $$"""
-                  {
-                    "projectSummary": "Handles order work for the demo project.",
-                    "confidence": "high",
-                    "nodes": [
-                      { "nodeId": {{nodeId}}, "description": "Coordinates order operations.", "confidence": "high" }
-                    ]
-                  }
-                  """;
-            return Task.FromResult(new AnalysisTextResponse(json, "qwen3", ProviderName));
-        }
-
-        public Task<AnalysisBatchSubmissionResult> SubmitBatchAsync(
-            IReadOnlyList<AnalysisBatchRequestItem> items,
-            AnalysisRequestOptions request,
-            CancellationToken ct = default) =>
-            throw new NotSupportedException();
-
-        public Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default) =>
-            throw new NotSupportedException();
-
-        public Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
-            string batchId,
-            IReadOnlyList<string>? requestIds = null,
-            CancellationToken ct = default) =>
-            throw new NotSupportedException();
     }
 
     private sealed class SingleProviderRegistry(IAnalysisModelProvider provider) : IAnalysisProviderRegistry
@@ -369,7 +358,7 @@ public class BatchAnalysisServiceDirectFallbackTests
 
         public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class
         {
-            PublishedMessages.Add(message);
+            PublishedMessages.Add(message!);
             return Task.CompletedTask;
         }
     }

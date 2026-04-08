@@ -158,6 +158,44 @@ public class LocalAnalysisProviderTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_RecoversJsonFromBadRequestParserError_WhenServerIncludesModelOutput()
+    {
+        var handler = new SequencedHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """
+                    {"error":"Failed to parse input at pos 0: <|channel>thought\n<channel|>{\"projectSummary\":\"Recovered\",\"confidence\":\"high\",\"nodes\":[]}"}
+                    """,
+                    Encoding.UTF8,
+                    "application/json")
+            });
+
+        var provider = new LocalAnalysisProvider(
+            new StubHttpClientFactory(new HttpClient(handler)),
+            new InMemoryGraphStore(),
+            Options.Create(new AnalysisOptions
+            {
+                Local = new LocalAnalysisProviderOptions
+                {
+                    BaseUrl = "http://localhost:1234/v1",
+                    Model = "local-model",
+                    UseJsonObjectResponseFormat = false
+                }
+            }),
+            NullLogger<LocalAnalysisProvider>.Instance);
+
+        var response = await provider.ExecuteAsync(
+            new AnalysisPrompt("system", "user"),
+            new AnalysisRequestOptions(),
+            CancellationToken.None);
+
+        response.Text.ShouldContain("\"projectSummary\":\"Recovered\"");
+        response.ModelUsed.ShouldBe("local-model");
+        handler.RequestBodies.Count.ShouldBe(1);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_AppliesConfiguredHttpTimeout()
     {
         var client = new HttpClient(new SequencedHandler(
@@ -203,6 +241,94 @@ public class LocalAnalysisProviderTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ReadsChoiceText_WhenMessageContentIsMissing()
+    {
+        var client = new HttpClient(new SequencedHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                      "model": "local-model",
+                      "choices": [
+                        {
+                          "text": "{\"projectSummary\":\"ok\",\"confidence\":\"high\",\"nodes\":[]}"
+                        }
+                      ]
+                    }
+                    """,
+                    Encoding.UTF8,
+                    "application/json")
+            }));
+
+        var provider = new LocalAnalysisProvider(
+            new StubHttpClientFactory(client),
+            new InMemoryGraphStore(),
+            Options.Create(new AnalysisOptions
+            {
+                Local = new LocalAnalysisProviderOptions
+                {
+                    BaseUrl = "http://localhost:1234/v1",
+                    Model = "local-model"
+                }
+            }),
+            NullLogger<LocalAnalysisProvider>.Instance);
+
+        var response = await provider.ExecuteAsync(
+            new AnalysisPrompt("system", "user"),
+            new AnalysisRequestOptions(),
+            CancellationToken.None);
+
+        response.Text.ShouldContain("\"projectSummary\":\"ok\"");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReadsNestedTextParts_FromArrayContent()
+    {
+        var client = new HttpClient(new SequencedHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                      "model": "local-model",
+                      "choices": [
+                        {
+                          "message": {
+                            "content": [
+                              { "type": "text", "text": "{\"projectSummary\":\"nested\",\"confidence\":\"medium\",\"nodes\":[]}" }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                    """,
+                    Encoding.UTF8,
+                    "application/json")
+            }));
+
+        var provider = new LocalAnalysisProvider(
+            new StubHttpClientFactory(client),
+            new InMemoryGraphStore(),
+            Options.Create(new AnalysisOptions
+            {
+                Local = new LocalAnalysisProviderOptions
+                {
+                    BaseUrl = "http://localhost:1234/v1",
+                    Model = "local-model"
+                }
+            }),
+            NullLogger<LocalAnalysisProvider>.Instance);
+
+        var response = await provider.ExecuteAsync(
+            new AnalysisPrompt("system", "user"),
+            new AnalysisRequestOptions(),
+            CancellationToken.None);
+
+        response.Text.ShouldContain("\"projectSummary\":\"nested\"");
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WrapsTransientTimeouts_AsRetryableAnalysisException()
     {
         var provider = new LocalAnalysisProvider(
@@ -228,7 +354,7 @@ public class LocalAnalysisProviderTests
     }
 
     [Fact]
-    public async Task GetBatchStatusAsync_ProcessesStoredRequest_AndReturnsCompletedResults()
+    public async Task GetBatchStatusAsync_StartsBackgroundProcessing_AndLaterReturnsCompletedResults()
     {
         var store = new InMemoryGraphStore();
         var batch = new AnalysisBatchEntity
@@ -290,16 +416,26 @@ public class LocalAnalysisProviderTests
             }),
             NullLogger<LocalAnalysisProvider>.Instance);
 
-        var status = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
+        var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
+        firstStatus.IsCompleted.ShouldBeFalse();
+        firstStatus.ProcessingStatus.ShouldBe("processing");
+
+        AnalysisBatchRequestEntity storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
+        for (var attempt = 0; attempt < 20 && !string.Equals(storedRequest.Status, "succeeded", StringComparison.OrdinalIgnoreCase); attempt++)
+        {
+            await Task.Delay(25);
+            storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
+        }
+
+        var secondStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
         var results = await provider.GetBatchResultsAsync(batch.ProviderBatchId, ["req_1"], CancellationToken.None);
 
-        status.IsCompleted.ShouldBeTrue();
+        secondStatus.IsCompleted.ShouldBeTrue();
         results.Count.ShouldBe(1);
         results[0].Status.ShouldBe("succeeded");
         results[0].Text.ShouldNotBeNull();
         results[0].Text!.ShouldContain("\"projectSummary\":\"Firmware\"");
 
-        var storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
         storedRequest.Status.ShouldBe("succeeded");
         storedRequest.ResponseText.ShouldNotBeNull();
         storedRequest.ResponseText!.ShouldContain("\"projectSummary\":\"Firmware\"");
@@ -353,8 +489,15 @@ public class LocalAnalysisProviderTests
             NullLogger<LocalAnalysisProvider>.Instance);
 
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
-        var afterFirstAttempt = (await store.GetBatchRequestsAsync(batchId)).Single();
         firstStatus.IsCompleted.ShouldBeFalse();
+
+        AnalysisBatchRequestEntity afterFirstAttempt = (await store.GetBatchRequestsAsync(batchId)).Single();
+        for (var attempt = 0; attempt < 20 && afterFirstAttempt.AttemptCount == 0; attempt++)
+        {
+            await Task.Delay(25);
+            afterFirstAttempt = (await store.GetBatchRequestsAsync(batchId)).Single();
+        }
+
         afterFirstAttempt.Status.ShouldBe("pending");
         afterFirstAttempt.AttemptCount.ShouldBe(1);
     }

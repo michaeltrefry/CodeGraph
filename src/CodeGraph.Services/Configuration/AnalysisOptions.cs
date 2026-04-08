@@ -106,4 +106,7 @@ public class LocalAnalysisProviderOptions
     public int MaxConcurrentRequests { get; set; } = 1;
     public int DirectFallbackMaxAttempts { get; set; } = 3;
     public bool UseJsonObjectResponseFormat { get; set; }
+    public int MaxSourceChars { get; set; } = 32_000;
+    public int MaxPromptNodes { get; set; } = 80;
+    public int MaxRelationshipTargetsPerType { get; set; } = 8;
 }

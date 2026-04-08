@@ -150,6 +150,7 @@ public static class Startup
         // MassTransit + RabbitMQ
         services.AddMassTransit(x =>
         {
+            x.AddDelayedMessageScheduler();
             x.AddConsumer<ProcessRepositoryConsumer>();
             x.AddConsumer<RepositoryIndexingCompletedConsumer>();
             x.AddConsumer<AnalysisBatchSubmittedConsumer>();
@@ -160,6 +161,8 @@ public static class Startup
 
             x.UsingRabbitMq((context, cfg) =>
             {
+                cfg.UseDelayedMessageScheduler();
+
                 var rabbitOptions = context.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
                 cfg.Host(rabbitOptions.Host, "/", h =>
                 {
@@ -184,13 +187,7 @@ public static class Startup
                 cfg.ReceiveEndpoint("analysis-batch-submitted", e =>
                 {
                     e.ConcurrentMessageLimit = 1;
-                    e.UseMessageRetry(retry => retry
-                        .Incremental(3, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10))
-                        .Ignore<BatchNotReadyException>());
-                    e.UseDelayedRedelivery(redelivery => redelivery
-                        .Intervals(TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5),
-                            TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(15))
-                        .Handle<BatchNotReadyException>());
+                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
                     e.ConfigureConsumer<AnalysisBatchSubmittedConsumer>(context);
                 });
 

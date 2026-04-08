@@ -99,6 +99,12 @@ public class BatchAnalysisServiceLocalBatchTests
 
         await service.ProcessCompletedBatchesAsync("demo-repo");
 
+        for (var attempt = 0; attempt < 10 && (await store.GetPendingBatchesAsync("demo-repo")).Count > 0; attempt++)
+        {
+            await Task.Delay(25);
+            await service.ProcessCompletedBatchesAsync("demo-repo");
+        }
+
         (await store.GetPendingBatchesAsync("demo-repo")).ShouldBeEmpty();
         (await store.GetProjectAnalysesAsync("demo-repo")).Count.ShouldBe(1);
         (await store.GetNodeAnalysisAsync(nodeId)).ShouldNotBeNull();

@@ -10,6 +10,7 @@ using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Models.Exceptions;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Extensions;
 
 namespace CodeGraph.Services.Analyzers;
 
@@ -26,6 +27,8 @@ public class LocalAnalysisProvider(
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
     private readonly SemaphoreSlim concurrencyGate = CreateConcurrencyGate(optionsAccessor.Value.Local.MaxConcurrentRequests);
+    private readonly object batchRunnerLock = new();
+    private readonly Dictionary<string, Task> batchRunners = new(StringComparer.Ordinal);
 
     public string ProviderName => "local";
 
@@ -70,18 +73,31 @@ public class LocalAnalysisProvider(
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorBody = await response.Content.ReadAsStringAsync(ct);
+                    if (TryRecoverCompletionFromBadRequest(errorBody, body.Model, out var recovered))
+                    {
+                        logger.LogWarning(
+                            "Local provider returned {Status} while parsing model output; recovered JSON from error body and will continue.",
+                            (int)response.StatusCode);
+                        return recovered;
+                    }
+
                     logger.LogError("Local chat completion failed {Status}: {Body}",
                         (int)response.StatusCode, errorBody);
                     response.EnsureSuccessStatusCode();
                 }
 
-                var completion = await response.Content.ReadFromJsonAsync<LocalChatCompletionResponse>(SnakeOpts, ct)
+                var rawBody = await response.Content.ReadAsStringAsync(ct);
+                var completion = JsonSerializer.Deserialize<LocalChatCompletionResponse>(rawBody, SnakeOpts)
                     ?? throw new InvalidOperationException("Local provider returned null chat completion response");
                 var text = completion.Choices
-                    .Select(choice => ExtractMessageText(choice.Message))
+                    .Select(ExtractChoiceText)
                     .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
                 if (string.IsNullOrWhiteSpace(text))
+                {
+                    logger.LogWarning("Local provider returned an empty chat completion response body: {Body}",
+                        TruncateForLog(rawBody, 1200));
                     throw new InvalidOperationException("Local provider returned an empty chat completion response");
+                }
 
                 return new AnalysisTextResponse(text, completion.Model ?? body.Model, ProviderName);
             }
@@ -120,6 +136,9 @@ public class LocalAnalysisProvider(
         return await http.SendAsync(CreateJsonRequest(HttpMethod.Post, url, fallbackBody), ct);
     }
 
+    private AnalysisTextResponse CreateRecoveredResponse(string text, string model) =>
+        new(text, model, ProviderName);
+
     public Task<AnalysisBatchSubmissionResult> SubmitBatchAsync(
         IReadOnlyList<AnalysisBatchRequestItem> items,
         AnalysisRequestOptions request,
@@ -137,26 +156,21 @@ public class LocalAnalysisProvider(
         if (requests.Count == 0)
             return new AnalysisBatchStatusResult(batchId, "submitted", IsCompleted: false);
 
-        var pendingRequest = requests
-            .Where(r => string.Equals(r.Status, "pending", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(r => r.Sequence)
-            .ThenBy(r => r.CustomId, StringComparer.Ordinal)
-            .FirstOrDefault();
-
-        if (pendingRequest is not null)
+        var completedCount = requests.Count(r => IsTerminalStatus(r.Status));
+        var isCompleted = requests.Count > 0 && requests.All(r => IsTerminalStatus(r.Status));
+        if (isCompleted)
         {
-            await ProcessPendingBatchRequestAsync(batch, pendingRequest, ct);
-            requests = await store.GetBatchRequestsAsync(batch.Id);
+            await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
+            return new AnalysisBatchStatusResult(batchId, "completed", IsCompleted: true);
         }
 
-        var completedCount = requests.Count(r => IsTerminalStatus(r.Status));
-        await store.UpdateBatchStatusAsync(batch.Id, batch.Status, completedCount, completedAt: null);
+        await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
+        EnsureBatchRunnerStarted(batchId);
 
-        var isCompleted = requests.Count > 0 && requests.All(r => IsTerminalStatus(r.Status));
         return new AnalysisBatchStatusResult(
             batchId,
-            isCompleted ? "completed" : "processing",
-            IsCompleted: isCompleted);
+            IsBatchRunnerActive(batchId) ? "processing" : "submitted",
+            IsCompleted: false);
     }
 
     public async Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
@@ -239,36 +253,204 @@ public class LocalAnalysisProvider(
         }
     }
 
-    private static string? ExtractMessageText(LocalMessageResponse? message)
+    private bool TryRecoverCompletionFromBadRequest(string errorBody, string model, out AnalysisTextResponse recovered)
     {
-        if (message is null)
+        recovered = default!;
+
+        if (string.IsNullOrWhiteSpace(errorBody))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(errorBody);
+            if (!doc.RootElement.TryGetProperty("error", out var errorElement) ||
+                errorElement.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            var errorText = errorElement.GetString();
+            if (string.IsNullOrWhiteSpace(errorText) ||
+                errorText.IndexOf("Failed to parse input", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+
+            var recoveredText = errorText.NormalizeJsonResponse()
+                .Replace("\uFFFD", "", StringComparison.Ordinal)
+                .Trim();
+
+            if (string.IsNullOrWhiteSpace(recoveredText) ||
+                recoveredText[0] is not ('{' or '['))
+            {
+                return false;
+            }
+
+            recovered = CreateRecoveredResponse(recoveredText, model);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private void EnsureBatchRunnerStarted(string batchId)
+    {
+        lock (batchRunnerLock)
+        {
+            if (batchRunners.TryGetValue(batchId, out var existing) && !existing.IsCompleted)
+                return;
+
+            var runner = Task.Run(() => RunBatchInBackgroundAsync(batchId));
+            batchRunners[batchId] = runner;
+
+            _ = runner.ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                {
+                    logger.LogError(t.Exception,
+                        "Local batch runner crashed for {BatchId}",
+                        batchId);
+                }
+
+                lock (batchRunnerLock)
+                {
+                    if (batchRunners.TryGetValue(batchId, out var current) && ReferenceEquals(current, runner))
+                        batchRunners.Remove(batchId);
+                }
+            }, TaskScheduler.Default);
+        }
+    }
+
+    private bool IsBatchRunnerActive(string batchId)
+    {
+        lock (batchRunnerLock)
+        {
+            return batchRunners.TryGetValue(batchId, out var runner) && !runner.IsCompleted;
+        }
+    }
+
+    private async Task RunBatchInBackgroundAsync(string batchId)
+    {
+        while (true)
+        {
+            var batch = await store.GetBatchByProviderBatchIdAsync(batchId);
+            if (batch is null)
+                return;
+
+            var requests = await store.GetBatchRequestsAsync(batch.Id);
+            if (requests.Count == 0)
+            {
+                await store.UpdateBatchStatusAsync(batch.Id, "submitted", 0, completedAt: null);
+                return;
+            }
+
+            var completedCount = requests.Count(r => IsTerminalStatus(r.Status));
+            var pendingRequest = requests
+                .Where(r => string.Equals(r.Status, "pending", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(r => r.Sequence)
+                .ThenBy(r => r.CustomId, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (pendingRequest is null)
+            {
+                await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
+                return;
+            }
+
+            var priorAttemptCount = pendingRequest.AttemptCount;
+            await ProcessPendingBatchRequestAsync(batch, pendingRequest, CancellationToken.None);
+
+            requests = await store.GetBatchRequestsAsync(batch.Id);
+            completedCount = requests.Count(r => IsTerminalStatus(r.Status));
+            await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
+
+            var updatedRequest = requests.FirstOrDefault(r => string.Equals(r.CustomId, pendingRequest.CustomId, StringComparison.Ordinal));
+            if (updatedRequest is null)
+                return;
+
+            // Stop after a retryable failure so the next poll can re-drive the batch later.
+            if (string.Equals(updatedRequest.Status, "pending", StringComparison.OrdinalIgnoreCase) &&
+                updatedRequest.AttemptCount > priorAttemptCount)
+            {
+                return;
+            }
+        }
+    }
+
+    private static string? ExtractChoiceText(LocalChoice? choice)
+    {
+        if (choice is null)
             return null;
 
-        if (message.Content.ValueKind == JsonValueKind.String)
-            return message.Content.GetString();
+        var messageText = ExtractContentText(choice.Message?.Content);
+        if (!string.IsNullOrWhiteSpace(messageText))
+            return messageText;
 
-        if (message.Content.ValueKind != JsonValueKind.Array)
+        var directText = ExtractContentText(choice.Text);
+        if (!string.IsNullOrWhiteSpace(directText))
+            return directText;
+
+        var reasoningText = ExtractContentText(choice.Reasoning);
+        if (!string.IsNullOrWhiteSpace(reasoningText))
+            return reasoningText;
+
+        return null;
+    }
+
+    private static string? ExtractContentText(JsonElement? content)
+    {
+        if (content is null)
+            return null;
+
+        var element = content.Value;
+
+        if (element.ValueKind == JsonValueKind.Undefined || element.ValueKind == JsonValueKind.Null)
+            return null;
+
+        if (element.ValueKind == JsonValueKind.String)
+            return element.GetString();
+
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            if (element.TryGetProperty("text", out var objectText))
+            {
+                var text = ExtractContentText(objectText);
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text;
+            }
+
+            if (element.TryGetProperty("content", out var nestedContent))
+            {
+                var nested = ExtractContentText(nestedContent);
+                if (!string.IsNullOrWhiteSpace(nested))
+                    return nested;
+            }
+
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
             return null;
 
         var parts = new List<string>();
-        foreach (var item in message.Content.EnumerateArray())
+        foreach (var item in element.EnumerateArray())
         {
-            switch (item.ValueKind)
-            {
-                case JsonValueKind.String:
-                    var str = item.GetString();
-                    if (!string.IsNullOrWhiteSpace(str))
-                        parts.Add(str);
-                    break;
-                case JsonValueKind.Object when item.TryGetProperty("text", out var textElement):
-                    var text = textElement.GetString();
-                    if (!string.IsNullOrWhiteSpace(text))
-                        parts.Add(text);
-                    break;
-            }
+            var text = ExtractContentText(item);
+            if (!string.IsNullOrWhiteSpace(text))
+                parts.Add(text);
         }
 
         return parts.Count == 0 ? null : string.Join("\n", parts);
+    }
+
+    private static string TruncateForLog(string text, int maxChars)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= maxChars)
+            return text;
+
+        return text[..maxChars] + "...";
     }
 
     private HttpRequestMessage CreateJsonRequest(HttpMethod method, string url, object body)
@@ -417,10 +599,12 @@ public class LocalAnalysisProvider(
     private sealed class LocalChoice
     {
         public LocalMessageResponse? Message { get; set; }
+        public JsonElement? Text { get; set; }
+        public JsonElement? Reasoning { get; set; }
     }
 
     private sealed class LocalMessageResponse
     {
-        public JsonElement Content { get; set; }
+        public JsonElement? Content { get; set; }
     }
 }
