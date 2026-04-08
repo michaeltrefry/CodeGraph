@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using MassTransit;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -14,28 +13,17 @@ namespace CodeGraph.Jobs;
 
 public static class Startup
 {
-    public const int Port = 5038;
-
     public static void ConfigureServices(IServiceCollection services, IConfiguration configuration)
     {
         services.AddCodeGraphOptions(configuration);
         services.AddHttpClient();
 
-        services.AddMvc()
-            .AddJsonOptions(options =>
-                options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull);
-
-        services.AddCors(opts => opts.AddDefaultPolicy(policy =>
-            policy.WithOrigins($"http://localhost:{Port}")
-                .AllowAnyHeader()
-                .AllowAnyMethod()));
-
-        services.AddControllers();
-
         // Data stores (Neo4j)
         services.AddSingleton<Neo4jSessionFactory>();
-        services.AddSingleton<IGraphStore, Neo4jGraphStore>();
-        services.AddSingleton<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
+        services.AddTransient<IGraphStore, Neo4jGraphStore>();
+        services.AddTransient<IJobScheduleStore, Neo4jJobScheduleStore>();
+        services.AddTransient<IWikiStore, Neo4jWikiStore>();
+        services.AddTransient<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
         services.AddSingleton<IFileSystem, LocalFileSystem>();
 
@@ -45,7 +33,7 @@ public static class Startup
         services.AddSingleton<IAnalysisModelProvider, GeminiAnalysisProvider>();
         services.AddSingleton<IAnalysisModelProvider, LocalAnalysisProvider>();
         services.AddSingleton<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
-        services.AddSingleton<IBatchAnalysisService, BatchAnalysisService>();
+        services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
 
         // Messaging
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
@@ -64,29 +52,18 @@ public static class Startup
             });
         });
 
-        // Job framework
-        services.AddSingleton<IJobRunner, JobRunner>();
-        services.AddTransient<ProcessRepositoriesJob>();
-        services.AddTransient<DiscoverRepositoriesJob>();
-        services.AddTransient<ProcessBatchResultsJob>();
-
-        // DiscoverRepositoriesJob needs IAdminService — register it and its dependencies
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IExclusionService, ExclusionService>();
         services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
+        services.AddTransient<IMcpDocService, McpDocService>();
         RegisterRepoProvider(services);
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         services.AddTransient<CrossRepoLinker>();
         services.AddTransient<ICommunityDetectionService, CommunityDetectionService>();
-    }
-
-    public static void Configure(WebApplication app)
-    {
-        app.UseCors();
-        app.UseRouting();
-        app.MapControllers();
+        services.AddCodeGraphJobScheduling();
+        services.AddHostedService<ScheduleRunnerWorker>();
     }
 
     private static void RegisterRepoProvider(IServiceCollection services)

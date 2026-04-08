@@ -10,6 +10,7 @@ using CodeGraph.Extractors.CSharp;
 using CodeGraph.Extractors.Sql;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
+using CodeGraph.Jobs;
 using ModelContextProtocol.AspNetCore;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
@@ -67,6 +68,7 @@ public static class Startup
             ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
         services.AddTransient<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
+        services.AddTransient<IJobScheduleStore, Neo4jJobScheduleStore>();
         services.AddTransient<IVectorStore, Neo4jVectorStore>();
         services.AddTransient<IWikiStore, Neo4jWikiStore>();
         services.AddTransient<IMemoryGraphStore, Neo4jMemoryGraphStore>();
@@ -138,6 +140,7 @@ public static class Startup
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         RegisterRepoProvider(services);
+        services.AddCodeGraphJobScheduling();
 
         // Memory graph
         services.AddTransient<MemoryNormalizationService>();

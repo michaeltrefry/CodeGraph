@@ -336,3 +336,24 @@ public class ExclusionRuleEntity
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
+
+public class JobScheduleEntity
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = "";
+    public string JobType { get; set; } = "";
+    public bool IsEnabled { get; set; }
+    public string CronExpression { get; set; } = "";
+    public string TimeZoneId { get; set; } = "UTC";
+    public string ArgsJson { get; set; } = "{}";
+    public DateTime NextRunUtc { get; set; }
+    public DateTime? LastRunStartedUtc { get; set; }
+    public DateTime? LastRunCompletedUtc { get; set; }
+    public string? LastRunStatus { get; set; }
+    public string? LastError { get; set; }
+    public DateTime? LeaseAcquiredUtc { get; set; }
+    public string? LeaseOwner { get; set; }
+    public DateTime? LeaseExpiresUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}

@@ -58,6 +58,57 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  jobs:
+    build:
+      context: .
+      dockerfile: Dockerfile.jobs
+    environment:
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Development}
+      CodeGraph__StorageOptions__Neo4jUri: ${CodeGraph__StorageOptions__Neo4jUri:-bolt://neo4j:7687}
+      CodeGraph__StorageOptions__Neo4jUsername: ${CodeGraph__StorageOptions__Neo4jUsername:-neo4j}
+      CodeGraph__StorageOptions__Neo4jPassword: ${CodeGraph__StorageOptions__Neo4jPassword:-codegraph}
+      CodeGraph__StorageOptions__Neo4jDatabase: ${CodeGraph__StorageOptions__Neo4jDatabase:-neo4j}
+      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
+      CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
+      CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
+      CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
+      CodeGraph__AnalysisOptions__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__OpenAi__BaseUrl:-https://api.openai.com/v1}
+      CodeGraph__AnalysisOptions__OpenAi__Model: ${CodeGraph__AnalysisOptions__OpenAi__Model:-gpt-5}
+      CodeGraph__AnalysisOptions__Gemini__ApiKey: ${CodeGraph__AnalysisOptions__Gemini__ApiKey:-}
+      CodeGraph__AnalysisOptions__Gemini__BaseUrl: ${CodeGraph__AnalysisOptions__Gemini__BaseUrl:-https://generativelanguage.googleapis.com/v1beta}
+      CodeGraph__AnalysisOptions__Gemini__Model: ${CodeGraph__AnalysisOptions__Gemini__Model:-gemini-2.5-flash}
+      CodeGraph__AnalysisOptions__Local__ApiKey: ${CodeGraph__AnalysisOptions__Local__ApiKey:-}
+      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://host.docker.internal:1234/v1}
+      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-}
+      CodeGraph__AnalysisOptions__Local__TimeoutSeconds: ${CodeGraph__AnalysisOptions__Local__TimeoutSeconds:-300}
+      CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests:-1}
+      CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts:-3}
+      CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
+      CodeGraph__AnalysisOptions__Local__MaxSourceChars: ${CodeGraph__AnalysisOptions__Local__MaxSourceChars:-32000}
+      CodeGraph__AnalysisOptions__Local__MaxPromptNodes: ${CodeGraph__AnalysisOptions__Local__MaxPromptNodes:-80}
+      CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType:-8}
+      CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
+      CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
+      CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
+      CodeGraph__RepositorySource__Provider: ${CodeGraph__RepositorySource__Provider:-Folder}
+      CodeGraph__RepositorySource__ReposCachePath: ${CodeGraph__RepositorySource__ReposCachePath:-/repos/.cache}
+      CodeGraph__RepositorySource__Folder__RootPath: ${CodeGraph__RepositorySource__Folder__RootPath:-/repos}
+      CodeGraph__RepositorySource__GitLab__BaseUrl: ${CodeGraph__RepositorySource__GitLab__BaseUrl:-https://gitlab.example.com/}
+      CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
+      CodeGraph__RepositorySource__GitHub__BaseUrl: ${CodeGraph__RepositorySource__GitHub__BaseUrl:-https://api.github.com}
+      CodeGraph__RepositorySource__GitHub__PersonalAccessToken: ${CodeGraph__RepositorySource__GitHub__PersonalAccessToken:-}
+      CodeGraph__RepositorySource__GitHub__Organization: ${CodeGraph__RepositorySource__GitHub__Organization:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - repos_cache:/repos/.cache
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+
   rabbitmq:
     image: ${CODEGRAPH_DOCKER_RABBITMQ_IMAGE:-masstransit/rabbitmq}
     ports:
