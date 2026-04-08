@@ -83,7 +83,7 @@ public class Neo4jWikiStore(Neo4jSessionFactory sessionFactory) : IWikiStore
             await tx.RunAsync("""
                 MATCH (s:WikiSection {appId: $id})
                 SET s.title = $title, s.description = $description, s.icon = $icon,
-                    s.sortOrder = $sortOrder, s.allowUserPages = $allowUserPages,
+                    s.sortOrder = $sortOrder, s.isSystem = $isSystem, s.allowUserPages = $allowUserPages,
                     s.hasRawContent = $hasRawContent, s.updatedAt = $updatedAt
                 """,
                 SectionParams(entity));

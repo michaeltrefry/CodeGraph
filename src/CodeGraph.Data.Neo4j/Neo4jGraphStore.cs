@@ -12,6 +12,7 @@ public partial class Neo4jGraphStore(
     ILogger<Neo4jGraphStore> logger)
     : IGraphStore, IExclusionStore
 {
+    private const string RepositoryMetadataLabel = "RepositoryRecord";
     private readonly CodeGraphStorageOptions options = optionsAccessor.Value;
     private static readonly string[] AllCodeNodeSpecificLabels = Enum.GetNames<NodeLabel>();
     private static readonly HashSet<string> PromotedNodePropertyKeys =
@@ -60,8 +61,8 @@ public partial class Neo4jGraphStore(
 
         await session.ExecuteWriteAsync(async tx =>
         {
-            await tx.RunAsync("""
-                MERGE (r:Repository {name: $name})
+            await tx.RunAsync($$"""
+                MERGE (r:{{RepositoryMetadataLabel}} {name: $name})
                 ON CREATE SET r.createdAt = $now
                 SET r.repoUrl = COALESCE($repoUrl, r.repoUrl),
                     r.sourceGroup = COALESCE($sourceGroup, r.sourceGroup),
@@ -99,7 +100,7 @@ public partial class Neo4jGraphStore(
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (r:Repository) RETURN r ORDER BY r.name");
+                $"MATCH (r:{RepositoryMetadataLabel}) RETURN r ORDER BY r.name");
             var results = new List<ProjectInfo>();
             await foreach (var record in cursor)
             {
@@ -136,7 +137,7 @@ public partial class Neo4jGraphStore(
                 : "";
 
             var countCursor = await tx.RunAsync(
-                $"MATCH (r:Repository) {whereClause} RETURN count(r) AS total", parameters);
+                $"MATCH (r:{RepositoryMetadataLabel}) {whereClause} RETURN count(r) AS total", parameters);
             await countCursor.FetchAsync();
             var total = countCursor.Current["total"].As<int>();
 
@@ -144,7 +145,7 @@ public partial class Neo4jGraphStore(
             parameters["limit"] = pageSize;
 
             var cursor = await tx.RunAsync(
-                $"MATCH (r:Repository) {whereClause} RETURN r ORDER BY r.name SKIP $skip LIMIT $limit",
+                $"MATCH (r:{RepositoryMetadataLabel}) {whereClause} RETURN r ORDER BY r.name SKIP $skip LIMIT $limit",
                 parameters);
             var items = new List<ProjectInfo>();
             await foreach (var record in cursor)
@@ -161,7 +162,7 @@ public partial class Neo4jGraphStore(
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (r:Repository) WHERE r.sourceGroup IS NOT NULL AND r.sourceGroup <> '' " +
+                $"MATCH (r:{RepositoryMetadataLabel}) WHERE r.sourceGroup IS NOT NULL AND r.sourceGroup <> '' " +
                 "RETURN DISTINCT r.sourceGroup AS grp ORDER BY grp");
             var results = new List<string>();
             await foreach (var record in cursor)
@@ -177,7 +178,7 @@ public partial class Neo4jGraphStore(
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (r:Repository {name: $name}) RETURN r",
+                $"MATCH (r:{RepositoryMetadataLabel} {{name: $name}}) RETURN r",
                 new { name });
             if (await cursor.FetchAsync())
             {
@@ -194,7 +195,7 @@ public partial class Neo4jGraphStore(
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (r:Repository {name: $name}) DETACH DELETE r",
+                $"MATCH (r:{RepositoryMetadataLabel} {{name: $name}}) DETACH DELETE r",
                 new { name = project });
         });
     }

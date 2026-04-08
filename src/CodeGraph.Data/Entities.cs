@@ -126,7 +126,11 @@ public class AnalysisBatchRequestEntity
     public string CustomId { get; set; } = "";
     public long? NodeId { get; set; }
     public string NodeLabel { get; set; } = "";
+    public string? RequestPayloadJson { get; set; }
     public string Status { get; set; } = "pending";
+    public int AttemptCount { get; set; }
+    public string? ResponseText { get; set; }
+    public string? ModelUsed { get; set; }
     public DateTime? CompletedAt { get; set; }
 }
 

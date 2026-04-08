@@ -4,7 +4,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ApiService } from '../../core/api.service';
 import { ChatContextService } from '../../core/chat-context.service';
-import { ProjectDetailResponse, ProjectHealthResponse, ProjectSecurityResponse, AnalysisBatchStatus, LABEL_ICONS, CONFIDENCE_COLORS } from '../../core/models';
+import { ProjectDetailResponse, ProjectHealthResponse, ProjectSecurityResponse, AnalysisBatchStatus, LABEL_ICONS, CONFIDENCE_COLORS, DotnetSupportInfo } from '../../core/models';
 import { marked } from 'marked';
 
 @Component({
@@ -232,6 +232,41 @@ export class RepoDetailComponent implements OnInit {
 
   formatCommit(sha?: string) {
     return sha ? sha.slice(0, 8) : '—';
+  }
+
+  supportBadgeText(support?: DotnetSupportInfo | null): string | null {
+    if (!support) return null;
+
+    switch (support.overallStatus) {
+      case 'supported':
+        return 'supported';
+      case 'out_of_support':
+        return 'out of support';
+      case 'mixed':
+        return 'mixed support';
+      default:
+        return 'support unknown';
+    };
+  }
+
+  supportBadgeColor(status?: string): string {
+    switch (status) {
+      case 'supported': return '#15803d';
+      case 'out_of_support': return '#b91c1c';
+      case 'mixed': return '#b45309';
+      default: return '#6b7280';
+    }
+  }
+
+  supportStatusLabel(status?: string): string {
+    switch (status) {
+      case 'supported': return 'Supported';
+      case 'out_of_support': return 'Out of support';
+      case 'mixed': return 'Mixed support';
+      case 'not_applicable': return 'No independent lifecycle';
+      case 'os_lifecycle': return 'Follows Windows lifecycle';
+      default: return 'Unknown';
+    }
   }
 
   renderMarkdown(text: string): SafeHtml {

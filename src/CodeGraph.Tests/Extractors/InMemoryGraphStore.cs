@@ -156,7 +156,11 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (existing != null)
             _projects.Remove(existing);
         _projects.Add(new ProjectInfo(repository.Name, repository.RepoUrl, repository.SourceGroup,
-            repository.LocalPath, null, null, repository.Language, repository.Framework, repository.IsFoundational, null));
+            repository.LocalPath, null, null, repository.Language, repository.Framework,
+            repository.IsFoundational,
+            string.IsNullOrWhiteSpace(repository.Properties)
+                ? null
+                : JsonSerializer.Deserialize<Dictionary<string, object>>(repository.Properties)));
         return Task.CompletedTask;
     }
 
@@ -545,6 +549,18 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt));
     }
 
+    public Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId)
+    {
+        var batch = _batches
+            .Where(b => string.Equals(b.ProviderBatchId, providerBatchId, StringComparison.Ordinal))
+            .OrderByDescending(b => b.SubmittedAt)
+            .FirstOrDefault();
+        return Task.FromResult(batch is null
+            ? null
+            : new StoredAnalysisBatch(batch.Id, batch.Repo, batch.ProviderBatchId, batch.ProviderName, batch.ExecutionMode, batch.IncludeAllSource, batch.Status,
+                batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt));
+    }
+
     public Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt)
     {
         var batch = _batches.FirstOrDefault(b => b.Id == batchId);
@@ -557,12 +573,16 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task UpdateBatchRequestStatusAsync(string customId, string status, DateTime completedAt)
+    public Task UpdateBatchRequestStateAsync(long batchId, string customId, string status, int attemptCount,
+        string? responseText, string? modelUsed, DateTime? completedAt)
     {
-        var req = _batchRequests.FirstOrDefault(r => r.CustomId == customId);
+        var req = _batchRequests.FirstOrDefault(r => r.BatchId == batchId && r.CustomId == customId);
         if (req is not null)
         {
             req.Status = status;
+            req.AttemptCount = attemptCount;
+            req.ResponseText = responseText;
+            req.ModelUsed = modelUsed;
             req.CompletedAt = completedAt;
         }
         return Task.CompletedTask;

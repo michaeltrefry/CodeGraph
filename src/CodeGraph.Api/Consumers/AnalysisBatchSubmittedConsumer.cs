@@ -14,33 +14,35 @@ public class AnalysisBatchSubmittedConsumer(
     IGraphStore store,
     ILogger<AnalysisBatchSubmittedConsumer> logger) : IConsumer<AnalysisBatchSubmitted>
 {
+    private static readonly TimeSpan RecheckDelay = TimeSpan.FromMinutes(1);
+
     public async Task Consume(ConsumeContext<AnalysisBatchSubmitted> context)
     {
         var message = context.Message;
         var ct = context.CancellationToken;
 
-        await batchService.ProcessCompletedBatchesAsync(message.RepoName, ct);
+        await batchService.ProcessCompletedBatchAsync(message.RepoName, message.ProviderBatchId, ct);
 
-        var pending = await store.GetPendingBatchesAsync(message.RepoName);
-        var stillPending = pending.Any(b => b.ProviderBatchId == message.ProviderBatchId);
+        var batch = await store.GetBatchByProviderBatchIdAsync(message.ProviderBatchId);
+        var stillPending = batch is not null &&
+            string.Equals(batch.Status, "submitted", StringComparison.OrdinalIgnoreCase);
 
         if (stillPending)
         {
             logger.LogInformation(
-                "Batch {BatchId} for {Repo} still processing — will retry via redelivery",
-                message.ProviderBatchId, message.RepoName);
+                "Batch {BatchId} for {Repo} still processing — scheduling another check in {DelaySeconds}s",
+                message.ProviderBatchId, message.RepoName, (int)RecheckDelay.TotalSeconds);
 
-            throw new BatchNotReadyException(
-                $"Batch {message.ProviderBatchId} for {message.RepoName} is still processing");
+            await context.SchedulePublish(DateTime.UtcNow + RecheckDelay, new AnalysisBatchSubmitted
+            {
+                RepoName = message.RepoName,
+                ProviderBatchId = message.ProviderBatchId,
+                RequestCount = message.RequestCount
+            });
+            return;
         }
 
         logger.LogInformation("Batch {BatchId} for {Repo} completed and processed",
             message.ProviderBatchId, message.RepoName);
     }
-}
-
-public class BatchNotReadyException : Exception
-{
-    public BatchNotReadyException(string message) : base(message) { }
-    public BatchNotReadyException(string message, Exception innerException) : base(message, innerException) { }
 }

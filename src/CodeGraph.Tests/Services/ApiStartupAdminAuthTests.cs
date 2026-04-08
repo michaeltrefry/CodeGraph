@@ -9,7 +9,7 @@ namespace CodeGraph.Tests.Services;
 public class ApiStartupAdminAuthTests
 {
     [Fact]
-    public void ConfigureServices_RegistersCoreServicesWithoutAdminAuth()
+    public async Task ConfigureServices_RegistersCoreServicesWithoutAdminAuth()
     {
         var services = new ServiceCollection();
 
@@ -28,7 +28,7 @@ public class ApiStartupAdminAuthTests
         services.Any(d => d.ServiceType.Name == "IAdminUserService").ShouldBeFalse();
         services.Any(d => d.ServiceType.Name == "IAdminStore").ShouldBeFalse();
 
-        using var provider = services.BuildServiceProvider();
+        await using var provider = services.BuildServiceProvider();
         provider.GetRequiredService<IAnalysisProviderRegistry>().GetProvider().ProviderName.ShouldBe("anthropic");
     }
 }

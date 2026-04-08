@@ -22,7 +22,8 @@ public static class ConsumerConfiguration
             redeliver
                 .Intervals(TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5))
                 .Handle<Exception>(ex => ex is Neo4j.Driver.ServiceUnavailableException
-                                         || ex is System.Net.Sockets.SocketException);
+                                         || ex is System.Net.Sockets.SocketException
+                                         || ex is RetryableAnalysisException);
         });
     }
 }

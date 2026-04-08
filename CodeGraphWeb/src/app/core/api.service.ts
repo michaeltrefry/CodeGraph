@@ -25,7 +25,8 @@ import {
   ClusterOverviewResponse,
   ClusterDetailResponse,
   ClusterGraphResponse,
-  ImpactReport
+  ImpactReport,
+  DatabaseHealthResponse
 } from './models';
 
 const API = environment.apiUrl;
@@ -143,6 +144,10 @@ export class ApiService {
 
   getClusterDetail(id: number): Observable<ClusterDetailResponse> {
     return this.http.get<ClusterDetailResponse>(`${API}/clusters/${id}`);
+  }
+
+  getDatabaseHealth(): Observable<DatabaseHealthResponse> {
+    return this.http.get<DatabaseHealthResponse>(`${API}/settings/db-health`);
   }
 
   // Wiki

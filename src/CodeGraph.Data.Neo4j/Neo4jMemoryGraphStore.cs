@@ -220,36 +220,16 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
     public async Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5)
     {
         await using var session = _sessionFactory.GetSession(AccessMode.Read);
-        var results = new List<MemoryEntity>();
-        var escapedQuery = EscapeLuceneQuery(query);
-
-        var result = await session.RunAsync(
-            """
-            CALL db.index.fulltext.queryNodes('memory_entity_fulltext', $query)
-            YIELD node, score
-            RETURN node.id AS id, node.label AS label, node.type AS type,
-                   node.summary AS summary, node.source AS source,
-                   node.createdAt AS createdAt, node.updatedAt AS updatedAt
-            ORDER BY score DESC
-            LIMIT $limit
-            """,
-            new { query = escapedQuery, limit });
-
-        await foreach (var record in result)
+        try
         {
-            results.Add(new MemoryEntity
-            {
-                Id = record["id"].As<string>(),
-                Label = record["label"].As<string>(),
-                Type = record["type"].As<string>(),
-                Summary = record["summary"].As<string>(),
-                Source = record["source"].As<string>(),
-                CreatedAt = record["createdAt"].As<DateTimeOffset>().UtcDateTime,
-                UpdatedAt = record["updatedAt"].As<DateTimeOffset>().UtcDateTime,
-            });
+            return await TextSearchWithFulltextAsync(session, query, limit);
         }
-
-        return results;
+        catch (ClientException ex) when (IsMissingMemoryFulltextIndex(ex))
+        {
+            _logger.LogWarning(
+                "Memory fulltext index is missing; falling back to scan-based text search.");
+            return await TextSearchWithFallbackAsync(session, query, limit);
+        }
     }
 
     public async Task<List<MemoryRelationshipDetail>> GetRelationshipsAsync(string entityId)
@@ -505,23 +485,16 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
         if (string.IsNullOrWhiteSpace(searchTerms))
             return [];
 
-        var escapedTerms = EscapeLuceneQuery(searchTerms);
-
-        var result = await session.RunAsync(
-            """
-            CALL db.index.fulltext.queryNodes('memory_entity_fulltext', $query)
-            YIELD node, score
-            RETURN node.id AS id
-            LIMIT $limit
-            """,
-            new { query = escapedTerms, limit });
-
-        var ids = new List<string>();
-        await foreach (var record in result)
+        try
         {
-            ids.Add(record["id"].As<string>());
+            return await FindCandidateEntityIdsWithFulltextAsync(session, searchTerms, limit);
         }
-        return ids;
+        catch (ClientException ex) when (IsMissingMemoryFulltextIndex(ex))
+        {
+            _logger.LogWarning(
+                "Memory fulltext index is missing; falling back to scan-based candidate search.");
+            return await FindCandidateEntityIdsWithFallbackAsync(session, searchTerms, limit);
+        }
     }
 
     public async Task<MemoryEntity?> GetEntityAsync(string entityId)
@@ -564,5 +537,152 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
             escaped.Append(c);
         }
         return escaped.ToString();
+    }
+
+    internal static bool IsMissingMemoryFulltextIndex(ClientException ex) =>
+        ex.Message.Contains("There is no such fulltext schema index: memory_entity_fulltext",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<List<MemoryEntity>> TextSearchWithFulltextAsync(
+        IAsyncSession session,
+        string query,
+        int limit)
+    {
+        var results = new List<MemoryEntity>();
+        var escapedQuery = EscapeLuceneQuery(query);
+
+        var result = await session.RunAsync(
+            """
+            CALL db.index.fulltext.queryNodes('memory_entity_fulltext', $query)
+            YIELD node, score
+            RETURN node.id AS id, node.label AS label, node.type AS type,
+                   node.summary AS summary, node.source AS source,
+                   node.createdAt AS createdAt, node.updatedAt AS updatedAt
+            ORDER BY score DESC
+            LIMIT $limit
+            """,
+            new { query = escapedQuery, limit });
+
+        await foreach (var record in result)
+        {
+            results.Add(MapMemoryEntity(record));
+        }
+
+        return results;
+    }
+
+    private static async Task<List<MemoryEntity>> TextSearchWithFallbackAsync(
+        IAsyncSession session,
+        string query,
+        int limit)
+    {
+        var normalizedQuery = query.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+            return [];
+
+        var result = await session.RunAsync(
+            """
+            MATCH (e:MemoryEntity)
+            WITH e,
+                 CASE
+                    WHEN toLower(coalesce(e.id, '')) = $query THEN 100
+                    WHEN toLower(coalesce(e.label, '')) = $query THEN 90
+                    WHEN toLower(coalesce(e.id, '')) CONTAINS $query THEN 80
+                    WHEN toLower(coalesce(e.label, '')) CONTAINS $query THEN 70
+                    WHEN toLower(coalesce(e.summary, '')) CONTAINS $query THEN 50
+                    ELSE 0
+                 END AS score
+            WHERE score > 0
+            RETURN e.id AS id, e.label AS label, e.type AS type,
+                   e.summary AS summary, e.source AS source,
+                   e.createdAt AS createdAt, e.updatedAt AS updatedAt
+            ORDER BY score DESC, e.updatedAt DESC
+            LIMIT $limit
+            """,
+            new { query = normalizedQuery, limit });
+
+        var results = new List<MemoryEntity>();
+        await foreach (var record in result)
+        {
+            results.Add(MapMemoryEntity(record));
+        }
+
+        return results;
+    }
+
+    private static async Task<List<string>> FindCandidateEntityIdsWithFulltextAsync(
+        IAsyncSession session,
+        string searchTerms,
+        int limit)
+    {
+        var escapedTerms = EscapeLuceneQuery(searchTerms);
+
+        var result = await session.RunAsync(
+            """
+            CALL db.index.fulltext.queryNodes('memory_entity_fulltext', $query)
+            YIELD node, score
+            RETURN node.id AS id
+            LIMIT $limit
+            """,
+            new { query = escapedTerms, limit });
+
+        var ids = new List<string>();
+        await foreach (var record in result)
+        {
+            ids.Add(record["id"].As<string>());
+        }
+
+        return ids;
+    }
+
+    private static async Task<List<string>> FindCandidateEntityIdsWithFallbackAsync(
+        IAsyncSession session,
+        string searchTerms,
+        int limit)
+    {
+        var normalizedQuery = searchTerms.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+            return [];
+
+        var result = await session.RunAsync(
+            """
+            MATCH (e:MemoryEntity)
+            WITH e,
+                 CASE
+                    WHEN toLower(coalesce(e.id, '')) = $query THEN 100
+                    WHEN toLower(coalesce(e.label, '')) = $query THEN 90
+                    WHEN toLower(coalesce(e.id, '')) CONTAINS $query THEN 80
+                    WHEN toLower(coalesce(e.label, '')) CONTAINS $query THEN 70
+                    WHEN toLower(coalesce(e.summary, '')) CONTAINS $query THEN 50
+                    ELSE 0
+                 END AS score
+            WHERE score > 0
+            RETURN e.id AS id
+            ORDER BY score DESC, e.updatedAt DESC
+            LIMIT $limit
+            """,
+            new { query = normalizedQuery, limit });
+
+        var ids = new List<string>();
+        await foreach (var record in result)
+        {
+            ids.Add(record["id"].As<string>());
+        }
+
+        return ids;
+    }
+
+    private static MemoryEntity MapMemoryEntity(IRecord record)
+    {
+        return new MemoryEntity
+        {
+            Id = record["id"].As<string>(),
+            Label = record["label"].As<string>(),
+            Type = record["type"].As<string>(),
+            Summary = record["summary"].As<string>(),
+            Source = record["source"].As<string>(),
+            CreatedAt = record["createdAt"].As<DateTimeOffset>().UtcDateTime,
+            UpdatedAt = record["updatedAt"].As<DateTimeOffset>().UtcDateTime,
+        };
     }
 }

@@ -158,6 +158,58 @@
   color: #9ca3af;
 }
 
+.support-badge {
+  color: #fff;
+}
+
+.support-status-pill {
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.support-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.support-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.support-inline-status {
+  font-weight: 600;
+}
+
+.support-target-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.support-target-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+.support-target-status {
+  font-weight: 600;
+}
+
 .deps-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

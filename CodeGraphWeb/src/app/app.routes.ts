@@ -96,6 +96,10 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/admin/admin-operations.component').then(m => m.AdminOperationsComponent)
       },
       {
+        path: 'db-health',
+        loadComponent: () => import('./pages/admin/admin-db-health.component').then(m => m.AdminDbHealthComponent)
+      },
+      {
         path: 'sections',
         loadComponent: () => import('./pages/admin/admin-sections.component').then(m => m.AdminSectionsComponent)
       },

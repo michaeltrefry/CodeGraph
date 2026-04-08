@@ -52,6 +52,10 @@ public sealed record AnalysisBatchRequestItem(
     string CustomId,
     AnalysisPrompt Prompt);
 
+public sealed record AnalysisBatchRequestPayload(
+    AnalysisPrompt Prompt,
+    AnalysisRequestOptions Request);
+
 public sealed record AnalysisBatchSubmissionResult(
     string BatchId,
     string ProcessingStatus);

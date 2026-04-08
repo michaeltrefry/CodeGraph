@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -6,6 +7,7 @@ using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Metadata;
 
 namespace CodeGraph.Services.Pipeline;
 
@@ -126,7 +128,7 @@ public partial class IndexingPipeline
                 {
                     var results = await _solutionAnalyzer.AnalyzeSolutionAsync(slnFiles[0], context, ct);
                     _logger.LogInformation("[Timing] Roslyn solution analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    detectedMetadata ??= ExtractMetadata(results);
+                    detectedMetadata ??= SelectDominantMetadata(results.Select(r => r.Metadata));
                     MergeResults(results, buffer);
                     specializedExtensions.Add(".cs");
                 }
@@ -166,7 +168,7 @@ public partial class IndexingPipeline
                     var results = await _typeScriptAnalyzer.AnalyzeProjectAsync(
                         tsconfig, context, ct);
                     _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    detectedMetadata ??= ExtractMetadata(results);
+                    detectedMetadata ??= SelectDominantMetadata(results.Select(r => r.Metadata));
                     MergeResults(results, buffer);
                     specializedExtensions.Add(".ts");
                 }
@@ -205,7 +207,8 @@ public partial class IndexingPipeline
             {
                 Name = projectName,
                 Language = detectedMetadata.Language,
-                Framework = detectedMetadata.Framework
+                Framework = detectedMetadata.Framework,
+                Properties = SerializeRepositoryProperties(detectedMetadata)
             });
         }
 
@@ -294,7 +297,7 @@ public partial class IndexingPipeline
     private async Task<ProjectMetadata?> ExtractFilesAsync(List<string> files, string rootPath,
         ExtractorContext context, GraphBuffer buffer, CancellationToken ct)
     {
-        ProjectMetadata? metadata = null;
+        var metadataCounts = new ConcurrentDictionary<ProjectMetadata, int>();
 
         await Parallel.ForEachAsync(files,
             new ParallelOptions
@@ -329,7 +332,7 @@ public partial class IndexingPipeline
                         buffer.AddUnresolvedImport(import);
 
                     if (result.Metadata is not null)
-                        Interlocked.CompareExchange(ref metadata, result.Metadata, null);
+                        metadataCounts.AddOrUpdate(result.Metadata, 1, (_, count) => count + 1);
                 }
                 catch (Exception ex)
                 {
@@ -338,7 +341,7 @@ public partial class IndexingPipeline
                 }
             });
 
-        return metadata;
+        return SelectDominantMetadata(metadataCounts);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
@@ -354,9 +357,70 @@ public partial class IndexingPipeline
         }
     }
 
-    /// <summary>
-    /// Extract the first non-null ProjectMetadata from a set of extraction results.
-    /// </summary>
-    private static ProjectMetadata? ExtractMetadata(IReadOnlyList<ExtractionResult> results) =>
-        results.Select(r => r.Metadata).FirstOrDefault(m => m is not null);
+    private static ProjectMetadata? SelectDominantMetadata(IEnumerable<ProjectMetadata?> metadata)
+    {
+        return SelectDominantMetadata(
+            metadata
+                .Where(m => m is not null)
+                .Cast<ProjectMetadata>()
+                .GroupBy(m => m)
+                .ToDictionary(g => g.Key, g => g.Count()));
+    }
+
+    private static ProjectMetadata? SelectDominantMetadata(
+        IReadOnlyDictionary<ProjectMetadata, int> metadataCounts)
+    {
+        if (metadataCounts.Count == 0)
+            return null;
+
+        return metadataCounts
+            .GroupBy(kvp => new { kvp.Key.Language, kvp.Key.Framework }, kvp => kvp)
+            .Select(group =>
+            {
+                var representative = group
+                    .Select(entry => entry.Key)
+                    .OrderByDescending(entry => entry.DotnetSupport is not null)
+                    .First();
+
+                return new KeyValuePair<ProjectMetadata, int>(
+                    representative,
+                    group.Sum(entry => entry.Value));
+            })
+            .OrderByDescending(kvp => kvp.Value)
+            .ThenByDescending(kvp => GetLanguagePriority(kvp.Key.Language))
+            .ThenBy(kvp => kvp.Key.Language, StringComparer.OrdinalIgnoreCase)
+            .Select(kvp => kvp.Key)
+            .First();
+    }
+
+    private static string? SerializeRepositoryProperties(ProjectMetadata metadata)
+    {
+        var properties = DotnetSupportInspector.BuildRepositoryProperties(metadata.DotnetSupport);
+        return properties is null
+            ? null
+            : System.Text.Json.JsonSerializer.Serialize(
+                properties,
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+                });
+    }
+
+    private static int GetLanguagePriority(string language) =>
+        language.ToLowerInvariant() switch
+        {
+            "c#" => 100,
+            "typescript" => 95,
+            "c++" => 90,
+            "c" => 85,
+            "go" => 80,
+            "java" => 75,
+            "rust" => 70,
+            "python" => 60,
+            "sql" => 50,
+            "php" => 45,
+            "ruby" => 40,
+            "bash" => 10,
+            _ => 0
+        };
 }

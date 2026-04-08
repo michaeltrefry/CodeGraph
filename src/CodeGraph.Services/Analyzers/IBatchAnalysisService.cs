@@ -17,13 +17,16 @@ public interface IBatchAnalysisService
 
     /// <summary>
     /// Checks all submitted batches (optionally scoped to one repo) against the
-    /// active analysis provider. Native-batch providers are polled for completion;
-    /// non-batch providers replay the stored project requests one at a time through
-    /// the same batch workflow. Completed batches store per-project results and publish
+    /// active analysis provider. Completed batches store per-project results and publish
     /// ProjectAnalysisResultsProcessed to trigger synthesis asynchronously.
     /// Called by ProcessBatchResultsJob.
     /// </summary>
     Task ProcessCompletedBatchesAsync(string? repo = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Checks one submitted batch against the active analysis provider.
+    /// </summary>
+    Task ProcessCompletedBatchAsync(string repoName, string providerBatchId, CancellationToken ct = default);
 
     /// <summary>
     /// Synthesize a repo-level summary from stored per-project analyses via an AI API call.

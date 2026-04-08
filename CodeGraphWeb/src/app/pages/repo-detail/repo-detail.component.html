@@ -16,6 +16,13 @@
         @if (d.project.language) {
           <span class="badge">{{ d.project.language }}</span>
         }
+        @if (supportBadgeText(d.dotnetSupport); as supportText) {
+          <span class="badge support-badge"
+                [style.background]="supportBadgeColor(d.dotnetSupport?.overallStatus)"
+                [style.borderColor]="supportBadgeColor(d.dotnetSupport?.overallStatus)">
+            {{ supportText }}
+          </span>
+        }
       </div>
 
       <div class="repo-actions">
@@ -68,6 +75,53 @@
     </div>
 
     <!-- Summary -->
+    @if (d.dotnetSupport; as support) {
+      <div class="card">
+        <div class="card-header">
+          <h2>.NET Support</h2>
+          <span class="support-status-pill"
+                [style.background]="supportBadgeColor(support.overallStatus)">
+            {{ supportStatusLabel(support.overallStatus) }}
+          </span>
+        </div>
+        <div class="support-grid">
+          @if (support.sdk; as sdk) {
+            <div class="support-row">
+              <span class="meta-label">SDK:</span>
+              <span>{{ sdk.version }}</span>
+              <span class="support-inline-status"
+                    [style.color]="supportBadgeColor(sdk.supportStatus)">
+                {{ supportStatusLabel(sdk.supportStatus) }}
+              </span>
+              @if (sdk.supportEndedOn) {
+                <span class="muted">ended {{ formatDate(sdk.supportEndedOn) }}</span>
+              }
+            </div>
+          }
+          @if (support.targetFrameworks.length > 0) {
+            <div class="support-row">
+              <span class="meta-label">Targets:</span>
+              <div class="support-target-list">
+                @for (target of support.targetFrameworks; track target.moniker) {
+                  <span class="support-target-pill">
+                    {{ target.displayName }}
+                    <span class="support-target-status"
+                          [style.color]="supportBadgeColor(target.supportStatus)">
+                      {{ supportStatusLabel(target.supportStatus) }}
+                    </span>
+                    @if (target.supportEndedOn) {
+                      <span class="muted">· ended {{ formatDate(target.supportEndedOn) }}</span>
+                    }
+                  </span>
+                }
+              </div>
+            </div>
+          }
+        </div>
+        <div class="summary-meta">{{ support.summary }}</div>
+      </div>
+    }
+
     @if (d.summary) {
       <div class="card">
         <div class="card-header">

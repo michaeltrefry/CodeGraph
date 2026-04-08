@@ -4,6 +4,7 @@ using CodeGraph.Models;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Metadata;
 
 namespace CodeGraph.Services.Query;
 
@@ -63,6 +64,7 @@ public class ProjectQueryService(
 
         return new ProjectDetailResponse(
             MapProjectListItem(project),
+            ResolveDotnetSupport(project),
             MapSummary(summary),
             analyses.Select(MapAnalysis).ToList(),
             nodeCounts,
@@ -167,6 +169,10 @@ public class ProjectQueryService(
     internal static ProjectListItem MapProjectListItem(ProjectInfo p) =>
         new(p.Name, p.RepoUrl, p.SourceGroup, p.LocalPath, p.LastCommitSha, p.IndexedAt,
             p.Language, p.Framework, p.IsFoundational, p.Properties);
+
+    internal static DotnetSupportInfo? ResolveDotnetSupport(ProjectInfo p) =>
+        DotnetSupportInspector.TryReadStoredSupport(p.Properties) ??
+        DotnetSupportInspector.InspectRepository(p.LocalPath);
 
     internal static ProjectSummaryResponse? MapSummary(ProjectSummary? s) =>
         s is null ? null : new ProjectSummaryResponse(

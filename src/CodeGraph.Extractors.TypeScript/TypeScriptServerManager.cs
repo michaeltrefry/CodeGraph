@@ -26,6 +26,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
     private CancellationTokenSource? _idleCts;
     private int _activeRequests;
     private readonly Queue<string> _recentOutput = new();
+    private int _expectedExitProcessId = -1;
     private const int MaxRecentOutputLines = 40;
 
     public TypeScriptServerManager(int port, ILogger logger)
@@ -248,22 +249,38 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         };
         psi.Environment["CODEGRAPH_TS_PORT"] = _port.ToString();
 
-        _process = Process.Start(psi);
-        if (_process is null)
+        var process = Process.Start(psi);
+        _process = process;
+        if (process is null)
         {
             _logger.LogWarning("TypeScript extractor: failed to start Node.js process.");
             return false;
         }
 
-        _process.EnableRaisingEvents = true;
-        _process.Exited += (_, _) =>
+        Volatile.Write(ref _expectedExitProcessId, -1);
+
+        process.EnableRaisingEvents = true;
+        process.Exited += (_, _) =>
         {
+            if (ReferenceEquals(_process, process))
+                _available = false;
+
+            var expectedShutdown = Volatile.Read(ref _expectedExitProcessId) == process.Id;
             try
             {
-                _logger.LogWarning(
-                    "TypeScript extractor process exited with code {ExitCode}. Recent output: {RecentOutput}",
-                    _process?.ExitCode,
-                    string.Join(" | ", _recentOutput));
+                if (expectedShutdown)
+                {
+                    _logger.LogInformation(
+                        "TypeScript extractor process exited after intentional shutdown. Exit code: {ExitCode}.",
+                        process.ExitCode);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "TypeScript extractor process exited unexpectedly with code {ExitCode}. Recent output: {RecentOutput}",
+                        process.ExitCode,
+                        string.Join(" | ", _recentOutput));
+                }
             }
             catch
             {
@@ -272,7 +289,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         };
 
         // Forward sidecar stderr to our logger so timing/diagnostic output is visible
-        _process.ErrorDataReceived += (_, e) =>
+        process.ErrorDataReceived += (_, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
             {
@@ -280,8 +297,8 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
                 _logger.LogInformation("ts-extractor: {Line}", e.Data);
             }
         };
-        _process.BeginErrorReadLine();
-        _process.OutputDataReceived += (_, e) =>
+        process.BeginErrorReadLine();
+        process.OutputDataReceived += (_, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
             {
@@ -289,7 +306,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
                 _logger.LogDebug("ts-extractor: {Line}", e.Data);
             }
         };
-        _process.BeginOutputReadLine();
+        process.BeginOutputReadLine();
 
         // Kill child when .NET process exits
         AppDomain.CurrentDomain.ProcessExit += (_, _) => KillProcess();
@@ -337,7 +354,14 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
 
     private void KillProcess()
     {
-        try { _process?.Kill(entireProcessTree: true); }
+        try
+        {
+            if (_process is not null)
+            {
+                Volatile.Write(ref _expectedExitProcessId, _process.Id);
+                _process.Kill(entireProcessTree: true);
+            }
+        }
         catch { /* best effort */ }
         _process = null;
     }

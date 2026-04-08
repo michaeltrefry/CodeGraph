@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Models.Exceptions;
 using CodeGraph.Services.Models;
 using CodeGraph.Services.Extensions;
 
@@ -43,6 +44,10 @@ public partial class BatchAnalysisService
                 new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, promptText),
                 new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerSynthesis),
                 ct);
+        }
+        catch (RetryableAnalysisException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

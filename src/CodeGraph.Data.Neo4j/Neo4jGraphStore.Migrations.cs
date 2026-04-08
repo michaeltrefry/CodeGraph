@@ -7,6 +7,19 @@ public partial class Neo4jGraphStore
 {
     // ── Migrations (Cypher scripts) ──────────────────────────────────────
 
+    internal static IReadOnlyList<string> ParseMigrationStatements(string cypher)
+    {
+        var uncommented = string.Join(
+            Environment.NewLine,
+            cypher.Split(["\r\n", "\n"], StringSplitOptions.None)
+                .Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+
+        return uncommented
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(statement => !string.IsNullOrWhiteSpace(statement))
+            .ToList();
+    }
+
     public async Task ApplyMigrationsAsync(string migrationsPath)
     {
         var cypherPath = string.IsNullOrWhiteSpace(migrationsPath)
@@ -56,11 +69,9 @@ public partial class Neo4jGraphStore
             logger.LogInformation("Applying Neo4j migration: {Script}", scriptName);
             var cypher = await File.ReadAllTextAsync(script);
 
-            // Split on semicolons for multi-statement scripts
-            var statements = cypher
-                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Where(s => !string.IsNullOrWhiteSpace(s) && !s.StartsWith("//"))
-                .ToList();
+            // Strip comment-only lines before splitting so section headers do not
+            // accidentally suppress the first real statement in a block.
+            var statements = ParseMigrationStatements(cypher);
 
             // Neo4j cannot mix schema operations (CREATE CONSTRAINT/INDEX) with
             // data writes in the same transaction. Run each statement separately.
