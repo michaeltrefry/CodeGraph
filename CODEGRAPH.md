@@ -7,27 +7,25 @@
 
 ## Summary
 
-CodeGraph is a multi-project .NET/Angular repository that ingests source code repositories, builds a property graph of their structure, and exposes analysis, search, and AI-assisted query capabilities over that graph.
+CodeGraph is a multi-project .NET/Angular repository that builds a code intelligence and visualization platform. It ingests source code repositories (C#/.NET, TypeScript, SQL, and other languages via Tree-sitter), extracts structural and semantic information from them, stores the result as a labeled property graph in Neo4j, and exposes that graph through REST APIs and an Angular frontend for querying, visualization, and AI-assisted analysis.
 
-Core responsibilities by layer:
+The solution is organized into clearly separated layers:
 
-1. **Extraction** – Four extractor projects parse source code into graph nodes and edges: CodeGraph.Extractors.CSharp (Roslyn-based, handles C#/.NET solutions, DI registrations, HTTP routes, NuGet refs), CodeGraph.Extractors.TypeScript (spawns a Node.js Tree-sitter server for TypeScript/tsconfig analysis), CodeGraph.Extractors.TreeSitter (language-agnostic Tree-sitter backend for additional languages), and CodeGraph.Extractors.Sql (T-SQL parser for database objects and relationships). All implement a shared ICodeExtractor interface defined in CodeGraph.Services.
+**Extraction layer** – Four extractor projects handle language-specific parsing: CodeGraph.Extractors.CSharp uses Roslyn to walk C# solutions and emit nodes/edges for classes, methods, interfaces, DI registrations, HTTP routes, NuGet references, and service-bus interactions; CodeGraph.Extractors.TypeScript spawns an external Node.js process to perform TypeScript AST analysis; CodeGraph.Extractors.TreeSitter provides a language-agnostic fallback using the Tree-sitter library; and CodeGraph.Extractors.Sql parses T-SQL files to capture database objects and their relationships. All extractors implement a shared ICodeExtractor interface defined in CodeGraph.Services or CodeGraph.Data.
 
-2. **Data contracts** – CodeGraph.Data defines interfaces (IGraphStore, IAnalysisStore, IMetricsStore, IVectorStore, IWikiStore, IJobScheduleStore, IMemoryGraphStore, etc.) that abstract every persistence operation. CodeGraph.Data.Neo4j is the sole concrete implementation, translating those interfaces into Cypher queries against a Neo4j graph database, including vector embedding storage and cross-repository edge management.
+**Data / persistence layer** – CodeGraph.Data defines the full set of persistence-interface contracts (IGraphStore, IAnalysisStore, IVectorStore, IWikiStore, IJobScheduleStore, IMemoryGraphStore, IMetricsStore, etc.). CodeGraph.Data.Neo4j provides the concrete implementations, translating every application-level operation into Cypher queries executed against Neo4j, including vector-embedding storage, community/cluster metadata, job schedules, and AI-analysis batch records.
 
-3. **Models** – CodeGraph.Models is the shared contract library: DTOs, MassTransit message types, API request/response records, memory graph entities, and exception types consumed by all other projects.
+**Service / business-logic layer** – CodeGraph.Services is the orchestration core. It drives the full indexing pipeline (repository discovery → file extraction → graph construction → cross-repo linking → community detection), runs LLM-based batch analysis against multiple providers (Anthropic, OpenAI, Gemini, local), performs security scanning and health-metric computation, maintains a semantic vector search index, manages a wiki knowledge base, and exposes an AI chat/MCP tool interface.
 
-4. **Business logic** – CodeGraph.Services orchestrates the full pipeline: repository discovery (GitHub, GitLab, local folders), file extraction dispatch, graph construction, cross-repo linking, community/cluster detection, security and health scanning, semantic/vector search, batch LLM analysis (Anthropic, OpenAI, Gemini, local models), wiki management, and an MCP tool/prompt layer for AI assistants.
+**API layer** – CodeGraph.Api is an ASP.NET Core Web API that surfaces REST endpoints for graph queries, indexing triggers, wiki management, memory-graph operations, and the AI assistant. It also hosts MassTransit consumers that react to asynchronous pipeline events (repository indexed, batch submitted, analysis synthesized).
 
-5. **API** – CodeGraph.Api is an ASP.NET Core Web API that exposes REST endpoints for graph queries, indexing triggers, wiki CRUD, memory graph operations, and an AI chat assistant. It also hosts MassTransit consumers that react to async pipeline events (indexing complete, batch analysis submitted, synthesis complete).
+**Job scheduling layer** – CodeGraph.Jobs is a separate ASP.NET Core application that provides cron-driven background jobs (DiscoverRepositories, ProcessRepositories, ProcessBatchResults, ProcessBatchAnalysis, community detection, MCP doc regeneration, relationship linking). It uses a dispatcher pattern to route job types to their implementations and acquires distributed leases to prevent duplicate execution.
 
-6. **Jobs** – CodeGraph.Jobs is a separate ASP.NET Core host providing cron-scheduled background jobs: repository discovery, batch result processing, re-indexing, community detection, MCP doc regeneration, and graph relationship linking. It uses a dispatcher pattern to route job types to implementations.
+**Shared models** – CodeGraph.Models is the contracts library (DTOs, MassTransit message types, memory-graph entities, exception types) consumed by every other project to ensure type-safe inter-service communication.
 
-7. **Frontend** – An Angular application (within the main CodeGraph project) visualizes the code graph, provides search and impact-analysis UIs, and surfaces the AI assistant.
+**Test projects** – CodeGraph.Tests and CodeGraph.Jobs.Tests provide unit and integration test coverage using xUnit, with rich sets of in-memory fakes, recording doubles, and stubs that replace Neo4j, HTTP clients, LLM providers, and message buses.
 
-8. **Tests** – CodeGraph.Tests and CodeGraph.Jobs.Tests are xUnit projects that cover extractors, graph store operations, indexing pipelines, analysis services, repository providers, wiki/memory services, job scheduling, and DI registration, using in-memory fakes and recording doubles for all external dependencies.
-
-Key external dependencies: Neo4j (graph persistence), MassTransit (async messaging), Roslyn (C# analysis), Tree-sitter via Node.js (multi-language parsing), multiple LLM provider APIs (Anthropic, OpenAI, Gemini), GitHub/GitLab APIs, and standard ASP.NET Core infrastructure. No downstream repositories that depend on this one are identified in the provided evidence.
+Key external dependencies include: Neo4j (graph database), MassTransit (async messaging), Roslyn (C# compilation/analysis), Tree-sitter (multi-language parsing), Node.js/TypeScript toolchain (TypeScript extraction), and multiple LLM provider SDKs. The Angular frontend consumes the HTTP API exposed by CodeGraph.Api. No external repositories are identified as dependents of this repository.
 
 ## Projects
 
