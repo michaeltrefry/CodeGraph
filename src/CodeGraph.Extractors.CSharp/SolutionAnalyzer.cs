@@ -5,6 +5,7 @@ using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.Extensions.Logging;
+using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
@@ -17,11 +18,16 @@ public class SolutionAnalyzer : ISolutionAnalyzer
     private static int _msBuildRegistered;
     private readonly ILogger<SolutionAnalyzer> _logger;
     private readonly LintResultCache _lintCache;
+    private readonly DiagnosticDetailCache _diagnosticDetailCache;
 
-    public SolutionAnalyzer(ILogger<SolutionAnalyzer> logger, LintResultCache lintCache)
+    public SolutionAnalyzer(
+        ILogger<SolutionAnalyzer> logger,
+        LintResultCache lintCache,
+        DiagnosticDetailCache diagnosticDetailCache)
     {
         _logger = logger;
         _lintCache = lintCache;
+        _diagnosticDetailCache = diagnosticDetailCache;
         EnsureMSBuildRegistered();
     }
 
@@ -51,6 +57,8 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         _logger.LogInformation("Analyzing {Count} projects in solution", solution.Projects.Count());
 
         var diagnosticCounts = new ConcurrentDictionary<string, (int Errors, int Warnings)>(StringComparer.OrdinalIgnoreCase);
+        var diagnosticDetails = new ConcurrentBag<ProjectDiagnosticEntity>();
+        var computedAt = DateTime.UtcNow;
 
         await Parallel.ForEachAsync(solution.Projects, ct, async (project, ct2) =>
         {
@@ -67,11 +75,36 @@ public class SolutionAnalyzer : ISolutionAnalyzer
                 if (diag.Location.SourceTree?.FilePath is not { Length: > 0 } filePath) continue;
 
                 var relPath = Path.GetRelativePath(context.RootPath, filePath).Replace('\\', '/');
-                diagnosticCounts.AddOrUpdate(relPath,
-                    diag.Severity == DiagnosticSeverity.Error ? (1, 0) : (0, 1),
-                    (_, prev) => diag.Severity == DiagnosticSeverity.Error
-                        ? (prev.Errors + 1, prev.Warnings)
-                        : (prev.Errors, prev.Warnings + 1));
+                var lineSpan = diag.Location.GetLineSpan();
+                var lineStart = lineSpan.IsValid ? (int?)(lineSpan.StartLinePosition.Line + 1) : null;
+                var lineEnd = lineSpan.IsValid ? (int?)(lineSpan.EndLinePosition.Line + 1) : null;
+                var severity = MapDiagnosticSeverity(diag.Severity);
+                var message = diag.GetMessage();
+
+                diagnosticDetails.Add(new ProjectDiagnosticEntity
+                {
+                    Project = context.ProjectName,
+                    DotnetProject = project.Name,
+                    Source = "roslyn",
+                    DiagnosticKey = BuildDiagnosticKey(project.Name, diag.Id, relPath, lineStart, lineEnd, message),
+                    DiagnosticId = diag.Id,
+                    Severity = severity,
+                    Message = message,
+                    Category = string.IsNullOrWhiteSpace(diag.Descriptor.Category) ? null : diag.Descriptor.Category,
+                    FilePath = relPath,
+                    LineStart = lineStart,
+                    LineEnd = lineEnd,
+                    ComputedAt = computedAt
+                });
+
+                if (diag.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
+                {
+                    diagnosticCounts.AddOrUpdate(relPath,
+                        diag.Severity == DiagnosticSeverity.Error ? (1, 0) : (0, 1),
+                        (_, prev) => diag.Severity == DiagnosticSeverity.Error
+                            ? (prev.Errors + 1, prev.Warnings)
+                            : (prev.Errors, prev.Warnings + 1));
+                }
             }
 
             var projectContext = new ExtractorContext
@@ -117,6 +150,14 @@ public class SolutionAnalyzer : ISolutionAnalyzer
             _lintCache.Set(context.ProjectName, lintResults);
             _logger.LogInformation("Stashed Roslyn diagnostics for {Project}: {Count} files with issues",
                 context.ProjectName, lintResults.Count);
+        }
+
+        if (!diagnosticDetails.IsEmpty)
+        {
+            var detailList = diagnosticDetails.ToList();
+            _diagnosticDetailCache.Set(context.ProjectName, detailList);
+            _logger.LogInformation("Stashed {Count} detailed Roslyn diagnostics for {Project}",
+                detailList.Count, context.ProjectName);
         }
 
         // Detect framework from .csproj files next to the solution
@@ -239,4 +280,22 @@ public class SolutionAnalyzer : ISolutionAnalyzer
 
         return ".NET";
     }
+
+    private static string MapDiagnosticSeverity(DiagnosticSeverity severity) => severity switch
+    {
+        DiagnosticSeverity.Error => "error",
+        DiagnosticSeverity.Warning => "warning",
+        DiagnosticSeverity.Info => "info",
+        DiagnosticSeverity.Hidden => "suggestion",
+        _ => "info"
+    };
+
+    private static string BuildDiagnosticKey(
+        string dotnetProject,
+        string diagnosticId,
+        string filePath,
+        int? lineStart,
+        int? lineEnd,
+        string message)
+        => $"{dotnetProject}|{diagnosticId}|{filePath}|{lineStart?.ToString() ?? ""}|{lineEnd?.ToString() ?? ""}|{message}";
 }

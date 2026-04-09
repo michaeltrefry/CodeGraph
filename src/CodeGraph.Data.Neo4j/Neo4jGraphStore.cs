@@ -344,7 +344,24 @@ public partial class Neo4jGraphStore(
                 OPTIONAL MATCH (s:RepositorySummary {project: $project})
                 OPTIONAL MATCH (ha:ProjectHealthAnalysis {project: $project})
                 OPTIONAL MATCH (hs:ProjectHealthSummary {project: $project})
-                DELETE a, s, ha, hs
+                OPTIONAL MATCH (ps:ProjectSecuritySummary {project: $project})
+                DELETE a, s, ha, hs, ps
+                """, new { project });
+
+            await tx.RunAsync("""
+                MATCH (sf:SecurityFinding {project: $project})
+                DELETE sf
+                """, new { project });
+
+            await tx.RunAsync("""
+                MATCH (pd:ProjectDiagnostic {project: $project})
+                DELETE pd
+                """, new { project });
+
+            await tx.RunAsync("""
+                MATCH (rr:ProjectReviewRun {project: $project})
+                OPTIONAL MATCH (rr)-[rfRel:HAS_FINDING]->(rf:ProjectReviewFinding)
+                DELETE rfRel, rf, rr
                 """, new { project });
 
             // Delete node analyses for nodes in this project

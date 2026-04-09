@@ -232,6 +232,57 @@ public class SecurityFindingEntity
     public DateTime ComputedAt { get; set; }
 }
 
+public class ProjectDiagnosticEntity
+{
+    public string Project { get; set; } = "";
+    public string? DotnetProject { get; set; }
+    public string Source { get; set; } = "roslyn";
+    public string DiagnosticKey { get; set; } = "";
+    public string DiagnosticId { get; set; } = "";
+    public string Severity { get; set; } = "";
+    public string Message { get; set; } = "";
+    public string? Category { get; set; }
+    public string FilePath { get; set; } = "";
+    public int? LineStart { get; set; }
+    public int? LineEnd { get; set; }
+    public DateTime ComputedAt { get; set; }
+}
+
+public class ProjectReviewRunEntity
+{
+    public long Id { get; set; }
+    public string Project { get; set; } = "";
+    public string ProjectName { get; set; } = "";
+    public string? ReviewedCommitSha { get; set; }
+    public string Status { get; set; } = "queued";
+    public string ReviewMode { get; set; } = "standard";
+    public string PromptVersion { get; set; } = "v1";
+    public string? OverviewJson { get; set; }
+    public string? ModelUsed { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public string? Error { get; set; }
+}
+
+public class ProjectReviewFindingEntity
+{
+    public long Id { get; set; }
+    public long ReviewRunId { get; set; }
+    public int Ordinal { get; set; }
+    public string Severity { get; set; } = "";
+    public string Category { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Explanation { get; set; } = "";
+    public string Evidence { get; set; } = "";
+    public string FilePath { get; set; } = "";
+    public int? LineStart { get; set; }
+    public int? LineEnd { get; set; }
+    public string SuggestedImprovement { get; set; } = "";
+    public string Confidence { get; set; } = "";
+    public string? ProvenanceJson { get; set; }
+}
+
 public class ProjectSecuritySummaryEntity
 {
     public long Id { get; set; }

@@ -22,6 +22,7 @@ using CodeGraph.Services.Memory;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Query;
+using CodeGraph.Services.Reviews;
 
 namespace CodeGraph.Api;
 
@@ -93,6 +94,7 @@ public static class Startup
 
         // Lint / Trust scoring
         services.AddSingleton<LintResultCache>();
+        services.AddSingleton<DiagnosticDetailCache>();
         services.AddTransient<ILintRunner>(sp => new CompositeLintRunner(
             sp.GetRequiredService<LintResultCache>(),
             sp.GetRequiredService<TypeScriptServerManager>(),
@@ -128,6 +130,8 @@ public static class Startup
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
         services.AddTransient<IProjectService, ProjectService>();
         services.AddTransient<IProjectQueryService, ProjectQueryService>();
+        services.AddSingleton<IProjectReviewBackgroundRunner, ProjectReviewBackgroundRunner>();
+        services.AddTransient<IProjectReviewService, ProjectReviewService>();
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
