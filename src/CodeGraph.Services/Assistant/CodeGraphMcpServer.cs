@@ -351,8 +351,31 @@ public class CodeGraphMcpServer(
             sb.AppendLine($"**Total Files:** {h.TotalFiles}");
             sb.AppendLine($"**Hotspots:** {h.HotspotCount} (health < 4.0)");
             sb.AppendLine($"**Alerts:** {h.AlertCount} (health < 2.5)");
+            if (!string.IsNullOrWhiteSpace(h.HistoryMaturity))
+                sb.AppendLine($"**History Maturity:** {h.HistoryMaturity}");
             sb.AppendLine($"**Computed:** {h.ComputedAt:yyyy-MM-dd HH:mm}");
             sb.AppendLine();
+
+            if (h.HasSufficientHistoryForTrends || !string.IsNullOrWhiteSpace(h.HistoryMaturity))
+            {
+                sb.AppendLine("## Repository Vitality\n");
+                if (h.HasSufficientHistoryForTrends)
+                {
+                    if (!string.IsNullOrWhiteSpace(h.ActivityStatus))
+                        sb.AppendLine($"- **Activity:** {h.ActivityStatus}");
+                    if (!string.IsNullOrWhiteSpace(h.FirefightingStatus))
+                        sb.AppendLine($"- **Firefighting:** {h.FirefightingStatus}");
+                    sb.AppendLine($"- **Recent Velocity:** {h.VelocityLast6Months} commits vs {h.VelocityPrior6Months} in prior 6 months ({h.VelocityChangePercent:+0.0;-0.0;0.0}%)");
+                    sb.AppendLine($"- **Dormancy:** {h.DormantMonths12m} zero-commit months in last year, max inactive streak {h.MaxInactiveStreakMonths}");
+                    sb.AppendLine($"- **Firefighting Counts:** {h.FirefightingCommits90d} in 90d, {h.FirefightingCommits365d} in 365d");
+                    sb.AppendLine($"- **Firefighting Rates:** {h.FirefightingRate90d:P0} in 90d, {h.FirefightingRate365d:P0} in 365d");
+                }
+                else
+                {
+                    sb.AppendLine("- Trend signals are immature due to limited repo history.");
+                }
+                sb.AppendLine();
+            }
         }
 
         if (report.ProjectHealths.Count > 0)
@@ -370,8 +393,9 @@ public class CodeGraphMcpServer(
             sb.AppendLine("## Top Hotspot Files\n");
             foreach (var f in report.TopHotspots)
             {
-                sb.AppendLine($"- **{f.FilePath}** — health: {f.HealthScore:F1}, trust: {f.TrustScore:F2}, risk: {f.RiskScore:F0}");
-                sb.AppendLine($"  Complexity: {f.ComplexityScore}, Churn: {f.Changes} changes, Authors: {f.AuthorCount}, Truck factor: {f.TruckFactor}");
+                sb.AppendLine($"- **{f.FilePath}** — concern: {f.ConcernScore:F1}, health: {f.HealthScore:F1}, trust: {f.TrustScore:F2}");
+                sb.AppendLine($"  Repeated fixes: {f.BugFixCommits365d:F2} ({f.BugFixRatio365d:P0}), recurring churn: {f.RecurringChurnScore:F2}, yearly churn: {f.Churn365d:F2}");
+                sb.AppendLine($"  Complexity: {f.ComplexityScore}, recent churn: {f.Changes} changes, Authors: {f.AuthorCount}, Truck factor: {f.TruckFactor}, risk: {f.RiskScore:F0}");
             }
             sb.AppendLine();
         }

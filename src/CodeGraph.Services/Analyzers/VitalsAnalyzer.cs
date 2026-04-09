@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -29,6 +30,12 @@ public class VitalsAnalyzer(
     {
         "test", "tests", "spec", "specs", "testing", ".tests", ".test"
     };
+
+    private static readonly Regex BugFixKeywordPattern = new(@"\b(fix|bug|broken|defect|patch)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex FirefightingKeywordPattern = new(@"\b(hotfix|incident|urgent|emergency|rollback|revert)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     public async Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
     {
@@ -72,7 +79,7 @@ public class VitalsAnalyzer(
         var filePaths = fileToDotnetProject.Keys.ToList();
 
         // 2. Run git-based metrics + ESLint in parallel
-        var churnTask = ComputeChurnAsync(repoPath, ct: ct);
+        var historyTask = ReadHistorySnapshotAsync(repoPath, ct);
         var couplingTask = ComputeCouplingAsync(repoPath, ct: ct);
         var knowledgeTask = ComputeKnowledgeRiskAsync(repoPath, ct: ct);
 
@@ -88,9 +95,9 @@ public class VitalsAnalyzer(
             : Task.FromResult<IReadOnlyDictionary<string, LintResult>>(
                 new Dictionary<string, LintResult>());
 
-        await Task.WhenAll(churnTask, couplingTask, knowledgeTask, lintTask);
+        await Task.WhenAll(historyTask, couplingTask, knowledgeTask, lintTask);
 
-        var churn = await churnTask;
+        var history = await historyTask;
         var coupling = await couplingTask;
         var knowledge = await knowledgeTask;
         var lint = await lintTask;
@@ -122,17 +129,29 @@ public class VitalsAnalyzer(
             var ext = Path.GetExtension(relPath);
             if (!SourceExtensions.Contains(ext)) continue;
 
-            churn.TryGetValue(relPath, out var ch);
+            history.FileMetricsByPath.TryGetValue(relPath, out var fileHistory);
             coupling.TryGetValue(relPath, out var co);
             knowledge.TryGetValue(relPath, out var kn);
             complexity.TryGetValue(relPath, out var cx);
             lint.TryGetValue(relPath, out var ln);
 
+            var ch = fileHistory?.ToChurnData();
             var role = ClassifyRole(relPath);
             var health = ComputeHealthScore(ch, co, kn, cx, ln);
             var changes = ch?.Changes ?? 0;
             var couplingPartners = co?.CouplingPartners ?? 0;
             var risk = ComputeRiskScore(health, changes, role, couplingPartners);
+            var recurringChurnScore = ComputeRecurringChurnScore(
+                fileHistory?.WeightedChurn30d ?? 0,
+                fileHistory?.WeightedChurn90d ?? 0,
+                fileHistory?.WeightedChurn365d ?? 0);
+            var concernScore = ComputeConcernScore(
+                health,
+                risk,
+                role,
+                recurringChurnScore,
+                fileHistory?.WeightedBugFixCommits365d ?? 0,
+                fileHistory?.WeightedTouches365d ?? 0);
             var isUntrusted = untrustedFiles.Contains(relPath);
             var trust = ComputeTrustScore(ch, ln, isUntrusted);
 
@@ -165,6 +184,17 @@ public class VitalsAnalyzer(
                 HealthScore = health,
                 Role = role,
                 RiskScore = risk,
+                ConcernScore = concernScore,
+                Churn30d = fileHistory?.WeightedChurn30d ?? 0,
+                Churn90d = fileHistory?.WeightedChurn90d ?? 0,
+                Churn365d = fileHistory?.WeightedChurn365d ?? 0,
+                BugFixCommits90d = fileHistory?.WeightedBugFixCommits90d ?? 0,
+                BugFixCommits365d = fileHistory?.WeightedBugFixCommits365d ?? 0,
+                BugFixRatio365d = ComputeBugFixRatio(
+                    fileHistory?.WeightedBugFixCommits365d ?? 0,
+                    fileHistory?.WeightedTouches365d ?? 0),
+                BugFixWeightedTouches365d = fileHistory?.WeightedTouches365d ?? 0,
+                RecurringChurnScore = recurringChurnScore,
                 ComputedAt = now
             });
         }
@@ -174,7 +204,7 @@ public class VitalsAnalyzer(
         await store.UpsertFileMetricsBatchAsync(projectName, metrics);
 
         // 6. Compute and store project health summaries
-        await ComputeAndStoreHealthSummaries(projectName, metrics);
+        await ComputeAndStoreHealthSummaries(projectName, metrics, history);
 
         logger.LogInformation(
             "Vitals complete for {Project}: {Count} files analyzed in {Elapsed:F1}s",
@@ -271,7 +301,7 @@ public class VitalsAnalyzer(
         ProjectSecuritySummaryEntity? securitySummary = null)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"You are a codebase health analyst. Analyze the following metrics for project '{dotnetProject}' in repository '{repoName}'.");
+        sb.AppendLine($"You are a solo-maintenance code health analyst. Analyze the following metrics for project '{dotnetProject}' in repository '{repoName}'.");
         sb.AppendLine();
         sb.AppendLine($"Overall health: {summary.OverallHealth:F1}/10");
         sb.AppendLine($"Total files: {summary.TotalFiles}");
@@ -280,27 +310,32 @@ public class VitalsAnalyzer(
         AppendSecurityContext(sb, securitySummary);
         sb.AppendLine();
 
-        var hotspots = metrics.OrderBy(m => m.HealthScore).Take(20).ToList();
+        var hotspots = metrics
+            .OrderByDescending(m => m.ConcernScore)
+            .ThenBy(m => m.HealthScore)
+            .Take(20)
+            .ToList();
         if (hotspots.Count > 0)
         {
-            sb.AppendLine("File-level metrics (worst health first):");
-            sb.AppendLine("| File | Health | Churn (90d) | Complexity | Coupling | Truck Factor | Role |");
-            sb.AppendLine("|------|--------|-------------|------------|----------|-------------|------|");
+            sb.AppendLine("File-level metrics (highest concern first):");
+            sb.AppendLine("| File | Concern | Health | Bug/Fix | Recurring Churn | Churn | Complexity | Coupling | Role |");
+            sb.AppendLine("|------|---------|--------|---------|-----------------|-------|------------|----------|------|");
             foreach (var m in hotspots)
             {
-                sb.AppendLine($"| {m.FilePath} | {m.HealthScore:F1} | {m.Changes} changes, +{m.LinesAdded}/-{m.LinesRemoved} | {m.ComplexityScore}/100 (depth {m.MaxNestingDepth}) | {m.MaxCouplingStrength:F2} ({m.CouplingPartners} partners) | {m.TruckFactor} | {m.Role} |");
+                sb.AppendLine($"| {m.FilePath} | {m.ConcernScore:F1} | {m.HealthScore:F1} | {m.BugFixCommits365d:F2} fixes ({m.BugFixRatio365d:P0}) | {m.RecurringChurnScore:F2} | {m.Changes} recent / {m.Churn365d:F2} yearly | {m.ComplexityScore}/100 (depth {m.MaxNestingDepth}) | {m.MaxCouplingStrength:F2} ({m.CouplingPartners} partners) | {m.Role} |");
             }
             sb.AppendLine();
         }
 
         sb.AppendLine("""
             Provide a concise health analysis covering:
-            1. **Risk Assessment**: What are the highest-risk files and why?
+            1. **Repeated Maintenance Drag**: Which files look like repeated fix areas or persistent work friction, and why?
             2. **Remediation Priorities**: Top 3 actions ranked by impact.
-            3. **Knowledge Risk**: Any bus-factor concerns (truck factor 1)?
+            3. **Persistent Churn**: Which files keep being revisited across time windows?
             4. **Coupling Concerns**: Files with high coupling that may cause cascading issues.
             5. **Security**: Any security concerns from the security scan (if data available).
 
+            Optimize for solo maintenance pain, not team-dynamics language.
             Be specific — reference actual file names and metrics. Keep it under 300 words.
             """);
 
@@ -314,12 +349,27 @@ public class VitalsAnalyzer(
         ProjectSecuritySummaryEntity? securitySummary = null)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"You are a codebase health analyst. Synthesize the health status of repository '{repoName}'.");
+        sb.AppendLine($"You are a solo-maintenance code health analyst. Synthesize the health status of repository '{repoName}'.");
         sb.AppendLine();
         sb.AppendLine($"Repository health: {repoSummary.OverallHealth:F1}/10");
         sb.AppendLine($"Total files: {repoSummary.TotalFiles}");
         sb.AppendLine($"Hotspots: {repoSummary.HotspotCount}");
         sb.AppendLine($"Alerts: {repoSummary.AlertCount}");
+        if (!string.IsNullOrWhiteSpace(repoSummary.HistoryMaturity))
+            sb.AppendLine($"History maturity: {repoSummary.HistoryMaturity}");
+        if (repoSummary.HasSufficientHistoryForTrends)
+        {
+            if (!string.IsNullOrWhiteSpace(repoSummary.ActivityStatus))
+                sb.AppendLine($"Activity status: {repoSummary.ActivityStatus}");
+            if (!string.IsNullOrWhiteSpace(repoSummary.FirefightingStatus))
+                sb.AppendLine($"Firefighting status: {repoSummary.FirefightingStatus}");
+            sb.AppendLine($"Velocity: {repoSummary.VelocityLast6Months} commits in last 6 months vs {repoSummary.VelocityPrior6Months} in prior 6 months ({repoSummary.VelocityChangePercent:+0.0;-0.0;0.0}%)");
+            sb.AppendLine($"Dormant months (12m): {repoSummary.DormantMonths12m}, max inactive streak: {repoSummary.MaxInactiveStreakMonths}");
+        }
+        else if (!string.IsNullOrWhiteSpace(repoSummary.HistoryMaturity))
+        {
+            sb.AppendLine("Trend signals are immature due to limited repo history.");
+        }
         AppendSecurityContext(sb, securitySummary);
         sb.AppendLine();
 
@@ -333,24 +383,29 @@ public class VitalsAnalyzer(
             sb.AppendLine();
         }
 
-        var topHotspots = allMetrics.OrderBy(m => m.HealthScore).Take(10).ToList();
+        var topHotspots = allMetrics
+            .OrderByDescending(m => m.ConcernScore)
+            .ThenBy(m => m.HealthScore)
+            .Take(10)
+            .ToList();
         if (topHotspots.Count > 0)
         {
-            sb.AppendLine("Top 10 riskiest files across all projects:");
+            sb.AppendLine("Top 10 maintenance hotspots across all projects:");
             foreach (var m in topHotspots)
-                sb.AppendLine($"- {m.FilePath} (health {m.HealthScore:F1}, {m.Changes} changes, truck factor {m.TruckFactor})");
+                sb.AppendLine($"- {m.FilePath} (concern {m.ConcernScore:F1}, health {m.HealthScore:F1}, fixes {m.BugFixCommits365d:F2}, recurring churn {m.RecurringChurnScore:F2})");
             sb.AppendLine();
         }
 
         sb.AppendLine("""
             Provide a repository-level health summary covering:
-            1. **Overall Assessment**: Is this repo healthy, at risk, or critical?
+            1. **Overall Assessment**: What is creating the most solo maintenance drag in this repo?
             2. **Worst Projects**: Which projects need attention and why?
             3. **Top Remediation Actions**: 3-5 prioritized recommendations.
-            4. **Systemic Risks**: Cross-cutting concerns (knowledge concentration, high coupling between projects).
+            4. **Vitality Context**: Is the repo stable, slowing, dormant, revived, or too young for trend confidence?
             5. **Security**: Highlight any security findings if present (secrets, vulnerable packages, attack surface).
 
-            Be specific and actionable. Keep it under 400 words.
+            Emphasize repeated fix areas, persistent work friction, and maintenance hotspots.
+            Avoid team-dynamics framing. Be specific and actionable. Keep it under 400 words.
             """);
 
         return sb.ToString();
@@ -458,6 +513,190 @@ public class VitalsAnalyzer(
 
         logger.LogDebug("Churn: {Count} files with changes in last {Days} days", result.Count, days);
         return result;
+    }
+
+    internal async Task<HistorySnapshot> ReadHistorySnapshotAsync(
+        string repoPath,
+        CancellationToken ct = default)
+    {
+        var now = DateTime.UtcNow;
+        var trailingMonths = 12;
+        var historyOutputTask = RunGitAsync(
+            repoPath,
+            "log --numstat --format=%H%x00%aI%x00%aN%x00%s --no-merges --no-renames --date-order --since=400.days.ago",
+            ct);
+        var totalCommitCountTask = RunGitAsync(repoPath, "rev-list --count --no-merges HEAD", ct);
+        var firstCommitTask = RunGitAsync(repoPath, "log --reverse --format=%aI --no-merges --max-count=1", ct);
+
+        await Task.WhenAll(historyOutputTask, totalCommitCountTask, firstCommitTask);
+
+        var snapshot = new HistorySnapshot();
+        var historyOutput = await historyOutputTask;
+        var totalCommitCountOutput = await totalCommitCountTask;
+        var firstCommitOutput = await firstCommitTask;
+
+        snapshot.TotalCommitCount = int.TryParse(totalCommitCountOutput.Trim(), out var totalCommitCount)
+            ? totalCommitCount
+            : 0;
+        snapshot.FirstCommitAt = DateTime.TryParse(firstCommitOutput.Trim(), CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind, out var firstCommitAt)
+            ? firstCommitAt
+            : null;
+
+        if (!string.IsNullOrWhiteSpace(historyOutput))
+        {
+            PendingCommitRecord? currentCommit = null;
+
+            void FlushPendingCommit()
+            {
+                if (currentCommit is null)
+                    return;
+
+                var sourceTouches = currentCommit.FileTouches
+                    .Where(t => SourceExtensions.Contains(Path.GetExtension(t.Path)))
+                    .GroupBy(t => t.Path, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.Last())
+                    .ToList();
+
+                if (sourceTouches.Count == 0)
+                {
+                    currentCommit = null;
+                    return;
+                }
+
+                var ageDays = (now - currentCommit.AuthorDate).TotalDays;
+                var isBugFix = IsBugFixCommit(currentCommit.Message);
+                var isFirefighting = IsFirefightingCommit(currentCommit.Message);
+                var totalChangedLines = sourceTouches.Sum(t => Math.Max(0, t.LinesAdded) + Math.Max(0, t.LinesRemoved));
+                var fallbackWeight = 1.0 / sourceTouches.Count;
+
+                for (var i = 0; i < sourceTouches.Count; i++)
+                {
+                    var touch = sourceTouches[i];
+                    var changedLines = Math.Max(0, touch.LinesAdded) + Math.Max(0, touch.LinesRemoved);
+                    var weight = totalChangedLines > 0
+                        ? changedLines / (double)totalChangedLines
+                        : fallbackWeight;
+                    if (!snapshot.FileMetricsByPath.TryGetValue(touch.Path, out var data))
+                    {
+                        data = new FileHistoryData();
+                        snapshot.FileMetricsByPath[touch.Path] = data;
+                    }
+
+                    if (ageDays <= 365)
+                    {
+                        data.WeightedTouches365d += weight;
+                        data.WeightedChurn365d += weight;
+                        if (isBugFix)
+                            data.WeightedBugFixCommits365d += weight;
+                    }
+
+                    if (ageDays <= 90)
+                    {
+                        data.Changes90d++;
+                        data.LinesAdded90d += touch.LinesAdded;
+                        data.LinesRemoved90d += touch.LinesRemoved;
+                        data.Authors90d.Add(currentCommit.Author);
+                        data.LastChangeAt = data.LastChangeAt is null || currentCommit.AuthorDate > data.LastChangeAt
+                            ? currentCommit.AuthorDate
+                            : data.LastChangeAt;
+                        data.WeightedChurn90d += weight;
+                        if (isBugFix)
+                            data.WeightedBugFixCommits90d += weight;
+                    }
+
+                    if (ageDays <= 30)
+                        data.WeightedChurn30d += weight;
+                }
+
+                var monthStart = new DateTime(currentCommit.AuthorDate.Year, currentCommit.AuthorDate.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+                snapshot.MonthlyCommitCounts.TryGetValue(monthStart, out var currentMonthCount);
+                snapshot.MonthlyCommitCounts[monthStart] = currentMonthCount + 1;
+
+                if (ageDays <= 365)
+                {
+                    snapshot.SourceCommits365d++;
+                    if (isFirefighting)
+                        snapshot.FirefightingCommits365d++;
+                }
+
+                if (ageDays <= 90)
+                {
+                    snapshot.SourceCommits90d++;
+                    if (isFirefighting)
+                        snapshot.FirefightingCommits90d++;
+                }
+
+                currentCommit = null;
+            }
+
+            foreach (var rawLine in historyOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = rawLine.Split('\0');
+                if (parts.Length == 4)
+                {
+                    FlushPendingCommit();
+
+                    if (!DateTime.TryParse(parts[1], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var authorDate))
+                        continue;
+
+                    currentCommit = new PendingCommitRecord
+                    {
+                        AuthorDate = authorDate,
+                        Author = parts[2].Trim(),
+                        Message = parts[3].Trim()
+                    };
+                    continue;
+                }
+
+                if (currentCommit is null)
+                    continue;
+
+                var tabs = rawLine.Split('\t');
+                if (tabs.Length != 3)
+                    continue;
+
+                if (!int.TryParse(tabs[0], out var added))
+                    continue;
+
+                _ = int.TryParse(tabs[1], out var removed);
+                currentCommit.FileTouches.Add(new PendingFileTouch
+                {
+                    Path = tabs[2].Trim().Replace('\\', '/'),
+                    LinesAdded = added,
+                    LinesRemoved = removed
+                });
+            }
+
+            FlushPendingCommit();
+        }
+
+        snapshot.HistoryMaturity = DetermineHistoryMaturity(snapshot.FirstCommitAt, snapshot.TotalCommitCount, now);
+        snapshot.HasSufficientHistoryForTrends = snapshot.HistoryMaturity is not "Young";
+        snapshot.TrailingMonthlyPoints = BuildTrailingMonthlyPoints(snapshot.MonthlyCommitCounts, now, trailingMonths);
+        snapshot.MonthlyCommitCountsJson = JsonSerializer.Serialize(snapshot.TrailingMonthlyPoints);
+        snapshot.VelocityLast6Months = snapshot.TrailingMonthlyPoints.TakeLast(6).Sum(p => p.CommitCount);
+        snapshot.VelocityPrior6Months = snapshot.TrailingMonthlyPoints.Count > 6
+            ? snapshot.TrailingMonthlyPoints.Take(Math.Max(0, snapshot.TrailingMonthlyPoints.Count - 6)).TakeLast(6).Sum(p => p.CommitCount)
+            : 0;
+        snapshot.VelocityChangePercent = snapshot.VelocityPrior6Months > 0
+            ? Math.Round(((snapshot.VelocityLast6Months - snapshot.VelocityPrior6Months) / (double)snapshot.VelocityPrior6Months) * 100, 1)
+            : snapshot.VelocityLast6Months > 0 ? 100 : 0;
+        snapshot.DormantMonths12m = snapshot.TrailingMonthlyPoints.Count(p => p.CommitCount == 0);
+        snapshot.MaxInactiveStreakMonths = ComputeMaxInactiveStreak(snapshot.TrailingMonthlyPoints);
+        snapshot.ActivityStatus = DetermineActivityStatus(snapshot.TrailingMonthlyPoints, snapshot.HasSufficientHistoryForTrends, snapshot.VelocityLast6Months, snapshot.VelocityPrior6Months);
+        snapshot.FirefightingRate90d = snapshot.SourceCommits90d > 0
+            ? Math.Round(snapshot.FirefightingCommits90d / (double)snapshot.SourceCommits90d, 3)
+            : 0;
+        snapshot.FirefightingRate365d = snapshot.SourceCommits365d > 0
+            ? Math.Round(snapshot.FirefightingCommits365d / (double)snapshot.SourceCommits365d, 3)
+            : 0;
+        snapshot.FirefightingStatus = DetermineFirefightingStatus(snapshot.FirefightingRate365d);
+
+        logger.LogDebug("History snapshot: {FileCount} files, {CommitCount} commits, maturity {HistoryMaturity}",
+            snapshot.FileMetricsByPath.Count, snapshot.TotalCommitCount, snapshot.HistoryMaturity ?? "unknown");
+
+        return snapshot;
     }
 
     internal async Task<Dictionary<string, CouplingData>> ComputeCouplingAsync(
@@ -982,8 +1221,40 @@ public class VitalsAnalyzer(
 
     // --- Health Summary Aggregation ---
 
+    private static double ComputeRecurringChurnScore(double churn30d, double churn90d, double churn365d)
+    {
+        var normalized30 = Math.Min(churn30d / 10.0, 1.0);
+        var normalized90 = Math.Min(churn90d / 25.0, 1.0);
+        var normalized365 = Math.Min(churn365d / 100.0, 1.0);
+        return Math.Round((0.2 * normalized30) + (0.3 * normalized90) + (0.5 * normalized365), 2);
+    }
+
+    private static double ComputeConcernScore(
+        double health,
+        double riskScore,
+        string role,
+        double recurringChurnScore,
+        double bugFixCommits365d,
+        double weightedTouches365d)
+    {
+        var bugFixRatio365d = ComputeBugFixRatio(bugFixCommits365d, weightedTouches365d);
+        var baseConcern = Math.Max(riskScore, (10 - health) * 2);
+        var persistentChurnContribution = recurringChurnScore * 8;
+        var bugFixContribution = Math.Min(bugFixRatio365d * 12, 8) + Math.Min(bugFixCommits365d, 4);
+        var roleWeight = role == "test" ? 0.5 : 1.0;
+        return Math.Round((baseConcern + persistentChurnContribution + bugFixContribution) * roleWeight, 1);
+    }
+
+    private static double ComputeBugFixRatio(double bugFixCommits365d, double weightedTouches365d)
+    {
+        if (weightedTouches365d <= 0)
+            return 0;
+
+        return Math.Round(bugFixCommits365d / weightedTouches365d, 3);
+    }
+
     private async Task ComputeAndStoreHealthSummaries(
-        string projectName, List<FileMetricsEntity> metrics)
+        string projectName, List<FileMetricsEntity> metrics, HistorySnapshot history)
     {
         var now = DateTime.UtcNow;
 
@@ -1001,11 +1272,22 @@ public class VitalsAnalyzer(
         }
 
         // Repo-level aggregate (DotnetProject = null)
-        if (groups.Count > 1 || (groups.Count == 1 && groups[0].Key != ""))
-        {
-            var repoSummary = AggregateHealth(projectName, null, metrics, now);
-            await store.UpsertProjectHealthSummaryAsync(repoSummary);
-        }
+        var repoSummary = AggregateHealth(projectName, null, metrics, now);
+        repoSummary.HistoryMaturity = history.HistoryMaturity;
+        repoSummary.HasSufficientHistoryForTrends = history.HasSufficientHistoryForTrends;
+        repoSummary.ActivityStatus = history.ActivityStatus;
+        repoSummary.FirefightingStatus = history.FirefightingStatus;
+        repoSummary.MonthlyCommitCounts = history.MonthlyCommitCountsJson;
+        repoSummary.VelocityLast6Months = history.VelocityLast6Months;
+        repoSummary.VelocityPrior6Months = history.VelocityPrior6Months;
+        repoSummary.VelocityChangePercent = history.VelocityChangePercent;
+        repoSummary.DormantMonths12m = history.DormantMonths12m;
+        repoSummary.MaxInactiveStreakMonths = history.MaxInactiveStreakMonths;
+        repoSummary.FirefightingCommits90d = history.FirefightingCommits90d;
+        repoSummary.FirefightingCommits365d = history.FirefightingCommits365d;
+        repoSummary.FirefightingRate90d = history.FirefightingRate90d;
+        repoSummary.FirefightingRate365d = history.FirefightingRate365d;
+        await store.UpsertProjectHealthSummaryAsync(repoSummary);
     }
 
     private static ProjectHealthSummaryEntity AggregateHealth(
@@ -1041,9 +1323,10 @@ public class VitalsAnalyzer(
         var alerts = files.Count(f => f.HealthScore < 2.5);
 
         var topHotspots = files
-            .OrderByDescending(f => f.RiskScore)
+            .OrderByDescending(f => f.ConcernScore)
+            .ThenByDescending(f => f.RiskScore)
             .Take(10)
-            .Select(f => new { file = f.FilePath, health = f.HealthScore, risk = f.RiskScore })
+            .Select(f => new { file = f.FilePath, health = f.HealthScore, risk = f.RiskScore, concern = f.ConcernScore })
             .ToList();
 
         return new ProjectHealthSummaryEntity
@@ -1060,6 +1343,111 @@ public class VitalsAnalyzer(
             ComputedAt = now
         };
     }
+
+    private static string? DetermineHistoryMaturity(DateTime? firstCommitAt, int totalCommitCount, DateTime now)
+    {
+        if (firstCommitAt is null)
+            return null;
+
+        var ageDays = (now - firstCommitAt.Value).TotalDays;
+        if (ageDays < 180 || totalCommitCount < 100)
+            return "Young";
+        if (ageDays < 365 || totalCommitCount < 300)
+            return "Growing";
+        return "Mature";
+    }
+
+    private static string? DetermineActivityStatus(
+        IReadOnlyList<MonthlyCommitBucket> monthlyPoints,
+        bool hasSufficientHistoryForTrends,
+        int velocityLast6Months,
+        int velocityPrior6Months)
+    {
+        if (!hasSufficientHistoryForTrends || monthlyPoints.Count == 0)
+            return null;
+
+        var recentZeroStreak = 0;
+        for (var i = monthlyPoints.Count - 1; i >= 0; i--)
+        {
+            if (monthlyPoints[i].CommitCount != 0)
+                break;
+
+            recentZeroStreak++;
+        }
+
+        var dormantMonths = monthlyPoints.Count(p => p.CommitCount == 0);
+
+        if (recentZeroStreak >= 3 && velocityLast6Months <= Math.Max(1, velocityPrior6Months / 4))
+            return "PossiblyAbandoned";
+        if (recentZeroStreak >= 2)
+            return "Dormant";
+        if (dormantMonths >= 2 && velocityPrior6Months > 0 && velocityLast6Months >= Math.Ceiling(velocityPrior6Months * 1.3))
+            return "Revived";
+        if (velocityPrior6Months > 0 && velocityLast6Months <= Math.Floor(velocityPrior6Months * 0.7))
+            return "Slowing";
+
+        var changePercent = velocityPrior6Months > 0
+            ? Math.Abs(((velocityLast6Months - velocityPrior6Months) / (double)velocityPrior6Months) * 100)
+            : 0;
+
+        return changePercent <= 20 ? "Stable" : "Active";
+    }
+
+    private static string DetermineFirefightingStatus(double firefightingRate365d)
+    {
+        return firefightingRate365d switch
+        {
+            < 0.10 => "Low",
+            < 0.25 => "Moderate",
+            < 0.40 => "High",
+            _ => "Critical"
+        };
+    }
+
+    private static IReadOnlyList<MonthlyCommitBucket> BuildTrailingMonthlyPoints(
+        IReadOnlyDictionary<DateTime, int> monthlyCommitCounts,
+        DateTime now,
+        int monthCount)
+    {
+        var currentMonthStart = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var points = new List<MonthlyCommitBucket>(monthCount);
+
+        for (var offset = monthCount - 1; offset >= 0; offset--)
+        {
+            var month = currentMonthStart.AddMonths(-offset);
+            monthlyCommitCounts.TryGetValue(month, out var commitCount);
+            points.Add(new MonthlyCommitBucket(month.ToString("yyyy-MM", CultureInfo.InvariantCulture), commitCount));
+        }
+
+        return points;
+    }
+
+    private static int ComputeMaxInactiveStreak(IReadOnlyList<MonthlyCommitBucket> monthlyPoints)
+    {
+        var maxStreak = 0;
+        var currentStreak = 0;
+
+        for (var i = 0; i < monthlyPoints.Count; i++)
+        {
+            if (monthlyPoints[i].CommitCount == 0)
+            {
+                currentStreak++;
+                maxStreak = Math.Max(maxStreak, currentStreak);
+            }
+            else
+            {
+                currentStreak = 0;
+            }
+        }
+
+        return maxStreak;
+    }
+
+    private static bool IsBugFixCommit(string? message) =>
+        !string.IsNullOrWhiteSpace(message) && BugFixKeywordPattern.IsMatch(message);
+
+    private static bool IsFirefightingCommit(string? message) =>
+        !string.IsNullOrWhiteSpace(message) && FirefightingKeywordPattern.IsMatch(message);
 
     // --- Helpers ---
 
@@ -1160,4 +1548,70 @@ public class VitalsAnalyzer(
         public int FunctionCount { get; set; }
         public int LongestFunction { get; set; }
     }
+
+    internal sealed class FileHistoryData
+    {
+        public int Changes90d { get; set; }
+        public int LinesAdded90d { get; set; }
+        public int LinesRemoved90d { get; set; }
+        public HashSet<string> Authors90d { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public DateTime? LastChangeAt { get; set; }
+        public double WeightedTouches365d { get; set; }
+        public double WeightedChurn30d { get; set; }
+        public double WeightedChurn90d { get; set; }
+        public double WeightedChurn365d { get; set; }
+        public double WeightedBugFixCommits90d { get; set; }
+        public double WeightedBugFixCommits365d { get; set; }
+
+        public ChurnData ToChurnData() => new()
+        {
+            Changes = Changes90d,
+            LinesAdded = LinesAdded90d,
+            LinesRemoved = LinesRemoved90d,
+            AuthorCount = Authors90d.Count,
+            LastChangeAt = LastChangeAt
+        };
+    }
+
+    internal sealed class HistorySnapshot
+    {
+        public Dictionary<string, FileHistoryData> FileMetricsByPath { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<DateTime, int> MonthlyCommitCounts { get; } = new();
+        public IReadOnlyList<MonthlyCommitBucket> TrailingMonthlyPoints { get; set; } = [];
+        public DateTime? FirstCommitAt { get; set; }
+        public int TotalCommitCount { get; set; }
+        public int SourceCommits90d { get; set; }
+        public int SourceCommits365d { get; set; }
+        public int FirefightingCommits90d { get; set; }
+        public int FirefightingCommits365d { get; set; }
+        public double FirefightingRate90d { get; set; }
+        public double FirefightingRate365d { get; set; }
+        public string? HistoryMaturity { get; set; }
+        public bool HasSufficientHistoryForTrends { get; set; }
+        public string? ActivityStatus { get; set; }
+        public string FirefightingStatus { get; set; } = "Low";
+        public string? MonthlyCommitCountsJson { get; set; }
+        public int VelocityLast6Months { get; set; }
+        public int VelocityPrior6Months { get; set; }
+        public double VelocityChangePercent { get; set; }
+        public int DormantMonths12m { get; set; }
+        public int MaxInactiveStreakMonths { get; set; }
+    }
+
+    internal sealed class PendingCommitRecord
+    {
+        public DateTime AuthorDate { get; set; }
+        public string Author { get; set; } = "";
+        public string Message { get; set; } = "";
+        public List<PendingFileTouch> FileTouches { get; } = [];
+    }
+
+    internal sealed class PendingFileTouch
+    {
+        public string Path { get; set; } = "";
+        public int LinesAdded { get; set; }
+        public int LinesRemoved { get; set; }
+    }
+
+    internal sealed record MonthlyCommitBucket(string Month, int CommitCount);
 }

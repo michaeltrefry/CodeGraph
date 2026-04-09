@@ -10,11 +10,13 @@ import {
   CONFIDENCE_COLORS,
   DotnetSupportInfo,
   LABEL_ICONS,
+  MonthlyCommitPoint,
   ProjectDetailResponse,
   ProjectDiagnosticResponse,
   ProjectDiagnosticsResponse,
   ProjectHealthResponse,
   ProjectSecurityResponse,
+  RepositoryVitalitySummary,
   RepositoryReviewFindingResponse,
   RepositoryReviewProjectSectionResponse,
   RepositoryReviewResponse,
@@ -784,6 +786,92 @@ export class RepoDetailComponent implements OnInit {
     if (score < 4.0) return 'ALERT';
     if (score < 6.0) return 'WARNING';
     return 'HEALTHY';
+  }
+
+  concernTone(score: number): string {
+    if (score >= 20) return '#b91c1c';
+    if (score >= 12) return '#d97706';
+    if (score >= 6) return '#2563eb';
+    return '#6b7280';
+  }
+
+  vitality(): RepositoryVitalitySummary | null {
+    return this.health()?.repositoryVitality ?? null;
+  }
+
+  hasVitalityChart(vitality?: RepositoryVitalitySummary | null): boolean {
+    return !!vitality?.monthlyCommits?.length;
+  }
+
+  vitalityChartMax(vitality?: RepositoryVitalitySummary | null): number {
+    const values = vitality?.monthlyCommits?.map(point => point.commitCount) ?? [];
+    return Math.max(1, ...values);
+  }
+
+  vitalityBarHeight(point: MonthlyCommitPoint, vitality?: RepositoryVitalitySummary | null): number {
+    const max = this.vitalityChartMax(vitality);
+    return Math.max(10, Math.round((point.commitCount / max) * 88));
+  }
+
+  vitalityBarTone(point: MonthlyCommitPoint): string {
+    if (point.commitCount === 0) return '#d1d5db';
+    if (point.commitCount <= 2) return '#93c5fd';
+    if (point.commitCount <= 6) return '#60a5fa';
+    return '#2563eb';
+  }
+
+  vitalityStatusTone(status?: string): string {
+    switch ((status ?? '').toLowerCase()) {
+      case 'active':
+      case 'stable':
+      case 'revived':
+        return '#15803d';
+      case 'slowing':
+        return '#b45309';
+      case 'dormant':
+      case 'possiblyabandoned':
+        return '#b91c1c';
+      default:
+        return '#6b7280';
+    }
+  }
+
+  vitalityStatusBackground(status?: string): string {
+    switch ((status ?? '').toLowerCase()) {
+      case 'active':
+      case 'stable':
+      case 'revived':
+        return '#dcfce7';
+      case 'slowing':
+        return '#fef3c7';
+      case 'dormant':
+      case 'possiblyabandoned':
+        return '#fee2e2';
+      default:
+        return '#f3f4f6';
+    }
+  }
+
+  formatPercent(value?: number): string {
+    if (value === undefined || value === null) return '0%';
+    return `${(value * 100).toFixed(0)}%`;
+  }
+
+  formatSignedPercent(value?: number): string {
+    if (value === undefined || value === null) return '0.0%';
+    return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
+  }
+
+  historyMaturityLabel(value?: string): string {
+    if (!value) return 'Unknown';
+    return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+  }
+
+  hotspotBadgeLabel(file: { bugFixCommits365d: number; recurringChurnScore: number }): string | null {
+    if (file.bugFixCommits365d >= 1 && file.recurringChurnScore >= 0.5) return 'Repeated fixes';
+    if (file.bugFixCommits365d >= 1) return 'Fix-heavy';
+    if (file.recurringChurnScore >= 0.5) return 'Persistent churn';
+    return null;
   }
 
   nodeLabelEntries() {

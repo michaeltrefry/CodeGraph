@@ -5,6 +5,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extensions;
 using CodeGraph.Services.Metadata;
+using System.Text.Json;
 
 namespace CodeGraph.Services.Query;
 
@@ -98,7 +99,8 @@ public class ProjectQueryService(
                 [],
                 [],
                 secSummary is not null ? MapSecuritySummary(secSummary) : null,
-                dotnetSupport);
+                dotnetSupport,
+                null);
         }
 
         var repoSummary = summaries.FirstOrDefault(s => string.IsNullOrEmpty(s.DotnetProject));
@@ -112,14 +114,16 @@ public class ProjectQueryService(
             hotspots.Select(MapFileMetrics).ToList(),
             analyses.Select(MapHealthAnalysis).ToList(),
             secSummary is not null ? MapSecuritySummary(secSummary) : null,
-            dotnetSupport);
+            dotnetSupport,
+            MapRepositoryVitalitySummary(repoSummary));
     }
 
     public async Task<IReadOnlyList<FileMetrics>> GetMetricsAsync(string name, string? dotnetProject, int top)
     {
         var metrics = await store.GetFileMetricsAsync(name, dotnetProject);
         return metrics
-            .OrderByDescending(m => m.RiskScore)
+            .OrderByDescending(m => m.ConcernScore)
+            .ThenByDescending(m => m.RiskScore)
             .Take(top)
             .Select(MapFileMetrics)
             .ToList();
@@ -221,7 +225,7 @@ public class ProjectQueryService(
         return new ProjectHealthSummary(
             e.Id, e.Project, e.DotnetProject, adjustedHealth, e.TotalFiles,
             e.HotspotCount, e.AlertCount, e.TopHotspots, e.ComputedAt,
-            baseOverallHealth, scorePenalty);
+            baseOverallHealth, scorePenalty, ParseHistoryMaturity(e.HistoryMaturity));
     }
 
     internal static FileMetrics MapFileMetrics(FileMetricsEntity e) =>
@@ -231,7 +235,71 @@ public class ProjectQueryService(
             e.LintErrors, e.LintWarnings, e.TrustScore,
             e.MaxCouplingStrength, e.CouplingPartners,
             e.TruckFactor, e.TopAuthors,
-            e.HealthScore, e.Role, e.RiskScore, e.ComputedAt);
+            e.HealthScore, e.Role, e.RiskScore, e.ComputedAt,
+            e.ConcernScore, e.Churn30d, e.Churn90d, e.Churn365d,
+            e.BugFixCommits90d, e.BugFixCommits365d, e.BugFixRatio365d,
+            e.BugFixWeightedTouches365d, e.RecurringChurnScore);
+
+    internal static RepositoryVitalitySummary? MapRepositoryVitalitySummary(ProjectHealthSummaryEntity? e)
+    {
+        if (e is null)
+            return null;
+
+        var hasMeaningfulData = !string.IsNullOrWhiteSpace(e.HistoryMaturity) ||
+            e.HasSufficientHistoryForTrends ||
+            !string.IsNullOrWhiteSpace(e.ActivityStatus) ||
+            !string.IsNullOrWhiteSpace(e.FirefightingStatus) ||
+            !string.IsNullOrWhiteSpace(e.MonthlyCommitCounts) ||
+            e.VelocityLast6Months > 0 ||
+            e.VelocityPrior6Months > 0 ||
+            e.DormantMonths12m > 0 ||
+            e.MaxInactiveStreakMonths > 0 ||
+            e.FirefightingCommits90d > 0 ||
+            e.FirefightingCommits365d > 0 ||
+            e.FirefightingRate90d > 0 ||
+            e.FirefightingRate365d > 0;
+
+        if (!hasMeaningfulData)
+            return null;
+
+        return new RepositoryVitalitySummary(
+            ParseHistoryMaturity(e.HistoryMaturity),
+            e.HasSufficientHistoryForTrends,
+            e.ActivityStatus,
+            e.FirefightingStatus,
+            ParseMonthlyCommitPoints(e.MonthlyCommitCounts),
+            e.VelocityLast6Months,
+            e.VelocityPrior6Months,
+            e.VelocityChangePercent,
+            e.DormantMonths12m,
+            e.MaxInactiveStreakMonths,
+            e.FirefightingCommits90d,
+            e.FirefightingCommits365d,
+            e.FirefightingRate90d,
+            e.FirefightingRate365d);
+    }
+
+    internal static HistoryMaturity? ParseHistoryMaturity(string? value)
+    {
+        return Enum.TryParse<HistoryMaturity>(value, ignoreCase: true, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    internal static IReadOnlyList<MonthlyCommitPoint> ParseMonthlyCommitPoints(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<MonthlyCommitPoint>>(value) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
 
     internal static ProjectHealthAnalysis MapHealthAnalysis(ProjectHealthAnalysisEntity e) =>
         new(e.Id, e.Project, e.DotnetProject, e.Analysis, e.Confidence, e.ModelUsed, e.CreatedAt, e.UpdatedAt);

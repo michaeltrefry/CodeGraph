@@ -686,7 +686,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10) =>
         Task.FromResult<IReadOnlyList<FileMetricsEntity>>(
             _fileMetrics.Where(m => m.Project == project)
-                .OrderByDescending(m => m.RiskScore).Take(top).ToList());
+                .OrderByDescending(m => m.ConcernScore)
+                .ThenByDescending(m => m.RiskScore)
+                .Take(top)
+                .ToList());
 
     public Task DeleteFileMetricsAsync(string project)
     {

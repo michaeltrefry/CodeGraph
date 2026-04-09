@@ -184,6 +184,15 @@ public class FileMetricsEntity
     public double HealthScore { get; set; } = 5.0;
     public string Role { get; set; } = "core";
     public double RiskScore { get; set; }
+    public double ConcernScore { get; set; }
+    public double Churn30d { get; set; }
+    public double Churn90d { get; set; }
+    public double Churn365d { get; set; }
+    public double BugFixCommits90d { get; set; }
+    public double BugFixCommits365d { get; set; }
+    public double BugFixRatio365d { get; set; }
+    public double BugFixWeightedTouches365d { get; set; }
+    public double RecurringChurnScore { get; set; }
 
     public DateTime ComputedAt { get; set; }
 }
@@ -199,6 +208,20 @@ public class ProjectHealthSummaryEntity
     public int HotspotCount { get; set; }
     public int AlertCount { get; set; }
     public string? TopHotspots { get; set; }
+    public string? HistoryMaturity { get; set; }
+    public bool HasSufficientHistoryForTrends { get; set; }
+    public string? ActivityStatus { get; set; }
+    public string? FirefightingStatus { get; set; }
+    public string? MonthlyCommitCounts { get; set; }
+    public int VelocityLast6Months { get; set; }
+    public int VelocityPrior6Months { get; set; }
+    public double VelocityChangePercent { get; set; }
+    public int DormantMonths12m { get; set; }
+    public int MaxInactiveStreakMonths { get; set; }
+    public int FirefightingCommits90d { get; set; }
+    public int FirefightingCommits365d { get; set; }
+    public double FirefightingRate90d { get; set; }
+    public double FirefightingRate365d { get; set; }
 
     public DateTime ComputedAt { get; set; }
 }
