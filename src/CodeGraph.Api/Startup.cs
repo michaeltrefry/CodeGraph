@@ -131,7 +131,12 @@ public static class Startup
         services.AddTransient<IProjectService, ProjectService>();
         services.AddTransient<IProjectQueryService, ProjectQueryService>();
         services.AddSingleton<IProjectReviewBackgroundRunner, ProjectReviewBackgroundRunner>();
-        services.AddTransient<IProjectReviewService, ProjectReviewService>();
+        services.AddSingleton<IRepositoryReviewBackgroundRunner, RepositoryReviewBackgroundRunner>();
+        services.AddTransient<IRepositoryReviewRecoveryService, RepositoryReviewRecoveryService>();
+        services.AddTransient<ProjectReviewService>();
+        services.AddTransient<IProjectReviewService>(sp => sp.GetRequiredService<ProjectReviewService>());
+        services.AddTransient<RepositoryReviewService>();
+        services.AddTransient<IRepositoryReviewService>(sp => sp.GetRequiredService<RepositoryReviewService>());
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
@@ -266,6 +271,9 @@ public static class Startup
         var exclusionService = serviceProvider.GetRequiredService<IExclusionService>();
         var repoSourceOptions = serviceProvider.GetRequiredService<IOptions<RepositorySourceOptions>>().Value;
         await exclusionService.SeedFromConfigAsync(repoSourceOptions.ExcludedGroups);
+
+        var repositoryReviewRecoveryService = serviceProvider.GetRequiredService<IRepositoryReviewRecoveryService>();
+        await repositoryReviewRecoveryService.RecoverInterruptedRunsAsync();
     }
 
     private static void RegisterRepoProvider(IServiceCollection services)

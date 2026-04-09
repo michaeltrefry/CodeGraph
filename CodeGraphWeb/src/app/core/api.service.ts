@@ -30,7 +30,10 @@ import {
   ProjectDiagnosticsResponse,
   ProjectReviewResponse,
   ProjectReviewStreamEvent,
-  StartProjectReviewResponse
+  StartProjectReviewResponse,
+  RepositoryReviewResponse,
+  RepositoryReviewStreamEvent,
+  StartRepositoryReviewResponse
 } from './models';
 
 const API = environment.apiUrl;
@@ -73,6 +76,22 @@ export class ApiService {
   getProjectReadme(name: string): Observable<{ content: string }> {
     return this.http.get<{ content: string }>(
       `${API}/projects/${encodeURIComponent(name)}/readme`);
+  }
+
+  startRepositoryReview(repo: string, mode = 'full'): Observable<StartRepositoryReviewResponse> {
+    return this.http.post<StartRepositoryReviewResponse>(
+      `${API}/projects/${encodeURIComponent(repo)}/code-review`,
+      { mode });
+  }
+
+  getLatestRepositoryReview(repo: string): Observable<RepositoryReviewResponse> {
+    return this.http.get<RepositoryReviewResponse>(
+      `${API}/projects/${encodeURIComponent(repo)}/code-review/latest`);
+  }
+
+  getRepositoryReview(repo: string, reviewRunId: number): Observable<RepositoryReviewResponse> {
+    return this.http.get<RepositoryReviewResponse>(
+      `${API}/projects/${encodeURIComponent(repo)}/code-review/${reviewRunId}`);
   }
 
   startProjectReview(repo: string, projectName: string, mode = 'standard'): Observable<StartProjectReviewResponse> {
@@ -308,6 +327,44 @@ export class ApiService {
         const line = chunk.trim();
         if (!line.startsWith('data:')) continue;
         yield JSON.parse(line.slice(5).trim()) as ProjectReviewStreamEvent;
+      }
+
+      if (done) break;
+    }
+  }
+
+  async *streamRepositoryReview(repo: string, reviewRunId: number, signal?: AbortSignal): AsyncGenerator<RepositoryReviewStreamEvent> {
+    const response = await fetch(
+      `${API}/projects/${encodeURIComponent(repo)}/code-review/${reviewRunId}/stream`,
+      {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+        signal
+      });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+      } else {
+        buffer += decoder.decode(value, { stream: true });
+      }
+
+      const lines = buffer.split('\n\n');
+      buffer = done ? '' : (lines.pop() ?? '');
+
+      for (const chunk of lines) {
+        const line = chunk.trim();
+        if (!line.startsWith('data:')) continue;
+        yield JSON.parse(line.slice(5).trim()) as RepositoryReviewStreamEvent;
       }
 
       if (done) break;

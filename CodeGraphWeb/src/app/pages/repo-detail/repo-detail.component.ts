@@ -2,35 +2,46 @@ import { Component, DestroyRef, inject, OnInit, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { marked } from 'marked';
 import { ApiService } from '../../core/api.service';
 import { ChatContextService } from '../../core/chat-context.service';
 import {
-  ProjectDetailResponse,
-  ProjectHealthResponse,
-  ProjectSecurityResponse,
   AnalysisBatchStatus,
-  LABEL_ICONS,
   CONFIDENCE_COLORS,
   DotnetSupportInfo,
-  ProjectDiagnosticsResponse,
-  ProjectReviewResponse,
-  ProjectReviewRunResponse,
+  LABEL_ICONS,
+  ProjectDetailResponse,
   ProjectDiagnosticResponse,
-  ProjectReviewFindingResponse
+  ProjectDiagnosticsResponse,
+  ProjectHealthResponse,
+  ProjectSecurityResponse,
+  RepositoryReviewFindingResponse,
+  RepositoryReviewProjectSectionResponse,
+  RepositoryReviewResponse,
+  RepositoryReviewRunResponse,
+  StoredProjectAnalysis
 } from '../../core/models';
-import { marked } from 'marked';
 
-interface ProjectReviewPanelState {
-  latestReview: ProjectReviewResponse | null;
+interface ProjectDiagnosticsPanelState {
   diagnostics: ProjectDiagnosticsResponse | null;
   diagnosticsPreview: ProjectDiagnosticResponse[];
-  loadingLatestReview: boolean;
   loadingDiagnostics: boolean;
+  diagnosticsOpen: boolean;
+}
+
+interface RepositoryReviewPanelState {
+  latestReview: RepositoryReviewResponse | null;
+  loadingLatestReview: boolean;
   startingReview: boolean;
-  activeRun: ProjectReviewRunResponse | null;
+  activeRun: RepositoryReviewRunResponse | null;
   streamStatus: string | null;
   streamError: string | null;
-  diagnosticsOpen: boolean;
+  expanded: boolean;
+}
+
+interface RepoProjectEntry {
+  projectName: string;
+  analysis: StoredProjectAnalysis | null;
 }
 
 @Component({
@@ -40,6 +51,8 @@ interface ProjectReviewPanelState {
   styleUrl: './repo-detail.component.scss'
 })
 export class RepoDetailComponent implements OnInit {
+  private static readonly repositoryReviewRunStoragePrefix = 'codegraph:repository-review-run:';
+
   private api = inject(ApiService);
   private route = inject(ActivatedRoute);
   private sanitizer = inject(DomSanitizer);
@@ -62,15 +75,16 @@ export class RepoDetailComponent implements OnInit {
   reAnalyzing = signal(false);
   deleting = signal(false);
   showDeleteConfirm = signal(false);
-  projectReviewStates = signal<Record<string, ProjectReviewPanelState>>({});
+  repositoryReviewState = signal<RepositoryReviewPanelState>(this.createInitialRepositoryReviewState());
+  projectDiagnosticsStates = signal<Record<string, ProjectDiagnosticsPanelState>>({});
 
   readonly labelIcons = LABEL_ICONS;
   readonly confidenceColors = CONFIDENCE_COLORS;
   private readonly diagnosticPreviewLimit = 20;
-  private readonly reviewStreamControllers = new Map<string, AbortController>();
+  private reviewStreamController: AbortController | null = null;
 
   constructor() {
-    this.destroyRef.onDestroy(() => this.abortReviewStreams());
+    this.destroyRef.onDestroy(() => this.abortRepositoryReviewStream());
   }
 
   ngOnInit() {
@@ -90,14 +104,16 @@ export class RepoDetailComponent implements OnInit {
     this.loading.set(true);
     this.expandedAnalysis.set(null);
     this.expandedHealthAnalysis.set(null);
-    this.abortReviewStreams();
-    this.projectReviewStates.set({});
+    this.abortRepositoryReviewStream();
+    this.repositoryReviewState.set(this.createInitialRepositoryReviewState());
+    this.projectDiagnosticsStates.set({});
 
     this.api.getProject(n).subscribe({
       next: d => {
         this.detail.set(d);
         this.loading.set(false);
-        this.initializeProjectReviewStates(n, d);
+        this.initializeProjectDiagnosticsStates(n, d);
+        this.loadLatestRepositoryReview(n);
       },
       error: () => this.loading.set(false)
     });
@@ -119,59 +135,99 @@ export class RepoDetailComponent implements OnInit {
     });
   }
 
-  private createInitialReviewState(): ProjectReviewPanelState {
+  private createInitialProjectDiagnosticsState(): ProjectDiagnosticsPanelState {
     return {
-      latestReview: null,
       diagnostics: null,
       diagnosticsPreview: [],
-      loadingLatestReview: false,
       loadingDiagnostics: false,
-      startingReview: false,
-      activeRun: null,
-      streamStatus: null,
-      streamError: null,
       diagnosticsOpen: false
     };
   }
 
-  private initializeProjectReviewStates(repo: string, detail: ProjectDetailResponse) {
+  private createInitialRepositoryReviewState(): RepositoryReviewPanelState {
+    return {
+      latestReview: null,
+      loadingLatestReview: false,
+      startingReview: false,
+      activeRun: null,
+      streamStatus: null,
+      streamError: null,
+      expanded: true
+    };
+  }
+
+  private initializeProjectDiagnosticsStates(repo: string, detail: ProjectDetailResponse) {
     const projectNames = Array.from(new Set(detail.analyses.map(analysis => analysis.projectName)));
-    const states = Object.fromEntries(projectNames.map(projectName => [projectName, this.createInitialReviewState()]));
-    this.projectReviewStates.set(states);
+    const states = Object.fromEntries(
+      projectNames.map(projectName => [projectName, this.createInitialProjectDiagnosticsState()])
+    );
+    this.projectDiagnosticsStates.set(states);
 
     for (const projectName of projectNames) {
-      this.loadLatestProjectReview(repo, projectName);
       this.loadProjectDiagnostics(repo, projectName);
     }
   }
 
-  private updateProjectReviewState(
+  private updateProjectDiagnosticsState(
     projectName: string,
-    updater: (state: ProjectReviewPanelState) => ProjectReviewPanelState) {
-    this.projectReviewStates.update(states => ({
+    updater: (state: ProjectDiagnosticsPanelState) => ProjectDiagnosticsPanelState) {
+    this.projectDiagnosticsStates.update(states => ({
       ...states,
-      [projectName]: updater(states[projectName] ?? this.createInitialReviewState())
+      [projectName]: updater(states[projectName] ?? this.createInitialProjectDiagnosticsState())
     }));
   }
 
-  reviewState(projectName: string): ProjectReviewPanelState {
-    return this.projectReviewStates()[projectName] ?? this.createInitialReviewState();
+  private updateRepositoryReviewState(
+    updater: (state: RepositoryReviewPanelState) => RepositoryReviewPanelState) {
+    this.repositoryReviewState.update(updater);
   }
 
-  completedReview(projectName: string): ProjectReviewResponse | null {
-    const review = this.reviewState(projectName).latestReview;
+  projectDiagnosticsState(projectName: string): ProjectDiagnosticsPanelState {
+    return this.projectDiagnosticsStates()[projectName] ?? this.createInitialProjectDiagnosticsState();
+  }
+
+  completedRepositoryReview(): RepositoryReviewResponse | null {
+    const review = this.repositoryReviewState().latestReview;
     return review && review.run.status.toLowerCase() === 'completed' ? review : null;
   }
 
-  isReviewInProgress(projectName: string): boolean {
-    const status = this.reviewState(projectName).activeRun?.status?.toLowerCase();
+  isRepositoryReviewInProgress(): boolean {
+    const status = this.repositoryReviewState().activeRun?.status?.toLowerCase();
     return status === 'queued' || status === 'running';
   }
 
-  reviewActionLabel(projectName: string): string {
-    const state = this.reviewState(projectName);
-    if (state.startingReview || this.isReviewInProgress(projectName)) return 'Reviewing…';
-    return state.latestReview ? 'Re-run Review' : 'Generate Review';
+  isRepositoryReviewStale(): boolean {
+    const review = this.completedRepositoryReview();
+    const currentCommit = this.detail()?.project.lastCommitSha;
+    return !!review?.run.reviewedCommitSha &&
+      !!currentCommit &&
+      review.run.reviewedCommitSha !== currentCommit;
+  }
+
+  interruptedRepositoryReview(): RepositoryReviewResponse | null {
+    const review = this.repositoryReviewState().latestReview;
+    return review && review.run.status.toLowerCase() === 'interrupted' ? review : null;
+  }
+
+  canContinueInterruptedRepositoryReview(): boolean {
+    const review = this.interruptedRepositoryReview();
+    if (!review) return false;
+
+    if (review.run.reviewMode.toLowerCase() !== 'update') return true;
+
+    const currentCommit = this.detail()?.project.lastCommitSha;
+    return !review.run.reviewedCommitSha ||
+      !currentCommit ||
+      review.run.reviewedCommitSha === currentCommit;
+  }
+
+  repositoryReviewActionLabel(): string {
+    const state = this.repositoryReviewState();
+    if (state.startingReview || this.isRepositoryReviewInProgress()) return 'Reviewing…';
+    if (this.canContinueInterruptedRepositoryReview()) return 'Continue Review';
+    if (!state.latestReview) return 'Run Code Review';
+    if (this.isRepositoryReviewStale()) return 'Update Review';
+    return 'Re-run Code Review';
   }
 
   reviewStatusTone(status?: string): string {
@@ -183,6 +239,8 @@ export class RepoDetailComponent implements OnInit {
       case 'completed':
         return 'completed';
       case 'failed':
+        return 'failed';
+      case 'interrupted':
         return 'failed';
       default:
         return 'idle';
@@ -199,54 +257,103 @@ export class RepoDetailComponent implements OnInit {
         return 'Completed';
       case 'failed':
         return 'Failed';
+      case 'interrupted':
+        return 'Interrupted';
       default:
         return 'Idle';
     }
   }
 
-  private loadLatestProjectReview(repo: string, projectName: string) {
-    this.updateProjectReviewState(projectName, state => ({
+  private loadLatestRepositoryReview(repo: string) {
+    this.resumeTrackedRepositoryReview(repo);
+
+    this.updateRepositoryReviewState(state => ({
       ...state,
       loadingLatestReview: true,
       streamError: null
     }));
 
-    this.api.getLatestProjectReview(repo, projectName).subscribe({
+    this.api.getLatestRepositoryReview(repo).subscribe({
       next: review => {
         if (this.name() !== repo) return;
 
         const status = review.run.status.toLowerCase();
-        this.updateProjectReviewState(projectName, state => ({
+        const isInProgress = status === 'queued' || status === 'running';
+        const preserveTrackedRun = this.shouldPreserveTrackedRepositoryReview(
+          this.repositoryReviewState().activeRun,
+          review.run);
+        this.updateRepositoryReviewState(state => ({
           ...state,
+          activeRun: preserveTrackedRun
+            ? state.activeRun
+            : (isInProgress ? review.run : null),
           latestReview: review,
           loadingLatestReview: false,
-          activeRun: status === 'queued' || status === 'running' ? review.run : null,
-          streamStatus: status === 'queued' || status === 'running'
-            ? this.defaultReviewStatusMessage(review.run.status)
+          streamStatus: isInProgress
+            ? this.defaultRepositoryReviewStatusMessage(review.run.status)
+            : (preserveTrackedRun ? state.streamStatus : null),
+          streamError: preserveTrackedRun
+            ? state.streamError
+            : status === 'failed'
+            ? (review.run.error ?? 'The latest repository review failed.')
             : null,
-          streamError: status === 'failed'
-            ? (review.run.error ?? 'The latest review failed.')
-            : null
+          expanded: isInProgress || preserveTrackedRun
+            ? true
+            : state.expanded
         }));
 
-        if (status === 'queued' || status === 'running') {
-          this.connectReviewStream(repo, projectName, review.run.id);
+        if (isInProgress) {
+          this.trackRepositoryReviewRun(repo, review.run.id);
+          this.connectRepositoryReviewStream(repo, review.run.id);
+        } else {
+          this.clearTrackedRepositoryReviewRun(repo, review.run.id);
         }
       },
       error: err => {
         if (this.name() !== repo) return;
 
-        this.updateProjectReviewState(projectName, state => ({
+        this.updateRepositoryReviewState(state => ({
           ...state,
           loadingLatestReview: false,
-          streamError: err?.status === 404 ? null : 'Unable to load the latest review right now.'
+          streamError: err?.status === 404 ? null : 'Unable to load the latest repository review right now.'
         }));
       }
     });
   }
 
+  private resumeTrackedRepositoryReview(repo: string) {
+    const trackedReviewRunId = this.getTrackedRepositoryReviewRunId(repo);
+    if (!trackedReviewRunId) return;
+
+    this.api.getRepositoryReview(repo, trackedReviewRunId).subscribe({
+      next: review => {
+        if (this.name() !== repo) return;
+
+        const status = review.run.status.toLowerCase();
+        if (status === 'queued' || status === 'running') {
+          this.trackRepositoryReviewRun(repo, review.run.id);
+          this.updateRepositoryReviewState(state => ({
+            ...state,
+            activeRun: review.run,
+            streamStatus: this.defaultRepositoryReviewStatusMessage(review.run.status),
+            streamError: null,
+            expanded: true
+          }));
+          this.connectRepositoryReviewStream(repo, review.run.id);
+          return;
+        }
+
+        this.clearTrackedRepositoryReviewRun(repo, trackedReviewRunId);
+      },
+      error: () => {
+        if (this.name() !== repo) return;
+        this.clearTrackedRepositoryReviewRun(repo, trackedReviewRunId);
+      }
+    });
+  }
+
   private loadProjectDiagnostics(repo: string, projectName: string) {
-    this.updateProjectReviewState(projectName, state => ({
+    this.updateProjectDiagnosticsState(projectName, state => ({
       ...state,
       loadingDiagnostics: true
     }));
@@ -255,7 +362,7 @@ export class RepoDetailComponent implements OnInit {
       next: diagnostics => {
         if (this.name() !== repo) return;
 
-        this.updateProjectReviewState(projectName, state => ({
+        this.updateProjectDiagnosticsState(projectName, state => ({
           ...state,
           diagnostics,
           diagnosticsPreview: this.buildDiagnosticsPreview(diagnostics),
@@ -265,7 +372,7 @@ export class RepoDetailComponent implements OnInit {
       error: () => {
         if (this.name() !== repo) return;
 
-        this.updateProjectReviewState(projectName, state => ({
+        this.updateProjectDiagnosticsState(projectName, state => ({
           ...state,
           diagnostics: null,
           diagnosticsPreview: [],
@@ -275,33 +382,39 @@ export class RepoDetailComponent implements OnInit {
     });
   }
 
-  startReview(event: MouseEvent, projectName: string) {
-    event.stopPropagation();
-    if (this.isReviewInProgress(projectName)) return;
+  startRepositoryReview(mode?: 'full' | 'update') {
+    if (this.isRepositoryReviewInProgress()) return;
 
     const repo = this.name();
-    this.updateProjectReviewState(projectName, state => ({
+    const interruptedReview = this.interruptedRepositoryReview();
+    const effectiveMode = mode ??
+      (this.canContinueInterruptedRepositoryReview()
+        ? (interruptedReview?.run.reviewMode.toLowerCase() === 'update' ? 'update' : 'full')
+        : (this.isRepositoryReviewStale() ? 'update' : 'full'));
+    this.updateRepositoryReviewState(state => ({
       ...state,
       startingReview: true,
       streamError: null,
-      streamStatus: 'Submitting review request…'
+      streamStatus: 'Submitting repository review request…',
+      expanded: true
     }));
 
-    this.api.startProjectReview(repo, projectName).subscribe({
+    this.api.startRepositoryReview(repo, effectiveMode).subscribe({
       next: response => {
         if (this.name() !== repo) return;
 
         const now = new Date().toISOString();
-        this.updateProjectReviewState(projectName, state => ({
+        this.updateRepositoryReviewState(state => ({
           ...state,
           startingReview: false,
           activeRun: {
             id: response.reviewRunId,
-            project: repo,
-            projectName,
+            repo,
             reviewedCommitSha: undefined,
+            baselineReviewRunId: state.latestReview?.run.id,
+            baselineCommitSha: state.latestReview?.run.reviewedCommitSha,
             status: response.status,
-            reviewMode: 'standard',
+            reviewMode: effectiveMode,
             promptVersion: 'v1',
             modelUsed: undefined,
             createdAt: now,
@@ -309,51 +422,51 @@ export class RepoDetailComponent implements OnInit {
             completedAt: undefined,
             error: undefined
           },
-          streamStatus: this.defaultReviewStatusMessage(response.status),
-          streamError: null
+          streamStatus: this.defaultRepositoryReviewStatusMessage(response.status),
+          streamError: null,
+          expanded: true
         }));
 
-        this.connectReviewStream(repo, projectName, response.reviewRunId);
+        this.trackRepositoryReviewRun(repo, response.reviewRunId);
+        this.connectRepositoryReviewStream(repo, response.reviewRunId);
       },
       error: () => {
         if (this.name() !== repo) return;
 
-        this.updateProjectReviewState(projectName, state => ({
+        this.updateRepositoryReviewState(state => ({
           ...state,
           startingReview: false,
           streamStatus: null,
-          streamError: 'Unable to start a review right now.'
+          streamError: 'Unable to start a repository review right now.'
         }));
       }
     });
   }
 
-  private connectReviewStream(repo: string, projectName: string, reviewRunId: number) {
-    this.abortReviewStream(projectName);
+  private connectRepositoryReviewStream(repo: string, reviewRunId: number) {
+    this.abortRepositoryReviewStream();
 
     const controller = new AbortController();
-    this.reviewStreamControllers.set(projectName, controller);
-    void this.consumeReviewStream(repo, projectName, reviewRunId, controller);
+    this.reviewStreamController = controller;
+    void this.consumeRepositoryReviewStream(repo, reviewRunId, controller);
   }
 
-  private async consumeReviewStream(
+  private async consumeRepositoryReviewStream(
     repo: string,
-    projectName: string,
     reviewRunId: number,
     controller: AbortController) {
     try {
-      for await (const event of this.api.streamProjectReview(repo, reviewRunId, controller.signal)) {
+      for await (const event of this.api.streamRepositoryReview(repo, reviewRunId, controller.signal)) {
         if (controller.signal.aborted || this.name() !== repo) return;
 
         switch (event.type) {
           case 'status':
-            this.updateProjectReviewState(projectName, state => ({
+            this.updateRepositoryReviewState(state => ({
               ...state,
               startingReview: false,
-              activeRun: this.mergeActiveRun(
+              activeRun: this.mergeActiveRepositoryRun(
                 state.activeRun,
                 repo,
-                projectName,
                 reviewRunId,
                 {
                   status: event.content.status,
@@ -361,42 +474,43 @@ export class RepoDetailComponent implements OnInit {
                   completedAt: event.content.completedAt,
                   error: event.content.error
                 }),
-              streamStatus: this.defaultReviewStatusMessage(event.content.status),
+              streamStatus: this.defaultRepositoryReviewStatusMessage(event.content.status),
               streamError: event.content.error ?? null
             }));
             break;
           case 'progress':
-            this.updateProjectReviewState(projectName, state => ({
+            this.updateRepositoryReviewState(state => ({
               ...state,
               startingReview: false,
               streamStatus: event.content.message,
-              activeRun: this.mergeActiveRun(
+              activeRun: this.mergeActiveRepositoryRun(
                 state.activeRun,
                 repo,
-                projectName,
                 reviewRunId,
                 { status: event.content.status })
             }));
             break;
           case 'finding':
-            this.updateProjectReviewState(projectName, state => ({
+            this.updateRepositoryReviewState(state => ({
               ...state,
               streamStatus: `Review found: ${event.content.title}`
             }));
             break;
           case 'completed':
-            this.updateProjectReviewState(projectName, state => ({
+            this.clearTrackedRepositoryReviewRun(repo, reviewRunId);
+            this.updateRepositoryReviewState(state => ({
               ...state,
               latestReview: event.content,
               activeRun: null,
               startingReview: false,
               streamStatus: null,
-              streamError: null
+              streamError: null,
+              expanded: true
             }));
-            this.loadProjectDiagnostics(repo, projectName);
             return;
           case 'error':
-            this.updateProjectReviewState(projectName, state => ({
+            this.clearTrackedRepositoryReviewRun(repo, reviewRunId);
+            this.updateRepositoryReviewState(state => ({
               ...state,
               activeRun: state.activeRun
                 ? { ...state.activeRun, status: event.content.status ?? 'failed', error: event.content.message }
@@ -405,43 +519,42 @@ export class RepoDetailComponent implements OnInit {
               streamStatus: null,
               streamError: event.content.message
             }));
-            this.loadLatestProjectReview(repo, projectName);
+            this.loadLatestRepositoryReview(repo);
             return;
         }
       }
     } catch (err: any) {
       if (controller.signal.aborted || this.name() !== repo || err?.name === 'AbortError') return;
 
-      this.updateProjectReviewState(projectName, state => ({
+      this.updateRepositoryReviewState(state => ({
         ...state,
         activeRun: null,
         startingReview: false,
         streamStatus: null,
-        streamError: 'Lost the live review stream. Refresh to check the latest saved result.'
+        streamError: 'Lost the live repository review stream. Refresh to check the latest saved result.'
       }));
     } finally {
-      if (this.reviewStreamControllers.get(projectName) === controller) {
-        this.reviewStreamControllers.delete(projectName);
+      if (this.reviewStreamController === controller) {
+        this.reviewStreamController = null;
       }
     }
   }
 
-  private abortReviewStream(projectName: string) {
-    const controller = this.reviewStreamControllers.get(projectName);
-    if (!controller) return;
-    controller.abort();
-    this.reviewStreamControllers.delete(projectName);
+  private abortRepositoryReviewStream() {
+    if (!this.reviewStreamController) return;
+    this.reviewStreamController.abort();
+    this.reviewStreamController = null;
   }
 
-  private abortReviewStreams() {
-    for (const controller of this.reviewStreamControllers.values()) {
-      controller.abort();
-    }
-    this.reviewStreamControllers.clear();
+  toggleCodeReviewExpanded() {
+    this.updateRepositoryReviewState(state => ({
+      ...state,
+      expanded: !state.expanded
+    }));
   }
 
   toggleDiagnostics(projectName: string) {
-    this.updateProjectReviewState(projectName, state => ({
+    this.updateProjectDiagnosticsState(projectName, state => ({
       ...state,
       diagnosticsOpen: !state.diagnosticsOpen
     }));
@@ -452,16 +565,20 @@ export class RepoDetailComponent implements OnInit {
   }
 
   diagnosticPreview(projectName: string): ProjectDiagnosticResponse[] {
-    return this.reviewState(projectName).diagnosticsPreview;
+    return this.projectDiagnosticsState(projectName).diagnosticsPreview;
   }
 
   hasMoreDiagnostics(projectName: string): boolean {
-    const state = this.reviewState(projectName);
+    const state = this.projectDiagnosticsState(projectName);
     return !!state.diagnostics && state.diagnostics.diagnostics.length > state.diagnosticsPreview.length;
   }
 
-  reviewFindingTrackBy(index: number, finding: ProjectReviewFindingResponse): string {
-    return `${finding.filePath}:${finding.lineStart ?? 0}:${index}`;
+  reviewFindingTrackBy(index: number, finding: RepositoryReviewFindingResponse): string {
+    return `${finding.projectName ?? 'repo'}:${finding.filePath}:${finding.lineStart ?? 0}:${index}`;
+  }
+
+  projectSectionTrackBy(index: number, section: RepositoryReviewProjectSectionResponse): string {
+    return `${section.projectName}:${index}`;
   }
 
   diagnosticTrackBy(index: number, diagnostic: ProjectDiagnosticResponse): string {
@@ -507,19 +624,19 @@ export class RepoDetailComponent implements OnInit {
       .slice(0, this.diagnosticPreviewLimit);
   }
 
-  private mergeActiveRun(
-    existing: ProjectReviewRunResponse | null,
+  private mergeActiveRepositoryRun(
+    existing: RepositoryReviewRunResponse | null,
     repo: string,
-    projectName: string,
     reviewRunId: number,
-    updates: Partial<ProjectReviewRunResponse>): ProjectReviewRunResponse {
+    updates: Partial<RepositoryReviewRunResponse>): RepositoryReviewRunResponse {
     return {
       id: reviewRunId,
-      project: repo,
-      projectName,
+      repo,
       reviewedCommitSha: existing?.reviewedCommitSha,
+      baselineReviewRunId: existing?.baselineReviewRunId,
+      baselineCommitSha: existing?.baselineCommitSha,
       status: existing?.status ?? 'queued',
-      reviewMode: existing?.reviewMode ?? 'standard',
+      reviewMode: existing?.reviewMode ?? 'full',
       promptVersion: existing?.promptVersion ?? 'v1',
       modelUsed: existing?.modelUsed,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -530,14 +647,74 @@ export class RepoDetailComponent implements OnInit {
     };
   }
 
-  private defaultReviewStatusMessage(status?: string): string | null {
+  private defaultRepositoryReviewStatusMessage(status?: string): string | null {
     switch (status?.toLowerCase()) {
       case 'queued':
-        return 'Queued for server-side review execution.';
+        return 'Queued for server-side repository review execution.';
       case 'running':
-        return 'Review is gathering evidence and synthesizing findings.';
+        return 'Repository review is gathering project evidence and synthesizing results.';
+      case 'interrupted':
+        return 'The previous repository review was interrupted before it finished.';
       default:
         return null;
+    }
+  }
+
+  private shouldPreserveTrackedRepositoryReview(
+    activeRun: RepositoryReviewRunResponse | null,
+    latestRun: RepositoryReviewRunResponse): boolean {
+    if (!activeRun || activeRun.id === latestRun.id) return false;
+
+    const activeStatus = activeRun.status?.toLowerCase();
+    const latestStatus = latestRun.status?.toLowerCase();
+    return (activeStatus === 'queued' || activeStatus === 'running') &&
+      latestStatus !== 'queued' &&
+      latestStatus !== 'running';
+  }
+
+  private repositoryReviewRunStorageKey(repo: string): string {
+    return `${RepoDetailComponent.repositoryReviewRunStoragePrefix}${repo.toLowerCase()}`;
+  }
+
+  private getTrackedRepositoryReviewRunId(repo: string): number | null {
+    try {
+      const raw = window.localStorage.getItem(this.repositoryReviewRunStorageKey(repo));
+      if (!raw) return null;
+
+      const reviewRunId = Number.parseInt(raw, 10);
+      if (Number.isFinite(reviewRunId) && reviewRunId > 0) {
+        return reviewRunId;
+      }
+
+      this.clearTrackedRepositoryReviewRun(repo);
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  private trackRepositoryReviewRun(repo: string, reviewRunId: number) {
+    try {
+      window.localStorage.setItem(this.repositoryReviewRunStorageKey(repo), reviewRunId.toString());
+    } catch {
+      // Ignore storage failures and keep the in-memory live state.
+    }
+  }
+
+  private clearTrackedRepositoryReviewRun(repo: string, reviewRunId?: number) {
+    try {
+      const key = this.repositoryReviewRunStorageKey(repo);
+      if (reviewRunId !== undefined) {
+        const raw = window.localStorage.getItem(key);
+        if (raw && Number.parseInt(raw, 10) !== reviewRunId) {
+          return;
+        }
+      }
+
+      window.localStorage.removeItem(key);
+    } catch {
+      // Ignore storage failures and keep the in-memory live state.
     }
   }
 
@@ -596,10 +773,10 @@ export class RepoDetailComponent implements OnInit {
   }
 
   trustColor(score: number): string {
-    if (score < 0.25) return '#ef4444';  // untrusted
-    if (score < 0.50) return '#f59e0b';  // low
-    if (score < 0.75) return '#3b82f6';  // medium
-    return '#22c55e';                    // high
+    if (score < 0.25) return '#ef4444';
+    if (score < 0.50) return '#f59e0b';
+    if (score < 0.75) return '#3b82f6';
+    return '#22c55e';
   }
 
   healthLabel(score: number): string {
@@ -631,6 +808,27 @@ export class RepoDetailComponent implements OnInit {
 
   getDotnetProject(projectName: string) {
     return this.dotnetProjectEntries().find(p => p.name === projectName) ?? null;
+  }
+
+  projectEntries(): RepoProjectEntry[] {
+    const detail = this.detail();
+    if (!detail) return [];
+
+    const analysesByProject = new Map(
+      detail.analyses.map(analysis => [analysis.projectName, analysis] as const)
+    );
+
+    const orderedNames = [
+      ...detail.analyses.map(analysis => analysis.projectName),
+      ...Object.keys(detail.dotnetProjects ?? {})
+    ];
+
+    return Array.from(new Set(orderedNames))
+      .filter(projectName => !!projectName)
+      .map(projectName => ({
+        projectName,
+        analysis: analysesByProject.get(projectName) ?? null
+      }));
   }
 
   toggleAnalysis(projectName: string) {
@@ -716,7 +914,7 @@ export class RepoDetailComponent implements OnInit {
         return 'mixed support';
       default:
         return 'support unknown';
-    };
+    }
   }
 
   supportBadgeColor(status?: string): string {

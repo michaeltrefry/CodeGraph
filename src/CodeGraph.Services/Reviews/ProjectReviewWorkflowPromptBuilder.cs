@@ -18,6 +18,9 @@ internal static class ProjectReviewWorkflowPromptBuilder
         7. test gaps around risky behavior
 
         Diagnostics are lead signals, not proof. Do not convert a diagnostic into a finding unless the source evidence supports it.
+        Prefer suspicious code paths, risky control flow, and missing safeguards over cosmetic commentary.
+        Anchor evidence in the code's behavior or structure, not just in diagnostic text.
+        The output will be shown in a compact repository detail UI, so keep it concise and easy to scan.
         Only emit findings grounded in the provided source and context.
         Return JSON only.
         """;
@@ -27,6 +30,10 @@ internal static class ProjectReviewWorkflowPromptBuilder
         string projectName,
         string mode,
         string? projectSummary,
+        string? updateSummary,
+        ProjectReviewBaselineContext? baselineContext,
+        IReadOnlyList<string> changedFiles,
+        IReadOnlyList<string> blastRadiusFiles,
         IReadOnlyDictionary<string, int> nodeCounts,
         IReadOnlyList<FileMetricsEntity> hotspots,
         IReadOnlyList<ProjectDiagnosticEntity> diagnostics,
@@ -47,6 +54,41 @@ internal static class ProjectReviewWorkflowPromptBuilder
         {
             sb.AppendLine("## Existing Project Analysis");
             sb.AppendLine(projectSummary);
+            sb.AppendLine();
+        }
+
+        if (string.Equals(mode, "update", StringComparison.OrdinalIgnoreCase))
+        {
+            sb.AppendLine("## Update Scope");
+            if (!string.IsNullOrWhiteSpace(updateSummary))
+                sb.AppendLine($"- Summary: {updateSummary}");
+            if (changedFiles.Count > 0)
+            {
+                sb.AppendLine("- Changed files:");
+                foreach (var path in changedFiles.Take(12))
+                    sb.AppendLine($"  - {path}");
+            }
+            if (blastRadiusFiles.Count > 0)
+            {
+                sb.AppendLine("- Blast radius files:");
+                foreach (var path in blastRadiusFiles.Take(12))
+                    sb.AppendLine($"  - {path}");
+            }
+            sb.AppendLine();
+        }
+
+        if (baselineContext is not null)
+        {
+            sb.AppendLine("## Baseline Review Context");
+            sb.AppendLine(baselineContext.Overview);
+            if (baselineContext.Strengths.Count > 0)
+                sb.AppendLine($"Strengths: {string.Join("; ", baselineContext.Strengths.Take(4))}");
+            if (baselineContext.ReviewedAreas.Count > 0)
+                sb.AppendLine($"Previously reviewed areas: {string.Join("; ", baselineContext.ReviewedAreas.Take(5))}");
+            if (baselineContext.FollowUps.Count > 0)
+                sb.AppendLine($"Prior follow-ups: {string.Join("; ", baselineContext.FollowUps.Take(4))}");
+            foreach (var finding in baselineContext.Findings.Take(4))
+                sb.AppendLine($"- Prior finding [{finding.Severity}] {finding.Title} in {finding.FilePath}: {finding.Evidence}");
             sb.AppendLine();
         }
 
@@ -130,7 +172,16 @@ internal static class ProjectReviewWorkflowPromptBuilder
             Review only the evidence above. Prefer fewer, stronger findings over many speculative ones.
             Call out strengths when you see them.
             If a suspicious area is not strong enough for a finding, move it to follow-ups instead.
+            Do not fill the quota just because space is available; 0-4 strong findings is better than a padded list.
+            Keep the overview to 1-2 sentences and under roughly 70 words.
+            Keep strengths/reviewedAreas/skippedAreas/followUps to short phrases or single-sentence bullets.
+            Sort candidateFindings strongest-first.
+            Keep each finding title short and specific.
+            Keep explanation, evidence, and suggestedImprovement concise and non-redundant.
+            Do not restate every diagnostic; mention a diagnostic only when it materially reinforces a source-backed concern.
             Emit at most {{maxFindings}} findings.
+            If mode is update, start with the changed files and their surrounding snippets, then use blast-radius files and baseline context to judge whether prior concerns still look relevant.
+            Do not repeat a baseline finding unless the current inspected evidence still supports it.
 
             Respond as JSON with this shape:
             {

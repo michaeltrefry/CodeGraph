@@ -19,8 +19,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private readonly List<ProjectDiagnosticEntity> _projectDiagnostics = new();
     private readonly List<ProjectReviewRunEntity> _projectReviewRuns = new();
     private readonly List<ProjectReviewFindingEntity> _projectReviewFindings = new();
+    private readonly List<RepositoryReviewRunEntity> _repositoryReviewRuns = new();
+    private readonly List<RepositoryReviewFindingEntity> _repositoryReviewFindings = new();
+    private readonly List<RepositoryReviewProjectSectionEntity> _repositoryReviewProjectSections = new();
     private long _nextReviewRunId = 1;
     private long _nextReviewFindingId = 1;
+    private long _nextRepositoryReviewRunId = 1;
+    private long _nextRepositoryReviewFindingId = 1;
+    private long _nextRepositoryReviewProjectSectionId = 1;
 
     public IReadOnlyList<GraphNode> Nodes => _nodes;
     public IReadOnlyList<GraphEdge> Edges => _edges;
@@ -820,6 +826,104 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             _projectReviewFindings.Where(f => f.ReviewRunId == reviewRunId)
                 .OrderBy(f => f.Ordinal)
                 .ThenBy(f => f.Id)
+                .ToList());
+
+    public Task<long> CreateRepositoryReviewRunAsync(RepositoryReviewRunEntity run)
+    {
+        run.Id = _nextRepositoryReviewRunId++;
+        _repositoryReviewRuns.Add(run);
+        return Task.FromResult(run.Id);
+    }
+
+    public Task UpdateRepositoryReviewRunStatusAsync(long reviewRunId, string status, string? overviewJson = null,
+        DateTime? completedAt = null, string? error = null)
+    {
+        var run = _repositoryReviewRuns.FirstOrDefault(r => r.Id == reviewRunId);
+        if (run is null)
+            return Task.CompletedTask;
+
+        run.Status = status;
+        if (overviewJson is not null)
+            run.OverviewJson = overviewJson;
+        if (completedAt.HasValue)
+            run.CompletedAt = completedAt;
+        if (status is "running" or "completed" or "failed")
+            run.StartedAt ??= DateTime.UtcNow;
+        run.Error = error;
+        return Task.CompletedTask;
+    }
+
+    public Task UpsertRepositoryReviewFindingsAsync(long reviewRunId, IReadOnlyList<RepositoryReviewFindingEntity> findings)
+    {
+        _repositoryReviewFindings.RemoveAll(f => f.ReviewRunId == reviewRunId);
+
+        foreach (var finding in findings)
+        {
+            finding.Id = _nextRepositoryReviewFindingId++;
+            finding.ReviewRunId = reviewRunId;
+        }
+
+        _repositoryReviewFindings.AddRange(findings);
+        return Task.CompletedTask;
+    }
+
+    public Task UpsertRepositoryReviewProjectSectionsAsync(long reviewRunId,
+        IReadOnlyList<RepositoryReviewProjectSectionEntity> sections)
+    {
+        _repositoryReviewProjectSections.RemoveAll(s => s.ReviewRunId == reviewRunId);
+
+        foreach (var section in sections)
+        {
+            section.Id = _nextRepositoryReviewProjectSectionId++;
+            section.ReviewRunId = reviewRunId;
+        }
+
+        _repositoryReviewProjectSections.AddRange(sections);
+        return Task.CompletedTask;
+    }
+
+    public Task<RepositoryReviewRunEntity?> GetLatestRepositoryReviewRunAsync(string repo)
+    {
+        var run = _repositoryReviewRuns
+            .Where(r => r.Repo == repo)
+            .OrderByDescending(r => r.CreatedAt)
+            .ThenByDescending(r => r.Id)
+            .FirstOrDefault();
+        return Task.FromResult(run);
+    }
+
+    public Task<RepositoryReviewRunEntity?> GetRepositoryReviewRunAsync(long reviewRunId)
+    {
+        var run = _repositoryReviewRuns.FirstOrDefault(r => r.Id == reviewRunId);
+        return Task.FromResult(run);
+    }
+
+    public Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsByStatusAsync(IReadOnlyList<string> statuses)
+    {
+        var set = new HashSet<string>(
+            statuses.Where(status => !string.IsNullOrWhiteSpace(status)).Select(status => status.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+
+        return Task.FromResult<IReadOnlyList<RepositoryReviewRunEntity>>(
+            _repositoryReviewRuns.Where(r => set.Contains(r.Status))
+                .OrderByDescending(r => r.CreatedAt)
+                .ThenByDescending(r => r.Id)
+                .ToList());
+    }
+
+    public Task<IReadOnlyList<RepositoryReviewFindingEntity>> GetRepositoryReviewFindingsAsync(long reviewRunId) =>
+        Task.FromResult<IReadOnlyList<RepositoryReviewFindingEntity>>(
+            _repositoryReviewFindings.Where(f => f.ReviewRunId == reviewRunId)
+                .OrderBy(f => f.Ordinal)
+                .ThenBy(f => f.Id)
+                .ToList());
+
+    public Task<IReadOnlyList<RepositoryReviewProjectSectionEntity>> GetRepositoryReviewProjectSectionsAsync(
+        long reviewRunId) =>
+        Task.FromResult<IReadOnlyList<RepositoryReviewProjectSectionEntity>>(
+            _repositoryReviewProjectSections.Where(s => s.ReviewRunId == reviewRunId)
+                .OrderBy(s => s.ProjectName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(s => s.Id)
                 .ToList());
 
     public Task UpsertSecurityFindingsBatchAsync(string project, IReadOnlyList<SecurityFindingEntity> findings)

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Models.Responses;
@@ -29,6 +30,8 @@ public class ProjectReviewService(
     {
         "test", "tests", "spec", "specs", ".tests", ".test"
     };
+    internal const string CurrentPromptVersion = "v2";
+    private static readonly Regex SentenceBoundaryRegex = new(@"(?<=[.!?])\s+", RegexOptions.Compiled);
 
     public async Task<long> StartReviewAsync(string repo, string projectName, string mode, CancellationToken ct = default)
     {
@@ -49,7 +52,7 @@ public class ProjectReviewService(
             ReviewedCommitSha = reviewedCommitSha,
             Status = "queued",
             ReviewMode = reviewMode,
-            PromptVersion = "v1",
+            PromptVersion = CurrentPromptVersion,
             ModelUsed = string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
             CreatedAt = DateTime.UtcNow
         };
@@ -66,7 +69,6 @@ public class ProjectReviewService(
         if (IsTerminalStatus(run.Status))
             return;
 
-        var provider = providerRegistry.GetProvider();
         var reviewMode = NormalizeMode(run.ReviewMode);
         var repository = await store.GetRepositoryByName(run.Project)
             ?? throw new InvalidOperationException($"Repository '{run.Project}' was not found.");
@@ -76,10 +78,7 @@ public class ProjectReviewService(
         {
             await store.UpdateProjectReviewRunStatusAsync(reviewRunId, "running");
 
-            var context = await BuildContextAsync(repository, run.Project, repoRoot, run.ProjectName, reviewMode, ct);
-            var workflow = await RunWorkflowAsync(run.Project, run.ProjectName, reviewMode, provider, context, ct);
-            var verifiedWorkflow = VerifyWorkflow(workflow, context);
-            var finalReview = await RunSynthesisAsync(run.Project, run.ProjectName, provider, verifiedWorkflow, ct);
+            var finalReview = await GenerateReviewAsync(run.Project, run.ProjectName, reviewMode, ct);
 
             var overviewPayload = new StoredProjectReviewOverview(
                 finalReview.Overview,
@@ -125,6 +124,70 @@ public class ProjectReviewService(
                 error: ex.Message);
             throw;
         }
+    }
+
+    public async Task<ProjectReviewResponse> GenerateReviewAsync(
+        string repo,
+        string projectName,
+        string mode,
+        CancellationToken ct = default)
+        => await GenerateReviewAsync(repo, projectName, new ProjectReviewExecutionInput(mode), ct);
+
+    public async Task<ProjectReviewResponse> GenerateReviewAsync(
+        string repo,
+        string projectName,
+        ProjectReviewExecutionInput input,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("Repository name is required.", nameof(repo));
+        if (string.IsNullOrWhiteSpace(projectName))
+            throw new ArgumentException("Project name is required.", nameof(projectName));
+        ArgumentNullException.ThrowIfNull(input);
+
+        var provider = providerRegistry.GetProvider();
+        var reviewMode = NormalizeMode(input.ReviewMode);
+        var repository = await store.GetRepositoryByName(repo)
+            ?? throw new InvalidOperationException($"Repository '{repo}' was not found.");
+        var repoRoot = ResolveRepoRoot(repo, repository);
+        var reviewedCommitSha = ResolveReviewedCommitSha(repository, repoRoot);
+        var executionInput = NormalizeExecutionInput(input, reviewMode);
+        var context = await BuildContextAsync(repository, repo, repoRoot, projectName, reviewMode, executionInput, ct);
+        var workflow = await RunWorkflowAsync(repo, projectName, reviewMode, provider, context, ct);
+        var verifiedWorkflow = VerifyWorkflow(workflow, context);
+        var finalReview = await RunSynthesisAsync(repo, projectName, reviewMode, provider, verifiedWorkflow, ct);
+
+        var now = DateTime.UtcNow;
+        return new ProjectReviewResponse(
+            new ProjectReviewRunResponse(
+                0,
+                repo,
+                projectName,
+                reviewedCommitSha,
+                "completed",
+                reviewMode,
+                CurrentPromptVersion,
+                string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+                now,
+                now,
+                now,
+                null),
+            finalReview.Overview,
+            finalReview.Findings.Select(f => new ProjectReviewFindingResponse(
+                f.Severity,
+                f.Category,
+                f.Title,
+                f.Explanation,
+                f.Evidence,
+                f.FilePath,
+                f.LineStart,
+                f.LineEnd,
+                f.SuggestedImprovement,
+                f.Confidence)).ToList(),
+            finalReview.Strengths,
+            finalReview.ReviewedAreas,
+            finalReview.SkippedAreas,
+            finalReview.FollowUps);
     }
 
     public async Task<ProjectReviewResponse?> GetReviewAsync(long reviewRunId, CancellationToken ct = default)
@@ -173,6 +236,7 @@ public class ProjectReviewService(
         string? repoRoot,
         string projectName,
         string mode,
+        ProjectReviewExecutionInput executionInput,
         CancellationToken ct)
     {
         if (repoRoot is null)
@@ -216,9 +280,27 @@ public class ProjectReviewService(
             .ToList();
 
         var inspectionBudget = GetInspectionBudget(mode);
-        var inspectionTargets = SelectInspectionTargets(projectNodes, metrics, diagnostics, securityFindings, inspectionBudget);
-        var inspectionFiles = await ReadInspectionFilesAsync(repo, repoRoot, inspectionTargets, ct);
-        var candidateTests = SelectCandidateTests(repoRoot, inspectionFiles.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase));
+        var inspectionTargets = SelectInspectionTargets(
+            projectNodes,
+            metrics,
+            diagnostics,
+            securityFindings,
+            inspectionBudget,
+            executionInput);
+        var inspectionFiles = await ReadInspectionFilesAsync(
+            repo,
+            repoRoot,
+            inspectionTargets,
+            executionInput.ChangedLineSpans,
+            preferFocusedSnippets: string.Equals(mode, "update", StringComparison.OrdinalIgnoreCase),
+            ct);
+        var candidateTests = SelectCandidateTests(repoRoot, inspectionFiles.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase))
+            .Concat(executionInput.CandidateTests ?? [])
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(NormalizePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToList();
 
         if (inspectionFiles.Count == 0)
             throw new InvalidOperationException($"No source files could be loaded for {repo}/{projectName} review.");
@@ -226,8 +308,13 @@ public class ProjectReviewService(
         return new ProjectReviewContext(
             Repository: repository,
             RepoRoot: repoRoot,
+            ReviewMode: mode,
             ProjectName: projectName,
             ProjectSummary: projectAnalysis?.Summary,
+            UpdateSummary: executionInput.UpdateSummary,
+            BaselineContext: executionInput.BaselineContext,
+            ChangedFiles: NormalizePathList(executionInput.SeedFiles),
+            BlastRadiusFiles: NormalizePathList(executionInput.BlastRadiusFiles),
             NodeCounts: nodeCounts,
             Metrics: metrics.OrderByDescending(m => m.RiskScore).ToList(),
             Diagnostics: diagnostics,
@@ -251,6 +338,10 @@ public class ProjectReviewService(
             projectName,
             mode,
             context.ProjectSummary,
+            context.UpdateSummary,
+            context.BaselineContext,
+            context.ChangedFiles,
+            context.BlastRadiusFiles,
             context.NodeCounts,
             context.Metrics,
             context.Diagnostics,
@@ -280,6 +371,7 @@ public class ProjectReviewService(
     private async Task<ProjectReviewResponseModel> RunSynthesisAsync(
         string repo,
         string projectName,
+        string mode,
         IAnalysisModelProvider provider,
         ProjectReviewWorkflowResult workflow,
         CancellationToken ct)
@@ -287,6 +379,7 @@ public class ProjectReviewService(
         var prompt = ProjectReviewSynthesisPromptBuilder.Build(
             repo,
             projectName,
+            mode,
             JsonSerializer.Serialize(workflow, CamelOpts),
             Math.Min(workflow.Findings.Count, analysisOptions.Review.MaxFindings));
 
@@ -300,24 +393,26 @@ public class ProjectReviewService(
                 ct);
 
             var synthesis = DeserializeOrThrow<ProjectReviewSynthesisModel>(response.Text);
-            return new ProjectReviewResponseModel(
+            return NormalizeFinalReview(new ProjectReviewResponseModel(
                 synthesis.Overview ?? workflow.Overview,
                 NormalizeStringList(synthesis.Strengths).DefaultIfEmptyList(workflow.Strengths),
                 NormalizeStringList(synthesis.ReviewedAreas).DefaultIfEmptyList(workflow.ReviewedAreas),
                 NormalizeStringList(synthesis.SkippedAreas).DefaultIfEmptyList(workflow.SkippedAreas),
                 NormalizeStringList(synthesis.FollowUps).DefaultIfEmptyList(workflow.FollowUps),
-                NormalizeFindings(synthesis.Findings));
+                NormalizeFindings(synthesis.Findings)),
+                analysisOptions.Review.MaxFindings);
         }
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Review synthesis failed, falling back to verified workflow notes");
-            return new ProjectReviewResponseModel(
+            return NormalizeFinalReview(new ProjectReviewResponseModel(
                 workflow.Overview,
                 workflow.Strengths,
                 workflow.ReviewedAreas,
                 workflow.SkippedAreas,
                 workflow.FollowUps,
-                workflow.Findings);
+                workflow.Findings),
+                analysisOptions.Review.MaxFindings);
         }
     }
 
@@ -380,6 +475,8 @@ public class ProjectReviewService(
         string repo,
         string repoRoot,
         IReadOnlyList<InspectionTarget> targets,
+        IReadOnlyDictionary<string, IReadOnlyList<ProjectReviewLineSpan>>? changedLineSpans,
+        bool preferFocusedSnippets,
         CancellationToken ct)
     {
         var results = new List<ReviewInspectionFile>();
@@ -392,23 +489,20 @@ public class ProjectReviewService(
 
             var content = await fileSystem.ReadAllTextAsync(fullPath, ct);
             var lines = content.Replace("\r\n", "\n").Split('\n');
-            var numbered = new StringBuilder();
-            var maxChars = analysisOptions.Review.MaxSourceCharsPerFile;
-            var written = 0;
-            for (var i = 0; i < lines.Length; i++)
-            {
-                var line = $"{i + 1,4}: {lines[i]}";
-                if (written + line.Length + 1 > maxChars)
-                {
-                    numbered.AppendLine("... truncated ...");
-                    break;
-                }
+            var normalizedPath = NormalizePath(target.FilePath);
+            var focusedSpans = changedLineSpans is not null &&
+                               changedLineSpans.TryGetValue(normalizedPath, out var spans)
+                ? spans
+                : null;
+            var hasFocusedSpans = preferFocusedSnippets && focusedSpans is not null && focusedSpans.Count > 0;
+            var renderedContent = hasFocusedSpans
+                ? BuildFocusedInspectionContent(lines, focusedSpans!, analysisOptions.Review.MaxSourceCharsPerFile)
+                : BuildNumberedInspectionContent(lines, analysisOptions.Review.MaxSourceCharsPerFile);
+            var reason = hasFocusedSpans
+                ? $"{target.Reason}; changed lines {FormatLineSpans(focusedSpans!)} with surrounding context"
+                : target.Reason;
 
-                numbered.AppendLine(line);
-                written += line.Length + 1;
-            }
-
-            results.Add(new ReviewInspectionFile(target.FilePath, target.Reason, numbered.ToString().TrimEnd(), lines.Length));
+            results.Add(new ReviewInspectionFile(target.FilePath, reason, renderedContent, lines.Length));
         }
 
         return results;
@@ -442,9 +536,14 @@ public class ProjectReviewService(
         IReadOnlyList<FileMetricsEntity> metrics,
         IReadOnlyList<ProjectDiagnosticEntity> diagnostics,
         IReadOnlyList<SecurityFindingEntity> securityFindings,
-        int maxFiles)
+        int maxFiles,
+        ProjectReviewExecutionInput executionInput)
     {
         var candidates = new Dictionary<string, InspectionTargetBuilder>(StringComparer.OrdinalIgnoreCase);
+        var prioritizedFiles = NormalizePathList(executionInput.SeedFiles)
+            .Concat(NormalizePathList(executionInput.BlastRadiusFiles))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var metric in metrics)
         {
@@ -514,7 +613,25 @@ public class ProjectReviewService(
             }
         }
 
-        return candidates.Values
+        foreach (var filePath in NormalizePathList(executionInput.BlastRadiusFiles))
+        {
+            var candidate = GetOrAddCandidate(candidates, filePath);
+            candidate.Score += 30;
+            candidate.Reasons.Add("blast-radius file related to the changed scope");
+        }
+
+        foreach (var filePath in NormalizePathList(executionInput.SeedFiles))
+        {
+            var candidate = GetOrAddCandidate(candidates, filePath);
+            candidate.Score += 100;
+            candidate.Reasons.Add("changed file in the update scope");
+        }
+
+        var selectedCandidates = prioritizedFiles.Count > 0
+            ? candidates.Values.Where(c => prioritizedFiles.Contains(c.FilePath))
+            : candidates.Values;
+
+        return selectedCandidates
             .OrderByDescending(c => c.Score)
             .ThenBy(c => c.FilePath, StringComparer.OrdinalIgnoreCase)
             .Take(Math.Max(1, maxFiles))
@@ -540,6 +657,7 @@ public class ProjectReviewService(
     {
         return NormalizeMode(mode) switch
         {
+            "update" => Math.Max(1, Math.Min(analysisOptions.Review.MaxFilesToInspect, 12)),
             "quick" => Math.Max(1, analysisOptions.Review.MaxFilesToInspect / 2),
             "deep" => Math.Max(1, Math.Min(analysisOptions.Review.MaxFilesToInspect * 2, 50)),
             _ => Math.Max(1, analysisOptions.Review.MaxFilesToInspect)
@@ -549,6 +667,7 @@ public class ProjectReviewService(
     private static string NormalizeMode(string mode)
         => mode.Trim().ToLowerInvariant() switch
         {
+            "update" => "update",
             "quick" => "quick",
             "deep" => "deep",
             _ => "standard"
@@ -674,6 +793,16 @@ public class ProjectReviewService(
 
     private static IReadOnlyList<string> BuildSkippedAreas(ProjectReviewContext context)
     {
+        if (string.Equals(context.ReviewMode, "update", StringComparison.OrdinalIgnoreCase))
+        {
+            var skipped = new List<string>();
+            if (context.BlastRadiusFiles.Count > context.InspectionFiles.Count)
+                skipped.Add($"{context.BlastRadiusFiles.Count - context.InspectionFiles.Count} related files in the blast radius were not inspected in this update pass.");
+            if (context.ChangedFiles.Count == 0)
+                skipped.Add("No changed source files were available for direct inspection in this update pass.");
+            return skipped;
+        }
+
         if (context.Metrics.Count <= context.InspectionFiles.Count)
             return [];
 
@@ -691,6 +820,215 @@ public class ProjectReviewService(
                 FilePath = NormalizePath(f.FilePath)
             })
             .ToList() ?? [];
+
+    private static ProjectReviewResponseModel NormalizeFinalReview(ProjectReviewResponseModel review, int maxFindings)
+        => review with
+        {
+            Overview = ShortenText(review.Overview, maxChars: 320, maxSentences: 2),
+            Strengths = NormalizeSummaryList(review.Strengths, maxItems: 4, maxChars: 140),
+            ReviewedAreas = NormalizeSummaryList(review.ReviewedAreas, maxItems: 5, maxChars: 140),
+            SkippedAreas = NormalizeSummaryList(review.SkippedAreas, maxItems: 3, maxChars: 160),
+            FollowUps = NormalizeSummaryList(review.FollowUps, maxItems: 4, maxChars: 160),
+            Findings = review.Findings
+                .Take(Math.Max(0, maxFindings))
+                .Select(f => f with
+                {
+                    Title = ShortenText(f.Title, maxChars: 120, maxSentences: 1),
+                    Explanation = ShortenText(f.Explanation, maxChars: 260, maxSentences: 2),
+                    Evidence = ShortenText(f.Evidence, maxChars: 260, maxSentences: 2),
+                    SuggestedImprovement = ShortenText(f.SuggestedImprovement, maxChars: 220, maxSentences: 2)
+                })
+                .ToList()
+        };
+
+    private static IReadOnlyList<string> NormalizeSummaryList(
+        IReadOnlyList<string>? values,
+        int maxItems,
+        int maxChars)
+        => NormalizeStringList(values)
+            .Select(v => ShortenText(v, maxChars, maxSentences: 1))
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Take(Math.Max(0, maxItems))
+            .ToList();
+
+    private static string ShortenText(string? value, int maxChars, int maxSentences)
+    {
+        var normalized = NormalizeWhitespace(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return "";
+
+        if (maxSentences > 0)
+        {
+            var limitedSentences = SentenceBoundaryRegex
+                .Split(normalized)
+                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .Take(maxSentences)
+                .ToArray();
+
+            if (limitedSentences.Length > 0)
+                normalized = string.Join(" ", limitedSentences);
+        }
+
+        if (normalized.Length <= maxChars)
+            return normalized;
+
+        var truncated = normalized[..Math.Min(maxChars, normalized.Length)].TrimEnd();
+        var lastSpace = truncated.LastIndexOf(' ');
+        if (lastSpace >= maxChars / 2)
+            truncated = truncated[..lastSpace].TrimEnd();
+
+        return truncated + "...";
+    }
+
+    private static string NormalizeWhitespace(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? ""
+            : string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    private static ProjectReviewExecutionInput NormalizeExecutionInput(ProjectReviewExecutionInput input, string normalizedMode)
+        => input with
+        {
+            ReviewMode = normalizedMode,
+            SeedFiles = NormalizePathList(input.SeedFiles),
+            BlastRadiusFiles = NormalizePathList(input.BlastRadiusFiles),
+            ChangedLineSpans = NormalizeChangedLineSpans(input.ChangedLineSpans),
+            CandidateTests = NormalizePathList(input.CandidateTests),
+            UpdateSummary = NormalizeWhitespace(input.UpdateSummary)
+        };
+
+    private static IReadOnlyList<string> NormalizePathList(IReadOnlyList<string>? values)
+        => values?
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(NormalizePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+
+    private static IReadOnlyDictionary<string, IReadOnlyList<ProjectReviewLineSpan>> NormalizeChangedLineSpans(
+        IReadOnlyDictionary<string, IReadOnlyList<ProjectReviewLineSpan>>? changedLineSpans)
+    {
+        if (changedLineSpans is null || changedLineSpans.Count == 0)
+            return EmptyChangedLineSpans;
+
+        return changedLineSpans
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
+            .ToDictionary(
+                entry => NormalizePath(entry.Key),
+                entry => (IReadOnlyList<ProjectReviewLineSpan>)entry.Value
+                    .Where(span => span.StartLine > 0 && span.EndLine >= span.StartLine)
+                    .Distinct()
+                    .OrderBy(span => span.StartLine)
+                    .ToList(),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string BuildNumberedInspectionContent(string[] lines, int maxChars)
+    {
+        var numbered = new StringBuilder();
+        var written = 0;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = $"{i + 1,4}: {lines[i]}";
+            if (written + line.Length + 1 > maxChars)
+            {
+                numbered.AppendLine("... truncated ...");
+                break;
+            }
+
+            numbered.AppendLine(line);
+            written += line.Length + 1;
+        }
+
+        return numbered.ToString().TrimEnd();
+    }
+
+    private static string BuildFocusedInspectionContent(
+        string[] lines,
+        IReadOnlyList<ProjectReviewLineSpan> spans,
+        int maxChars)
+    {
+        var windowedRanges = MergeLineSpans(spans, lines.Length, contextWindow: 8);
+        var numbered = new StringBuilder();
+        var written = 0;
+
+        for (var rangeIndex = 0; rangeIndex < windowedRanges.Count; rangeIndex++)
+        {
+            var range = windowedRanges[rangeIndex];
+            var header = $"... focus lines {range.StartLine}-{range.EndLine} ...";
+            if (written + header.Length + 1 > maxChars)
+            {
+                numbered.AppendLine("... truncated ...");
+                break;
+            }
+
+            numbered.AppendLine(header);
+            written += header.Length + 1;
+
+            for (var lineNumber = range.StartLine; lineNumber <= range.EndLine; lineNumber++)
+            {
+                var line = $"{lineNumber,4}: {lines[lineNumber - 1]}";
+                if (written + line.Length + 1 > maxChars)
+                {
+                    numbered.AppendLine("... truncated ...");
+                    return numbered.ToString().TrimEnd();
+                }
+
+                numbered.AppendLine(line);
+                written += line.Length + 1;
+            }
+
+            if (rangeIndex < windowedRanges.Count - 1)
+            {
+                const string divider = "... omitted unchanged lines ...";
+                if (written + divider.Length + 1 > maxChars)
+                {
+                    numbered.AppendLine("... truncated ...");
+                    break;
+                }
+
+                numbered.AppendLine(divider);
+                written += divider.Length + 1;
+            }
+        }
+
+        return numbered.ToString().TrimEnd();
+    }
+
+    private static IReadOnlyList<ProjectReviewLineSpan> MergeLineSpans(
+        IReadOnlyList<ProjectReviewLineSpan> spans,
+        int lineCount,
+        int contextWindow)
+    {
+        var normalized = spans
+            .Select(span => new ProjectReviewLineSpan(
+                Math.Max(1, span.StartLine - contextWindow),
+                Math.Min(lineCount, span.EndLine + contextWindow)))
+            .OrderBy(span => span.StartLine)
+            .ToList();
+        if (normalized.Count == 0)
+            return [];
+
+        var merged = new List<ProjectReviewLineSpan> { normalized[0] };
+        for (var i = 1; i < normalized.Count; i++)
+        {
+            var current = normalized[i];
+            var last = merged[^1];
+            if (current.StartLine <= last.EndLine + 1)
+            {
+                merged[^1] = last with { EndLine = Math.Max(last.EndLine, current.EndLine) };
+            }
+            else
+            {
+                merged.Add(current);
+            }
+        }
+
+        return merged;
+    }
+
+    private static string FormatLineSpans(IReadOnlyList<ProjectReviewLineSpan> spans)
+        => string.Join(", ", spans.Select(span => span.StartLine == span.EndLine
+            ? span.StartLine.ToString()
+            : $"{span.StartLine}-{span.EndLine}"));
 
     private static string NormalizeSeverity(string? severity) => severity?.Trim().ToLowerInvariant() switch
     {
@@ -762,8 +1100,13 @@ public class ProjectReviewService(
     private sealed record ProjectReviewContext(
         ProjectInfo Repository,
         string RepoRoot,
+        string ReviewMode,
         string ProjectName,
         string? ProjectSummary,
+        string? UpdateSummary,
+        ProjectReviewBaselineContext? BaselineContext,
+        IReadOnlyList<string> ChangedFiles,
+        IReadOnlyList<string> BlastRadiusFiles,
         IReadOnlyDictionary<string, int> NodeCounts,
         IReadOnlyList<FileMetricsEntity> Metrics,
         IReadOnlyList<ProjectDiagnosticEntity> Diagnostics,
@@ -797,6 +1140,9 @@ public class ProjectReviewService(
         IReadOnlyList<string>? SkippedAreas,
         IReadOnlyList<string>? FollowUps,
         IReadOnlyList<ProjectReviewFindingModel>? Findings);
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<ProjectReviewLineSpan>> EmptyChangedLineSpans =
+        new Dictionary<string, IReadOnlyList<ProjectReviewLineSpan>>(StringComparer.OrdinalIgnoreCase);
 
     internal sealed record ProjectReviewWorkflowResult(
         string Overview,

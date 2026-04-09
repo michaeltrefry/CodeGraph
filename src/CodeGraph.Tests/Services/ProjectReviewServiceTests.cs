@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Shouldly;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
@@ -254,6 +255,194 @@ public class ProjectReviewServiceTests
             latest!.Findings.Count.ShouldBe(1);
             latest.Findings[0].FilePath.ShouldBe("src/BigService.cs");
             latest.Findings[0].Evidence.ShouldContain("Process method");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(repoPath)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StartReviewAsync_NormalizesVerboseFinalReviewForRepoDetailSurface()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestRepo");
+
+        try
+        {
+            await SeedProjectAsync(store, repoPath);
+
+            var provider = new RecordingProvider(
+                """
+                {
+                  "overview": "workflow",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "candidateFindings": [
+                    {
+                      "severity": "medium",
+                      "category": "design",
+                      "title": "BigService mixes orchestration and business rules in one place while also owning multiple unrelated responsibilities that make the class harder to reason about during changes",
+                      "explanation": "The Process method coordinates several branches and business decisions in one method. That makes it harder to understand which behavior changes are safe and which branches are supposed to remain coupled over time. The overall shape reads like a single place where more responsibilities will accumulate.",
+                      "evidence": "The Process method contains nested conditionals that combine orchestration flow with domain decisions and fallback behavior in one location. The method already spans multiple branches, prints different outcomes, and gives no smaller seams for understanding or testing each phase independently. This is visible directly in the inspected source.",
+                      "filePath": "src/BigService.cs",
+                      "lineStart": 1,
+                      "lineEnd": 23,
+                      "suggestedImprovement": "Extract the decision logic into a collaborator and keep BigService focused on orchestration so future changes can be tested and reasoned about in smaller units. As a follow-on, add focused tests around the branches that currently live inside Process.",
+                      "confidence": "high"
+                    }
+                  ]
+                }
+                """,
+                """
+                {
+                  "overview": "This project is generally understandable, but the strongest risk is that BigService concentrates orchestration and policy decisions in one method, which makes behavioral changes harder to reason about and test. Aside from that, the inspected slice looks stable, though future review passes should keep an eye on whether additional logic continues to accumulate in the same class.",
+                  "strengths": [
+                    "File organization is straightforward and the inspected source is easy to locate.",
+                    "The project keeps simple helper services small and easy to scan.",
+                    "The code avoids unnecessary abstraction in the small files that were inspected.",
+                    "There is at least one candidate test file that suggests some coverage exists around higher-risk code paths.",
+                    "An extra strength that should be trimmed away by the service normalization because the UI does not need this many bullets."
+                  ],
+                  "reviewedAreas": [
+                    "BigService control flow and responsibility split across its main Process method.",
+                    "FooService null-handling behavior in the small helper path.",
+                    "Candidate tests that appear related to BigService behavior.",
+                    "Repository-level context from metrics and stored project analysis.",
+                    "An extra reviewed area that should be trimmed away to keep the panel concise.",
+                    "Another extra reviewed area."
+                  ],
+                  "skippedAreas": [
+                    "Lower-priority files outside the inspection budget were not read in this pass.",
+                    "Another skipped area that should be trimmed.",
+                    "A third skipped area that can remain.",
+                    "A fourth skipped area that should be removed."
+                  ],
+                  "followUps": [
+                    "Add tests that lock in the intended outcomes for each Process branch.",
+                    "Revisit the class if additional business rules are added to the same method.",
+                    "Consider a deeper review of adjacent orchestration code if the class continues to grow.",
+                    "Check whether logging or error handling should be more explicit around future failure paths.",
+                    "An extra follow-up that should be trimmed."
+                  ],
+                  "findings": [
+                    {
+                      "severity": "medium",
+                      "category": "design",
+                      "title": "BigService mixes orchestration and business rules in one place while also owning multiple unrelated responsibilities that make the class harder to reason about during changes",
+                      "explanation": "The Process method coordinates several branches and business decisions in one method. That makes it harder to understand which behavior changes are safe and which branches are supposed to remain coupled over time. The overall shape reads like a single place where more responsibilities will accumulate.",
+                      "evidence": "The Process method contains nested conditionals that combine orchestration flow with domain decisions and fallback behavior in one location. The method already spans multiple branches, prints different outcomes, and gives no smaller seams for understanding or testing each phase independently. This is visible directly in the inspected source.",
+                      "filePath": "src/BigService.cs",
+                      "lineStart": 1,
+                      "lineEnd": 23,
+                      "suggestedImprovement": "Extract the decision logic into a collaborator and keep BigService focused on orchestration so future changes can be tested and reasoned about in smaller units. As a follow-on, add focused tests around the branches that currently live inside Process.",
+                      "confidence": "high"
+                    }
+                  ]
+                }
+                """);
+
+            var service = CreateService(store, provider, maxFilesToInspect: 1);
+
+            var runId = await service.StartReviewAsync("TestRepo", "TestRepo.Api", "standard");
+            await service.ExecuteReviewRunAsync(runId);
+            var latest = await service.GetLatestReviewAsync("TestRepo", "TestRepo.Api");
+
+            latest.ShouldNotBeNull();
+            latest!.Run.PromptVersion.ShouldBe(ProjectReviewService.CurrentPromptVersion);
+            latest.Overview.Length.ShouldBeLessThanOrEqualTo(320);
+            latest.Strengths.Count.ShouldBe(4);
+            latest.ReviewedAreas.Count.ShouldBe(5);
+            latest.SkippedAreas.Count.ShouldBe(3);
+            latest.FollowUps.Count.ShouldBe(4);
+            latest.Findings[0].Title.Length.ShouldBeLessThanOrEqualTo(123);
+            latest.Findings[0].Explanation.Length.ShouldBeLessThanOrEqualTo(263);
+            latest.Findings[0].Evidence.Length.ShouldBeLessThanOrEqualTo(263);
+            latest.Findings[0].SuggestedImprovement.Length.ShouldBeLessThanOrEqualTo(223);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(repoPath)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateReviewAsync_UpdateInput_IncludesBaselineAndFocusedChangedSnippets()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestRepo");
+
+        try
+        {
+            await SeedProjectAsync(store, repoPath);
+
+            var provider = new RecordingProvider(
+                """
+                {
+                  "overview": "workflow",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "candidateFindings": []
+                }
+                """,
+                """
+                {
+                  "overview": "final",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "findings": []
+                }
+                """);
+
+            var service = CreateService(store, provider, maxFilesToInspect: 2);
+            await service.GenerateReviewAsync(
+                "TestRepo",
+                "TestRepo.Api",
+                new ProjectReviewExecutionInput(
+                    "update",
+                    SeedFiles: ["src/BigService.cs"],
+                    BlastRadiusFiles: ["src/BigService.cs"],
+                    ChangedLineSpans: new Dictionary<string, IReadOnlyList<ProjectReviewLineSpan>>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["src/BigService.cs"] = [new ProjectReviewLineSpan(12, 12)]
+                    },
+                    CandidateTests: ["tests/BigServiceTests.cs"],
+                    UpdateSummary: "Only the BigService branching logic changed in this update.",
+                    BaselineContext: new ProjectReviewBaselineContext(
+                        "Baseline review flagged BigService as a design hotspot.",
+                        ["Small helper files were easy to scan."],
+                        ["BigService orchestration"],
+                        ["Add targeted branch tests."],
+                        [
+                            new ProjectReviewFindingResponse(
+                                "medium",
+                                "design",
+                                "BigService mixes orchestration and policy",
+                                "The class coordinates too many branches.",
+                                "The Process method combines multiple responsibilities.",
+                                "src/BigService.cs",
+                                1,
+                                23,
+                                "Split orchestration from rule evaluation.",
+                                "high")
+                        ])),
+                CancellationToken.None);
+
+            provider.Prompts.Count.ShouldBe(2);
+            provider.Prompts[0].ShouldContain("## Update Scope");
+            provider.Prompts[0].ShouldContain("Only the BigService branching logic changed in this update.");
+            provider.Prompts[0].ShouldContain("## Baseline Review Context");
+            provider.Prompts[0].ShouldContain("BigService mixes orchestration and policy");
+            provider.Prompts[0].ShouldContain("### src/BigService.cs");
+            provider.Prompts[0].ShouldContain("... focus lines");
+            provider.Prompts[0].ShouldContain("tests/BigServiceTests.cs");
+            provider.Prompts[1].ShouldContain("Mode: update");
         }
         finally
         {

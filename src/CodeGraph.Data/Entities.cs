@@ -283,6 +283,56 @@ public class ProjectReviewFindingEntity
     public string? ProvenanceJson { get; set; }
 }
 
+public class RepositoryReviewRunEntity
+{
+    public long Id { get; set; }
+    public string Repo { get; set; } = "";
+    public string? ReviewedCommitSha { get; set; }
+    public long? BaselineReviewRunId { get; set; }
+    public string? BaselineCommitSha { get; set; }
+    public string Status { get; set; } = "queued";
+    public string ReviewMode { get; set; } = "full";
+    public string PromptVersion { get; set; } = "v1";
+    public string? OverviewJson { get; set; }
+    public string? ModelUsed { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public string? Error { get; set; }
+}
+
+public class RepositoryReviewProjectSectionEntity
+{
+    public long Id { get; set; }
+    public long ReviewRunId { get; set; }
+    public string ProjectName { get; set; } = "";
+    public string Overview { get; set; } = "";
+    public string StrengthsJson { get; set; } = "[]";
+    public string ReviewedAreasJson { get; set; } = "[]";
+    public string SkippedAreasJson { get; set; } = "[]";
+    public string FollowUpsJson { get; set; } = "[]";
+    public bool ReusedFromBaseline { get; set; }
+}
+
+public class RepositoryReviewFindingEntity
+{
+    public long Id { get; set; }
+    public long ReviewRunId { get; set; }
+    public string? ProjectName { get; set; }
+    public int Ordinal { get; set; }
+    public string Severity { get; set; } = "";
+    public string Category { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Explanation { get; set; } = "";
+    public string Evidence { get; set; } = "";
+    public string FilePath { get; set; } = "";
+    public int? LineStart { get; set; }
+    public int? LineEnd { get; set; }
+    public string SuggestedImprovement { get; set; } = "";
+    public string Confidence { get; set; } = "";
+    public string? ProvenanceJson { get; set; }
+}
+
 public class ProjectSecuritySummaryEntity
 {
     public long Id { get; set; }

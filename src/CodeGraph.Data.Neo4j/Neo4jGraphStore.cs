@@ -364,6 +364,21 @@ public partial class Neo4jGraphStore(
                 DELETE rfRel, rf, rr
                 """, new { project });
 
+            await tx.RunAsync("""
+                MATCH (rr:RepositoryReviewRun {repo: $project})-[rfRel:HAS_FINDING]->(rf:RepositoryReviewFinding)
+                DELETE rfRel, rf
+                """, new { project });
+
+            await tx.RunAsync("""
+                MATCH (rr:RepositoryReviewRun {repo: $project})-[rsRel:HAS_PROJECT_SECTION]->(rs:RepositoryReviewProjectSection)
+                DELETE rsRel, rs
+                """, new { project });
+
+            await tx.RunAsync("""
+                MATCH (rr:RepositoryReviewRun {repo: $project})
+                DELETE rr
+                """, new { project });
+
             // Delete node analyses for nodes in this project
             await tx.RunAsync("""
                 MATCH (n:CodeNode {project: $project})-[:HAS_ANALYSIS]->(na:NodeAnalysis)
@@ -616,5 +631,26 @@ public partial class Neo4jGraphStore(
             chunks.Add(chunk);
         }
         return chunks;
+    }
+
+    private async Task<long> ReserveSequenceRangeAsync(IAsyncSession session, string sequenceName, int count)
+    {
+        if (count <= 0)
+            return 0;
+
+        return await session.ExecuteWriteAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MERGE (seq:Sequence {name: $sequenceName})
+                ON CREATE SET seq.value = 0
+                WITH seq.value AS startId, seq
+                SET seq.value = seq.value + $count
+                RETURN startId
+                """,
+                new { sequenceName, count });
+
+            await cursor.FetchAsync();
+            return cursor.Current["startId"].As<long>();
+        });
     }
 }

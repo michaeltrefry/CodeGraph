@@ -214,6 +214,11 @@ export interface StartProjectReviewResponse {
   status: string;
 }
 
+export interface StartRepositoryReviewResponse {
+  reviewRunId: number;
+  status: string;
+}
+
 export interface ProjectReviewRunResponse {
   id: number;
   project: string;
@@ -250,6 +255,58 @@ export interface ProjectReviewResponse {
   reviewedAreas: string[];
   skippedAreas: string[];
   followUps: string[];
+}
+
+export interface RepositoryReviewRunResponse {
+  id: number;
+  repo: string;
+  reviewedCommitSha?: string;
+  baselineReviewRunId?: number;
+  baselineCommitSha?: string;
+  status: string;
+  reviewMode: string;
+  promptVersion: string;
+  modelUsed?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface RepositoryReviewFindingResponse {
+  severity: string;
+  category: string;
+  title: string;
+  explanation: string;
+  evidence: string;
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+  suggestedImprovement: string;
+  confidence: string;
+  projectName?: string;
+}
+
+export interface RepositoryReviewProjectSectionResponse {
+  projectName: string;
+  overview: string;
+  strengths: string[];
+  reviewedAreas: string[];
+  skippedAreas: string[];
+  followUps: string[];
+  findings: RepositoryReviewFindingResponse[];
+  reusedFromBaseline: boolean;
+}
+
+export interface RepositoryReviewResponse {
+  run: RepositoryReviewRunResponse;
+  overview: string;
+  findings: RepositoryReviewFindingResponse[];
+  strengths: string[];
+  reviewedAreas: string[];
+  skippedAreas: string[];
+  followUps: string[];
+  projectReviews: RepositoryReviewProjectSectionResponse[];
 }
 
 export interface ProjectDiagnosticResponse {
@@ -308,6 +365,33 @@ export type ProjectReviewStreamEvent =
   | { type: 'finding'; content: ProjectReviewFindingResponse }
   | { type: 'completed'; content: ProjectReviewResponse }
   | { type: 'error'; content: ProjectReviewErrorEvent };
+
+export interface RepositoryReviewStatusEvent {
+  reviewRunId: number;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface RepositoryReviewProgressEvent {
+  reviewRunId: number;
+  status: string;
+  message: string;
+}
+
+export interface RepositoryReviewErrorEvent {
+  reviewRunId: number;
+  status?: string;
+  message: string;
+}
+
+export type RepositoryReviewStreamEvent =
+  | { type: 'status'; content: RepositoryReviewStatusEvent }
+  | { type: 'progress'; content: RepositoryReviewProgressEvent }
+  | { type: 'finding'; content: RepositoryReviewFindingResponse }
+  | { type: 'completed'; content: RepositoryReviewResponse }
+  | { type: 'error'; content: RepositoryReviewErrorEvent };
 
 export interface FileMetrics {
   filePath: string;
