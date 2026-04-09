@@ -393,39 +393,391 @@
       </div>
     }
 
+    @let reviewPanel = repositoryReviewState();
+    <div class="card code-review-card">
+      <div class="code-review-header clickable" (click)="toggleCodeReviewExpanded()">
+        <div class="code-review-header-main">
+          <h2>Code Review</h2>
+          <p class="code-review-subtitle">
+            One repository review that synthesizes overall findings first, then breaks them down by project.
+          </p>
+        </div>
+
+        <div class="code-review-header-actions">
+          @if (reviewPanel.activeRun; as activeRun) {
+            <span class="review-status-pill" [attr.data-tone]="reviewStatusTone(activeRun.status)">
+              {{ reviewStatusLabel(activeRun.status) }}
+            </span>
+          } @else if (interruptedRepositoryReview()) {
+            <span class="review-status-pill" data-tone="failed">
+              Interrupted
+            </span>
+          } @else if (completedRepositoryReview(); as review) {
+            <span class="review-status-pill" [attr.data-tone]="isRepositoryReviewStale() ? 'failed' : 'completed'">
+              {{ isRepositoryReviewStale() ? 'Out of date' : 'Reviewed ' + formatDate(review.run.completedAt) }}
+            </span>
+          }
+
+          <button class="btn-review"
+                  (click)="$event.stopPropagation(); startRepositoryReview()"
+                  [disabled]="reviewPanel.startingReview || isRepositoryReviewInProgress()">
+            {{ repositoryReviewActionLabel() }}
+          </button>
+
+          <span class="expand-icon">
+            {{ reviewPanel.expanded ? '▲' : '▼' }}
+          </span>
+        </div>
+      </div>
+
+      @if (reviewPanel.activeRun; as activeRun) {
+        <div class="review-run-banner" [attr.data-tone]="reviewStatusTone(activeRun.status)">
+          <div class="review-run-status">
+            <span class="batch-spinner small"></span>
+            <strong>{{ reviewStatusLabel(activeRun.status) }}</strong>
+            <span>{{ reviewPanel.streamStatus || 'Waiting for repository review status updates…' }}</span>
+          </div>
+          <div class="review-run-meta">
+            Started {{ formatDateTime(activeRun.startedAt || activeRun.createdAt) }}
+          </div>
+        </div>
+      }
+
+      @if (reviewPanel.streamError) {
+        <div class="review-message review-message-error">
+          {{ reviewPanel.streamError }}
+        </div>
+      }
+
+      @if (reviewPanel.expanded) {
+        @if (reviewPanel.loadingLatestReview && !reviewPanel.latestReview) {
+          <div class="review-message">Loading the latest saved repository review…</div>
+        } @else if (completedRepositoryReview(); as review) {
+          <div class="review-overview markdown-body" [innerHTML]="renderMarkdown(review.overview)"></div>
+
+          <div class="review-meta-row">
+            <span class="review-meta-pill">{{ review.findings.length }} findings</span>
+            <span class="review-meta-pill">Completed {{ formatDateTime(review.run.completedAt) }}</span>
+            @if (review.run.reviewedCommitSha) {
+              <span class="review-meta-pill mono">Reviewed commit {{ formatCommit(review.run.reviewedCommitSha) }}</span>
+            }
+            @if (d.project.lastCommitSha) {
+              <span class="review-meta-pill mono">Current commit {{ formatCommit(d.project.lastCommitSha) }}</span>
+            }
+            @if (review.run.modelUsed) {
+              <span class="review-meta-pill">{{ review.run.modelUsed }}</span>
+            }
+          </div>
+
+          @if (isRepositoryReviewStale()) {
+            <div class="review-message">
+              This review is out of date because the reviewed commit does not match the current repository commit.
+            </div>
+          }
+
+          <div class="review-list-grid">
+            @if (review.strengths.length > 0) {
+              <div class="review-list-card">
+                <h5>Strengths</h5>
+                <ul>
+                  @for (item of review.strengths; track item) {
+                    <li>{{ item }}</li>
+                  }
+                </ul>
+              </div>
+            }
+            @if (review.reviewedAreas.length > 0) {
+              <div class="review-list-card">
+                <h5>Reviewed Areas</h5>
+                <ul>
+                  @for (item of review.reviewedAreas; track item) {
+                    <li>{{ item }}</li>
+                  }
+                </ul>
+              </div>
+            }
+            @if (review.followUps.length > 0) {
+              <div class="review-list-card">
+                <h5>Follow-Ups</h5>
+                <ul>
+                  @for (item of review.followUps; track item) {
+                    <li>{{ item }}</li>
+                  }
+                </ul>
+              </div>
+            }
+            @if (review.skippedAreas.length > 0) {
+              <div class="review-list-card">
+                <h5>Skipped Areas</h5>
+                <ul>
+                  @for (item of review.skippedAreas; track item) {
+                    <li>{{ item }}</li>
+                  }
+                </ul>
+              </div>
+            }
+          </div>
+
+          <div class="review-findings">
+            <div class="review-findings-header">
+              <h5>Repository Findings</h5>
+              @if (review.findings.length === 0) {
+                <span class="summary-meta">No repository-level findings in the latest completed review.</span>
+              }
+            </div>
+            @for (finding of review.findings; track reviewFindingTrackBy($index, finding)) {
+              <div class="review-finding-item">
+                <div class="review-finding-heading">
+                  <span class="severity-badge" [style.background]="severityColor(finding.severity)">
+                    {{ finding.severity }}
+                  </span>
+                  <span class="review-finding-title">{{ finding.title }}</span>
+                  @if (finding.projectName) {
+                    <span class="review-meta-pill">{{ finding.projectName }}</span>
+                  }
+                  <span class="review-confidence-pill"
+                        [style.background]="reviewConfidenceColor(finding.confidence)">
+                    {{ finding.confidence }}
+                  </span>
+                </div>
+                <p class="review-finding-copy">{{ finding.explanation }}</p>
+                <p class="review-finding-evidence"><strong>Evidence:</strong> {{ finding.evidence }}</p>
+                <p class="review-finding-copy"><strong>Suggested improvement:</strong> {{ finding.suggestedImprovement }}</p>
+                @if (finding.filePath) {
+                  <span class="finding-location clickable"
+                        (click)="navigateToFinding($event, finding.filePath, finding.lineStart ?? undefined)">
+                    {{ finding.filePath }}{{ formatLineRange(finding.lineStart, finding.lineEnd) }}
+                  </span>
+                }
+              </div>
+            }
+          </div>
+
+          @if (review.projectReviews.length > 0) {
+            <div class="project-review-groups">
+              <h3 class="health-section-title">Project Reviews</h3>
+              @for (section of review.projectReviews; track projectSectionTrackBy($index, section)) {
+                @let diagnosticsState = projectDiagnosticsState(section.projectName);
+                <div class="project-review-section">
+                  <div class="project-review-header">
+                    <div>
+                      <h4>{{ section.projectName }}</h4>
+                      <p class="project-review-subtitle">
+                        Project-level detail captured as part of the repository review.
+                      </p>
+                    </div>
+
+                    <div class="analysis-badges">
+                      @if (section.reusedFromBaseline) {
+                        <span class="review-meta-pill">Baseline context</span>
+                      }
+                      @if (diagnosticsState.loadingDiagnostics && !diagnosticsState.diagnostics) {
+                        <span class="diagnostics-loading">Diagnostics…</span>
+                      } @else if (diagnosticsState.diagnostics; as diagnostics) {
+                        @if (diagnostics.errorCount > 0) {
+                          <span class="diagnostic-badge diagnostic-badge-error">{{ diagnostics.errorCount }} errors</span>
+                        }
+                        @if (diagnostics.warningCount > 0) {
+                          <span class="diagnostic-badge diagnostic-badge-warning">{{ diagnostics.warningCount }} warnings</span>
+                        }
+                        @if (diagnostics.infoCount > 0) {
+                          <span class="diagnostic-badge diagnostic-badge-info">{{ diagnostics.infoCount }} info</span>
+                        }
+                      }
+                    </div>
+                  </div>
+
+                  <div class="review-overview markdown-body" [innerHTML]="renderMarkdown(section.overview)"></div>
+
+                  <div class="review-list-grid">
+                    @if (section.strengths.length > 0) {
+                      <div class="review-list-card">
+                        <h5>Strengths</h5>
+                        <ul>
+                          @for (item of section.strengths; track item) {
+                            <li>{{ item }}</li>
+                          }
+                        </ul>
+                      </div>
+                    }
+                    @if (section.reviewedAreas.length > 0) {
+                      <div class="review-list-card">
+                        <h5>Reviewed Areas</h5>
+                        <ul>
+                          @for (item of section.reviewedAreas; track item) {
+                            <li>{{ item }}</li>
+                          }
+                        </ul>
+                      </div>
+                    }
+                    @if (section.followUps.length > 0) {
+                      <div class="review-list-card">
+                        <h5>Follow-Ups</h5>
+                        <ul>
+                          @for (item of section.followUps; track item) {
+                            <li>{{ item }}</li>
+                          }
+                        </ul>
+                      </div>
+                    }
+                    @if (section.skippedAreas.length > 0) {
+                      <div class="review-list-card">
+                        <h5>Skipped Areas</h5>
+                        <ul>
+                          @for (item of section.skippedAreas; track item) {
+                            <li>{{ item }}</li>
+                          }
+                        </ul>
+                      </div>
+                    }
+                  </div>
+
+                  <div class="review-findings">
+                    <div class="review-findings-header">
+                      <h5>{{ section.projectName }} Findings</h5>
+                      @if (section.findings.length === 0) {
+                        <span class="summary-meta">No findings recorded for this project section.</span>
+                      }
+                    </div>
+                    @for (finding of section.findings; track reviewFindingTrackBy($index, finding)) {
+                      <div class="review-finding-item">
+                        <div class="review-finding-heading">
+                          <span class="severity-badge" [style.background]="severityColor(finding.severity)">
+                            {{ finding.severity }}
+                          </span>
+                          <span class="review-finding-title">{{ finding.title }}</span>
+                          <span class="review-confidence-pill"
+                                [style.background]="reviewConfidenceColor(finding.confidence)">
+                            {{ finding.confidence }}
+                          </span>
+                        </div>
+                        <p class="review-finding-copy">{{ finding.explanation }}</p>
+                        <p class="review-finding-evidence"><strong>Evidence:</strong> {{ finding.evidence }}</p>
+                        <p class="review-finding-copy"><strong>Suggested improvement:</strong> {{ finding.suggestedImprovement }}</p>
+                        @if (finding.filePath) {
+                          <span class="finding-location clickable"
+                                (click)="navigateToFinding($event, finding.filePath, finding.lineStart ?? undefined)">
+                            {{ finding.filePath }}{{ formatLineRange(finding.lineStart, finding.lineEnd) }}
+                          </span>
+                        }
+                      </div>
+                    }
+                  </div>
+
+                  @if (diagnosticsState.diagnostics; as diagnostics) {
+                    <div class="project-diagnostics-section">
+                      <div class="project-diagnostics-header">
+                        <h5>Diagnostics</h5>
+                        <div class="analysis-badges">
+                          <span class="diagnostic-badge diagnostic-badge-error">{{ diagnostics.errorCount }} errors</span>
+                          <span class="diagnostic-badge diagnostic-badge-warning">{{ diagnostics.warningCount }} warnings</span>
+                          <span class="diagnostic-badge diagnostic-badge-info">{{ diagnostics.infoCount }} info</span>
+                        </div>
+                      </div>
+                      @if (totalDiagnostics(diagnostics) > 0) {
+                        <button class="text-button" (click)="toggleDiagnostics(section.projectName)">
+                          {{ diagnosticsState.diagnosticsOpen ? 'Hide diagnostics' : 'Show diagnostics' }}
+                        </button>
+                      } @else {
+                        <div class="summary-meta">No persisted diagnostics for this project.</div>
+                      }
+
+                      @if (diagnosticsState.diagnosticsOpen && totalDiagnostics(diagnostics) > 0) {
+                        @let previewDiagnostics = diagnosticPreview(section.projectName);
+                        <div class="diagnostic-list">
+                          @for (diagnostic of previewDiagnostics; track diagnosticTrackBy($index, diagnostic)) {
+                            <div class="diagnostic-item">
+                              <span class="diagnostic-severity"
+                                    [style.background]="diagnosticSeverityColor(diagnostic.severity)">
+                                {{ diagnostic.severity }}
+                              </span>
+                              <div class="diagnostic-detail">
+                                <span class="diagnostic-title">{{ diagnostic.diagnosticId }} · {{ diagnostic.message }}</span>
+                                <span class="diagnostic-meta">
+                                  {{ diagnostic.source }}
+                                  @if (diagnostic.category) { · {{ diagnostic.category }} }
+                                </span>
+                                <span class="finding-location clickable"
+                                      (click)="navigateToFinding($event, diagnostic.filePath, diagnostic.lineStart ?? undefined)">
+                                  {{ diagnostic.filePath }}{{ formatLineRange(diagnostic.lineStart, diagnostic.lineEnd) }}
+                                </span>
+                              </div>
+                            </div>
+                          }
+                        </div>
+                        @if (hasMoreDiagnostics(section.projectName)) {
+                          <div class="summary-meta">
+                            Showing the first {{ previewDiagnostics.length }} of {{ diagnostics.diagnostics.length }} diagnostics.
+                          </div>
+                        }
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          }
+        } @else if (interruptedRepositoryReview(); as interruptedReview) {
+          <div class="review-message review-message-error">
+            {{ interruptedReview.run.error || 'The latest repository review was interrupted before it finished.' }}
+          </div>
+          @if (!canContinueInterruptedRepositoryReview() && interruptedReview.run.reviewMode === 'update') {
+            <div class="review-message">
+              The repo moved to a new commit after that interrupted update review, so continuing it would no longer use the same diff baseline. Start a fresh review instead.
+            </div>
+          }
+        } @else if (reviewPanel.latestReview?.run?.status === 'failed') {
+          <div class="review-message review-message-error">
+            The latest saved repository review failed{{ reviewPanel.latestReview?.run?.error ? ': ' + reviewPanel.latestReview?.run?.error : '.' }}
+          </div>
+        } @else {
+          <div class="review-message">
+            No repository review has been completed yet. Run one to review the repo as a whole and then drill into project-level sections.
+          </div>
+        }
+      }
+    </div>
+
     <!-- Projects (merged solution projects + analyses) -->
-    @if (d.analyses.length > 0) {
+    @if (projectEntries().length > 0) {
       <div class="card">
         <h2>Projects</h2>
-        @for (analysis of d.analyses; track analysis.projectName) {
+        @for (projectEntry of projectEntries(); track projectEntry.projectName) {
           <div class="analysis-item">
-            <div class="analysis-header" (click)="toggleAnalysis(analysis.projectName)">
-              @if (getDotnetProject(analysis.projectName); as proj) {
+            <div class="analysis-header" (click)="toggleAnalysis(projectEntry.projectName)">
+              @if (getDotnetProject(projectEntry.projectName); as proj) {
                 <a class="analysis-title project-link"
                    [routerLink]="['/repos', name(), 'nodes']"
                    [queryParams]="{ dotnetProject: proj.name }"
                    (click)="$event.stopPropagation()">
-                  {{ analysis.projectName }}
+                  {{ projectEntry.projectName }}
                 </a>
                 <span class="project-node-count">{{ proj.total }} nodes</span>
               } @else {
-                <span class="analysis-title">{{ analysis.projectName }}</span>
+                <span class="analysis-title">{{ projectEntry.projectName }}</span>
               }
-              <span class="confidence-badge"
-                    [style.background]="confidenceColors[analysis.confidence]">
-                {{ analysis.confidence }}
-              </span>
+              @if (projectEntry.analysis; as analysis) {
+                <span class="confidence-badge"
+                      [style.background]="confidenceColors[analysis.confidence]">
+                  {{ analysis.confidence }}
+                </span>
+              }
               <span class="expand-icon">
-                {{ expandedAnalysis() === analysis.projectName ? '▲' : '▼' }}
+                {{ expandedAnalysis() === projectEntry.projectName ? '▲' : '▼' }}
               </span>
             </div>
 
-            @if (expandedAnalysis() === analysis.projectName) {
+            @if (expandedAnalysis() === projectEntry.projectName) {
               <div class="analysis-body">
-                <div class="markdown-body" [innerHTML]="renderMarkdown(analysis.summary)"></div>
+                @if (projectEntry.analysis; as analysis) {
+                  <div class="markdown-body" [innerHTML]="renderMarkdown(analysis.summary)"></div>
+                } @else {
+                  <div class="summary-meta">
+                    No stored project analysis yet.
+                  </div>
+                }
 
-                <!-- Node label breakdown from solution projects -->
-                @if (getDotnetProject(analysis.projectName); as proj) {
+                @if (getDotnetProject(projectEntry.projectName); as proj) {
                   <div class="project-tile-labels">
                     @for (lbl of proj.labels; track lbl[0]) {
                       <a [routerLink]="['/repos', name(), 'nodes']"
@@ -437,12 +789,12 @@
                   </div>
                 }
 
-                @if (analysis.endpoints?.length) {
+                @if (projectEntry.analysis?.endpoints?.length) {
                   <h4>Endpoints</h4>
                   <table class="inner-table">
                     <thead><tr><th>Method</th><th>Route</th><th>Description</th></tr></thead>
                     <tbody>
-                      @for (ep of analysis.endpoints; track ep.route) {
+                      @for (ep of projectEntry.analysis!.endpoints; track ep.route) {
                         <tr>
                           <td><span class="http-method http-{{ep.httpMethod.toLowerCase()}}">{{ ep.httpMethod }}</span></td>
                           <td class="mono">{{ ep.route }}</td>
@@ -453,12 +805,12 @@
                   </table>
                 }
 
-                @if (analysis.services?.length) {
+                @if (projectEntry.analysis?.services?.length) {
                   <h4>Services</h4>
                   <table class="inner-table">
                     <thead><tr><th>Name</th><th>Interface</th><th>Lifetime</th><th>Description</th></tr></thead>
                     <tbody>
-                      @for (svc of analysis.services; track svc.name) {
+                      @for (svc of projectEntry.analysis!.services; track svc.name) {
                         <tr>
                           <td>{{ svc.name }}</td>
                           <td class="mono">{{ svc.interfaceName || '—' }}</td>
@@ -470,19 +822,19 @@
                   </table>
                 }
 
-                @if (analysis.databaseTables?.length) {
+                @if (projectEntry.analysis?.databaseTables?.length) {
                   <h4>Database Tables</h4>
                   <div class="tag-list">
-                    @for (t of analysis.databaseTables; track t) {
+                    @for (t of projectEntry.analysis!.databaseTables; track t) {
                       <span class="tag">{{ t }}</span>
                     }
                   </div>
                 }
 
-                @if (analysis.externalDependencies?.length) {
+                @if (projectEntry.analysis?.externalDependencies?.length) {
                   <h4>External Dependencies</h4>
                   <div class="tag-list">
-                    @for (d of analysis.externalDependencies; track d) {
+                    @for (d of projectEntry.analysis!.externalDependencies; track d) {
                       <span class="tag">{{ d }}</span>
                     }
                   </div>

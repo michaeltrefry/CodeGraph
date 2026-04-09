@@ -22,6 +22,7 @@ using CodeGraph.Services.Memory;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Query;
+using CodeGraph.Services.Reviews;
 
 namespace CodeGraph.Api;
 
@@ -93,6 +94,7 @@ public static class Startup
 
         // Lint / Trust scoring
         services.AddSingleton<LintResultCache>();
+        services.AddSingleton<DiagnosticDetailCache>();
         services.AddTransient<ILintRunner>(sp => new CompositeLintRunner(
             sp.GetRequiredService<LintResultCache>(),
             sp.GetRequiredService<TypeScriptServerManager>(),
@@ -128,6 +130,13 @@ public static class Startup
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
         services.AddTransient<IProjectService, ProjectService>();
         services.AddTransient<IProjectQueryService, ProjectQueryService>();
+        services.AddSingleton<IProjectReviewBackgroundRunner, ProjectReviewBackgroundRunner>();
+        services.AddSingleton<IRepositoryReviewBackgroundRunner, RepositoryReviewBackgroundRunner>();
+        services.AddTransient<IRepositoryReviewRecoveryService, RepositoryReviewRecoveryService>();
+        services.AddTransient<ProjectReviewService>();
+        services.AddTransient<IProjectReviewService>(sp => sp.GetRequiredService<ProjectReviewService>());
+        services.AddTransient<RepositoryReviewService>();
+        services.AddTransient<IRepositoryReviewService>(sp => sp.GetRequiredService<RepositoryReviewService>());
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
@@ -262,6 +271,9 @@ public static class Startup
         var exclusionService = serviceProvider.GetRequiredService<IExclusionService>();
         var repoSourceOptions = serviceProvider.GetRequiredService<IOptions<RepositorySourceOptions>>().Value;
         await exclusionService.SeedFromConfigAsync(repoSourceOptions.ExcludedGroups);
+
+        var repositoryReviewRecoveryService = serviceProvider.GetRequiredService<IRepositoryReviewRecoveryService>();
+        await repositoryReviewRecoveryService.RecoverInterruptedRunsAsync();
     }
 
     private static void RegisterRepoProvider(IServiceCollection services)

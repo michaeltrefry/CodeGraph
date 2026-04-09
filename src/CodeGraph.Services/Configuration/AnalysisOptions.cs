@@ -10,6 +10,7 @@ public class AnalysisOptions
     public int MaxParallelAnalyses { get; set; } = 5;
 
     public AssistantOptions Assistant { get; set; } = new();
+    public ReviewOptions Review { get; set; } = new();
 
     /// <summary>Legacy compatibility shim for existing assistant token bindings.</summary>
     public int AssistantMaxTokens
@@ -106,6 +107,15 @@ public class AssistantOptions
     public AssistantAnthropicOptions Anthropic { get; set; } = new();
     public AssistantOpenAiCompatibleOptions OpenAi { get; set; } = new();
     public AssistantOpenAiCompatibleOptions Local { get; set; } = new();
+}
+
+public class ReviewOptions
+{
+    public string Model { get; set; } = "";
+    public int MaxFilesToInspect { get; set; } = 25;
+    public int MaxSourceCharsPerFile { get; set; } = 12_000;
+    public int MaxInspectionPasses { get; set; } = 4;
+    public int MaxFindings { get; set; } = 20;
 }
 
 public class AssistantAnthropicOptions

@@ -7,7 +7,7 @@ namespace CodeGraph.Data;
 /// Extends focused sub-interfaces for analysis, metrics, and migrations.
 /// Consumers that only need a subset should depend on the narrower interface.
 /// </summary>
-public interface IGraphStore : IAnalysisStore, IMetricsStore, IMigrationRunner
+public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMigrationRunner
 {
     // Repositories
     Task UpsertRepositoryAsync(RepositoryEntity repository);

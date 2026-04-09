@@ -15,6 +15,8 @@ public class VitalsAnalyzer(
     IOptions<AnalysisOptions> analysisOptionsAccessor,
     IFileSystem fileSystem,
     ILintRunner lintRunner,
+    LintResultCache lintCache,
+    DiagnosticDetailCache diagnosticDetailCache,
     ILogger<VitalsAnalyzer> logger) : IVitalsAnalyzer
 {
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
@@ -80,7 +82,8 @@ public class VitalsAnalyzer(
             f.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".jsx", StringComparison.OrdinalIgnoreCase));
-        var lintTask = hasLintableFiles
+        var hasRoslynLintResults = lintCache.HasResults(projectName);
+        var lintTask = hasLintableFiles || hasRoslynLintResults
             ? lintRunner.LintProjectAsync(repoPath, ct)
             : Task.FromResult<IReadOnlyDictionary<string, LintResult>>(
                 new Dictionary<string, LintResult>());
@@ -91,10 +94,19 @@ public class VitalsAnalyzer(
         var coupling = await couplingTask;
         var knowledge = await knowledgeTask;
         var lint = await lintTask;
+        var diagnostics = diagnosticDetailCache.Take(projectName);
 
         if (lint.Count > 0)
-            logger.LogInformation("ESLint found issues in {Count} files for {Project}",
+            logger.LogInformation("Lint found issues in {Count} files for {Project}",
                 lint.Count, projectName);
+
+        await store.DeleteProjectDiagnosticsAsync(projectName);
+        if (diagnostics.Count > 0)
+        {
+            await store.UpsertProjectDiagnosticsBatchAsync(projectName, diagnostics);
+            logger.LogInformation("Persisted {Count} diagnostics for {Project}",
+                diagnostics.Count, projectName);
+        }
 
         // 3. Run structural complexity
         var complexity = ComputeComplexityBatch(repoPath, filePaths);
