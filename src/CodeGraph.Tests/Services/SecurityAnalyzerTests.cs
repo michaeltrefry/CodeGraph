@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
+using CodeGraph.Extractors.CSharp;
 using CodeGraph.Models.Responses;
+using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Tests.Extractors;
 
@@ -17,7 +19,13 @@ public class SecurityAnalyzerTests
         _store = new InMemoryGraphStore();
         _files = new InMemorySourceFileProvider();
         var httpFactory = new StubHttpClientFactory();
-        _analyzer = new SecurityAnalyzer(_store, httpFactory, _files, NullLogger<SecurityAnalyzer>.Instance);
+        _analyzer = new SecurityAnalyzer(
+            _store,
+            httpFactory,
+            new LocalFileSystem(),
+            new NuGetReferenceExtractor(),
+            _files,
+            NullLogger<SecurityAnalyzer>.Instance);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
@@ -369,6 +377,75 @@ public class SecurityAnalyzerTests
         Find(result, "secret", "Hardcoded Password").ShouldNotBeNull();
     }
 
+    [Fact]
+    public async Task IgnoresSecretsInTestProjects()
+    {
+        _files.AddFile("src/CodeGraph.Tests/Services/SecurityAnalyzerTests.cs", """
+            var key = "AKIAI44QH8DHBKUPLDRE";
+            var jwt_secret = "mySuper$ecretSigningKey2024!@#";
+            """);
+
+        var result = await ScanAsync();
+
+        result.Findings.Where(f => f.Category == "secret").ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task DetectsApiKeyInJsonConfig()
+    {
+        _files.AddFile("src/appsettings.json", """
+            { "ApiKey": "sk-abcdefghijklmnopqrstuvwxyz123456" }
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "secret", "API Key");
+        finding.ShouldNotBeNull();
+        finding!.FilePath.ShouldBe("src/appsettings.json");
+    }
+
+    [Fact]
+    public async Task DetectsProviderApiTokenWithoutSecretNamedVariable()
+    {
+        _files.AddFile("src/OpenAiClient.cs", """
+            var modelCredential = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890";
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "secret", "Service API Token");
+        finding.ShouldNotBeNull();
+        finding!.Severity.ShouldBe("critical");
+    }
+
+    [Fact]
+    public async Task DetectsConfigSecretField()
+    {
+        _files.AddFile("src/appsettings.json", """
+            { "clientSecret": "sup3r-Secret-Client-Key-2026" }
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "secret", "Config Secret");
+        finding.ShouldNotBeNull();
+        finding!.Severity.ShouldBe("high");
+    }
+
+    [Fact]
+    public async Task DetectsCredentialedUrl()
+    {
+        _files.AddFile("src/appsettings.json", """
+            { "WebhookUrl": "https://service-user:Sup3rSecret!@api.example.com/hook" }
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "secret", "Credentialed URL");
+        finding.ShouldNotBeNull();
+        finding!.Severity.ShouldBe("high");
+    }
+
     // ── Entropy helper unit tests ────────────────────────────────────────
 
     [Theory]
@@ -397,6 +474,85 @@ public class SecurityAnalyzerTests
     public void IsSensitiveConfigFile_ClassifiesCorrectly(string path, bool expected)
     {
         SecurityAnalyzer.IsSensitiveConfigFile(path).ShouldBe(expected);
+    }
+
+    [Theory]
+    [InlineData("src/CodeGraph.Tests/Services/SecurityAnalyzerTests.cs", true)]
+    [InlineData("tests/fixtures/leaky-config.json", true)]
+    [InlineData("src/examples/demo.ts", true)]
+    [InlineData("src/CodeGraph.Api/Startup.cs", false)]
+    [InlineData("src/Services/AuthService.cs", false)]
+    public void ShouldSkipFileForSecurityScan_ClassifiesCorrectly(string path, bool expected)
+    {
+        SecurityAnalyzer.ShouldSkipFileForSecurityScan(path).ShouldBe(expected);
+    }
+
+    [Fact]
+    public void IsTestProjectFile_DetectsIsTestProjectFlag()
+    {
+        var refs = new List<(string PackageName, string Version)>
+        {
+            ("Dapper", "2.1.0")
+        };
+
+        var result = SecurityAnalyzer.IsTestProjectFile(
+            "src/MyProject/MyProject.csproj",
+            """
+            <Project>
+              <PropertyGroup>
+                <IsTestProject>true</IsTestProject>
+              </PropertyGroup>
+            </Project>
+            """,
+            refs);
+
+        result.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void IsTestProjectFile_DetectsTestPackageReferences()
+    {
+        var refs = new List<(string PackageName, string Version)>
+        {
+            ("Microsoft.NET.Test.Sdk", "17.11.1"),
+            ("xunit", "2.9.2")
+        };
+
+        var result = SecurityAnalyzer.IsTestProjectFile(
+            "src/MyProject/MyProject.csproj",
+            "<Project />",
+            refs);
+
+        result.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void FilterPackagesForVulnerabilityScan_IgnoresPackagesOnlyUsedInTestProjects()
+    {
+        var packages = SecurityAnalyzer.FilterPackagesForVulnerabilityScan(
+        [
+            ("xunit", "2.9.2", true),
+            ("coverlet.collector", "6.0.2", true),
+            ("Dapper", "2.1.0", false),
+            ("Shouldly", "4.3.0", true)
+        ]);
+
+        packages.Count.ShouldBe(1);
+        packages.ShouldContain(("Dapper", "2.1.0"));
+    }
+
+    [Fact]
+    public void FilterPackagesForVulnerabilityScan_KeepsPackagesSharedByProdAndTests()
+    {
+        var packages = SecurityAnalyzer.FilterPackagesForVulnerabilityScan(
+        [
+            ("Newtonsoft.Json", "13.0.3", true),
+            ("Newtonsoft.Json", "13.0.3", false),
+            ("xunit", "2.9.2", true)
+        ]);
+
+        packages.Count.ShouldBe(1);
+        packages.ShouldContain(("Newtonsoft.Json", "13.0.3"));
     }
 
     [Fact]
@@ -571,6 +727,85 @@ public class SecurityAnalyzerTests
         Find(result, "attack_surface", "SQL injection").ShouldBeNull();
     }
 
+    [Fact]
+    public async Task IgnoresAttackSurfaceExamplesInFixtureFiles()
+    {
+        _files.AddFile("tests/fixtures/PublicController.cs", """
+            [ApiController]
+            [Route("api/public")]
+            public class PublicController : ControllerBase
+            {
+                [HttpGet]
+                public IActionResult Get() => Ok();
+            }
+            """);
+
+        var result = await ScanAsync();
+
+        result.Findings.Where(f => f.Category == "attack_surface").ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task DetectsPermissiveCorsPolicy()
+    {
+        _files.AddFile("src/Startup.cs", """
+            services.AddCors(options => options.AddPolicy("open", policy =>
+                policy.AllowAnyOrigin()
+                    .AllowAnyHeader()
+                    .AllowAnyMethod()));
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "attack_surface", "Permissive CORS");
+        finding.ShouldNotBeNull();
+        finding!.Severity.ShouldBe("medium");
+    }
+
+    [Fact]
+    public async Task DetectsTlsValidationBypass()
+    {
+        _files.AddFile("src/HttpClientFactory.cs", """
+            var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            };
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "attack_surface", "TLS certificate validation bypass");
+        finding.ShouldNotBeNull();
+        finding!.Severity.ShouldBe("high");
+    }
+
+    [Fact]
+    public async Task DetectsNonLocalHttpEndpointInConfig()
+    {
+        _files.AddFile("src/appsettings.json", """
+            { "WebhookBaseUrl": "http://api.example.com/v1" }
+            """);
+
+        var result = await ScanAsync();
+
+        var finding = Find(result, "attack_surface", "Non-local HTTP endpoint");
+        finding.ShouldNotBeNull();
+        finding!.Severity.ShouldBe("medium");
+        finding.FilePath.ShouldBe("src/appsettings.json");
+    }
+
+    [Fact]
+    public async Task IgnoresLocalHttpEndpointInConfig()
+    {
+        _files.AddFile("src/appsettings.json", """
+            { "BaseUrl": "http://localhost:1234/v1" }
+            """);
+
+        var result = await ScanAsync();
+
+        Find(result, "attack_surface", "Non-local HTTP endpoint").ShouldBeNull();
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  SCORING
     // ═══════════════════════════════════════════════════════════════════
@@ -626,6 +861,29 @@ public class SecurityAnalyzerTests
         var result = await ScanAsync();
 
         result.SecurityScore.ShouldBeGreaterThanOrEqualTo(1.0);
+    }
+
+    [Fact]
+    public async Task RepeatedFindingsInOneFileScoreBetterThanSpreadAcrossFiles()
+    {
+        _files.AddFile("src/one-place.cs", """
+            var key1 = "AKIAI44QH8DHBKUPLDRE";
+            var key2 = "AKIAI44QH8DHBKUPLDRF";
+            var key3 = "AKIAI44QH8DHBKUPLDRG";
+            """);
+
+        var concentrated = await ScanAsync();
+
+        _files.AddFile("src/one.cs", """var key = "AKIAI44QH8DHBKUPLDRH";""");
+        _files.AddFile("src/two.cs", """var key = "AKIAI44QH8DHBKUPLDRI";""");
+        _files.AddFile("src/three.cs", """var key = "AKIAI44QH8DHBKUPLDRJ";""");
+        _files.AddFile("src/one-place.cs", "// cleaned");
+
+        var spread = await ScanAsync();
+
+        concentrated.CriticalCount.ShouldBe(3);
+        spread.CriticalCount.ShouldBe(3);
+        spread.SecurityScore.ShouldBeLessThan(concentrated.SecurityScore);
     }
 
     // ═══════════════════════════════════════════════════════════════════

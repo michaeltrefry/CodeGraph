@@ -226,6 +226,11 @@
   display: inline-block;
 
   &.unclustered { background: #9ca3af; }
+  &.isolated {
+    background: #e5e7eb;
+    border: 1px dashed #94a3b8;
+    box-sizing: border-box;
+  }
 }
 
 .legend-ring {

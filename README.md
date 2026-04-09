@@ -317,6 +317,28 @@ cd CodeGraphWeb && npm install && npm start
 | POST | `/api/admin/processBatchAnalysis` | Process completed Anthropic batches |
 | POST | `/api/admin/discover` | Auto-discover repos from the configured source provider |
 
+### Optional Git Hooks
+
+This repo includes versioned Git hooks in `.githooks/` plus an installer:
+
+```bash
+./tools/install-git-hooks.sh
+```
+
+The hooks are gated to `main` by default:
+
+- `post-commit` triggers repository indexing only
+- `post-merge` triggers repository indexing plus analysis
+
+Both hooks publish to the current `POST /api/settings/processRepos` endpoint asynchronously so they do not block Git for long.
+
+Optional environment overrides:
+
+- `CODEGRAPH_API_URL` — defaults to `http://localhost:5037`
+- `CODEGRAPH_HOOK_MAIN_BRANCH` — defaults to `main`
+- `CODEGRAPH_HOOK_REPO_NAME` — defaults to the repo folder name
+- `CODEGRAPH_HOOK_TIMEOUT_SECONDS` — defaults to `5`
+
 ## MCP Server
 
 The MCP server is hosted within the API project via HTTP transport at `http://localhost:5037`. Add it to your MCP client configuration:

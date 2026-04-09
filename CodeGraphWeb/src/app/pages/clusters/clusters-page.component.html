@@ -14,9 +14,9 @@
 
   @if (loading()) {
     <div class="loading-message">Loading cluster data...</div>
-  } @else if (clusters().length === 0) {
+  } @else if (graphData() && graphData()!.nodes.length === 0) {
     <div class="empty-message">
-      No clusters detected yet. Clusters are computed automatically after repositories are indexed and cross-repo edges are linked.
+      No repositories have been indexed yet.
     </div>
   } @else {
     <div class="clusters-body">
@@ -58,6 +58,9 @@
               }
               <span class="legend-item">
                 <span class="legend-dot unclustered"></span> Foundational
+              </span>
+              <span class="legend-item">
+                <span class="legend-dot isolated"></span> Isolated
               </span>
               <span class="legend-item bridge-item">
                 <span class="legend-ring"></span> Bridge repo
@@ -122,41 +125,47 @@
       <!-- List View -->
       @if (viewMode() === 'list') {
         <div class="list-panel">
-          @for (cluster of clusters(); track cluster.clusterId) {
-            <div class="cluster-card" (click)="selectCluster(cluster.clusterId)">
-              <div class="cluster-card-header">
-                <span class="cluster-dot" [style.background]="getClusterColor(cluster.clusterId)"></span>
-                <h2>{{ getClusterLabel(cluster) }}</h2>
-                <span class="cluster-member-count">{{ cluster.memberCount }} repos</span>
-              </div>
-              @if (selectedClusterId() === cluster.clusterId && clusterDetail()) {
-                <div class="cluster-card-body">
-                  <div class="detail-stats compact">
-                    <span>Internal: {{ clusterDetail()!.internalEdgeCount }}</span>
-                    <span>External: {{ clusterDetail()!.externalEdgeCount }}</span>
-                  </div>
-                  <div class="member-list compact">
-                    @for (member of clusterDetail()!.members; track member.projectName) {
-                      <div class="member-row" (click)="navigateToRepo(member.projectName); $event.stopPropagation()">
-                        <span class="member-name">{{ member.projectName }}</span>
-                        @if (member.betweennessCentrality > 0.01) {
-                          <span class="badge badge-red">bridge</span>
+          @if (clusters().length === 0) {
+            <div class="empty-message">
+              No connected clusters yet. Switch to Graph view to see isolated repositories.
+            </div>
+          } @else {
+            @for (cluster of clusters(); track cluster.clusterId) {
+              <div class="cluster-card" (click)="selectCluster(cluster.clusterId)">
+                <div class="cluster-card-header">
+                  <span class="cluster-dot" [style.background]="getClusterColor(cluster.clusterId)"></span>
+                  <h2>{{ getClusterLabel(cluster) }}</h2>
+                  <span class="cluster-member-count">{{ cluster.memberCount }} repos</span>
+                </div>
+                @if (selectedClusterId() === cluster.clusterId && clusterDetail()) {
+                  <div class="cluster-card-body">
+                    <div class="detail-stats compact">
+                      <span>Internal: {{ clusterDetail()!.internalEdgeCount }}</span>
+                      <span>External: {{ clusterDetail()!.externalEdgeCount }}</span>
+                    </div>
+                    <div class="member-list compact">
+                      @for (member of clusterDetail()!.members; track member.projectName) {
+                        <div class="member-row" (click)="navigateToRepo(member.projectName); $event.stopPropagation()">
+                          <span class="member-name">{{ member.projectName }}</span>
+                          @if (member.betweennessCentrality > 0.01) {
+                            <span class="badge badge-red">bridge</span>
+                          }
+                        </div>
+                      }
+                    </div>
+                    @if (clusterDetail()!.topConnections.length > 0) {
+                      <div class="connection-list compact">
+                        @for (conn of clusterDetail()!.topConnections; track conn.targetClusterId) {
+                          <div class="connection-row">
+                            &rarr; {{ getClusterLabelById(conn.targetClusterId) }}: {{ conn.edgeCount }} edges
+                          </div>
                         }
                       </div>
                     }
                   </div>
-                  @if (clusterDetail()!.topConnections.length > 0) {
-                    <div class="connection-list compact">
-                      @for (conn of clusterDetail()!.topConnections; track conn.targetClusterId) {
-                        <div class="connection-row">
-                          &rarr; {{ getClusterLabelById(conn.targetClusterId) }}: {{ conn.edgeCount }} edges
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
-              }
-            </div>
+                }
+              </div>
+            }
           }
         </div>
       }

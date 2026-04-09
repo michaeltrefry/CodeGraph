@@ -74,54 +74,6 @@
       </div>
     </div>
 
-    <!-- Summary -->
-    @if (d.dotnetSupport; as support) {
-      <div class="card">
-        <div class="card-header">
-          <h2>.NET Support</h2>
-          <span class="support-status-pill"
-                [style.background]="supportBadgeColor(support.overallStatus)">
-            {{ supportStatusLabel(support.overallStatus) }}
-          </span>
-        </div>
-        <div class="support-grid">
-          @if (support.sdk; as sdk) {
-            <div class="support-row">
-              <span class="meta-label">SDK:</span>
-              <span>{{ sdk.version }}</span>
-              <span class="support-inline-status"
-                    [style.color]="supportBadgeColor(sdk.supportStatus)">
-                {{ supportStatusLabel(sdk.supportStatus) }}
-              </span>
-              @if (sdk.supportEndedOn) {
-                <span class="muted">ended {{ formatDate(sdk.supportEndedOn) }}</span>
-              }
-            </div>
-          }
-          @if (support.targetFrameworks.length > 0) {
-            <div class="support-row">
-              <span class="meta-label">Targets:</span>
-              <div class="support-target-list">
-                @for (target of support.targetFrameworks; track target.moniker) {
-                  <span class="support-target-pill">
-                    {{ target.displayName }}
-                    <span class="support-target-status"
-                          [style.color]="supportBadgeColor(target.supportStatus)">
-                      {{ supportStatusLabel(target.supportStatus) }}
-                    </span>
-                    @if (target.supportEndedOn) {
-                      <span class="muted">· ended {{ formatDate(target.supportEndedOn) }}</span>
-                    }
-                  </span>
-                }
-              </div>
-            </div>
-          }
-        </div>
-        <div class="summary-meta">{{ support.summary }}</div>
-      </div>
-    }
-
     @if (d.summary) {
       <div class="card">
         <div class="card-header">
@@ -170,6 +122,67 @@
                   <span class="stat-value stat-danger">{{ h.repoHealth.alertCount }}</span>
                   <span class="stat-label">Alerts</span>
                 </div>
+                @if (h.repoHealth.scorePenalty > 0) {
+                  <div class="health-stat">
+                    <span class="stat-value stat-danger">-{{ h.repoHealth.scorePenalty.toFixed(1) }}</span>
+                    <span class="stat-label">Support penalty</span>
+                  </div>
+                }
+              </div>
+            }
+
+            @if (h.dotnetSupport; as support) {
+              <div class="support-health-section">
+                <div class="support-health-header">
+                  <h3 class="health-section-title">.NET Support</h3>
+                  <span class="support-status-pill"
+                        [style.background]="supportBadgeColor(support.overallStatus)">
+                    {{ supportStatusLabel(support.overallStatus) }}
+                  </span>
+                </div>
+
+                @if (h.repoHealth && h.repoHealth.scorePenalty > 0) {
+                  <div class="support-penalty-note">
+                    Health score includes a -{{ h.repoHealth.scorePenalty.toFixed(1) }} penalty because this repo is {{ supportStatusLabel(support.overallStatus).toLowerCase() }}.
+                    <span class="muted">Base health {{ h.repoHealth.baseOverallHealth.toFixed(1) }}/10.</span>
+                  </div>
+                }
+
+                <div class="support-grid">
+                  @if (support.sdk; as sdk) {
+                    <div class="support-row">
+                      <span class="meta-label">SDK:</span>
+                      <span>{{ sdk.version }}</span>
+                      <span class="support-inline-status"
+                            [style.color]="supportBadgeColor(sdk.supportStatus)">
+                        {{ supportStatusLabel(sdk.supportStatus) }}
+                      </span>
+                      @if (sdk.supportEndedOn) {
+                        <span class="muted">ended {{ formatDate(sdk.supportEndedOn) }}</span>
+                      }
+                    </div>
+                  }
+                  @if (support.targetFrameworks.length > 0) {
+                    <div class="support-row">
+                      <span class="meta-label">Targets:</span>
+                      <div class="support-target-list">
+                        @for (target of support.targetFrameworks; track target.moniker) {
+                          <span class="support-target-pill">
+                            {{ target.displayName }}
+                            <span class="support-target-status"
+                                  [style.color]="supportBadgeColor(target.supportStatus)">
+                              {{ supportStatusLabel(target.supportStatus) }}
+                            </span>
+                            @if (target.supportEndedOn) {
+                              <span class="muted">· ended {{ formatDate(target.supportEndedOn) }}</span>
+                            }
+                          </span>
+                        }
+                      </div>
+                    </div>
+                  }
+                </div>
+                <div class="summary-meta">{{ support.summary }}</div>
               </div>
             }
 

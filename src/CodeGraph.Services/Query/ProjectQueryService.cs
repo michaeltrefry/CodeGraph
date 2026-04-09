@@ -44,6 +44,7 @@ public class ProjectQueryService(
 
         var healthSummaries = await store.GetProjectHealthSummariesAsync(name);
         var repoHealth = healthSummaries.FirstOrDefault(h => string.IsNullOrEmpty(h.DotnetProject));
+        var dotnetSupport = ResolveDotnetSupport(project);
 
         var crossRepoEdges = await store.FindCrossRepoEdgesAsync(name);
 
@@ -64,7 +65,7 @@ public class ProjectQueryService(
 
         return new ProjectDetailResponse(
             MapProjectListItem(project),
-            ResolveDotnetSupport(project),
+            dotnetSupport,
             MapSummary(summary),
             analyses.Select(MapAnalysis).ToList(),
             nodeCounts,
@@ -73,28 +74,45 @@ public class ProjectQueryService(
             outboundCount,
             inboundProjects,
             outboundProjects,
-            MapHealthSummary(repoHealth));
+            MapHealthSummary(repoHealth, dotnetSupport));
     }
 
     public async Task<ProjectHealthResponse?> GetHealthAsync(string name)
     {
-        var summaries = await store.GetProjectHealthSummariesAsync(name);
-        if (summaries.Count == 0)
+        var project = await store.GetRepositoryByName(name);
+        if (project is null)
             return null;
+
+        var summaries = await store.GetProjectHealthSummariesAsync(name);
+        var dotnetSupport = ResolveDotnetSupport(project);
+        var secSummary = await store.GetProjectSecuritySummaryAsync(name);
+
+        if (summaries.Count == 0)
+        {
+            if (dotnetSupport is null && secSummary is null)
+                return null;
+
+            return new ProjectHealthResponse(
+                null,
+                [],
+                [],
+                [],
+                secSummary is not null ? MapSecuritySummary(secSummary) : null,
+                dotnetSupport);
+        }
 
         var repoSummary = summaries.FirstOrDefault(s => string.IsNullOrEmpty(s.DotnetProject));
         var projectSummaries = summaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
         var hotspots = await store.GetHotspotsAsync(name, 10);
         var analyses = await store.GetProjectHealthAnalysesAsync(name);
 
-        var secSummary = await store.GetProjectSecuritySummaryAsync(name);
-
         return new ProjectHealthResponse(
-            MapHealthSummary(repoSummary),
-            projectSummaries.Select(MapHealthSummary).ToList()!,
+            MapHealthSummary(repoSummary, dotnetSupport),
+            projectSummaries.Select(summary => MapHealthSummary(summary)).ToList()!,
             hotspots.Select(MapFileMetrics).ToList(),
             analyses.Select(MapHealthAnalysis).ToList(),
-            secSummary is not null ? MapSecuritySummary(secSummary) : null);
+            secSummary is not null ? MapSecuritySummary(secSummary) : null,
+            dotnetSupport);
     }
 
     public async Task<IReadOnlyList<FileMetrics>> GetMetricsAsync(string name, string? dotnetProject, int top)
@@ -187,10 +205,24 @@ public class ProjectQueryService(
             a.DatabaseTables.ToList(),
             a.ModelUsed, a.UpdatedAt);
 
-    internal static ProjectHealthSummary? MapHealthSummary(ProjectHealthSummaryEntity? e) =>
-        e is null ? null : new ProjectHealthSummary(
-            e.Id, e.Project, e.DotnetProject, e.OverallHealth, e.TotalFiles,
-            e.HotspotCount, e.AlertCount, e.TopHotspots, e.ComputedAt);
+    internal static ProjectHealthSummary? MapHealthSummary(ProjectHealthSummaryEntity? e, DotnetSupportInfo? dotnetSupport = null)
+    {
+        if (e is null)
+            return null;
+
+        var baseOverallHealth = e.OverallHealth;
+        var scorePenalty = dotnetSupport is not null && string.IsNullOrEmpty(e.DotnetProject)
+            ? DotnetSupportHealthPolicy.GetPenalty(dotnetSupport)
+            : 0;
+        var adjustedHealth = scorePenalty > 0
+            ? DotnetSupportHealthPolicy.ApplyPenalty(baseOverallHealth, dotnetSupport)
+            : baseOverallHealth;
+
+        return new ProjectHealthSummary(
+            e.Id, e.Project, e.DotnetProject, adjustedHealth, e.TotalFiles,
+            e.HotspotCount, e.AlertCount, e.TopHotspots, e.ComputedAt,
+            baseOverallHealth, scorePenalty);
+    }
 
     internal static FileMetrics MapFileMetrics(FileMetricsEntity e) =>
         new(e.Id, e.Project, e.FilePath, e.DotnetProject,

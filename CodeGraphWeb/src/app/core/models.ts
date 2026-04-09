@@ -162,6 +162,8 @@ export interface ProjectHealthSummary {
   alertCount: number;
   topHotspots?: string;
   computedAt: string;
+  baseOverallHealth: number;
+  scorePenalty: number;
 }
 
 export interface ProjectHealthAnalysis {
@@ -213,6 +215,7 @@ export interface ProjectHealthResponse {
   topHotspots: FileMetrics[];
   analyses: ProjectHealthAnalysis[];
   securitySummary?: ProjectSecuritySummary;
+  dotnetSupport?: DotnetSupportInfo;
 }
 
 export interface FileMetrics {
