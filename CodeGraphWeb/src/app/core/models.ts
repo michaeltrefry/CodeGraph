@@ -209,6 +209,70 @@ export interface ProjectSecurityResponse {
   computedAt: string;
 }
 
+export interface StartProjectReviewResponse {
+  reviewRunId: number;
+  status: string;
+}
+
+export interface ProjectReviewRunResponse {
+  id: number;
+  project: string;
+  projectName: string;
+  reviewedCommitSha?: string;
+  status: string;
+  reviewMode: string;
+  promptVersion: string;
+  modelUsed?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface ProjectReviewFindingResponse {
+  severity: string;
+  category: string;
+  title: string;
+  explanation: string;
+  evidence: string;
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+  suggestedImprovement: string;
+  confidence: string;
+}
+
+export interface ProjectReviewResponse {
+  run: ProjectReviewRunResponse;
+  overview: string;
+  findings: ProjectReviewFindingResponse[];
+  strengths: string[];
+  reviewedAreas: string[];
+  skippedAreas: string[];
+  followUps: string[];
+}
+
+export interface ProjectDiagnosticResponse {
+  source: string;
+  diagnosticId: string;
+  severity: string;
+  message: string;
+  category?: string;
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+  computedAt: string;
+}
+
+export interface ProjectDiagnosticsResponse {
+  project: string;
+  dotnetProject?: string;
+  errorCount: number;
+  warningCount: number;
+  infoCount: number;
+  diagnostics: ProjectDiagnosticResponse[];
+}
+
 export interface ProjectHealthResponse {
   repoHealth?: ProjectHealthSummary;
   projectHealths: ProjectHealthSummary[];
@@ -217,6 +281,33 @@ export interface ProjectHealthResponse {
   securitySummary?: ProjectSecuritySummary;
   dotnetSupport?: DotnetSupportInfo;
 }
+
+export interface ProjectReviewStatusEvent {
+  reviewRunId: number;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface ProjectReviewProgressEvent {
+  reviewRunId: number;
+  status: string;
+  message: string;
+}
+
+export interface ProjectReviewErrorEvent {
+  reviewRunId: number;
+  status?: string;
+  message: string;
+}
+
+export type ProjectReviewStreamEvent =
+  | { type: 'status'; content: ProjectReviewStatusEvent }
+  | { type: 'progress'; content: ProjectReviewProgressEvent }
+  | { type: 'finding'; content: ProjectReviewFindingResponse }
+  | { type: 'completed'; content: ProjectReviewResponse }
+  | { type: 'error'; content: ProjectReviewErrorEvent };
 
 export interface FileMetrics {
   filePath: string;

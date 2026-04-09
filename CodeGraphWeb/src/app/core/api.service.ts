@@ -26,7 +26,11 @@ import {
   ClusterDetailResponse,
   ClusterGraphResponse,
   ImpactReport,
-  DatabaseHealthResponse
+  DatabaseHealthResponse,
+  ProjectDiagnosticsResponse,
+  ProjectReviewResponse,
+  ProjectReviewStreamEvent,
+  StartProjectReviewResponse
 } from './models';
 
 const API = environment.apiUrl;
@@ -69,6 +73,27 @@ export class ApiService {
   getProjectReadme(name: string): Observable<{ content: string }> {
     return this.http.get<{ content: string }>(
       `${API}/projects/${encodeURIComponent(name)}/readme`);
+  }
+
+  startProjectReview(repo: string, projectName: string, mode = 'standard'): Observable<StartProjectReviewResponse> {
+    return this.http.post<StartProjectReviewResponse>(
+      `${API}/projects/${encodeURIComponent(repo)}/reviews`,
+      { projectName, mode });
+  }
+
+  getLatestProjectReview(repo: string, projectName: string): Observable<ProjectReviewResponse> {
+    const params = new HttpParams().set('projectName', projectName);
+    return this.http.get<ProjectReviewResponse>(
+      `${API}/projects/${encodeURIComponent(repo)}/reviews/latest`,
+      { params });
+  }
+
+  getProjectDiagnostics(repo: string, dotnetProject?: string): Observable<ProjectDiagnosticsResponse> {
+    let params = new HttpParams();
+    if (dotnetProject) params = params.set('dotnetProject', dotnetProject);
+    return this.http.get<ProjectDiagnosticsResponse>(
+      `${API}/projects/${encodeURIComponent(repo)}/diagnostics`,
+      { params });
   }
 
   deleteProject(name: string): Observable<void> {
@@ -245,6 +270,44 @@ export class ApiService {
         } catch {
           // ignore malformed events
         }
+      }
+
+      if (done) break;
+    }
+  }
+
+  async *streamProjectReview(repo: string, reviewRunId: number, signal?: AbortSignal): AsyncGenerator<ProjectReviewStreamEvent> {
+    const response = await fetch(
+      `${API}/projects/${encodeURIComponent(repo)}/reviews/${reviewRunId}/stream`,
+      {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+        signal
+      });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+      } else {
+        buffer += decoder.decode(value, { stream: true });
+      }
+
+      const lines = buffer.split('\n\n');
+      buffer = done ? '' : (lines.pop() ?? '');
+
+      for (const chunk of lines) {
+        const line = chunk.trim();
+        if (!line.startsWith('data:')) continue;
+        yield JSON.parse(line.slice(5).trim()) as ProjectReviewStreamEvent;
       }
 
       if (done) break;
