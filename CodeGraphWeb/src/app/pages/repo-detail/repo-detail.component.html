@@ -131,6 +131,75 @@
               </div>
             }
 
+            @if (vitality(); as vitality) {
+              <div class="vitality-section">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;">
+                  <div>
+                    <h3 class="health-section-title">Project Vitality</h3>
+                    <p class="summary-meta vitality-subtitle">Long-history context for how active, dormant, or noisy this repo feels over time.</p>
+                  </div>
+                  @if (vitality.activityStatus) {
+                    <span style="padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;"
+                          [style.background]="vitalityStatusBackground(vitality.activityStatus)"
+                          [style.color]="vitalityStatusTone(vitality.activityStatus)">
+                      {{ vitality.activityStatus }}
+                    </span>
+                  }
+                </div>
+
+                <div class="review-meta-row">
+                  @if (vitality.historyMaturity) {
+                    <span class="review-meta-pill">History {{ historyMaturityLabel(vitality.historyMaturity) }}</span>
+                  }
+                  @if (vitality.firefightingStatus) {
+                    <span class="review-meta-pill">Firefighting {{ vitality.firefightingStatus }}</span>
+                  }
+                  <span class="review-meta-pill">Velocity {{ formatSignedPercent(vitality.velocityChangePercent) }}</span>
+                  <span class="review-meta-pill">{{ vitality.dormantMonths12m }} dormant month{{ vitality.dormantMonths12m === 1 ? '' : 's' }}</span>
+                </div>
+
+                @if (vitality.hasSufficientHistoryForTrends) {
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px;">
+                    <div style="padding:12px;border-radius:12px;border:1px solid #dbeafe;background:rgba(255,255,255,.85);">
+                      <span style="display:block;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;">Recent velocity</span>
+                      <span style="display:block;margin-top:4px;font-size:28px;font-weight:700;color:#0f172a;">{{ vitality.velocityLast6Months }}</span>
+                      <span style="display:block;margin-top:4px;font-size:12px;color:#64748b;line-height:1.4;">vs {{ vitality.velocityPrior6Months }} in the prior 6 months</span>
+                    </div>
+                    <div style="padding:12px;border-radius:12px;border:1px solid #dbeafe;background:rgba(255,255,255,.85);">
+                      <span style="display:block;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;">Firefighting rate</span>
+                      <span style="display:block;margin-top:4px;font-size:28px;font-weight:700;color:#0f172a;">{{ formatPercent(vitality.firefightingRate365d) }}</span>
+                      <span style="display:block;margin-top:4px;font-size:12px;color:#64748b;line-height:1.4;">{{ vitality.firefightingCommits365d }} classified commits over 365 days</span>
+                    </div>
+                    <div style="padding:12px;border-radius:12px;border:1px solid #dbeafe;background:rgba(255,255,255,.85);">
+                      <span style="display:block;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;">Inactive streak</span>
+                      <span style="display:block;margin-top:4px;font-size:28px;font-weight:700;color:#0f172a;">{{ vitality.maxInactiveStreakMonths }}</span>
+                      <span style="display:block;margin-top:4px;font-size:12px;color:#64748b;line-height:1.4;">longest zero-commit run in the last year</span>
+                    </div>
+                  </div>
+
+                  @if (hasVitalityChart(vitality)) {
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(24px,1fr));gap:8px;align-items:end;min-height:124px;">
+                      @for (point of vitality.monthlyCommits; track point.month) {
+                        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+                          <div style="display:flex;align-items:end;justify-content:center;width:100%;height:96px;"
+                               [title]="point.month + ': ' + point.commitCount + ' commits'">
+                            <div style="width:100%;max-width:20px;border-radius:999px 999px 4px 4px;"
+                                 [style.height.px]="vitalityBarHeight(point, vitality)"
+                                 [style.background]="vitalityBarTone(point)"></div>
+                          </div>
+                          <span style="font-size:11px;color:#64748b;">{{ point.month.slice(5) }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                } @else {
+                  <div class="review-message" style="margin-bottom:0;background:rgba(255,255,255,.8);border-style:dashed;">
+                    Trend signals are still immature for this repository, so vitality is shown cautiously until more history accumulates.
+                  </div>
+                }
+              </div>
+            }
+
             @if (h.dotnetSupport; as support) {
               <div class="support-health-section">
                 <div class="support-health-header">
@@ -270,12 +339,20 @@
                     <tr>
                       <th>File</th>
                       <th>
+                        Concern
+                        <span class="th-info" title="Primary Solo ranking signal for what is most likely creating repeated maintenance drag right now.">&#9432;</span>
+                      </th>
+                      <th>
                         Health
                         <span class="th-info" title="Composite score (1-10). Combines churn, complexity, coupling, knowledge risk, and lint signals. Below 4.0 = hotspot, below 2.5 = alert.">&#9432;</span>
                       </th>
                       <th>
+                        Fixes
+                        <span class="th-info" title="Weighted bug/fix commit signal over 365 days. Higher values suggest repeated fix activity.">&#9432;</span>
+                      </th>
+                      <th>
                         Churn
-                        <span class="th-info" title="Number of commits touching this file in the last 90 days. High churn + low health = likely source of bugs.">&#9432;</span>
+                        <span class="th-info" title="Short and long-window churn together. Persistent churn matters more than a single burst.">&#9432;</span>
                       </th>
                       <th>
                         Complexity
@@ -300,11 +377,26 @@
                       <tr>
                         <td class="mono hotspot-path">{{ f.filePath }}</td>
                         <td>
+                          <span class="health-score-inline" [style.color]="concernTone(f.concernScore)">
+                            {{ f.concernScore.toFixed(1) }}
+                          </span>
+                          @if (hotspotBadgeLabel(f); as badge) {
+                            <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ badge }}</div>
+                          }
+                        </td>
+                        <td>
                           <span class="health-score-inline" [style.color]="healthColor(f.healthScore)">
                             {{ f.healthScore.toFixed(1) }}
                           </span>
                         </td>
-                        <td>{{ f.changes }}</td>
+                        <td>
+                          <div>{{ f.bugFixCommits365d.toFixed(2) }}</div>
+                          <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ (f.bugFixRatio365d * 100).toFixed(0) }}% ratio</div>
+                        </td>
+                        <td>
+                          <div>{{ f.changes }} recent</div>
+                          <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ f.churn365d.toFixed(1) }} yearly · {{ f.recurringChurnScore.toFixed(2) }} persistence</div>
+                        </td>
                         <td>{{ f.complexityScore }}/100</td>
                         <td>
                           @if (f.truckFactor === 1) {
@@ -318,7 +410,10 @@
                             {{ f.trustScore.toFixed(2) }}
                           </span>
                         </td>
-                        <td>{{ f.riskScore.toFixed(0) }}</td>
+                        <td>
+                          <div>{{ f.riskScore.toFixed(0) }}</div>
+                          <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ f.role }}</div>
+                        </td>
                       </tr>
                     }
                   </tbody>

@@ -164,6 +164,29 @@ export interface ProjectHealthSummary {
   computedAt: string;
   baseOverallHealth: number;
   scorePenalty: number;
+  historyMaturity?: 'young' | 'growing' | 'mature' | 'Young' | 'Growing' | 'Mature';
+}
+
+export interface MonthlyCommitPoint {
+  month: string;
+  commitCount: number;
+}
+
+export interface RepositoryVitalitySummary {
+  historyMaturity?: 'young' | 'growing' | 'mature' | 'Young' | 'Growing' | 'Mature';
+  hasSufficientHistoryForTrends: boolean;
+  activityStatus?: string;
+  firefightingStatus?: string;
+  monthlyCommits: MonthlyCommitPoint[];
+  velocityLast6Months: number;
+  velocityPrior6Months: number;
+  velocityChangePercent: number;
+  dormantMonths12m: number;
+  maxInactiveStreakMonths: number;
+  firefightingCommits90d: number;
+  firefightingCommits365d: number;
+  firefightingRate90d: number;
+  firefightingRate365d: number;
 }
 
 export interface ProjectHealthAnalysis {
@@ -337,6 +360,7 @@ export interface ProjectHealthResponse {
   analyses: ProjectHealthAnalysis[];
   securitySummary?: ProjectSecuritySummary;
   dotnetSupport?: DotnetSupportInfo;
+  repositoryVitality?: RepositoryVitalitySummary;
 }
 
 export interface ProjectReviewStatusEvent {
@@ -407,6 +431,15 @@ export interface FileMetrics {
   trustScore: number;
   riskScore: number;
   role: string;
+  concernScore: number;
+  churn30d: number;
+  churn90d: number;
+  churn365d: number;
+  bugFixCommits90d: number;
+  bugFixCommits365d: number;
+  bugFixRatio365d: number;
+  bugFixWeightedTouches365d: number;
+  recurringChurnScore: number;
 }
 
 export interface ProjectDetailResponse {

@@ -229,7 +229,29 @@ public partial class GraphAssistant
             var h = report.RepoHealth;
             sb.AppendLine($"**Overall Health:** {h.OverallHealth:F1}/10");
             sb.AppendLine($"**Files:** {h.TotalFiles}, **Hotspots:** {h.HotspotCount}, **Alerts:** {h.AlertCount}");
+            if (!string.IsNullOrWhiteSpace(h.HistoryMaturity))
+                sb.AppendLine($"**History Maturity:** {h.HistoryMaturity}");
             sb.AppendLine();
+
+            if (h.HasSufficientHistoryForTrends || !string.IsNullOrWhiteSpace(h.HistoryMaturity))
+            {
+                sb.AppendLine("### Repository Vitality");
+                if (h.HasSufficientHistoryForTrends)
+                {
+                    if (!string.IsNullOrWhiteSpace(h.ActivityStatus))
+                        sb.AppendLine($"- **Activity:** {h.ActivityStatus}");
+                    if (!string.IsNullOrWhiteSpace(h.FirefightingStatus))
+                        sb.AppendLine($"- **Firefighting:** {h.FirefightingStatus}");
+                    sb.AppendLine($"- **Recent Velocity:** {h.VelocityLast6Months} vs {h.VelocityPrior6Months} commits over the last two 6-month windows ({h.VelocityChangePercent:+0.0;-0.0;0.0}%)");
+                    sb.AppendLine($"- **Dormancy:** {h.DormantMonths12m} zero-commit months in the last year, max inactive streak {h.MaxInactiveStreakMonths}");
+                    sb.AppendLine($"- **Firefighting Rates:** {h.FirefightingRate90d:P0} in 90d, {h.FirefightingRate365d:P0} in 365d");
+                }
+                else
+                {
+                    sb.AppendLine("- Trend signals are immature due to limited repo history.");
+                }
+                sb.AppendLine();
+            }
         }
 
         if (report.ProjectHealths.Count > 0)
@@ -244,7 +266,7 @@ public partial class GraphAssistant
         {
             sb.AppendLine("### Top Hotspots");
             foreach (var f in report.TopHotspots)
-                sb.AppendLine($"- **{f.FilePath}** — health: {f.HealthScore:F1}, trust: {f.TrustScore:F2}, risk: {f.RiskScore:F0}, complexity: {f.ComplexityScore}, churn: {f.Changes}");
+                sb.AppendLine($"- **{f.FilePath}** — concern: {f.ConcernScore:F1}, health: {f.HealthScore:F1}, fixes: {f.BugFixCommits365d:F2} ({f.BugFixRatio365d:P0}), recurring churn: {f.RecurringChurnScore:F2}, risk: {f.RiskScore:F0}");
             sb.AppendLine();
         }
 
