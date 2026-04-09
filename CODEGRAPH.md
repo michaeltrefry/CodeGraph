@@ -7,23 +7,27 @@
 
 ## Summary
 
-CodeGraph is a full-stack code intelligence platform that indexes source code repositories into a Neo4j graph database, performs AI-assisted analysis, and exposes APIs and visualizations for code search, impact analysis, security scanning, and knowledge management.
+CodeGraph is a multi-project .NET/Angular repository that ingests source code repositories, builds a property graph of their structure, and exposes analysis, search, and AI-assisted query capabilities over that graph.
 
-The repository is organized into a set of cooperating projects with clear layering:
+Core responsibilities by layer:
 
-**Data & Models layer**: `CodeGraph.Models` defines shared DTOs, message contracts, and entity types used across all projects. `CodeGraph.Data` declares persistence interfaces (IGraphStore, IAnalysisStore, IVectorStore, IWikiStore, IJobScheduleStore, etc.). `CodeGraph.Data.Neo4j` implements those interfaces with Cypher queries against a Neo4j graph database, handling code nodes/edges, AI batch results, vector embeddings, wiki pages, job schedules, and health/security metrics.
+1. **Extraction** – Four extractor projects parse source code into graph nodes and edges: CodeGraph.Extractors.CSharp (Roslyn-based, handles C#/.NET solutions, DI registrations, HTTP routes, NuGet refs), CodeGraph.Extractors.TypeScript (spawns a Node.js Tree-sitter server for TypeScript/tsconfig analysis), CodeGraph.Extractors.TreeSitter (language-agnostic Tree-sitter backend for additional languages), and CodeGraph.Extractors.Sql (T-SQL parser for database objects and relationships). All implement a shared ICodeExtractor interface defined in CodeGraph.Services.
 
-**Extraction layer**: Multiple language-specific extractors implement a shared ICodeExtractor interface. `CodeGraph.Extractors.CSharp` uses Roslyn to analyze C# solutions, extracting classes, methods, DI registrations, HTTP routes, service bus usage, and NuGet references. `CodeGraph.Extractors.TypeScript` spawns an external Node.js server process for TypeScript AST extraction and linting. `CodeGraph.Extractors.TreeSitter` provides language-agnostic parsing via the Tree-sitter library. `CodeGraph.Extractors.Sql` parses T-SQL files to extract tables, views, stored procedures, and their relationships.
+2. **Data contracts** – CodeGraph.Data defines interfaces (IGraphStore, IAnalysisStore, IMetricsStore, IVectorStore, IWikiStore, IJobScheduleStore, IMemoryGraphStore, etc.) that abstract every persistence operation. CodeGraph.Data.Neo4j is the sole concrete implementation, translating those interfaces into Cypher queries against a Neo4j graph database, including vector embedding storage and cross-repository edge management.
 
-**Services layer**: `CodeGraph.Services` is the core business logic orchestrator. It manages the full pipeline from repository discovery (GitHub, GitLab, local folders) and file extraction through graph construction, cross-repository linking, community/cluster detection, security scanning, health metrics, semantic/vector search, batch LLM analysis (supporting Anthropic, OpenAI, Gemini, and local models), wiki management, and an AI chat/MCP tool interface.
+3. **Models** – CodeGraph.Models is the shared contract library: DTOs, MassTransit message types, API request/response records, memory graph entities, and exception types consumed by all other projects.
 
-**API layer**: `CodeGraph.Api` is an ASP.NET Core Web API exposing REST endpoints for graph queries, repository indexing, wiki management, memory store operations, and an AI assistant. It also hosts MassTransit message consumers that react to asynchronous pipeline events (indexing completion, batch analysis submission, synthesis completion). The frontend is an Angular application for graph visualization.
+4. **Business logic** – CodeGraph.Services orchestrates the full pipeline: repository discovery (GitHub, GitLab, local folders), file extraction dispatch, graph construction, cross-repo linking, community/cluster detection, security and health scanning, semantic/vector search, batch LLM analysis (Anthropic, OpenAI, Gemini, local models), wiki management, and an MCP tool/prompt layer for AI assistants.
 
-**Jobs layer**: `CodeGraph.Jobs` is a separate ASP.NET Core application providing HTTP endpoints and cron-scheduled background jobs for repository discovery, batch analysis processing, re-indexing, community detection, MCP doc regeneration, and graph relationship linking. It uses a dispatcher pattern to route job types to implementations.
+5. **API** – CodeGraph.Api is an ASP.NET Core Web API that exposes REST endpoints for graph queries, indexing triggers, wiki CRUD, memory graph operations, and an AI chat assistant. It also hosts MassTransit consumers that react to async pipeline events (indexing complete, batch analysis submitted, synthesis complete).
 
-**Test projects**: `CodeGraph.Tests` and `CodeGraph.Jobs.Tests` provide unit and integration tests using xUnit, with rich in-memory fakes and recording doubles for databases, HTTP clients, message buses, and LLM providers.
+6. **Jobs** – CodeGraph.Jobs is a separate ASP.NET Core host providing cron-scheduled background jobs: repository discovery, batch result processing, re-indexing, community detection, MCP doc regeneration, and graph relationship linking. It uses a dispatcher pattern to route job types to implementations.
 
-**Key external dependencies** include Neo4j (graph database), MassTransit (message bus), Roslyn (C# compilation/analysis), Tree-sitter (multi-language parsing), Node.js (TypeScript extraction subprocess), and multiple LLM provider SDKs (Anthropic, OpenAI, Gemini). The system has no observed external consumers — it appears to be a self-contained platform.
+7. **Frontend** – An Angular application (within the main CodeGraph project) visualizes the code graph, provides search and impact-analysis UIs, and surfaces the AI assistant.
+
+8. **Tests** – CodeGraph.Tests and CodeGraph.Jobs.Tests are xUnit projects that cover extractors, graph store operations, indexing pipelines, analysis services, repository providers, wiki/memory services, job scheduling, and DI registration, using in-memory fakes and recording doubles for all external dependencies.
+
+Key external dependencies: Neo4j (graph persistence), MassTransit (async messaging), Roslyn (C# analysis), Tree-sitter via Node.js (multi-language parsing), multiple LLM provider APIs (Anthropic, OpenAI, Gemini), GitHub/GitLab APIs, and standard ASP.NET Core infrastructure. No downstream repositories that depend on this one are identified in the provided evidence.
 
 ## Projects
 
