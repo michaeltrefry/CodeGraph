@@ -463,6 +463,7 @@
 
 .health-stats {
   display: flex;
+  flex-wrap: wrap;
   gap: 24px;
   padding: 12px 0 16px;
 }
@@ -512,6 +513,34 @@
   text-transform: uppercase;
   color: #6b7280;
   margin: 20px 0 10px;
+}
+
+.support-health-section {
+  border-top: 1px solid #f3f4f6;
+  padding: 16px 0 4px;
+}
+
+.support-health-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+
+  .health-section-title {
+    margin: 0;
+  }
+}
+
+.support-penalty-note {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .health-analysis-text {

@@ -174,24 +174,27 @@ public partial class BatchAnalysisService
         if (relativeFiles.Count == 0)
             return;
 
-        await RunGitAsync(repoRoot, BuildGitPathCommand("add", relativeFiles), ct);
+        await RunGitAsync(repoRoot, ["add", "--", .. relativeFiles], ct);
 
-        var stagedChanges = await TryRunGitAsync(repoRoot, BuildGitPathCommand("diff --cached --name-only --", relativeFiles), ct);
+        var stagedChanges = await TryRunGitAsync(repoRoot, ["diff", "--cached", "--name-only", "--", .. relativeFiles], ct);
         if (string.IsNullOrWhiteSpace(stagedChanges))
         {
             logger.LogInformation("Generated CODEGRAPH.md files for {RepoRoot} produced no staged changes", repoRoot);
             return;
         }
 
-        await RunGitAsync(repoRoot, $"commit -m \"{EscapeGitArgument(options.AutoCommitMessage)}\"", ct);
+        await RunGitAsync(repoRoot,
+            ["-c", $"user.name={options.AutoCommitAuthorName}",
+             "-c", $"user.email={options.AutoCommitAuthorEmail}",
+             "commit", "-m", options.AutoCommitMessage], ct);
 
         if (options.AutoPushDocs)
-            await RunGitAsync(repoRoot, "push origin HEAD", ct);
+            await RunGitAsync(repoRoot, ["push", "origin", "HEAD"], ct);
     }
 
-    private async Task<string> TryRunGitAsync(string repoRoot, string arguments, CancellationToken ct)
+    private async Task<string> TryRunGitAsync(string repoRoot, IReadOnlyList<string> arguments, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo("git", arguments)
+        var psi = new ProcessStartInfo("git")
         {
             WorkingDirectory = repoRoot,
             RedirectStandardOutput = true,
@@ -199,33 +202,34 @@ public partial class BatchAnalysisService
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        foreach (var argument in arguments)
+            psi.ArgumentList.Add(argument);
+
+        var formattedArgs = FormatGitArguments(arguments);
 
         using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start git {arguments}");
+            ?? throw new InvalidOperationException($"Failed to start git {formattedArgs}");
 
         var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
         var stderr = await proc.StandardError.ReadToEndAsync(ct);
         await proc.WaitForExitAsync(ct);
 
         if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"git {arguments} failed with exit code {proc.ExitCode}: {stderr}");
+            throw new InvalidOperationException($"git {formattedArgs} failed with exit code {proc.ExitCode}: {stderr}");
 
         return stdout;
     }
 
-    private async Task RunGitAsync(string repoRoot, string arguments, CancellationToken ct)
+    private async Task RunGitAsync(string repoRoot, IReadOnlyList<string> arguments, CancellationToken ct)
     {
         _ = await TryRunGitAsync(repoRoot, arguments, ct);
     }
 
-    private static string BuildGitPathCommand(string prefix, IReadOnlyList<string> paths)
+    private static string FormatGitArguments(IReadOnlyList<string> arguments)
     {
-        var escapedPaths = paths.Select(EscapeGitArgument);
-        return $"{prefix} {string.Join(" ", escapedPaths)}";
-    }
-
-    private static string EscapeGitArgument(string value)
-    {
-        return $"\"{value.Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
+        return string.Join(" ", arguments.Select(argument =>
+            argument.Any(char.IsWhiteSpace)
+                ? $"\"{argument.Replace("\"", "\\\"", StringComparison.Ordinal)}\""
+                : argument));
     }
 }

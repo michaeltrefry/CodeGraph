@@ -32,6 +32,7 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
       <div class="graph-legend">
         <span class="legend-item"><span class="legend-dot foundational"></span> Foundational</span>
         <span class="legend-item"><span class="legend-dot regular"></span> Application</span>
+        <span class="legend-item"><span class="legend-dot isolated"></span> Isolated</span>
         <span class="legend-hint">Scroll to zoom · Drag to pan · Click a node to navigate</span>
       </div>
     </div>
@@ -81,6 +82,11 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
     }
     .legend-dot.foundational { background: #f59e0b; }
     .legend-dot.regular { background: #3b82f6; }
+    .legend-dot.isolated {
+      background: #e5e7eb;
+      border: 1px dashed #94a3b8;
+      box-sizing: border-box;
+    }
     .legend-hint { margin-left: auto; font-style: italic; }
   `]
 })
@@ -136,19 +142,11 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
       edgeCounts.set(e.target, (edgeCounts.get(e.target) ?? 0) + e.count);
     }
 
-    // Only include nodes that have at least one cross-repo edge
-    const connectedNames = new Set<string>();
-    for (const e of rawEdges) {
-      connectedNames.add(e.source);
-      connectedNames.add(e.target);
-    }
-
     const radiusScale = d3.scaleSqrt()
       .domain([0, d3.max([...edgeCounts.values()]) ?? 1])
       .range([4, 20]);
 
     const nodes: SimNode[] = rawNodes
-      .filter(n => connectedNames.has(n.name))
       .map(n => {
         const ec = edgeCounts.get(n.name) ?? 0;
         return {
@@ -162,6 +160,7 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
       });
 
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const isolatedNodes = nodes.filter(n => n.edgeCount === 0);
 
     const links: SimLink[] = rawEdges
       .filter(e => nodeMap.has(e.source) && nodeMap.has(e.target))
@@ -172,19 +171,33 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
         types: e.typeCounts
       }));
 
-    // If no data, show message
     if (nodes.length === 0) {
       svg.append('text')
         .attr('x', width / 2).attr('y', height / 2)
         .attr('text-anchor', 'middle')
         .attr('fill', '#9ca3af')
-        .text('No cross-repo connections found.');
+        .text('No repositories found.');
       return;
     }
 
     const linkWidthScale = d3.scaleLinear()
       .domain([1, d3.max(links, l => l.count) ?? 1])
       .range([0.5, 4]);
+
+    const orbitRadius = Math.min(width, height) * 0.42;
+    const orbitTargets = new Map<string, { x: number; y: number }>();
+
+    isolatedNodes.forEach((node, index) => {
+      const angle = (2 * Math.PI * index) / Math.max(isolatedNodes.length, 1);
+      const target = {
+        x: width / 2 + orbitRadius * Math.cos(angle),
+        y: height / 2 + orbitRadius * Math.sin(angle)
+      };
+
+      node.x = target.x;
+      node.y = target.y;
+      orbitTargets.set(node.id, target);
+    });
 
     // Zoom
     const g = svg.append('g');
@@ -222,8 +235,8 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
 
     nodeG.append('circle')
       .attr('r', d => d.radius)
-      .attr('fill', d => d.isFoundational ? '#f59e0b' : '#3b82f6')
-      .attr('stroke', '#fff')
+      .attr('fill', d => d.edgeCount === 0 ? '#e5e7eb' : (d.isFoundational ? '#f59e0b' : '#3b82f6'))
+      .attr('stroke', d => d.edgeCount === 0 ? '#94a3b8' : '#fff')
       .attr('stroke-width', 1.5);
 
     nodeG.append('text')
@@ -236,7 +249,12 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
 
     // Tooltip on hover
     nodeG.append('title')
-      .text(d => `${d.id}\n${d.edgeCount} cross-repo edges${d.isFoundational ? '\n(foundational)' : ''}`);
+      .text(d => {
+        const edgeSummary = d.edgeCount === 0
+          ? 'No cross-repo edges'
+          : `${d.edgeCount} cross-repo edges`;
+        return `${d.id}\n${edgeSummary}${d.isFoundational ? '\n(foundational)' : ''}`;
+      });
 
     // Simulation
     this.simulation = d3.forceSimulation<SimNode>(nodes)
@@ -245,6 +263,10 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
         .distance(80))
       .force('charge', d3.forceManyBody().strength(-150))
       .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('orbitX', d3.forceX<SimNode>(d => orbitTargets.get(d.id)?.x ?? width / 2)
+        .strength(d => d.edgeCount === 0 ? 0.25 : 0.02))
+      .force('orbitY', d3.forceY<SimNode>(d => orbitTargets.get(d.id)?.y ?? height / 2)
+        .strength(d => d.edgeCount === 0 ? 0.25 : 0.02))
       .force('collision', d3.forceCollide<SimNode>().radius(d => d.radius + 8))
       .on('tick', () => {
         linkG

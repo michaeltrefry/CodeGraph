@@ -48,6 +48,16 @@ public class AnalysisOptions
     /// </summary>
     public string AutoCommitMessage { get; set; } = "docs(codegraph): update CODEGRAPH.md";
 
+    /// <summary>
+    /// Git author/committer name used for automatic CODEGRAPH.md commits.
+    /// </summary>
+    public string AutoCommitAuthorName { get; set; } = "CodeGraph";
+
+    /// <summary>
+    /// Git author/committer email used for automatic CODEGRAPH.md commits.
+    /// </summary>
+    public string AutoCommitAuthorEmail { get; set; } = "codegraph@localhost";
+
     public AnthropicAnalysisProviderOptions Anthropic { get; set; } = new();
     public OpenAiAnalysisProviderOptions OpenAi { get; set; } = new();
     public GeminiAnalysisProviderOptions Gemini { get; set; } = new();

@@ -5,7 +5,8 @@ public record ProjectHealthResponse(
     IReadOnlyList<ProjectHealthSummary> ProjectHealths,
     IReadOnlyList<FileMetrics> TopHotspots,
     IReadOnlyList<ProjectHealthAnalysis> Analyses,
-    ProjectSecuritySummary? SecuritySummary = null);
+    ProjectSecuritySummary? SecuritySummary = null,
+    DotnetSupportInfo? DotnetSupport = null);
 
 public record ProjectHealthSummary(
     long Id,
@@ -16,7 +17,9 @@ public record ProjectHealthSummary(
     int HotspotCount,
     int AlertCount,
     string? TopHotspots,
-    DateTime ComputedAt);
+    DateTime ComputedAt,
+    double BaseOverallHealth = 0,
+    double ScorePenalty = 0);
 
 public record FileMetrics(
     long Id,

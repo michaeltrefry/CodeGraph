@@ -102,6 +102,116 @@ public class DotnetSupportInspectorTests
         }
     }
 
+    [Fact]
+    public async Task GetHealthAsync_AppliesDotnetSupportPenaltyToRepoHealth()
+    {
+        var rootPath = CreateTempRepo();
+
+        try
+        {
+            File.WriteAllText(Path.Combine(rootPath, "global.json"), """
+                {
+                  "sdk": {
+                    "version": "2.1.802"
+                  }
+                }
+                """);
+            File.WriteAllText(Path.Combine(rootPath, "Legacy.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>netcoreapp2.1</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var store = new InMemoryGraphStore();
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "Legacy.Api",
+                LocalPath = rootPath,
+                Language = "C#",
+                Framework = ".NET"
+            });
+            await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
+            {
+                Project = "Legacy.Api",
+                OverallHealth = 6.4,
+                TotalFiles = 12,
+                HotspotCount = 2,
+                AlertCount = 1,
+                ComputedAt = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+            });
+
+            var service = new ProjectQueryService(
+                store,
+                Options.Create(new RepositorySourceOptions()));
+
+            var health = await service.GetHealthAsync("Legacy.Api");
+
+            health.ShouldNotBeNull();
+            health.DotnetSupport.ShouldNotBeNull();
+            health.DotnetSupport.OverallStatus.ShouldBe("out_of_support");
+            health.RepoHealth.ShouldNotBeNull();
+            health.RepoHealth.BaseOverallHealth.ShouldBe(6.4);
+            health.RepoHealth.ScorePenalty.ShouldBe(DotnetSupportHealthPolicy.OutOfSupportPenalty);
+            health.RepoHealth.OverallHealth.ShouldBe(3.9);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GetHealthAsync_ReturnsDotnetSupport_WhenVitalsSummaryIsMissing()
+    {
+        var rootPath = CreateTempRepo();
+
+        try
+        {
+            File.WriteAllText(Path.Combine(rootPath, "global.json"), """
+                {
+                  "sdk": {
+                    "version": "8.0.100"
+                  }
+                }
+                """);
+            File.WriteAllText(Path.Combine(rootPath, "Modern.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var store = new InMemoryGraphStore();
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "Modern.Api",
+                LocalPath = rootPath,
+                Language = "C#",
+                Framework = ".NET"
+            });
+
+            var service = new ProjectQueryService(
+                store,
+                Options.Create(new RepositorySourceOptions()));
+
+            var health = await service.GetHealthAsync("Modern.Api");
+
+            health.ShouldNotBeNull();
+            health.DotnetSupport.ShouldNotBeNull();
+            health.DotnetSupport.OverallStatus.ShouldBe("supported");
+            health.RepoHealth.ShouldBeNull();
+            health.ProjectHealths.ShouldBeEmpty();
+            health.TopHotspots.ShouldBeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     private static string CreateTempRepo()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-dotnet-support-{Guid.NewGuid():N}");

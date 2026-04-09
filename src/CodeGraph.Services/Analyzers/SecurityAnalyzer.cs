@@ -6,12 +6,15 @@ using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Models.Responses;
+using CodeGraph.Services.Extractors;
 
 namespace CodeGraph.Services.Analyzers;
 
 public class SecurityAnalyzer(
     IGraphStore store,
     IHttpClientFactory httpClientFactory,
+    IFileSystem fileSystem,
+    INuGetReferenceExtractor nugetReferenceExtractor,
     ISourceFileProvider sourceFileProvider,
     ILogger<SecurityAnalyzer> logger) : ISecurityAnalyzer
 {
@@ -26,29 +29,40 @@ public class SecurityAnalyzer(
         ("AWS Access Key", new Regex(@"AKIA[0-9A-Z]{16}", RegexOptions.Compiled, RegexTimeout),
             "critical", null, false),
 
+        ("Service API Token", new Regex(@"(?:gh[pousr]_[A-Za-z0-9]{20,255}|sk-(?:proj-)?[A-Za-z0-9_\-]{20,255}|AIza[0-9A-Za-z\-_]{35})", RegexOptions.Compiled, RegexTimeout),
+            "critical", null, false),
+
         ("Private Key", new Regex(@"-----BEGIN\s+(RSA|EC|DSA|OPENSSH)\s+PRIVATE\s+KEY-----", RegexOptions.Compiled, RegexTimeout),
             "critical", null, false),
 
         ("Connection String Password",
-            new Regex(@"(?:password|pwd)\s*=\s*[""']?([^;""'\s]{3,})", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            new Regex(@"(?:password|pwd)[""']?\s*[:=]\s*[""']?([^;""'\s]{3,})", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
             "high", null, true),
 
+        ("Credentialed URL",
+            new Regex(@"https?://[^/\s:@""']+:([^@\s/""']{3,})@[^/\s""']+", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            "high", null, false),
+
         ("Generic API Key",
-            new Regex(@"(?:api[_\-]?key|apikey|secret[_\-]?key)\s*[:=]\s*[""']([A-Za-z0-9+/=]{20,})[""']", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            new Regex(@"[""']?(?:api[_\-]?key|apikey|secret[_\-]?key)[""']?\s*[:=]\s*[""']([A-Za-z0-9_:/+\-=]{20,})[""']", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
             "medium", null, true),
 
+        ("Config Secret",
+            new Regex(@"[""']?(?:client[_\-]?secret|access[_\-]?token|refresh[_\-]?token|auth[_\-]?token|secret[_\-]?access[_\-]?key)[""']?\s*[:=]\s*[""']([^""']{10,})[""']", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            "high", null, true),
+
         ("JWT/Signing Secret",
-            new Regex(@"(?:jwt[_\-]?secret|signing[_\-]?key)\s*[:=]\s*[""']([^""']{10,})[""']", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            new Regex(@"[""']?(?:jwt[_\-]?secret|signing[_\-]?key)[""']?\s*[:=]\s*[""']([^""']{10,})[""']", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
             "high", null, true),
 
         ("Hardcoded Password Assignment",
-            new Regex(@"(?:password|passwd)\s*=\s*""([^""]{3,})""", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            new Regex(@"(?:password|passwd)[""']?\s*[:=]\s*""([^""]{3,})""", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
             "high", ".cs", true),
     ];
 
     // Placeholder values that aren't real secrets
     private static readonly Regex PlaceholderPattern = new(
-        @"(?:changeme|todo|example|placeholder|xxx|your[_\-]?key|replace[_\-]?me|dummy|test|sample|fake|mock)",
+        @"(?:changeme|todo|placeholder|xxx|your[_\-]?key|replace[_\-]?me|dummy|fake)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
 
     // False positive patterns — assignments to variables, property access, config lookups, empty/short values
@@ -95,6 +109,50 @@ public class SecurityAnalyzer(
         @"(?:BinaryFormatter|JavaScriptSerializer|TypeNameHandling\s*\.\s*(?:All|Auto|Objects|Arrays))",
         RegexOptions.Compiled, RegexTimeout);
 
+    private static readonly Regex PermissiveCorsPattern = new(
+        @"(?:AllowAnyOrigin\s*\(|SetIsOriginAllowed\s*\(\s*[^)]*=>\s*true)",
+        RegexOptions.Compiled | RegexOptions.Singleline, RegexTimeout);
+
+    private static readonly Regex AllowCredentialsPattern = new(
+        @"AllowCredentials\s*\(",
+        RegexOptions.Compiled, RegexTimeout);
+
+    private static readonly Regex TlsValidationBypassPattern = new(
+        @"(?:" +
+            @"(?:ServerCertificateCustomValidationCallback|RemoteCertificateValidationCallback)\s*=\s*(?:HttpClientHandler\.)?DangerousAcceptAnyServerCertificateValidator" +
+            @"|(?:ServerCertificateCustomValidationCallback|RemoteCertificateValidationCallback)\s*=\s*(?:\([^)]*\)|\w+)\s*=>\s*true" +
+            @"|(?:ServerCertificateCustomValidationCallback|RemoteCertificateValidationCallback)[\s\S]{0,160}return\s+true\s*;" +
+        @")",
+        RegexOptions.Compiled | RegexOptions.Singleline, RegexTimeout);
+
+    private static readonly Regex InsecureHttpEndpointPattern = new(
+        @"[""']http://(?!localhost(?=[:/""'])|127\.0\.0\.1(?=[:/""'])|0\.0\.0\.0(?=[:/""'])|host\.docker\.internal(?=[:/""'])|\[::1\])[^""'\s]+[""']",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout);
+
+    private static readonly HashSet<string> NonProductionPathMarkers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "test", "tests", "spec", "specs", "__tests__", "fixture", "fixtures",
+        "sample", "samples", "example", "examples", "mock", "mocks",
+        "stub", "stubs", "demo", "demos", "benchmark", "benchmarks"
+    };
+
+    private static readonly HashSet<string> KnownTestPackageNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Microsoft.NET.Test.Sdk",
+        "coverlet.collector",
+        "xunit",
+        "xunit.runner.visualstudio",
+        "NUnit",
+        "NUnit3TestAdapter",
+        "MSTest.TestAdapter",
+        "MSTest.TestFramework",
+        "FluentAssertions",
+        "Shouldly",
+        "Moq",
+        "NSubstitute",
+        "FakeItEasy"
+    };
+
     // ── Vulnerability cache (package@version → advisories) ─────────────
 
     private static readonly ConcurrentDictionary<string, (DateTime CachedAt, List<VulnAdvisory> Advisories)> VulnCache = new();
@@ -110,7 +168,7 @@ public class SecurityAnalyzer(
 
         // Run all three pillars in parallel
         var secretsTask = Task.Run(() => ScanForSecrets(repoPath, findings), ct);
-        var vulnTask = ScanVulnerablePackagesAsync(projectName, findings, ct);
+        var vulnTask = ScanVulnerablePackagesAsync(projectName, repoPath, findings, ct);
         var attackTask = Task.Run(() => ScanAttackSurface(repoPath, findings), ct);
 
         await Task.WhenAll(secretsTask, vulnTask, attackTask);
@@ -193,6 +251,8 @@ public class SecurityAnalyzer(
 
     internal static void ScanFileForSecrets(SourceFile file, ConcurrentBag<SecurityFinding> findings)
     {
+        if (ShouldSkipFileForSecurityScan(file.RelativePath)) return;
+
         var isSensitiveFile = IsSensitiveConfigFile(file.RelativePath);
 
         for (int lineNum = 0; lineNum < file.Lines.Length; lineNum++)
@@ -245,27 +305,16 @@ public class SecurityAnalyzer(
 
     // ── Pillar 2: Vulnerable NuGet Packages ─────────────────────────────
 
-    private async Task ScanVulnerablePackagesAsync(string projectName, ConcurrentBag<SecurityFinding> findings, CancellationToken ct)
+    private async Task ScanVulnerablePackagesAsync(string projectName, string repoPath, ConcurrentBag<SecurityFinding> findings, CancellationToken ct)
     {
         try
         {
-            // Get all NuGetPackage nodes for this project from the graph
-            var nugetNodes = await store.SearchNodesAsync(
-                projectName, "%", label: NodeLabel.NuGetPackage, limit: 500);
-
-            if (nugetNodes.Count == 0) return;
-
-            // Deduplicate by package name + version
-            var packages = nugetNodes
-                .Select(n => (
-                    Name: n.Name,
-                    Version: n.Properties.TryGetValue("version", out var v) ? v?.ToString() ?? "" : ""))
-                .Where(p => !string.IsNullOrEmpty(p.Version))
-                .Distinct()
-                .ToList();
+            var packages = await GetPackagesForVulnerabilityScanAsync(projectName, repoPath, ct);
 
             logger.LogInformation("Checking {Count} NuGet packages for vulnerabilities in {Project}",
                 packages.Count, projectName);
+
+            if (packages.Count == 0) return;
 
             using var client = httpClientFactory.CreateClient("nuget-vuln");
             client.DefaultRequestHeaders.UserAgent.ParseAdd("CodeGraph/1.0");
@@ -400,6 +449,96 @@ public class SecurityAnalyzer(
         }
     }
 
+    private async Task<List<(string Name, string Version)>> GetPackagesForVulnerabilityScanAsync(
+        string projectName, string repoPath, CancellationToken ct)
+    {
+        var localPackages = GetPackagesFromProjectFiles(repoPath);
+        if (localPackages.HasProjectFiles)
+            return localPackages.Packages;
+
+        // Fallback to graph when a local checkout isn't available.
+        var nugetNodes = await store.SearchNodesAsync(
+            projectName, "%", label: NodeLabel.NuGetPackage, limit: 500);
+
+        return nugetNodes
+            .Select(n => (
+                Name: n.Name,
+                Version: n.Properties.TryGetValue("version", out var v) ? v?.ToString() ?? "" : ""))
+            .Where(p => !string.IsNullOrEmpty(p.Version))
+            .Distinct()
+            .ToList();
+    }
+
+    private (bool HasProjectFiles, List<(string Name, string Version)> Packages) GetPackagesFromProjectFiles(string repoPath)
+    {
+        if (!fileSystem.DirectoryExists(repoPath))
+            return (false, []);
+
+        var csprojFiles = fileSystem.EnumerateFiles(repoPath, "*.csproj", SearchOption.AllDirectories).ToArray();
+        if (csprojFiles.Length == 0)
+            return (false, []);
+
+        var packageRefs = new List<(string Name, string Version, bool IsTestProject)>();
+
+        foreach (var csproj in csprojFiles)
+        {
+            try
+            {
+                var projectXml = fileSystem.ReadAllText(csproj);
+                var refs = nugetReferenceExtractor.ExtractFromProjectXml(projectXml);
+                var relativePath = fileSystem.GetRelativePath(repoPath, csproj);
+                var isTestProject = IsTestProjectFile(relativePath, projectXml, refs);
+
+                packageRefs.AddRange(refs.Select(r => (r.PackageName, r.Version, isTestProject)));
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Failed to inspect project file {Csproj} for package vulnerability filtering", csproj);
+            }
+        }
+
+        return (true, FilterPackagesForVulnerabilityScan(packageRefs));
+    }
+
+    internal static bool IsTestProjectFile(
+        string relativePath,
+        string projectXml,
+        IReadOnlyList<(string PackageName, string Version)> packageReferences)
+    {
+        if (ShouldSkipFileForSecurityScan(relativePath))
+            return true;
+
+        if (Regex.IsMatch(projectXml, @"<IsTestProject>\s*true\s*</IsTestProject>", RegexOptions.IgnoreCase, RegexTimeout))
+            return true;
+
+        return packageReferences.Any(p => KnownTestPackageNames.Contains(p.PackageName));
+    }
+
+    internal static List<(string Name, string Version)> FilterPackagesForVulnerabilityScan(
+        IEnumerable<(string Name, string Version, bool IsTestProject)> packageReferences)
+    {
+        return packageReferences
+            .Where(p => !string.IsNullOrWhiteSpace(p.Name) && !string.IsNullOrWhiteSpace(p.Version))
+            .GroupBy(p => (p.Name, p.Version), StringTupleComparer.OrdinalIgnoreCase)
+            .Where(g => g.Any(p => !p.IsTestProject))
+            .Select(g => (g.Key.Name, g.Key.Version))
+            .ToList();
+    }
+
+    private sealed class StringTupleComparer : IEqualityComparer<(string Name, string Version)>
+    {
+        public static readonly StringTupleComparer OrdinalIgnoreCase = new();
+
+        public bool Equals((string Name, string Version) x, (string Name, string Version) y) =>
+            string.Equals(x.Name, y.Name, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.Version, y.Version, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Name, string Version) obj) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Name),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Version));
+    }
+
     // ── Pillar 3: Attack Surface Analysis ───────────────────────────────
 
     private void ScanAttackSurface(string repoPath, ConcurrentBag<SecurityFinding> findings)
@@ -408,55 +547,120 @@ public class SecurityAnalyzer(
 
         foreach (var file in sourceFileProvider.EnumerateSourceFiles(repoPath))
         {
-            if (!file.Extension.Equals(".cs", StringComparison.OrdinalIgnoreCase)) continue;
             ScanFileForAttackSurface(file, findings);
         }
     }
 
     internal static void ScanFileForAttackSurface(SourceFile file, ConcurrentBag<SecurityFinding> findings)
     {
+        if (ShouldSkipFileForSecurityScan(file.RelativePath)) return;
+
         var content = string.Join('\n', file.Lines);
+        var isCodeFile = file.Extension.Equals(".cs", StringComparison.OrdinalIgnoreCase);
 
-        // Check for SQL injection patterns (string interpolation in query methods)
-        for (int i = 0; i < file.Lines.Length; i++)
+        if (isCodeFile)
         {
-            var line = file.Lines[i];
-
-            try
+            // Check for SQL injection patterns (string interpolation in query methods)
+            for (int i = 0; i < file.Lines.Length; i++)
             {
-                if (SqlInjectionPattern.IsMatch(line))
+                var line = file.Lines[i];
+
+                try
                 {
-                    findings.Add(new SecurityFinding(
-                        Category: "attack_surface",
-                        Severity: "high",
-                        Title: "Potential SQL injection",
-                        Description: "String interpolation used directly in a database query method. Use parameterized queries instead.",
-                        FilePath: file.RelativePath,
-                        LineNumber: i + 1,
-                        Package: null, PackageVersion: null, Advisory: null));
+                    if (SqlInjectionPattern.IsMatch(line))
+                    {
+                        findings.Add(new SecurityFinding(
+                            Category: "attack_surface",
+                            Severity: "high",
+                            Title: "Potential SQL injection",
+                            Description: "String interpolation used directly in a database query method. Use parameterized queries instead.",
+                            FilePath: file.RelativePath,
+                            LineNumber: i + 1,
+                            Package: null, PackageVersion: null, Advisory: null));
+                    }
                 }
-            }
-            catch (RegexMatchTimeoutException) { }
+                catch (RegexMatchTimeoutException) { }
 
+                try
+                {
+                    if (UnsafeDeserializationPattern.IsMatch(line))
+                    {
+                        findings.Add(new SecurityFinding(
+                            Category: "attack_surface",
+                            Severity: "high",
+                            Title: "Unsafe deserialization",
+                            Description: "Use of unsafe deserialization method that could allow remote code execution",
+                            FilePath: file.RelativePath,
+                            LineNumber: i + 1,
+                            Package: null, PackageVersion: null, Advisory: null));
+                    }
+                }
+                catch (RegexMatchTimeoutException) { }
+            }
+        }
+
+        if (isCodeFile)
+        {
             try
             {
-                if (UnsafeDeserializationPattern.IsMatch(line))
+                var corsMatch = PermissiveCorsPattern.Match(content);
+                if (corsMatch.Success)
                 {
+                    var allowsCredentials = AllowCredentialsPattern.IsMatch(content);
                     findings.Add(new SecurityFinding(
                         Category: "attack_surface",
-                        Severity: "high",
-                        Title: "Unsafe deserialization",
-                        Description: "Use of unsafe deserialization method that could allow remote code execution",
+                        Severity: allowsCredentials ? "high" : "medium",
+                        Title: allowsCredentials ? "CORS allows any origin with credentials" : "Permissive CORS policy",
+                        Description: allowsCredentials
+                            ? "CORS policy appears to allow credentials while broadly trusting origins. Restrict origins explicitly."
+                            : "CORS policy allows any origin. Restrict origins explicitly for non-public APIs.",
                         FilePath: file.RelativePath,
-                        LineNumber: i + 1,
+                        LineNumber: GetLineNumberFromIndex(content, corsMatch.Index),
                         Package: null, PackageVersion: null, Advisory: null));
                 }
             }
             catch (RegexMatchTimeoutException) { }
         }
 
+        if (isCodeFile)
+        {
+            try
+            {
+                var tlsMatch = TlsValidationBypassPattern.Match(content);
+                if (tlsMatch.Success)
+                {
+                    findings.Add(new SecurityFinding(
+                        Category: "attack_surface",
+                        Severity: "high",
+                        Title: "TLS certificate validation bypass",
+                        Description: "HTTP client code appears to disable certificate validation, which can enable man-in-the-middle attacks.",
+                        FilePath: file.RelativePath,
+                        LineNumber: GetLineNumberFromIndex(content, tlsMatch.Index),
+                        Package: null, PackageVersion: null, Advisory: null));
+                }
+            }
+            catch (RegexMatchTimeoutException) { }
+        }
+
+        try
+        {
+            var httpMatch = InsecureHttpEndpointPattern.Match(content);
+            if (httpMatch.Success)
+            {
+                findings.Add(new SecurityFinding(
+                    Category: "attack_surface",
+                    Severity: "medium",
+                    Title: "Non-local HTTP endpoint",
+                    Description: "Code appears to call a non-local service over plain HTTP. Prefer HTTPS unless the endpoint is intentionally trusted and isolated.",
+                    FilePath: file.RelativePath,
+                    LineNumber: GetLineNumberFromIndex(content, httpMatch.Index),
+                    Package: null, PackageVersion: null, Advisory: null));
+            }
+        }
+        catch (RegexMatchTimeoutException) { }
+
         // Check for controllers without auth
-        if (content.Contains("[ApiController]") || content.Contains("[Route("))
+        if (isCodeFile && (content.Contains("[ApiController]") || content.Contains("[Route(")))
         {
             var hasClassAuth = content.Contains("[Authorize") || content.Contains("[AllowAnonymous");
             if (!hasClassAuth)
@@ -494,6 +698,24 @@ public class SecurityAnalyzer(
         if (fileName.StartsWith("docker-compose") && (fileName.EndsWith(".yml") || fileName.EndsWith(".yaml"))) return true;
 
         return false;
+    }
+
+    internal static bool ShouldSkipFileForSecurityScan(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath)) return false;
+
+        var normalized = relativePath.Replace('\\', '/');
+        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Any(ContainsNonProductionMarker);
+    }
+
+    private static bool ContainsNonProductionMarker(string segment)
+    {
+        if (string.IsNullOrWhiteSpace(segment)) return false;
+        if (NonProductionPathMarkers.Contains(segment)) return true;
+
+        var tokens = segment.Split(['.', '_', '-', ' '], StringSplitOptions.RemoveEmptyEntries);
+        return tokens.Any(NonProductionPathMarkers.Contains);
     }
 
     // ── Entropy / structure analysis ─────────────────────────────────────
@@ -556,18 +778,69 @@ public class SecurityAnalyzer(
         return entropy;
     }
 
+    private static int GetLineNumberFromIndex(string content, int matchIndex)
+    {
+        var boundedIndex = Math.Clamp(matchIndex, 0, content.Length);
+        var line = 1;
+        for (var i = 0; i < boundedIndex; i++)
+        {
+            if (content[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
     // ── Scoring ─────────────────────────────────────────────────────────
 
     private static double ComputeSecurityScore(IReadOnlyList<SecurityFinding> findings)
     {
-        var criticalPenalty = Math.Min(findings.Count(f => f.Severity == "critical") * 2.0, 6.0);
-        var highPenalty = Math.Min(findings.Count(f => f.Severity == "high") * 1.0, 4.0);
-        var mediumPenalty = Math.Min(findings.Count(f => f.Severity == "medium") * 0.3, 2.0);
-        var lowPenalty = Math.Min(findings.Count(f => f.Severity == "low") * 0.1, 1.0);
+        var secretPenalty = ComputeCategoryPenalty(
+            findings.Where(f => f.Category == "secret"),
+            f => f.FilePath ?? $"{f.Title}:{f.LineNumber ?? 0}",
+            cap: 6.5);
 
-        var score = 10.0 - criticalPenalty - highPenalty - mediumPenalty - lowPenalty;
+        var attackSurfacePenalty = ComputeCategoryPenalty(
+            findings.Where(f => f.Category == "attack_surface"),
+            f => f.FilePath ?? $"{f.Title}:{f.LineNumber ?? 0}",
+            cap: 4.0);
+
+        var packagePenalty = ComputeCategoryPenalty(
+            findings.Where(f => f.Category == "vulnerable_package"),
+            f => $"{f.Package ?? f.Title}@{f.PackageVersion ?? ""}",
+            cap: 4.5);
+
+        var score = 10.0 - secretPenalty - attackSurfacePenalty - packagePenalty;
         return Math.Round(Math.Clamp(score, 1.0, 10.0), 1);
     }
+
+    private static double ComputeCategoryPenalty(IEnumerable<SecurityFinding> findings,
+        Func<SecurityFinding, string> scopeKeySelector, double cap)
+    {
+        double penalty = 0;
+
+        foreach (var scope in findings
+                     .GroupBy(scopeKeySelector)
+                     .Select(g => g.Select(f => SeverityWeight(f.Severity)).OrderDescending().ToList()))
+        {
+            if (scope.Count == 0) continue;
+
+            penalty += scope[0];
+            for (var i = 1; i < scope.Count; i++)
+                penalty += scope[i] * 0.6;
+        }
+
+        return Math.Min(penalty, cap);
+    }
+
+    private static double SeverityWeight(string severity) => severity switch
+    {
+        "critical" => 2.5,
+        "high" => 1.5,
+        "medium" => 0.7,
+        "low" => 0.3,
+        _ => 0.5
+    };
 
     private record VulnAdvisory(string Severity, string AdvisoryUrl);
 }

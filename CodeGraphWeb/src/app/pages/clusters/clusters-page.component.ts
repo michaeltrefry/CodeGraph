@@ -264,18 +264,11 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       edgeCounts.set(e.target, (edgeCounts.get(e.target) ?? 0) + e.count);
     }
 
-    const connectedNames = new Set<string>();
-    for (const e of data.edges) {
-      connectedNames.add(e.source);
-      connectedNames.add(e.target);
-    }
-
     const radiusScale = d3.scaleSqrt()
       .domain([0, d3.max([...edgeCounts.values()]) ?? 1])
       .range([5, 22]);
 
     const nodes: SimNode[] = data.nodes
-      .filter(n => connectedNames.has(n.name))
       .map(n => {
         const ec = edgeCounts.get(n.name) ?? 0;
         return {
@@ -289,6 +282,7 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       });
 
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const isolatedNodes = nodes.filter(n => n.edgeCount === 0);
 
     const links: SimLink[] = data.edges
       .filter(e => nodeMap.has(e.source) && nodeMap.has(e.target))
@@ -341,12 +335,25 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       });
     });
 
-    // Foundational nodes get pushed to periphery
-    const foundational = nodes.filter(n => n.isFoundational);
+    // Foundational nodes with edges get pushed to the periphery of connected clusters.
+    const foundational = nodes.filter(n => n.isFoundational && n.edgeCount > 0);
     foundational.forEach((n, i) => {
       const a = (2 * Math.PI * i) / Math.max(foundational.length, 1);
       n.x = width / 2 + (clusterRadius + 80) * Math.cos(a);
       n.y = height / 2 + (clusterRadius + 80) * Math.sin(a);
+    });
+
+    const isolatedOrbitRadius = Math.min(width, height) * 0.44;
+    const isolatedTargets = new Map<string, { x: number; y: number }>();
+    isolatedNodes.forEach((n, i) => {
+      const a = (2 * Math.PI * i) / Math.max(isolatedNodes.length, 1);
+      const target = {
+        x: width / 2 + isolatedOrbitRadius * Math.cos(a),
+        y: height / 2 + isolatedOrbitRadius * Math.sin(a)
+      };
+      n.x = target.x;
+      n.y = target.y;
+      isolatedTargets.set(n.id, target);
     });
 
     // Zoom
@@ -409,11 +416,12 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
     nodeG.append('circle')
       .attr('r', d => d.radius)
       .attr('fill', d => {
+        if (d.edgeCount === 0) return '#e5e7eb';
         if (d.isFoundational) return '#9ca3af';
         if (d.clusterId === null) return '#d1d5db';
         return this.colorScale(String(d.clusterId));
       })
-      .attr('stroke', '#fff')
+      .attr('stroke', d => d.edgeCount === 0 ? '#94a3b8' : '#fff')
       .attr('stroke-width', 1.5);
 
     // Labels
@@ -430,9 +438,12 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       .text(d => {
         const clusterLabel = d.clusterId !== null
           ? this.getClusterLabelById(d.clusterId)
-          : 'Unclustered';
+          : (d.edgeCount === 0 ? 'Isolated' : 'Unclustered');
         const bridge = d.betweenness > 0.01 ? '\n(bridge repo)' : '';
-        return `${d.id}\n${clusterLabel}\n${d.edgeCount} cross-repo edges${bridge}`;
+        const edgeSummary = d.edgeCount === 0
+          ? 'No cross-repo edges'
+          : `${d.edgeCount} cross-repo edges`;
+        return `${d.id}\n${clusterLabel}\n${edgeSummary}${bridge}`;
       });
 
     // Store selections for highlight updates
@@ -454,12 +465,16 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
         if (d.clusterId !== null && clusterCentroids.has(d.clusterId))
           return clusterCentroids.get(d.clusterId)!.x;
         return width / 2;
-      }).strength(d => d.clusterId !== null ? 0.15 : 0.02))
+      }).strength(d => d.edgeCount === 0 ? 0 : (d.clusterId !== null ? 0.15 : 0.02)))
       .force('clusterY', d3.forceY<SimNode>(d => {
         if (d.clusterId !== null && clusterCentroids.has(d.clusterId))
           return clusterCentroids.get(d.clusterId)!.y;
         return height / 2;
-      }).strength(d => d.clusterId !== null ? 0.15 : 0.02))
+      }).strength(d => d.edgeCount === 0 ? 0 : (d.clusterId !== null ? 0.15 : 0.02)))
+      .force('orbitX', d3.forceX<SimNode>(d => isolatedTargets.get(d.id)?.x ?? width / 2)
+        .strength(d => d.edgeCount === 0 ? 0.28 : 0))
+      .force('orbitY', d3.forceY<SimNode>(d => isolatedTargets.get(d.id)?.y ?? height / 2)
+        .strength(d => d.edgeCount === 0 ? 0.28 : 0))
       .on('tick', () => {
         linkG
           .attr('x1', d => (d.source as SimNode).x!)
