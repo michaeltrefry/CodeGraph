@@ -111,6 +111,28 @@ public partial class Neo4jGraphStore(
         });
     }
 
+    public async Task UpdateRepositoryCommitShaAsync(string name, string? commitSha)
+    {
+        await using var session = sessionFactory.GetSession();
+        var now = DateTime.UtcNow;
+
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync($$"""
+                MERGE (r:{{RepositoryMetadataLabel}} {name: $name})
+                ON CREATE SET r.createdAt = $now
+                SET r.lastCommitSha = $lastCommitSha,
+                    r.updatedAt = $now
+                """,
+                new
+                {
+                    name,
+                    now,
+                    lastCommitSha = commitSha
+                });
+        });
+    }
+
     public async Task<RepositorySearchResult> SearchRepositoriesAsync(string? search = null, string? group = null,
         int page = 1, int pageSize = 25)
     {

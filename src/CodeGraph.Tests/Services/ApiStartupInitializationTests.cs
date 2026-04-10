@@ -2,6 +2,7 @@ using CodeGraph.Api;
 using CodeGraph.Data;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Reviews;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -19,11 +20,13 @@ public class ApiStartupInitializationTests
         var migrationRunner = new RecordingMigrationRunner(lifecycle);
         var wikiSectionSeedService = new RecordingWikiSectionSeedService(lifecycle);
         var exclusionService = new RecordingExclusionService(lifecycle);
+        var recoveryService = new RecordingRepositoryReviewRecoveryService(lifecycle);
         var services = new ServiceCollection();
 
         services.AddSingleton<IMigrationRunner>(migrationRunner);
         services.AddSingleton<IWikiSectionSeedService>(wikiSectionSeedService);
         services.AddSingleton<IExclusionService>(exclusionService);
+        services.AddSingleton<IRepositoryReviewRecoveryService>(recoveryService);
         services.AddSingleton<IHostEnvironment>(new TestHostEnvironment
         {
             ContentRootPath = "/repo"
@@ -43,7 +46,8 @@ public class ApiStartupInitializationTests
 
         migrationRunner.AppliedPaths.ShouldBe([Path.GetFullPath(Path.Combine("/repo", "Migrations"))]);
         exclusionService.SeededGroups.ShouldBe([["foo", "bar"]]);
-        lifecycle.ShouldBe(["migrate", "wiki", "seed"]);
+        recoveryService.Calls.ShouldBe(1);
+        lifecycle.ShouldBe(["migrate", "wiki", "seed", "recover"]);
     }
 
     private sealed class RecordingMigrationRunner(List<string> lifecycle) : IMigrationRunner
@@ -85,6 +89,18 @@ public class ApiStartupInitializationTests
         {
             lifecycle.Add("seed");
             SeededGroups.Add(excludedGroups.ToArray());
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingRepositoryReviewRecoveryService(List<string> lifecycle) : IRepositoryReviewRecoveryService
+    {
+        public int Calls { get; private set; }
+
+        public Task RecoverInterruptedRunsAsync(CancellationToken ct = default)
+        {
+            Calls++;
+            lifecycle.Add("recover");
             return Task.CompletedTask;
         }
     }

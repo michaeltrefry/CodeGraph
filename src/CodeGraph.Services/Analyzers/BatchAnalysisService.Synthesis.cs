@@ -137,7 +137,11 @@ public partial class BatchAnalysisService
         }
 
         if (generatedFiles.Count > 0)
-            await PublishGeneratedDocsAsync(repoInfo.LocalPath, generatedFiles, ct);
+        {
+            var publishedCommitSha = await PublishGeneratedDocsAsync(repoInfo.LocalPath, generatedFiles, ct);
+            if (!string.IsNullOrWhiteSpace(publishedCommitSha))
+                await UpdateRepositoryCommitStateAsync(repoName, publishedCommitSha);
+        }
     }
 
     /// <summary>
@@ -161,10 +165,10 @@ public partial class BatchAnalysisService
         return null;
     }
 
-    private async Task PublishGeneratedDocsAsync(string repoRoot, IReadOnlyList<string> generatedFiles, CancellationToken ct)
+    private async Task<string?> PublishGeneratedDocsAsync(string repoRoot, IReadOnlyList<string> generatedFiles, CancellationToken ct)
     {
         if (!options.AutoCommitDocs)
-            return;
+            return null;
 
         var relativeFiles = generatedFiles
             .Select(path => Path.GetRelativePath(repoRoot, path).Replace('\\', '/'))
@@ -172,7 +176,7 @@ public partial class BatchAnalysisService
             .ToList();
 
         if (relativeFiles.Count == 0)
-            return;
+            return null;
 
         await RunGitAsync(repoRoot, ["add", "--", .. relativeFiles], ct);
 
@@ -180,7 +184,7 @@ public partial class BatchAnalysisService
         if (string.IsNullOrWhiteSpace(stagedChanges))
         {
             logger.LogInformation("Generated CODEGRAPH.md files for {RepoRoot} produced no staged changes", repoRoot);
-            return;
+            return null;
         }
 
         await RunGitAsync(repoRoot,
@@ -188,8 +192,30 @@ public partial class BatchAnalysisService
              "-c", $"user.email={options.AutoCommitAuthorEmail}",
              "commit", "-m", options.AutoCommitMessage], ct);
 
+        var publishedCommitSha = await TryGetHeadCommitShaAsync(repoRoot, ct);
         if (options.AutoPushDocs)
             await RunGitAsync(repoRoot, ["push", "origin", "HEAD"], ct);
+
+        return publishedCommitSha;
+    }
+
+    private async Task UpdateRepositoryCommitStateAsync(string repoName, string commitSha)
+    {
+        await store.UpdateRepositoryCommitShaAsync(repoName, commitSha);
+        await store.UpsertSyncStateAsync(new SyncStateEntity
+        {
+            Project = repoName,
+            LastCommitSha = commitSha,
+            LastSyncAt = DateTime.UtcNow,
+            Status = "idle",
+            ErrorMessage = null
+        });
+    }
+
+    private async Task<string?> TryGetHeadCommitShaAsync(string repoRoot, CancellationToken ct)
+    {
+        var sha = (await TryRunGitAsync(repoRoot, ["rev-parse", "HEAD"], ct)).Trim();
+        return sha.Length >= 40 ? sha : null;
     }
 
     private async Task<string> TryRunGitAsync(string repoRoot, IReadOnlyList<string> arguments, CancellationToken ct)

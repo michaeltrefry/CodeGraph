@@ -272,11 +272,11 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
             if (_initialized) return;
             _initialized = true;
 
-            var modelPath = _options.EmbeddingModelPath;
-            if (string.IsNullOrEmpty(modelPath) || !File.Exists(modelPath))
+            var modelPath = ResolveModelPath(_options.EmbeddingModelPath);
+            if (string.IsNullOrEmpty(modelPath))
             {
                 _logger.LogInformation("No ONNX embedding model configured or file not found at {Path}. " +
-                    "Embedding-based search will be disabled.", modelPath);
+                    "Embedding-based search will be disabled.", _options.EmbeddingModelPath);
                 return;
             }
 
@@ -313,6 +313,36 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
                 _logger.LogError(ex, "Failed to load ONNX model from {Path}", modelPath);
             }
         }
+    }
+
+    internal static string? ResolveModelPath(string? configuredPath) =>
+        ResolveModelPath(configuredPath, [
+            ("/models/", "/models-legacy/"),
+            ("/models/", "/Users/michael/Repos/llm/models/"),
+            ("/models-legacy/", "/models/"),
+            ("/Users/michael/Repos/llm/models/", "/models/")
+        ]);
+
+    internal static string? ResolveModelPath(
+        string? configuredPath,
+        IReadOnlyList<(string FromPrefix, string ToPrefix)> fallbackMappings)
+    {
+        if (string.IsNullOrWhiteSpace(configuredPath))
+            return null;
+
+        var candidates = new List<string> { configuredPath };
+
+        foreach (var (fromPrefix, toPrefix) in fallbackMappings)
+        {
+            if (!configuredPath.StartsWith(fromPrefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            candidates.Add(toPrefix + configuredPath[fromPrefix.Length..]);
+        }
+
+        return candidates
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(File.Exists);
     }
 
     public void Dispose()

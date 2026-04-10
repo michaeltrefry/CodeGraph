@@ -10,4 +10,6 @@ public class MemoryObservation
     public bool Resolved { get; set; }
     public string? Resolution { get; set; }
     public string? ResolvedByMemoryId { get; set; }
+    public List<string> AboutEntityIds { get; set; } = [];
+    public List<string> AboutClaimIds { get; set; } = [];
 }

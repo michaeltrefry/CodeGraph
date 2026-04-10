@@ -16,6 +16,7 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMig
         int page = 1, int pageSize = 25);
     Task<IReadOnlyList<string>> GetDistinctGroupsAsync();
     Task<ProjectInfo?> GetRepositoryByName(string name);
+    Task UpdateRepositoryCommitShaAsync(string name, string? commitSha);
     Task DeleteRepositoryAsync(string project);
 
     // Nodes

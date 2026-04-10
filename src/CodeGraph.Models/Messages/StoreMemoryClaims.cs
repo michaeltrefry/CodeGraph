@@ -2,8 +2,8 @@ using CodeGraph.Models.Memory;
 
 namespace CodeGraph.Models.Messages;
 
-public class StoreMemory
+public class StoreMemoryClaims
 {
-    public required MemoryExtractionResult Extraction { get; set; }
+    public required MemoryClaimExtractionResult Extraction { get; set; }
     public string Source { get; set; } = "api";
 }

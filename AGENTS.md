@@ -76,11 +76,46 @@ Default operating procedure for any agent working in this repo:
 
 - Use CodeGraph MCP tools first for discovery, architecture questions, dependency tracing, and locating implementation.
 - Start with graph and convention queries before opening source files directly.
-- `memorygraph` is one tool family in the broader CodeGraph MCP suite, not the whole strategy.
+- Memory tools are part of the broader CodeGraph MCP suite, not a separate `memorygraph` tool family.
 - Prefer these CodeGraph MCP tools when they fit the question: `search_graph`, `get_service_summary`, `trace_call_path`, `trace_data_lineage`, `find_consumers`, `find_publishers`, `get_architecture`, `get_project_health`, `get_fleet_health`, `list_conventions`, `get_convention`, `get_code_snippet`, and `read_node_source`.
 - Do not assume CodeGraph MCP results reflect the current git working tree or non-`main` branches; the indexed graph reflects committed code on `main`, not uncommitted local edits.
 - Inspect source files directly when MCP results are insufficient, exact line-level behavior matters, the question depends on uncommitted or branch-only changes, or a file is about to be edited.
 - Avoid broad file-reading sweeps when CodeGraph MCP can narrow the search space first.
+
+## Memory System
+
+The personal memory system in this repo is claim-centric and Neo4j-native.
+
+Current memory MCP tools live under the main CodeGraph MCP surface. Use the current tool names such as `query_memory`, `search_memory`, `get_memory_subgraph`, `get_entity_bundle`, `get_claim_bundle`, `expand_memory_frontier`, `render_memory_summary`, `store_memory_v2`, `migrate_legacy_memory_graph`, and `migrate_memory_observations`. Do not refer to the retired `mcp__memorygraph__...` namespace in new docs or agent guidance.
+
+### Memory Model
+
+- `MemoryEntity` nodes are stable anchors for named things such as people, projects, tools, concepts, and decisions.
+- `MemoryClaim` nodes are the primary truth unit. Atomic facts live in claims, not in entity summaries.
+- `MemoryObservation` nodes represent unresolved contradiction or ambiguity.
+- `MemoryEvidence` nodes capture provenance for claims and observations.
+- Direct entity-to-entity memory edges are derived convenience edges only. They are not the source of truth.
+
+### Working Rules
+
+- Do not design new memory features around entity-summary accumulation.
+- Do not treat human-readable markdown summaries as the primary memory retrieval contract.
+- Prefer explicit claim status such as active, superseded, conflicted, and deprecated over implicit recency heuristics.
+- Keep recency local to fact groups. Do not globally rank the memory graph by freshness alone.
+- When exact behavior matters, inspect the current source. Memory tools and indexed results may lag local edits.
+
+### Retrieval Expectations
+
+- The primary read path should return structured memory subgraphs, not only rendered prose.
+- Retrieval should combine exact recall, lexical recall, and vector recall before graph expansion.
+- Iterative deepening is the expected access pattern: find seeds, fetch a bounded subgraph, inspect promising entities or claims, then expand only if needed.
+- Human-readable summaries should be rendered from structured retrieval results as a secondary convenience layer.
+
+### Migration Guidance
+
+- The older memory implementation stored truth too coarsely in entity summaries and append-only relationship edges.
+- When modifying memory code, prefer the claim-centric model even if temporary compatibility wrappers still exist.
+- Do not attempt to recover precise atomic claims from already-merged entity summary text. Treat that text as descriptive metadata only.
 
 ## Legacy Codebase Conventions
 

@@ -478,4 +478,4 @@ Tests use **xUnit** with **Shouldly** assertions and include an `InMemoryGraphSt
 | Frontend | Angular, TypeScript, D3.js, RxJS, marked |
 | Testing | xUnit, Shouldly |
 
-For Docker runs, the API now expects embeddings under `/models`. The default ONNX path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`, with `vocab.txt` in the same directory. On the host, that maps to `./.cache/models/embeddings/all-MiniLM-L6-v2/` unless you override `CODEGRAPH_DOCKER_MODELS_MOUNT`.
+For Docker runs, the API now expects embeddings under `/models`. The default ONNX path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`, with `vocab.txt` in the same directory. By default Docker mounts `./.cache/models` to `/models`, and also mounts the legacy sibling checkout `../llm/models` to `/models-legacy` so older local setups keep working. Override `CODEGRAPH_DOCKER_MODELS_MOUNT` or `CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT` if your host layout differs.
