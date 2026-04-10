@@ -1,58 +1,79 @@
 using System.ComponentModel;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using CodeGraph.Models.Memory;
-using CodeGraph.Services.Messaging;
-using CodeGraph.Models.Messages;
 using CodeGraph.Services.Memory;
+using CodeGraph.Services.Messaging;
 
 namespace CodeGraph.Services.Assistant;
 
 [McpServerToolType]
 public class MemoryMcpServer
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new JsonStringEnumConverter() },
+    };
+
     [McpServerTool(Name = "store_memory_v2", Title = "Store Memory V2", ReadOnly = false, Destructive = false)]
     [Description("""
         Store claim-centric memory in the Neo4j memory graph.
-        Pass structured JSON with optional "entities", required atomic "claims", and optional "evidence".
+        Prefer typed MCP arguments for entities, claims, and evidence. A legacy JSON payload is still accepted through "data" for compatibility.
 
         Entity format: { "id": "michael", "label": "Michael", "type": "person", "canonicalName": "Michael", "aliases": ["mike"] }
         Claim format: { "subject": "michael", "predicate": "prefers", "valueText": "clean slate design", "confidence": 0.9 }
         Evidence format: { "claimId": "optional-claim-id", "evidenceType": "conversation", "sourceRef": "thread-123", "snippet": "..." }
         """)]
     public static async Task<string> StoreMemoryV2(
-        [Description("JSON object with 'entities', 'claims', and optional 'evidence' arrays")] string data,
-        [Description("Source identifier (e.g. 'claude_conversation', 'document')")] string source,
+        MemoryService memoryService,
         IMessageBus messageBus,
-        ILogger<MemoryMcpServer> logger)
+        ILogger<MemoryMcpServer> logger,
+        [Description("Source identifier (e.g. 'claude_conversation', 'document')")] string source = "mcp",
+        [Description("Legacy JSON object with 'entities', 'claims', and optional 'evidence' arrays")] string? data = null,
+        [Description("Typed memory entities to store")] List<MemoryExtractedEntity>? entities = null,
+        [Description("Typed atomic memory claims to store")] List<MemoryExtractedClaim>? claims = null,
+        [Description("Typed evidence rows to store")] List<MemoryExtractedEvidence>? evidence = null)
     {
-        MemoryClaimExtractionResult extraction;
-        try
-        {
-            extraction = JsonSerializer.Deserialize<MemoryClaimExtractionResult>(data)
-                         ?? throw new JsonException("Deserialized to null");
+        var hasData = !string.IsNullOrWhiteSpace(data);
+        var hasTypedInput = (entities?.Count ?? 0) > 0 || (claims?.Count ?? 0) > 0 || (evidence?.Count ?? 0) > 0;
 
-            if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
-                return "Error: No entities, claims, or evidence provided.";
-        }
-        catch (JsonException ex)
-        {
-            logger.LogWarning(ex, "Failed to parse claim-centric structured input");
-            return $"Error: Invalid JSON. Expected {{\"entities\": [...], \"claims\": [...], \"evidence\": [...]}}. Details: {ex.Message}";
-        }
+        if (hasData && hasTypedInput)
+            return SerializeError("invalid_input", "Provide either typed arguments or legacy JSON data, not both.");
 
-        await messageBus.PublishAsync(new StoreMemoryClaims
-        {
-            Extraction = extraction,
-            Source = source,
-        });
+        var extraction = TryBuildExtraction(data, entities, claims, evidence, logger, out var parseError);
+        if (parseError != null)
+            return SerializeError("invalid_json", parseError);
 
-        return $"Memory v2 storage initiated — storing {extraction.Entities.Count} entities, {extraction.Claims.Count} claims, and {extraction.Evidence.Count} evidence rows.";
+        if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
+            return SerializeError("empty_input", "No entities, claims, or evidence provided.");
+
+        var ack = await memoryService.QueueClaimsAsync(
+            extraction,
+            source,
+            hasData ? "json" : "typed",
+            messageBus);
+
+        return JsonSerializer.Serialize(ack, JsonOptions);
+    }
+
+    [McpServerTool(Name = "get_memory_write_status", Title = "Get Memory Write Status", ReadOnly = true)]
+    [Description("Get the durable status of a queued memory write by receipt id.")]
+    public static async Task<string> GetMemoryWriteStatus(
+        [Description("Memory write receipt id")] string receiptId,
+        MemoryService memoryService)
+    {
+        var receipt = await memoryService.GetWriteReceiptAsync(receiptId);
+        return receipt == null
+            ? SerializeError("not_found", $"Memory write receipt '{receiptId}' was not found.")
+            : JsonSerializer.Serialize(receipt, JsonOptions);
     }
 
     [McpServerTool(Name = "query_memory", Title = "Query Memory", ReadOnly = true)]
-    [Description("Search the memory graph for information about a topic. Returns relevant entities, relationships, and any unresolved conflicts.")]
+    [Description("Search the memory graph for information about a topic. Returns structured JSON with entities, conflicts, the bounded subgraph, and a rendered summary.")]
     public static async Task<string> QueryMemory(
         [Description("The topic to search for")] string topic,
         MemoryService memoryService,
@@ -63,7 +84,7 @@ public class MemoryMcpServer
         maxNodes = Math.Clamp(maxNodes, 1, 50);
 
         var result = await memoryService.QueryAsync(topic, hops, maxNodes);
-        return result.FormattedText;
+        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     [McpServerTool(Name = "search_memory", Title = "Search Memory", ReadOnly = true)]
@@ -79,7 +100,7 @@ public class MemoryMcpServer
             Math.Clamp(entityLimit, 1, 25),
             Math.Clamp(claimLimit, 1, 25));
 
-        return JsonSerializer.Serialize(result);
+        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     [McpServerTool(Name = "get_memory_subgraph", Title = "Get Memory Subgraph", ReadOnly = true)]
@@ -108,7 +129,7 @@ public class MemoryMcpServer
         };
 
         var result = await memoryService.GetMemorySubgraphAsync(request);
-        return JsonSerializer.Serialize(result);
+        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     [McpServerTool(Name = "get_entity_bundle", Title = "Get Entity Bundle", ReadOnly = true)]
@@ -126,7 +147,9 @@ public class MemoryMcpServer
             includeConflicts,
             Math.Clamp(neighborLimit, 1, 100));
 
-        return bundle == null ? "Error: Entity not found." : JsonSerializer.Serialize(bundle);
+        return bundle == null
+            ? SerializeError("not_found", $"Memory entity '{entityId}' was not found.")
+            : JsonSerializer.Serialize(bundle, JsonOptions);
     }
 
     [McpServerTool(Name = "get_claim_bundle", Title = "Get Claim Bundle", ReadOnly = true)]
@@ -144,7 +167,9 @@ public class MemoryMcpServer
             includeConflicts,
             includeEvidence);
 
-        return bundle == null ? "Error: Claim not found." : JsonSerializer.Serialize(bundle);
+        return bundle == null
+            ? SerializeError("not_found", $"Memory claim '{claimId}' was not found.")
+            : JsonSerializer.Serialize(bundle, JsonOptions);
     }
 
     [McpServerTool(Name = "expand_memory_frontier", Title = "Expand Memory Frontier", ReadOnly = true)]
@@ -166,7 +191,7 @@ public class MemoryMcpServer
             MinScore = Math.Clamp(minScore, 0, 100),
         });
 
-        return JsonSerializer.Serialize(result);
+        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     [McpServerTool(Name = "render_memory_summary", Title = "Render Memory Summary", ReadOnly = true)]
@@ -192,7 +217,7 @@ public class MemoryMcpServer
     public static async Task<string> MigrateLegacyMemoryGraph(MemoryService memoryService)
     {
         var result = await memoryService.MigrateLegacyRelationshipsAsync();
-        return JsonSerializer.Serialize(result);
+        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     [McpServerTool(Name = "migrate_memory_observations", Title = "Migrate Memory Observations", ReadOnly = false, Destructive = false)]
@@ -200,11 +225,56 @@ public class MemoryMcpServer
     public static async Task<string> MigrateMemoryObservations(MemoryService memoryService)
     {
         var result = await memoryService.MigrateObservationsAsync();
-        return JsonSerializer.Serialize(result);
+        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     private static List<string> ParseCsv(string? csv) =>
         string.IsNullOrWhiteSpace(csv)
             ? []
             : csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    private static MemoryClaimExtractionResult TryBuildExtraction(
+        string? data,
+        List<MemoryExtractedEntity>? entities,
+        List<MemoryExtractedClaim>? claims,
+        List<MemoryExtractedEvidence>? evidence,
+        ILogger logger,
+        out string? parseError)
+    {
+        parseError = null;
+
+        if (!string.IsNullOrWhiteSpace(data))
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<MemoryClaimExtractionResult>(data)
+                       ?? throw new JsonException("Deserialized to null");
+            }
+            catch (JsonException ex)
+            {
+                logger.LogWarning(ex, "Failed to parse claim-centric structured input");
+                parseError = $"Invalid JSON. Expected {{\"entities\": [...], \"claims\": [...], \"evidence\": [...]}}. Details: {ex.Message}";
+                return new MemoryClaimExtractionResult();
+            }
+        }
+
+        return new MemoryClaimExtractionResult
+        {
+            Entities = entities ?? [],
+            Claims = claims ?? [],
+            Evidence = evidence ?? [],
+        };
+    }
+
+    private static string SerializeError(string code, string message)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            error = new
+            {
+                code,
+                message,
+            },
+        }, JsonOptions);
+    }
 }

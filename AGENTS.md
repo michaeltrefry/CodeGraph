@@ -110,6 +110,10 @@ Current memory MCP tools live under the main CodeGraph MCP surface. Use the curr
 - Retrieval should combine exact recall, lexical recall, and vector recall before graph expansion.
 - Iterative deepening is the expected access pattern: find seeds, fetch a bounded subgraph, inspect promising entities or claims, then expand only if needed.
 - Human-readable summaries should be rendered from structured retrieval results as a secondary convenience layer.
+- Preferred agent read workflow is: `search_memory` -> `get_memory_subgraph` -> `get_claim_bundle` / `get_entity_bundle` -> `expand_memory_frontier` -> `render_memory_summary` only for final human-facing output.
+- `query_memory` is a convenience read surface and should be treated as structured-plus-summary output, not as the primary retrieval entry point for deeper agent workflows.
+- Preferred agent write workflow is: `store_memory_v2` -> `get_memory_write_status` -> `search_memory` / `get_claim_bundle` for verification.
+- Memory MCP errors should be treated as structured JSON error envelopes rather than prose sentinels when chaining tool calls.
 
 ### Migration Guidance
 

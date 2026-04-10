@@ -14,6 +14,7 @@ public class MemoryEntitySeed
     public required string Type { get; set; }
     public double Score { get; set; }
     public string MatchKind { get; set; } = string.Empty;
+    public MemorySeedDiagnostics Diagnostics { get; set; } = new();
 }
 
 public class MemoryClaimSeed
@@ -24,4 +25,14 @@ public class MemoryClaimSeed
     public MemoryClaimStatus Status { get; set; } = MemoryClaimStatus.Active;
     public double Score { get; set; }
     public string MatchKind { get; set; } = string.Empty;
+    public MemorySeedDiagnostics Diagnostics { get; set; } = new();
+}
+
+public class MemorySeedDiagnostics
+{
+    public string RetrievalStage { get; set; } = string.Empty;
+    public Dictionary<string, double> ScoreBreakdown { get; set; } = [];
+    public List<string> MatchedFields { get; set; } = [];
+    public List<string> MatchedEntityIds { get; set; } = [];
+    public List<string> MatchedClaimIds { get; set; } = [];
 }

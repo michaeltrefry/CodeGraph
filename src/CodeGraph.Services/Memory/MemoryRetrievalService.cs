@@ -23,16 +23,18 @@ public class MemoryRetrievalService
     {
         _logger.LogInformation("Searching memory v2 for query: {Query}", query);
 
-        var normalizedQuery = query.Trim();
-        if (string.IsNullOrWhiteSpace(normalizedQuery))
+        var rawQuery = query.Trim();
+        if (string.IsNullOrWhiteSpace(rawQuery))
             return new MemorySearchResult();
+
+        var normalizedQuery = NormalizeSearchText(rawQuery);
 
         float[]? queryEmbedding = null;
         if (_embedding.IsAvailable)
         {
             try
             {
-                var embedding = _embedding.GenerateEmbedding(normalizedQuery);
+                var embedding = _embedding.GenerateEmbedding(rawQuery);
                 if (embedding.Length > 0)
                     queryEmbedding = embedding;
             }
@@ -42,12 +44,16 @@ public class MemoryRetrievalService
             }
         }
 
-        var entitySeeds = await SearchEntitySeedsAsync(normalizedQuery, queryEmbedding, entityLimit);
-        var claimSeeds = await _store.SearchClaimsAsync(normalizedQuery, queryEmbedding, claimLimit);
+        var entitySeeds = await SearchEntitySeedsAsync(rawQuery, queryEmbedding, entityLimit);
+        var claimSeeds = SanitizeClaimSeeds(
+            await _store.SearchClaimsAsync(rawQuery, queryEmbedding, claimLimit),
+            rawQuery,
+            claimLimit);
+        entitySeeds = await PreferClaimAnchoredEntitySeedsAsync(entitySeeds, claimSeeds, entityLimit);
 
         return new MemorySearchResult
         {
-            Query = normalizedQuery,
+            Query = rawQuery,
             Entities = entitySeeds,
             Claims = claimSeeds
                 .OrderByDescending(seed => seed.Score)
@@ -60,6 +66,7 @@ public class MemoryRetrievalService
                     Status = seed.Claim.Status,
                     Score = seed.Score,
                     MatchKind = seed.MatchKind,
+                    Diagnostics = BuildClaimSeedDiagnostics(seed.Claim, seed.MatchKind, seed.Score, normalizedQuery),
                 })
                 .ToList(),
         };
@@ -293,6 +300,7 @@ public class MemoryRetrievalService
         {
             Entities = entitiesWithRels,
             Conflicts = conflicts,
+            Subgraph = subgraph,
             FormattedText = FormatSubgraphForLlm(subgraph, maxRelsPerEntity),
         };
     }
@@ -492,32 +500,31 @@ public class MemoryRetrievalService
         var exactEntity = await _store.GetEntityAsync(normalizedId) ?? await _store.GetEntityByExternalIdAsync(normalizedId);
         if (exactEntity != null)
         {
-            exactCandidates[exactEntity.Id] = new MemoryEntitySeed
-            {
-                EntityId = exactEntity.Id,
-                Label = exactEntity.Label,
-                Type = exactEntity.Type,
-                Score = 100,
-                MatchKind = "exact",
-            };
+            MergeEntitySeed(
+                exactCandidates,
+                exactEntity,
+                100,
+                "exact",
+                "exact_lookup",
+                GetExactEntityMatchedFields(exactEntity, normalizedId),
+                "exact");
         }
 
         var textResults = await _store.TextSearchAsync(query, limit);
-        foreach (var entity in textResults)
+        for (var index = 0; index < textResults.Count; index++)
         {
+            var entity = textResults[index];
             if (!PassesLexicalEntityFilter(entity, normalizedQuery, queryTokens))
                 continue;
 
-            var existing = exactCandidates.GetValueOrDefault(entity.Id);
-            var score = existing?.Score ?? 0;
-            exactCandidates[entity.Id] = new MemoryEntitySeed
-            {
-                EntityId = entity.Id,
-                Label = entity.Label,
-                Type = entity.Type,
-                Score = Math.Max(score, 60 - textResults.IndexOf(entity)),
-                MatchKind = existing?.MatchKind ?? "lexical",
-            };
+            MergeEntitySeed(
+                exactCandidates,
+                entity,
+                60 - index,
+                "lexical",
+                "text_search",
+                GetMatchedEntityFields(entity, normalizedQuery, queryTokens),
+                "lexical");
         }
 
         if (queryEmbedding != null)
@@ -525,16 +532,14 @@ public class MemoryRetrievalService
             var vectorResults = await _store.VectorSearchAsync(queryEmbedding, limit);
             foreach (var (entity, similarity) in vectorResults)
             {
-                var existing = exactCandidates.GetValueOrDefault(entity.Id);
-                var candidateScore = Math.Max(existing?.Score ?? 0, 40 + (similarity * 20));
-                exactCandidates[entity.Id] = new MemoryEntitySeed
-                {
-                    EntityId = entity.Id,
-                    Label = entity.Label,
-                    Type = entity.Type,
-                    Score = candidateScore,
-                    MatchKind = existing?.MatchKind == "exact" ? "exact" : existing?.MatchKind ?? "vector",
-                };
+                MergeEntitySeed(
+                    exactCandidates,
+                    entity,
+                    40 + (similarity * 20),
+                    "vector",
+                    "vector_search",
+                    ["embedding"],
+                    "vector");
             }
         }
 
@@ -544,6 +549,125 @@ public class MemoryRetrievalService
             .ToList();
 
         return PruneWeakEntitySeeds(ranked, limit);
+    }
+
+    private async Task<List<MemoryEntitySeed>> PreferClaimAnchoredEntitySeedsAsync(
+        List<MemoryEntitySeed> entitySeeds,
+        List<(MemoryClaim Claim, double Score, string MatchKind)> claimSeeds,
+        int limit)
+    {
+        var hasStrongClaimSeeds = claimSeeds.Any(seed => !string.Equals(seed.MatchKind, "vector", StringComparison.OrdinalIgnoreCase));
+        var hasNonVectorEntitySeeds = entitySeeds.Any(seed => !string.Equals(seed.MatchKind, "vector", StringComparison.OrdinalIgnoreCase));
+        if (!hasStrongClaimSeeds || hasNonVectorEntitySeeds)
+            return entitySeeds;
+
+        var preferred = new Dictionary<string, MemoryEntitySeed>(StringComparer.OrdinalIgnoreCase);
+        foreach (var claimSeed in claimSeeds)
+        {
+            await MergeClaimAnchoredEntitySeedAsync(preferred, claimSeed.Claim.SubjectEntityId, claimSeed);
+
+            if (!string.IsNullOrWhiteSpace(claimSeed.Claim.ObjectEntityId))
+                await MergeClaimAnchoredEntitySeedAsync(preferred, claimSeed.Claim.ObjectEntityId!, claimSeed);
+        }
+
+        if (preferred.Count == 0)
+            return entitySeeds;
+
+        return preferred.Values
+            .OrderByDescending(seed => seed.Score)
+            .ThenBy(seed => seed.Label, StringComparer.OrdinalIgnoreCase)
+            .Take(limit)
+            .ToList();
+    }
+
+    private async Task MergeClaimAnchoredEntitySeedAsync(
+        IDictionary<string, MemoryEntitySeed> candidates,
+        string entityId,
+        (MemoryClaim Claim, double Score, string MatchKind) claimSeed)
+    {
+        if (string.IsNullOrWhiteSpace(entityId))
+            return;
+
+        var entity = await _store.GetEntityAsync(entityId) ?? await _store.GetEntityByExternalIdAsync(entityId);
+        if (entity == null)
+            return;
+
+        var score = claimSeed.MatchKind switch
+        {
+            "exact" => 95d,
+            "lexical" => 85d,
+            _ => 70d,
+        };
+
+        MergeEntitySeed(
+            candidates,
+            entity,
+            score,
+            claimSeed.MatchKind.Equals("exact", StringComparison.OrdinalIgnoreCase) ? "exact" : "lexical",
+            "claim_text_search",
+            ["claim_anchor"],
+            "claim");
+    }
+
+    private static void MergeEntitySeed(
+        IDictionary<string, MemoryEntitySeed> candidates,
+        MemoryEntity entity,
+        double score,
+        string matchKind,
+        string retrievalStage,
+        IReadOnlyCollection<string> matchedFields,
+        string scoreComponent)
+    {
+        if (!candidates.TryGetValue(entity.Id, out var existing))
+        {
+            candidates[entity.Id] = new MemoryEntitySeed
+            {
+                EntityId = entity.Id,
+                Label = entity.Label,
+                Type = entity.Type,
+                Score = score,
+                MatchKind = matchKind,
+                Diagnostics = new MemorySeedDiagnostics
+                {
+                    RetrievalStage = retrievalStage,
+                    ScoreBreakdown = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        [scoreComponent] = score,
+                    },
+                    MatchedFields = matchedFields
+                        .Where(field => !string.IsNullOrWhiteSpace(field))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(field => field, StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    MatchedEntityIds = [entity.Id],
+                    MatchedClaimIds = [],
+                },
+            };
+            return;
+        }
+
+        existing.Score = Math.Max(existing.Score, score);
+        if (ShouldPreferMatchKind(matchKind, existing.MatchKind))
+            existing.MatchKind = matchKind;
+
+        if (!existing.Diagnostics.ScoreBreakdown.TryGetValue(scoreComponent, out var previousScore)
+            || score > previousScore)
+        {
+            existing.Diagnostics.ScoreBreakdown[scoreComponent] = score;
+        }
+
+        if (ShouldPreferRetrievalStage(retrievalStage, existing.Diagnostics.RetrievalStage))
+            existing.Diagnostics.RetrievalStage = retrievalStage;
+
+        existing.Diagnostics.MatchedFields = existing.Diagnostics.MatchedFields
+            .Concat(matchedFields)
+            .Where(field => !string.IsNullOrWhiteSpace(field))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(field => field, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!existing.Diagnostics.MatchedEntityIds.Contains(entity.Id, StringComparer.OrdinalIgnoreCase))
+            existing.Diagnostics.MatchedEntityIds.Add(entity.Id);
     }
 
     internal static List<MemoryPathExplanation> BuildDirectSeedPaths(MemorySubgraphResult result)
@@ -684,6 +808,22 @@ public class MemoryRetrievalService
             new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
 
+    internal static string NormalizeLookupKey(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var chars = value.Trim()
+            .Select(ch => char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : '_')
+            .ToArray();
+
+        var normalized = new string(chars);
+        while (normalized.Contains("__", StringComparison.Ordinal))
+            normalized = normalized.Replace("__", "_", StringComparison.Ordinal);
+
+        return normalized.Trim('_');
+    }
+
     internal static List<string> TokenizeSearchText(string value) =>
         NormalizeSearchText(value)
             .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -732,6 +872,228 @@ public class MemoryRetrievalService
 
         return pruned;
     }
+
+    internal static List<(MemoryClaim Claim, double Score, string MatchKind)> SanitizeClaimSeeds(
+        IEnumerable<(MemoryClaim Claim, double Score, string MatchKind)> claimSeeds,
+        string rawQuery,
+        int limit)
+    {
+        var normalizedQuery = NormalizeSearchText(rawQuery);
+        var normalizedLookup = NormalizeLookupKey(rawQuery);
+        var sanitized = new List<(MemoryClaim Claim, double Score, string MatchKind)>();
+
+        foreach (var seed in claimSeeds)
+        {
+            if (TrySanitizeClaimSeed(seed, normalizedQuery, normalizedLookup, out var sanitizedSeed))
+                sanitized.Add(sanitizedSeed);
+        }
+
+        return sanitized
+            .OrderByDescending(seed => seed.Score)
+            .ThenByDescending(seed => seed.Claim.RecordedAt)
+            .Take(limit)
+            .ToList();
+    }
+
+    internal static bool TrySanitizeClaimSeed(
+        (MemoryClaim Claim, double Score, string MatchKind) seed,
+        string normalizedQuery,
+        string normalizedLookup,
+        out (MemoryClaim Claim, double Score, string MatchKind) sanitizedSeed)
+    {
+        if (!string.Equals(seed.MatchKind, "exact", StringComparison.OrdinalIgnoreCase))
+        {
+            sanitizedSeed = seed;
+            return true;
+        }
+
+        if (IsTrueExactClaimMatch(seed.Claim, normalizedQuery, normalizedLookup))
+        {
+            sanitizedSeed = seed;
+            return true;
+        }
+
+        if (HasLexicalClaimMatch(seed.Claim, normalizedQuery))
+        {
+            sanitizedSeed = (seed.Claim, Math.Min(seed.Score, 90d), "lexical");
+            return true;
+        }
+
+        sanitizedSeed = default;
+        return false;
+    }
+
+    internal static bool IsTrueExactClaimMatch(MemoryClaim claim, string normalizedQuery, string normalizedLookup)
+    {
+        if (!string.IsNullOrWhiteSpace(claim.NormalizedText)
+            && NormalizeSearchText(claim.NormalizedText) == normalizedQuery)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(claim.Id)
+            && NormalizeLookupKey(claim.Id) == normalizedLookup)
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(claim.ClaimKey)
+               && NormalizeLookupKey(claim.ClaimKey) == normalizedLookup;
+    }
+
+    internal static bool HasLexicalClaimMatch(MemoryClaim claim, string normalizedQuery)
+    {
+        var queryTokens = TokenizeSearchText(normalizedQuery);
+        if (queryTokens.Count == 0)
+            return false;
+
+        return MatchesField(claim.NormalizedText, normalizedQuery, queryTokens)
+               || MatchesField(claim.ValueText, normalizedQuery, queryTokens)
+               || MatchesField(claim.Predicate, normalizedQuery, queryTokens)
+               || MatchesField(claim.SubjectEntityId, normalizedQuery, queryTokens)
+               || MatchesField(claim.ObjectEntityId, normalizedQuery, queryTokens)
+               || MatchesField(claim.Id, normalizedQuery, queryTokens)
+               || MatchesField(claim.ClaimKey, normalizedQuery, queryTokens);
+    }
+
+    internal static List<string> GetExactEntityMatchedFields(MemoryEntity entity, string normalizedId)
+    {
+        var fields = new List<string>();
+
+        if (NormalizeSearchText(entity.Id) == normalizedId)
+            fields.Add("id");
+        if (!string.IsNullOrWhiteSpace(entity.ExternalId) && NormalizeSearchText(entity.ExternalId) == normalizedId)
+            fields.Add("externalId");
+
+        return fields.Count == 0 ? ["id"] : fields;
+    }
+
+    internal static List<string> GetMatchedEntityFields(MemoryEntity entity, string normalizedQuery, IReadOnlyList<string> queryTokens)
+    {
+        var matchedFields = new List<string>();
+        AddMatchedField(matchedFields, "label", entity.Label, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "id", entity.Id, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "externalId", entity.ExternalId, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "canonicalName", entity.CanonicalName, normalizedQuery, queryTokens);
+
+        foreach (var alias in entity.Aliases)
+        {
+            if (MatchesField(alias, normalizedQuery, queryTokens))
+            {
+                matchedFields.Add("aliases");
+                break;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(entity.Summary) && MatchesField(entity.Summary, normalizedQuery, queryTokens))
+            matchedFields.Add("summary");
+
+        return matchedFields
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(field => field, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    internal static MemorySeedDiagnostics BuildClaimSeedDiagnostics(
+        MemoryClaim claim,
+        string matchKind,
+        double score,
+        string normalizedQuery)
+    {
+        var matchedEntityIds = new List<string> { claim.SubjectEntityId };
+        if (!string.IsNullOrWhiteSpace(claim.ObjectEntityId))
+            matchedEntityIds.Add(claim.ObjectEntityId);
+
+        return new MemorySeedDiagnostics
+        {
+            RetrievalStage = matchKind switch
+            {
+                "exact" => "claim_exact_lookup",
+                "vector" => "claim_vector_search",
+                _ => "claim_text_search",
+            },
+            ScoreBreakdown = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+            {
+                [matchKind] = score,
+            },
+            MatchedFields = GetMatchedClaimFields(claim, normalizedQuery, matchKind),
+            MatchedEntityIds = matchedEntityIds
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            MatchedClaimIds = [claim.Id],
+        };
+    }
+
+    internal static List<string> GetMatchedClaimFields(MemoryClaim claim, string normalizedQuery, string matchKind)
+    {
+        if (string.Equals(matchKind, "vector", StringComparison.OrdinalIgnoreCase))
+            return ["embedding"];
+
+        var queryTokens = TokenizeSearchText(normalizedQuery);
+        var matchedFields = new List<string>();
+        AddMatchedField(matchedFields, "id", claim.Id, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "normalizedText", claim.NormalizedText, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "predicate", claim.Predicate, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "subjectEntityId", claim.SubjectEntityId, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "objectEntityId", claim.ObjectEntityId, normalizedQuery, queryTokens);
+        AddMatchedField(matchedFields, "valueText", claim.ValueText, normalizedQuery, queryTokens);
+
+        return matchedFields.Count == 0
+            ? [string.Equals(matchKind, "exact", StringComparison.OrdinalIgnoreCase) ? "normalizedText" : "text"]
+            : matchedFields
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(field => field, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+    }
+
+    internal static void AddMatchedField(List<string> matchedFields, string fieldName, string? rawValue, string normalizedQuery,
+        IReadOnlyList<string> queryTokens)
+    {
+        if (MatchesField(rawValue, normalizedQuery, queryTokens))
+            matchedFields.Add(fieldName);
+    }
+
+    internal static bool MatchesField(string? rawValue, string normalizedQuery, IReadOnlyList<string> queryTokens)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue) || string.IsNullOrWhiteSpace(normalizedQuery))
+            return false;
+
+        var normalizedValue = NormalizeSearchText(rawValue);
+        if (string.IsNullOrWhiteSpace(normalizedValue))
+            return false;
+
+        if (normalizedValue.Contains(normalizedQuery, StringComparison.Ordinal))
+            return true;
+
+        return queryTokens.Count > 1 && queryTokens.All(token => normalizedValue.Contains(token, StringComparison.Ordinal));
+    }
+
+    private static bool ShouldPreferMatchKind(string candidate, string current) =>
+        GetMatchRank(candidate) < GetMatchRank(current);
+
+    private static bool ShouldPreferRetrievalStage(string candidate, string current) =>
+        GetRetrievalStageRank(candidate) < GetRetrievalStageRank(current);
+
+    private static int GetMatchRank(string matchKind) =>
+        matchKind.ToLowerInvariant() switch
+        {
+            "exact" => 0,
+            "lexical" => 1,
+            "vector" => 2,
+            _ => 3,
+        };
+
+    private static int GetRetrievalStageRank(string retrievalStage) =>
+        retrievalStage.ToLowerInvariant() switch
+        {
+            "exact_lookup" => 0,
+            "claim_exact_lookup" => 0,
+            "text_search" => 1,
+            "claim_text_search" => 1,
+            "vector_search" => 2,
+            "claim_vector_search" => 2,
+            _ => 3,
+        };
 
     private static List<MemoryEntityWithRelationships> ConvertSubgraphToLegacyEntities(
         MemorySubgraphResult subgraph,

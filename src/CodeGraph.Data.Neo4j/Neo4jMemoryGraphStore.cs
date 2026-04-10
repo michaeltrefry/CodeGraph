@@ -1,10 +1,11 @@
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Neo4j.Driver;
 using CodeGraph.Models.Memory;
 
 namespace CodeGraph.Data.Neo4j;
 
-public class Neo4jMemoryGraphStore : IMemoryGraphStore
+public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
 {
     private readonly Neo4jSessionFactory _sessionFactory;
     private readonly ILogger<Neo4jMemoryGraphStore> _logger;
@@ -982,11 +983,12 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
 
         var results = new Dictionary<string, (MemoryClaim Claim, double Score, string MatchKind)>(StringComparer.OrdinalIgnoreCase);
         var normalizedQuery = query.Trim();
+        var normalizedExactQuery = NormalizeMemorySearchText(normalizedQuery);
         var exactClaim = await GetClaimAsync(NormalizeLookupKey(normalizedQuery));
         if (exactClaim != null && (includeSuperseded || exactClaim.Status != MemoryClaimStatus.Superseded))
             results[exactClaim.Id] = (exactClaim, 100, "exact");
 
-        var exactTextMatches = await SearchClaimsByExactTextAsync(session, normalizedQuery, limit, includeSuperseded);
+        var exactTextMatches = await SearchClaimsByExactTextAsync(session, normalizedExactQuery, limit, includeSuperseded);
         foreach (var (claim, score) in exactTextMatches)
             MergeClaimSearchResult(results, claim, score, "exact");
 
@@ -1043,7 +1045,10 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
         };
 
         var seedClaimIds = query.SeedClaimIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var seedEntityIds = query.SeedEntityIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var directSeedEntityIds = query.SeedEntityIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var claimPromotedEntityIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         if (seedClaimIds.Count > 0)
         {
@@ -1059,22 +1064,20 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
             await foreach (var record in seedClaimEntities)
             {
                 var subjectId = record["subjectId"].As<string>();
-                if (!string.IsNullOrWhiteSpace(subjectId))
-                    seedEntityIds.Add(subjectId);
+                if (!string.IsNullOrWhiteSpace(subjectId) && !directSeedEntityIds.Contains(subjectId))
+                    claimPromotedEntityIds.Add(subjectId);
 
                 var objectId = record["objectId"].As<string?>();
-                if (!string.IsNullOrWhiteSpace(objectId))
-                    seedEntityIds.Add(objectId!);
+                if (!string.IsNullOrWhiteSpace(objectId) && !directSeedEntityIds.Contains(objectId!))
+                    claimPromotedEntityIds.Add(objectId!);
             }
         }
 
-        seedEntityIds = seedEntityIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-
-        if (seedEntityIds.Count == 0 && seedClaimIds.Count == 0)
+        if (directSeedEntityIds.Count == 0 && claimPromotedEntityIds.Count == 0 && seedClaimIds.Count == 0)
             return result;
 
         var entityDistances = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        if (seedEntityIds.Count > 0)
+        if (directSeedEntityIds.Count > 0)
         {
             var neighborhoodResult = await session.RunAsync(
                 $$"""
@@ -1088,19 +1091,25 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
                 ORDER BY hopDistance ASC, id ASC
                 LIMIT $limit
                 """,
-                new { seedIds = seedEntityIds, limit = maxReturnedEntities });
+                new { seedIds = directSeedEntityIds.ToList(), limit = maxReturnedEntities });
 
             await foreach (var record in neighborhoodResult)
                 entityDistances[record["id"].As<string>()] = record["hopDistance"].As<int>();
         }
 
-        foreach (var seedEntityId in seedEntityIds)
+        foreach (var seedEntityId in directSeedEntityIds)
         {
             if (!entityDistances.ContainsKey(seedEntityId))
                 entityDistances[seedEntityId] = 0;
         }
 
-        var entityIds = entityDistances.Keys.Take(maxReturnedEntities).ToList();
+        MergeClaimPromotedEntityDistances(entityDistances, claimPromotedEntityIds);
+
+        var entityIds = RankMemorySubgraphEntityIds(
+            entityDistances,
+            directSeedEntityIds,
+            claimPromotedEntityIds,
+            maxReturnedEntities);
         if (entityIds.Count == 0 && seedClaimIds.Count == 0)
             return result;
 
@@ -1127,9 +1136,9 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
             .Select(id => new MemorySubgraphEntity
             {
                 Entity = entityMap[id],
-                Score = query.SeedEntityIds.Contains(id, StringComparer.OrdinalIgnoreCase) ? 100 : Math.Max(1, 50 - (entityDistances[id] * 10)),
+                Score = directSeedEntityIds.Contains(id) ? 100 : Math.Max(1, 50 - (entityDistances[id] * 10)),
                 HopDistance = entityDistances[id],
-                IsDirectSeed = query.SeedEntityIds.Contains(id, StringComparer.OrdinalIgnoreCase),
+                IsDirectSeed = directSeedEntityIds.Contains(id),
             })
             .OrderBy(entity => entity.HopDistance)
             .ThenByDescending(entity => entity.Score)
@@ -1143,8 +1152,10 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
               AND ($includeConflicts OR c.status <> 'conflicted')
               AND (
                    c.id IN $seedClaimIds
-                   OR subject.id IN $entityIds
-                   OR object.id IN $entityIds
+                   OR (
+                        subject.id IN $entityIds
+                        AND (object IS NULL OR object.id IN $entityIds)
+                   )
               )
             RETURN c.id AS id, c.claimKey AS claimKey, c.factGroupKey AS factGroupKey,
                    subject.id AS subjectEntityId, c.predicate AS predicate, object.id AS objectEntityId,
@@ -1164,20 +1175,24 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
                 limit = maxReturnedClaims,
             });
 
-        var claims = await ReadClaimsAsync(claimsResult);
+        var entityIdSet = entityIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var seedClaimIdSet = seedClaimIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var claims = (await ReadClaimsAsync(claimsResult))
+            .Where(claim => IsClaimInMemorySubgraph(claim, entityIdSet, seedClaimIdSet))
+            .ToList();
         var claimIds = claims.Select(claim => claim.Id).ToList();
 
         result.Claims = claims
             .Select(claim => new MemorySubgraphClaim
             {
                 Claim = claim,
-                Score = seedClaimIds.Contains(claim.Id, StringComparer.OrdinalIgnoreCase)
+                Score = seedClaimIdSet.Contains(claim.Id)
                     ? 100
-                    : entityDistances.TryGetValue(claim.SubjectEntityId, out var hopDistance)
-                        ? Math.Max(1, 60 - (hopDistance * 10))
-                        : 25,
-                HopDistance = entityDistances.TryGetValue(claim.SubjectEntityId, out var distance) ? distance : 0,
-                IsDirectSeed = seedClaimIds.Contains(claim.Id, StringComparer.OrdinalIgnoreCase),
+                    : Math.Max(1, 60 - (GetMemorySubgraphClaimHopDistance(claim, entityDistances) * 10)),
+                HopDistance = seedClaimIdSet.Contains(claim.Id)
+                    ? 0
+                    : GetMemorySubgraphClaimHopDistance(claim, entityDistances),
+                IsDirectSeed = seedClaimIdSet.Contains(claim.Id),
             })
             .OrderBy(claim => claim.HopDistance)
             .ThenByDescending(claim => claim.Score)
@@ -1278,6 +1293,91 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
         return normalized.Trim('_');
     }
 
+    internal static string NormalizeMemorySearchText(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return string.Empty;
+
+        var builder = new StringBuilder(input.Length);
+        var wroteSpace = false;
+
+        foreach (var ch in input.Trim())
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(char.ToLowerInvariant(ch));
+                wroteSpace = false;
+                continue;
+            }
+
+            if (wroteSpace || builder.Length == 0)
+                continue;
+
+            builder.Append(' ');
+            wroteSpace = true;
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    internal static void MergeClaimPromotedEntityDistances(
+        IDictionary<string, int> entityDistances,
+        IEnumerable<string> claimPromotedEntityIds)
+    {
+        foreach (var entityId in claimPromotedEntityIds)
+        {
+            if (!entityDistances.TryGetValue(entityId, out var existingDistance) || existingDistance > 1)
+                entityDistances[entityId] = 1;
+        }
+    }
+
+    internal static List<string> RankMemorySubgraphEntityIds(
+        IReadOnlyDictionary<string, int> entityDistances,
+        IReadOnlySet<string> directSeedEntityIds,
+        IReadOnlySet<string> claimPromotedEntityIds,
+        int limit)
+    {
+        return entityDistances
+            .OrderBy(kvp => directSeedEntityIds.Contains(kvp.Key) ? 0 : claimPromotedEntityIds.Contains(kvp.Key) ? 1 : 2)
+            .ThenBy(kvp => kvp.Value)
+            .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(limit)
+            .Select(kvp => kvp.Key)
+            .ToList();
+    }
+
+    internal static bool IsClaimInMemorySubgraph(
+        MemoryClaim claim,
+        IReadOnlySet<string> entityIds,
+        IReadOnlySet<string> seedClaimIds)
+    {
+        if (seedClaimIds.Contains(claim.Id))
+            return true;
+
+        if (!entityIds.Contains(claim.SubjectEntityId))
+            return false;
+
+        return string.IsNullOrWhiteSpace(claim.ObjectEntityId) || entityIds.Contains(claim.ObjectEntityId);
+    }
+
+    internal static int GetMemorySubgraphClaimHopDistance(
+        MemoryClaim claim,
+        IReadOnlyDictionary<string, int> entityDistances)
+    {
+        var bestDistance = int.MaxValue;
+
+        if (entityDistances.TryGetValue(claim.SubjectEntityId, out var subjectDistance))
+            bestDistance = subjectDistance;
+
+        if (!string.IsNullOrWhiteSpace(claim.ObjectEntityId)
+            && entityDistances.TryGetValue(claim.ObjectEntityId, out var objectDistance))
+        {
+            bestDistance = Math.Min(bestDistance, objectDistance);
+        }
+
+        return bestDistance == int.MaxValue ? 0 : bestDistance;
+    }
+
     internal static bool IsMissingMemoryFulltextIndex(ClientException ex) =>
         ex.Message.Contains("There is no such fulltext schema index: memory_entity_fulltext",
             StringComparison.OrdinalIgnoreCase);
@@ -1359,7 +1459,7 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
         int limit,
         bool includeSuperseded)
     {
-        var normalized = query.Trim().ToLowerInvariant();
+        var normalized = NormalizeMemorySearchText(query);
         if (string.IsNullOrWhiteSpace(normalized))
             return [];
 
@@ -1369,9 +1469,8 @@ public class Neo4jMemoryGraphStore : IMemoryGraphStore
             OPTIONAL MATCH (c)-[:OBJECT]->(object:MemoryEntity)
             WHERE ($includeSuperseded OR c.status <> 'superseded')
               AND (
-                   toLower(c.normalizedText) = $query
-                   OR toLower(c.claimKey) = $query
-                   OR toLower(c.predicate) = $query
+                   toLower(coalesce(c.normalizedText, '')) = $query
+                   OR toLower(coalesce(c.claimKey, '')) = $query
               )
             RETURN c.id AS id, c.claimKey AS claimKey, c.factGroupKey AS factGroupKey,
                    subject.id AS subjectEntityId, c.predicate AS predicate, object.id AS objectEntityId,

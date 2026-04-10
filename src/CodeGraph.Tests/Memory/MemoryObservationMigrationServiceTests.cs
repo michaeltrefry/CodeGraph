@@ -131,6 +131,10 @@ public class MemoryObservationMigrationServiceTests
         public Dictionary<string, List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchResults { get; } =
             new(StringComparer.OrdinalIgnoreCase);
 
+        public Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt) => Task.CompletedTask;
+        public Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId) => Task.FromResult<MemoryWriteReceipt?>(null);
+        public Task UpdateWriteReceiptStatusAsync(string receiptId, MemoryWriteReceiptStatus status, StoreMemoryResult? result = null,
+            string? errorMessage = null) => Task.CompletedTask;
         public Task UpsertEntitiesBatchAsync(IReadOnlyList<MemoryEntity> entities) => Task.CompletedTask;
         public Task UpsertClaimsBatchAsync(IReadOnlyList<MemoryClaim> claims) => Task.CompletedTask;
         public Task AddClaimEdgesBatchAsync(IReadOnlyList<MemoryClaimEdge> edges) => Task.CompletedTask;

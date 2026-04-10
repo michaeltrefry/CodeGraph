@@ -1,6 +1,5 @@
 using CodeGraph.Models.Memory;
 using Microsoft.AspNetCore.Mvc;
-using CodeGraph.Models.Messages;
 using CodeGraph.Services.Memory;
 using CodeGraph.Services.Messaging;
 
@@ -16,19 +15,15 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
         if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
             return BadRequest(new { error = "No entities, claims, or evidence provided" });
 
-        await messageBus.PublishAsync(new StoreMemoryClaims
-        {
-            Extraction = extraction,
-            Source = source ?? "api",
-        });
+        var ack = await memoryService.QueueClaimsAsync(extraction, source ?? "api", "typed", messageBus, HttpContext.RequestAborted);
+        return Accepted(ack);
+    }
 
-        return Accepted(new
-        {
-            status = "processing",
-            entities = extraction.Entities.Count,
-            claims = extraction.Claims.Count,
-            evidence = extraction.Evidence.Count,
-        });
+    [HttpGet("writes/{receiptId}")]
+    public async Task<ActionResult<MemoryWriteReceipt>> GetWriteStatus(string receiptId)
+    {
+        var receipt = await memoryService.GetWriteReceiptAsync(receiptId);
+        return receipt == null ? NotFound() : Ok(receipt);
     }
 
     [HttpGet("search")]

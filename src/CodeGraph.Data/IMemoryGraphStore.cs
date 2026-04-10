@@ -4,6 +4,10 @@ namespace CodeGraph.Data;
 
 public interface IMemoryGraphStore
 {
+    Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt);
+    Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId);
+    Task UpdateWriteReceiptStatusAsync(string receiptId, MemoryWriteReceiptStatus status, StoreMemoryResult? result = null,
+        string? errorMessage = null);
     Task UpsertEntitiesBatchAsync(IReadOnlyList<MemoryEntity> entities);
     Task UpsertClaimsBatchAsync(IReadOnlyList<MemoryClaim> claims);
     Task AddClaimEdgesBatchAsync(IReadOnlyList<MemoryClaimEdge> edges);

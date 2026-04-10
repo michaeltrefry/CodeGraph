@@ -162,8 +162,10 @@ A personal knowledge graph for storing and querying memories across assistant co
 
 | Method | Route | Description |
 |--------|-------|-------------|
-| POST | `/api/memory/store` | Store entities and relationships (async via MassTransit) |
-| GET | `/api/memory/query?topic=...` | Semantic search with subgraph expansion |
+| POST | `/api/memory/claims/store` | Queue claim-centric memory writes (async via MassTransit) |
+| GET | `/api/memory/search?query=...` | Return top entity and claim seeds |
+| POST | `/api/memory/subgraph` | Return a bounded structured memory subgraph |
+| GET | `/api/memory/query?topic=...` | Convenience query that returns structure plus rendered summary |
 | GET | `/api/memory/graph` | Full graph snapshot (paginated) |
 | GET | `/api/memory/entities/{id}` | Entity detail with relationships |
 
@@ -171,8 +173,15 @@ A personal knowledge graph for storing and querying memories across assistant co
 
 | Tool | Description |
 |------|-------------|
-| `store_memory` | Store structured entities and relationships |
-| `query_memory` | Semantic search across the memory graph |
+| `store_memory_v2` | Store claim-centric memory with typed arguments or legacy JSON compatibility |
+| `get_memory_write_status` | Poll the durable status of a queued memory write |
+| `search_memory` | Return ranked claim/entity seeds for iterative retrieval |
+| `get_memory_subgraph` | Fetch a bounded structured memory subgraph around seeds |
+| `get_entity_bundle` | Inspect an entity with nearby claims and observations |
+| `get_claim_bundle` | Inspect a claim with evidence, peers, and conflicts |
+| `expand_memory_frontier` | Iteratively deepen from known entities or claims |
+| `render_memory_summary` | Render human-facing markdown or plain-text summaries |
+| `query_memory` | Convenience query returning structured results plus summary text |
 
 ### Migrating Legacy MemoryGraph Data
 
@@ -378,8 +387,15 @@ The MCP server is hosted within the API project via HTTP transport at `http://lo
 | `get_cluster_detail` | Detailed view of a specific cluster |
 | `analyze_impact` | Blast radius analysis for a changed code element |
 | `index_repository` | Trigger re-indexing of a repository |
-| `store_memory` | Store entities and relationships in the memory graph |
-| `query_memory` | Semantic search across the memory graph |
+| `store_memory_v2` | Store claim-centric memory in the memory graph |
+| `get_memory_write_status` | Read queued/processing/completed/failed receipt status for a memory write |
+| `search_memory` | Find claim/entity seeds before expansion |
+| `get_memory_subgraph` | Retrieve a bounded structured memory neighborhood |
+| `get_entity_bundle` | Read one entity with local claim context |
+| `get_claim_bundle` | Read one claim with evidence and conflicts |
+| `expand_memory_frontier` | Chase promising follow-on nodes from a frontier |
+| `render_memory_summary` | Render structured results into human-readable output |
+| `query_memory` | Convenience structured query with summary text |
 
 ## Graph Model
 

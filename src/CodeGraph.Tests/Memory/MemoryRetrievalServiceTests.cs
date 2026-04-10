@@ -350,7 +350,10 @@ public class MemoryRetrievalServiceTests
         var result = await service.SearchAsync("Michael");
 
         result.Entities.ShouldContain(seed => seed.EntityId == "michael" && seed.MatchKind == "exact");
+        result.Entities.First(seed => seed.EntityId == "michael").Diagnostics.MatchedFields.ShouldContain("id");
         result.Claims.ShouldContain(seed => seed.ClaimId == "claim_1" && seed.MatchKind == "lexical");
+        result.Claims.First(seed => seed.ClaimId == "claim_1").Diagnostics.MatchedFields.ShouldContain("normalizedText");
+        result.Claims.First(seed => seed.ClaimId == "claim_1").Diagnostics.MatchedEntityIds.ShouldContain("michael");
     }
 
     [Fact]
@@ -393,6 +396,159 @@ public class MemoryRetrievalServiceTests
         var result = await service.SearchAsync("Michael Smoke");
 
         result.Entities.Select(seed => seed.EntityId).ShouldBe(["michael_smoke"]);
+    }
+
+    [Fact]
+    public async Task SearchAsync_DowngradesMislabeledExactClaimsAndDropsUnmatchedOnes()
+    {
+        var store = new FakeMemoryGraphStore
+        {
+            ClaimSearchResults =
+            [
+                (
+                    new MemoryClaim
+                    {
+                        Id = "claim_smoke_prefers",
+                        ClaimKey = "claim_key_smoke_prefers",
+                        FactGroupKey = "fact_group_smoke_prefers",
+                        SubjectEntityId = "memory_smoke_agent_20260410t155937z",
+                        Predicate = "prefers",
+                        ValueText = "structured memory receipts",
+                        NormalizedText = "memory_smoke_agent_20260410t155937z prefers structured memory receipts",
+                        Source = "test",
+                    },
+                    100d,
+                    "exact"
+                ),
+                (
+                    new MemoryClaim
+                    {
+                        Id = "claim_unrelated",
+                        ClaimKey = "claim_key_unrelated",
+                        FactGroupKey = "fact_group_unrelated",
+                        SubjectEntityId = "memory_agent_ux_hardening_branch",
+                        Predicate = "focuses_on",
+                        ValueText = "typed store contract and retrieval diagnostics",
+                        NormalizedText = "memory_agent_ux_hardening_branch focuses_on codegraph typed store contract and retrieval diagnostics",
+                        Source = "test",
+                    },
+                    100d,
+                    "exact"
+                )
+            ]
+        };
+
+        var service = CreateService(store);
+        var result = await service.SearchAsync("structured memory receipts");
+
+        result.Claims.Select(claim => claim.ClaimId).ShouldBe(["claim_smoke_prefers"]);
+        result.Claims[0].MatchKind.ShouldBe("lexical");
+        result.Claims[0].Score.ShouldBe(90d);
+    }
+
+    [Fact]
+    public async Task SearchAsync_PrefersClaimAnchoredEntitiesOverVectorOnlyNoise()
+    {
+        var smokeAgent = new MemoryEntity
+        {
+            Id = "memory_smoke_agent_20260410t155937z",
+            ExternalId = "memory_smoke_agent_20260410t155937z",
+            Label = "Memory Smoke Agent 20260410T155937Z",
+            Type = "agent",
+            Summary = "",
+            Source = "test",
+        };
+
+        var store = new FakeMemoryGraphStore
+        {
+            VectorSearchResults =
+            [
+                (
+                    new MemoryEntity
+                    {
+                        Id = "memorygraph",
+                        Label = "MemoryGraph",
+                        Type = "project",
+                        Summary = "",
+                        Source = "test",
+                    },
+                    0.76d
+                )
+            ],
+            ClaimSearchResults =
+            [
+                (
+                    new MemoryClaim
+                    {
+                        Id = "claim_smoke_prefers",
+                        ClaimKey = "claim_key_smoke_prefers",
+                        FactGroupKey = "fact_group_smoke_prefers",
+                        SubjectEntityId = smokeAgent.Id,
+                        Predicate = "prefers",
+                        ValueText = "structured memory receipts",
+                        NormalizedText = $"{smokeAgent.Id} prefers structured memory receipts",
+                        Source = "test",
+                    },
+                    90d,
+                    "lexical"
+                )
+            ]
+        };
+        store.EntitiesById[smokeAgent.Id] = smokeAgent;
+
+        var service = CreateService(store);
+        var result = await service.SearchAsync("structured memory receipts");
+
+        result.Entities.Select(seed => seed.EntityId).ShouldBe([smokeAgent.Id]);
+        result.Entities[0].MatchKind.ShouldBe("lexical");
+        result.Entities[0].Diagnostics.RetrievalStage.ShouldBe("claim_text_search");
+        result.Entities[0].Diagnostics.MatchedFields.ShouldContain("claim_anchor");
+    }
+
+    [Fact]
+    public async Task GetMemorySubgraphAsync_UsesSanitizedClaimSeedsForQueryExpansion()
+    {
+        var store = new FakeMemoryGraphStore
+        {
+            ClaimSearchResults =
+            [
+                (
+                    new MemoryClaim
+                    {
+                        Id = "claim_smoke_prefers",
+                        ClaimKey = "claim_key_smoke_prefers",
+                        FactGroupKey = "fact_group_smoke_prefers",
+                        SubjectEntityId = "memory_smoke_agent_20260410t155937z",
+                        Predicate = "prefers",
+                        ValueText = "structured memory receipts",
+                        NormalizedText = "memory_smoke_agent_20260410t155937z prefers structured memory receipts",
+                        Source = "test",
+                    },
+                    100d,
+                    "exact"
+                ),
+                (
+                    new MemoryClaim
+                    {
+                        Id = "claim_unrelated",
+                        ClaimKey = "claim_key_unrelated",
+                        FactGroupKey = "fact_group_unrelated",
+                        SubjectEntityId = "memory_agent_ux_hardening_branch",
+                        Predicate = "focuses_on",
+                        ValueText = "typed store contract and retrieval diagnostics",
+                        NormalizedText = "memory_agent_ux_hardening_branch focuses_on codegraph typed store contract and retrieval diagnostics",
+                        Source = "test",
+                    },
+                    100d,
+                    "exact"
+                )
+            ]
+        };
+
+        var service = CreateService(store);
+        await service.GetMemorySubgraphAsync(new MemorySubgraphRequest { Query = "structured memory receipts" });
+
+        store.LastSubgraphQuery.SeedClaimIds.ShouldBe(["claim_smoke_prefers"]);
     }
 
     [Fact]
@@ -552,10 +708,70 @@ public class MemoryRetrievalServiceTests
         var result = await service.QueryAsync("Michael");
 
         result.Entities.ShouldContain(entity => entity.Entity.Id == "michael");
+        result.Subgraph.ShouldNotBeNull();
+        result.Subgraph.Entities.ShouldContain(entity => entity.Entity.Id == "michael");
         result.Entities.First(entity => entity.Entity.Id == "michael")
             .Relationships.ShouldContain(rel => rel.RelationshipType == "uses" && rel.TargetId == "memory_system");
         result.FormattedText.ShouldContain("michael prefers clean slate design");
         result.FormattedText.ShouldContain("CONFLICT (unresolved)");
+    }
+
+    [Fact]
+    public void GetMatchedEntityFields_ReportsLexicalFieldHits()
+    {
+        var entity = new MemoryEntity
+        {
+            Id = "michael_smoke",
+            ExternalId = "michael_smoke",
+            Label = "Michael Smoke",
+            CanonicalName = "Michael Smoke",
+            Aliases = ["michael smoke alias"],
+            Summary = "Smoke test entity",
+            Type = "person",
+            Source = "test",
+        };
+
+        var matchedFields = MemoryRetrievalService.GetMatchedEntityFields(
+            entity,
+            MemoryRetrievalService.NormalizeSearchText("Michael Smoke"),
+            MemoryRetrievalService.TokenizeSearchText("Michael Smoke"));
+
+        matchedFields.ShouldContain("label");
+        matchedFields.ShouldContain("id");
+        matchedFields.ShouldContain("externalId");
+        matchedFields.ShouldContain("canonicalName");
+        matchedFields.ShouldContain("aliases");
+    }
+
+    [Fact]
+    public void BuildClaimSeedDiagnostics_ReportsMatchedFieldsAndIds()
+    {
+        var claim = new MemoryClaim
+        {
+            Id = "claim_1",
+            ClaimKey = "claim_key_1",
+            FactGroupKey = "fact_group_key_1",
+            SubjectEntityId = "michael",
+            ObjectEntityId = "memory_system",
+            Predicate = "prefers",
+            NormalizedText = "michael prefers clean slate design",
+            ValueText = "clean slate design",
+            Source = "test",
+        };
+
+        var diagnostics = MemoryRetrievalService.BuildClaimSeedDiagnostics(
+            claim,
+            "lexical",
+            88,
+            MemoryRetrievalService.NormalizeSearchText("clean slate"));
+
+        diagnostics.RetrievalStage.ShouldBe("claim_text_search");
+        diagnostics.MatchedFields.ShouldContain("normalizedText");
+        diagnostics.MatchedFields.ShouldContain("valueText");
+        diagnostics.MatchedEntityIds.ShouldContain("michael");
+        diagnostics.MatchedEntityIds.ShouldContain("memory_system");
+        diagnostics.MatchedClaimIds.ShouldContain("claim_1");
+        diagnostics.ScoreBreakdown["lexical"].ShouldBe(88);
     }
 
     [Fact]
@@ -763,10 +979,23 @@ public class MemoryRetrievalServiceTests
     private sealed class FakeMemoryGraphStore : IMemoryGraphStore
     {
         public MemoryEntity? ExactEntity { get; set; }
+        public Dictionary<string, MemoryEntity> EntitiesById { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<MemoryEntity> TextSearchResults { get; set; } = [];
+        public List<(MemoryEntity Entity, double Score)> VectorSearchResults { get; set; } = [];
         public List<(MemoryClaim Claim, double Score, string MatchKind)> ClaimSearchResults { get; set; } = [];
         public MemorySubgraphResult SubgraphResult { get; set; } = new();
+        public MemorySubgraphQuery LastSubgraphQuery { get; private set; } = new();
+        public Dictionary<string, MemoryWriteReceipt> WriteReceipts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+        public Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt)
+        {
+            WriteReceipts[receipt.Id] = receipt;
+            return Task.CompletedTask;
+        }
+        public Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId) =>
+            Task.FromResult(WriteReceipts.GetValueOrDefault(receiptId));
+        public Task UpdateWriteReceiptStatusAsync(string receiptId, MemoryWriteReceiptStatus status, StoreMemoryResult? result = null,
+            string? errorMessage = null) => Task.CompletedTask;
         public Task UpsertEntitiesBatchAsync(IReadOnlyList<MemoryEntity> entities) => Task.CompletedTask;
         public Task UpsertClaimsBatchAsync(IReadOnlyList<MemoryClaim> claims) => Task.CompletedTask;
         public Task AddClaimEdgesBatchAsync(IReadOnlyList<MemoryClaimEdge> edges) => Task.CompletedTask;
@@ -774,15 +1003,28 @@ public class MemoryRetrievalServiceTests
         public Task UpsertEntityEdgesBatchAsync(IReadOnlyList<MemoryEntityEdge> edges) => Task.CompletedTask;
         public Task CreateObservationAsync(MemoryObservation obs) => Task.CompletedTask;
         public Task ResolveObservationAsync(string observationId, string resolution, string? resolvedByMemoryId) => Task.CompletedTask;
-        public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5) => Task.FromResult(new List<(MemoryEntity Entity, double Score)>());
+        public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5) => Task.FromResult(VectorSearchResults.Take(topK).ToList());
         public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5) => Task.FromResult(TextSearchResults.Take(limit).ToList());
         public Task<List<MemoryRelationshipDetail>> GetRelationshipsAsync(string entityId) => Task.FromResult(new List<MemoryRelationshipDetail>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsAsync(IEnumerable<string> entityIds, IEnumerable<string> claimIds) => Task.FromResult(new List<MemoryObservation>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsForEntitiesAsync(IEnumerable<string> entityIds) => Task.FromResult(new List<MemoryObservation>());
         public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0) => Task.FromResult(new MemoryGraphSnapshot());
         public Task<List<string>> FindCandidateEntityIdsAsync(string candidateId, int limit = 20) => Task.FromResult(new List<string>());
-        public Task<MemoryEntity?> GetEntityAsync(string entityId) => Task.FromResult(entityId == ExactEntity?.Id ? ExactEntity : null);
-        public Task<MemoryEntity?> GetEntityByExternalIdAsync(string externalId) => Task.FromResult(externalId == ExactEntity?.ExternalId ? ExactEntity : null);
+        public Task<MemoryEntity?> GetEntityAsync(string entityId)
+        {
+            if (entityId == ExactEntity?.Id)
+                return Task.FromResult<MemoryEntity?>(ExactEntity);
+
+            return Task.FromResult(EntitiesById.GetValueOrDefault(entityId));
+        }
+        public Task<MemoryEntity?> GetEntityByExternalIdAsync(string externalId)
+        {
+            if (externalId == ExactEntity?.ExternalId)
+                return Task.FromResult<MemoryEntity?>(ExactEntity);
+
+            return Task.FromResult(EntitiesById.Values.FirstOrDefault(entity =>
+                string.Equals(entity.ExternalId, externalId, StringComparison.OrdinalIgnoreCase)));
+        }
         public Task<List<MemoryLegacyRelationship>> GetLegacyRelationshipsAsync() => Task.FromResult(new List<MemoryLegacyRelationship>());
         public Task<List<MemoryObservation>> GetAllObservationsAsync() => Task.FromResult(new List<MemoryObservation>());
         public Task<MemoryClaim?> GetClaimAsync(string claimId)
@@ -799,6 +1041,9 @@ public class MemoryRetrievalServiceTests
         public Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(string query, float[]? queryEmbedding, int limit = 5, bool includeSuperseded = false)
             => Task.FromResult(ClaimSearchResults.Take(limit).ToList());
         public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphQuery query, int maxHops = 2, int maxReturnedEntities = 20, int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true)
-            => Task.FromResult(SubgraphResult);
+        {
+            LastSubgraphQuery = query;
+            return Task.FromResult(SubgraphResult);
+        }
     }
 }

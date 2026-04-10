@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models.Memory;
+using CodeGraph.Models.Messages;
+using CodeGraph.Services.Messaging;
 
 namespace CodeGraph.Services.Memory;
 
@@ -27,6 +29,74 @@ public class MemoryService
         _retrieval = retrieval;
         _store = store;
         _logger = logger;
+    }
+
+    public async Task<MemoryStoreAcceptedResult> QueueClaimsAsync(
+        MemoryClaimExtractionResult extraction,
+        string source,
+        string inputMode,
+        IMessageBus messageBus,
+        CancellationToken ct = default)
+    {
+        var receipt = new MemoryWriteReceipt
+        {
+            Id = $"memory_write_{Guid.NewGuid():N}",
+            Source = source,
+            InputMode = inputMode,
+            Status = MemoryWriteReceiptStatus.Queued,
+            EntitiesRequested = extraction.Entities.Count,
+            ClaimsRequested = extraction.Claims.Count,
+            EvidenceRequested = extraction.Evidence.Count,
+        };
+
+        await _store.CreateWriteReceiptAsync(receipt);
+
+        try
+        {
+            await messageBus.PublishAsync(new StoreMemoryClaims
+            {
+                ReceiptId = receipt.Id,
+                InputMode = inputMode,
+                Extraction = extraction,
+                Source = source,
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            await _store.UpdateWriteReceiptStatusAsync(receipt.Id, MemoryWriteReceiptStatus.Failed, errorMessage: ex.Message);
+            throw;
+        }
+
+        return new MemoryStoreAcceptedResult
+        {
+            Status = "queued",
+            ReceiptId = receipt.Id,
+            Source = source,
+            InputMode = inputMode,
+            EntitiesRequested = extraction.Entities.Count,
+            ClaimsRequested = extraction.Claims.Count,
+            EvidenceRequested = extraction.Evidence.Count,
+        };
+    }
+
+    public async Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId)
+    {
+        return await _store.GetWriteReceiptAsync(receiptId);
+    }
+
+    public async Task MarkWriteReceiptProcessingAsync(string receiptId)
+    {
+        await _store.UpdateWriteReceiptStatusAsync(receiptId, MemoryWriteReceiptStatus.Processing);
+    }
+
+    public async Task CompleteWriteReceiptAsync(string receiptId, StoreMemoryResult result)
+    {
+        await _store.UpdateWriteReceiptStatusAsync(receiptId, MemoryWriteReceiptStatus.Completed, result);
+    }
+
+    public async Task FailWriteReceiptAsync(string receiptId, string errorMessage)
+    {
+        await _store.UpdateWriteReceiptStatusAsync(receiptId, MemoryWriteReceiptStatus.Failed, errorMessage: errorMessage);
     }
 
     public async Task<StoreMemoryResult> StoreClaimsAsync(MemoryClaimExtractionResult extraction, string source = "api")

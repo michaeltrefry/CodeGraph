@@ -4,6 +4,14 @@
 
 Last updated: 2026-04-10
 
+Recent progress in this branch:
+
+- `store_memory_v2` now accepts typed MCP arguments in addition to the legacy JSON payload
+- `query_memory` now returns structured data plus rendered summary instead of prose-only at the MCP boundary
+- queued memory writes now return durable receipt ids and can be polled through `get_memory_write_status`
+- search seeds now carry richer retrieval diagnostics to help agents inspect why a result ranked
+- admin and UI work remain intentionally out of scope for this branch
+
 Scope:
 
 - evaluate whether the current claim-centric memory implementation is actually good for agent use

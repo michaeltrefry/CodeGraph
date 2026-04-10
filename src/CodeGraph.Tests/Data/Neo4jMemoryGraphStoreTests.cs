@@ -65,6 +65,13 @@ public class Neo4jMemoryGraphStoreTests
     }
 
     [Fact]
+    public void NormalizeMemorySearchText_StripsPunctuationAndCollapsesWhitespace()
+    {
+        Neo4jMemoryGraphStore.NormalizeMemorySearchText(" Memory Smoke Agent (20260410T155937Z)! ")
+            .ShouldBe("memory smoke agent 20260410t155937z");
+    }
+
+    [Fact]
     public void IsClaimInEntityBundle_ReturnsTrue_WhenEntityIsSubject()
     {
         var claim = new MemoryClaim
@@ -132,5 +139,129 @@ public class Neo4jMemoryGraphStoreTests
     {
         Should.Throw<InvalidOperationException>(() => Neo4jMemoryGraphStore.MapClaimRelationshipType("related_to"))
             .Message.ShouldContain("Unsupported memory claim edge type");
+    }
+
+    [Fact]
+    public void MergeClaimPromotedEntityDistances_AssignsOneHopContextWithoutOverwritingCloserPaths()
+    {
+        var distances = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["direct_seed"] = 0,
+            ["already_nearby"] = 1,
+            ["far_neighbor"] = 3,
+        };
+
+        Neo4jMemoryGraphStore.MergeClaimPromotedEntityDistances(
+            distances,
+            ["claim_subject", "already_nearby", "far_neighbor"]);
+
+        distances["claim_subject"].ShouldBe(1);
+        distances["already_nearby"].ShouldBe(1);
+        distances["far_neighbor"].ShouldBe(1);
+        distances["direct_seed"].ShouldBe(0);
+    }
+
+    [Fact]
+    public void RankMemorySubgraphEntityIds_PrioritizesDirectSeedsThenClaimPromotedContext()
+    {
+        var ranked = Neo4jMemoryGraphStore.RankMemorySubgraphEntityIds(
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["neighbor_b"] = 1,
+                ["claim_subject"] = 1,
+                ["direct_seed"] = 0,
+                ["neighbor_c"] = 2,
+            },
+            new HashSet<string>(["direct_seed"], StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(["claim_subject"], StringComparer.OrdinalIgnoreCase),
+            limit: 4);
+
+        ranked.ShouldBe(["direct_seed", "claim_subject", "neighbor_b", "neighbor_c"]);
+    }
+
+    [Fact]
+    public void IsClaimInMemorySubgraph_ReturnsFalse_ForObjectOnlyMatchesOutsideSelectedSubjects()
+    {
+        var claim = new MemoryClaim
+        {
+            Id = "claim_1",
+            ClaimKey = "claim_key_1",
+            FactGroupKey = "fact_group_1",
+            SubjectEntityId = "michael_smoke",
+            Predicate = "uses",
+            ObjectEntityId = "claim_centric_memory",
+            NormalizedText = "michael_smoke uses claim_centric_memory",
+            Source = "test",
+        };
+
+        Neo4jMemoryGraphStore.IsClaimInMemorySubgraph(
+            claim,
+            new HashSet<string>(["claim_centric_memory"], StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void IsClaimInMemorySubgraph_ReturnsTrue_WhenClaimStaysInsideSelectedEntitySet()
+    {
+        var claim = new MemoryClaim
+        {
+            Id = "claim_2",
+            ClaimKey = "claim_key_2",
+            FactGroupKey = "fact_group_2",
+            SubjectEntityId = "memory_smoke_agent",
+            Predicate = "validates",
+            ObjectEntityId = "memory_smoke_plan",
+            NormalizedText = "memory_smoke_agent validates memory_smoke_plan",
+            Source = "test",
+        };
+
+        Neo4jMemoryGraphStore.IsClaimInMemorySubgraph(
+            claim,
+            new HashSet<string>(["memory_smoke_agent", "memory_smoke_plan"], StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void IsClaimInMemorySubgraph_ReturnsTrue_ForDirectSeedClaimEvenWhenEntitiesAreTrimmed()
+    {
+        var claim = new MemoryClaim
+        {
+            Id = "claim_seed",
+            ClaimKey = "claim_key_seed",
+            FactGroupKey = "fact_group_seed",
+            SubjectEntityId = "memory_smoke_agent",
+            Predicate = "prefers",
+            NormalizedText = "memory_smoke_agent prefers structured memory receipts",
+            Source = "test",
+        };
+
+        Neo4jMemoryGraphStore.IsClaimInMemorySubgraph(
+            claim,
+            new HashSet<string>(["structured_memory_receipts"], StringComparer.OrdinalIgnoreCase),
+            new HashSet<string>(["claim_seed"], StringComparer.OrdinalIgnoreCase)).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void GetMemorySubgraphClaimHopDistance_UsesNearestAnchoredEntity()
+    {
+        var claim = new MemoryClaim
+        {
+            Id = "claim_3",
+            ClaimKey = "claim_key_3",
+            FactGroupKey = "fact_group_3",
+            SubjectEntityId = "memory_smoke_agent",
+            Predicate = "validates",
+            ObjectEntityId = "memory_smoke_plan",
+            NormalizedText = "memory_smoke_agent validates memory_smoke_plan",
+            Source = "test",
+        };
+
+        Neo4jMemoryGraphStore.GetMemorySubgraphClaimHopDistance(
+            claim,
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["memory_smoke_agent"] = 2,
+                ["memory_smoke_plan"] = 1,
+            }).ShouldBe(1);
     }
 }

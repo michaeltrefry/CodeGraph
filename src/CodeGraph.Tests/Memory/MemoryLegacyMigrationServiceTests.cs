@@ -133,6 +133,19 @@ public class MemoryLegacyMigrationServiceTests
         public List<MemoryEvidence> Evidence { get; } = [];
         public List<MemoryObservation> Observations { get; } = [];
         public List<MemoryLegacyRelationship> LegacyRelationships { get; } = [];
+        public Dictionary<string, MemoryWriteReceipt> WriteReceipts { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt)
+        {
+            WriteReceipts[receipt.Id] = receipt;
+            return Task.CompletedTask;
+        }
+
+        public Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId) =>
+            Task.FromResult(WriteReceipts.GetValueOrDefault(receiptId));
+
+        public Task UpdateWriteReceiptStatusAsync(string receiptId, MemoryWriteReceiptStatus status, StoreMemoryResult? result = null,
+            string? errorMessage = null) => Task.CompletedTask;
 
         public Task UpsertEntitiesBatchAsync(IReadOnlyList<MemoryEntity> entities)
         {
