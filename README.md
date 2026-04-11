@@ -1,356 +1,311 @@
 # CodeGraph
 
-A self-maintaining .NET 9 service that indexes source repositories into a queryable knowledge graph backed by Neo4j, with a personal memory graph for conversational tooling. It produces two outputs: a structural graph of code and service relationships, and generated `CODEGRAPH.md` files that describe each repository in plain language. An MCP server lets compatible clients query the graph as a domain expert for the indexed codebase.
+CodeGraph is a self-maintaining .NET 9 platform that indexes source repositories into a Neo4j-backed knowledge graph, generates `CODEGRAPH.md` documentation, exposes graph and memory tooling over REST and MCP, and ships with an Angular UI for exploration, reviews, operations, and memory browsing.
+
+It is designed around one rule: if a feature needs ongoing human babysitting to stay correct, it will rot.
 
 ## Core Principle
 
-**Self-maintaining.** If it requires human attention to stay accurate, it will rot. Auto-discovery of new repos, CI-triggered updates, direct commits for doc changes, automatic cleanup of removed repos.
+**Self-maintaining.** CodeGraph should discover repositories, re-index them, refresh generated docs, surface risk, and clean up stale data without requiring a person to keep the system coherent by hand.
 
-## Features
+## What CodeGraph Does
 
-- **Knowledge Graph Indexing** — Extracts classes, methods, routes, events, queues, jobs, tables, and their relationships from source code into a Neo4j graph
-- **Multi-Language Extraction** — C# (Roslyn semantic analysis), TypeScript/Angular (Node.js sidecar), T-SQL (ScriptDom), Tree-sitter (multi-language fallback)
-- **AI-Powered Analysis** — Anthropic Batches API generates natural language summaries with confidence indicators for every project
-- **Cross-Repo Linking** — Connects HTTP calls, MassTransit events, and NuGet package references across repositories
-- **Codebase Health Metrics** — Tracks file churn, cyclomatic complexity, truck factor, coupling centrality, and risk scores
-- **Event-Driven Pipeline** — Asynchronous processing via MassTransit consumers with independent failure isolation and automatic retry
-- **Memory Graph** — Personal knowledge graph stored in Neo4j with vector search, fuzzy entity matching, conflict detection, and relationship traversal — accessible via MCP tools and REST API
-- **MCP Server** — 20+ tools for compatible assistants to query the graph, trace call paths, find consumers/publishers, explore architecture, check health, analyze impact, detect clusters, store/query memory, and read conventions
-- **REST API** — Full query interface for projects, nodes, edges, graph overview, health data, search, memory, and wiki
-- **Angular Dashboard** — Browse repositories, explore the graph, view health hotspots, ask questions via streaming chat, and manage the wiki
-- **Hierarchical Wiki** — Multi-section wiki with nested pages (up to 3 levels), file attachments, raw content support, revision history, admin-managed sections, and MCP integration
-- **Global Search** — Unified search across repositories and nodes with relevance ranking
-- **Service Cluster Detection** — Louvain community detection algorithm discovers tightly-coupled repository groups from the cross-repo dependency graph, with edge-type weighting, bridge repo identification, and D3.js cluster visualization
-- **Blast Radius / Impact Analysis** — Given a changed code element or file, traverses inbound dependencies to identify everything affected, classifying each by risk level (Critical/High/Medium/Low) with cross-repo awareness
-- **Anthropic Circuit Breaker** — Resilient API integration with exponential backoff, transient detection, and automatic circuit breaking
+- Indexes repositories into a structural graph of code, APIs, messaging, jobs, packages, and database objects
+- Extracts across multiple languages: C# via Roslyn, TypeScript/Angular via a Node sidecar, T-SQL via ScriptDom, and Tree-sitter as a fallback
+- Links repositories through HTTP calls, MassTransit messaging, shared packages, and other cross-repo signals
+- Generates natural-language repository and project analysis with confidence indicators and optional auto-commit/auto-push of `CODEGRAPH.md`
+- Supports multiple AI backends for analysis: Anthropic, OpenAI, Gemini, and local OpenAI-compatible endpoints
+- Computes repository health, hotspot metrics, security findings, .NET support posture, and repository vitality trends
+- Runs project-level and repository-level AI code reviews with persisted findings and SSE streaming updates
+- Stores claim-centric personal memory in Neo4j, including evidence, conflicts, bounded subgraphs, and frontier expansion
+- Serves a web UI for repositories, graph views, reviews, impact analysis, wiki pages, schedules, and a dedicated memory browser
+- Exposes graph and memory capabilities over MCP for assistants and other compatible clients
 
 ## Solution Structure
 
-```
+```text
 CodeGraph/
 ├── src/
-│   ├── CodeGraph.Api/                         # ASP.NET Core API host, controllers, consumers, DI
-│   │   └── Consumers/                         # MassTransit event consumers
-│   ├── CodeGraph.Models/                      # Domain model, request/response DTOs (zero dependencies)
-│   │   ├── Messages/                          # MassTransit event messages
-│   │   ├── Memory/                            # Memory graph models (entities, relationships, observations)
-│   │   ├── Requests/                          # API request models
-│   │   └── Responses/                         # API response models
-│   ├── CodeGraph.Services/                    # All business logic, query engine, AI analysis, MCP tools
-│   │   └── Memory/                            # Memory normalization, retrieval, embedding services
-│   ├── CodeGraph.Data/                        # Store interfaces (IGraphStore, IMemoryGraphStore, etc.)
-│   ├── CodeGraph.Data.Neo4j/                  # Neo4j implementations of all store interfaces
-│   ├── CodeGraph.Extractors.CSharp/           # Roslyn semantic extraction
-│   ├── CodeGraph.Extractors.TypeScript/       # TypeScript compiler API sidecar
-│   ├── CodeGraph.Extractors.Sql/              # T-SQL ScriptDom parsing
-│   ├── CodeGraph.Extractors.TreeSitter/       # Tree-sitter multi-language extraction
-│   └── CodeGraph.Jobs/                        # Scheduled jobs (batch processing, discovery)
-├── tests/
-│   ├── CodeGraph.Tests/                       # Unit tests (xUnit + Shouldly)
-│   └── CodeGraph.Jobs.Tests/                  # Job-specific tests
-├── CodeGraphWeb/                              # Angular dashboard
-└── src/CodeGraph.Api/Migrations/              # Neo4j schema migrations bundled with the API
+│   ├── CodeGraph.Api/                   # ASP.NET Core API host, MCP host, controllers, MassTransit consumers
+│   ├── CodeGraph.Models/                # Domain models, request/response DTOs, messages, memory contracts
+│   ├── CodeGraph.Services/              # Analysis, indexing, query engine, assistant, reviews, memory, wiki
+│   ├── CodeGraph.Data/                  # Store interfaces and shared entities
+│   ├── CodeGraph.Data.Neo4j/            # Neo4j-backed implementations
+│   ├── CodeGraph.Jobs/                  # Background job host and embedded schedule runner
+│   ├── CodeGraph.Extractors.CSharp/     # Roslyn-based extraction
+│   ├── CodeGraph.Extractors.TypeScript/ # TypeScript/Angular sidecar integration
+│   ├── CodeGraph.Extractors.Sql/        # T-SQL extraction
+│   ├── CodeGraph.Extractors.TreeSitter/ # Fallback multi-language extraction
+│   ├── CodeGraph.Tests/                 # Main test suite
+│   └── CodeGraph.Jobs.Tests/            # Job-host test suite
+├── CodeGraphWeb/                        # Angular frontend
+└── src/CodeGraph.Api/Migrations/        # Neo4j schema and feature migrations
 ```
 
-### Dependency Flow
+### Dependency flow
 
-```
-Models ← Data ← Services ← Extractors.*
-                          ← Api (hosts consumers)
-                          ← Jobs
-```
-
-No references flow upward. Models has zero dependencies.
-
-### Controller / Service Architecture
-
-Controllers are thin — they handle HTTP concerns (validation, status codes) and delegate all business logic to dedicated services. No controller references the Data layer directly.
-
-| Controller | Service | Responsibility |
-|---|---|---|
-| `ProjectsController` | `IProjectQueryService` | Project listing, detail, health metrics, hotspots, nodes, readme, impact analysis, batch status |
-| `ProjectsController` | `IProjectService` | Re-analysis orchestration (index + analyze pipeline) |
-| `AdminController` | `IAdminService` | Repo processing, re-indexing, cross-repo linking, and repository discovery |
-| `WikiController` | `IWikiService` | Hierarchical wiki with sections, nested pages, attachments, revisions |
-| `GraphController` | `IGraphOverviewService` | Cross-repo graph overview aggregation |
-| `NodesController` | `INodeQueryService` | Node detail with edge resolution, search |
-| `SearchController` | `ISearchService` | Unified search across repositories and nodes |
-| `ClustersController` | `ICommunityDetectionService` | Service cluster detection, cluster graph, cluster detail |
-| `MemoryController` | `MemoryService` | Memory graph store, query, entity detail |
-| `AskController` | `GraphAssistant` | Streaming assistant chat with graph tools |
-
-**Request/response models** live in `CodeGraph.Models` under `Requests/` and `Responses/`. Response models are simple POCOs — data entities are mapped to response DTOs in the service layer, never exposed through controllers.
-
-## Data Layer
-
-All persistent storage uses **Neo4j**. The `CodeGraph.Data` project defines store interfaces; `CodeGraph.Data.Neo4j` implements them.
-
-| Store | Responsibility |
-|-------|----------------|
-| `IGraphStore` | Code nodes, edges, cross-repo edges, repositories, sync state, file hashes |
-| `IAnalysisStore` | AI analysis batches, project analyses, repo summaries |
-| `IMetricsStore` | File-level health metrics, project health summaries |
-| `IMemoryGraphStore` | Memory entities, relationships, observations, vector/text search |
-| `IWikiStore` | Wiki sections, pages, revisions, attachments |
-| `IAdminStore` | Admin users and exclusion rules |
-| `IVectorStore` | Embedding storage and vector similarity search |
-| `IMigrationRunner` | Schema migration execution |
-
-### Schema Migrations
-
-Located in `src/CodeGraph.Api/Migrations/` and copied into API publish output:
-
-| Migration | Description |
-|-----------|-------------|
-| `001_schema.cypher` | All constraints, indexes, fulltext indexes, vector indexes, wiki schema, and memory graph schema |
-| `002_wiki_seed_sections.cypher` | Seed default wiki sections (general, conventions, skills, agents, mcp-documentation) |
-| `003_analysis_batch_provider_batch_id_backfill.cypher` | Backfill `providerBatchId` on legacy analysis batch records |
-
-## Event-Driven Pipeline
-
-The indexing and analysis pipeline is fully event-driven via MassTransit/RabbitMQ. Each stage is an independent consumer with its own retry policy — failures in one stage don't block others.
-
-```
-ProcessRepository (message)
-  │
-  ▼
-ProcessRepositoryConsumer
-  └─→ Index repo → publish RepositoryIndexingCompleted
-                        ├─→ CrossRepoLinker (incremental linking)
-                        ├─→ VitalsAnalyzer (health metrics + AI analysis)
-                        └─→ BatchAnalysisService (submit to Anthropic)
-                                └─→ publish AnalysisBatchSubmitted
-                                        │
-                              [delayed redelivery: 1m, 5m, 10m, 15m]
-                                        │
-                                        ▼
-                              AnalysisBatchSubmittedConsumer (poll Anthropic)
-                                ├─ Done → publish ProjectAnalysisResultsProcessed
-                                │               └─→ SynthesizeRepoSummary
-                                │                       └─→ publish AnalysisSynthesisCompleted
-                                │                               └─→ Write CODEGRAPH.md files
-                                └─ Still processing → throw BatchNotReadyException (retries)
+```text
+Models <- Data <- Services <- Extractors.*
+                         <- Api
+                         <- Jobs
 ```
 
-### Messages & Consumers
+`CodeGraph.Api` hosts the REST API, the MCP endpoint, and the MassTransit consumers. `CodeGraph.Jobs` runs scheduled and manual background jobs. `CodeGraphWeb` is the Angular UI. Neo4j is the primary datastore, and RabbitMQ backs the event-driven pipeline.
 
-| Message | Consumer | Trigger |
-|---------|----------|---------|
-| `ProcessRepository` | `ProcessRepositoryConsumer` | Admin API, scheduled jobs, repository discovery |
-| `RepositoryIndexingCompleted` | `RepositoryIndexingCompletedConsumer` | After successful indexing |
-| `AnalysisBatchSubmitted` | `AnalysisBatchSubmittedConsumer` | After Anthropic batch submission |
-| `ProjectAnalysisResultsProcessed` | `ProjectAnalysisResultsProcessedConsumer` | After batch results stored |
-| `AnalysisSynthesisCompleted` | `AnalysisSynthesisCompletedConsumer` | After repo-level synthesis |
-| `ConventionUpdated` | `ConventionUpdatedConsumer` | Wiki page created/updated |
-| `RepositoryRemoved` | `RepositoryRemovedConsumer` | Repo removed from the configured source provider (cascading cleanup) |
-| `StoreMemory` | `StoreMemoryConsumer` | Memory graph store request (from MCP or API) |
+## Key Capabilities
 
-## Memory Graph
+### Knowledge graph and discovery
 
-A personal knowledge graph for storing and querying memories across assistant conversations. Entities, relationships, and observations are stored in Neo4j with vector embeddings for semantic search.
+- Repository, namespace, file, class, method, route, service, event, queue, exchange, table, component, and job indexing
+- Cross-repo traversal for callers, consumers, publishers, data lineage, impact analysis, and service clustering
+- Trust-aware search and source lookup for graph nodes
 
-### Features
+### Analysis and docs
 
-- **Fuzzy entity matching** — New entities are matched against existing ones using fuzzy string matching to prevent duplicates
-- **Vector search** — Entities are embedded (384-dim) for semantic similarity search with automatic overfetch/filter
-- **Fulltext search** — Lucene-backed fallback when vector search is unavailable
-- **Subgraph traversal** — Query returns seed entities plus N-hop neighborhood with relationship context
-- **Conflict detection** — Edges marked as conflicting create observations that surface during queries
-- **Relationship embeddings** — Edges are also embedded for relevance-ranked relationship display
+- Repository and project summaries with confidence indicators
+- Automatic `CODEGRAPH.md` generation and optional git commit/push
+- Multi-provider analysis configuration with provider-specific settings
+- Assistant model settings independent from batch-analysis settings
 
-### API Endpoints
+### Health, security, and vitality
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| POST | `/api/memory/claims/store` | Queue claim-centric memory writes (async via MassTransit) |
-| GET | `/api/memory/search?query=...` | Return top entity and claim seeds |
-| POST | `/api/memory/subgraph` | Return a bounded structured memory subgraph |
-| GET | `/api/memory/query?topic=...` | Convenience query that returns structure plus rendered summary |
-| GET | `/api/memory/graph` | Full graph snapshot (paginated) |
-| GET | `/api/memory/entities/{id}` | Entity detail with relationships |
+- File-level hotspot scoring and repository health summaries
+- Security analysis across three pillars: secrets, vulnerable packages, and attack-surface checks
+- .NET SDK / target framework support reporting
+- Repository vitality trends such as activity velocity, dormant periods, and firefighting rates
 
-### MCP Tools
+### Reviews
 
-| Tool | Description |
-|------|-------------|
-| `store_memory_v2` | Store claim-centric memory with typed arguments or legacy JSON compatibility |
-| `get_memory_write_status` | Poll the durable status of a queued memory write |
-| `search_memory` | Return ranked claim/entity seeds for iterative retrieval |
-| `get_memory_subgraph` | Fetch a bounded structured memory subgraph around seeds |
-| `get_entity_bundle` | Inspect an entity with nearby claims and observations |
-| `get_claim_bundle` | Inspect a claim with evidence, peers, and conflicts |
-| `expand_memory_frontier` | Iteratively deepen from known entities or claims |
-| `render_memory_summary` | Render human-facing markdown or plain-text summaries |
-| `query_memory` | Convenience query returning structured results plus summary text |
+- Project-scoped AI reviews for a specific `.csproj` or project surface
+- Repository-level code reviews that synthesize findings across projects
+- Persisted review runs with latest-run lookup and SSE progress streams
 
-### Migrating Legacy MemoryGraph Data
+### Memory
 
-If you have memories stored in the older `MemoryGraph` project, use the one-off migration tool in [`tools/memory-migration/`](./tools/memory-migration):
+- Claim-centric memory model built on entities, claims, evidence, and observations
+- Structured search, bounded subgraph retrieval, claim/entity bundle inspection, and frontier expansion
+- Durable queued writes with receipt polling
+- Memory browser UI with graph snapshots and focused entity drill-in
 
-```bash
-# Dry-run against the old Docker volume
-./tools/memory-migration/run-memorygraph-migration.sh --source-username michael
+### Operations and wiki
 
-# Apply the migration into the current CodeGraph Neo4j
-./tools/memory-migration/run-memorygraph-migration.sh --source-username michael --apply
-```
+- Repository discovery from local folders, GitHub, or GitLab
+- Embedded job scheduling and manual job execution from the settings surface
+- Hierarchical wiki with sections, nested pages, attachments, revisions, and auto-generated MCP documentation
 
-The wrapper script starts a temporary Neo4j container against the old `memorygraph_neo4j_data` Docker volume, then runs a dry-run or import into the current CodeGraph memory graph. The migration is dry-run by default and aborts if overlapping target ids are detected, unless you explicitly allow that.
+## AI Provider Support
+
+CodeGraph no longer assumes a single analysis backend.
+
+- `AnalysisOptions:DefaultProvider` selects the backend for repository/project analysis
+- Supported built-in providers are `anthropic`, `openai`, `gemini`, and `local`
+- `AnalysisOptions:Assistant` has its own provider/model settings for the Ask experience
+- Local analysis targets OpenAI-compatible endpoints by default and is wired for tools like LM Studio
+
+Current config includes provider blocks for:
+
+- `CodeGraph:AnalysisOptions:Anthropic`
+- `CodeGraph:AnalysisOptions:OpenAi`
+- `CodeGraph:AnalysisOptions:Gemini`
+- `CodeGraph:AnalysisOptions:Local`
+- `CodeGraph:AnalysisOptions:Assistant`
 
 ## Prerequisites
 
 - [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-- Neo4j 5.x (with vector index support)
-- RabbitMQ (for MassTransit event-driven pipeline)
-- [Node.js 18+](https://nodejs.org/) (for Angular dashboard and TypeScript extractor)
-- An [Anthropic API key](https://console.anthropic.com/) (for AI analysis features)
-- A configured repository source: GitHub, GitLab, or a local folder root
+- Neo4j 5.x
+- RabbitMQ
+- [Node.js 18+](https://nodejs.org/)
+- A repository source configuration: `Folder`, `GitHub`, or `GitLab`
+- At least one configured analysis provider if you want AI analysis or reviews
+
+For Docker-based local model setups, the default local provider points at `http://host.docker.internal:1234/v1`.
 
 ## Quick Start
 
-### 1. Configuration
+### 1. Configure settings
 
-Key settings in `appsettings.json`:
+The main local config file is [src/CodeGraph.Api/appsettings.json](/Users/michael/Repos/CodeGraph/src/CodeGraph.Api/appsettings.json). Docker-friendly defaults live in [.env.example](/Users/michael/Repos/CodeGraph/.env.example).
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `CodeGraph:StorageOptions:Neo4jUri` | `bolt://localhost:7687` | Neo4j connection URI |
-| `CodeGraph:StorageOptions:Neo4jUsername` | `neo4j` | Neo4j username |
-| `CodeGraph:StorageOptions:Neo4jPassword` | — | Neo4j password |
-| `CodeGraph:AnalysisOptions:Model` | `claude-sonnet-4-6` | Default analysis model |
-| `CodeGraph:IndexingOptions:FoundationalRepos` | — | Repositories to index first during bootstrap |
-| `CodeGraph:RepositorySource:Provider` | `Folder` | Source provider: Folder, GitHub, or GitLab |
-| `CodeGraph:RepositorySource:ReposCachePath` | `~/repos/.cache` | Local cache for cloned remote repos |
-| `CodeGraph:RepositorySource:Folder:RootPath` | `~/repos/` | Local folder root used by the folder provider |
-| `CodeGraph:TsPort` | `3100` | TypeScript extractor sidecar port |
+Useful settings to know:
 
-### 2. Build & Run
+| Setting | Purpose |
+|---|---|
+| `CodeGraph:StorageOptions:*` | Neo4j connection and embedding model settings |
+| `CodeGraph:RepositorySource:Provider` | Choose `Folder`, `GitHub`, or `GitLab` |
+| `CodeGraph:RepositorySource:Folder:RootPath` | Local repo root when using the folder provider |
+| `CodeGraph:AnalysisOptions:DefaultProvider` | Default analysis backend |
+| `CodeGraph:AnalysisOptions:Assistant:Provider` | Ask/assistant backend |
+| `CodeGraph:AnalysisOptions:OpenAi:*` | OpenAI analysis provider settings |
+| `CodeGraph:AnalysisOptions:Gemini:*` | Gemini analysis provider settings |
+| `CodeGraph:AnalysisOptions:Local:*` | Local OpenAI-compatible provider settings |
+| `CodeGraph:AnalysisOptions:AutoCommitDocs` | Auto-commit generated `CODEGRAPH.md` files |
+| `CodeGraph:AnalysisOptions:AutoPushDocs` | Auto-push generated doc commits |
+| `CodeGraph:TsPort` | TypeScript analyzer sidecar port |
+
+### 2. Run locally
 
 ```bash
-# Build the solution
 dotnet build CodeGraph.sln
 
-# Start the API server (http://localhost:5037)
-# Pending Neo4j migrations are applied automatically at startup.
+# API + MCP host
 dotnet run --project src/CodeGraph.Api
 
-# Start the Angular dashboard (http://localhost:4200)
-cd CodeGraphWeb && npm install && npm start
+# Jobs host / schedule runner
+dotnet run --project src/CodeGraph.Jobs
+
+# Angular UI
+cd CodeGraphWeb
+npm install
+npm start
 ```
 
-## API Endpoints
+Default endpoints:
 
-### Projects
+- API: [http://localhost:5037](http://localhost:5037)
+- Swagger: [http://localhost:5037/swagger](http://localhost:5037/swagger)
+- MCP: [http://localhost:5037/mcp](http://localhost:5037/mcp)
+- Web UI: [http://localhost:4200](http://localhost:4200)
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/projects` | List repositories (pagination, search) |
-| GET | `/api/projects/{name}` | Project detail with node counts and cross-repo edges |
-| GET | `/api/projects/{name}/health` | Health summary + hotspots |
-| GET | `/api/projects/{name}/metrics` | File metrics sorted by risk |
-| GET | `/api/projects/{name}/hotspots` | Top risky files |
-| GET | `/api/projects/{name}/nodes` | Nodes by label with pagination |
-| GET | `/api/projects/{name}/batch-status` | Latest analysis batch status |
-| GET | `/api/projects/{name}/readme` | Project README.md content |
-| GET | `/api/projects/{name}/impact` | Blast radius impact analysis for a node (`?node=QualifiedName&depth=3`) |
-| GET | `/api/projects/{name}/impact/file` | Blast radius impact analysis for a file (`?path=relative/file.cs&depth=3`) |
-| POST | `/api/projects/ReAnalyze` | Trigger full re-index + analysis for a repo |
+### 3. Run with Docker Compose
 
-### Search
+```bash
+cp .env.example .env
+docker compose up --build
+```
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/search?q={query}` | Unified search across repos and nodes |
+The compose stack includes:
 
-### Graph
+- `api`
+- `jobs`
+- `web`
+- `neo4j`
+- `rabbitmq`
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/graph/overview` | All repos + aggregated cross-repo edges |
+Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`.
 
-### Nodes
+## Event-Driven Pipeline
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/nodes/{id}` | Node detail with edges |
-| GET | `/api/nodes/search` | Search by pattern, label, project |
+Repository processing is asynchronous and message-driven via MassTransit and RabbitMQ.
 
-### Clusters
+Typical flow:
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/clusters` | Cluster overview with members, edge counts, density, bridge repos |
-| GET | `/api/clusters/graph` | Graph representation for D3.js visualization |
-| GET | `/api/clusters/{id}` | Cluster detail with cross-cluster connections |
+1. A repository is queued for processing.
+2. Indexing extracts graph data and publishes completion events.
+3. Cross-repo linking, health/vitals, security, and analysis follow as downstream stages.
+4. Analysis results are synthesized into repository summaries and `CODEGRAPH.md`.
+5. Memory writes are queued separately through their own consumer path.
+
+The API host currently registers consumers for:
+
+- `ProcessRepository`
+- `RepositoryIndexingCompleted`
+- `AnalysisBatchSubmitted`
+- `ProjectAnalysisResultsProcessed`
+- `AnalysisSynthesisCompleted`
+- `RepositoryRemoved`
+- `StoreMemoryClaims`
+
+## REST API Highlights
+
+The authoritative REST contract is the Swagger UI at [http://localhost:5037/swagger](http://localhost:5037/swagger). The routes below are the main surfaces that tend to matter day to day.
+
+### Repository and graph data
+
+| Route | Purpose |
+|---|---|
+| `GET /api/projects` | List repositories with search, grouping, and pagination |
+| `GET /api/projects/{name}` | Repository detail |
+| `GET /api/projects/{name}/health` | Health, hotspots, security summary, .NET support, vitality |
+| `GET /api/projects/{name}/security` | Expanded security findings |
+| `GET /api/projects/{name}/metrics` | File metrics |
+| `GET /api/projects/{name}/hotspots` | Top hotspots |
+| `GET /api/projects/{name}/nodes` | Repository nodes by label/project |
+| `GET /api/projects/{name}/readme` | Stored README content for an indexed repo |
+| `GET /api/projects/{name}/impact` | Impact analysis by node name |
+| `GET /api/projects/{name}/impact/file` | Impact analysis by file path |
+| `POST /api/projects/ReAnalyze` | Trigger re-analysis for a repository |
+| `DELETE /api/projects/{name}` | Remove an indexed repository |
+| `GET /api/graph/overview` | Cross-repo graph overview |
+| `GET /api/search` | Search repositories and nodes |
+| `GET /api/nodes/by-file` | Nodes for a file |
+| `GET /api/nodes/{id}` | Node detail |
+| `GET /api/nodes/{id}/source` | Source for a node |
+| `PUT /api/nodes/{id}/do-not-trust` | Mark a node as untrusted |
+| `GET /api/nodes/search` | Node search |
+| `GET /api/clusters`, `/api/clusters/graph`, `/api/clusters/{id}` | Service cluster views |
+
+### Reviews and diagnostics
+
+| Route | Purpose |
+|---|---|
+| `POST /api/projects/{repo}/reviews` | Start a project-level review |
+| `GET /api/projects/{repo}/reviews/latest?projectName=...` | Latest project review |
+| `GET /api/projects/{repo}/reviews/{reviewRunId}/stream` | SSE stream for a project review |
+| `GET /api/projects/{repo}/diagnostics` | Project diagnostics and review prep data |
+| `POST /api/projects/{repo}/code-review` | Start a repository-level review |
+| `GET /api/projects/{repo}/code-review/latest` | Latest repository review |
+| `GET /api/projects/{repo}/code-review/{reviewRunId}` | Repository review detail |
+| `GET /api/projects/{repo}/code-review/{reviewRunId}/stream` | SSE stream for a repository review |
 
 ### Memory
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| POST | `/api/memory/store` | Store entities and relationships (async) |
-| GET | `/api/memory/query?topic=...` | Semantic search with subgraph expansion |
-| GET | `/api/memory/graph` | Full graph snapshot (paginated) |
-| GET | `/api/memory/entities/{id}` | Entity detail with relationships |
+| Route | Purpose |
+|---|---|
+| `POST /api/memory/claims/store` | Queue claim-centric memory writes |
+| `GET /api/memory/writes/{receiptId}` | Check durable write status |
+| `GET /api/memory/search` | Search memory claims/entities |
+| `POST /api/memory/subgraph` | Fetch a bounded structured subgraph |
+| `GET /api/memory/entities/{id}/bundle` | Entity bundle with nearby claims |
+| `GET /api/memory/entities/{id}/graph` | Focused graph snapshot for an entity |
+| `GET /api/memory/claims/{id}` | Claim bundle |
+| `POST /api/memory/frontier/expand` | Expand memory frontier |
+| `POST /api/memory/render-summary` | Render a human-readable summary |
+| `GET /api/memory/query` | Convenience query returning structure plus summary |
+| `GET /api/memory/graph` | Paginated global memory graph snapshot |
+| `POST /api/memory/migrate-legacy` | Legacy relationship migration |
+| `POST /api/memory/migrate-observations` | Observation migration |
 
-### Ask
+### Settings, operations, and wiki
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| POST | `/api/ask` | SSE stream — assistant conversation with graph tools |
+CodeGraph has largely moved operational endpoints under `api/settings` rather than the older `api/admin` naming.
 
-### Wiki
+| Route | Purpose |
+|---|---|
+| `POST /api/settings/processRepos` | Queue one or more repositories |
+| `POST /api/settings/reIndexAll` | Re-index all known repos |
+| `POST /api/settings/link` | Run cross-repo linking |
+| `POST /api/settings/detectCommunities` | Re-run community detection |
+| `POST /api/settings/linkAndDetect` | Link then detect communities |
+| `POST /api/settings/processBatchAnalysis` | Resume/process pending batch analysis |
+| `POST /api/settings/discover` | Discover repositories from the configured source |
+| `GET /api/settings/db-health` | Neo4j health and index diagnostics |
+| `GET/POST/PUT/DELETE /api/settings/schedules...` | Embedded job scheduling |
+| `GET/POST/PUT/DELETE /api/settings/sections...` | Wiki section management |
+| `GET/POST/PUT/DELETE /api/settings/exclusions...` | Exclusion rule management |
+| `POST /api/settings/mcp/regenerate` | Rebuild generated MCP documentation pages |
+| `GET /api/wiki/...` | Wiki tree, page, revision, and attachment operations |
+| `POST /api/ask` | Streaming Ask experience |
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| GET | `/api/wiki/sections` | List all wiki sections |
-| GET | `/api/wiki/{section}/tree` | Hierarchical page tree for a section |
-| GET | `/api/wiki/{section}/{**path}` | Get page by nested path |
-| POST | `/api/wiki/{section}` | Create a root page in a section |
-| POST | `/api/wiki/{section}/{**path}` | Create a child page or upload attachment |
-| PUT | `/api/wiki/{section}/{**path}` | Update a page (creates revision) |
-| DELETE | `/api/wiki/{section}/{**path}` | Delete a page |
-| PATCH | `/api/wiki/{section}/{**path}/move` | Move a page between sections/parents |
-| GET | `/api/wiki/{section}/{**path}/revisions` | List revision history |
-| GET | `/api/wiki/{section}/{**path}/revisions/{rev}` | Get a specific revision |
-| GET | `/api/wiki/{section}/{**path}/attachments` | List page attachments |
-| POST | `/api/wiki/{section}/{**path}/attachments` | Upload an attachment |
-| GET | `/api/wiki/attachments/{id}/{filename}` | Download an attachment |
+## Angular UI
 
-### Admin
+`CodeGraphWeb/` exposes the main product surfaces:
 
-| Method | Route | Description |
-|--------|-------|-------------|
-| POST | `/api/admin/processRepos` | Publish indexing messages for repos |
-| POST | `/api/admin/reIndexAll` | Re-index all repos |
-| POST | `/api/admin/link` | Run cross-repo linking |
-| POST | `/api/admin/processBatchAnalysis` | Process completed Anthropic batches |
-| POST | `/api/admin/discover` | Auto-discover repos from the configured source provider |
-
-### Optional Git Hooks
-
-This repo includes versioned Git hooks in `.githooks/` plus an installer:
-
-```bash
-./tools/install-git-hooks.sh
-```
-
-The hooks are gated to `main` by default:
-
-- `post-commit` triggers repository indexing only
-- `post-merge` triggers repository indexing plus analysis
-
-Both hooks publish to the current `POST /api/settings/processRepos` endpoint asynchronously so they do not block Git for long.
-
-Optional environment overrides:
-
-- `CODEGRAPH_API_URL` — defaults to `http://localhost:5037`
-- `CODEGRAPH_HOOK_MAIN_BRANCH` — defaults to `main`
-- `CODEGRAPH_HOOK_REPO_NAME` — defaults to the repo folder name
-- `CODEGRAPH_HOOK_TIMEOUT_SECONDS` — defaults to `5`
+- `/repos` and `/repos/:name` for repository browsing, health, security, vitality, and review workflows
+- `/graph` for the repository dependency graph
+- `/clusters` for service cluster visualization
+- `/impact` for blast-radius analysis
+- `/search` for global search
+- `/ask` for streaming assistant interactions
+- `/memory` for the memory browser and entity-focused graph exploration
+- `/wiki/...` for the conventions/wiki system
+- `/settings/...` for operations, schedules, DB health, sections, and exclusions
 
 ## MCP Server
 
-The MCP server is hosted within the API project via HTTP transport at `http://localhost:5037`. Add it to your MCP client configuration:
+The API hosts an MCP server at [http://localhost:5037/mcp](http://localhost:5037/mcp).
+
+Example client config:
 
 ```json
 {
@@ -363,135 +318,66 @@ The MCP server is hosted within the API project via HTTP transport at `http://lo
 }
 ```
 
-### Available Tools
+### Graph tools
 
-| Tool | Description |
-|------|-------------|
-| `get_graph_schema` | Describe node/edge types and properties |
-| `list_projects` | List all indexed repositories |
-| `search_graph` | Search by name pattern, node type, project |
-| `get_service_summary` | AI analysis summary for a service |
-| `trace_call_path` | Trace inbound/outbound calls and dependencies |
-| `trace_data_lineage` | Follow a model through publishers/consumers |
-| `find_consumers` | What consumes this event/model/endpoint |
-| `find_publishers` | What publishes to a queue/exchange |
-| `get_architecture` | Architecture overview and dependency analysis |
-| `find_archival_candidates` | Repos with no inbound/outbound dependencies |
-| `get_code_snippet` | Read source code from a repository |
-| `get_project_health` | Health scores, hotspots, and AI analysis per project |
-| `get_fleet_health` | Fleet-wide health overview, repos ranked by score |
-| `read_node_source` | Read source code for a node with surrounding context |
-| `list_conventions` | List all convention pages from the wiki |
-| `get_convention` | Read a convention page by slug (supports fuzzy matching) |
-| `get_service_clusters` | Discover tightly-coupled repository groups |
-| `get_cluster_detail` | Detailed view of a specific cluster |
-| `analyze_impact` | Blast radius analysis for a changed code element |
-| `index_repository` | Trigger re-indexing of a repository |
-| `store_memory_v2` | Store claim-centric memory in the memory graph |
-| `get_memory_write_status` | Read queued/processing/completed/failed receipt status for a memory write |
-| `search_memory` | Find claim/entity seeds before expansion |
-| `get_memory_subgraph` | Retrieve a bounded structured memory neighborhood |
-| `get_entity_bundle` | Read one entity with local claim context |
-| `get_claim_bundle` | Read one claim with evidence and conflicts |
-| `expand_memory_frontier` | Chase promising follow-on nodes from a frontier |
-| `render_memory_summary` | Render structured results into human-readable output |
-| `query_memory` | Convenience structured query with summary text |
+- `get_graph_schema`
+- `list_projects`
+- `search_graph`
+- `get_service_summary`
+- `trace_call_path`
+- `trace_data_lineage`
+- `find_consumers`
+- `find_publishers`
+- `get_architecture`
+- `get_project_health`
+- `get_fleet_health`
+- `find_archival_candidates`
+- `get_service_clusters`
+- `get_cluster_detail`
+- `analyze_impact`
+- `read_node_source`
+- `get_code_snippet`
+- `list_conventions`
+- `get_convention`
 
-## Graph Model
+### Memory tools
 
-### Node Types
+- `store_memory_v2`
+- `get_memory_write_status`
+- `query_memory`
+- `search_memory`
+- `get_memory_subgraph`
+- `get_entity_bundle`
+- `get_claim_bundle`
+- `expand_memory_frontier`
+- `render_memory_summary`
+- `migrate_legacy_memory_graph`
+- `migrate_memory_observations`
 
-| Category | Node Types |
-|----------|-----------|
-| Code | Project, Namespace, File, Class, Interface, Struct, Record, Enum, Method, Function, Property, Constructor, Delegate |
-| API | Route, Service |
-| Data | Table, View, StoredProcedure |
-| Messaging | Event, Queue, Exchange |
-| UI | Component, Module |
-| Operations | Job, NuGetPackage |
+The API also exposes MCP resources and can regenerate wiki-backed MCP documentation from current tool metadata.
 
-### Edge Types
+## Optional Git Hooks
 
-| Category | Edge Types |
-|----------|-----------|
-| Structure | CONTAINS_FILE, CONTAINS_FOLDER, CONTAINS_NAMESPACE, CONTAINS_PROJECT, DEFINES, DEFINES_METHOD |
-| Code | CALLS, IMPORTS, IMPLEMENTS, INHERITS, USES_TYPE, INJECTS |
-| HTTP | HTTP_CALLS, HANDLES |
-| Messaging | PUBLISHES, CONSUMES, SUBSCRIBES |
-| Data | QUERIES |
-| Packages | REFERENCES_PACKAGE |
-| UI | RENDERS |
-| Operations | SCHEDULES, FILE_CHANGES_WITH |
-
-## Angular Dashboard
-
-The `CodeGraphWeb/` directory contains an Angular application with:
-
-- **Repository list** — Browse all indexed repos with search and pagination
-- **Repository detail** — Node counts, health scores, AI analysis, dependency graph
-- **Node browser** — Filter by type, project, search pattern
-- **Node detail** — View edges, cross-repo connections
-- **Graph visualization** — D3.js interactive dependency graph
-- **Ask** — Streaming chat interface backed by the assistant + graph tools
-- **Wiki** — Multi-section hierarchical wiki with sidebar navigation, tree view, inline editing, file attachments, raw content editors, and revision history
-- **Health dashboard** — Hotspots, risk scores, file metrics with rendered markdown analysis
-- **Service clusters** — D3.js force-directed cluster visualization with color-coded groups, bridge repo highlighting, and cluster detail panel
-- **Impact analysis** — Blast radius explorer with typeahead search, risk-grouped results, cross-repo impact table, and configurable traversal depth
-- **Global search** — Unified search across repos and nodes with relevance ranking
+Versioned git hooks live in [.githooks](/Users/michael/Repos/CodeGraph/.githooks), with an installer at [tools/install-git-hooks.sh](/Users/michael/Repos/CodeGraph/tools/install-git-hooks.sh).
 
 ```bash
-cd CodeGraphWeb
-npm install
-npm start          # Dev server at http://localhost:4200
-npm run build      # Production build
+./tools/install-git-hooks.sh
 ```
+
+By default:
+
+- `post-commit` triggers repository indexing
+- `post-merge` triggers repository indexing plus analysis
+
+Both hooks call `POST /api/settings/processRepos` asynchronously.
 
 ## Testing
 
 ```bash
-# Run all tests
-dotnet test
-
-# Run specific test project
+dotnet test CodeGraph.sln
 dotnet test src/CodeGraph.Tests
-
-# Run a single test
+dotnet test src/CodeGraph.Jobs.Tests
 dotnet test --filter "FullyQualifiedName~TestMethodName"
 ```
 
-Tests use **xUnit** with **Shouldly** assertions and include an `InMemoryGraphStore` for data layer testing without Neo4j.
-
-## Architecture Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Neo4j for all storage | Graph-native queries replace recursive CTEs; single data store simplifies ops |
-| Roslyn for C# | Semantic analysis far exceeds tree-sitter's syntactic parsing |
-| Tree-sitter for other languages | Multi-language fallback replaces separate Ansible/ColdFusion/Terraform extractors |
-| Node.js sidecar for TypeScript | TypeScript compiler API understands Angular natively |
-| Direct commits, not MRs | MRs add friction and would be ignored — self-maintaining |
-| Confidence indicators | "I don't know" is better than a confident wrong answer |
-| NuGet qualified names as linking keys | Canonical cross-repo identifiers (e.g. `OrdersApi.Models.OrderCreatedEvent`) |
-| Foundational-first indexing | Framework repos (ServiceStack, ServiceBus) analyzed first to provide context for all other repos |
-| Anthropic Batches API | 50% cost reduction for bulk analysis across hundreds of repos |
-| Event-driven pipeline | Independent failure isolation — linking failures don't block analysis, vitals failures don't block indexing |
-| Delayed redelivery for batch polling | MassTransit redelivery replaces scheduled polling jobs for faster results without tying up threads |
-| Incremental cross-repo linking | Re-links only the newly indexed repo's edges instead of full graph rebuild |
-| Single-user memory graph | No per-user scoping — streamlined for personal use |
-
-## Key Technologies
-
-| Layer | Technologies |
-|-------|-------------|
-| Runtime | .NET 9, ASP.NET Core |
-| Database | Neo4j 5.x (Cypher, vector indexes, fulltext indexes) |
-| Messaging | RabbitMQ, MassTransit |
-| Code Analysis | Roslyn (C#), ScriptDom (T-SQL), TypeScript Compiler API, Tree-sitter |
-| AI | Anthropic Claude API, Anthropic Batches API, AnthropicCircuitBreaker |
-| Embeddings | ONNX Runtime (all-MiniLM-L6-v2, 384-dim) |
-| Integration | MCP SDK, LibGit2Sharp |
-| DI | Autofac |
-| Frontend | Angular, TypeScript, D3.js, RxJS, marked |
-| Testing | xUnit, Shouldly |
-
-For Docker runs, the API now expects embeddings under `/models`. The default ONNX path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`, with `vocab.txt` in the same directory. By default Docker mounts `./.cache/models` to `/models`, and also mounts the legacy sibling checkout `../llm/models` to `/models-legacy` so older local setups keep working. Override `CODEGRAPH_DOCKER_MODELS_MOUNT` or `CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT` if your host layout differs.
+Tests use xUnit and Shouldly, with extensive in-memory fakes for graph, metrics, reviews, jobs, and memory flows.
