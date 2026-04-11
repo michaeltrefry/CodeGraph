@@ -115,6 +115,17 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(_projects.FirstOrDefault(x => x.Name == name));
     }
 
+    public Task UpdateRepositoryCommitShaAsync(string name, string? commitSha)
+    {
+        var existing = _projects.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (existing is null)
+            return Task.CompletedTask;
+
+        _projects.Remove(existing);
+        _projects.Add(existing with { LastCommitSha = commitSha });
+        return Task.CompletedTask;
+    }
+
     public Task<IReadOnlyList<TraversalEntry>> TraverseAsync(long startNodeId,
         TraceDirection direction, int maxDepth,
         EdgeType[]? edgeFilter = null, double minConfidence = 0)

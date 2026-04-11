@@ -38,12 +38,21 @@ public class BatchAnalysisServiceDocPublishingTests : IDisposable
         await RunGitAsync(repoPath, "add README.md src/Demo.Project/Demo.Project.csproj");
         await RunGitAsync(repoPath, "commit -m \"chore: seed repo\"");
         await RunGitAsync(repoPath, "push -u origin main");
+        var indexedHead = await RunGitCaptureAsync(repoPath, "rev-parse HEAD");
 
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
         {
             Name = "demo-repo",
-            LocalPath = repoPath
+            LocalPath = repoPath,
+            LastCommitSha = indexedHead
+        });
+        await store.UpsertSyncStateAsync(new SyncStateEntity
+        {
+            Project = "demo-repo",
+            LastCommitSha = indexedHead,
+            LastSyncAt = DateTime.UtcNow.AddMinutes(-5),
+            Status = "idle"
         });
 
         await store.UpsertProjectAnalysisAsync("demo-repo", new StoredProjectAnalysis(
@@ -91,6 +100,14 @@ public class BatchAnalysisServiceDocPublishingTests : IDisposable
         var localHead = await RunGitCaptureAsync(repoPath, "rev-parse HEAD");
         var remoteHead = await RunGitCaptureAsync(_tempRoot, $"--git-dir=\"{remotePath}\" rev-parse refs/heads/main");
         remoteHead.ShouldBe(localHead);
+
+        var syncState = await store.GetSyncStateAsync("demo-repo");
+        syncState.ShouldNotBeNull();
+        syncState.LastCommitSha.ShouldBe(localHead);
+
+        var repository = await store.GetRepositoryByName("demo-repo");
+        repository.ShouldNotBeNull();
+        repository.LastCommitSha.ShouldBe(localHead);
     }
 
     public void Dispose()

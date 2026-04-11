@@ -499,6 +499,148 @@ export interface GraphOverviewResponse {
   edges: GraphOverviewEdge[];
 }
 
+export interface MemoryGraphNode {
+  id: string;
+  label: string;
+  type: string;
+  summary: string;
+  source?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryGraphLink {
+  source: string;
+  target: string;
+  relationship: string;
+  context?: string;
+  timestamp: string;
+}
+
+export interface MemoryGraphResponse {
+  nodes: MemoryGraphNode[];
+  links: MemoryGraphLink[];
+  totalNodeCount: number;
+}
+
+export interface MemoryEntity {
+  id: string;
+  label: string;
+  type: string;
+  externalId?: string;
+  canonicalName?: string;
+  aliases: string[];
+  summary: string;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type MemoryClaimStatus = 'Active' | 'Superseded' | 'Conflicted' | 'Deprecated';
+
+export interface MemoryClaim {
+  id: string;
+  claimKey: string;
+  factGroupKey: string;
+  subjectEntityId: string;
+  predicate: string;
+  objectEntityId?: string;
+  valueText?: string;
+  valueJson?: string;
+  normalizedText: string;
+  status: MemoryClaimStatus;
+  confidence?: number;
+  effectiveAt?: string;
+  recordedAt: string;
+  supersedesClaimId?: string;
+  source: string;
+}
+
+export interface MemoryEntityEdge {
+  fromEntityId: string;
+  toEntityId: string;
+  edgeType: string;
+  bestActiveClaimId?: string;
+  weight?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryObservation {
+  id: string;
+  claim: string;
+  conflictsWith: string;
+  source: string;
+  timestamp: string;
+  resolved: boolean;
+  resolution?: string;
+  resolvedByMemoryId?: string;
+  aboutEntityIds: string[];
+  aboutClaimIds: string[];
+}
+
+export interface MemoryEvidence {
+  id: string;
+  claimId?: string;
+  observationId?: string;
+  evidenceType: string;
+  sourceRef: string;
+  snippet?: string;
+  metadataJson?: string;
+  createdAt: string;
+}
+
+export interface MemoryEntityBundle {
+  entity: MemoryEntity;
+  activeClaims: MemoryClaim[];
+  conflictingClaims: MemoryClaim[];
+  supersededClaims: MemoryClaim[];
+  neighborEdges: MemoryEntityEdge[];
+  observations: MemoryObservation[];
+}
+
+export interface MemoryClaimBundle {
+  claim: MemoryClaim;
+  factGroupPeers: MemoryClaim[];
+  supersessionChain: MemoryClaim[];
+  conflicts: MemoryClaim[];
+  evidence: MemoryEvidence[];
+  observations: MemoryObservation[];
+}
+
+export interface MemorySeedDiagnostics {
+  retrievalStage: string;
+  scoreBreakdown: Record<string, number>;
+  matchedFields: string[];
+  matchedEntityIds: string[];
+  matchedClaimIds: string[];
+}
+
+export interface MemoryEntitySeed {
+  entityId: string;
+  label: string;
+  type: string;
+  score: number;
+  matchKind: string;
+  diagnostics: MemorySeedDiagnostics;
+}
+
+export interface MemoryClaimSeed {
+  claimId: string;
+  normalizedText: string;
+  predicate: string;
+  status: MemoryClaimStatus;
+  score: number;
+  matchKind: string;
+  diagnostics: MemorySeedDiagnostics;
+}
+
+export interface MemorySearchResult {
+  query: string;
+  entities: MemoryEntitySeed[];
+  claims: MemoryClaimSeed[];
+}
+
 // Cluster (community detection)
 export interface ClusterSummary {
   clusterId: number;

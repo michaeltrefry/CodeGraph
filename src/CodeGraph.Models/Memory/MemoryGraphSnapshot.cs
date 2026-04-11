@@ -13,6 +13,9 @@ public class MemoryGraphNode
     public required string Label { get; set; }
     public required string Type { get; set; }
     public required string Summary { get; set; }
+    public string? Source { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
 }
 
 public class MemoryGraphLink

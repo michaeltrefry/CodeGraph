@@ -4,6 +4,7 @@ public class MemoryQueryResult
 {
     public List<MemoryEntityWithRelationships> Entities { get; set; } = [];
     public List<MemoryObservation> Conflicts { get; set; } = [];
+    public MemorySubgraphResult? Subgraph { get; set; }
     public string FormattedText { get; set; } = string.Empty;
 }
 

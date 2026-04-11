@@ -152,7 +152,9 @@ public static class Startup
         services.AddCodeGraphJobScheduling();
 
         // Memory graph
-        services.AddTransient<MemoryNormalizationService>();
+        services.AddTransient<MemoryClaimIngestionService>();
+        services.AddTransient<MemoryLegacyMigrationService>();
+        services.AddTransient<MemoryObservationMigrationService>();
         services.AddTransient<MemoryRetrievalService>();
         services.AddTransient<MemoryService>();
 
@@ -169,7 +171,7 @@ public static class Startup
             x.AddConsumer<ProjectAnalysisResultsProcessedConsumer>();
             x.AddConsumer<AnalysisSynthesisCompletedConsumer>();
             x.AddConsumer<RepositoryRemovedConsumer>();
-            x.AddConsumer<StoreMemoryConsumer>();
+            x.AddConsumer<StoreMemoryClaimsConsumer>();
 
             x.UsingRabbitMq((context, cfg) =>
             {
@@ -221,10 +223,10 @@ public static class Startup
                     e.ConfigureConsumer<RepositoryRemovedConsumer>(context);
                 });
 
-                cfg.ReceiveEndpoint("store-memory", e =>
+                cfg.ReceiveEndpoint("store-memory-claims", e =>
                 {
                     ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<StoreMemoryConsumer>(context);
+                    e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
                 });
             });
         });

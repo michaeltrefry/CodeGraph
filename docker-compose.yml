@@ -64,7 +64,8 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - repos_cache:/repos/.cache
-      - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./llm/models}:/Users/michael/Repos/llm/models
+      - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
+      - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
     depends_on:
       rabbitmq:
         condition: service_healthy
