@@ -27,6 +27,10 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/graph/graph-page.component').then(m => m.GraphPageComponent)
   },
   {
+    path: 'memory',
+    loadComponent: () => import('./pages/memory/memory-page.component').then(m => m.MemoryPageComponent)
+  },
+  {
     path: 'clusters',
     loadComponent: () => import('./pages/clusters/clusters-page.component').then(m => m.ClustersPageComponent)
   },

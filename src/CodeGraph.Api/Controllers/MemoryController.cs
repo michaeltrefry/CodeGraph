@@ -57,10 +57,18 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
             id,
             includeSuperseded ?? false,
             includeConflicts ?? true,
-            Math.Clamp(neighborLimit ?? 20, 1, 100));
+            Math.Clamp(neighborLimit ?? 20, 1, 500));
 
         if (bundle == null) return NotFound();
         return Ok(bundle);
+    }
+
+    [HttpGet("entities/{id}/graph")]
+    public async Task<ActionResult<MemoryGraphSnapshot>> GetEntityGraph(string id, [FromQuery] int? neighborLimit)
+    {
+        var snapshot = await memoryService.GetEntityGraphAsync(id, Math.Clamp(neighborLimit ?? 200, 1, 500));
+        if (snapshot.Nodes.Count == 0) return NotFound();
+        return Ok(snapshot);
     }
 
     [HttpGet("claims/{id}")]
@@ -131,7 +139,9 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
     [HttpGet("graph")]
     public async Task<ActionResult<MemoryGraphSnapshot>> Graph([FromQuery] int? limit, [FromQuery] int? skip)
     {
-        var snapshot = await memoryService.GetFullGraphAsync(limit ?? 200, skip ?? 0);
+        var snapshot = await memoryService.GetFullGraphAsync(
+            Math.Clamp(limit ?? 200, 1, 500),
+            Math.Max(skip ?? 0, 0));
         return Ok(snapshot);
     }
 

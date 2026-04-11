@@ -597,6 +597,9 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
                 Label = record["label"].As<string>(),
                 Type = record["type"].As<string>(),
                 Summary = record["summary"].As<string>(),
+                Source = record["source"].As<string?>(),
+                CreatedAt = record["createdAt"].As<DateTimeOffset>().UtcDateTime,
+                UpdatedAt = record["updatedAt"].As<DateTimeOffset>().UtcDateTime,
             });
         }
 
@@ -630,6 +633,80 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
             "MATCH (e:MemoryEntity) RETURN count(e) AS total");
         if (await countResult.FetchAsync())
             snapshot.TotalNodeCount = countResult.Current["total"].As<int>();
+
+        return snapshot;
+    }
+
+    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200)
+    {
+        await using var session = _sessionFactory.GetSession(AccessMode.Read);
+        var snapshot = new MemoryGraphSnapshot();
+
+        var nodeResult = await session.RunAsync(
+            """
+            MATCH (center:MemoryEntity {id: $entityId})
+            OPTIONAL MATCH (center)-[r:ACTIVE_RELATES_TO]-(neighbor:MemoryEntity)
+            WITH center, r, neighbor
+            ORDER BY r.updatedAt DESC
+            WITH center, collect(neighbor)[0..$neighborLimit] AS neighbors
+            WITH [center] + [n IN neighbors WHERE n IS NOT NULL] AS nodes
+            UNWIND nodes AS node
+            RETURN DISTINCT node.id AS id,
+                            node.label AS label,
+                            node.type AS type,
+                            node.summary AS summary,
+                            node.source AS source,
+                            node.createdAt AS createdAt,
+                            node.updatedAt AS updatedAt
+            ORDER BY CASE WHEN id = $entityId THEN 0 ELSE 1 END, updatedAt DESC
+            """,
+            new { entityId, neighborLimit = Math.Clamp(neighborLimit, 1, 500) });
+
+        await foreach (var record in nodeResult)
+        {
+            snapshot.Nodes.Add(new MemoryGraphNode
+            {
+                Id = record["id"].As<string>(),
+                Label = record["label"].As<string>(),
+                Type = record["type"].As<string>(),
+                Summary = record["summary"].As<string>(),
+                Source = record["source"].As<string?>(),
+                CreatedAt = record["createdAt"].As<DateTimeOffset>().UtcDateTime,
+                UpdatedAt = record["updatedAt"].As<DateTimeOffset>().UtcDateTime,
+            });
+        }
+
+        if (snapshot.Nodes.Count == 0)
+            return snapshot;
+
+        snapshot.TotalNodeCount = snapshot.Nodes.Count;
+
+        var nodeIds = snapshot.Nodes.Select(n => n.Id).ToList();
+        var relResult = await session.RunAsync(
+            """
+            MATCH (center:MemoryEntity {id: $entityId})-[r:ACTIVE_RELATES_TO]-(neighbor:MemoryEntity)
+            WHERE neighbor.id IN $nodeIds
+            WITH center, neighbor, r, startNode(r) AS from, endNode(r) AS to
+            RETURN from.id AS source,
+                   to.id AS target,
+                   r.edgeType AS relationship,
+                   r.bestActiveClaimId AS context,
+                   r.updatedAt AS timestamp
+            ORDER BY r.updatedAt DESC
+            """,
+            new { entityId, nodeIds });
+
+        await foreach (var record in relResult)
+        {
+            snapshot.Links.Add(new MemoryGraphLink
+            {
+                Source = record["source"].As<string>(),
+                Target = record["target"].As<string>(),
+                Relationship = record["relationship"].As<string>(),
+                Context = record["context"].As<string?>(),
+                Timestamp = record["timestamp"].As<DateTimeOffset>().UtcDateTime,
+            });
+        }
 
         return snapshot;
     }

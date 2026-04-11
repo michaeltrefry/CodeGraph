@@ -22,6 +22,7 @@ public interface IMemoryGraphStore
     Task<List<MemoryObservation>> GetUnresolvedObservationsAsync(IEnumerable<string> entityIds, IEnumerable<string> claimIds);
     Task<List<MemoryObservation>> GetUnresolvedObservationsForEntitiesAsync(IEnumerable<string> entityIds);
     Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0);
+    Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200);
     Task<List<string>> FindCandidateEntityIdsAsync(string candidateId, int limit = 20);
     Task<MemoryEntity?> GetEntityAsync(string entityId);
     Task<MemoryEntity?> GetEntityByExternalIdAsync(string externalId);

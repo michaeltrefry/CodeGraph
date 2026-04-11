@@ -171,4 +171,9 @@ public class MemoryService
     {
         return await _store.GetFullGraphAsync(limit, skip);
     }
+
+    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200)
+    {
+        return await _store.GetEntityGraphAsync(entityId, neighborLimit);
+    }
 }

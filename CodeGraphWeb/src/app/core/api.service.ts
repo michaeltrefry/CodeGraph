@@ -10,6 +10,10 @@ import {
   NodeListResponse,
   NodeDetailResponse,
   GraphOverviewResponse,
+  MemoryClaimBundle,
+  MemoryEntityBundle,
+  MemoryGraphResponse,
+  MemorySearchResult,
   AssistantEvent,
   WikiSection,
   WikiTreeNode,
@@ -175,6 +179,47 @@ export class ApiService {
   // Graph overview
   getGraphOverview(): Observable<GraphOverviewResponse> {
     return this.http.get<GraphOverviewResponse>(`${API}/graph/overview`);
+  }
+
+  // Memory
+  getMemoryGraph(limit = 200, skip = 0): Observable<MemoryGraphResponse> {
+    const params = new HttpParams().set('limit', limit).set('skip', skip);
+    return this.http.get<MemoryGraphResponse>(`${API}/memory/graph`, { params });
+  }
+
+  getMemoryEntityGraph(id: string, neighborLimit = 200): Observable<MemoryGraphResponse> {
+    const params = new HttpParams().set('neighborLimit', neighborLimit);
+    return this.http.get<MemoryGraphResponse>(`${API}/memory/entities/${encodeURIComponent(id)}/graph`, { params });
+  }
+
+  searchMemory(query: string, entityLimit = 8, claimLimit = 8): Observable<MemorySearchResult> {
+    const params = new HttpParams()
+      .set('query', query)
+      .set('entityLimit', entityLimit)
+      .set('claimLimit', claimLimit);
+    return this.http.get<MemorySearchResult>(`${API}/memory/search`, { params });
+  }
+
+  getMemoryEntityBundle(
+    id: string,
+    options?: { includeSuperseded?: boolean; includeConflicts?: boolean; neighborLimit?: number }
+  ): Observable<MemoryEntityBundle> {
+    let params = new HttpParams();
+    if (options?.includeSuperseded != null) params = params.set('includeSuperseded', options.includeSuperseded);
+    if (options?.includeConflicts != null) params = params.set('includeConflicts', options.includeConflicts);
+    if (options?.neighborLimit != null) params = params.set('neighborLimit', options.neighborLimit);
+    return this.http.get<MemoryEntityBundle>(`${API}/memory/entities/${encodeURIComponent(id)}/bundle`, { params });
+  }
+
+  getMemoryClaimBundle(
+    id: string,
+    options?: { includeSupersessionChain?: boolean; includeConflicts?: boolean; includeEvidence?: boolean }
+  ): Observable<MemoryClaimBundle> {
+    let params = new HttpParams();
+    if (options?.includeSupersessionChain != null) params = params.set('includeSupersessionChain', options.includeSupersessionChain);
+    if (options?.includeConflicts != null) params = params.set('includeConflicts', options.includeConflicts);
+    if (options?.includeEvidence != null) params = params.set('includeEvidence', options.includeEvidence);
+    return this.http.get<MemoryClaimBundle>(`${API}/memory/claims/${encodeURIComponent(id)}`, { params });
   }
 
   // Clusters (community detection)
