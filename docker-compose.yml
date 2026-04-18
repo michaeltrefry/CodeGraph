@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "5037:5037"
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       CodeGraph__TsPort: ${CodeGraph__TsPort:-3100}
@@ -182,7 +180,10 @@ services:
       context: ./CodeGraphWeb
       dockerfile: Dockerfile
     ports:
-      - "4200:4200"
+      - "127.0.0.1:${CODEGRAPH_DOCKER_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ${CODEGRAPH_DOCKER_TLS_CERT_PATH:-./CodeGraphWeb/certs/localhost.pem}:/etc/nginx/certs/localhost.pem:ro
+      - ${CODEGRAPH_DOCKER_TLS_KEY_PATH:-./CodeGraphWeb/certs/localhost-key.pem}:/etc/nginx/certs/localhost-key.pem:ro
     depends_on:
       api:
         condition: service_started
