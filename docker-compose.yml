@@ -1,3 +1,6 @@
+networks:
+  default:
+    name: mcp-shared
 services:
   api:
     build:
