@@ -1,6 +1,6 @@
 # CodeGraph
 
-CodeGraph is a self-maintaining .NET 9 platform that indexes source repositories into a Neo4j-backed knowledge graph, generates `CODEGRAPH.md` documentation, exposes graph and memory tooling over REST and MCP, and ships with an Angular UI for exploration, reviews, operations, and memory browsing.
+CodeGraph is a self-maintaining .NET 10 platform that indexes source repositories into a Neo4j-backed knowledge graph, generates `CODEGRAPH.md` documentation, exposes graph and memory tooling over REST and MCP, and ships with an Angular UI for exploration, reviews, operations, and memory browsing.
 
 It is designed around one rule: if a feature needs ongoing human babysitting to stay correct, it will rot.
 
@@ -12,6 +12,7 @@ It is designed around one rule: if a feature needs ongoing human babysitting to 
 
 - Indexes repositories into a structural graph of code, APIs, messaging, jobs, packages, and database objects
 - Extracts across multiple languages: C# via Roslyn, TypeScript/Angular via a Node sidecar, T-SQL via ScriptDom, and Tree-sitter as a fallback
+- Recognizes modern .NET repository layouts, including solution-level analysis from top-level `.sln` and `.slnx` files
 - Links repositories through HTTP calls, MassTransit messaging, shared packages, and other cross-repo signals
 - Generates natural-language repository and project analysis with confidence indicators and optional auto-commit/auto-push of `CODEGRAPH.md`
 - Supports multiple AI backends for analysis: Anthropic, OpenAI, Gemini, and local OpenAI-compatible endpoints
@@ -112,7 +113,7 @@ Current config includes provider blocks for:
 
 ## Prerequisites
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 - Neo4j 5.x
 - RabbitMQ
 - [Node.js 18+](https://nodejs.org/)
@@ -120,6 +121,8 @@ Current config includes provider blocks for:
 - At least one configured analysis provider if you want AI analysis or reviews
 
 For Docker-based local model setups, the default local provider points at `http://host.docker.internal:1234/v1`.
+
+For repository indexing, CodeGraph expects one or more top-level solution files (`.sln` or `.slnx`) when you want full Roslyn solution analysis. The Docker API image also includes compatibility SDKs for older repositories and `libssl1.1` for legacy .NET Core 2.1/global.json scenarios.
 
 ## Quick Start
 
@@ -182,14 +185,14 @@ mkdir -p CodeGraphWeb/certs
 mkcert -cert-file CodeGraphWeb/certs/localhost.pem -key-file CodeGraphWeb/certs/localhost-key.pem localhost 127.0.0.1 ::1
 ```
 
-The compose stack terminates TLS in the `web` container and forwards the API and MCP traffic to the internal `api` container over the Docker network.
+The compose stack terminates TLS in the `codegraph-web` container and forwards the API and MCP traffic to the internal `codegraph-api` container over the Docker network.
 By default it binds only to `127.0.0.1:8443` so it does not take over shared host ports like `80` or `443`.
 
 The compose stack includes:
 
-- `api`
+- `codegraph-api`
 - `jobs`
-- `web`
+- `codegraph-web`
 - `neo4j`
 - `rabbitmq`
 
