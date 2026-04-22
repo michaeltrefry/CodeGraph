@@ -174,6 +174,17 @@ cp .env.example .env
 docker compose up --build
 ```
 
+To run the Docker stack over HTTPS locally, generate a certificate before starting compose:
+
+```bash
+mkcert -install
+mkdir -p CodeGraphWeb/certs
+mkcert -cert-file CodeGraphWeb/certs/localhost.pem -key-file CodeGraphWeb/certs/localhost-key.pem localhost 127.0.0.1 ::1
+```
+
+The compose stack terminates TLS in the `web` container and forwards the API and MCP traffic to the internal `api` container over the Docker network.
+By default it binds only to `127.0.0.1:8443` so it does not take over shared host ports like `80` or `443`.
+
 The compose stack includes:
 
 - `api`
@@ -183,6 +194,13 @@ The compose stack includes:
 - `rabbitmq`
 
 Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`.
+
+Docker HTTPS endpoints:
+
+- Web UI: [https://localhost:8443](https://localhost:8443)
+- API: [https://localhost:8443/api](https://localhost:8443/api)
+- Swagger: [https://localhost:8443/swagger](https://localhost:8443/swagger)
+- MCP: [https://localhost:8443/mcp](https://localhost:8443/mcp)
 
 ## Event-Driven Pipeline
 

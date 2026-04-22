@@ -118,15 +118,19 @@ public partial class IndexingPipeline
         // C# — solution-level Roslyn analysis
         if (_solutionAnalyzer is not null)
         {
-            var slnFiles = _fileSystem.EnumerateFiles(rootPath, "*.sln", SearchOption.TopDirectoryOnly).ToArray();
-            if (slnFiles.Length > 0)
+            var solutionFiles = _fileSystem.EnumerateFiles(rootPath, "*.slnx", SearchOption.TopDirectoryOnly)
+                .Concat(_fileSystem.EnumerateFiles(rootPath, "*.sln", SearchOption.TopDirectoryOnly))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (solutionFiles.Length > 0)
             {
-                _logger.LogInformation("Using solution-level Roslyn analysis for {Sln}",
-                    Path.GetFileName(slnFiles[0]));
+                var solutionFile = solutionFiles[0];
+                _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
+                    Path.GetFileName(solutionFile));
                 stepSw.Restart();
                 try
                 {
-                    var results = await _solutionAnalyzer.AnalyzeSolutionAsync(slnFiles[0], context, ct);
+                    var results = await _solutionAnalyzer.AnalyzeSolutionAsync(solutionFile, context, ct);
                     _logger.LogInformation("[Timing] Roslyn solution analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     detectedMetadata ??= SelectDominantMetadata(results.Select(r => r.Metadata));
                     MergeResults(results, buffer);
@@ -139,8 +143,8 @@ public partial class IndexingPipeline
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
-                        "Roslyn solution analysis failed for {Sln} — falling back to per-file extraction",
-                        Path.GetFileName(slnFiles[0]));
+                        "Roslyn solution analysis failed for {Solution} — falling back to per-file extraction",
+                        Path.GetFileName(solutionFile));
                 }
             }
         }

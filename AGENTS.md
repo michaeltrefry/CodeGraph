@@ -7,6 +7,7 @@ This file provides guidance to Codex when working with code in this repository.
 CodeGraph is a self-maintaining .NET 9 service that indexes source repositories into a queryable knowledge graph (Neo4j) with natural language documentation. It produces two outputs: a structural graph of code and service relationships, and generated CODEGRAPH.md files committed to each repo describing business intent. An MCP server lets Codex act as the domain expert for the indexed codebase.
 
 Use this file and the repository README as the current architecture guide. The older `CodeGraph-Architecture.md` and `CodeGraph-Implementation.md` references are no longer authoritative in this checkout.
+If a `CODEGRAPH.md` file exists at the repository root, treat it as a high-value overview of the project's structure and intent during initial orientation.
 
 ## Core Design Principle
 
@@ -74,6 +75,9 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 
 Default operating procedure for any agent working in this repo:
 
+- At the start of a session, spend a small amount of time orienting with MCP before reading many files directly.
+- Begin by checking for relevant prior context in memory for the repository, subsystem, feature area, or decision you are about to work on.
+- After memory lookup, use CodeGraph discovery tools to familiarize yourself with the repository shape before doing broad file reads.
 - Use CodeGraph MCP tools first for discovery, architecture questions, dependency tracing, and locating implementation.
 - Start with graph and convention queries before opening source files directly.
 - Memory tools are part of the broader CodeGraph MCP suite, not a separate `memorygraph` tool family.
@@ -81,6 +85,21 @@ Default operating procedure for any agent working in this repo:
 - Do not assume CodeGraph MCP results reflect the current git working tree or non-`main` branches; the indexed graph reflects committed code on `main`, not uncommitted local edits.
 - Inspect source files directly when MCP results are insufficient, exact line-level behavior matters, the question depends on uncommitted or branch-only changes, or a file is about to be edited.
 - Avoid broad file-reading sweeps when CodeGraph MCP can narrow the search space first.
+
+### Recommended Session Startup Workflow
+
+- Start with `search_memory` for the repo name, feature area, subsystem names, bug title, or other likely anchors for prior work.
+- If memory hits appear relevant, follow the structured retrieval flow before trusting summaries: `search_memory` -> `get_memory_subgraph` -> `get_claim_bundle` / `get_entity_bundle` -> `expand_memory_frontier` as needed -> `render_memory_summary` only for human-facing output.
+- If the repository has a root-level `CODEGRAPH.md`, read it early as a concise overview of the project's structure before doing broad source exploration.
+- After memory recall, orient on the codebase with MCP discovery such as `get_service_summary`, `get_architecture`, `search_graph`, `list_conventions`, and `get_convention`.
+- Only then move to direct source reads, and prefer targeted reads informed by MCP results over reading directories wholesale.
+
+### Code Path Discovery
+
+- When trying to find or understand a code path, do not start by opening many files at random.
+- Use `search_graph` first to locate the relevant classes, methods, routes, services, events, jobs, or tables.
+- Use related graph tools to follow the path through the system, such as `read_node_source`, `get_code_snippet`, `find_consumers`, `find_publishers`, and any available path-tracing tools.
+- Read local files directly only for the narrowed set of nodes that the graph search identifies, or when local uncommitted changes may differ from indexed `main`.
 
 ## Memory System
 
@@ -98,6 +117,8 @@ Current memory MCP tools live under the main CodeGraph MCP surface. Use the curr
 
 ### Working Rules
 
+- At session start, and again before major design or implementation decisions, search for relevant prior memory if historical context could affect the choice.
+- Before searching the codebase for answers to a decision that may have prior context, check memory first for past decisions, constraints, terminology, and related entities.
 - Do not design new memory features around entity-summary accumulation.
 - Do not treat human-readable markdown summaries as the primary memory retrieval contract.
 - Prefer explicit claim status such as active, superseded, conflicted, and deprecated over implicit recency heuristics.

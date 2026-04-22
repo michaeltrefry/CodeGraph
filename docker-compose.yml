@@ -1,10 +1,11 @@
+networks:
+  mcp-shared:
+    external: true
 services:
-  api:
+  codegraph-api:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "5037:5037"
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       CodeGraph__TsPort: ${CodeGraph__TsPort:-3100}
@@ -72,6 +73,9 @@ services:
       neo4j:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - default
+      - mcp-shared
 
   jobs:
     build:
@@ -177,14 +181,17 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  web:
+  codegraph-web:
     build:
       context: ./CodeGraphWeb
       dockerfile: Dockerfile
     ports:
-      - "4200:4200"
+      - "127.0.0.1:${CODEGRAPH_DOCKER_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ${CODEGRAPH_DOCKER_TLS_CERT_PATH:-./CodeGraphWeb/certs/localhost.pem}:/etc/nginx/certs/localhost.pem:ro
+      - ${CODEGRAPH_DOCKER_TLS_KEY_PATH:-./CodeGraphWeb/certs/localhost-key.pem}:/etc/nginx/certs/localhost-key.pem:ro
     depends_on:
-      api:
+      codegraph-api:
         condition: service_started
     restart: unless-stopped
 

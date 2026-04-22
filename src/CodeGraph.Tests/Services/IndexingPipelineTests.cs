@@ -86,6 +86,79 @@ public class IndexingPipelineTests
         }
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_UsesSlnxForSolutionLevelAnalysis()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-slnx-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var solutionPath = Path.Combine(rootPath, "Demo.slnx");
+            await File.WriteAllTextAsync(solutionPath, "<Solution />");
+
+            var store = new InMemoryGraphStore();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer();
+            var pipeline = new IndexingPipeline(
+                store,
+                [],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync("Demo", rootPath, ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPath.ShouldBe(solutionPath);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_AssignsStructuralFilesToNearestDotnetProject()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-dotnet-project-map-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var appDir = Path.Combine(rootPath, "src", "Demo.App");
+            Directory.CreateDirectory(appDir);
+
+            await File.WriteAllTextAsync(Path.Combine(appDir, "Demo.App.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(Path.Combine(appDir, "Program.cs"), "public class Program {}");
+
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [new TestSupportMetadataExtractor(new DotnetSupportInfo("supported", "supported", null, []))],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+
+            await pipeline.IndexProjectAsync("DemoRepo", rootPath, ct: CancellationToken.None);
+
+            var counts = await store.GetNodeCountsByDotnetProjectAsync("DemoRepo");
+            counts.ShouldContainKey("Demo.App");
+            counts["Demo.App"].ShouldContainKey(nameof(NodeLabel.File));
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     private sealed class TestMetadataExtractor : ICodeExtractor
     {
         public IReadOnlySet<string> SupportedExtensions { get; } =
@@ -134,6 +207,20 @@ public class IndexingPipelineTests
             {
                 Metadata = new ProjectMetadata("C#", ".NET", support)
             });
+        }
+    }
+
+    private sealed class RecordingSolutionAnalyzer : ISolutionAnalyzer
+    {
+        public string? CalledSolutionPath { get; private set; }
+
+        public Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
+            string solutionPath,
+            ExtractorContext context,
+            CancellationToken ct)
+        {
+            CalledSolutionPath = solutionPath;
+            return Task.FromResult<IReadOnlyList<ExtractionResult>>([]);
         }
     }
 }

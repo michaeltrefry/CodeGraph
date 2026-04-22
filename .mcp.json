@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "codegraph": {
-      "type": "sse",
-      "url": "http://localhost:5037/sse"
-    }
-  }
-}

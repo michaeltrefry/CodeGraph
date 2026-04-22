@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Copy NuGet config and project files for restore
@@ -21,7 +21,7 @@ RUN dotnet restore src/CodeGraph.Api/CodeGraph.Api.csproj
 COPY src/ src/
 RUN dotnet publish src/CodeGraph.Api/CodeGraph.Api.csproj -c Release -o /app/publish --no-restore
 
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS runtime
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 WORKDIR /app
 
 # Install git, ssh, Node.js, and Mono for legacy .NET Framework NuGet restore
@@ -32,12 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chmod +x /usr/local/bin/nuget
 
 # .NET Core 2.1 SDK depends on OpenSSL 1.1, which is no longer shipped in the
-# base Debian 12 image. Install the compatibility package from Debian 11 so
-# exact global.json pins like 2.1.802 can still restore/analyze older repos.
-RUN echo "deb http://deb.debian.org/debian bullseye main" > /etc/apt/sources.list.d/bullseye-libssl.list && \
+# Ubuntu 24.04 base image used by the .NET 10 container tags. Pull the
+# compatibility package from Ubuntu 20.04 security updates so exact global.json
+# pins like 2.1.802 can still restore/analyze older repos.
+RUN echo "deb http://ports.ubuntu.com/ubuntu-ports focal-security main" > /etc/apt/sources.list.d/focal-libssl.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends libssl1.1 && \
-    rm -f /etc/apt/sources.list.d/bullseye-libssl.list && \
+    rm -f /etc/apt/sources.list.d/focal-libssl.list && \
     rm -rf /var/lib/apt/lists/*
 
 # Install .NET Framework reference assemblies so Roslyn can analyze legacy Framework projects.
@@ -52,7 +53,9 @@ RUN dotnet new console -n _fxref -o /tmp/_fxref --no-restore && \
 RUN mkdir -p /repos/.cache
 COPY docker/Directory.Build.props /repos/.cache/Directory.Build.props
 
-# Install older SDKs needed by MSBuildWorkspace/Roslyn to analyze target repos
+# Install compatibility SDKs needed by MSBuildWorkspace/Roslyn to analyze target repos.
+# The base sdk:10.0 image already provides .NET 10; add older channels plus .NET 9
+# so repos pinned to earlier global.json versions can still restore and load in-container.
 RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
     chmod +x /tmp/dotnet-install.sh && \
@@ -60,6 +63,8 @@ RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
     /tmp/dotnet-install.sh --channel 6.0 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 7.0 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet && \
     rm /tmp/dotnet-install.sh
 
 # Copy ts-extractor sidecar
