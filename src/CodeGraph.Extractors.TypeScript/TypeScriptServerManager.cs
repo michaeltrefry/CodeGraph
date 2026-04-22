@@ -224,18 +224,18 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         if (!_checkedPrerequisites)
         {
             _checkedPrerequisites = true;
-            _prerequisitesMet = FindExecutable("node") is not null && FindServerScript() is not null;
+            _prerequisitesMet = FindNodeExecutable() is not null && FindServerScript() is not null;
 
             if (!_prerequisitesMet)
             {
                 _logger.LogWarning(
-                    "TypeScript extractor: 'node' not found on PATH or server script missing. " +
+                    "TypeScript extractor: neither 'node' nor 'nodejs' was found on PATH, or the server script is missing. " +
                     "TypeScript/Angular files will be skipped.");
                 return false;
             }
         }
 
-        var nodeExe = FindExecutable("node")!;
+        var nodeExe = FindNodeExecutable()!;
         var scriptPath = FindServerScript()!;
 
         _logger.LogInformation(
@@ -393,6 +393,9 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         }
         return null;
     }
+
+    private static string? FindNodeExecutable()
+        => FindExecutable("node") ?? FindExecutable("nodejs");
 
     private static string? FindServerScript()
     {

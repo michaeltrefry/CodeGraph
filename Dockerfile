@@ -52,7 +52,9 @@ RUN dotnet new console -n _fxref -o /tmp/_fxref --no-restore && \
 RUN mkdir -p /repos/.cache
 COPY docker/Directory.Build.props /repos/.cache/Directory.Build.props
 
-# Install older SDKs needed by MSBuildWorkspace/Roslyn to analyze target repos
+# Install compatibility SDKs needed by MSBuildWorkspace/Roslyn to analyze target repos.
+# The base sdk:9.0 image already provides .NET 9; add older channels plus .NET 10
+# so repos pinned to net10.0/global.json can still restore and load in-container.
 RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
     chmod +x /tmp/dotnet-install.sh && \
@@ -60,6 +62,7 @@ RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
     /tmp/dotnet-install.sh --channel 6.0 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 7.0 --install-dir /usr/share/dotnet && \
     /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet && \
     rm /tmp/dotnet-install.sh
 
 # Copy ts-extractor sidecar
