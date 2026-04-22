@@ -1059,6 +1059,7 @@ public class RepositoryReviewService(
     {
         var fileName = Path.GetFileName(path);
         return string.Equals(Path.GetExtension(path), ".sln", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(Path.GetExtension(path), ".slnx", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(Path.GetExtension(path), ".csproj", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(fileName, "Directory.Build.props", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(fileName, "Directory.Build.targets", StringComparison.OrdinalIgnoreCase) ||

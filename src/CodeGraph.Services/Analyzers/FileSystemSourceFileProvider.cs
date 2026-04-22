@@ -14,7 +14,7 @@ public class FileSystemSourceFileProvider(IFileSystem fileSystem) : ISourceFileP
     private static readonly HashSet<string> ScanExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".cs", ".ts", ".tsx", ".js", ".jsx", ".json", ".xml", ".config", ".yaml", ".yml",
-        ".env", ".cfg", ".ini", ".properties", ".csproj", ".sln", ".tf", ".cfm", ".cfc"
+        ".env", ".cfg", ".ini", ".properties", ".csproj", ".sln", ".slnx", ".tf", ".cfm", ".cfc"
     };
 
     public bool RootExists(string rootPath) => fileSystem.DirectoryExists(rootPath);

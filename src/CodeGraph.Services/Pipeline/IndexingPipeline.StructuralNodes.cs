@@ -8,6 +8,8 @@ public partial class IndexingPipeline
     private void CreateStructuralNodes(string projectName, string rootPath,
         List<string> files, string[] csprojFiles, GraphBuffer buffer)
     {
+        var projectRoots = BuildProjectRoots(rootPath, csprojFiles);
+
         // Repository node
         buffer.AddNode(new GraphNode
         {
@@ -25,6 +27,7 @@ public partial class IndexingPipeline
             buffer.AddNode(new GraphNode
             {
                 Project = projectName,
+                DotnetProject = csprojName,
                 Label = NodeLabel.DotnetProject,
                 Name = csprojName,
                 QualifiedName = dotnetProjectQN
@@ -39,13 +42,15 @@ public partial class IndexingPipeline
         var folders = new HashSet<string>();
         foreach (var file in files)
         {
-            var relPath = Path.GetRelativePath(rootPath, file);
-            var relDir = Path.GetDirectoryName(relPath) ?? "";
+            var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
+            var relDir = NormalizeRelativePath(Path.GetDirectoryName(relPath) ?? "");
+            var owningProject = FindOwningProject(relPath, projectRoots);
 
             // File node
             buffer.AddNode(new GraphNode
             {
                 Project = projectName,
+                DotnetProject = owningProject,
                 Label = NodeLabel.File,
                 Name = Path.GetFileName(file),
                 QualifiedName = $"{projectName}:{relPath}",
@@ -56,9 +61,11 @@ public partial class IndexingPipeline
             var dir = relDir;
             while (!string.IsNullOrEmpty(dir) && folders.Add(dir))
             {
+                var folderOwningProject = FindOwningProject(dir, projectRoots);
                 buffer.AddNode(new GraphNode
                 {
                     Project = projectName,
+                    DotnetProject = folderOwningProject,
                     Label = NodeLabel.Folder,
                     Name = Path.GetFileName(dir),
                     QualifiedName = $"{projectName}:{dir}"
@@ -86,6 +93,49 @@ public partial class IndexingPipeline
                 EdgeType.CONTAINS_FILE));
         }
     }
+
+    private static Dictionary<string, string> BuildProjectRoots(string rootPath, IEnumerable<string> csprojFiles)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var csproj in csprojFiles)
+        {
+            var projectName = Path.GetFileNameWithoutExtension(csproj);
+            var projectDir = NormalizeRelativePath(Path.GetRelativePath(rootPath, Path.GetDirectoryName(csproj) ?? rootPath));
+            result[projectDir] = projectName;
+        }
+
+        return result;
+    }
+
+    private static string? FindOwningProject(string relativePath, IReadOnlyDictionary<string, string> projectRoots)
+    {
+        if (projectRoots.Count == 0)
+            return null;
+
+        var normalized = NormalizeRelativePath(relativePath);
+        string? bestMatch = null;
+        var bestLength = -1;
+
+        foreach (var (projectRoot, projectName) in projectRoots)
+        {
+            var matches = string.IsNullOrEmpty(projectRoot) ||
+                          normalized.Equals(projectRoot, StringComparison.OrdinalIgnoreCase) ||
+                          normalized.StartsWith(projectRoot + "/", StringComparison.OrdinalIgnoreCase);
+            if (!matches)
+                continue;
+
+            if (projectRoot.Length <= bestLength)
+                continue;
+
+            bestMatch = projectName;
+            bestLength = projectRoot.Length;
+        }
+
+        return bestMatch;
+    }
+
+    private static string NormalizeRelativePath(string path)
+        => path.Replace('\\', '/').Trim('/');
 
     private void ExtractNuGetReferences(string projectName, string[] csprojFiles,
         GraphBuffer buffer)
