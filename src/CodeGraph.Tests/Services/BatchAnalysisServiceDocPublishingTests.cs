@@ -36,7 +36,7 @@ public class BatchAnalysisServiceDocPublishingTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(projectDir, "Demo.Project.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />\n");
 
         await RunGitAsync(repoPath, "add README.md src/Demo.Project/Demo.Project.csproj");
-        await RunGitAsync(repoPath, "commit -m \"chore: seed repo\"");
+        await RunGitAsync(repoPath, "-c user.name=\"CodeGraph Tests\" -c user.email=\"codegraph-tests@example.com\" commit -m \"chore: seed repo\"");
         await RunGitAsync(repoPath, "push -u origin main");
         var indexedHead = await RunGitCaptureAsync(repoPath, "rev-parse HEAD");
 
