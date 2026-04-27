@@ -1,0 +1,73 @@
+@if (detail; as d) {
+  <div class="rdd-wrap">
+    <div class="rdd-deps-grid">
+      <section class="rdd-card">
+        <header class="rdd-card-head">
+          <h2 class="rdd-card-title">Inbound</h2>
+          <div class="rdd-card-meta">
+            <span class="cg-chip cg-chip-mono">{{ d.inboundEdgeCount }} edges</span>
+            <span class="cg-muted cg-xsmall">from {{ d.inboundProjects.length }} {{ d.inboundProjects.length === 1 ? 'repo' : 'repos' }}</span>
+          </div>
+        </header>
+        @if (d.inboundProjects.length > 0) {
+          <ul class="rdd-list">
+            @for (p of d.inboundProjects; track p) {
+              <li>
+                <a class="cg-mono-link rdd-list-link" [routerLink]="projectRoute(p)">
+                  <span class="rdd-list-arrow">←</span>
+                  {{ p }}
+                </a>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="rdd-empty cg-muted">No inbound dependencies.</p>
+        }
+      </section>
+
+      <section class="rdd-card">
+        <header class="rdd-card-head">
+          <h2 class="rdd-card-title">Outbound</h2>
+          <div class="rdd-card-meta">
+            <span class="cg-chip cg-chip-mono">{{ d.outboundEdgeCount }} edges</span>
+            <span class="cg-muted cg-xsmall">to {{ d.outboundProjects.length }} {{ d.outboundProjects.length === 1 ? 'repo' : 'repos' }}</span>
+          </div>
+        </header>
+        @if (d.outboundProjects.length > 0) {
+          <ul class="rdd-list">
+            @for (p of d.outboundProjects; track p) {
+              <li>
+                <a class="cg-mono-link rdd-list-link" [routerLink]="projectRoute(p)">
+                  <span class="rdd-list-arrow">→</span>
+                  {{ p }}
+                </a>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="rdd-empty cg-muted">No outbound dependencies.</p>
+        }
+      </section>
+    </div>
+
+    @if (nodeLabelEntries().length > 0) {
+      <section class="rdd-card">
+        <header class="rdd-card-head">
+          <h2 class="rdd-card-title">Browse by node type</h2>
+          <span class="cg-chip cg-chip-mono">{{ nodeLabelEntries().length }} kinds</span>
+        </header>
+        <div class="rdd-label-grid">
+          @for (entry of nodeLabelEntries(); track entry[0]) {
+            <a [routerLink]="projectNodesRoute(projectName)"
+               [queryParams]="{ label: entry[0] }"
+               class="rdd-label-tile">
+              <span class="rdd-label-icon">{{ labelIcons[entry[0]] || '•' }}</span>
+              <span class="rdd-label-count">{{ entry[1].toLocaleString() }}</span>
+              <span class="rdd-label-name">{{ entry[0] }}</span>
+            </a>
+          }
+        </div>
+      </section>
+    }
+  </div>
+}

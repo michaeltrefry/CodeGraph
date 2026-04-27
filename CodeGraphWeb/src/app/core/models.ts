@@ -55,6 +55,7 @@ export interface SchemaObject {
   comment?: string;
   primaryKeyColumns: string[];
   indexes: SchemaIndex[];
+  constraints: SchemaConstraint[];
   foreignKeys: SchemaForeignKey[];
   columns: SchemaColumn[];
 }
@@ -87,6 +88,15 @@ export interface SchemaIndex {
   isUnique: boolean;
   indexType?: string;
   columns: string[];
+}
+
+export interface SchemaConstraint {
+  name: string;
+  constraintType: string;
+  columns: string[];
+  referencedTable?: string;
+  referencedColumns?: string[];
+  checkClause?: string;
 }
 
 export interface SchemaForeignKey {

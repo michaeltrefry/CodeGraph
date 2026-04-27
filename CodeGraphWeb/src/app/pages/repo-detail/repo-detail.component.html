@@ -1,996 +1,214 @@
-<div class="page">
-  <div class="breadcrumb">
-    <a routerLink="/repos">Repositories</a> / {{ name() }}
-  </div>
-
-  @if (loading()) { <div class="loading">Loading…</div> }
+<div class="cg-page rd-page">
+  @if (loading()) { <div class="rd-loading">Loading…</div> }
 
   @if (detail(); as d) {
-    <!-- Header -->
-    <div class="repo-header">
-      <div class="repo-title">
-        <h1>{{ d.project.name }}</h1>
-        @if (d.project.isFoundational) {
-          <span class="badge badge-foundational">foundational</span>
-        }
-        @if (d.project.language) {
-          <span class="badge">{{ d.project.language }}</span>
-        }
-        @if (supportBadgeText(d.dotnetSupport); as supportText) {
-          <span class="badge support-badge"
-                [style.background]="supportBadgeColor(d.dotnetSupport?.overallStatus)"
-                [style.borderColor]="supportBadgeColor(d.dotnetSupport?.overallStatus)">
-            {{ supportText }}
-          </span>
-        }
+    <header class="rd-header">
+      <div class="rd-header-main">
+        <h1 class="rd-title">{{ isSchemaProject() ? schemaDatabaseName() : d.project.name }}</h1>
+        <div class="rd-header-chips">
+          @if (d.project.isFoundational) {
+            <span class="cg-chip cg-chip-accent">foundational</span>
+          }
+          @if (!isSchemaProject() && dotnetSupportStatus(); as support) {
+            <span class="cg-chip"
+                  [style.background]="dotnetSupportBackground(support.overallStatus)"
+                  [style.color]="dotnetSupportColor(support.overallStatus)"
+                  [style.border-color]="dotnetSupportColor(support.overallStatus)">
+              .NET {{ dotnetSupportLabel(support.overallStatus) }}
+            </span>
+          }
+        </div>
+        <p class="rd-subtitle">{{ headerSubtitle() }}</p>
       </div>
 
-      <div class="repo-actions">
+      <div class="rd-header-actions">
+        @if (!isSchemaProject()) {
+          <a class="cg-chip cg-chip-mono" [routerLink]="['/repos', name(), 'nodes']">
+            Browse {{ totalNodes().toLocaleString() }} nodes →
+          </a>
+          @if (reAnalyzing()) {
+            <button class="rd-btn" disabled>Analyzing…</button>
+          } @else {
+            <button class="rd-btn primary" (click)="reAnalyze()">Re-analyze</button>
+          }
+        }
         @if (showDeleteConfirm()) {
-          <span class="delete-confirm-text">Delete all data for this repo?</span>
-          <button class="btn-delete-confirm" (click)="deleteRepo()" [disabled]="deleting()">
+          <span class="rd-delete-confirm">
+            {{ isSchemaProject() ? 'Delete schema?' : 'Delete repo?' }}
+          </span>
+          <button class="rd-btn danger" (click)="deleteRepo()" [disabled]="deleting()">
             {{ deleting() ? 'Deleting…' : 'Yes, delete' }}
           </button>
-          <button class="btn-delete-cancel" (click)="cancelDelete()">Cancel</button>
+          <button class="rd-btn" (click)="cancelDelete()">Cancel</button>
         } @else {
-          <button class="btn-delete" (click)="confirmDelete()">Delete from graph</button>
+          <button class="rd-btn ghost-danger" (click)="confirmDelete()">
+            {{ isSchemaProject() ? 'Delete schema' : 'Delete' }}
+          </button>
         }
       </div>
+    </header>
 
-      <div class="repo-meta">
-        @if (d.project.sourceGroup) {
-          <div><span class="meta-label">Group:</span> {{ d.project.sourceGroup }}</div>
-        }
+    @if (reAnalyzeError(); as errorMessage) {
+      <div class="rd-banner err">{{ errorMessage }}</div>
+    } @else if (isBatchInProgress()) {
+      <div class="rd-banner warn">
+        Analysis in progress · submitted {{ formatDate(batchStatus()!.submittedAt) }}
+      </div>
+    } @else if (batchStatus(); as b) {
+      @if (b.status === 'completed') {
+        <div class="rd-banner ok">Analysis completed {{ formatDate(b.completedAt) }}</div>
+      } @else if (b.status === 'failed') {
+        <div class="rd-banner err">Analysis failed</div>
+      }
+    }
+
+    @if (isSchemaProject()) {
+      <div class="rd-meta-strip">
+        <div><span class="cg-muted cg-xsmall">SERVER</span>&nbsp;<span class="cg-mono">{{ schemaServerName() }}</span></div>
+        <div><span class="cg-muted cg-xsmall">DATABASE</span>&nbsp;<span class="cg-mono">{{ schemaDatabaseName() }}</span></div>
+        <div><span class="cg-muted cg-xsmall">SCHEMA ID</span>&nbsp;<span class="cg-mono">{{ d.project.name }}</span></div>
+      </div>
+    } @else if (d.project.repoUrl || d.project.lastCommitSha) {
+      <div class="rd-meta-strip">
         @if (d.project.repoUrl) {
-          <div><span class="meta-label">Repo URL:</span> {{ d.project.repoUrl }}</div>
-        }
-        <div class="indexed-row">
-          <span><span class="meta-label">Last indexed:</span> {{ formatDate(d.project.indexedAt) }}</span>
-          @if (reAnalyzing()) {
-            <span class="batch-spinner"></span>
-          } @else if (isBatchInProgress()) {
-            <span class="batch-status batch-status-submitted">
-              Analysis in progress · submitted {{ formatDate(batchStatus()!.submittedAt) }}
-            </span>
-          } @else if (batchStatus(); as b) {
-            @if (b.status === 'completed') {
-              <span class="batch-status batch-status-completed">
-                Analysis completed {{ formatDate(b.completedAt) }}
-              </span>
-            } @else if (b.status === 'failed') {
-              <span class="batch-status batch-status-failed">Analysis failed</span>
-            }
-            <button class="btn-reanalyze" (click)="reAnalyze()">Re-analyze</button>
-          } @else {
-            <button class="btn-reanalyze" (click)="reAnalyze()">Re-analyze</button>
-          }
-        </div>
-        @if (batchProviderSummary(); as summary) {
-          <div><span class="meta-label">Analysis batch:</span> {{ summary }}</div>
+          <div><span class="cg-muted cg-xsmall">REPO</span>&nbsp;<a class="cg-mono cg-small" [href]="d.project.repoUrl" target="_blank" rel="noopener">{{ d.project.repoUrl }}</a></div>
         }
         @if (d.project.lastCommitSha) {
-          <div><span class="meta-label">Commit:</span> {{ formatCommit(d.project.lastCommitSha) }}</div>
+          <div><span class="cg-muted cg-xsmall">COMMIT</span>&nbsp;<span class="cg-mono cg-small">{{ formatCommit(d.project.lastCommitSha) }}</span></div>
         }
-      </div>
-    </div>
-
-    @if (d.summary) {
-      <div class="card">
-        <div class="card-header">
-          <h2>Summary</h2>
-          <span class="confidence-badge"
-                [style.background]="confidenceColors[d.summary.confidence]">
-            {{ d.summary.confidence }} confidence
-          </span>
-        </div>
-        <div class="summary-text markdown-body" [innerHTML]="renderMarkdown(d.summary.summary)"></div>
-        <div class="summary-meta">
-          Updated {{ formatDate(d.summary.updatedAt) }}
-          @if (d.summary.modelUsed) { · {{ d.summary.modelUsed }} }
-        </div>
       </div>
     }
 
-    <!-- Health Analysis -->
-    @if (health(); as h) {
-      <div class="card health-card">
-        <div class="card-header">
-          <h2>
-            Codebase Health
-            @if (h.repoHealth) {
-              <span class="health-score-badge"
-                    [style.background]="healthColor(h.repoHealth.overallHealth)">
-                {{ h.repoHealth.overallHealth.toFixed(1) }}/10 · {{ healthLabel(h.repoHealth.overallHealth) }}
-              </span>
-            }
-          </h2>
-        </div>
-
-        <div class="health-body">
-            <!-- Repo-level stats -->
-            @if (h.repoHealth) {
-              <div class="health-stats">
-                <div class="health-stat">
-                  <span class="stat-value">{{ h.repoHealth.totalFiles }}</span>
-                  <span class="stat-label">Files analyzed</span>
-                </div>
-                <div class="health-stat">
-                  <span class="stat-value stat-warning">{{ h.repoHealth.hotspotCount }}</span>
-                  <span class="stat-label">Hotspots</span>
-                </div>
-                <div class="health-stat">
-                  <span class="stat-value stat-danger">{{ h.repoHealth.alertCount }}</span>
-                  <span class="stat-label">Alerts</span>
-                </div>
-                @if (h.repoHealth.scorePenalty > 0) {
-                  <div class="health-stat">
-                    <span class="stat-value stat-danger">-{{ h.repoHealth.scorePenalty.toFixed(1) }}</span>
-                    <span class="stat-label">Support penalty</span>
-                  </div>
-                }
-              </div>
-            }
-
-            @if (vitality(); as vitality) {
-              <div class="vitality-section">
-                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;">
-                  <div>
-                    <h3 class="health-section-title">Project Vitality</h3>
-                    <p class="summary-meta vitality-subtitle">Long-history context for how active, dormant, or noisy this repo feels over time.</p>
-                  </div>
-                  @if (vitality.activityStatus) {
-                    <span style="padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;"
-                          [style.background]="vitalityStatusBackground(vitality.activityStatus)"
-                          [style.color]="vitalityStatusTone(vitality.activityStatus)">
-                      {{ vitality.activityStatus }}
-                    </span>
-                  }
-                </div>
-
-                <div class="review-meta-row">
-                  @if (vitality.historyMaturity) {
-                    <span class="review-meta-pill">History {{ historyMaturityLabel(vitality.historyMaturity) }}</span>
-                  }
-                  @if (vitality.firefightingStatus) {
-                    <span class="review-meta-pill">Firefighting {{ vitality.firefightingStatus }}</span>
-                  }
-                  <span class="review-meta-pill">Velocity {{ formatSignedPercent(vitality.velocityChangePercent) }}</span>
-                  <span class="review-meta-pill">{{ vitality.dormantMonths12m }} dormant month{{ vitality.dormantMonths12m === 1 ? '' : 's' }}</span>
-                </div>
-
-                @if (vitality.hasSufficientHistoryForTrends) {
-                  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px;">
-                    <div style="padding:12px;border-radius:12px;border:1px solid #dbeafe;background:rgba(255,255,255,.85);">
-                      <span style="display:block;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;">Recent velocity</span>
-                      <span style="display:block;margin-top:4px;font-size:28px;font-weight:700;color:#0f172a;">{{ vitality.velocityLast6Months }}</span>
-                      <span style="display:block;margin-top:4px;font-size:12px;color:#64748b;line-height:1.4;">vs {{ vitality.velocityPrior6Months }} in the prior 6 months</span>
-                    </div>
-                    <div style="padding:12px;border-radius:12px;border:1px solid #dbeafe;background:rgba(255,255,255,.85);">
-                      <span style="display:block;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;">Firefighting rate</span>
-                      <span style="display:block;margin-top:4px;font-size:28px;font-weight:700;color:#0f172a;">{{ formatPercent(vitality.firefightingRate365d) }}</span>
-                      <span style="display:block;margin-top:4px;font-size:12px;color:#64748b;line-height:1.4;">{{ vitality.firefightingCommits365d }} classified commits over 365 days</span>
-                    </div>
-                    <div style="padding:12px;border-radius:12px;border:1px solid #dbeafe;background:rgba(255,255,255,.85);">
-                      <span style="display:block;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;">Inactive streak</span>
-                      <span style="display:block;margin-top:4px;font-size:28px;font-weight:700;color:#0f172a;">{{ vitality.maxInactiveStreakMonths }}</span>
-                      <span style="display:block;margin-top:4px;font-size:12px;color:#64748b;line-height:1.4;">longest zero-commit run in the last year</span>
-                    </div>
-                  </div>
-
-                  @if (hasVitalityChart(vitality)) {
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(24px,1fr));gap:8px;align-items:end;min-height:124px;">
-                      @for (point of vitality.monthlyCommits; track point.month) {
-                        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
-                          <div style="display:flex;align-items:end;justify-content:center;width:100%;height:96px;"
-                               [title]="point.month + ': ' + point.commitCount + ' commits'">
-                            <div style="width:100%;max-width:20px;border-radius:999px 999px 4px 4px;"
-                                 [style.height.px]="vitalityBarHeight(point, vitality)"
-                                 [style.background]="vitalityBarTone(point)"></div>
-                          </div>
-                          <span style="font-size:11px;color:#64748b;">{{ point.month.slice(5) }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
-                } @else {
-                  <div class="review-message" style="margin-bottom:0;background:rgba(255,255,255,.8);border-style:dashed;">
-                    Trend signals are still immature for this repository, so vitality is shown cautiously until more history accumulates.
-                  </div>
-                }
-              </div>
-            }
-
-            @if (h.dotnetSupport; as support) {
-              <div class="support-health-section">
-                <div class="support-health-header">
-                  <h3 class="health-section-title">.NET Support</h3>
-                  <span class="support-status-pill"
-                        [style.background]="supportBadgeColor(support.overallStatus)">
-                    {{ supportStatusLabel(support.overallStatus) }}
-                  </span>
-                </div>
-
-                @if (h.repoHealth && h.repoHealth.scorePenalty > 0) {
-                  <div class="support-penalty-note">
-                    Health score includes a -{{ h.repoHealth.scorePenalty.toFixed(1) }} penalty because this repo is {{ supportStatusLabel(support.overallStatus).toLowerCase() }}.
-                    <span class="muted">Base health {{ h.repoHealth.baseOverallHealth.toFixed(1) }}/10.</span>
-                  </div>
-                }
-
-                <div class="support-grid">
-                  @if (support.sdk; as sdk) {
-                    <div class="support-row">
-                      <span class="meta-label">SDK:</span>
-                      <span>{{ sdk.version }}</span>
-                      <span class="support-inline-status"
-                            [style.color]="supportBadgeColor(sdk.supportStatus)">
-                        {{ supportStatusLabel(sdk.supportStatus) }}
-                      </span>
-                      @if (sdk.supportEndedOn) {
-                        <span class="muted">ended {{ formatDate(sdk.supportEndedOn) }}</span>
-                      }
-                    </div>
-                  }
-                  @if (support.targetFrameworks.length > 0) {
-                    <div class="support-row">
-                      <span class="meta-label">Targets:</span>
-                      <div class="support-target-list">
-                        @for (target of support.targetFrameworks; track target.moniker) {
-                          <span class="support-target-pill">
-                            {{ target.displayName }}
-                            <span class="support-target-status"
-                                  [style.color]="supportBadgeColor(target.supportStatus)">
-                              {{ supportStatusLabel(target.supportStatus) }}
-                            </span>
-                            @if (target.supportEndedOn) {
-                              <span class="muted">· ended {{ formatDate(target.supportEndedOn) }}</span>
-                            }
-                          </span>
-                        }
-                      </div>
-                    </div>
-                  }
-                </div>
-                <div class="summary-meta">{{ support.summary }}</div>
-              </div>
-            }
-
-            <!-- Security Score -->
-            @if (h.securitySummary; as secSum) {
-                <div class="security-section">
-                  <div class="security-header">
-                    <h3 class="security-title">
-                      Security
-                      <span class="health-score-badge small"
-                            [style.background]="healthColor(secSum.securityScore)">
-                        {{ secSum.securityScore.toFixed(1) }}/10
-                      </span>
-                    </h3>
-                    <div class="severity-pills">
-                      @if (secSum.criticalCount > 0) {
-                        <span class="severity-pill severity-critical">{{ secSum.criticalCount }} critical</span>
-                      }
-                      @if (secSum.highCount > 0) {
-                        <span class="severity-pill severity-high">{{ secSum.highCount }} high</span>
-                      }
-                      @if (secSum.mediumCount > 0) {
-                        <span class="severity-pill severity-medium">{{ secSum.mediumCount }} medium</span>
-                      }
-                      @if (secSum.lowCount > 0) {
-                        <span class="severity-pill severity-low">{{ secSum.lowCount }} low</span>
-                      }
-                      @if (secSum.criticalCount === 0 && secSum.highCount === 0 && secSum.mediumCount === 0 && secSum.lowCount === 0) {
-                        <span class="severity-pill severity-none">No findings</span>
-                      }
-                    </div>
-                  </div>
-
-                  @if (security(); as secDetail) {
-                    @if (secDetail.findings.length > 0) {
-                      <div class="health-details-toggle clickable" (click)="toggleSecurity()">
-                        <span>{{ securityOpen() ? 'Hide' : 'Show' }} {{ secDetail.findings.length }} findings</span>
-                        <span class="expand-icon">{{ securityOpen() ? '▲' : '▼' }}</span>
-                      </div>
-
-                      @if (securityOpen()) {
-                        <div class="security-findings">
-                          @for (cat of ['secret', 'vulnerable_package', 'attack_surface']; track cat) {
-                            @let catFindings = securityFindings(cat);
-                            @if (catFindings.length > 0) {
-                              <h4 class="findings-category">
-                                @switch (cat) {
-                                  @case ('secret') { Embedded Secrets }
-                                  @case ('vulnerable_package') { Vulnerable Packages }
-                                  @case ('attack_surface') { Attack Surface }
-                                }
-                                <span class="findings-count">({{ catFindings.length }})</span>
-                              </h4>
-                              @for (f of catFindings; track $index) {
-                                <div class="finding-item">
-                                  <span class="severity-badge" [style.background]="severityColor(f.severity)">
-                                    {{ f.severity }}
-                                  </span>
-                                  <div class="finding-detail">
-                                    <span class="finding-title">{{ f.title }}</span>
-                                    <span class="finding-desc">{{ f.description }}</span>
-                                    @if (f.filePath) {
-                                      <span class="finding-location clickable" (click)="navigateToFinding($event, f.filePath!, f.lineNumber ?? undefined)">{{ f.filePath }}@if (f.lineNumber) {:{{ f.lineNumber }}}</span>
-                                    }
-                                    @if (f.advisory) {
-                                      <a class="finding-advisory" [href]="f.advisory" target="_blank" rel="noopener">Advisory</a>
-                                    }
-                                  </div>
-                                </div>
-                              }
-                            }
-                          }
-                        </div>
-                      }
-                    }
-                  }
-                </div>
-            }
-
-            <!-- Top hotspots table (always visible) -->
-              @if (h.topHotspots.length > 0) {
-                <h3 class="health-section-title">Top Hotspots</h3>
-                <table class="inner-table">
-                  <thead>
-                    <tr>
-                      <th>File</th>
-                      <th>
-                        Concern
-                        <span class="th-info" title="Primary Solo ranking signal for what is most likely creating repeated maintenance drag right now.">&#9432;</span>
-                      </th>
-                      <th>
-                        Health
-                        <span class="th-info" title="Composite score (1-10). Combines churn, complexity, coupling, knowledge risk, and lint signals. Below 4.0 = hotspot, below 2.5 = alert.">&#9432;</span>
-                      </th>
-                      <th>
-                        Fixes
-                        <span class="th-info" title="Weighted bug/fix commit signal over 365 days. Higher values suggest repeated fix activity.">&#9432;</span>
-                      </th>
-                      <th>
-                        Churn
-                        <span class="th-info" title="Short and long-window churn together. Persistent churn matters more than a single burst.">&#9432;</span>
-                      </th>
-                      <th>
-                        Complexity
-                        <span class="th-info" title="Structural complexity score (0-100) based on nesting depth, deep-nesting lines, function length, and branch density.">&#9432;</span>
-                      </th>
-                      <th>
-                        Truck Factor
-                        <span class="th-info" title="Minimum number of authors covering >50% of commits. A value of 1 means a single person owns the file — a knowledge risk.">&#9432;</span>
-                      </th>
-                      <th>
-                        Trust
-                        <span class="th-info" title="Trust score (0-1). Combines code stability (low churn = trustworthy) and lint quality (Roslyn for C#, ESLint for TS/JS). Higher = more reliable.">&#9432;</span>
-                      </th>
-                      <th>
-                        Risk
-                        <span class="th-info" title="ROI-ranked priority score. Factors in health, churn, coupling centrality, and whether the file is core vs test code.">&#9432;</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    @for (f of h.topHotspots; track f.filePath) {
-                      <tr>
-                        <td class="mono hotspot-path">{{ f.filePath }}</td>
-                        <td>
-                          <span class="health-score-inline" [style.color]="concernTone(f.concernScore)">
-                            {{ f.concernScore.toFixed(1) }}
-                          </span>
-                          @if (hotspotBadgeLabel(f); as badge) {
-                            <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ badge }}</div>
-                          }
-                        </td>
-                        <td>
-                          <span class="health-score-inline" [style.color]="healthColor(f.healthScore)">
-                            {{ f.healthScore.toFixed(1) }}
-                          </span>
-                        </td>
-                        <td>
-                          <div>{{ f.bugFixCommits365d.toFixed(2) }}</div>
-                          <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ (f.bugFixRatio365d * 100).toFixed(0) }}% ratio</div>
-                        </td>
-                        <td>
-                          <div>{{ f.changes }} recent</div>
-                          <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ f.churn365d.toFixed(1) }} yearly · {{ f.recurringChurnScore.toFixed(2) }} persistence</div>
-                        </td>
-                        <td>{{ f.complexityScore }}/100</td>
-                        <td>
-                          @if (f.truckFactor === 1) {
-                            <span class="truck-factor-warning">{{ f.truckFactor }}</span>
-                          } @else {
-                            {{ f.truckFactor }}
-                          }
-                        </td>
-                        <td>
-                          <span class="trust-score" [style.color]="trustColor(f.trustScore)">
-                            {{ f.trustScore.toFixed(2) }}
-                          </span>
-                        </td>
-                        <td>
-                          <div>{{ f.riskScore.toFixed(0) }}</div>
-                          <div style="margin-top:2px;font-size:11px;color:#64748b;line-height:1.35;">{{ f.role }}</div>
-                        </td>
-                      </tr>
-                    }
-                  </tbody>
-                </table>
-              }
-
-            <!-- Expand/collapse details toggle -->
-            <div class="health-details-toggle clickable" (click)="toggleHealthDetails()">
-              <span>{{ healthDetailsOpen() ? 'Hide' : 'Show' }} details</span>
-              <span class="expand-icon">{{ healthDetailsOpen() ? '▲' : '▼' }}</span>
-            </div>
-
-            @if (healthDetailsOpen()) {
-              <!-- Repo-level AI analysis -->
-              @for (a of h.analyses; track a.dotnetProject ?? '__repo__') {
-                @if (!a.dotnetProject) {
-                  <div class="health-analysis-text">
-                    <div class="health-analysis-header">
-                      <span class="health-analysis-label">AI Health Assessment</span>
-                      <span class="confidence-badge"
-                            [style.background]="confidenceColors[a.confidence]">
-                        {{ a.confidence }}
-                      </span>
-                    </div>
-                    <div class="health-analysis-content markdown-body" [innerHTML]="renderMarkdown(a.analysis)"></div>
-                    <div class="summary-meta">
-                      Updated {{ formatDate(a.updatedAt) }}
-                      @if (a.modelUsed) { · {{ a.modelUsed }} }
-                    </div>
-                  </div>
-                }
-              }
-
-              <!-- Per-project health -->
-              @if (h.projectHealths.length > 0) {
-                <h3 class="health-section-title">Project Health</h3>
-                @for (ph of h.projectHealths; track ph.dotnetProject) {
-                  <div class="analysis-item">
-                    <div class="analysis-header" (click)="toggleHealthAnalysis(ph.dotnetProject ?? '')">
-                      <span class="analysis-title">{{ ph.dotnetProject }}</span>
-                      <span class="health-score-badge small"
-                            [style.background]="healthColor(ph.overallHealth)">
-                        {{ ph.overallHealth.toFixed(1) }}
-                      </span>
-                      @if (ph.hotspotCount > 0) {
-                        <span class="health-count-badge">{{ ph.hotspotCount }} hotspots</span>
-                      }
-                      <span class="expand-icon">
-                        {{ expandedHealthAnalysis() === ph.dotnetProject ? '▲' : '▼' }}
-                      </span>
-                    </div>
-
-                    @if (expandedHealthAnalysis() === ph.dotnetProject) {
-                      <div class="analysis-body">
-                        <!-- Per-project AI analysis -->
-                        @for (a of h.analyses; track a.dotnetProject ?? '__repo__') {
-                          @if (a.dotnetProject === ph.dotnetProject) {
-                            <div class="health-analysis-content markdown-body" [innerHTML]="renderMarkdown(a.analysis)"></div>
-                            <div class="summary-meta">
-                              @if (a.modelUsed) { {{ a.modelUsed }} · }
-                              {{ a.confidence }} confidence
-                            </div>
-                          }
-                        }
-                      </div>
-                    }
-                  </div>
-                }
-              }
-            }
-          </div>
-      </div>
-    }
-
-    @let reviewPanel = repositoryReviewState();
-    <div class="card code-review-card">
-      <div class="code-review-header clickable" (click)="toggleCodeReviewExpanded()">
-        <div class="code-review-header-main">
-          <h2>Code Review</h2>
-          <p class="code-review-subtitle">
-            One repository review that synthesizes overall findings first, then breaks them down by project.
-          </p>
-        </div>
-
-        <div class="code-review-header-actions">
-          @if (reviewPanel.activeRun; as activeRun) {
-            <span class="review-status-pill" [attr.data-tone]="reviewStatusTone(activeRun.status)">
-              {{ reviewStatusLabel(activeRun.status) }}
-            </span>
-          } @else if (interruptedRepositoryReview()) {
-            <span class="review-status-pill" data-tone="failed">
-              Interrupted
-            </span>
-          } @else if (completedRepositoryReview(); as review) {
-            <span class="review-status-pill" [attr.data-tone]="isRepositoryReviewStale() ? 'failed' : 'completed'">
-              {{ isRepositoryReviewStale() ? 'Out of date' : 'Reviewed ' + formatDate(review.run.completedAt) }}
-            </span>
+    @if (!isSchemaProject()) {
+      <nav class="rd-tabs" role="tablist">
+        <button class="rd-tab" type="button" role="tab"
+                [attr.aria-selected]="tab() === 'overview'"
+                [class.active]="tab() === 'overview'"
+                (click)="setTab('overview')">
+          Overview
+        </button>
+        <a class="rd-tab" role="tab" [routerLink]="['/repos', name(), 'nodes']">
+          Nodes
+          <span class="rd-tab-badge">{{ totalNodes().toLocaleString() }}</span>
+        </a>
+        <button class="rd-tab" type="button" role="tab"
+                [attr.aria-selected]="tab() === 'health'"
+                [class.active]="tab() === 'health'"
+                (click)="setTab('health')">
+          Health
+        </button>
+        <button class="rd-tab" type="button" role="tab"
+                [attr.aria-selected]="tab() === 'reviews'"
+                [class.active]="tab() === 'reviews'"
+                (click)="setTab('reviews')">
+          Reviews
+          @if (reviewCount() > 0) {
+            <span class="rd-tab-badge">{{ reviewCount() }}</span>
           }
+        </button>
+      </nav>
 
-          <button class="btn-review"
-                  (click)="$event.stopPropagation(); startRepositoryReview()"
-                  [disabled]="reviewPanel.startingReview || isRepositoryReviewInProgress()">
-            {{ repositoryReviewActionLabel() }}
-          </button>
-
-          <span class="expand-icon">
-            {{ reviewPanel.expanded ? '▲' : '▼' }}
-          </span>
-        </div>
-      </div>
-
-      @if (reviewPanel.activeRun; as activeRun) {
-        <div class="review-run-banner" [attr.data-tone]="reviewStatusTone(activeRun.status)">
-          <div class="review-run-status">
-            <span class="batch-spinner small"></span>
-            <strong>{{ reviewStatusLabel(activeRun.status) }}</strong>
-            <span>{{ reviewPanel.streamStatus || 'Waiting for repository review status updates…' }}</span>
-          </div>
-          <div class="review-run-meta">
-            Started {{ formatDateTime(activeRun.startedAt || activeRun.createdAt) }}
-          </div>
-        </div>
-      }
-
-      @if (reviewPanel.streamError) {
-        <div class="review-message review-message-error">
-          {{ reviewPanel.streamError }}
-        </div>
-      }
-
-      @if (reviewPanel.expanded) {
-        @if (reviewPanel.loadingLatestReview && !reviewPanel.latestReview) {
-          <div class="review-message">Loading the latest saved repository review…</div>
-        } @else if (completedRepositoryReview(); as review) {
-          <div class="review-overview markdown-body" [innerHTML]="renderMarkdown(review.overview)"></div>
-
-          <div class="review-meta-row">
-            <span class="review-meta-pill">{{ review.findings.length }} findings</span>
-            <span class="review-meta-pill">Completed {{ formatDateTime(review.run.completedAt) }}</span>
-            @if (review.run.reviewedCommitSha) {
-              <span class="review-meta-pill mono">Reviewed commit {{ formatCommit(review.run.reviewedCommitSha) }}</span>
+      @if (tab() === 'overview') {
+        <section class="rd-vitality-grid">
+          <div class="rd-tile" [attr.data-tone]="healthTone()">
+            <div class="rd-tile-label">Health score</div>
+            @if (health()?.repoHealth?.overallHealth; as h) {
+              <div class="rd-tile-value">{{ h }}<span class="rd-tile-value-suffix">/100</span></div>
+            } @else {
+              <div class="rd-tile-value cg-faint">—</div>
             }
-            @if (d.project.lastCommitSha) {
-              <span class="review-meta-pill mono">Current commit {{ formatCommit(d.project.lastCommitSha) }}</span>
-            }
-            @if (review.run.modelUsed) {
-              <span class="review-meta-pill">{{ review.run.modelUsed }}</span>
-            }
-          </div>
-
-          @if (isRepositoryReviewStale()) {
-            <div class="review-message">
-              This review is out of date because the reviewed commit does not match the current repository commit.
-            </div>
-          }
-
-          <div class="review-list-grid">
-            @if (review.strengths.length > 0) {
-              <div class="review-list-card">
-                <h5>Strengths</h5>
-                <ul>
-                  @for (item of review.strengths; track item) {
-                    <li>{{ item }}</li>
-                  }
-                </ul>
-              </div>
-            }
-            @if (review.reviewedAreas.length > 0) {
-              <div class="review-list-card">
-                <h5>Reviewed Areas</h5>
-                <ul>
-                  @for (item of review.reviewedAreas; track item) {
-                    <li>{{ item }}</li>
-                  }
-                </ul>
-              </div>
-            }
-            @if (review.followUps.length > 0) {
-              <div class="review-list-card">
-                <h5>Follow-Ups</h5>
-                <ul>
-                  @for (item of review.followUps; track item) {
-                    <li>{{ item }}</li>
-                  }
-                </ul>
-              </div>
-            }
-            @if (review.skippedAreas.length > 0) {
-              <div class="review-list-card">
-                <h5>Skipped Areas</h5>
-                <ul>
-                  @for (item of review.skippedAreas; track item) {
-                    <li>{{ item }}</li>
-                  }
-                </ul>
-              </div>
-            }
-          </div>
-
-          <div class="review-findings">
-            <div class="review-findings-header">
-              <h5>Repository Findings</h5>
-              @if (review.findings.length === 0) {
-                <span class="summary-meta">No repository-level findings in the latest completed review.</span>
-              }
-            </div>
-            @for (finding of review.findings; track reviewFindingTrackBy($index, finding)) {
-              <div class="review-finding-item">
-                <div class="review-finding-heading">
-                  <span class="severity-badge" [style.background]="severityColor(finding.severity)">
-                    {{ finding.severity }}
-                  </span>
-                  <span class="review-finding-title">{{ finding.title }}</span>
-                  @if (finding.projectName) {
-                    <span class="review-meta-pill">{{ finding.projectName }}</span>
-                  }
-                  <span class="review-confidence-pill"
-                        [style.background]="reviewConfidenceColor(finding.confidence)">
-                    {{ finding.confidence }}
-                  </span>
-                </div>
-                <p class="review-finding-copy">{{ finding.explanation }}</p>
-                <p class="review-finding-evidence"><strong>Evidence:</strong> {{ finding.evidence }}</p>
-                <p class="review-finding-copy"><strong>Suggested improvement:</strong> {{ finding.suggestedImprovement }}</p>
-                @if (finding.filePath) {
-                  <span class="finding-location clickable"
-                        (click)="navigateToFinding($event, finding.filePath, finding.lineStart ?? undefined)">
-                    {{ finding.filePath }}{{ formatLineRange(finding.lineStart, finding.lineEnd) }}
-                  </span>
-                }
-              </div>
-            }
-          </div>
-
-          @if (review.projectReviews.length > 0) {
-            <div class="project-review-groups">
-              <h3 class="health-section-title">Project Reviews</h3>
-              @for (section of review.projectReviews; track projectSectionTrackBy($index, section)) {
-                @let diagnosticsState = projectDiagnosticsState(section.projectName);
-                <div class="project-review-section">
-                  <div class="project-review-header">
-                    <div>
-                      <h4>{{ section.projectName }}</h4>
-                      <p class="project-review-subtitle">
-                        Project-level detail captured as part of the repository review.
-                      </p>
-                    </div>
-
-                    <div class="analysis-badges">
-                      @if (section.reusedFromBaseline) {
-                        <span class="review-meta-pill">Baseline context</span>
-                      }
-                      @if (diagnosticsState.loadingDiagnostics && !diagnosticsState.diagnostics) {
-                        <span class="diagnostics-loading">Diagnostics…</span>
-                      } @else if (diagnosticsState.diagnostics; as diagnostics) {
-                        @if (diagnostics.errorCount > 0) {
-                          <span class="diagnostic-badge diagnostic-badge-error">{{ diagnostics.errorCount }} errors</span>
-                        }
-                        @if (diagnostics.warningCount > 0) {
-                          <span class="diagnostic-badge diagnostic-badge-warning">{{ diagnostics.warningCount }} warnings</span>
-                        }
-                        @if (diagnostics.infoCount > 0) {
-                          <span class="diagnostic-badge diagnostic-badge-info">{{ diagnostics.infoCount }} info</span>
-                        }
-                      }
-                    </div>
-                  </div>
-
-                  <div class="review-overview markdown-body" [innerHTML]="renderMarkdown(section.overview)"></div>
-
-                  <div class="review-list-grid">
-                    @if (section.strengths.length > 0) {
-                      <div class="review-list-card">
-                        <h5>Strengths</h5>
-                        <ul>
-                          @for (item of section.strengths; track item) {
-                            <li>{{ item }}</li>
-                          }
-                        </ul>
-                      </div>
-                    }
-                    @if (section.reviewedAreas.length > 0) {
-                      <div class="review-list-card">
-                        <h5>Reviewed Areas</h5>
-                        <ul>
-                          @for (item of section.reviewedAreas; track item) {
-                            <li>{{ item }}</li>
-                          }
-                        </ul>
-                      </div>
-                    }
-                    @if (section.followUps.length > 0) {
-                      <div class="review-list-card">
-                        <h5>Follow-Ups</h5>
-                        <ul>
-                          @for (item of section.followUps; track item) {
-                            <li>{{ item }}</li>
-                          }
-                        </ul>
-                      </div>
-                    }
-                    @if (section.skippedAreas.length > 0) {
-                      <div class="review-list-card">
-                        <h5>Skipped Areas</h5>
-                        <ul>
-                          @for (item of section.skippedAreas; track item) {
-                            <li>{{ item }}</li>
-                          }
-                        </ul>
-                      </div>
-                    }
-                  </div>
-
-                  <div class="review-findings">
-                    <div class="review-findings-header">
-                      <h5>{{ section.projectName }} Findings</h5>
-                      @if (section.findings.length === 0) {
-                        <span class="summary-meta">No findings recorded for this project section.</span>
-                      }
-                    </div>
-                    @for (finding of section.findings; track reviewFindingTrackBy($index, finding)) {
-                      <div class="review-finding-item">
-                        <div class="review-finding-heading">
-                          <span class="severity-badge" [style.background]="severityColor(finding.severity)">
-                            {{ finding.severity }}
-                          </span>
-                          <span class="review-finding-title">{{ finding.title }}</span>
-                          <span class="review-confidence-pill"
-                                [style.background]="reviewConfidenceColor(finding.confidence)">
-                            {{ finding.confidence }}
-                          </span>
-                        </div>
-                        <p class="review-finding-copy">{{ finding.explanation }}</p>
-                        <p class="review-finding-evidence"><strong>Evidence:</strong> {{ finding.evidence }}</p>
-                        <p class="review-finding-copy"><strong>Suggested improvement:</strong> {{ finding.suggestedImprovement }}</p>
-                        @if (finding.filePath) {
-                          <span class="finding-location clickable"
-                                (click)="navigateToFinding($event, finding.filePath, finding.lineStart ?? undefined)">
-                            {{ finding.filePath }}{{ formatLineRange(finding.lineStart, finding.lineEnd) }}
-                          </span>
-                        }
-                      </div>
-                    }
-                  </div>
-
-                  @if (diagnosticsState.diagnostics; as diagnostics) {
-                    <div class="project-diagnostics-section">
-                      <div class="project-diagnostics-header">
-                        <h5>Diagnostics</h5>
-                        <div class="analysis-badges">
-                          <span class="diagnostic-badge diagnostic-badge-error">{{ diagnostics.errorCount }} errors</span>
-                          <span class="diagnostic-badge diagnostic-badge-warning">{{ diagnostics.warningCount }} warnings</span>
-                          <span class="diagnostic-badge diagnostic-badge-info">{{ diagnostics.infoCount }} info</span>
-                        </div>
-                      </div>
-                      @if (totalDiagnostics(diagnostics) > 0) {
-                        <button class="text-button" (click)="toggleDiagnostics(section.projectName)">
-                          {{ diagnosticsState.diagnosticsOpen ? 'Hide diagnostics' : 'Show diagnostics' }}
-                        </button>
-                      } @else {
-                        <div class="summary-meta">No persisted diagnostics for this project.</div>
-                      }
-
-                      @if (diagnosticsState.diagnosticsOpen && totalDiagnostics(diagnostics) > 0) {
-                        @let previewDiagnostics = diagnosticPreview(section.projectName);
-                        <div class="diagnostic-list">
-                          @for (diagnostic of previewDiagnostics; track diagnosticTrackBy($index, diagnostic)) {
-                            <div class="diagnostic-item">
-                              <span class="diagnostic-severity"
-                                    [style.background]="diagnosticSeverityColor(diagnostic.severity)">
-                                {{ diagnostic.severity }}
-                              </span>
-                              <div class="diagnostic-detail">
-                                <span class="diagnostic-title">{{ diagnostic.diagnosticId }} · {{ diagnostic.message }}</span>
-                                <span class="diagnostic-meta">
-                                  {{ diagnostic.source }}
-                                  @if (diagnostic.category) { · {{ diagnostic.category }} }
-                                </span>
-                                <span class="finding-location clickable"
-                                      (click)="navigateToFinding($event, diagnostic.filePath, diagnostic.lineStart ?? undefined)">
-                                  {{ diagnostic.filePath }}{{ formatLineRange(diagnostic.lineStart, diagnostic.lineEnd) }}
-                                </span>
-                              </div>
-                            </div>
-                          }
-                        </div>
-                        @if (hasMoreDiagnostics(section.projectName)) {
-                          <div class="summary-meta">
-                            Showing the first {{ previewDiagnostics.length }} of {{ diagnostics.diagnostics.length }} diagnostics.
-                          </div>
-                        }
-                      }
-                    </div>
-                  }
-                </div>
-              }
-            </div>
-          }
-        } @else if (interruptedRepositoryReview(); as interruptedReview) {
-          <div class="review-message review-message-error">
-            {{ interruptedReview.run.error || 'The latest repository review was interrupted before it finished.' }}
-          </div>
-          @if (!canContinueInterruptedRepositoryReview() && interruptedReview.run.reviewMode === 'update') {
-            <div class="review-message">
-              The repo moved to a new commit after that interrupted update review, so continuing it would no longer use the same diff baseline. Start a fresh review instead.
-            </div>
-          }
-        } @else if (reviewPanel.latestReview?.run?.status === 'failed') {
-          <div class="review-message review-message-error">
-            The latest saved repository review failed{{ reviewPanel.latestReview?.run?.error ? ': ' + reviewPanel.latestReview?.run?.error : '.' }}
-          </div>
-        } @else {
-          <div class="review-message">
-            No repository review has been completed yet. Run one to review the repo as a whole and then drill into project-level sections.
-          </div>
-        }
-      }
-    </div>
-
-    <!-- Projects (merged solution projects + analyses) -->
-    @if (projectEntries().length > 0) {
-      <div class="card">
-        <h2>Projects</h2>
-        @for (projectEntry of projectEntries(); track projectEntry.projectName) {
-          <div class="analysis-item">
-            <div class="analysis-header" (click)="toggleAnalysis(projectEntry.projectName)">
-              @if (getDotnetProject(projectEntry.projectName); as proj) {
-                <a class="analysis-title project-link"
-                   [routerLink]="['/repos', name(), 'nodes']"
-                   [queryParams]="{ dotnetProject: proj.name }"
-                   (click)="$event.stopPropagation()">
-                  {{ projectEntry.projectName }}
-                </a>
-                <span class="project-node-count">{{ proj.total }} nodes</span>
+            <div class="rd-tile-sub cg-muted">
+              @if (health()?.repoHealth?.hotspotCount; as hc) {
+                {{ hc }} hotspot{{ hc === 1 ? '' : 's' }}
               } @else {
-                <span class="analysis-title">{{ projectEntry.projectName }}</span>
+                no hotspots
               }
-              @if (projectEntry.analysis; as analysis) {
-                <span class="confidence-badge"
-                      [style.background]="confidenceColors[analysis.confidence]">
-                  {{ analysis.confidence }}
-                </span>
-              }
-              <span class="expand-icon">
-                {{ expandedAnalysis() === projectEntry.projectName ? '▲' : '▼' }}
-              </span>
             </div>
+          </div>
 
-            @if (expandedAnalysis() === projectEntry.projectName) {
-              <div class="analysis-body">
-                @if (projectEntry.analysis; as analysis) {
-                  <div class="markdown-body" [innerHTML]="renderMarkdown(analysis.summary)"></div>
-                } @else {
-                  <div class="summary-meta">
-                    No stored project analysis yet.
-                  </div>
-                }
+          <div class="rd-tile" data-tone="info">
+            <div class="rd-tile-label">Indexed nodes</div>
+            <div class="rd-tile-value">{{ totalNodes().toLocaleString() }}</div>
+            <div class="rd-tile-sub cg-muted">
+              across {{ projectCount() }} {{ projectCount() === 1 ? 'project' : 'projects' }}
+            </div>
+          </div>
 
-                @if (getDotnetProject(projectEntry.projectName); as proj) {
-                  <div class="project-tile-labels">
-                    @for (lbl of proj.labels; track lbl[0]) {
-                      <a [routerLink]="['/repos', name(), 'nodes']"
-                         [queryParams]="{ dotnetProject: proj.name, label: lbl[0] }"
-                         class="project-label-tag project-label-link">
-                        {{ labelIcons[lbl[0]] || '•' }} {{ lbl[0] }} ({{ lbl[1] }})
-                      </a>
-                    }
-                  </div>
-                }
+          <div class="rd-tile" [attr.data-tone]="vitalityTone()">
+            <div class="rd-tile-label">Firefighting</div>
+            @if (firefightingRatePct() != null) {
+              <div class="rd-tile-value">{{ firefightingRatePct() }}%</div>
+            } @else {
+              <div class="rd-tile-value cg-faint">—</div>
+            }
+            <div class="rd-tile-sub cg-muted">{{ vitalityLabel() }} · last 90d</div>
+          </div>
 
-                @if (projectEntry.analysis?.endpoints?.length) {
-                  <h4>Endpoints</h4>
-                  <table class="inner-table">
-                    <thead><tr><th>Method</th><th>Route</th><th>Description</th></tr></thead>
-                    <tbody>
-                      @for (ep of projectEntry.analysis!.endpoints; track ep.route) {
-                        <tr>
-                          <td><span class="http-method http-{{ep.httpMethod.toLowerCase()}}">{{ ep.httpMethod }}</span></td>
-                          <td class="mono">{{ ep.route }}</td>
-                          <td>{{ ep.description }}</td>
-                        </tr>
-                      }
-                    </tbody>
-                  </table>
-                }
-
-                @if (projectEntry.analysis?.services?.length) {
-                  <h4>Services</h4>
-                  <table class="inner-table">
-                    <thead><tr><th>Name</th><th>Interface</th><th>Lifetime</th><th>Description</th></tr></thead>
-                    <tbody>
-                      @for (svc of projectEntry.analysis!.services; track svc.name) {
-                        <tr>
-                          <td>{{ svc.name }}</td>
-                          <td class="mono">{{ svc.interfaceName || '—' }}</td>
-                          <td>{{ svc.lifetime }}</td>
-                          <td>{{ svc.description }}</td>
-                        </tr>
-                      }
-                    </tbody>
-                  </table>
-                }
-
-                @if (projectEntry.analysis?.databaseTables?.length) {
-                  <h4>Database Tables</h4>
-                  <div class="tag-list">
-                    @for (t of projectEntry.analysis!.databaseTables; track t) {
-                      <span class="tag">{{ t }}</span>
-                    }
-                  </div>
-                }
-
-                @if (projectEntry.analysis?.externalDependencies?.length) {
-                  <h4>External Dependencies</h4>
-                  <div class="tag-list">
-                    @for (d of projectEntry.analysis!.externalDependencies; track d) {
-                      <span class="tag">{{ d }}</span>
-                    }
-                  </div>
+          <div class="rd-tile" data-tone="ok">
+            <div class="rd-tile-label">Commits · last month</div>
+            <div class="rd-tile-value">{{ commitsLast30d() }}</div>
+            @if (commitSpark().length) {
+              <div class="rd-spark">
+                @for (h of commitSpark(); track $index) {
+                  <span [style.height.px]="h"></span>
                 }
               </div>
+            } @else {
+              <div class="rd-tile-sub cg-faint">no history</div>
             }
           </div>
-        }
-      </div>
-    }
+        </section>
 
-    <!-- Dependencies -->
-    <div class="deps-row">
-      <div class="card deps-card">
-        <h2>Inbound ({{ d.inboundEdgeCount }} edges from {{ d.inboundProjects.length }} repos)</h2>
-        @if (d.inboundProjects.length > 0) {
-          <ul class="dep-list">
-            @for (p of d.inboundProjects; track p) {
-              <li><a [routerLink]="['/repos', p]" class="project-link">{{ p }}</a></li>
-            }
-          </ul>
-        } @else {
-          <p class="empty-msg">No inbound dependencies.</p>
+        @if (d.summary) {
+          <section class="rd-summary-card">
+            <header class="rd-summary-head">
+              <div class="rd-summary-title">Summary</div>
+              <span class="cg-chip cg-chip-mono"
+                    [style.background]="confidenceColors[d.summary.confidence]"
+                    [style.color]="'#fff'"
+                    [style.border-color]="confidenceColors[d.summary.confidence]">
+                {{ d.summary.confidence }} confidence
+              </span>
+            </header>
+            <app-markdown class="rd-summary-body" [content]="d.summary.summary" />
+            <div class="cg-muted cg-small">
+              Updated {{ formatDate(d.summary.updatedAt) }}
+              @if (d.summary.modelUsed) { · {{ d.summary.modelUsed }} }
+            </div>
+          </section>
         }
-      </div>
-      <div class="card deps-card">
-        <h2>Outbound ({{ d.outboundEdgeCount }} edges to {{ d.outboundProjects.length }} repos)</h2>
-        @if (d.outboundProjects.length > 0) {
-          <ul class="dep-list">
-            @for (p of d.outboundProjects; track p) {
-              <li><a [routerLink]="['/repos', p]" class="project-link">{{ p }}</a></li>
-            }
-          </ul>
-        } @else {
-          <p class="empty-msg">No outbound dependencies.</p>
-        }
-      </div>
-    </div>
 
-    <!-- Node type browser -->
-    <div class="card">
-      <h2>Browse by Node Type</h2>
-      <div class="label-grid">
-        @for (entry of nodeLabelEntries(); track entry[0]) {
-          <a [routerLink]="['/repos', name(), 'nodes']"
-             [queryParams]="{ label: entry[0] }"
-             class="label-tile">
-            <span class="label-icon">{{ labelIcons[entry[0]] || '•' }}</span>
-            <span class="label-name">{{ entry[0] }}</span>
-            <span class="label-count">{{ entry[1] }}</span>
-          </a>
-        }
-      </div>
-    </div>
+        <app-repo-detail-projects [projectName]="name()" [detail]="d" />
+        <app-repo-detail-dependencies [projectName]="name()" [detail]="d" />
 
-    <!-- README -->
-    @if (readme(); as readmeContent) {
-      <div class="card readme-card">
-        <h2>README</h2>
-        <div class="markdown-body" [innerHTML]="renderMarkdown(readmeContent)"></div>
-      </div>
+        @if (readme(); as readmeContent) {
+          <section class="rd-readme-card">
+            <header class="rd-summary-head">
+              <div class="rd-summary-title">README</div>
+            </header>
+            <app-markdown class="rd-summary-body" [content]="readmeContent" />
+          </section>
+        }
+      } @else if (tab() === 'health') {
+        <app-repo-detail-health
+          [projectName]="name()"
+          [detail]="d"
+          [health]="health()"
+          [security]="security()"
+        />
+      } @else if (tab() === 'reviews') {
+        <app-repo-detail-review
+          [projectName]="name()"
+          [review]="repositoryReviewState().latestReview"
+          [reviewRunning]="isRepositoryReviewInProgress()"
+          [reviewLoading]="repositoryReviewState().startingReview || repositoryReviewState().loadingLatestReview"
+          [lastCommitSha]="d.project.lastCommitSha ?? null"
+          (startReview)="startRepositoryReview()"
+        />
+      }
+    } @else {
+      <app-schema-catalog [projectName]="name()" />
+      <app-repo-detail-dependencies [projectName]="name()" [detail]="d" />
     }
   }
 </div>

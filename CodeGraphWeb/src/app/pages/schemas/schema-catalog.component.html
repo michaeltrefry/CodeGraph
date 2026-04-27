@@ -1,86 +1,177 @@
 @if (loading()) {
-  <div class="loading">Loading schema catalog…</div>
-} @else if (error()) {
-  <div class="empty">{{ error() }}</div>
-} @else if (catalog(); as data) {
-  <section class="catalog">
-    <div class="catalog-header">
+  <div class="sc-state">Loading schema catalog...</div>
+} @else if (loadError()) {
+  <div class="sc-state">{{ loadError() }}</div>
+} @else {
+  <section class="cg-card cg-card-padded sc-catalog">
+    <div class="sc-header">
       <div>
-        <h2>{{ data.databaseName }}</h2>
-        <div class="meta">{{ data.serverName }} · {{ objects().length }} objects</div>
+        <h2>Schema Catalog</h2>
+        @if (catalog(); as data) {
+          <div class="sc-meta">{{ data.serverName }} / {{ data.databaseName }}</div>
+        }
       </div>
-      <a [routerLink]="['/schemas', data.projectName, 'nodes']" class="btn-small">All nodes</a>
+      <div class="sc-header-actions">
+        <span class="cg-count-pill">{{ totalObjects().toLocaleString() }} objects</span>
+        @if (catalog(); as data) {
+          <a [routerLink]="['/schemas', data.projectName, 'nodes']" class="cg-btn cg-btn-secondary">All nodes</a>
+        }
+      </div>
     </div>
 
-    @for (item of objects(); track item.id) {
-      <div class="catalog-object">
-        <button type="button" class="object-header" (click)="toggle(item.id)">
-          <span class="expand">{{ isExpanded(item.id) ? '▼' : '▶' }}</span>
-          <span class="object-name">{{ item.name }}</span>
-          <span class="object-kind">{{ isProcedure(item) ? item.routineType : item.label }}</span>
-          <span class="object-summary">{{ summary(item) }}</span>
+    @for (group of groups(); track group.key) {
+      <section class="sc-group">
+        <button type="button" class="sc-group-header" (click)="toggleGroup(group.label)">
+          <span class="sc-expand">{{ isGroupExpanded(group.label) ? '▼' : '▶' }}</span>
+          <span class="sc-title">{{ group.label }}</span>
+          <span class="cg-chip cg-chip-mono">{{ group.items.length }}</span>
         </button>
 
-        @if (isExpanded(item.id)) {
-          <div class="object-body">
-            <a [routerLink]="['/nodes', item.id]" class="node-link">Open node</a>
-            @if (item.comment) {
-              <p>{{ item.comment }}</p>
-            }
-
-            @if (isProcedure(item)) {
-              <h3>Parameters</h3>
-              @for (parameter of item.parameters; track parameter.ordinal + parameter.name) {
-                <div class="detail-row">
-                  <span>{{ parameter.name }}</span>
-                  <span>{{ formatParameter(parameter) }}</span>
-                </div>
-              } @empty {
-                <div class="empty compact">No parameters.</div>
-              }
+        @if (isGroupExpanded(group.label)) {
+          <div class="sc-group-body">
+            @if (group.items.length === 0) {
+              <div class="sc-empty">No {{ group.label.toLowerCase() }} found.</div>
             } @else {
-              <h3>Columns</h3>
-              <table class="detail-table">
-                <thead><tr><th>Name</th><th>Type</th><th>Null</th><th>PK</th></tr></thead>
-                <tbody>
-                  @for (column of item.columns; track column.id + column.name) {
-                    <tr>
-                      <td>{{ column.name }}</td>
-                      <td>{{ column.dataType || '-' }}</td>
-                      <td>{{ column.nullable ? 'YES' : 'NO' }}</td>
-                      <td>{{ column.isPrimaryKey ? 'YES' : 'NO' }}</td>
-                    </tr>
-                  } @empty {
-                    <tr><td colspan="4" class="empty compact">No columns.</td></tr>
+              @for (item of group.items; track item.id) {
+                <div class="sc-object">
+                  <button type="button" class="sc-object-header" (click)="toggleObject(item.id)">
+                    <span class="sc-expand">{{ isObjectExpanded(item.id) ? '▼' : '▶' }}</span>
+                    <span class="sc-object-name">{{ item.name }}</span>
+                    <span class="sc-object-summary">{{ objectSummary(item) }}</span>
+                  </button>
+
+                  @if (isObjectExpanded(item.id)) {
+                    <div class="sc-object-body">
+                      <div class="sc-object-topline">
+                        <a [routerLink]="['/nodes', item.id]" class="sc-node-link">Open node</a>
+                        @if (isProcedure(item)) {
+                          <span class="cg-chip">{{ item.routineType }}</span>
+                        } @else {
+                          <span class="cg-chip">{{ item.label }}</span>
+                        }
+                      </div>
+
+                      @if (item.comment) {
+                        <div class="sc-comment">{{ item.comment }}</div>
+                      }
+
+                      @if (isProcedure(item)) {
+                        <div class="sc-detail-block">
+                          <h3>Parameters</h3>
+                          @if (item.parameters.length === 0) {
+                            <div class="sc-empty compact">No parameters.</div>
+                          } @else {
+                            <table class="cg-table sc-grid">
+                              <thead>
+                                <tr>
+                                  <th>Name</th>
+                                  <th>Mode</th>
+                                  <th>Type</th>
+                                  <th>Null</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                @for (parameter of item.parameters; track parameter.ordinal + '-' + parameter.name) {
+                                  <tr>
+                                    <td>{{ parameter.name }}</td>
+                                    <td>{{ parameter.mode }}</td>
+                                    <td>{{ parameter.dataType }}</td>
+                                    <td>{{ formatNullable(parameter.nullable) }}</td>
+                                  </tr>
+                                }
+                              </tbody>
+                            </table>
+                          }
+                        </div>
+                      } @else {
+                        <div class="sc-detail-block">
+                          <h3>Columns</h3>
+                          @if (item.columns.length === 0) {
+                            <div class="sc-empty compact">No columns.</div>
+                          } @else {
+                            <table class="cg-table sc-grid">
+                              <thead>
+                                <tr>
+                                  <th>Name</th>
+                                  <th>Type</th>
+                                  <th>Null</th>
+                                  <th>PK</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                @for (column of item.columns; track column.id + '-' + column.name) {
+                                  <tr>
+                                    <td>{{ column.name }}</td>
+                                    <td>{{ column.dataType || '-' }}</td>
+                                    <td>{{ formatNullable(column.nullable) }}</td>
+                                    <td>{{ column.isPrimaryKey ? 'YES' : 'NO' }}</td>
+                                  </tr>
+                                }
+                              </tbody>
+                            </table>
+                          }
+                        </div>
+
+                        <div class="sc-detail-panels">
+                          <div class="sc-detail-panel">
+                            <h3>Indexes</h3>
+                            @if (item.primaryKeyColumns.length > 0) {
+                              <div class="sc-detail-row">
+                                <div class="sc-detail-name">PRIMARY</div>
+                                <div class="sc-detail-value">PRIMARY KEY · {{ formatColumns(item.primaryKeyColumns) }}</div>
+                              </div>
+                            }
+                            @if (item.indexes.length === 0) {
+                              <div class="sc-empty compact">No secondary indexes.</div>
+                            } @else {
+                              @for (index of item.indexes; track index.name) {
+                                <div class="sc-detail-row">
+                                  <div class="sc-detail-name">{{ index.name }}</div>
+                                  <div class="sc-detail-value">{{ formatIndex(index) }} · {{ formatColumns(index.columns) }}</div>
+                                </div>
+                              }
+                            }
+                          </div>
+
+                          <div class="sc-detail-panel">
+                            <h3>Foreign Keys</h3>
+                            @if (item.foreignKeys.length === 0) {
+                              <div class="sc-empty compact">No foreign keys.</div>
+                            } @else {
+                              @for (foreignKey of item.foreignKeys; track foreignKey.name) {
+                                <div class="sc-detail-row">
+                                  <div class="sc-detail-name">{{ foreignKey.name }}</div>
+                                  <div class="sc-detail-value">{{ formatForeignKey(foreignKey) }}</div>
+                                </div>
+                              }
+                            }
+                          </div>
+
+                          <div class="sc-detail-panel">
+                            <h3>Constraints</h3>
+                            @if (constraints(item).length === 0) {
+                              <div class="sc-empty compact">No constraints.</div>
+                            } @else {
+                              @for (constraint of constraints(item); track constraint.name + '-' + constraint.constraintType) {
+                                <div class="sc-detail-row">
+                                  <div class="sc-detail-name">{{ constraint.name }}</div>
+                                  <div class="sc-detail-value">{{ formatConstraint(constraint) }}</div>
+                                </div>
+                              }
+                            }
+                          </div>
+                        </div>
+                      }
+                    </div>
                   }
-                </tbody>
-              </table>
-
-              @if (item.indexes.length) {
-                <h3>Indexes</h3>
-                @for (index of item.indexes; track index.name) {
-                  <div class="detail-row">
-                    <span>{{ index.name }}</span>
-                    <span>{{ index.isUnique ? 'unique' : 'non-unique' }} · {{ index.columns.join(', ') }}</span>
-                  </div>
-                }
-              }
-
-              @if (item.foreignKeys.length) {
-                <h3>Foreign Keys</h3>
-                @for (foreignKey of item.foreignKeys; track foreignKey.name) {
-                  <div class="detail-row">
-                    <span>{{ foreignKey.name }}</span>
-                    <span>{{ formatForeignKey(foreignKey) }}</span>
-                  </div>
-                }
+                </div>
               }
             }
           </div>
         }
-      </div>
+      </section>
     } @empty {
-      <div class="empty">No schema objects found.</div>
+      <div class="sc-state">No schema objects found.</div>
     }
   </section>
 }

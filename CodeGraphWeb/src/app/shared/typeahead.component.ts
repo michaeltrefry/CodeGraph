@@ -77,20 +77,22 @@ export interface TypeaheadItem {
       width: 100%;
       box-sizing: border-box;
       padding: 8px 12px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      font-size: 14px;
-      color: #111827;
-      background: white;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: var(--fs-sm);
+      color: var(--text);
+      background: var(--surface);
+      font-family: inherit;
 
       &:focus {
         outline: none;
-        border-color: #a78bfa;
-        box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2);
+        border-color: var(--accent-dim);
+        background: var(--surface-2);
+        box-shadow: 0 0 0 2px var(--accent-weak);
       }
 
       &::placeholder {
-        color: #9ca3af;
+        color: var(--faint);
       }
     }
 
@@ -101,8 +103,8 @@ export interface TypeaheadItem {
       transform: translateY(-50%);
       width: 14px;
       height: 14px;
-      border: 2px solid #d1d5db;
-      border-top-color: #7c3aed;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
       border-radius: 50%;
       animation: typeahead-spin 0.6s linear infinite;
     }
@@ -116,10 +118,10 @@ export interface TypeaheadItem {
       top: calc(100% + 4px);
       left: 0;
       right: 0;
-      background: white;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
       z-index: 100;
       max-height: 280px;
       overflow-y: auto;
@@ -131,17 +133,18 @@ export interface TypeaheadItem {
       gap: 8px;
       padding: 8px 12px;
       cursor: pointer;
-      font-size: 14px;
-      color: #111827;
-      transition: background 0.1s;
+      font-size: var(--fs-sm);
+      color: var(--text);
+      transition: background var(--transition), color var(--transition);
 
       &:hover, &.active {
-        background: #f3f0ff;
+        background: var(--accent-weak);
+        color: var(--text);
       }
     }
 
     .typeahead-item-icon {
-      font-size: 14px;
+      font-size: var(--fs-sm);
       flex-shrink: 0;
     }
 
@@ -158,8 +161,8 @@ export interface TypeaheadItem {
     }
 
     .typeahead-item-desc {
-      font-size: 12px;
-      color: #6b7280;
+      font-size: var(--fs-xs);
+      color: var(--muted);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -167,8 +170,8 @@ export interface TypeaheadItem {
 
     .typeahead-empty {
       padding: 10px 12px;
-      font-size: 13px;
-      color: #9ca3af;
+      font-size: var(--fs-sm);
+      color: var(--muted);
       text-align: center;
     }
   `]

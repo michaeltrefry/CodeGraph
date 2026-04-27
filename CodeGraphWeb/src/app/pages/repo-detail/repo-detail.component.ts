@@ -1,4 +1,4 @@
-import { Component, DestroyRef, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, DestroyRef, inject, OnInit, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
@@ -23,6 +23,12 @@ import {
   RepositoryReviewRunResponse,
   StoredProjectAnalysis
 } from '../../core/models';
+import { MarkdownComponent } from '../../shared/markdown.component';
+import { SchemaCatalogComponent } from '../schemas/schema-catalog.component';
+import { RepoDetailDependenciesComponent } from './repo-detail-dependencies.component';
+import { RepoDetailHealthComponent } from './repo-detail-health.component';
+import { RepoDetailProjectsComponent } from './repo-detail-projects.component';
+import { RepoDetailReviewComponent } from './repo-detail-review.component';
 
 interface ProjectDiagnosticsPanelState {
   diagnostics: ProjectDiagnosticsResponse | null;
@@ -48,7 +54,15 @@ interface RepoProjectEntry {
 
 @Component({
   selector: 'app-repo-detail',
-  imports: [RouterLink],
+  imports: [
+    RouterLink,
+    MarkdownComponent,
+    SchemaCatalogComponent,
+    RepoDetailDependenciesComponent,
+    RepoDetailHealthComponent,
+    RepoDetailProjectsComponent,
+    RepoDetailReviewComponent
+  ],
   templateUrl: './repo-detail.component.html',
   styleUrl: './repo-detail.component.scss'
 })
@@ -77,6 +91,8 @@ export class RepoDetailComponent implements OnInit {
   reAnalyzing = signal(false);
   deleting = signal(false);
   showDeleteConfirm = signal(false);
+  reAnalyzeError = signal<string | null>(null);
+  tab = signal<'overview' | 'health' | 'reviews'>('overview');
   repositoryReviewState = signal<RepositoryReviewPanelState>(this.createInitialRepositoryReviewState());
   projectDiagnosticsStates = signal<Record<string, ProjectDiagnosticsPanelState>>({});
 
@@ -90,10 +106,78 @@ export class RepoDetailComponent implements OnInit {
     this.destroyRef.onDestroy(() => this.abortRepositoryReviewStream());
   }
 
+  headerSubtitle = computed<string>(() => {
+    const d = this.detail();
+    if (!d) return '';
+    const parts: string[] = [];
+    if (d.project.sourceGroup) parts.push(d.project.sourceGroup);
+    if (d.project.language) parts.push(d.project.language);
+    if (d.project.framework) parts.push(d.project.framework);
+    if (d.project.indexedAt) parts.push(`indexed ${this.relTime(d.project.indexedAt)}`);
+    return parts.join(' · ');
+  });
+
+  totalNodes = computed<number>(() => {
+    const counts = this.detail()?.nodeCounts;
+    if (!counts) return 0;
+    return Object.values(counts).reduce((sum, count) => sum + count, 0);
+  });
+
+  projectCount = computed<number>(() => Object.keys(this.detail()?.dotnetProjects ?? {}).length);
+
+  healthTone = computed<'ok' | 'warn' | 'err'>(() => {
+    const score = this.health()?.repoHealth?.overallHealth;
+    if (score == null) return 'ok';
+    if (score >= 6) return 'ok';
+    if (score >= 4) return 'warn';
+    return 'err';
+  });
+
+  vitalityLabel = computed<string>(() => {
+    const status = (this.health()?.repositoryVitality?.firefightingStatus ?? '').toLowerCase();
+    if (status === 'firefighting' || status === 'high') return 'firefighting';
+    if (status === 'elevated' || status === 'aging') return 'aging';
+    return this.health()?.repositoryVitality ? 'healthy' : '—';
+  });
+
+  vitalityTone = computed<'ok' | 'warn' | 'err'>(() => {
+    const label = this.vitalityLabel();
+    if (label === 'firefighting') return 'err';
+    if (label === 'aging') return 'warn';
+    return 'ok';
+  });
+
+  commitsLast30d = computed<number>(() => {
+    const points = this.health()?.repositoryVitality?.monthlyCommits ?? [];
+    if (!points.length) return 0;
+    return points[points.length - 1]?.commitCount ?? 0;
+  });
+
+  commitSpark = computed<number[]>(() => {
+    const points = this.health()?.repositoryVitality?.monthlyCommits ?? [];
+    const counts = points.slice(-12).map(point => point.commitCount);
+    const max = Math.max(1, ...counts);
+    return counts.map(count => Math.max(2, Math.round((count / max) * 38)));
+  });
+
+  firefightingRatePct = computed<number | null>(() => {
+    const rate = this.health()?.repositoryVitality?.firefightingRate90d;
+    return rate == null ? null : Math.round(rate * 100);
+  });
+
+  reviewCount = computed<number>(() => this.repositoryReviewState().latestReview?.findings.length ?? 0);
+
   ngOnInit() {
     this.route.paramMap
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(params => this.loadProject(params.get('name') ?? ''));
+
+    this.route.queryParamMap
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(params => {
+        const t = params.get('tab');
+        this.tab.set(t === 'health' || t === 'reviews' ? t : 'overview');
+      });
   }
 
   private loadProject(n: string) {
@@ -106,6 +190,7 @@ export class RepoDetailComponent implements OnInit {
     this.security.set(null);
     this.batchStatus.set(null);
     this.loading.set(true);
+    this.reAnalyzeError.set(null);
     this.expandedAnalysis.set(null);
     this.expandedHealthAnalysis.set(null);
     this.abortRepositoryReviewStream();
@@ -118,13 +203,20 @@ export class RepoDetailComponent implements OnInit {
         this.detail.set(d);
         this.loading.set(false);
         this.initializeProjectDiagnosticsStates(n, d);
-        this.loadLatestRepositoryReview(n);
+        if (!this.isSchemaProject()) {
+          this.loadLatestRepositoryReview(n);
+        }
       },
       error: () => {
         if (requestId !== this.loadRequestId) return;
         this.loading.set(false);
       }
     });
+
+    if (n.startsWith('db:')) {
+      return;
+    }
+
     this.api.getProjectHealth(n).subscribe({
       next: h => {
         if (requestId !== this.loadRequestId) return;
@@ -153,6 +245,68 @@ export class RepoDetailComponent implements OnInit {
       },
       error: () => {}
     });
+  }
+
+  setTab(t: 'overview' | 'health' | 'reviews') {
+    this.tab.set(t);
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { tab: t === 'overview' ? null : t },
+      queryParamsHandling: 'merge',
+      replaceUrl: true
+    });
+  }
+
+  isSchemaProject(): boolean {
+    return this.name().startsWith('db:');
+  }
+
+  schemaServerName() {
+    return this.projectStringProperty('serverName') ?? this.detail()?.project.sourceGroup ?? 'Unknown server';
+  }
+
+  schemaDatabaseName() {
+    return this.projectStringProperty('databaseName') ?? this.name();
+  }
+
+  private projectStringProperty(key: string): string | null {
+    const value = this.detail()?.project.properties?.[key];
+    return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  dotnetSupportStatus(): DotnetSupportInfo | null {
+    return this.health()?.dotnetSupport ?? this.detail()?.dotnetSupport ?? null;
+  }
+
+  dotnetSupportLabel(status: string): string {
+    return this.supportStatusLabel(status).toLowerCase();
+  }
+
+  dotnetSupportColor(status: string): string {
+    return this.supportBadgeColor(status);
+  }
+
+  dotnetSupportBackground(status: string): string {
+    switch (status) {
+      case 'supported': return '#dcfce7';
+      case 'mixed': return '#fef3c7';
+      case 'out_of_support': return '#fee2e2';
+      case 'os_lifecycle': return '#e2e8f0';
+      case 'not_applicable': return '#dbeafe';
+      default: return '#f3f4f6';
+    }
+  }
+
+  private relTime(value: string): string {
+    const date = new Date(value);
+    const diffMs = Date.now() - date.getTime();
+    const days = Math.floor(diffMs / 86_400_000);
+    if (!Number.isFinite(days) || days < 0) return date.toLocaleDateString();
+    if (days === 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 30) return `${days}d ago`;
+    if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+    return `${Math.floor(days / 365)}y ago`;
   }
 
   private createInitialProjectDiagnosticsState(): ProjectDiagnosticsPanelState {
@@ -943,12 +1097,16 @@ export class RepoDetailComponent implements OnInit {
 
   reAnalyze() {
     this.reAnalyzing.set(true);
+    this.reAnalyzeError.set(null);
     this.api.reAnalyze(this.name()).subscribe({
       next: b => {
         this.batchStatus.set(b);
         this.reAnalyzing.set(false);
       },
-      error: () => this.reAnalyzing.set(false)
+      error: () => {
+        this.reAnalyzing.set(false);
+        this.reAnalyzeError.set('Unable to start analysis for this repository right now.');
+      }
     });
   }
 

@@ -24,11 +24,11 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
   selector: 'app-repo-graph',
   standalone: true,
   template: `
-    <div class="graph-wrapper" #wrapper>
+    <div class="graph-wrapper" #wrapper role="group" aria-label="Repository dependency graph">
       @if (loading()) {
         <div class="graph-loading">Loading graph…</div>
       }
-      <svg #svg></svg>
+      <svg #svg role="img" aria-label="Cross-repository dependency graph"></svg>
       <div class="graph-legend">
         <span class="legend-item"><span class="legend-dot foundational"></span> Foundational</span>
         <span class="legend-item"><span class="legend-dot regular"></span> Application</span>
@@ -41,9 +41,12 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
     :host { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .graph-wrapper {
       position: relative;
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 10px;
+      background:
+        radial-gradient(ellipse at center, color-mix(in oklab, var(--accent) 6%, transparent) 0%, transparent 60%),
+        radial-gradient(ellipse at bottom left, color-mix(in oklab, var(--sem-purple) 4%, transparent) 0%, transparent 50%),
+        var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
       overflow: hidden;
       flex: 1;
       min-height: 300px;
@@ -55,8 +58,8 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #9ca3af;
-      font-size: 14px;
+      color: var(--muted);
+      font-size: var(--fs-md);
       z-index: 1;
     }
     .graph-legend {
@@ -66,8 +69,8 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
       display: flex;
       align-items: center;
       gap: 14px;
-      font-size: 11px;
-      color: #6b7280;
+      font-size: var(--fs-xs);
+      color: var(--muted);
     }
     .legend-item {
       display: flex;
@@ -80,11 +83,11 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
       border-radius: 50%;
       display: inline-block;
     }
-    .legend-dot.foundational { background: #f59e0b; }
-    .legend-dot.regular { background: #3b82f6; }
+    .legend-dot.foundational { background: var(--sem-amber); }
+    .legend-dot.regular { background: var(--accent); }
     .legend-dot.isolated {
-      background: #e5e7eb;
-      border: 1px dashed #94a3b8;
+      background: var(--surface-3);
+      border: 1px dashed var(--faint);
       box-sizing: border-box;
     }
     .legend-hint { margin-left: auto; font-style: italic; }
@@ -175,7 +178,7 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
       svg.append('text')
         .attr('x', width / 2).attr('y', height / 2)
         .attr('text-anchor', 'middle')
-        .attr('fill', '#9ca3af')
+        .style('fill', 'var(--muted)')
         .text('No repositories found.');
       return;
     }
@@ -208,7 +211,7 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
 
     // Links
     const linkG = g.append('g')
-      .attr('stroke', '#d1d5db')
+      .style('stroke', 'var(--border-2)')
       .attr('stroke-opacity', 0.6)
       .selectAll('line')
       .data(links)
@@ -235,16 +238,18 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
 
     nodeG.append('circle')
       .attr('r', d => d.radius)
-      .attr('fill', d => d.edgeCount === 0 ? '#e5e7eb' : (d.isFoundational ? '#f59e0b' : '#3b82f6'))
-      .attr('stroke', d => d.edgeCount === 0 ? '#94a3b8' : '#fff')
+      .style('fill', d => d.edgeCount === 0 ? 'var(--surface-3)' : (d.isFoundational ? 'var(--sem-amber)' : 'var(--accent)'))
+      .attr('fill-opacity', d => d.edgeCount === 0 ? 0.62 : 0.78)
+      .style('stroke', d => d.edgeCount === 0 ? 'var(--faint)' : 'var(--surface)')
       .attr('stroke-width', 1.5);
 
     nodeG.append('text')
-      .text(d => d.id)
+      .text(d => this.displayRepoName(d.id))
       .attr('dy', d => d.radius + 12)
       .attr('text-anchor', 'middle')
       .attr('font-size', '10px')
-      .attr('fill', '#374151')
+      .style('font-family', 'var(--font-mono)')
+      .style('fill', 'var(--text-2)')
       .attr('pointer-events', 'none');
 
     // Tooltip on hover
@@ -276,5 +281,12 @@ export class RepoGraphComponent implements AfterViewInit, OnDestroy {
           .attr('y2', d => (d.target as SimNode).y!);
         nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
       });
+  }
+
+  private displayRepoName(name: string): string {
+    return name
+      .replace(/^TC\./, '')
+      .replace(/^CodeGraph\./, '')
+      .replace(/Api$/, '');
   }
 }

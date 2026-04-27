@@ -444,14 +444,44 @@ public class ProjectQueryService(
             .Select(edge => MapSchemaForeignKey(node, edge, nodesById))
             .ToList();
 
+        var primaryKeyColumns = columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToList();
+        var constraints = GetPropertyObjects(node.Properties, "constraints")
+            .Select(constraint => new SchemaConstraintResponse(
+                GetStringProperty(constraint, "name") ?? "constraint",
+                GetStringProperty(constraint, "constraintType") ??
+                    GetStringProperty(constraint, "constraint_type") ??
+                    "UNKNOWN",
+                GetStringListProperty(constraint, "columns"),
+                GetStringProperty(constraint, "referencedTable") ??
+                    GetStringProperty(constraint, "referenced_table"),
+                GetStringListPropertyOrNull(constraint, "referencedColumns") ??
+                    GetStringListPropertyOrNull(constraint, "referenced_columns"),
+                GetStringProperty(constraint, "checkClause") ??
+                    GetStringProperty(constraint, "check_clause")))
+            .Where(constraint => !constraint.ConstraintType.Equals("FOREIGN KEY", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(constraint => constraint.Name)
+            .ToList();
+
+        if (constraints.Count == 0 && primaryKeyColumns.Count > 0)
+        {
+            constraints.Add(new SchemaConstraintResponse(
+                "PRIMARY",
+                "PRIMARY KEY",
+                primaryKeyColumns,
+                null,
+                null,
+                null));
+        }
+
         return new SchemaObjectResponse(
             node.Id,
             node.Name,
             node.QualifiedName,
             node.Label.ToString(),
             GetStringProperty(node.Properties, "comment"),
-            columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToList(),
+            primaryKeyColumns,
             indexes,
+            constraints,
             foreignKeys,
             columns);
     }
@@ -624,6 +654,59 @@ public class ProjectQueryService(
             string s when bool.TryParse(s, out var b) => b,
             _ => null
         };
+    }
+
+    private static IReadOnlyList<string> GetStringListProperty(Dictionary<string, object>? properties, string key)
+    {
+        var value = GetPropertyValue(properties, key);
+        if (value is null)
+            return [];
+
+        if (value is string text)
+            return SplitCsv(text);
+
+        if (value is JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.String)
+                return SplitCsv(element.GetString());
+
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                return element.EnumerateArray()
+                    .Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() : item.ToString())
+                    .Where(item => !string.IsNullOrWhiteSpace(item))
+                    .Select(item => item!)
+                    .ToList();
+            }
+
+            return [];
+        }
+
+        if (value is IEnumerable<string> strings)
+            return strings.Where(item => !string.IsNullOrWhiteSpace(item)).ToList();
+
+        if (value is IEnumerable<object> objects)
+        {
+            return objects
+                .Select(item => item switch
+                {
+                    string textItem => textItem,
+                    JsonElement { ValueKind: JsonValueKind.String } elementItem => elementItem.GetString(),
+                    JsonElement elementItem => elementItem.ToString(),
+                    _ => item.ToString()
+                })
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!)
+                .ToList();
+        }
+
+        return [];
+    }
+
+    private static IReadOnlyList<string>? GetStringListPropertyOrNull(Dictionary<string, object>? properties, string key)
+    {
+        var value = GetPropertyValue(properties, key);
+        return value is null ? null : GetStringListProperty(properties, key);
     }
 
     private static object? GetPropertyValue(Dictionary<string, object>? properties, string key)

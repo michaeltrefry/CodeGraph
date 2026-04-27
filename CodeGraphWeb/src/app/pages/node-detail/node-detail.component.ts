@@ -1,6 +1,7 @@
 import { Component, inject, OnInit, signal, computed, AfterViewChecked, ElementRef, viewChild } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
-import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { DomSanitizer } from '@angular/platform-browser';
+import { SecurityContext } from '@angular/core';
 import { ApiService } from '../../core/api.service';
 import { ChatContextService } from '../../core/chat-context.service';
 import {
@@ -14,7 +15,7 @@ import hljs from 'highlight.js';
 
 interface SourceLine {
   num: number;
-  html: SafeHtml;
+  html: string;
   highlighted: boolean;
 }
 
@@ -40,6 +41,18 @@ export class NodeDetailComponent implements OnInit, AfterViewChecked {
   readonly labelIcons = LABEL_ICONS;
   readonly sourceViewer = viewChild<ElementRef<HTMLElement>>('sourceViewer');
 
+  sectionRoot() {
+    return this.detail()?.node.project.startsWith('db:') ? '/schemas' : '/repos';
+  }
+
+  sectionLabel() {
+    return this.detail()?.node.project.startsWith('db:') ? 'Schemas' : 'Repositories';
+  }
+
+  projectRoute(projectName: string) {
+    return [projectName.startsWith('db:') ? '/schemas' : '/repos', projectName];
+  }
+
   sourceLines = computed<SourceLine[]>(() => {
     const src = this.source();
     if (!src) return [];
@@ -54,21 +67,13 @@ export class NodeDetailComponent implements OnInit, AfterViewChecked {
         : lineNum >= src.startLine && lineNum <= src.endLine;
       return {
         num: lineNum,
-        html: this.sanitizer.bypassSecurityTrustHtml(html || '&nbsp;'),
+        html: this.sanitizer.sanitize(SecurityContext.HTML, html || '&nbsp;') ?? '',
         highlighted
       };
     });
   });
 
   highlightLine = signal<number | null>(null);
-
-  projectBaseRoute(project: string): string {
-    return project.startsWith('db:') ? '/schemas' : '/repos';
-  }
-
-  projectBaseLabel(project: string): string {
-    return project.startsWith('db:') ? 'Schemas' : 'Repositories';
-  }
 
   ngOnInit() {
     this.route.paramMap.subscribe(params => {
@@ -176,5 +181,29 @@ export class NodeDetailComponent implements OnInit, AfterViewChecked {
 
   edgePropEntries(props: Record<string, unknown> | null | undefined): [string, unknown][] {
     return props ? Object.entries(props) : [];
+  }
+
+  copied = signal(false);
+  private copyTimer: number | null = null;
+
+  copyFqn() {
+    const fqn = this.detail()?.node.qualifiedName ?? this.detail()?.node.name;
+    if (!fqn) return;
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(fqn).catch(() => undefined);
+    }
+    this.copied.set(true);
+    if (this.copyTimer !== null) window.clearTimeout(this.copyTimer);
+    this.copyTimer = window.setTimeout(() => {
+      this.copied.set(false);
+      this.copyTimer = null;
+    }, 1400);
+  }
+
+  sourceLocation(): string | null {
+    const n = this.detail()?.node;
+    if (!n?.filePath) return null;
+    if (n.startLine && n.endLine) return `${n.filePath}:${n.startLine}-${n.endLine}`;
+    return n.filePath;
   }
 }

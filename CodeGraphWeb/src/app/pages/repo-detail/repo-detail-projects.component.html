@@ -1,0 +1,136 @@
+@if (detail; as d) {
+  @if (projectEntries().length > 0) {
+    <section class="rdp-card">
+      <header class="rdp-header">
+        <h2 class="rdp-title">Projects</h2>
+        <span class="cg-chip cg-chip-mono">{{ projectEntries().length }}</span>
+      </header>
+
+      <div class="rdp-list">
+        @for (entry of projectEntries(); track entry.projectName) {
+          <div class="rdp-project">
+            <div class="rdp-project-head" (click)="toggleAnalysis(entry.projectName)">
+              @if (getDotnetProject(entry.projectName); as proj) {
+                <a class="cg-mono-link rdp-project-name"
+                   [routerLink]="projectNodesRoute(projectName)"
+                   [queryParams]="{ dotnetProject: proj.name }"
+                   (click)="$event.stopPropagation()">
+                  {{ entry.projectName }}
+                </a>
+                <span class="cg-chip cg-chip-mono">{{ proj.total }} nodes</span>
+              } @else {
+                <span class="cg-mono rdp-project-name">{{ entry.projectName }}</span>
+              }
+
+              @if (entry.analysis; as analysis) {
+                <span class="cg-chip cg-chip-mono"
+                      [style.background]="confidenceColors[analysis.confidence]"
+                      [style.color]="'#fff'"
+                      [style.border-color]="confidenceColors[analysis.confidence]">
+                  {{ analysis.confidence }}
+                </span>
+              }
+
+              <span class="rdp-caret">
+                {{ expandedAnalysis() === entry.projectName ? '▲' : '▼' }}
+              </span>
+            </div>
+
+            @if (expandedAnalysis() === entry.projectName) {
+              <div class="rdp-project-body">
+                @if (entry.analysis; as analysis) {
+                  <app-markdown class="rdp-markdown" [content]="analysis.summary" />
+                } @else {
+                  <p class="cg-muted cg-small">No stored project analysis yet.</p>
+                }
+
+                @if (getDotnetProject(entry.projectName); as proj) {
+                  <div class="rdp-label-row">
+                    @for (lbl of proj.labels; track lbl[0]) {
+                      <a [routerLink]="projectNodesRoute(projectName)"
+                         [queryParams]="{ dotnetProject: proj.name, label: lbl[0] }"
+                         class="rdp-label-chip">
+                        <span class="rdp-label-icon">{{ labelIcons[lbl[0]] || '•' }}</span>
+                        <span class="rdp-label-name">{{ lbl[0] }}</span>
+                        <span class="rdp-label-count cg-faint">{{ lbl[1] }}</span>
+                      </a>
+                    }
+                  </div>
+                }
+
+                @if (entry.analysis?.endpoints?.length) {
+                  <div class="rdp-section">
+                    <div class="rdp-section-label">Endpoints</div>
+                    <div class="rdp-table-wrap">
+                      <table class="cg-table rdp-table">
+                        <thead>
+                          <tr><th style="width:80px;">Method</th><th>Route</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                          @for (ep of entry.analysis!.endpoints; track ep.route) {
+                            <tr>
+                              <td>
+                                <span class="rdp-method" [attr.data-method]="ep.httpMethod.toLowerCase()">{{ ep.httpMethod }}</span>
+                              </td>
+                              <td class="cg-mono cg-small">{{ ep.route }}</td>
+                              <td class="cg-small">{{ ep.description }}</td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                }
+
+                @if (entry.analysis?.services?.length) {
+                  <div class="rdp-section">
+                    <div class="rdp-section-label">Services</div>
+                    <div class="rdp-table-wrap">
+                      <table class="cg-table rdp-table">
+                        <thead>
+                          <tr><th>Name</th><th>Interface</th><th>Lifetime</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                          @for (svc of entry.analysis!.services; track svc.name) {
+                            <tr>
+                              <td class="cg-mono cg-small">{{ svc.name }}</td>
+                              <td class="cg-mono cg-small">{{ svc.interfaceName || '—' }}</td>
+                              <td><span class="cg-chip cg-chip-mono">{{ svc.lifetime }}</span></td>
+                              <td class="cg-small">{{ svc.description }}</td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                }
+
+                @if (entry.analysis?.databaseTables?.length) {
+                  <div class="rdp-section">
+                    <div class="rdp-section-label">Database tables</div>
+                    <div class="rdp-chips">
+                      @for (table of entry.analysis!.databaseTables; track table) {
+                        <span class="cg-chip cg-chip-mono">{{ table }}</span>
+                      }
+                    </div>
+                  </div>
+                }
+
+                @if (entry.analysis?.externalDependencies?.length) {
+                  <div class="rdp-section">
+                    <div class="rdp-section-label">External dependencies</div>
+                    <div class="rdp-chips">
+                      @for (dependency of entry.analysis!.externalDependencies; track dependency) {
+                        <span class="cg-chip cg-chip-mono">{{ dependency }}</span>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    </section>
+  }
+}

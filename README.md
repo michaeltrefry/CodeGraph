@@ -288,9 +288,9 @@ Register the SPA client in `identity.trefry.net` with redirect URI `https://code
 GitHub Actions workflows live under `.github/workflows`:
 
 - `ci.yml` runs on pull requests and pushes to `main`/`codex/**`. It restores, builds, and tests the .NET solution; builds and tests the Angular app; runs the browser shell smoke; and validates Docker image builds for API, jobs, indexer, memory, metrics, and web.
-- `deploy.yml` runs on `main` and can be started manually. It publishes API, jobs, indexer, memory, metrics, and web images to GHCR, then deploys through SSH when the repository or environment variable `CODEGRAPH_DEPLOY_ENABLED=true`.
+- `deploy.yml` runs on `main` and can be started manually. It publishes API, jobs, indexer, memory, metrics, and web images to GHCR, then deploys through SSH when the production environment variable `CODEGRAPH_DEPLOY_ENABLED=true`.
 
-Deployment uses `docker-compose.yml` plus `deploy/docker-compose.production.yml` on the host. Required GitHub environment secrets are documented in [deploy/README.md](/Users/michael/Repos/CodeGraph/deploy/README.md).
+Deployment uses `docker-compose.yml` plus `deploy/docker-compose.production.yml` on the host. The deploy workflow generates the remote `.env` file from individual GitHub Actions production environment variables and secrets. Required settings are documented in [deploy/README.md](/Users/michael/Repos/CodeGraph/deploy/README.md).
 
 ## Event-Driven Pipeline
 

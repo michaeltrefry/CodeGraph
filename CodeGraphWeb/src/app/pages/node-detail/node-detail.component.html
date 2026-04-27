@@ -1,194 +1,227 @@
-<div class="page">
+<div class="cg-page nd-page">
   @if (loading()) {
-    <div class="loading">Loading…</div>
+    <div class="nd-state cg-muted">Loading...</div>
   }
 
   @if (detail(); as d) {
-    <!-- Breadcrumb -->
-    <div class="breadcrumb">
-      <a [routerLink]="projectBaseRoute(d.node.project)">{{ projectBaseLabel(d.node.project) }}</a>
+    <nav class="nd-breadcrumb" aria-label="Node location">
+      <a [routerLink]="sectionRoot()">{{ sectionLabel() }}</a>
       <span class="sep">/</span>
-      <a [routerLink]="[projectBaseRoute(d.node.project), d.node.project]">{{ d.node.project }}</a>
+      <a [routerLink]="projectRoute(d.node.project)">{{ d.node.project }}</a>
       <span class="sep">/</span>
-      <a [routerLink]="[projectBaseRoute(d.node.project), d.node.project, 'nodes']"
+      <a [routerLink]="[sectionRoot(), d.node.project, 'nodes']"
          [queryParams]="{ label: d.node.label }">
         {{ icon(d.node.label) }} {{ d.node.label }}s
       </a>
-      <span class="sep">/</span>
-      <span class="current">{{ d.node.name }}</span>
-    </div>
+    </nav>
 
-    <!-- Node header -->
-    <div class="node-header">
-      <div class="node-label-badge">
-        <span class="label-icon">{{ icon(d.node.label) }}</span>
-        <span class="label-text">{{ d.node.label }}</span>
-      </div>
-      <h1>
-        {{ d.node.name }}
-        @if (d.node.doNotTrust) {
-          <span class="do-not-trust-badge">untrusted</span>
+    <header class="nd-header">
+      <div class="nd-header-main">
+        <div class="nd-chip-row">
+          <span class="cg-chip cg-chip-accent">
+            <span class="nd-kind-icon">{{ icon(d.node.label) }}</span>
+            {{ d.node.label }}
+          </span>
+          @if (d.node.doNotTrust) {
+            <span class="cg-chip cg-chip-err cg-chip-dot">untrusted</span>
+          }
+          @if (d.node.analysisConfidence) {
+            <span class="cg-chip"
+                  [class.cg-chip-ok]="d.node.analysisConfidence === 'high'"
+                  [class.cg-chip-warn]="d.node.analysisConfidence === 'medium'"
+                  [class.cg-chip-err]="d.node.analysisConfidence === 'low'">
+              {{ d.node.analysisConfidence }} confidence
+            </span>
+          }
+        </div>
+
+        <h1 class="nd-title">{{ d.node.name }}</h1>
+
+        @if (d.node.qualifiedName && d.node.qualifiedName !== d.node.name) {
+          <div class="nd-fqn cg-mono cg-small cg-muted">{{ d.node.qualifiedName }}</div>
         }
-      </h1>
-      <div class="node-actions">
-        <button class="btn-trust-toggle"
-                [class.untrusted]="d.node.doNotTrust"
+
+        <div class="nd-subtitle cg-muted cg-small">
+          <a class="nd-subtitle-link" [routerLink]="projectRoute(d.node.project)">{{ d.node.project }}</a>
+          @if (sourceLocation(); as loc) {
+            <span class="sep">&middot;</span>
+            <span class="cg-mono">{{ loc }}</span>
+          }
+        </div>
+      </div>
+
+      <div class="nd-actions">
+        <button class="nd-btn" type="button" (click)="copyFqn()">
+          @if (copied()) {
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg>
+            Copied
+          } @else {
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="8" height="10" rx="1.5"/><rect x="3" y="5" width="8" height="10" rx="1.5"/></svg>
+            Copy path
+          }
+        </button>
+        <button class="nd-btn"
+                [class.danger]="!d.node.doNotTrust"
+                [class.primary]="d.node.doNotTrust"
                 (click)="toggleDoNotTrust()"
                 [disabled]="trustToggling()">
-          {{ d.node.doNotTrust ? 'Restore Trust' : 'Mark Untrusted' }}
+          {{ d.node.doNotTrust ? 'Restore trust' : 'Mark untrusted' }}
         </button>
       </div>
-      <div class="node-project">
-        in <a [routerLink]="[projectBaseRoute(d.node.project), d.node.project]">{{ d.node.project }}</a>
-      </div>
-    </div>
+    </header>
 
-    <!-- Core info -->
-    <div class="card">
-      <h2>Details</h2>
-      <table class="detail-table">
-        <tr>
-          <td>Qualified Name</td>
-          <td><code>{{ d.node.qualifiedName }}</code></td>
-        </tr>
+    <section class="nd-card">
+      <header class="nd-card-head">
+        <div class="nd-card-label">Details</div>
+      </header>
+      <dl class="nd-kv-list">
+        <div class="nd-kv">
+          <dt>Qualified name</dt>
+          <dd class="cg-mono cg-small">{{ d.node.qualifiedName }}</dd>
+        </div>
         @if (d.node.filePath) {
-          <tr>
-            <td>Source</td>
-            <td><code>{{ d.node.filePath }}:{{ d.node.startLine }}–{{ d.node.endLine }}</code></td>
-          </tr>
+          <div class="nd-kv">
+            <dt>Source</dt>
+            <dd class="cg-mono cg-small">{{ d.node.filePath }}:{{ d.node.startLine }}-{{ d.node.endLine }}</dd>
+          </div>
         }
         @if (d.node.description) {
-          <tr>
-            <td>Description</td>
-            <td>
-              {{ d.node.description }}
-              @if (d.node.analysisConfidence) {
-                <span class="confidence-badge confidence-{{ d.node.analysisConfidence }}">{{ d.node.analysisConfidence }}</span>
-              }
-            </td>
-          </tr>
+          <div class="nd-kv">
+            <dt>Description</dt>
+            <dd>{{ d.node.description }}</dd>
+          </div>
         }
         @for (entry of propertyEntries(); track entry[0]) {
-          <tr>
-            <td>{{ entry[0] }}</td>
-            <td><code>{{ entry[1] }}</code></td>
-          </tr>
+          <div class="nd-kv">
+            <dt>{{ entry[0] }}</dt>
+            <dd class="cg-mono cg-small">{{ entry[1] }}</dd>
+          </div>
         }
-      </table>
-    </div>
+      </dl>
+    </section>
 
-    <!-- Outbound edges -->
-    @if (d.outboundEdges.length > 0 || crossRepoOutbound().length > 0) {
-      <div class="card">
-        <h2>Outbound Edges ({{ d.outboundEdges.length + crossRepoOutbound().length }})</h2>
-
-        @for (group of outboundByType(); track group[0]) {
-          <div class="edge-group">
-            <div class="edge-type-header">{{ group[0] }} <span class="edge-count">({{ group[1].length }})</span></div>
-            @for (edge of group[1]; track edge.edgeId) {
-              <div class="edge-row">
-                <a [routerLink]="['/nodes', edge.neighborId]" class="edge-target">
-                  <span class="target-icon">{{ icon(edge.neighborLabel) }}</span>
-                  <span class="target-name">{{ edge.neighborName ?? '#' + edge.neighborId }}</span>
-                </a>
-                @if (edge.isCrossProject) {
-                  <span class="cross-project-badge">{{ edge.neighborProject }}</span>
-                }
-                @if (edge.neighborQualifiedName && edge.neighborQualifiedName !== edge.neighborName) {
-                  <span class="target-qn">{{ edge.neighborQualifiedName }}</span>
-                }
-                @for (prop of edgePropEntries(edge.properties); track prop[0]) {
-                  <span class="edge-prop">{{ prop[0] }}: {{ prop[1] }}</span>
+    @if (d.outboundEdges.length > 0 || crossRepoOutbound().length > 0 || d.inboundEdges.length > 0 || crossRepoInbound().length > 0) {
+      <div class="nd-edges-grid">
+        <section class="nd-card">
+          <header class="nd-card-head">
+            <div class="nd-card-label">
+              <span class="nd-edge-arrow">-&gt;</span>
+              Outbound
+            </div>
+            <span class="cg-chip cg-chip-mono">{{ d.outboundEdges.length + crossRepoOutbound().length }}</span>
+          </header>
+          @if (d.outboundEdges.length === 0 && crossRepoOutbound().length === 0) {
+            <div class="nd-empty cg-muted cg-small">No outbound edges.</div>
+          } @else {
+            @for (group of outboundByType(); track group[0]) {
+              <div class="nd-edge-group">
+                <div class="nd-edge-type">{{ group[0] }}<span class="cg-faint cg-xsmall">&middot; {{ group[1].length }}</span></div>
+                @for (edge of group[1]; track edge.edgeId) {
+                  <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborId]">
+                    <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
+                    <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborId }}</span>
+                    @if (edge.isCrossProject) {
+                      <span class="cg-chip cg-chip-accent">{{ edge.neighborProject }}</span>
+                    }
+                    @if (edge.neighborQualifiedName && edge.neighborQualifiedName !== edge.neighborName) {
+                      <span class="nd-edge-qn cg-faint cg-xsmall cg-mono">{{ edge.neighborQualifiedName }}</span>
+                    }
+                  </a>
                 }
               </div>
             }
-          </div>
-        }
-
-        @if (crossRepoOutbound().length > 0) {
-          <div class="edge-group">
-            <div class="edge-type-header cross-repo">↗ Cross-Repo Outbound</div>
-            @for (edge of crossRepoOutbound(); track edge.edgeId) {
-              <div class="edge-row">
-                <a [routerLink]="['/nodes', edge.neighborNodeId]" class="edge-target">
-                  <span class="target-icon">{{ icon(edge.neighborLabel) }}</span>
-                  <span class="target-name">{{ edge.neighborName ?? '#' + edge.neighborNodeId }}</span>
-                </a>
-                <span class="cross-project-badge">{{ edge.targetProject }}</span>
-                <span class="edge-type-tag">{{ edge.type }}</span>
+            @if (crossRepoOutbound().length > 0) {
+              <div class="nd-edge-group nd-edge-group-cross">
+                <div class="nd-edge-type">
+                  <span class="nd-cross-arrow">&nearr;</span>
+                  Cross-repo
+                  <span class="cg-faint cg-xsmall">&middot; {{ crossRepoOutbound().length }}</span>
+                </div>
+                @for (edge of crossRepoOutbound(); track edge.edgeId) {
+                  <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborNodeId]">
+                    <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
+                    <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborNodeId }}</span>
+                    <span class="cg-chip cg-chip-accent">{{ edge.targetProject }}</span>
+                    <span class="cg-chip cg-chip-mono">{{ edge.type }}</span>
+                  </a>
+                }
               </div>
             }
-          </div>
-        }
+          }
+        </section>
+
+        <section class="nd-card">
+          <header class="nd-card-head">
+            <div class="nd-card-label">
+              <span class="nd-edge-arrow">&lt;-</span>
+              Inbound
+            </div>
+            <span class="cg-chip cg-chip-mono">{{ d.inboundEdges.length + crossRepoInbound().length }}</span>
+          </header>
+          @if (d.inboundEdges.length === 0 && crossRepoInbound().length === 0) {
+            <div class="nd-empty cg-muted cg-small">No inbound edges.</div>
+          } @else {
+            @for (group of inboundByType(); track group[0]) {
+              <div class="nd-edge-group">
+                <div class="nd-edge-type">{{ group[0] }}<span class="cg-faint cg-xsmall">&middot; {{ group[1].length }}</span></div>
+                @for (edge of group[1]; track edge.edgeId) {
+                  <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborId]">
+                    <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
+                    <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborId }}</span>
+                    @if (edge.isCrossProject) {
+                      <span class="cg-chip cg-chip-accent">{{ edge.neighborProject }}</span>
+                    }
+                    @if (edge.neighborQualifiedName && edge.neighborQualifiedName !== edge.neighborName) {
+                      <span class="nd-edge-qn cg-faint cg-xsmall cg-mono">{{ edge.neighborQualifiedName }}</span>
+                    }
+                  </a>
+                }
+              </div>
+            }
+            @if (crossRepoInbound().length > 0) {
+              <div class="nd-edge-group nd-edge-group-cross">
+                <div class="nd-edge-type">
+                  <span class="nd-cross-arrow">&swarr;</span>
+                  Cross-repo
+                  <span class="cg-faint cg-xsmall">&middot; {{ crossRepoInbound().length }}</span>
+                </div>
+                @for (edge of crossRepoInbound(); track edge.edgeId) {
+                  <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborNodeId]">
+                    <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
+                    <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborNodeId }}</span>
+                    <span class="cg-chip cg-chip-accent">{{ edge.sourceProject }}</span>
+                    <span class="cg-chip cg-chip-mono">{{ edge.type }}</span>
+                  </a>
+                }
+              </div>
+            }
+          }
+        </section>
       </div>
+    } @else {
+      <div class="nd-empty-card cg-muted">No edges found for this node.</div>
     }
 
-    <!-- Inbound edges -->
-    @if (d.inboundEdges.length > 0 || crossRepoInbound().length > 0) {
-      <div class="card">
-        <h2>Inbound Edges ({{ d.inboundEdges.length + crossRepoInbound().length }})</h2>
-
-        @for (group of inboundByType(); track group[0]) {
-          <div class="edge-group">
-            <div class="edge-type-header">{{ group[0] }} <span class="edge-count">({{ group[1].length }})</span></div>
-            @for (edge of group[1]; track edge.edgeId) {
-              <div class="edge-row">
-                <a [routerLink]="['/nodes', edge.neighborId]" class="edge-target">
-                  <span class="target-icon">{{ icon(edge.neighborLabel) }}</span>
-                  <span class="target-name">{{ edge.neighborName ?? '#' + edge.neighborId }}</span>
-                </a>
-                @if (edge.isCrossProject) {
-                  <span class="cross-project-badge">{{ edge.neighborProject }}</span>
-                }
-                @if (edge.neighborQualifiedName && edge.neighborQualifiedName !== edge.neighborName) {
-                  <span class="target-qn">{{ edge.neighborQualifiedName }}</span>
-                }
-              </div>
-            }
-          </div>
-        }
-
-        @if (crossRepoInbound().length > 0) {
-          <div class="edge-group">
-            <div class="edge-type-header cross-repo">↙ Cross-Repo Inbound</div>
-            @for (edge of crossRepoInbound(); track edge.edgeId) {
-              <div class="edge-row">
-                <a [routerLink]="['/nodes', edge.neighborNodeId]" class="edge-target">
-                  <span class="target-icon">{{ icon(edge.neighborLabel) }}</span>
-                  <span class="target-name">{{ edge.neighborName ?? '#' + edge.neighborNodeId }}</span>
-                </a>
-                <span class="cross-project-badge">{{ edge.sourceProject }}</span>
-                <span class="edge-type-tag">{{ edge.type }}</span>
-              </div>
-            }
-          </div>
-        }
-      </div>
-    }
-
-    @if (d.outboundEdges.length === 0 && d.inboundEdges.length === 0 && d.crossRepoEdges.length === 0) {
-      <div class="card empty-msg">No edges found for this node.</div>
-    }
-
-    <!-- Source viewer -->
     @if (sourceLoading()) {
-      <div class="card"><div class="loading">Loading source…</div></div>
+      <section class="nd-card"><div class="nd-state cg-muted">Loading source...</div></section>
     }
     @if (source(); as src) {
-      <div class="card source-card">
-        <h2>Source</h2>
-        <div class="source-file-path"><code>{{ src.filePath }}</code></div>
-        <div class="source-viewer" #sourceViewer>
-          <table class="source-table">
+      <section class="nd-source-card">
+        <header class="nd-card-head">
+          <div class="nd-card-label">Source</div>
+          <span class="cg-mono cg-xsmall cg-muted">{{ src.filePath }}</span>
+        </header>
+        <div class="nd-source-viewer" #sourceViewer>
+          <table class="nd-source-table">
             @for (line of sourceLines(); track line.num) {
               <tr [class.line-highlight]="line.highlighted">
-                <td class="line-num">{{ line.num }}</td>
-                <td class="line-code"><pre [innerHTML]="line.html"></pre></td>
+                <td class="nd-line-num">{{ line.num }}</td>
+                <td class="nd-line-code"><pre [innerHTML]="line.html"></pre></td>
               </tr>
             }
           </table>
         </div>
-      </div>
+      </section>
     }
   }
 </div>

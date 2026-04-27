@@ -51,7 +51,7 @@ public class ProjectQueryServiceTests
     }
 
     [Fact]
-    public async Task GetSchemaCatalogAsync_MapsColumnsIndexesForeignKeysAndProcedures()
+    public async Task GetSchemaCatalogAsync_MapsColumnsIndexesConstraintsForeignKeysAndProcedures()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -96,6 +96,16 @@ public class ProjectQueryServiceTests
                         ["name"] = "CustomerId",
                         ["type"] = "INT",
                         ["nullable"] = false
+                    }
+                },
+                ["constraints"] = new[]
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["name"] = "CK_Orders_CustomerId",
+                        ["constraint_type"] = "CHECK",
+                        ["columns"] = new[] { "CustomerId" },
+                        ["check_clause"] = "CustomerId > 0"
                     }
                 }
             }
@@ -155,7 +165,10 @@ public class ProjectQueryServiceTests
         var orders = catalog.Tables.Single(table => table.Name == "Orders");
         orders.Columns.Single().Name.ShouldBe("CustomerId");
         orders.Indexes.Single().Name.ShouldBe("IX_Orders_CustomerId");
+        orders.Constraints.Single().Name.ShouldBe("CK_Orders_CustomerId");
+        orders.Constraints.Single().Columns.ShouldBe(["CustomerId"]);
         orders.ForeignKeys.Single().ReferencedTable.ShouldBe("Customers");
+        catalog.Tables.Single(table => table.Name == "Customers").Constraints.Single().ConstraintType.ShouldBe("PRIMARY KEY");
         catalog.Procedures.Single().Parameters.Single().Name.ShouldBe("@CustomerId");
     }
 

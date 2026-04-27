@@ -1,3 +1,13 @@
 .schema-detail-page {
   gap: 16px;
 }
+
+.schema-detail-breadcrumb {
+  min-width: 0;
+
+  .current {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
