@@ -285,6 +285,91 @@ export interface AdminReportFiltersResponse {
   tools: string[];
 }
 
+export interface LlmProviderResponse {
+  provider: string;
+  hasToken: boolean;
+  endpointUrl?: string;
+  apiVersion?: string;
+  models: string[];
+  updatedBy?: string;
+  updatedAtUtc?: string;
+}
+
+export interface LlmProviderModelResponse {
+  provider: string;
+  model: string;
+}
+
+export type LlmProviderTokenActionKind = 'Preserve' | 'Replace' | 'Clear';
+
+export interface LlmProviderWriteRequest {
+  endpointUrl?: string | null;
+  apiVersion?: string | null;
+  models?: string[] | null;
+  token?: {
+    action: LlmProviderTokenActionKind;
+    value?: string | null;
+  } | null;
+}
+
+export interface LlmAnalysisResponse {
+  defaultProvider: string;
+  defaultModel: string;
+  maxTokensPerAnalysis: number;
+  maxTokensPerSynthesis: number;
+  maxFileSizeKb: number;
+  maxParallelAnalyses: number;
+  maxSourceChars: number;
+  updatedBy?: string;
+  updatedAtUtc?: string;
+}
+
+export interface LlmAnalysisWriteRequest {
+  defaultProvider: string;
+  defaultModel: string;
+  maxTokensPerAnalysis: number;
+  maxTokensPerSynthesis: number;
+  maxFileSizeKb: number;
+  maxParallelAnalyses: number;
+  maxSourceChars: number;
+}
+
+export interface LlmReviewResponse {
+  defaultProvider: string;
+  defaultModel: string;
+  maxFilesToInspect: number;
+  maxSourceCharsPerFile: number;
+  maxInspectionPasses: number;
+  maxFindings: number;
+  updatedBy?: string;
+  updatedAtUtc?: string;
+}
+
+export interface LlmReviewWriteRequest {
+  defaultProvider: string;
+  defaultModel: string;
+  maxFilesToInspect: number;
+  maxSourceCharsPerFile: number;
+  maxInspectionPasses: number;
+  maxFindings: number;
+}
+
+export interface LlmAssistantResponse {
+  defaultProvider: string;
+  defaultModel: string;
+  maxTokens: number;
+  maxTurns: number;
+  updatedBy?: string;
+  updatedAtUtc?: string;
+}
+
+export interface LlmAssistantWriteRequest {
+  defaultProvider: string;
+  defaultModel: string;
+  maxTokens: number;
+  maxTurns: number;
+}
+
 export interface AssistantRunResponse {
   id: number;
   chatId: string;

@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
+using CodeGraph.Services.Configuration;
 
 namespace CodeGraph.Services.Analyzers;
 
@@ -17,6 +18,7 @@ public partial class BatchAnalysisService
         IReadOnlyList<EdgeEntity> allRepoEdges,
         Dictionary<long, NodeEntity> nodeById,
         IAnalysisModelProvider provider,
+        LlmAnalysisRuntimeConfig analysisSettings,
         string? repoPath = null,
         bool includeAllSource = false)
     {
@@ -64,7 +66,7 @@ public partial class BatchAnalysisService
 
         var repo = await store.GetRepositoryByName(repoName);
         var promptStyle = DeterminePromptStyle(projectNodes, repo?.Language);
-        var promptBudget = GetPromptBudget(provider, promptStyle);
+        var promptBudget = GetPromptBudget(provider, promptStyle, analysisSettings);
         var describableNodes = SelectDescribableNodesForPrompt(projectNodes, outboundBySource, promptStyle, promptBudget);
 
         var sb = new StringBuilder();
@@ -610,21 +612,24 @@ public partial class BatchAnalysisService
             .ToList();
     }
 
-    private PromptBudget GetPromptBudget(IAnalysisModelProvider provider, PromptStyle promptStyle)
+    private PromptBudget GetPromptBudget(
+        IAnalysisModelProvider provider,
+        PromptStyle promptStyle,
+        LlmAnalysisRuntimeConfig analysisSettings)
     {
-        if (!string.Equals(provider.ProviderName, "local", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(provider.ProviderName, "lmstudio", StringComparison.OrdinalIgnoreCase))
         {
-            return new PromptBudget(options.MaxSourceChars, MaxPromptNodes: null, MaxRelationshipTargetsPerType: null);
+            return new PromptBudget(analysisSettings.MaxSourceChars, MaxPromptNodes: null, MaxRelationshipTargetsPerType: null);
         }
 
-        var localMaxNodes = Math.Max(1, options.Local.MaxPromptNodes);
+        var localMaxNodes = Math.Max(1, options.LmStudio.MaxPromptNodes);
         if (promptStyle == PromptStyle.CStyle)
             localMaxNodes = Math.Max(localMaxNodes, MaxCStyleFunctionsInPrompt + MaxCStyleStructsInPrompt);
 
         return new PromptBudget(
-            MaxSourceChars: Math.Max(1, options.Local.MaxSourceChars),
+            MaxSourceChars: Math.Max(1, options.LmStudio.MaxSourceChars),
             MaxPromptNodes: localMaxNodes,
-            MaxRelationshipTargetsPerType: Math.Max(1, options.Local.MaxRelationshipTargetsPerType));
+            MaxRelationshipTargetsPerType: Math.Max(1, options.LmStudio.MaxRelationshipTargetsPerType));
     }
 
     private static List<string> LimitRelationshipTargets(List<string> items, int? maxItems)

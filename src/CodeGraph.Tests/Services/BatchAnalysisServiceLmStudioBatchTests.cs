@@ -14,10 +14,10 @@ using CodeGraph.Tests.Extractors;
 
 namespace CodeGraph.Tests.Services;
 
-public class BatchAnalysisServiceLocalBatchTests
+public class BatchAnalysisServiceLmStudioBatchTests
 {
     [Fact]
-    public async Task SubmitAndProcessBatch_UsesStoredRequestPayloadJson_ForLocalProvider()
+    public async Task SubmitAndProcessBatch_UsesStoredRequestPayloadJson_ForLmStudioProvider()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -36,14 +36,14 @@ public class BatchAnalysisServiceLocalBatchTests
             FilePath = "OrderService.cs"
         });
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(new SequencedHandler(
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
                         $$"""
                         {
-                          "model": "local-model",
+                          "model": "lmstudio-model",
                           "choices": [
                             {
                               "message": {
@@ -59,16 +59,16 @@ public class BatchAnalysisServiceLocalBatchTests
             store,
             Options.Create(new AnalysisOptions
             {
-                DefaultProvider = "local",
-                Local = new LocalAnalysisProviderOptions
+                DefaultProvider = "lmstudio",
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model"
+                    Model = "lmstudio-model"
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
-        var registry = new AnalysisProviderRegistry([provider], Options.Create(new AnalysisOptions { DefaultProvider = "local" }));
+        var registry = new AnalysisProviderRegistry([provider], Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" }));
         var messageBus = new RecordingMessageBus();
         var service = new BatchAnalysisService(
             store,
@@ -77,11 +77,11 @@ public class BatchAnalysisServiceLocalBatchTests
             new NoOpExclusionService(),
             Options.Create(new AnalysisOptions
             {
-                DefaultProvider = "local",
-                Local = new LocalAnalysisProviderOptions
+                DefaultProvider = "lmstudio",
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model"
+                    Model = "lmstudio-model"
                 }
             }),
             new LocalFileSystem(),

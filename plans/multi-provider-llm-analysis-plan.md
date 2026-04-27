@@ -6,10 +6,9 @@ Last updated: 2026-04-06
 
 Refactor CodeGraph's analysis layer so repository analysis can run against any supported LLM provider, including:
 
-- Anthropic / Claude
-- OpenAI / Codex-family models
-- Google / Gemini
-- local models exposed through an OpenAI-compatible or custom endpoint
+- `anthropic` / Claude
+- `openai` / Codex-family models
+- `lmstudio` / LM Studio local-dev models exposed through an OpenAI-compatible endpoint
 
 The design should preserve the current analysis outputs:
 
@@ -25,7 +24,7 @@ while removing provider lock-in and removing hardcoded business-domain assumptio
 
 This plan is implemented in the current codebase.
 
-Repository analysis now supports Anthropic, OpenAI, Gemini, and local OpenAI-compatible backends through a shared provider abstraction, and the batch-shaped workflow is the long-term orchestration front door with direct replay as an internal fallback for non-batch providers.
+Repository analysis now supports Anthropic, OpenAI, and LM Studio/OpenAI-compatible local-dev backends through a shared provider abstraction, and the batch-shaped workflow is the long-term orchestration front door with direct replay as an internal fallback for non-batch providers.
 
 The historical sections below intentionally capture the pre-refactor starting state that this plan replaced.
 
@@ -108,7 +107,7 @@ Providers should decide:
 
 ### 2. Separate prompts from transports
 
-Prompt-building should be independent of Anthropic, OpenAI, Gemini, or local runtime formats.
+Prompt-building should be independent of Anthropic, OpenAI, or LM Studio runtime formats.
 
 ### 3. Model capabilities must be explicit
 
@@ -215,7 +214,7 @@ This layer owns:
 - schema description
 - reusable wording across providers
 
-This layer must not know anything about Anthropic message objects, OpenAI chat payloads, Gemini payloads, or local HTTP clients.
+This layer must not know anything about Anthropic message objects, OpenAI chat payloads, or LM Studio HTTP clients.
 
 ## Layer 3: Provider Capability Model
 
@@ -267,8 +266,7 @@ Concrete implementations should be small and specific:
 
 - `AnthropicAnalysisProvider`
 - `OpenAiAnalysisProvider`
-- `GeminiAnalysisProvider`
-- `LocalAnalysisProvider`
+- `LmStudioAnalysisProvider`
 
 These own:
 
@@ -344,8 +342,7 @@ public class AnalysisOptions
     public string AutoCommitMessage { get; set; } = "docs(codegraph): update CODEGRAPH.md";
     public AnthropicProviderOptions Anthropic { get; set; } = new();
     public OpenAiProviderOptions OpenAi { get; set; } = new();
-    public GeminiProviderOptions Gemini { get; set; } = new();
-    public LocalProviderOptions Local { get; set; } = new();
+    public LmStudioProviderOptions LmStudio { get; set; } = new();
 }
 ```
 
@@ -353,7 +350,7 @@ Notes:
 
 - keep generic knobs at the top level
 - move provider-specific endpoints, API keys, and versions under provider sections
-- allow local models to use either OpenAI-compatible endpoints or custom adapters
+- allow LM Studio models to use either OpenAI-compatible endpoints or custom adapters
 
 ## Prompt Policy
 
@@ -481,9 +478,9 @@ Status:
 - Completed on 2026-04-06 for the repository-analysis path
 - Direct analyzer and batch analyzer now depend on the provider abstraction
 - Current config remains backward-compatible while exposing a provider-oriented shape
-- Anthropic, OpenAI, Gemini, and local OpenAI-compatible providers are all implemented on the shared seam
+- Anthropic, OpenAI, and LM Studio/OpenAI-compatible providers are all implemented on the shared seam
 - Batch result correlation now supports ordered provider outputs by carrying request order through the shared seam
-- Provider-specific default models now exist for OpenAI, Gemini, and local backends
+- Provider-specific default models now exist for OpenAI and LM Studio backends
 
 ### Phase 3: Orchestration unification
 
@@ -503,8 +500,7 @@ Status:
 ### Phase 4: Additional providers
 
 - add `OpenAiAnalysisProvider`
-- add `GeminiAnalysisProvider`
-- add `LocalAnalysisProvider`
+- add `LmStudioAnalysisProvider`
 
 Outcome:
 
@@ -512,8 +508,8 @@ Outcome:
 
 Status:
 
-- Completed on 2026-04-06 with `OpenAiAnalysisProvider`, `GeminiAnalysisProvider`, and `LocalAnalysisProvider`
-- Non-batch local providers now run through batch-shaped orchestration via direct request replay
+- Completed on 2026-04-06 with `OpenAiAnalysisProvider` and `LmStudioAnalysisProvider`
+- Non-batch LM Studio (local-dev) providers now run through batch-shaped orchestration via direct request replay
 
 ### Phase 5: Provider selection and policy
 
@@ -579,12 +575,9 @@ src/CodeGraph.Services/Analyzers/
     OpenAi/
       OpenAiAnalysisProvider.cs
       OpenAiProviderOptions.cs
-    Gemini/
-      GeminiAnalysisProvider.cs
-      GeminiProviderOptions.cs
-    Local/
-      LocalAnalysisProvider.cs
-      LocalProviderOptions.cs
+    LmStudio/
+      LmStudioAnalysisProvider.cs
+      LmStudioProviderOptions.cs
 ```
 
 ## Recommended Execution Order
@@ -593,7 +586,7 @@ src/CodeGraph.Services/Analyzers/
 2. Introduce provider-neutral prompt builders
 3. Add provider abstraction with Anthropic as the first concrete implementation
 4. Rewire batch analysis to use the provider abstraction
-5. Add OpenAI, Gemini, and local providers
+5. Add OpenAI and LM Studio providers
 
 ## Success Criteria
 
@@ -619,4 +612,4 @@ The first move is:
 - separate orchestration from provider calls
 - make Anthropic one provider instead of the architecture itself
 
-Once that is done, supporting Claude, Codex/OpenAI, Gemini, and local models becomes incremental engineering instead of a rewrite.
+Once that is done, supporting Claude, Codex/OpenAI, and LM Studio models becomes incremental engineering instead of a rewrite.

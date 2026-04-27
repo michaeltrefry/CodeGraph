@@ -14,7 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace CodeGraph.Tests.Services;
 
-public class LocalAnalysisProviderTests
+public class LmStudioAnalysisProviderTests
 {
     [Fact]
     public void NormalizeBaseUrl_RewritesLocalhost_WhenRunningInContainer()
@@ -24,7 +24,7 @@ public class LocalAnalysisProviderTests
 
         try
         {
-            var normalized = LocalAnalysisProvider.NormalizeBaseUrl("http://localhost:1234/v1");
+            var normalized = LmStudioAnalysisProvider.NormalizeBaseUrl("http://localhost:1234/v1");
 
             normalized.ShouldBe("http://host.docker.internal:1234/v1");
         }
@@ -42,7 +42,7 @@ public class LocalAnalysisProviderTests
 
         try
         {
-            var normalized = LocalAnalysisProvider.NormalizeBaseUrl("http://localhost:1234/v1");
+            var normalized = LmStudioAnalysisProvider.NormalizeBaseUrl("http://localhost:1234/v1");
 
             normalized.ShouldBe("http://localhost:1234/v1");
         }
@@ -53,20 +53,20 @@ public class LocalAnalysisProviderTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_ThrowsHelpfulError_WhenLocalModelIsMissing()
+    public async Task ExecuteAsync_ThrowsHelpfulError_WhenLmStudioModelIsMissing()
     {
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
                     Model = ""
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var act = () => provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -74,13 +74,13 @@ public class LocalAnalysisProviderTests
             CancellationToken.None);
 
         var ex = await Should.ThrowAsync<InvalidOperationException>(act);
-        ex.Message.ShouldContain("CodeGraph:AnalysisOptions:Local:Model");
+        ex.Message.ShouldContain("CodeGraph:AnalysisOptions:LmStudio:Model");
     }
 
     [Fact]
     public void SerializeRequestBodyForTests_OmitsNullResponseFormat()
     {
-        var json = LocalAnalysisProvider.SerializeRequestBodyForTests(
+        var json = LmStudioAnalysisProvider.SerializeRequestBodyForTests(
             "google/gemma-4-26b-a4b",
             256,
             false,
@@ -93,7 +93,7 @@ public class LocalAnalysisProviderTests
     [Fact]
     public void SerializeRequestBodyForTests_IncludesResponseFormat_WhenEnabled()
     {
-        var json = LocalAnalysisProvider.SerializeRequestBodyForTests(
+        var json = LmStudioAnalysisProvider.SerializeRequestBodyForTests(
             "google/gemma-4-26b-a4b",
             256,
             true,
@@ -103,7 +103,7 @@ public class LocalAnalysisProviderTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_RetriesWithoutJsonObjectResponseFormat_WhenLocalServerRejectsStructuredOutput()
+    public async Task ExecuteAsync_RetriesWithoutJsonObjectResponseFormat_WhenLmStudioServerRejectsStructuredOutput()
     {
         var handler = new SequencedHandler(
             new HttpResponseMessage(HttpStatusCode.BadRequest)
@@ -115,7 +115,7 @@ public class LocalAnalysisProviderTests
                 Content = new StringContent(
                     """
                     {
-                      "model": "local-model",
+                      "model": "lmstudio-model",
                       "choices": [
                         {
                           "message": {
@@ -129,19 +129,19 @@ public class LocalAnalysisProviderTests
                     "application/json")
             });
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(handler)),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model",
+                    Model = "lmstudio-model",
                     UseJsonObjectResponseFormat = true
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var response = await provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -172,19 +172,19 @@ public class LocalAnalysisProviderTests
                     "application/json")
             });
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(handler)),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model",
+                    Model = "lmstudio-model",
                     UseJsonObjectResponseFormat = false
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var response = await provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -192,7 +192,7 @@ public class LocalAnalysisProviderTests
             CancellationToken.None);
 
         response.Text.ShouldContain("\"projectSummary\":\"Recovered\"");
-        response.ModelUsed.ShouldBe("local-model");
+        response.ModelUsed.ShouldBe("lmstudio-model");
         handler.RequestBodies.Count.ShouldBe(1);
     }
 
@@ -205,7 +205,7 @@ public class LocalAnalysisProviderTests
                 Content = new StringContent(
                     """
                     {
-                      "model": "local-model",
+                      "model": "lmstudio-model",
                       "choices": [
                         {
                           "message": {
@@ -219,19 +219,19 @@ public class LocalAnalysisProviderTests
                     "application/json")
             }));
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(client),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model",
+                    Model = "lmstudio-model",
                     TimeoutSeconds = 300
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         await provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -239,6 +239,61 @@ public class LocalAnalysisProviderTests
             CancellationToken.None);
 
         client.Timeout.ShouldBe(TimeSpan.FromSeconds(300));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UsesDbBackedProviderConfig_WhenResolverSuppliesOverride()
+    {
+        var handler = new SequencedHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {
+                  "model": "db-model",
+                  "choices": [
+                    {
+                      "message": {
+                        "content": "{\"projectSummary\":\"ok\"}"
+                      }
+                    }
+                  ]
+                }
+                """,
+                Encoding.UTF8,
+                "application/json")
+        });
+        var provider = new LmStudioAnalysisProvider(
+            new StubHttpClientFactory(new HttpClient(handler)),
+            new InMemoryGraphStore(),
+            Options.Create(new AnalysisOptions
+            {
+                LmStudio = new LmStudioAnalysisProviderOptions
+                {
+                    ApiKey = "fallback-token",
+                    BaseUrl = "http://fallback.example/v1",
+                    Model = "fallback-model"
+                }
+            }),
+            NullLogger<LmStudioAnalysisProvider>.Instance,
+            providerConfigResolver: new StaticProviderConfigResolver(new LlmProviderRuntimeConfig(
+                "lmstudio",
+                ApiKey: "db-token",
+                EndpointUrl: "http://db.example/v1",
+                ApiVersion: null,
+                Model: "db-model",
+                Models: ["db-model"],
+                HasDbConfig: true,
+                HasDbToken: true)));
+
+        await provider.ExecuteAsync(
+            new AnalysisPrompt("system", "user"),
+            new AnalysisRequestOptions(),
+            CancellationToken.None);
+
+        handler.RequestUris.Single().ShouldBe("http://db.example/v1/chat/completions");
+        handler.AuthorizationHeaders.Single().ShouldBe("Bearer db-token");
+        using var body = JsonDocument.Parse(handler.RequestBodies.Single());
+        body.RootElement.GetProperty("model").GetString().ShouldBe("db-model");
     }
 
     [Fact]
@@ -250,7 +305,7 @@ public class LocalAnalysisProviderTests
                 Content = new StringContent(
                     """
                     {
-                      "model": "local-model",
+                      "model": "lmstudio-model",
                       "choices": [
                         {
                           "text": "{\"projectSummary\":\"ok\",\"confidence\":\"high\",\"nodes\":[]}"
@@ -262,18 +317,18 @@ public class LocalAnalysisProviderTests
                     "application/json")
             }));
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(client),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model"
+                    Model = "lmstudio-model"
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var response = await provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -292,7 +347,7 @@ public class LocalAnalysisProviderTests
                 Content = new StringContent(
                     """
                     {
-                      "model": "local-model",
+                      "model": "lmstudio-model",
                       "choices": [
                         {
                           "message": {
@@ -308,18 +363,18 @@ public class LocalAnalysisProviderTests
                     "application/json")
             }));
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(client),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model"
+                    Model = "lmstudio-model"
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var response = await provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -332,19 +387,19 @@ public class LocalAnalysisProviderTests
     [Fact]
     public async Task ExecuteAsync_WrapsTransientTimeouts_AsRetryableAnalysisException()
     {
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(new ThrowingHandler(new TaskCanceledException("timed out")))),
             new InMemoryGraphStore(),
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model",
+                    Model = "lmstudio-model",
                     TimeoutSeconds = 300
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var act = () => provider.ExecuteAsync(
             new AnalysisPrompt("system", "user"),
@@ -362,7 +417,7 @@ public class LocalAnalysisProviderTests
         {
             Repo = "demo-repo",
             ProviderBatchId = "local_batch_1",
-            ProviderName = "local",
+            ProviderName = "lmstudio",
             ExecutionMode = "native_batch",
             Status = "submitted",
             RequestCount = 1,
@@ -386,14 +441,14 @@ public class LocalAnalysisProviderTests
             }
         ]);
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(new SequencedHandler(
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
                         """
                         {
-                          "model": "local-model",
+                          "model": "lmstudio-model",
                           "choices": [
                             {
                               "message": {
@@ -409,13 +464,13 @@ public class LocalAnalysisProviderTests
             store,
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model"
+                    Model = "lmstudio-model"
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
         for (var attempt = 0;
@@ -447,7 +502,7 @@ public class LocalAnalysisProviderTests
         storedRequest.Status.ShouldBe("succeeded");
         storedRequest.ResponseText.ShouldNotBeNull();
         storedRequest.ResponseText!.ShouldContain("\"projectSummary\":\"Firmware\"");
-        storedRequest.ModelUsed.ShouldBe("local-model");
+        storedRequest.ModelUsed.ShouldBe("lmstudio-model");
     }
 
     [Fact]
@@ -458,7 +513,7 @@ public class LocalAnalysisProviderTests
         {
             Repo = "demo-repo",
             ProviderBatchId = "local_batch_retry",
-            ProviderName = "local",
+            ProviderName = "lmstudio",
             ExecutionMode = "native_batch",
             Status = "submitted",
             RequestCount = 1,
@@ -482,19 +537,19 @@ public class LocalAnalysisProviderTests
             }
         ]);
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(new ThrowingHandler(new TaskCanceledException("timed out")))),
             store,
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model",
+                    Model = "lmstudio-model",
                     DirectFallbackMaxAttempts = 3
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance);
+            NullLogger<LmStudioAnalysisProvider>.Instance);
 
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
         firstStatus.IsCompleted.ShouldBeFalse();
@@ -516,22 +571,22 @@ public class LocalAnalysisProviderTests
         const string providerBatchId = "local_batch_scoped";
         var rootStore = new InMemoryGraphStore();
         var scopedStore = new InMemoryGraphStore();
-        var rootBatchId = await SeedPendingLocalBatchAsync(rootStore, providerBatchId, "req_root");
-        var scopedBatchId = await SeedPendingLocalBatchAsync(scopedStore, providerBatchId, "req_scoped");
+        var rootBatchId = await SeedPendingLmStudioBatchAsync(rootStore, providerBatchId, "req_root");
+        var scopedBatchId = await SeedPendingLmStudioBatchAsync(scopedStore, providerBatchId, "req_scoped");
 
-        var provider = new LocalAnalysisProvider(
+        var provider = new LmStudioAnalysisProvider(
             new StubHttpClientFactory(new HttpClient(new ThrowingHandler(new TaskCanceledException("timed out")))),
             rootStore,
             Options.Create(new AnalysisOptions
             {
-                Local = new LocalAnalysisProviderOptions
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     BaseUrl = "http://localhost:1234/v1",
-                    Model = "local-model",
+                    Model = "lmstudio-model",
                     DirectFallbackMaxAttempts = 3
                 }
             }),
-            NullLogger<LocalAnalysisProvider>.Instance,
+            NullLogger<LmStudioAnalysisProvider>.Instance,
             new SingleStoreScopeFactory(scopedStore));
 
         await provider.GetBatchStatusAsync(providerBatchId, CancellationToken.None);
@@ -548,13 +603,13 @@ public class LocalAnalysisProviderTests
         rootRequest.AttemptCount.ShouldBe(0);
     }
 
-    private static async Task<long> SeedPendingLocalBatchAsync(InMemoryGraphStore store, string providerBatchId, string customId)
+    private static async Task<long> SeedPendingLmStudioBatchAsync(InMemoryGraphStore store, string providerBatchId, string customId)
     {
         var batchId = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
         {
             Repo = "demo-repo",
             ProviderBatchId = providerBatchId,
-            ProviderName = "local",
+            ProviderName = "lmstudio",
             ExecutionMode = "native_batch",
             Status = "submitted",
             RequestCount = 1,
@@ -593,15 +648,25 @@ public class LocalAnalysisProviderTests
         private readonly Queue<HttpResponseMessage> _responses = new(responses);
 
         public List<string> RequestBodies { get; } = [];
+        public List<string> RequestUris { get; } = [];
+        public List<string?> AuthorizationHeaders { get; } = [];
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            RequestUris.Add(request.RequestUri?.ToString() ?? "");
+            AuthorizationHeaders.Add(request.Headers.Authorization?.ToString());
             RequestBodies.Add(request.Content is null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken));
 
             return _responses.Dequeue();
         }
+    }
+
+    private sealed class StaticProviderConfigResolver(LlmProviderRuntimeConfig config) : IDbBackedLlmProviderConfigResolver
+    {
+        public Task<LlmProviderRuntimeConfig> GetProviderAsync(string providerKey, CancellationToken ct = default) =>
+            Task.FromResult(config);
     }
 
     private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler

@@ -4,41 +4,47 @@ using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services.Assistant;
 
-public class AssistantConfigurationService(IOptions<AnalysisOptions> optionsAccessor) : IAssistantConfigurationService
+public class AssistantConfigurationService(
+    IOptions<AnalysisOptions> optionsAccessor,
+    IDbBackedAssistantSettingsResolver? assistantSettingsResolver = null,
+    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null) : IAssistantConfigurationService
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
 
-    public Task<AssistantConfigurationResponse> GetConfigurationAsync(CancellationToken ct = default)
+    public async Task<AssistantConfigurationResponse> GetConfigurationAsync(CancellationToken ct = default)
     {
-        var providers = BuildProviders();
-        var defaultProvider = ResolveName(options.Assistant.Provider, options.DefaultProvider, "anthropic");
+        var assistantConfig = await ResolveAssistantConfigAsync(ct);
+        var providers = await BuildProvidersAsync(assistantConfig, ct);
+        var defaultProvider = ResolveName(assistantConfig.DefaultProvider, options.DefaultProvider, "anthropic");
         var defaultModel = providers
             .FirstOrDefault(provider => string.Equals(provider.Name, defaultProvider, StringComparison.OrdinalIgnoreCase))
             ?.DefaultModel
-            ?? ResolveAssistantModel(defaultProvider);
+            ?? assistantConfig.DefaultModel;
 
-        return Task.FromResult(new AssistantConfigurationResponse(
+        return new AssistantConfigurationResponse(
             defaultProvider,
             defaultModel,
             providers,
             new IndexingConfigurationResponse(
                 ResolveName(options.DefaultProvider, "anthropic"),
-                FirstNonEmpty(options.Model, ResolveIndexingModel()))));
+                FirstNonEmpty(options.Model, ResolveIndexingModel())));
     }
 
-    private IReadOnlyList<AssistantProviderOptionResponse> BuildProviders()
+    private async Task<IReadOnlyList<AssistantProviderOptionResponse>> BuildProvidersAsync(
+        LlmAssistantRuntimeConfig assistantConfig,
+        CancellationToken ct)
     {
-        var configuredDefault = ResolveName(options.Assistant.Provider, options.DefaultProvider, "anthropic");
+        var configuredDefault = ResolveName(assistantConfig.DefaultProvider, options.DefaultProvider, "anthropic");
 
         var providers = new List<AssistantProviderOptionResponse>
         {
-            BuildProvider("anthropic", "Anthropic", ResolveAssistantModel("anthropic")),
-            BuildProvider("openai", "OpenAI", ResolveAssistantModel("openai")),
-            BuildProvider("local", "Local", ResolveAssistantModel("local"))
+            await BuildProviderAsync("anthropic", "Anthropic", assistantConfig, ct),
+            await BuildProviderAsync("openai", "OpenAI", assistantConfig, ct),
+            await BuildProviderAsync("lmstudio", "LM Studio", assistantConfig, ct)
         };
 
         if (!providers.Any(provider => string.Equals(provider.Name, configuredDefault, StringComparison.OrdinalIgnoreCase)))
-            providers.Add(BuildProvider(configuredDefault, configuredDefault, ResolveAssistantModel(configuredDefault)));
+            providers.Add(BuildProvider(configuredDefault, configuredDefault, assistantConfig.DefaultModel, [assistantConfig.DefaultModel]));
 
         return providers
             .Where(provider => !string.IsNullOrWhiteSpace(provider.DefaultModel) ||
@@ -46,31 +52,43 @@ public class AssistantConfigurationService(IOptions<AnalysisOptions> optionsAcce
             .ToList();
     }
 
-    private static AssistantProviderOptionResponse BuildProvider(string name, string displayName, string defaultModel)
+    private async Task<AssistantProviderOptionResponse> BuildProviderAsync(
+        string name,
+        string displayName,
+        LlmAssistantRuntimeConfig assistantConfig,
+        CancellationToken ct)
     {
-        var models = string.IsNullOrWhiteSpace(defaultModel)
-            ? Array.Empty<string>()
-            : new[] { defaultModel };
+        var providerConfig = await ResolveProviderConfigAsync(name, ct);
+        var defaultModel = string.Equals(name, assistantConfig.DefaultProvider, StringComparison.OrdinalIgnoreCase)
+            ? assistantConfig.DefaultModel
+            : providerConfig.Model;
+        var models = providerConfig.Models.Count == 0 && !string.IsNullOrWhiteSpace(defaultModel)
+            ? [defaultModel]
+            : providerConfig.Models;
 
-        return new AssistantProviderOptionResponse(name, displayName, defaultModel, models);
+        return BuildProvider(name, displayName, defaultModel, models);
     }
 
-    private string ResolveAssistantModel(string provider) =>
-        provider.ToLowerInvariant() switch
-        {
-            "anthropic" => FirstNonEmpty(options.Assistant.Model, options.Model),
-            "openai" => FirstNonEmpty(options.Assistant.Model, options.OpenAi.Model),
-            "local" => FirstNonEmpty(options.Assistant.Model, options.Local.Model),
-            _ => FirstNonEmpty(options.Assistant.Model, options.Model)
-        };
+    private static AssistantProviderOptionResponse BuildProvider(
+        string name,
+        string displayName,
+        string defaultModel,
+        IReadOnlyList<string> models)
+    {
+        var resolvedModels = models
+            .Where(model => !string.IsNullOrWhiteSpace(model))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return new AssistantProviderOptionResponse(name, displayName, defaultModel, resolvedModels);
+    }
 
     private string ResolveIndexingModel()
     {
         return ResolveName(options.DefaultProvider, "anthropic") switch
         {
             "openai" => FirstNonEmpty(options.Model, options.OpenAi.Model),
-            "gemini" => FirstNonEmpty(options.Model, options.Gemini.Model),
-            "local" => FirstNonEmpty(options.Model, options.Local.Model),
+            "lmstudio" => FirstNonEmpty(options.Model, options.LmStudio.Model),
             _ => FirstNonEmpty(options.Model)
         };
     }
@@ -80,4 +98,12 @@ public class AssistantConfigurationService(IOptions<AnalysisOptions> optionsAcce
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
+
+    private Task<LlmAssistantRuntimeConfig> ResolveAssistantConfigAsync(CancellationToken ct) =>
+        assistantSettingsResolver?.GetAssistantAsync(ct)
+        ?? Task.FromResult(LlmAssistantRuntimeConfig.FromOptions(options));
+
+    private Task<LlmProviderRuntimeConfig> ResolveProviderConfigAsync(string provider, CancellationToken ct) =>
+        providerConfigResolver?.GetProviderAsync(provider, ct)
+        ?? Task.FromResult(LlmProviderRuntimeConfig.FromOptions(provider, options));
 }

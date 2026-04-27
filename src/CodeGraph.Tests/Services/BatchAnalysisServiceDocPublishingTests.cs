@@ -76,7 +76,7 @@ public class BatchAnalysisServiceDocPublishingTests : IDisposable
 
         var service = new BatchAnalysisService(
             store,
-            new AnalysisProviderRegistry([], Options.Create(new AnalysisOptions { DefaultProvider = "local" })),
+            new AnalysisProviderRegistry([], Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" })),
             new NoOpMessageBus(),
             new NoOpExclusionService(),
             Options.Create(new AnalysisOptions

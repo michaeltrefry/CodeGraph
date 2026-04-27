@@ -21,7 +21,7 @@ The working inventory is tracked in [plans/standalone-rebase-inventory.md](/User
 - Recognizes modern .NET repository layouts, including solution-level analysis from top-level `.sln` and `.slnx` files
 - Links repositories through HTTP calls, MassTransit messaging, shared packages, and other cross-repo signals
 - Generates natural-language repository and project analysis with confidence indicators and optional auto-commit/auto-push of `CODEGRAPH.md`
-- Supports multiple AI backends for analysis: Anthropic, OpenAI, Gemini, and local OpenAI-compatible endpoints
+- Supports multiple AI backends for analysis: Anthropic, OpenAI, and LM Studio/OpenAI-compatible endpoints
 - Computes repository health, hotspot metrics, security findings, .NET support posture, and repository vitality trends
 - Runs project-level and repository-level AI code reviews with persisted findings and SSE streaming updates
 - Stores claim-centric personal memory in MariaDB, including evidence, conflicts, bounded subgraphs, and frontier expansion
@@ -118,16 +118,15 @@ Models <- Data <- Services <- Extractors.*
 CodeGraph no longer assumes a single analysis backend.
 
 - `AnalysisOptions:DefaultProvider` selects the backend for repository/project analysis
-- Supported built-in providers are `anthropic`, `openai`, `gemini`, and `local`
+- Supported built-in providers are `anthropic`, `openai`, and `lmstudio`
 - `AnalysisOptions:Assistant` has its own provider/model settings for the Ask experience
-- Local analysis targets OpenAI-compatible endpoints by default and is wired for tools like LM Studio
+- LM Studio analysis targets OpenAI-compatible endpoints by default and is wired for tools like LM Studio
 
 Current config includes provider blocks for:
 
 - `CodeGraph:AnalysisOptions:Anthropic`
 - `CodeGraph:AnalysisOptions:OpenAi`
-- `CodeGraph:AnalysisOptions:Gemini`
-- `CodeGraph:AnalysisOptions:Local`
+- `CodeGraph:AnalysisOptions:LmStudio`
 - `CodeGraph:AnalysisOptions:Assistant`
 
 ## Prerequisites
@@ -139,7 +138,7 @@ Current config includes provider blocks for:
 - A repository source configuration: `Folder`, `GitHub`, or `GitLab`
 - At least one configured analysis provider if you want AI analysis or reviews
 
-For Docker-based local model setups, the default local provider points at `http://host.docker.internal:1234/v1`.
+For Docker-based local model setups, the default LM Studio provider points at `http://host.docker.internal:1234/v1`.
 
 For repository indexing, CodeGraph expects one or more top-level solution files (`.sln` or `.slnx`) when you want full Roslyn solution analysis. The Docker API image also includes compatibility SDKs for older repositories and `libssl1.1` for legacy .NET Core 2.1/global.json scenarios.
 
@@ -165,8 +164,7 @@ Useful settings to know:
 | `CodeGraph:AnalysisOptions:DefaultProvider` | Default analysis backend |
 | `CodeGraph:AnalysisOptions:Assistant:Provider` | Ask/assistant backend |
 | `CodeGraph:AnalysisOptions:OpenAi:*` | OpenAI analysis provider settings |
-| `CodeGraph:AnalysisOptions:Gemini:*` | Gemini analysis provider settings |
-| `CodeGraph:AnalysisOptions:Local:*` | Local OpenAI-compatible provider settings |
+| `CodeGraph:AnalysisOptions:LmStudio:*` | Local OpenAI-compatible provider settings |
 | `CodeGraph:AnalysisOptions:AutoCommitDocs` | Auto-commit generated `CODEGRAPH.md` files |
 | `CodeGraph:AnalysisOptions:AutoPushDocs` | Auto-push generated doc commits |
 | `CodeGraph:TsPort` | TypeScript analyzer sidecar port |

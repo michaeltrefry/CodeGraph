@@ -12,6 +12,16 @@ public static class CodeGraphOptionsServiceCollectionExtensions
     {
         var root = configuration.GetSection(SectionName);
 
+        // This invalidator is intentionally process-local; horizontally scaled hosts need a distributed
+        // signal later, while LLM config resolvers will keep a short TTL fallback for external SQL edits.
+        services.AddSingleton<ILlmConfigInvalidator, LlmConfigInvalidator>();
+        services.AddSingleton<ILlmCatalogValidator, LlmCatalogValidator>();
+        services.AddSingleton<IDbBackedLlmProviderConfigResolver, DbBackedLlmProviderConfigResolver>();
+        services.AddSingleton<IDbBackedAnalysisSettingsResolver, DbBackedAnalysisSettingsResolver>();
+        services.AddSingleton<IDbBackedReviewSettingsResolver, DbBackedReviewSettingsResolver>();
+        services.AddSingleton<IDbBackedAssistantSettingsResolver, DbBackedAssistantSettingsResolver>();
+        services.AddSingleton<ILlmConfigDeprecationWarningService, LlmConfigDeprecationWarningService>();
+
         services.AddOptions<CodeGraphServiceSettings>()
             .Bind(root)
             .PostConfigure(CodeGraphSettingsNormalizer.Normalize);

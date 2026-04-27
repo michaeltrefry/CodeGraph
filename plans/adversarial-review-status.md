@@ -81,11 +81,10 @@ It is meant to replace the growing chat history with one current status snapshot
   - Added a provider contract and provider registry.
   - Anthropic transport details now live behind `AnthropicAnalysisProvider` instead of inside the analyzer orchestration classes.
   - Added `OpenAiAnalysisProvider` as the second provider implementation on the shared seam.
-  - Added `GeminiAnalysisProvider` as the third provider implementation on the shared seam.
-  - Added `LocalAnalysisProvider` as the fourth provider implementation for LM Studio / Ollama-style OpenAI-compatible local backends.
+  - Added `LmStudioAnalysisProvider` as the third provider implementation for LM Studio / Ollama-style OpenAI-compatible local-dev backends.
   - `BatchAnalysisService` now calls the provider abstraction for submit/status/results/synthesis flow.
   - Batch request ordering is now stored explicitly so providers with ordered inline responses can map results safely.
-  - Provider-specific default model settings now exist for OpenAI, Gemini, and local backends instead of inheriting the legacy top-level Anthropic default.
+  - Provider-specific default model settings now exist for OpenAI and LM Studio backends instead of inheriting the legacy top-level Anthropic default.
   - Non-batch providers now stay on the same batch/event workflow by replaying stored project requests one at a time during batch processing.
   - Existing config remains backward-compatible through legacy `AnalysisOptions` shims while adding a provider-oriented shape.
 
@@ -132,7 +131,7 @@ It is meant to replace the growing chat history with one current status snapshot
 - `Completed` Refactor the analyzer layer into a multi-provider LLM architecture.
   - Detailed design plan: `plans/multi-provider-llm-analysis-plan.md`
   - Phase 1 prompt cleanup is complete.
-  - Phase 2 provider abstraction is complete for Anthropic, OpenAI, Gemini, and local backends.
+  - Phase 2 provider abstraction is complete for Anthropic, OpenAI, and LM Studio backends.
   - Batch-shaped orchestration is the long-term front door for repository analysis.
   - Native-batch providers use provider batch APIs.
   - Non-batch providers stay on the same event flow via direct request replay during batch processing.

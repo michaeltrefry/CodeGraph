@@ -141,8 +141,7 @@ public static class Startup
         services.AddSingleton<AnthropicCircuitBreaker>();
         services.AddScoped<IAnalysisModelProvider, AnthropicAnalysisProvider>();
         services.AddScoped<IAnalysisModelProvider, OpenAiAnalysisProvider>();
-        services.AddScoped<IAnalysisModelProvider, GeminiAnalysisProvider>();
-        services.AddScoped<IAnalysisModelProvider, LocalAnalysisProvider>();
+        services.AddScoped<IAnalysisModelProvider, LmStudioAnalysisProvider>();
         services.AddScoped<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IMetricsEventPublisher, MetricsEventPublisher>();

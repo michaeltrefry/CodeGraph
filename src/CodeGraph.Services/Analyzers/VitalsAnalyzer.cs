@@ -18,7 +18,8 @@ public class VitalsAnalyzer(
     ILintRunner lintRunner,
     LintResultCache lintCache,
     DiagnosticDetailCache diagnosticDetailCache,
-    ILogger<VitalsAnalyzer> logger) : IVitalsAnalyzer
+    ILogger<VitalsAnalyzer> logger,
+    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null) : IVitalsAnalyzer
 {
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -431,14 +432,17 @@ public class VitalsAnalyzer(
 
     private async Task<AnalysisTextResponse?> CallAnalysisAsync(string prompt, CancellationToken ct)
     {
-        var provider = providerRegistry.GetProvider();
+        var analysisSettings = analysisSettingsResolver is null
+            ? LlmAnalysisRuntimeConfig.FromOptions(analysisOptions)
+            : await analysisSettingsResolver.GetAnalysisAsync(ct);
+        var provider = providerRegistry.GetProvider(analysisSettings.DefaultProvider);
         var response = await provider.ExecuteAsync(
             new AnalysisPrompt(
                 SystemPrompt: "You are a software architecture and code health analyst. " +
                               "Return concise, practical prose grounded in the provided metrics.",
                 UserPrompt: prompt),
             new AnalysisRequestOptions(
-                Model: null,
+                Model: analysisSettings.DefaultModel,
                 MaxTokens: 1024),
             ct);
 

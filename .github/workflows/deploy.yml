@@ -175,10 +175,9 @@ jobs:
           ACTIONS_VARS_JSON: ${{ toJson(vars) }}
           SECRET_ANALYSIS_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__APIKEY }}
           SECRET_ANALYSIS_ASSISTANT_ANTHROPIC_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__ANTHROPIC__APIKEY }}
-          SECRET_ANALYSIS_ASSISTANT_LOCAL_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__LOCAL__APIKEY }}
+          SECRET_ANALYSIS_ASSISTANT_LMSTUDIO_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__LMSTUDIO__APIKEY }}
           SECRET_ANALYSIS_ASSISTANT_OPENAI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__OPENAI__APIKEY }}
-          SECRET_ANALYSIS_GEMINI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__GEMINI__APIKEY }}
-          SECRET_ANALYSIS_LOCAL_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__LOCAL__APIKEY }}
+          SECRET_ANALYSIS_LMSTUDIO_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__LMSTUDIO__APIKEY }}
           SECRET_ANALYSIS_OPENAI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__OPENAI__APIKEY }}
           SECRET_INTERNAL_SERVICE_AUTH_HMAC_KEY: ${{ secrets.CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY }}
           SECRET_RABBITMQ_PASSWORD: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__PASSWORD }}
@@ -212,7 +211,6 @@ jobs:
               "ENABLED": "Enabled",
               "ENDSESSIONURL": "EndSessionUrl",
               "FOLDER": "Folder",
-              "GEMINI": "Gemini",
               "GITHUB": "GitHub",
               "GITLAB": "GitLab",
               "HMACKEY": "HmacKey",
@@ -224,6 +222,7 @@ jobs:
               "LOCAL": "Local",
               "LOCALDEVISADMIN": "LocalDevIsAdmin",
               "LOCALDEVUSERNAME": "LocalDevUsername",
+              "LMSTUDIO": "LmStudio",
               "MARIADBCONNECTIONSTRING": "MariaDbConnectionString",
               "MARIADBENCRYPTIONKEY": "MariaDbEncryptionKey",
               "MARIADBMIGRATIONSPATH": "MariaDbMigrationsPath",
@@ -278,10 +277,9 @@ jobs:
           secret_mappings = {
               "CodeGraph__AnalysisOptions__ApiKey": "SECRET_ANALYSIS_API_KEY",
               "CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey": "SECRET_ANALYSIS_ASSISTANT_ANTHROPIC_API_KEY",
-              "CodeGraph__AnalysisOptions__Assistant__Local__ApiKey": "SECRET_ANALYSIS_ASSISTANT_LOCAL_API_KEY",
+              "CodeGraph__AnalysisOptions__Assistant__LmStudio__ApiKey": "SECRET_ANALYSIS_ASSISTANT_LMSTUDIO_API_KEY",
               "CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey": "SECRET_ANALYSIS_ASSISTANT_OPENAI_API_KEY",
-              "CodeGraph__AnalysisOptions__Gemini__ApiKey": "SECRET_ANALYSIS_GEMINI_API_KEY",
-              "CodeGraph__AnalysisOptions__Local__ApiKey": "SECRET_ANALYSIS_LOCAL_API_KEY",
+              "CodeGraph__AnalysisOptions__LmStudio__ApiKey": "SECRET_ANALYSIS_LMSTUDIO_API_KEY",
               "CodeGraph__AnalysisOptions__OpenAi__ApiKey": "SECRET_ANALYSIS_OPENAI_API_KEY",
               "CodeGraph__InternalServiceAuth__HmacKey": "SECRET_INTERNAL_SERVICE_AUTH_HMAC_KEY",
               "CodeGraph__RabbitMqOptions__Password": "SECRET_RABBITMQ_PASSWORD",

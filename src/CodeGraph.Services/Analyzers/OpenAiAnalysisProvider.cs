@@ -12,7 +12,8 @@ namespace CodeGraph.Services.Analyzers;
 public class OpenAiAnalysisProvider(
     IHttpClientFactory httpClientFactory,
     IOptions<AnalysisOptions> optionsAccessor,
-    ILogger<OpenAiAnalysisProvider> logger) : IAnalysisModelProvider
+    ILogger<OpenAiAnalysisProvider> logger,
+    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null) : IAnalysisModelProvider
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
     private static readonly JsonSerializerOptions SnakeOpts = CodeGraphJsonDefaults.SnakeCase;
@@ -27,9 +28,10 @@ public class OpenAiAnalysisProvider(
         AnalysisRequestOptions request,
         CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var body = new OpenAiChatCompletionRequest
         {
-            Model = ResolveModel(request),
+            Model = ResolveModel(request, providerConfig),
             MaxCompletionTokens = request.MaxTokens,
             ResponseFormat = new OpenAiResponseFormat { Type = "json_object" },
             Messages =
@@ -42,7 +44,8 @@ public class OpenAiAnalysisProvider(
         var http = httpClientFactory.CreateClient();
         using var response = await http.SendAsync(CreateJsonRequest(
             HttpMethod.Post,
-            BuildUrl(options.OpenAi.ChatCompletionsPath),
+            BuildUrl(providerConfig, options.OpenAi.ChatCompletionsPath),
+            providerConfig,
             body), ct);
 
         if (!response.IsSuccessStatusCode)
@@ -69,8 +72,9 @@ public class OpenAiAnalysisProvider(
         AnalysisRequestOptions request,
         CancellationToken ct = default)
     {
-        var inputJsonl = BuildBatchInputFile(items, request);
-        var inputFileId = await UploadBatchFileAsync(inputJsonl, ct);
+        var providerConfig = await ResolveProviderConfigAsync(ct);
+        var inputJsonl = BuildBatchInputFile(items, request, providerConfig);
+        var inputFileId = await UploadBatchFileAsync(inputJsonl, providerConfig, ct);
 
         var body = new OpenAiBatchCreateRequest
         {
@@ -84,7 +88,8 @@ public class OpenAiAnalysisProvider(
         var http = httpClientFactory.CreateClient();
         using var response = await http.SendAsync(CreateJsonRequest(
             HttpMethod.Post,
-            BuildUrl(options.OpenAi.BatchesPath),
+            BuildUrl(providerConfig, options.OpenAi.BatchesPath),
+            providerConfig,
             body), ct);
 
         if (!response.IsSuccessStatusCode)
@@ -103,10 +108,12 @@ public class OpenAiAnalysisProvider(
 
     public async Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var http = httpClientFactory.CreateClient();
         using var response = await http.SendAsync(CreateRequest(
             HttpMethod.Get,
-            BuildUrl($"{options.OpenAi.BatchesPath.TrimEnd('/')}/{batchId}")), ct);
+            BuildUrl(providerConfig, $"{options.OpenAi.BatchesPath.TrimEnd('/')}/{batchId}"),
+            providerConfig), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -130,10 +137,12 @@ public class OpenAiAnalysisProvider(
         IReadOnlyList<string>? requestIds = null,
         CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var http = httpClientFactory.CreateClient();
         using var batchResponse = await http.SendAsync(CreateRequest(
             HttpMethod.Get,
-            BuildUrl($"{options.OpenAi.BatchesPath.TrimEnd('/')}/{batchId}")), ct);
+            BuildUrl(providerConfig, $"{options.OpenAi.BatchesPath.TrimEnd('/')}/{batchId}"),
+            providerConfig), ct);
 
         if (!batchResponse.IsSuccessStatusCode)
         {
@@ -150,7 +159,8 @@ public class OpenAiAnalysisProvider(
 
         using var fileResponse = await http.SendAsync(CreateRequest(
             HttpMethod.Get,
-            BuildUrl($"{options.OpenAi.FilesPath.TrimEnd('/')}/{batch.OutputFileId}/content")), ct);
+            BuildUrl(providerConfig, $"{options.OpenAi.FilesPath.TrimEnd('/')}/{batch.OutputFileId}/content"),
+            providerConfig), ct);
 
         if (!fileResponse.IsSuccessStatusCode)
         {
@@ -189,10 +199,13 @@ public class OpenAiAnalysisProvider(
         return results;
     }
 
-    private async Task<string> UploadBatchFileAsync(string jsonl, CancellationToken ct)
+    private async Task<string> UploadBatchFileAsync(
+        string jsonl,
+        LlmProviderRuntimeConfig providerConfig,
+        CancellationToken ct)
     {
         var http = httpClientFactory.CreateClient();
-        using var request = CreateRequest(HttpMethod.Post, BuildUrl(options.OpenAi.FilesPath));
+        using var request = CreateRequest(HttpMethod.Post, BuildUrl(providerConfig, options.OpenAi.FilesPath), providerConfig);
         using var form = new MultipartFormDataContent();
         using var fileContent = new ByteArrayContent(Encoding.UTF8.GetBytes(jsonl));
         fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("application/jsonl");
@@ -214,7 +227,10 @@ public class OpenAiAnalysisProvider(
         return uploaded.Id;
     }
 
-    private string BuildBatchInputFile(IReadOnlyList<AnalysisBatchRequestItem> items, AnalysisRequestOptions request)
+    private string BuildBatchInputFile(
+        IReadOnlyList<AnalysisBatchRequestItem> items,
+        AnalysisRequestOptions request,
+        LlmProviderRuntimeConfig providerConfig)
     {
         var lines = items.Select(item => JsonSerializer.Serialize(new OpenAiBatchInputLine
         {
@@ -225,7 +241,7 @@ public class OpenAiAnalysisProvider(
                 : $"/{options.OpenAi.ChatCompletionsPath}",
             Body = new OpenAiChatCompletionRequest
             {
-                Model = ResolveModel(request),
+                Model = ResolveModel(request, providerConfig),
                 MaxCompletionTokens = request.MaxTokens,
                 ResponseFormat = new OpenAiResponseFormat { Type = "json_object" },
                 Messages =
@@ -239,28 +255,37 @@ public class OpenAiAnalysisProvider(
         return string.Join("\n", lines);
     }
 
-    private string ResolveModel(AnalysisRequestOptions request)
+    private string ResolveModel(AnalysisRequestOptions request, LlmProviderRuntimeConfig providerConfig)
     {
         if (!string.IsNullOrWhiteSpace(request.Model))
             return request.Model;
 
-        if (!string.IsNullOrWhiteSpace(options.OpenAi.Model))
-            return options.OpenAi.Model;
+        if (!string.IsNullOrWhiteSpace(providerConfig.Model))
+            return providerConfig.Model;
 
         return options.Model;
     }
 
-    private HttpRequestMessage CreateJsonRequest(HttpMethod method, string url, object body)
+    private Task<LlmProviderRuntimeConfig> ResolveProviderConfigAsync(CancellationToken ct) =>
+        providerConfigResolver?.GetProviderAsync(ProviderName, ct)
+        ?? Task.FromResult(LlmProviderRuntimeConfig.FromOptions(ProviderName, options));
+
+    private HttpRequestMessage CreateJsonRequest(
+        HttpMethod method,
+        string url,
+        LlmProviderRuntimeConfig providerConfig,
+        object body)
     {
-        var request = CreateRequest(method, url);
+        var request = CreateRequest(method, url, providerConfig);
         request.Content = JsonContent.Create(body, options: SnakeOpts);
         return request;
     }
 
-    private HttpRequestMessage CreateRequest(HttpMethod method, string url)
+    private HttpRequestMessage CreateRequest(HttpMethod method, string url, LlmProviderRuntimeConfig providerConfig)
     {
         var request = new HttpRequestMessage(method, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.OpenAi.ApiKey);
+        if (!string.IsNullOrWhiteSpace(providerConfig.ApiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", providerConfig.ApiKey);
 
         var organization = options.OpenAi.Organization;
         if (!string.IsNullOrWhiteSpace(organization))
@@ -273,9 +298,9 @@ public class OpenAiAnalysisProvider(
         return request;
     }
 
-    private string BuildUrl(string path)
+    private string BuildUrl(LlmProviderRuntimeConfig providerConfig, string path)
     {
-        var baseUrl = options.OpenAi.BaseUrl.TrimEnd('/');
+        var baseUrl = (providerConfig.EndpointUrl ?? options.OpenAi.BaseUrl).TrimEnd('/');
         var relative = path.StartsWith("/") ? path : $"/{path}";
         return $"{baseUrl}{relative}";
     }

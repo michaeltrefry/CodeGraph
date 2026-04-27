@@ -61,8 +61,7 @@ public class AnalysisOptions
 
     public AnthropicAnalysisProviderOptions Anthropic { get; set; } = new();
     public OpenAiAnalysisProviderOptions OpenAi { get; set; } = new();
-    public GeminiAnalysisProviderOptions Gemini { get; set; } = new();
-    public LocalAnalysisProviderOptions Local { get; set; } = new();
+    public LmStudioAnalysisProviderOptions LmStudio { get; set; } = new();
 
     // Legacy compatibility shims for existing config bindings.
     public string ApiKey
@@ -104,9 +103,6 @@ public class AssistantOptions
     public string Model { get; set; } = "";
     public int MaxTokens { get; set; } = 10000;
     public int MaxTurns { get; set; } = 10;
-    public AssistantAnthropicOptions Anthropic { get; set; } = new();
-    public AssistantOpenAiCompatibleOptions OpenAi { get; set; } = new();
-    public AssistantOpenAiCompatibleOptions Local { get; set; } = new();
 }
 
 public class ReviewOptions
@@ -116,21 +112,6 @@ public class ReviewOptions
     public int MaxSourceCharsPerFile { get; set; } = 12_000;
     public int MaxInspectionPasses { get; set; } = 4;
     public int MaxFindings { get; set; } = 20;
-}
-
-public class AssistantAnthropicOptions
-{
-    public string ApiKey { get; set; } = "";
-    public string BaseUrl { get; set; } = "";
-}
-
-public class AssistantOpenAiCompatibleOptions
-{
-    public string ApiKey { get; set; } = "";
-    public string BaseUrl { get; set; } = "";
-    public string ChatCompletionsPath { get; set; } = "";
-    public string? Organization { get; set; }
-    public string? Project { get; set; }
 }
 
 public class OpenAiAnalysisProviderOptions
@@ -145,14 +126,7 @@ public class OpenAiAnalysisProviderOptions
     public string? Project { get; set; }
 }
 
-public class GeminiAnalysisProviderOptions
-{
-    public string ApiKey { get; set; } = "";
-    public string BaseUrl { get; set; } = "https://generativelanguage.googleapis.com/v1beta";
-    public string Model { get; set; } = "gemini-2.5-flash";
-}
-
-public class LocalAnalysisProviderOptions
+public class LmStudioAnalysisProviderOptions
 {
     public string ApiKey { get; set; } = "";
     public string BaseUrl { get; set; } = "http://localhost:1234/v1";

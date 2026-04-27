@@ -21,12 +21,14 @@ public class ApiStartupInitializationTests
         var wikiSectionSeedService = new RecordingWikiSectionSeedService(lifecycle);
         var exclusionService = new RecordingExclusionService(lifecycle);
         var recoveryService = new RecordingRepositoryReviewRecoveryService(lifecycle);
+        var llmConfigDeprecationWarningService = new RecordingLlmConfigDeprecationWarningService(lifecycle);
         var services = new ServiceCollection();
 
         services.AddSingleton<IMigrationRunner>(migrationRunner);
         services.AddSingleton<IWikiSectionSeedService>(wikiSectionSeedService);
         services.AddSingleton<IExclusionService>(exclusionService);
         services.AddSingleton<IRepositoryReviewRecoveryService>(recoveryService);
+        services.AddSingleton<ILlmConfigDeprecationWarningService>(llmConfigDeprecationWarningService);
         services.AddSingleton<IHostEnvironment>(new TestHostEnvironment
         {
             ContentRootPath = "/repo"
@@ -48,7 +50,7 @@ public class ApiStartupInitializationTests
         migrationRunner.AppliedPaths.ShouldBe([Path.GetFullPath(Path.Combine("/repo", "sql/migrations"))]);
         exclusionService.SeededGroups.ShouldBe([["foo", "bar"]]);
         recoveryService.Calls.ShouldBe(1);
-        lifecycle.ShouldBe(["migrate", "wiki", "seed", "recover"]);
+        lifecycle.ShouldBe(["migrate", "llm-deprecation", "wiki", "seed", "recover"]);
     }
 
     private sealed class RecordingMigrationRunner(List<string> lifecycle) : IMigrationRunner
@@ -71,6 +73,16 @@ public class ApiStartupInitializationTests
         {
             Calls++;
             lifecycle.Add("wiki");
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingLlmConfigDeprecationWarningService(List<string> lifecycle)
+        : ILlmConfigDeprecationWarningService
+    {
+        public Task LogWarningsAsync(CancellationToken ct = default)
+        {
+            lifecycle.Add("llm-deprecation");
             return Task.CompletedTask;
         }
     }

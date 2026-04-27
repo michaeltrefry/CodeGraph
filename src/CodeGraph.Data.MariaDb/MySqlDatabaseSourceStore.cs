@@ -5,7 +5,7 @@ namespace CodeGraph.Data.MariaDb;
 
 public class MySqlDatabaseSourceStore(
     CodeGraphDbContext db,
-    ConnectionStringEncryptor encryptor) : IDatabaseSourceStore
+    IAesEncryptor encryptor) : IDatabaseSourceStore
 {
     public async Task<IReadOnlyList<DatabaseSourceEntity>> ListAsync()
     {

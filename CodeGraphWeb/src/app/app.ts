@@ -37,6 +37,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   exclusions: 'Exclusions',
   admins: 'Admins',
   prompts: 'Prompts',
+  llm: 'LLM config',
   'database-sources': 'Database sources',
   reports: 'Reports',
   'assistant-debug': 'Assistant debug',

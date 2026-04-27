@@ -29,5 +29,7 @@ public class MariaDbServiceCollectionExtensionsTests
         descriptors.ShouldContain(d => d.ServiceType == typeof(IAssistantRunStore) && d.ImplementationType == typeof(MySqlAssistantRunStore));
         descriptors.ShouldContain(d => d.ServiceType == typeof(IMcpPersonalAccessTokenStore) && d.ImplementationType == typeof(MySqlMcpPersonalAccessTokenStore));
         descriptors.ShouldContain(d => d.ServiceType == typeof(IMetricsEventStore) && d.ImplementationType == typeof(MySqlMetricsEventStore));
+        descriptors.ShouldContain(d => d.ServiceType == typeof(ILlmConfigRepository) && d.ImplementationType == typeof(LlmConfigRepository));
+        descriptors.ShouldContain(d => d.ServiceType == typeof(IAesEncryptor));
     }
 }

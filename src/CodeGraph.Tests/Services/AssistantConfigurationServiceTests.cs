@@ -16,10 +16,10 @@ public class AssistantConfigurationServiceTests
             Model = "gpt-5",
             Assistant =
             {
-                Provider = "local",
+                Provider = "lmstudio",
                 Model = "qwen3"
             },
-            Local =
+            LmStudio =
             {
                 Model = "qwen3"
             }
@@ -27,10 +27,10 @@ public class AssistantConfigurationServiceTests
 
         var response = await service.GetConfigurationAsync();
 
-        response.DefaultProvider.ShouldBe("local");
+        response.DefaultProvider.ShouldBe("lmstudio");
         response.DefaultModel.ShouldBe("qwen3");
         response.Indexing.Provider.ShouldBe("openai");
         response.Indexing.Model.ShouldBe("gpt-5");
-        response.Providers.ShouldContain(provider => provider.Name == "local" && provider.Models.Contains("qwen3"));
+        response.Providers.ShouldContain(provider => provider.Name == "lmstudio" && provider.Models.Contains("qwen3"));
     }
 }

@@ -29,6 +29,11 @@ export class AskComponent {
   question = signal('');
   messages = signal<Message[]>([]);
   streaming = signal(false);
+  readonly suggestedQuestions = [
+    'What are the main entry points in this codebase?',
+    'How does data flow from an API endpoint to persistence?',
+    'Which classes or services depend on a given component?'
+  ];
   private abortController: AbortController | null = null;
 
   async send() {

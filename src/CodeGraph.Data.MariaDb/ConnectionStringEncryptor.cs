@@ -4,33 +4,60 @@ using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Data.MariaDb;
 
-public class ConnectionStringEncryptor(IOptions<MariaDbStorageOptions> optionsAccessor)
+public class ConnectionStringEncryptor(IOptions<MariaDbStorageOptions> optionsAccessor) : IAesEncryptor
 {
+    private const string GcmPrefix = "aes-gcm:v1:";
+    private const int NonceSizeBytes = 12;
+    private const int TagSizeBytes = 16;
     private readonly MariaDbStorageOptions options = optionsAccessor.Value;
 
     public string Encrypt(string plainText)
     {
         var key = GetKey();
-        using var aes = Aes.Create();
-        aes.Key = key;
-        aes.GenerateIV();
-
-        using var encryptor = aes.CreateEncryptor();
+        var nonce = RandomNumberGenerator.GetBytes(NonceSizeBytes);
         var plainBytes = Encoding.UTF8.GetBytes(plainText);
-        var cipherBytes = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
+        var cipherBytes = new byte[plainBytes.Length];
+        var tag = new byte[TagSizeBytes];
 
-        var result = new byte[aes.IV.Length + cipherBytes.Length];
-        Buffer.BlockCopy(aes.IV, 0, result, 0, aes.IV.Length);
-        Buffer.BlockCopy(cipherBytes, 0, result, aes.IV.Length, cipherBytes.Length);
+        using var aes = new AesGcm(key, TagSizeBytes);
+        aes.Encrypt(nonce, plainBytes, cipherBytes, tag);
 
-        return Convert.ToBase64String(result);
+        var result = new byte[nonce.Length + tag.Length + cipherBytes.Length];
+        Buffer.BlockCopy(nonce, 0, result, 0, nonce.Length);
+        Buffer.BlockCopy(tag, 0, result, nonce.Length, tag.Length);
+        Buffer.BlockCopy(cipherBytes, 0, result, nonce.Length + tag.Length, cipherBytes.Length);
+
+        return GcmPrefix + Convert.ToBase64String(result);
     }
 
     public string Decrypt(string encrypted)
     {
         var key = GetKey();
-        var fullBytes = Convert.FromBase64String(encrypted);
+        if (!encrypted.StartsWith(GcmPrefix, StringComparison.Ordinal))
+        {
+            return DecryptLegacyCbc(encrypted, key);
+        }
 
+        var fullBytes = Convert.FromBase64String(encrypted[GcmPrefix.Length..]);
+        if (fullBytes.Length < NonceSizeBytes + TagSizeBytes)
+        {
+            throw new CryptographicException("Encrypted payload is too short.");
+        }
+
+        var nonce = fullBytes[..NonceSizeBytes];
+        var tag = fullBytes[NonceSizeBytes..(NonceSizeBytes + TagSizeBytes)];
+        var cipherBytes = fullBytes[(NonceSizeBytes + TagSizeBytes)..];
+        var plainBytes = new byte[cipherBytes.Length];
+
+        using var aes = new AesGcm(key, TagSizeBytes);
+        aes.Decrypt(nonce, cipherBytes, tag, plainBytes);
+
+        return Encoding.UTF8.GetString(plainBytes);
+    }
+
+    private static string DecryptLegacyCbc(string encrypted, byte[] key)
+    {
+        var fullBytes = Convert.FromBase64String(encrypted);
         using var aes = Aes.Create();
         aes.Key = key;
 
@@ -54,6 +81,13 @@ public class ConnectionStringEncryptor(IOptions<MariaDbStorageOptions> optionsAc
                 "EncryptionKey is not configured in MariaDbStorageOptions. Cannot encrypt/decrypt database source connection strings.");
         }
 
-        return Convert.FromBase64String(options.EncryptionKey);
+        var key = Convert.FromBase64String(options.EncryptionKey);
+        if (key.Length != 32)
+        {
+            throw new InvalidOperationException(
+                "EncryptionKey must be a base64-encoded 32-byte AES-256 key.");
+        }
+
+        return key;
     }
 }

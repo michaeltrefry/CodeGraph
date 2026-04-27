@@ -23,7 +23,8 @@ public partial class BatchAnalysisService(
     IOptions<AnalysisOptions> optionsAccessor,
     IFileSystem fileSystem,
     ILogger<BatchAnalysisService> logger,
-    IAgentPromptService? agentPromptService = null)
+    IAgentPromptService? agentPromptService = null,
+    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null)
     : IBatchAnalysisService
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
@@ -66,10 +67,11 @@ public partial class BatchAnalysisService(
             repoName, allNodes.Count, allEdges.Count, nodesByProject.Count,
             includeAllSource ? " (all source)" : "");
 
+        var analysisSettings = await GetAnalysisSettingsAsync(ct);
         var nodeById = allNodes.ToDictionary(n => n.Id);
         var batchRequests = new List<AnalysisBatchRequestItem>();
         var batchRequestEntities = new List<AnalysisBatchRequestEntity>();
-        var provider = providerRegistry.GetProvider();
+        var provider = providerRegistry.GetProvider(analysisSettings.DefaultProvider);
 
         foreach (var (projectName, projectNodes) in nodesByProject)
         {
@@ -80,6 +82,7 @@ public partial class BatchAnalysisService(
                 allEdges,
                 nodeById,
                 provider,
+                analysisSettings,
                 repoPath,
                 includeAllSource);
             // custom_id: alphanumeric/hyphens/underscores only, max 64 chars
@@ -89,7 +92,9 @@ public partial class BatchAnalysisService(
                 new AnalysisPrompt(
                     await GetRepositoryAnalysisSystemPromptAsync("project analysis"),
                     prompt),
-                new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerAnalysis));
+                new AnalysisRequestOptions(
+                    Model: analysisSettings.DefaultModel,
+                    MaxTokens: analysisSettings.MaxTokensPerAnalysis));
 
             batchRequests.Add(new AnalysisBatchRequestItem(
                 customId,
@@ -116,7 +121,9 @@ public partial class BatchAnalysisService(
 
         var providerBatchId = (await provider.SubmitBatchAsync(
             batchRequests,
-            new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerAnalysis),
+            new AnalysisRequestOptions(
+                Model: analysisSettings.DefaultModel,
+                MaxTokens: analysisSettings.MaxTokensPerAnalysis),
             ct)).BatchId;
 
         logger.LogInformation(
@@ -235,7 +242,7 @@ public partial class BatchAnalysisService(
             foreach (var result in results)
             {
                 var projectName = projectNameByCustomId.GetValueOrDefault(result.CustomId, result.CustomId);
-                await ProcessBatchResultAsync(result, pending.Id, pending.Repo, pending.ProviderBatchId, projectName, attemptCount: 1);
+                await ProcessBatchResultAsync(result, pending.Id, pending.Repo, pending.ProviderBatchId, projectName, attemptCount: 1, ct);
                 completed++;
             }
 
@@ -257,7 +264,7 @@ public partial class BatchAnalysisService(
     }
 
     private async Task ProcessBatchResultAsync(AnalysisBatchItemResult result, long batchRecordId, string repoName,
-        string batchId, string projectName, int attemptCount)
+        string batchId, string projectName, int attemptCount, CancellationToken ct)
     {
         if (!string.Equals(result.Status, "succeeded", StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(result.Text))
@@ -292,7 +299,8 @@ public partial class BatchAnalysisService(
 
         if (parsed is null) return;
 
-        var model = result.ModelUsed ?? options.Model;
+        var analysisSettings = await GetAnalysisSettingsAsync(ct);
+        var model = result.ModelUsed ?? analysisSettings.DefaultModel;
 
         // Store per-project summary
         if (!string.IsNullOrWhiteSpace(parsed.ProjectSummary))
@@ -402,4 +410,9 @@ public partial class BatchAnalysisService(
             return null;
         }
     }
+
+    private Task<LlmAnalysisRuntimeConfig> GetAnalysisSettingsAsync(CancellationToken ct) =>
+        analysisSettingsResolver is null
+            ? Task.FromResult(LlmAnalysisRuntimeConfig.FromOptions(options))
+            : analysisSettingsResolver.GetAnalysisAsync(ct);
 }

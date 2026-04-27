@@ -43,7 +43,7 @@ public class BatchAnalysisServiceBatchProviderTests
             registry,
             messageBus,
             new NoOpExclusionService(),
-            Options.Create(new AnalysisOptions { DefaultProvider = "local" }),
+            Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" }),
             new LocalFileSystem(),
             NullLogger<BatchAnalysisService>.Instance);
 
@@ -109,7 +109,7 @@ public class BatchAnalysisServiceBatchProviderTests
             new SingleProviderRegistry(provider),
             new RecordingMessageBus(),
             new NoOpExclusionService(),
-            Options.Create(new AnalysisOptions { DefaultProvider = "local" }),
+            Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" }),
             new LocalFileSystem(),
             NullLogger<BatchAnalysisService>.Instance);
 
@@ -141,7 +141,7 @@ public class BatchAnalysisServiceBatchProviderTests
             new SingleProviderRegistry(provider),
             new RecordingMessageBus(),
             new NoOpExclusionService(),
-            Options.Create(new AnalysisOptions { DefaultProvider = "local" }),
+            Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" }),
             new LocalFileSystem(),
             NullLogger<BatchAnalysisService>.Instance,
             new TestAgentPromptService(new Dictionary<string, string>
@@ -217,7 +217,7 @@ public class BatchAnalysisServiceBatchProviderTests
                 new SingleProviderRegistry(provider),
                 new RecordingMessageBus(),
                 new NoOpExclusionService(),
-                Options.Create(new AnalysisOptions { DefaultProvider = "local", MaxSourceChars = 4000 }),
+                Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio", MaxSourceChars = 4000 }),
                 new LocalFileSystem(),
                 NullLogger<BatchAnalysisService>.Instance);
 
@@ -237,7 +237,7 @@ public class BatchAnalysisServiceBatchProviderTests
     }
 
     [Fact]
-    public async Task SubmitAnalysisBatch_ForLocalProvider_LimitsObjectOrientedPromptNodeCount()
+    public async Task SubmitAnalysisBatch_ForLmStudioProvider_LimitsObjectOrientedPromptNodeCount()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -297,7 +297,7 @@ public class BatchAnalysisServiceBatchProviderTests
             });
         }
 
-        var provider = new RecordingBatchProvider(1, providerName: "local");
+        var provider = new RecordingBatchProvider(1, providerName: "lmstudio");
         var service = new BatchAnalysisService(
             store,
             new SingleProviderRegistry(provider),
@@ -305,8 +305,8 @@ public class BatchAnalysisServiceBatchProviderTests
             new NoOpExclusionService(),
             Options.Create(new AnalysisOptions
             {
-                DefaultProvider = "local",
-                Local = new LocalAnalysisProviderOptions
+                DefaultProvider = "lmstudio",
+                LmStudio = new LmStudioAnalysisProviderOptions
                 {
                     MaxPromptNodes = 2,
                     MaxRelationshipTargetsPerType = 4,
@@ -325,13 +325,57 @@ public class BatchAnalysisServiceBatchProviderTests
         provider.LastSubmittedPrompt!.Split("[Class] ", StringSplitOptions.None).Length.ShouldBe(3);
     }
 
-    private sealed class RecordingBatchProvider(long nodeId, string providerName = "local") : IAnalysisModelProvider
+    [Fact]
+    public async Task SubmitAnalysisBatch_UsesDbBackedAnalysisSettings_ForProviderModelAndTokenBudget()
+    {
+        var store = new InMemoryGraphStore();
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "demo-repo" });
+        await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = "demo-repo",
+            DotnetProject = "Demo.Project",
+            Label = NodeLabel.Class,
+            Name = "OrderService",
+            QualifiedName = "Demo.Project.OrderService",
+            FilePath = "OrderService.cs"
+        });
+
+        var provider = new RecordingBatchProvider(1, providerName: "openai");
+        var service = new BatchAnalysisService(
+            store,
+            new SingleProviderRegistry(provider),
+            new RecordingMessageBus(),
+            new NoOpExclusionService(),
+            Options.Create(new AnalysisOptions { DefaultProvider = "anthropic", Model = "claude-fallback", MaxTokensPerAnalysis = 100 }),
+            new LocalFileSystem(),
+            NullLogger<BatchAnalysisService>.Instance,
+            analysisSettingsResolver: new FixedAnalysisSettingsResolver(new LlmAnalysisRuntimeConfig(
+                "openai",
+                "gpt-db",
+                MaxTokensPerAnalysis: 1234,
+                MaxTokensPerSynthesis: 5678,
+                MaxFileSizeKb: 1024,
+                MaxParallelAnalyses: 2,
+                MaxSourceChars: 9000,
+                UpdatedBy: null,
+                UpdatedAtUtc: null,
+                HasDbConfig: true)));
+
+        await service.SubmitAnalysisBatchAsync("demo-repo");
+
+        provider.LastBatchRequest.ShouldNotBeNull();
+        provider.LastBatchRequest.Model.ShouldBe("gpt-db");
+        provider.LastBatchRequest.MaxTokens.ShouldBe(1234);
+    }
+
+    private sealed class RecordingBatchProvider(long nodeId, string providerName = "lmstudio") : IAnalysisModelProvider
     {
         public int SubmitCalls { get; private set; }
         public int StatusCalls { get; private set; }
         public int ResultsCalls { get; private set; }
         public string? LastSubmittedPrompt { get; private set; }
         public string? LastSubmittedSystemPrompt { get; private set; }
+        public AnalysisRequestOptions? LastBatchRequest { get; private set; }
 
         public string ProviderName => providerName;
 
@@ -352,6 +396,7 @@ public class BatchAnalysisServiceBatchProviderTests
             SubmitCalls++;
             LastSubmittedPrompt = items.Single().Prompt.UserPrompt;
             LastSubmittedSystemPrompt = items.Single().Prompt.SystemPrompt;
+            LastBatchRequest = request;
             return Task.FromResult(new AnalysisBatchSubmissionResult("batch_1", "submitted"));
         }
 
@@ -387,6 +432,13 @@ public class BatchAnalysisServiceBatchProviderTests
     private sealed class SingleProviderRegistry(IAnalysisModelProvider provider) : IAnalysisProviderRegistry
     {
         public IAnalysisModelProvider GetProvider(string? providerName = null) => provider;
+    }
+
+    private sealed class FixedAnalysisSettingsResolver(
+        LlmAnalysisRuntimeConfig config) : IDbBackedAnalysisSettingsResolver
+    {
+        public Task<LlmAnalysisRuntimeConfig> GetAnalysisAsync(CancellationToken ct = default) =>
+            Task.FromResult(config);
     }
 
     private sealed class RecordingMessageBus : IMessageBus

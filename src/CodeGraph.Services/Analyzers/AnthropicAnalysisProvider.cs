@@ -12,7 +12,8 @@ public class AnthropicAnalysisProvider(
     IHttpClientFactory httpClientFactory,
     AnthropicCircuitBreaker circuitBreaker,
     IOptions<AnalysisOptions> optionsAccessor,
-    ILogger<AnthropicAnalysisProvider> logger) : IAnalysisModelProvider
+    ILogger<AnthropicAnalysisProvider> logger,
+    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null) : IAnalysisModelProvider
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
     private static readonly JsonSerializerOptions SnakeOpts = CodeGraphJsonDefaults.SnakeCase;
@@ -27,9 +28,10 @@ public class AnthropicAnalysisProvider(
         AnalysisRequestOptions request,
         CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var body = new AnthropicMessageRequest
         {
-            Model = request.Model ?? options.Model,
+            Model = request.Model ?? providerConfig.Model,
             MaxTokens = request.MaxTokens ?? options.MaxTokensPerSynthesis,
             System = prompt.SystemPrompt,
             Messages =
@@ -44,7 +46,7 @@ public class AnthropicAnalysisProvider(
 
         var http = httpClientFactory.CreateClient();
         using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Post, options.Anthropic.MessagesApiUrl, body), ct);
+            () => CreateRequest(HttpMethod.Post, BuildMessagesUrl(providerConfig), providerConfig, body), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -68,6 +70,7 @@ public class AnthropicAnalysisProvider(
         AnalysisRequestOptions request,
         CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var batchRequest = new AnthropicBatchCreateRequest
         {
             Requests = items.Select(item => new AnthropicBatchRequest
@@ -75,7 +78,7 @@ public class AnthropicAnalysisProvider(
                 CustomId = item.CustomId,
                 Params = new AnthropicMessageRequest
                 {
-                    Model = request.Model ?? options.Model,
+                    Model = request.Model ?? providerConfig.Model,
                     MaxTokens = request.MaxTokens ?? options.MaxTokensPerAnalysis,
                     System = item.Prompt.SystemPrompt,
                     Messages =
@@ -92,7 +95,7 @@ public class AnthropicAnalysisProvider(
 
         var http = httpClientFactory.CreateClient();
         using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Post, options.Anthropic.BatchApiBaseUrl, batchRequest), ct);
+            () => CreateRequest(HttpMethod.Post, BuildBatchUrl(providerConfig), providerConfig, batchRequest), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -112,9 +115,10 @@ public class AnthropicAnalysisProvider(
         string batchId,
         CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var http = httpClientFactory.CreateClient();
         using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Get, $"{options.Anthropic.BatchApiBaseUrl}/{batchId}"), ct);
+            () => CreateRequest(HttpMethod.Get, $"{BuildBatchUrl(providerConfig)}/{batchId}", providerConfig), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -138,9 +142,10 @@ public class AnthropicAnalysisProvider(
         IReadOnlyList<string>? requestIds = null,
         CancellationToken ct = default)
     {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
         var http = httpClientFactory.CreateClient();
         using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Get, $"{options.Anthropic.BatchApiBaseUrl}/{batchId}/results"), ct);
+            () => CreateRequest(HttpMethod.Get, $"{BuildBatchUrl(providerConfig)}/{batchId}/results", providerConfig), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -174,16 +179,57 @@ public class AnthropicAnalysisProvider(
         return results;
     }
 
-    private HttpRequestMessage CreateRequest(HttpMethod method, string url, object? body = null)
+    private Task<LlmProviderRuntimeConfig> ResolveProviderConfigAsync(CancellationToken ct) =>
+        providerConfigResolver?.GetProviderAsync(ProviderName, ct)
+        ?? Task.FromResult(LlmProviderRuntimeConfig.FromOptions(ProviderName, options));
+
+    private HttpRequestMessage CreateRequest(
+        HttpMethod method,
+        string url,
+        LlmProviderRuntimeConfig providerConfig,
+        object? body = null)
     {
         var request = new HttpRequestMessage(method, url);
-        request.Headers.Add("x-api-key", options.Anthropic.ApiKey);
-        request.Headers.Add("anthropic-version", options.Anthropic.Version);
+        if (!string.IsNullOrWhiteSpace(providerConfig.ApiKey))
+            request.Headers.Add("x-api-key", providerConfig.ApiKey);
+
+        if (!string.IsNullOrWhiteSpace(providerConfig.ApiVersion))
+            request.Headers.Add("anthropic-version", providerConfig.ApiVersion);
 
         if (body is not null)
             request.Content = JsonContent.Create(body, options: SnakeOpts);
 
         return request;
+    }
+
+    private string BuildMessagesUrl(LlmProviderRuntimeConfig providerConfig)
+    {
+        if (string.IsNullOrWhiteSpace(providerConfig.EndpointUrl))
+            return options.Anthropic.MessagesApiUrl;
+
+        var endpoint = providerConfig.EndpointUrl.TrimEnd('/');
+        if (endpoint.EndsWith("/messages/batches", StringComparison.OrdinalIgnoreCase))
+            return endpoint[..^"/batches".Length];
+
+        if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
+            return endpoint;
+
+        return $"{endpoint}/messages";
+    }
+
+    private string BuildBatchUrl(LlmProviderRuntimeConfig providerConfig)
+    {
+        if (string.IsNullOrWhiteSpace(providerConfig.EndpointUrl))
+            return options.Anthropic.BatchApiBaseUrl.TrimEnd('/');
+
+        var endpoint = providerConfig.EndpointUrl.TrimEnd('/');
+        if (endpoint.EndsWith("/messages/batches", StringComparison.OrdinalIgnoreCase))
+            return endpoint;
+
+        if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
+            return $"{endpoint}/batches";
+
+        return $"{endpoint}/messages/batches";
     }
 
     private static string? ExtractText(IReadOnlyList<AnthropicContentBlock>? content)
