@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ModelContextProtocol.Server;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -15,12 +17,20 @@ namespace CodeGraph.Services.Assistant;
 [McpServerToolType]
 public class CodeGraphMcpServer(
     GraphQueryEngine query,
+    IProjectQueryService projectQuery,
     IGraphStore store,
     IWikiStore wikiStore,
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     ICommunityDetectionService communityDetection,
     IImpactAnalysisService impactAnalysis)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        WriteIndented = true,
+    };
+
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
 
     [McpServerTool(Name = "get_graph_schema"),
@@ -72,6 +82,36 @@ public class CodeGraphMcpServer(
         }
 
         return string.Join('\n', lines);
+    }
+
+    [McpServerTool(Name = "list_schemas", Title = "List Database Schemas", ReadOnly = true)]
+    [Description("List indexed database schema projects with table/view/procedure counts. Use this before get_schema_catalog to discover available database schemas.")]
+    public async Task<string> ListSchemas(
+        [Description("Optional search across schema project, server, and database names")] string? search = null,
+        [Description("Optional server name filter")] string? server = null,
+        [Description("Optional database name filter")] string? database = null,
+        [Description("Page number, 1-based")] int page = 1,
+        [Description("Page size")] int pageSize = 25)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var result = await projectQuery.ListSchemasAsync(search, server, database, page, pageSize);
+        if (result.Items.Count == 0)
+            return JsonSerializer.Serialize(result, JsonOptions);
+
+        return JsonSerializer.Serialize(result, JsonOptions);
+    }
+
+    [McpServerTool(Name = "get_schema_catalog", Title = "Get Schema Catalog", ReadOnly = true)]
+    [Description("Get a detailed catalog for an indexed database schema, including tables, views, procedures, columns, indexes, foreign keys, and parameters.")]
+    public async Task<string> GetSchemaCatalog(
+        [Description("Schema project name from list_schemas, for example db:server/database")] string name)
+    {
+        var result = await projectQuery.GetSchemaCatalogAsync(name);
+        return result is null
+            ? $"Schema project '{name}' was not found. Call list_schemas to discover available schemas."
+            : JsonSerializer.Serialize(result, JsonOptions);
     }
 
     [McpServerTool(Name = "search_graph"),

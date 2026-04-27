@@ -30,7 +30,7 @@ public class NuGetReferenceExtractorTests
         var refs = _extractor.ExtractFromProjectXml("""
             <Project Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
-                <TargetFramework>net9.0</TargetFramework>
+                <TargetFramework>net10.0</TargetFramework>
               </PropertyGroup>
             </Project>
             """);

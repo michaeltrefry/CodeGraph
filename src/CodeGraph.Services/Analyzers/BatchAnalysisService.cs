@@ -11,6 +11,7 @@ using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Models;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Prompts;
 
 namespace CodeGraph.Services.Analyzers;
 
@@ -21,7 +22,8 @@ public partial class BatchAnalysisService(
     IExclusionService exclusionService,
     IOptions<AnalysisOptions> optionsAccessor,
     IFileSystem fileSystem,
-    ILogger<BatchAnalysisService> logger)
+    ILogger<BatchAnalysisService> logger,
+    IAgentPromptService? agentPromptService = null)
     : IBatchAnalysisService
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
@@ -84,7 +86,9 @@ public partial class BatchAnalysisService(
             var customId = SanitizeCustomId($"proj_{repoName}_{projectName}");
 
             var requestPayload = new AnalysisBatchRequestPayload(
-                new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, prompt),
+                new AnalysisPrompt(
+                    await GetRepositoryAnalysisSystemPromptAsync("project analysis"),
+                    prompt),
                 new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerAnalysis));
 
             batchRequests.Add(new AnalysisBatchRequestItem(

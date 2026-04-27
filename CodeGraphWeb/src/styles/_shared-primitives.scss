@@ -1,0 +1,141 @@
+.memory-page .loading-message,
+.memory-page .empty-message,
+.clusters-page .loading-message,
+.clusters-page .empty-message {
+  color: var(--cg-text-soft);
+  font-size: 14px;
+  text-align: center;
+  padding: 60px 20px;
+}
+
+.memory-page .diagnostic-card,
+.memory-page .migration-samples,
+.memory-page .result-column,
+.memory-page .main-panel,
+.memory-page .detail-panel,
+.memory-page .claim-row,
+.memory-page .neighbor-row,
+.memory-page .evidence-row,
+.memory-page .observation-row,
+.clusters-page .filter-panel,
+.clusters-page .graph-wrapper,
+.clusters-page .detail-panel,
+.clusters-page .cluster-card,
+.repo-header .label-tile,
+.repo-header .project-tile {
+  background: var(--cg-surface-bg);
+  border: 1px solid var(--cg-border-default);
+  border-radius: var(--cg-radius-md);
+}
+
+.repo-header .support-section {
+  background: var(--cg-surface-muted);
+  border: 1px solid var(--cg-border-soft);
+  border-radius: var(--cg-radius-md);
+}
+
+.repo-header .security-section {
+  background: var(--cg-surface-alert);
+  border: 1px solid var(--cg-border-alert);
+  border-radius: var(--cg-radius-md);
+}
+
+.memory-page .diagnostic-label,
+.memory-page .sample-title,
+.memory-page .result-title,
+.memory-page .detail-section h3,
+.memory-page .claim-subsection strong,
+.clusters-page .filter-title,
+.clusters-page .detail-panel h3,
+.repo-header .support-detail-label,
+.repo-header .findings-category,
+.repo-header .health-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--cg-text-muted);
+}
+
+.memory-page .header-stat,
+.memory-page .range-label,
+.memory-page .diagnostics-loading,
+.memory-page .result-meta,
+.memory-page .result-detail,
+.memory-page .result-empty,
+.memory-page .detail-empty,
+.memory-page .detail-meta,
+.memory-page .memory-row-meta,
+.memory-page .memory-row-summary,
+.memory-page .claim-meta,
+.memory-page .neighbor-meta,
+.memory-page .claim-detail-meta,
+.memory-page .evidence-snippet,
+.clusters-page .header-stat,
+.clusters-page .graph-legend,
+.clusters-page .detail-stats.compact,
+.clusters-page .member-edges,
+.clusters-page .connection-count,
+.clusters-page .connection-types,
+.repo-header .repo-meta,
+.repo-header .support-detail-meta,
+.repo-header .findings-count,
+.repo-header .health-analysis-label,
+.repo-header .muted {
+  color: var(--cg-text-muted);
+}
+
+.memory-page .result-card,
+.memory-page .memory-row,
+.memory-page .claim-row,
+.memory-page .neighbor-row,
+.clusters-page .member-row,
+.clusters-page .connection-row,
+.clusters-page .cluster-card,
+.repo-header .label-tile,
+.repo-header .project-tile-link {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.memory-page .result-card:hover,
+.memory-page .claim-row:hover,
+.memory-page .neighbor-row:hover,
+.clusters-page .member-row:hover,
+.clusters-page .connection-row:hover,
+.clusters-page .cluster-card:hover,
+.repo-header .label-tile:hover,
+.repo-header .project-tile-link:hover {
+  background: var(--cg-surface-subtle);
+}
+
+.memory-page .detail-stats .stat,
+.clusters-page .detail-stats:not(.compact) .stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px;
+  text-align: center;
+  background: var(--cg-surface-muted);
+  border: 1px solid var(--cg-border-default);
+  border-radius: var(--cg-radius-md);
+}
+
+.memory-page .stat-value,
+.clusters-page .detail-stats .stat-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--cg-text-strong);
+}
+
+.memory-page .stat-label,
+.clusters-page .detail-stats .stat-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cg-text-muted);
+}

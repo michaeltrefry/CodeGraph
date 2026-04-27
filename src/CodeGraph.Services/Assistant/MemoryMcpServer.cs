@@ -21,7 +21,7 @@ public class MemoryMcpServer
 
     [McpServerTool(Name = "store_memory_v2", Title = "Store Memory V2", ReadOnly = false, Destructive = false)]
     [Description("""
-        Store claim-centric memory in the Neo4j memory graph.
+        Store claim-centric memory in the configured CodeGraph memory graph.
         Prefer typed MCP arguments for entities, claims, and evidence. A legacy JSON payload is still accepted through "data" for compatibility.
 
         Entity format: { "id": "michael", "label": "Michael", "type": "person", "canonicalName": "Michael", "aliases": ["mike"] }

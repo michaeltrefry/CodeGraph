@@ -8,6 +8,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Prompts;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -21,7 +22,8 @@ public class ProjectReviewService(
     IProjectReviewBackgroundRunner backgroundRunner,
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     IOptions<AnalysisOptions> analysisOptionsAccessor,
-    ILogger<ProjectReviewService> logger) : IProjectReviewService
+    ILogger<ProjectReviewService> logger,
+    IAgentPromptService? agentPromptService = null) : IProjectReviewService
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
@@ -352,7 +354,12 @@ public class ProjectReviewService(
             context.MaxFindings);
 
         var response = await provider.ExecuteAsync(
-            new AnalysisPrompt(ProjectReviewWorkflowPromptBuilder.SystemPrompt, prompt),
+            new AnalysisPrompt(
+                await GetProjectReviewSystemPromptAsync(
+                    AgentPromptCatalog.CodeReviewWorkflowSystemPromptKey,
+                    ProjectReviewWorkflowPromptBuilder.SystemPrompt,
+                    "project review workflow"),
+                prompt),
             new AnalysisRequestOptions(
                 Model: string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
                 MaxTokens: Math.Min(analysisOptions.MaxTokensPerSynthesis, 8_000)),
@@ -386,7 +393,12 @@ public class ProjectReviewService(
         try
         {
             var response = await provider.ExecuteAsync(
-                new AnalysisPrompt(ProjectReviewSynthesisPromptBuilder.SystemPrompt, prompt),
+                new AnalysisPrompt(
+                    await GetProjectReviewSystemPromptAsync(
+                        AgentPromptCatalog.CodeReviewSynthesisSystemPromptKey,
+                        ProjectReviewSynthesisPromptBuilder.SystemPrompt,
+                        "project review synthesis"),
+                    prompt),
                 new AnalysisRequestOptions(
                     Model: string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
                     MaxTokens: Math.Min(analysisOptions.MaxTokensPerSynthesis, 6_000)),
@@ -415,6 +427,14 @@ public class ProjectReviewService(
                 analysisOptions.Review.MaxFindings);
         }
     }
+
+    private Task<string> GetProjectReviewSystemPromptAsync(string promptKey, string defaultPrompt, string usage)
+        => AgentPromptExecution.GetEffectivePromptOrDefaultAsync(
+            agentPromptService,
+            promptKey,
+            defaultPrompt,
+            logger,
+            usage);
 
     private ProjectReviewWorkflowResult VerifyWorkflow(ProjectReviewWorkflowResult workflow, ProjectReviewContext context)
     {

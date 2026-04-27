@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS job_schedules (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    job_type VARCHAR(255) NOT NULL,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    cron_expression VARCHAR(255) NOT NULL,
+    time_zone_id VARCHAR(128) NOT NULL DEFAULT 'UTC',
+    args_json JSON NOT NULL,
+    next_run_utc DATETIME(3) NOT NULL,
+    last_run_started_utc DATETIME(3) NULL,
+    last_run_completed_utc DATETIME(3) NULL,
+    last_run_status VARCHAR(64) NULL,
+    last_error TEXT NULL,
+    lease_acquired_utc DATETIME(3) NULL,
+    lease_owner VARCHAR(255) NULL,
+    lease_expires_utc DATETIME(3) NULL,
+    created_at_utc DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at_utc DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uq_job_schedules_name (name),
+    INDEX ix_job_schedules_due (is_enabled, next_run_utc, lease_expires_utc),
+    INDEX ix_job_schedules_lease_owner (lease_owner)
+) ENGINE=InnoDB;

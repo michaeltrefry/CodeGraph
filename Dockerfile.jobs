@@ -9,6 +9,7 @@ COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
 COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
 COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
 COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+COPY src/CodeGraph.Data.MariaDb/CodeGraph.Data.MariaDb.csproj src/CodeGraph.Data.MariaDb/
 
 RUN dotnet restore src/CodeGraph.Jobs/CodeGraph.Jobs.csproj
 
@@ -20,6 +21,7 @@ FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 
 COPY --from=build /app/publish .
+COPY sql/migrations /app/sql/migrations
 
 ENV DOTNET_ENVIRONMENT=Staging
 

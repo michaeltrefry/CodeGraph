@@ -62,6 +62,14 @@ export class NodeDetailComponent implements OnInit, AfterViewChecked {
 
   highlightLine = signal<number | null>(null);
 
+  projectBaseRoute(project: string): string {
+    return project.startsWith('db:') ? '/schemas' : '/repos';
+  }
+
+  projectBaseLabel(project: string): string {
+    return project.startsWith('db:') ? 'Schemas' : 'Repositories';
+  }
+
   ngOnInit() {
     this.route.paramMap.subscribe(params => {
       const id = +(params.get('id') ?? '0');

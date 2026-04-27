@@ -1,73 +1,99 @@
-<div class="page">
-  <div class="page-header">
-    <h1>Repositories</h1>
-    <div class="filter-bar">
+<div class="cg-page repos-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Repositories</h1>
+      <p>
+        {{ total() }} indexed
+        @if (groups().length) {
+          · across {{ groups().length }} {{ groups().length === 1 ? 'group' : 'groups' }}
+        }
+      </p>
+    </div>
+  </header>
+
+  <div class="repos-filters">
+    <div class="repos-filters-left">
       <input
-        class="search-box"
-        type="text"
-        placeholder="Search repositories…"
+        class="repos-search"
+        type="search"
+        placeholder="Search repositories..."
         [value]="search()"
         (input)="onSearchInput($any($event.target).value)" />
-      <app-typeahead
-        class="group-typeahead"
-        [items]="groupItems()"
-        [placeholder]="'Filter groups…'"
-        [showAllOption]="true"
-        [allLabel]="'All groups'"
-        (selected)="onGroupChange($event)"
-        (allSelected)="onGroupChange('')"
-      />
+
+      @if (groups().length > 1) {
+        <app-typeahead
+          class="repos-filter-typeahead"
+          placeholder="All groups"
+          [items]="groupItems()"
+          [minChars]="0"
+          [showAllOption]="true"
+          allLabel="All groups"
+          [ngModel]="group()"
+          (selected)="onGroupChange($event)"
+          (allSelected)="onGroupChange('')" />
+      }
     </div>
+
+    <span class="cg-small cg-mono cg-muted">{{ items().length }} shown</span>
   </div>
 
   @if (loading()) {
-    <div class="loading">Loading…</div>
-  } @else {
-    <div class="meta">
-      {{ total() }} repositories{{ search() ? ' matching "' + search() + '"' : '' }}
+    <div class="repos-state">Loading...</div>
+  } @else if (!items().length) {
+    <div class="repos-state">
+      No repositories found{{ search() ? ' matching "' + search() + '"' : '' }}.
     </div>
-
-    <table class="repo-table">
-      <thead>
-        <tr>
-          <th>Repository</th>
-          <th>Group</th>
-          <th>Language</th>
-          <th>Framework</th>
-          <th>Last Indexed</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        @for (repo of items(); track repo.name) {
+  } @else {
+    <div class="cg-card">
+      <table class="cg-table repos-table">
+        <thead>
           <tr>
-            <td>
-              <a [routerLink]="['/repos', repo.name]" class="repo-link">
-                {{ repo.name }}
-              </a>
-              @if (repo.isFoundational) {
-                <span class="badge badge-foundational">foundational</span>
-              }
-            </td>
-            <td>{{ repo.sourceGroup || '—' }}</td>
-            <td>{{ repo.language || '—' }}</td>
-            <td>{{ repo.framework || '—' }}</td>
-            <td>{{ formatDate(repo.indexedAt) }}</td>
-            <td>
-              <a [routerLink]="['/repos', repo.name]" class="btn-small">Browse →</a>
-            </td>
+            <th>Repository</th>
+            <th>Group</th>
+            <th>Language</th>
+            <th>Framework</th>
+            <th>Last indexed</th>
+            <th></th>
           </tr>
-        } @empty {
-          <tr><td colspan="6" class="empty">No repositories found.</td></tr>
-        }
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          @for (repo of items(); track repo.name) {
+            <tr>
+              <td>
+                <div class="repo-name-cell">
+                  <a class="cg-mono-link" [routerLink]="['/repos', repo.name]">{{ repo.name }}</a>
+                  @if (repo.isFoundational) {
+                    <span class="cg-chip cg-chip-accent">foundational</span>
+                  }
+                </div>
+              </td>
+              <td class="cg-muted cg-small cg-mono">{{ repo.sourceGroup || '-' }}</td>
+              <td>
+                @if (repo.language) {
+                  <span class="cg-lang" [attr.data-lang]="languageKey(repo.language)">
+                    <span class="cg-lang-dot"></span>
+                    <span>{{ repo.language }}</span>
+                  </span>
+                } @else {
+                  <span class="cg-faint">-</span>
+                }
+              </td>
+              <td class="cg-muted cg-small">{{ repo.framework || '-' }}</td>
+              <td class="cg-muted cg-small">{{ relTime(repo.indexedAt) }}</td>
+              <td class="cg-cell-actions">
+                <a class="repo-row-open" [routerLink]="['/repos', repo.name]" aria-label="Open repository">›</a>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
 
     @if (totalPages() > 1) {
       <div class="pagination">
-        <button (click)="prevPage()" [disabled]="page() === 1">← Prev</button>
+        <button class="cg-btn" type="button" (click)="prevPage()" [disabled]="page() === 1">Prev</button>
         <span>Page {{ page() }} of {{ totalPages() }}</span>
-        <button (click)="nextPage()" [disabled]="page() === totalPages()">Next →</button>
+        <button class="cg-btn" type="button" (click)="nextPage()" [disabled]="page() === totalPages()">Next</button>
       </div>
     }
   }

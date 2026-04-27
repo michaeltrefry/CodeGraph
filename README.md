@@ -1,8 +1,14 @@
 # CodeGraph
 
-CodeGraph is a self-maintaining .NET 10 platform that indexes source repositories into a Neo4j-backed knowledge graph, generates `CODEGRAPH.md` documentation, exposes graph and memory tooling over REST and MCP, and ships with an Angular UI for exploration, reviews, operations, and memory browsing.
+CodeGraph is a self-maintaining .NET 10 platform that indexes source repositories into a MariaDB-backed knowledge graph, generates `CODEGRAPH.md` documentation, exposes graph and memory tooling over REST and MCP, and ships with an Angular UI for exploration, reviews, operations, and memory browsing.
 
 It is designed around one rule: if a feature needs ongoing human babysitting to stay correct, it will rot.
+
+## Standalone Rebase Note
+
+This branch starts the standalone rebase from `/Users/michael/Repos/TC.CodeGraphApi` into this repository. The target runtime is `.NET 10`, and the first phase is dependency removal, donor-surface import, and `TC.CodeGraphApi` to `CodeGraph` renaming. Behavior changes should stay out of the mechanical import slices unless they are required to remove TC platform dependencies or keep the solution buildable.
+
+The working inventory is tracked in [plans/standalone-rebase-inventory.md](/Users/michael/Repos/CodeGraph/plans/standalone-rebase-inventory.md).
 
 ## Core Principle
 
@@ -11,14 +17,14 @@ It is designed around one rule: if a feature needs ongoing human babysitting to 
 ## What CodeGraph Does
 
 - Indexes repositories into a structural graph of code, APIs, messaging, jobs, packages, and database objects
-- Extracts across multiple languages: C# via Roslyn, TypeScript/Angular via a Node sidecar, T-SQL via ScriptDom, and Tree-sitter as a fallback
+- Extracts across multiple languages: C# via Roslyn, TypeScript/Angular via a Node sidecar, T-SQL via ScriptDom, Ansible, Terraform/HCL, ColdFusion, and Tree-sitter as a fallback
 - Recognizes modern .NET repository layouts, including solution-level analysis from top-level `.sln` and `.slnx` files
 - Links repositories through HTTP calls, MassTransit messaging, shared packages, and other cross-repo signals
 - Generates natural-language repository and project analysis with confidence indicators and optional auto-commit/auto-push of `CODEGRAPH.md`
 - Supports multiple AI backends for analysis: Anthropic, OpenAI, Gemini, and local OpenAI-compatible endpoints
 - Computes repository health, hotspot metrics, security findings, .NET support posture, and repository vitality trends
 - Runs project-level and repository-level AI code reviews with persisted findings and SSE streaming updates
-- Stores claim-centric personal memory in Neo4j, including evidence, conflicts, bounded subgraphs, and frontier expansion
+- Stores claim-centric personal memory in MariaDB, including evidence, conflicts, bounded subgraphs, and frontier expansion
 - Serves a web UI for repositories, graph views, reviews, impact analysis, wiki pages, schedules, and a dedicated memory browser
 - Exposes graph and memory capabilities over MCP for assistants and other compatible clients
 
@@ -31,16 +37,20 @@ CodeGraph/
 │   ├── CodeGraph.Models/                # Domain models, request/response DTOs, messages, memory contracts
 │   ├── CodeGraph.Services/              # Analysis, indexing, query engine, assistant, reviews, memory, wiki
 │   ├── CodeGraph.Data/                  # Store interfaces and shared entities
-│   ├── CodeGraph.Data.Neo4j/            # Neo4j-backed implementations
+│   ├── CodeGraph.Data.MariaDb/          # MariaDB/MySQL-backed implementations
+│   ├── CodeGraph.Data.Neo4j/            # Temporary compatibility/export provider
 │   ├── CodeGraph.Jobs/                  # Background job host and embedded schedule runner
+│   ├── CodeGraph.Extractors.Ansible/     # Ansible playbook/role extraction
+│   ├── CodeGraph.Extractors.ColdFusion/  # ColdFusion CFM/CFC extraction
 │   ├── CodeGraph.Extractors.CSharp/     # Roslyn-based extraction
-│   ├── CodeGraph.Extractors.TypeScript/ # TypeScript/Angular sidecar integration
 │   ├── CodeGraph.Extractors.Sql/        # T-SQL extraction
+│   ├── CodeGraph.Extractors.Terraform/  # Terraform/HCL extraction
+│   ├── CodeGraph.Extractors.TypeScript/ # TypeScript/Angular sidecar integration
 │   ├── CodeGraph.Extractors.TreeSitter/ # Fallback multi-language extraction
 │   ├── CodeGraph.Tests/                 # Main test suite
 │   └── CodeGraph.Jobs.Tests/            # Job-host test suite
 ├── CodeGraphWeb/                        # Angular frontend
-└── src/CodeGraph.Api/Migrations/        # Neo4j schema and feature migrations
+└── sql/migrations/                      # MariaDB schema and feature migrations
 ```
 
 ### Dependency flow
@@ -51,7 +61,7 @@ Models <- Data <- Services <- Extractors.*
                          <- Jobs
 ```
 
-`CodeGraph.Api` hosts the REST API, the MCP endpoint, and the MassTransit consumers. `CodeGraph.Jobs` runs scheduled and manual background jobs. `CodeGraphWeb` is the Angular UI. Neo4j is the primary datastore, and RabbitMQ backs the event-driven pipeline.
+`CodeGraph.Api` hosts the REST API, the MCP endpoint, and the MassTransit consumers. `CodeGraph.Jobs` runs scheduled and manual background jobs. `CodeGraphWeb` is the Angular UI. MariaDB/MySQL is the primary datastore, RabbitMQ backs the event-driven pipeline, and Neo4j remains only as a temporary compatibility/export provider during the standalone rebase.
 
 ## Key Capabilities
 
@@ -92,6 +102,7 @@ Models <- Data <- Services <- Extractors.*
 
 - Repository discovery from local folders, GitHub, or GitLab
 - Embedded job scheduling and manual job execution from the settings surface
+- Durable indexer runs for repository processing, discovery, linking, community detection, batch processing, and database schema sync
 - Hierarchical wiki with sections, nested pages, attachments, revisions, and auto-generated MCP documentation
 
 ## AI Provider Support
@@ -114,7 +125,7 @@ Current config includes provider blocks for:
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- Neo4j 5.x
+- MariaDB/MySQL 11.x-compatible server
 - RabbitMQ
 - [Node.js 18+](https://nodejs.org/)
 - A repository source configuration: `Folder`, `GitHub`, or `GitLab`
@@ -134,7 +145,10 @@ Useful settings to know:
 
 | Setting | Purpose |
 |---|---|
-| `CodeGraph:StorageOptions:*` | Neo4j connection and embedding model settings |
+| `CodeGraph:StorageOptions:*` | MariaDB provider, migration, encryption-key, and embedding model settings |
+| `CodeGraph:AuthOptions:*` | Standalone auth settings: local dev identity by default, optional OIDC/JWT authority/audience/client/scope/CORS settings |
+| `CodeGraph:McpOptions:RequirePersonalAccessToken` | Require issued MCP PATs for `/mcp`; defaults off for local dev. When OAuth auth is enabled, `/mcp` is PAT-only even if this is not set. |
+| `CodeGraph:AssistantRetentionOptions:*` | Stale assistant run and assistant history/debug retention settings used by the jobs cleanup task |
 | `CodeGraph:RepositorySource:Provider` | Choose `Folder`, `GitHub`, or `GitLab` |
 | `CodeGraph:RepositorySource:Folder:RootPath` | Local repo root when using the folder provider |
 | `CodeGraph:AnalysisOptions:DefaultProvider` | Default analysis backend |
@@ -188,13 +202,15 @@ mkcert -cert-file CodeGraphWeb/certs/localhost.pem -key-file CodeGraphWeb/certs/
 The compose stack terminates TLS in the `codegraph-web` container and forwards the API and MCP traffic to the internal `codegraph-api` container over the Docker network.
 By default it binds only to `127.0.0.1:8443` so it does not take over shared host ports like `80` or `443`.
 
-The compose stack includes:
+The compose stack includes the CodeGraph application services:
 
 - `codegraph-api`
 - `jobs`
 - `codegraph-web`
-- `neo4j`
-- `rabbitmq`
+
+MariaDB and RabbitMQ are expected to be shared containers on the external `trefry-network`; this compose file does not create them. The default container hostnames are `mariadb` and `rabbitmq`, and you can override `CodeGraph__StorageOptions__MariaDbConnectionString` or `CodeGraph__RabbitMqOptions__Host` when your shared services use different names.
+
+By default compose mounts the parent repo folder (`../`) into the containers at `/repos`, with a writable named volume at `/repos/.cache`. Override `CODEGRAPH_DOCKER_REPOS_MOUNT` when your local repositories live somewhere else.
 
 Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`.
 
@@ -204,6 +220,44 @@ Docker HTTPS endpoints:
 - API: [https://localhost:8443/api](https://localhost:8443/api)
 - Swagger: [https://localhost:8443/swagger](https://localhost:8443/swagger)
 - MCP: [https://localhost:8443/mcp](https://localhost:8443/mcp)
+
+### Public trefry.net OAuth deployment
+
+For the public deployment, expose the services as:
+
+- Web UI: `https://codegraph.trefry.net`
+- API: `https://codegraph-api.trefry.net/api`
+- MCP: `https://codegraph-mcp.trefry.net/mcp`
+- Identity provider: `https://identity.trefry.net`
+
+The Angular app uses Authorization Code + PKCE. The API validates bearer JWTs from the configured authority. MCP access is restricted to user-issued personal access tokens and should not accept browser OAuth tokens.
+
+Required public auth settings:
+
+```bash
+CodeGraph__AuthOptions__Enabled=true
+CodeGraph__AuthOptions__Authority=https://identity.trefry.net/realms/trefry
+CodeGraph__AuthOptions__Audience=codegraph-api
+CodeGraph__AuthOptions__ClientId=codegraph-web
+CodeGraph__AuthOptions__Scope="openid profile email"
+CodeGraph__AuthOptions__AuthorizationUrl=https://identity.trefry.net/realms/trefry/protocol/openid-connect/auth
+CodeGraph__AuthOptions__TokenUrl=https://identity.trefry.net/realms/trefry/protocol/openid-connect/token
+CodeGraph__AuthOptions__EndSessionUrl=https://identity.trefry.net/realms/trefry/protocol/openid-connect/logout
+CodeGraph__AuthOptions__AllowedOrigins__0=https://codegraph.trefry.net
+CodeGraph__AuthOptions__RequireHttpsMetadata=true
+CodeGraph__McpOptions__RequirePersonalAccessToken=true
+```
+
+Register the SPA client in `identity.trefry.net` with redirect URI `https://codegraph.trefry.net/auth/callback`, post-logout redirect URI `https://codegraph.trefry.net`, and allow CORS/token calls from `https://codegraph.trefry.net`.
+
+### GitHub Actions CI/CD
+
+GitHub Actions workflows live under `.github/workflows`:
+
+- `ci.yml` runs on pull requests and pushes to `main`/`codex/**`. It restores, builds, and tests the .NET solution; builds and tests the Angular app; runs the browser shell smoke; and validates Docker image builds for API, jobs, and web.
+- `deploy.yml` runs on `main` and can be started manually. It publishes API, jobs, and web images to GHCR, then deploys through SSH when the repository or environment variable `CODEGRAPH_DEPLOY_ENABLED=true`.
+
+Deployment uses `docker-compose.yml` plus `deploy/docker-compose.production.yml` on the host. Required GitHub environment secrets are documented in [deploy/README.md](/Users/michael/Repos/CodeGraph/deploy/README.md).
 
 ## Event-Driven Pipeline
 
@@ -300,13 +354,28 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 | `POST /api/settings/linkAndDetect` | Link then detect communities |
 | `POST /api/settings/processBatchAnalysis` | Resume/process pending batch analysis |
 | `POST /api/settings/discover` | Discover repositories from the configured source |
-| `GET /api/settings/db-health` | Neo4j health and index diagnostics |
+| `GET /api/settings/db-health` | MariaDB schema/index health diagnostics |
 | `GET/POST/PUT/DELETE /api/settings/schedules...` | Embedded job scheduling |
 | `GET/POST/PUT/DELETE /api/settings/sections...` | Wiki section management |
 | `GET/POST/PUT/DELETE /api/settings/exclusions...` | Exclusion rule management |
 | `POST /api/settings/mcp/regenerate` | Rebuild generated MCP documentation pages |
 | `GET /api/wiki/...` | Wiki tree, page, revision, and attachment operations |
 | `POST /api/ask` | Streaming Ask experience |
+| `POST/GET /api/ask/runs...` | Persisted Ask runs, SSE replay, cancellation, and debug exchange inspection |
+| `GET/POST/DELETE /api/user/mcp-tokens...` | User MCP personal access token list/create/revoke |
+| `GET/POST/DELETE /api/admin/admins...` | Standalone admin-user management backed by MariaDB |
+| `GET/PUT/DELETE /api/admin/prompts...` | Admin prompt catalog and prompt override management for analysis, review, and Ask assistant system prompts |
+| `GET /api/admin/reports...` | Assistant, MCP, review, and repository-analysis usage reports |
+| `GET /api/migration/neo4j-to-mariadb/dry-run` | Ordered Neo4j-to-MariaDB migration plan with live counts for the repositories/graph slice |
+| `POST /api/migration/neo4j-to-mariadb/repositories-graph/run` | Execute the first Neo4j-to-MariaDB migration slice for repositories, graph nodes/edges, and cross-repo edges with returned checkpoints |
+| `GET/POST/PUT/DELETE /api/database-sources...` | Database source configuration with masked connection strings |
+| `POST /api/database-sources/{id}/sync` and `POST /api/database-sources/sync-all` | Queue and start durable schema-sync indexer runs |
+| `POST /api/indexer/repositories/process` | Queue durable processing for specific repositories |
+| `POST /api/indexer/repositories/reindex-all` | Queue durable re-indexing for all known repositories |
+| `POST /api/indexer/repositories/discover` | Queue durable repository discovery and processing |
+| `POST /api/indexer/link`, `/api/indexer/communities/detect`, and `/api/indexer/link-and-detect` | Queue durable graph linking and community operations |
+| `POST /api/indexer/batch-analysis/process` | Queue durable batch-analysis result processing |
+| `GET /api/indexer/runs` and `GET /api/indexer/runs/{runId}` | List recent durable indexer runs and inspect run status |
 
 ## Angular UI
 
@@ -318,9 +387,10 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 - `/impact` for blast-radius analysis
 - `/search` for global search
 - `/ask` for streaming assistant interactions
+- `/access-tokens` for user-managed MCP personal access tokens
 - `/memory` for the memory browser and entity-focused graph exploration
 - `/wiki/...` for the conventions/wiki system
-- `/settings/...` for operations, schedules, DB health, sections, and exclusions
+- `/settings/...` for operations, schedules, DB health, sections, exclusions, admin users, prompt overrides, database sources, reports, and assistant debug inspection
 
 ## MCP Server
 

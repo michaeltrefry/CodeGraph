@@ -16,18 +16,130 @@ public class ProjectQueryService(
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     public async Task<ProjectListResponse> ListAsync(string? search, string? group, int page, int pageSize)
     {
-        // Run filtered query and group list in parallel — both at the store layer
-        var repoTask = store.SearchRepositoriesAsync(search, group, page, pageSize);
-        var groupsTask = store.GetDistinctGroupsAsync();
-
-        await Task.WhenAll(repoTask, groupsTask);
-
-        var result = await repoTask;
-        var groups = (await groupsTask).ToList();
+        var result = await store.SearchRepositoriesAsync(search, group, page, pageSize);
+        var groups = (await store.GetDistinctGroupsAsync()).ToList();
 
         var items = result.Items.Select(MapProjectListItem).ToList();
 
         return new ProjectListResponse(items, result.TotalCount, page, pageSize, groups);
+    }
+
+    public async Task<SchemaListResponse> ListSchemasAsync(string? search, string? server, string? database, int page, int pageSize)
+    {
+        var repositories = await store.ListRepositoriesAsync();
+        var schemas = repositories
+            .Where(IsDatabaseSchemaProject)
+            .Select(project => new SchemaProject(
+                project,
+                GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "",
+                GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name)))
+            .Where(x => !string.IsNullOrWhiteSpace(x.ServerName) && !string.IsNullOrWhiteSpace(x.DatabaseName))
+            .ToList();
+
+        var filtered = schemas.AsEnumerable();
+
+        if (!string.IsNullOrWhiteSpace(server))
+            filtered = filtered.Where(x => x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase));
+
+        if (!string.IsNullOrWhiteSpace(database))
+            filtered = filtered.Where(x => x.DatabaseName.Equals(database, StringComparison.OrdinalIgnoreCase));
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            filtered = filtered.Where(x =>
+                x.Project.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.ServerName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.DatabaseName.Contains(search, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var filteredList = filtered
+            .OrderBy(x => x.ServerName)
+            .ThenBy(x => x.DatabaseName)
+            .ToList();
+
+        var countsByProject = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var schema in filteredList)
+            countsByProject[schema.Project.Name] = await store.GetNodeCountsByLabelForProjectAsync(schema.Project.Name);
+
+        var totalTables = countsByProject.Values.Sum(counts => GetLabelCount(counts, NodeLabel.Table));
+        var totalViews = countsByProject.Values.Sum(counts => GetLabelCount(counts, NodeLabel.View));
+        var totalProcedures = countsByProject.Values.Sum(counts => GetLabelCount(counts, NodeLabel.StoredProcedure));
+
+        var items = filteredList
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x =>
+            {
+                countsByProject.TryGetValue(x.Project.Name, out var counts);
+
+                return new SchemaListItem(
+                    x.Project.Name,
+                    x.ServerName,
+                    x.DatabaseName,
+                    GetLabelCount(counts, NodeLabel.Table),
+                    GetLabelCount(counts, NodeLabel.View),
+                    GetLabelCount(counts, NodeLabel.StoredProcedure),
+                    x.Project.IndexedAt,
+                    x.Project.Language,
+                    x.Project.Framework,
+                    x.Project.Properties);
+            })
+            .ToList();
+
+        var serverOptions = schemas
+            .Select(x => x.ServerName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var databaseOptions = schemas
+            .Where(x => string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.DatabaseName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new SchemaListResponse(
+            items,
+            filteredList.Count,
+            totalTables,
+            totalViews,
+            totalProcedures,
+            page,
+            pageSize,
+            serverOptions,
+            databaseOptions);
+    }
+
+    public async Task<SchemaCatalogResponse?> GetSchemaCatalogAsync(string name)
+    {
+        var project = await store.GetRepositoryByName(name);
+        if (project is null || !IsDatabaseSchemaProject(project))
+            return null;
+
+        var serverName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "";
+        var databaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name);
+
+        var tables = await store.FindNodesByLabelAsync(name, NodeLabel.Table);
+        var views = await store.FindNodesByLabelAsync(name, NodeLabel.View);
+        var procedures = await store.FindNodesByLabelAsync(name, NodeLabel.StoredProcedure);
+        var allObjects = tables.Concat(views).Concat(procedures).ToList();
+        var nodesById = allObjects.ToDictionary(node => node.Id);
+
+        var tableResponses = new List<SchemaObjectResponse>();
+        foreach (var table in tables.OrderBy(node => node.Name))
+            tableResponses.Add(await MapSchemaObjectAsync(table, nodesById));
+
+        var viewResponses = new List<SchemaObjectResponse>();
+        foreach (var view in views.OrderBy(node => node.Name))
+            viewResponses.Add(await MapSchemaObjectAsync(view, nodesById));
+
+        var procedureResponses = procedures
+            .OrderBy(node => node.Name)
+            .Select(MapSchemaProcedure)
+            .ToList();
+
+        return new SchemaCatalogResponse(name, serverName, databaseName, tableResponses, viewResponses, procedureResponses);
     }
 
     public async Task<ProjectDetailResponse?> GetDetailAsync(string name)
@@ -310,4 +422,228 @@ public class ProjectQueryService(
 
     internal static ProjectSecuritySummary MapSecuritySummary(ProjectSecuritySummaryEntity e) =>
         new(e.SecurityScore, e.CriticalCount, e.HighCount, e.MediumCount, e.LowCount, e.ComputedAt);
+
+    private async Task<SchemaObjectResponse> MapSchemaObjectAsync(
+        GraphNode node,
+        IReadOnlyDictionary<long, GraphNode> nodesById)
+    {
+        var columns = GetPropertyObjects(node.Properties, "columns")
+            .Select((properties, index) => MapSchemaColumn(node, properties, index + 1))
+            .ToList();
+
+        var edges = await store.FindEdgesBySourceAsync(node.Id);
+        var indexes = edges
+            .Where(edge => edge.Type == EdgeType.DEFINES &&
+                GetStringProperty(edge.Properties, "relationship")?.Equals("index", StringComparison.OrdinalIgnoreCase) == true)
+            .Select(MapSchemaIndex)
+            .ToList();
+
+        var foreignKeys = edges
+            .Where(edge => edge.Type is EdgeType.FOREIGN_KEY or EdgeType.QUERIES &&
+                GetStringProperty(edge.Properties, "relationship")?.Equals("foreign_key", StringComparison.OrdinalIgnoreCase) == true)
+            .Select(edge => MapSchemaForeignKey(node, edge, nodesById))
+            .ToList();
+
+        return new SchemaObjectResponse(
+            node.Id,
+            node.Name,
+            node.QualifiedName,
+            node.Label.ToString(),
+            GetStringProperty(node.Properties, "comment"),
+            columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToList(),
+            indexes,
+            foreignKeys,
+            columns);
+    }
+
+    private static SchemaColumnResponse MapSchemaColumn(GraphNode owner, Dictionary<string, object> properties, int ordinal)
+    {
+        var name = GetStringProperty(properties, "name") ?? $"column_{ordinal}";
+        return new SchemaColumnResponse(
+            ordinal,
+            name,
+            $"{owner.QualifiedName}.{name}",
+            ordinal,
+            GetStringProperty(properties, "dataType") ?? GetStringProperty(properties, "type") ?? "",
+            GetBoolProperty(properties, "nullable") ?? true,
+            GetBoolProperty(properties, "isPrimaryKey") ?? GetBoolProperty(properties, "is_primary_key") ?? false,
+            GetStringProperty(properties, "default"),
+            GetStringProperty(properties, "key"),
+            GetStringProperty(properties, "extra"),
+            GetStringProperty(properties, "comment"));
+    }
+
+    private static SchemaIndexResponse MapSchemaIndex(GraphEdge edge)
+    {
+        var columns = SplitCsv(GetStringProperty(edge.Properties, "columns"));
+        return new SchemaIndexResponse(
+            GetStringProperty(edge.Properties, "indexName") ?? GetStringProperty(edge.Properties, "index_name") ?? "unnamed",
+            GetBoolProperty(edge.Properties, "isUnique") ?? GetBoolProperty(edge.Properties, "is_unique") ?? false,
+            GetStringProperty(edge.Properties, "indexType") ?? GetStringProperty(edge.Properties, "index_type"),
+            columns);
+    }
+
+    private static SchemaForeignKeyResponse MapSchemaForeignKey(
+        GraphNode node,
+        GraphEdge edge,
+        IReadOnlyDictionary<long, GraphNode> nodesById)
+    {
+        nodesById.TryGetValue(edge.TargetId, out var target);
+        var referencedTable = target?.Name ??
+            GetStringProperty(edge.Properties, "referencedTable") ??
+            GetStringProperty(edge.Properties, "referenced_table") ??
+            "";
+
+        var columns = SplitCsv(GetStringProperty(edge.Properties, "columns"));
+        if (columns.Count == 0)
+        {
+            var column = GetStringProperty(edge.Properties, "column");
+            if (!string.IsNullOrWhiteSpace(column))
+                columns = [column];
+        }
+
+        var referencedColumns = SplitCsv(GetStringProperty(edge.Properties, "referencedColumns") ??
+            GetStringProperty(edge.Properties, "referenced_columns"));
+        if (referencedColumns.Count == 0)
+        {
+            var referencedColumn = GetStringProperty(edge.Properties, "referencedColumn") ??
+                GetStringProperty(edge.Properties, "referenced_column");
+            if (!string.IsNullOrWhiteSpace(referencedColumn))
+                referencedColumns = [referencedColumn];
+        }
+
+        return new SchemaForeignKeyResponse(
+            GetStringProperty(edge.Properties, "name") ?? $"FK_{node.Name}_{referencedTable}".TrimEnd('_'),
+            columns,
+            referencedTable,
+            referencedColumns);
+    }
+
+    private static SchemaProcedureResponse MapSchemaProcedure(GraphNode node)
+    {
+        var parameters = GetPropertyObjects(node.Properties, "parameters")
+            .Select((properties, index) => new SchemaParameterResponse(
+                GetStringProperty(properties, "name") ?? $"parameter_{index + 1}",
+                index + 1,
+                GetBoolProperty(properties, "isOutput") ?? GetBoolProperty(properties, "is_output") ?? false ? "OUT" : "IN",
+                GetStringProperty(properties, "dataType") ?? GetStringProperty(properties, "type") ?? "",
+                GetBoolProperty(properties, "nullable") ?? true))
+            .ToList();
+
+        return new SchemaProcedureResponse(
+            node.Id,
+            node.Name,
+            node.QualifiedName,
+            GetStringProperty(node.Properties, "routineType") ?? GetStringProperty(node.Properties, "routine_type") ?? "PROCEDURE",
+            GetStringProperty(node.Properties, "comment"),
+            parameters);
+    }
+
+    private static bool IsDatabaseSchemaProject(ProjectInfo project) =>
+        project.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
+        GetStringProperty(project.Properties, "serverName") is not null ||
+        GetStringProperty(project.Properties, "databaseName") is not null;
+
+    private static string GetDatabaseNameFromProject(string projectName)
+    {
+        var name = projectName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
+            ? projectName[3..]
+            : projectName;
+        var slash = name.LastIndexOf('/');
+        return slash >= 0 ? name[(slash + 1)..] : name;
+    }
+
+    private static int GetLabelCount(Dictionary<string, int>? counts, NodeLabel label) =>
+        counts is not null && counts.TryGetValue(label.ToString(), out var value) ? value : 0;
+
+    private static IReadOnlyList<Dictionary<string, object>> GetPropertyObjects(
+        Dictionary<string, object>? properties,
+        string key)
+    {
+        var value = GetPropertyValue(properties, key);
+        if (value is null)
+            return [];
+
+        if (value is JsonElement element)
+        {
+            if (element.ValueKind != JsonValueKind.Array)
+                return [];
+
+            return element.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.Object)
+                .Select(item => item.EnumerateObject()
+                    .ToDictionary(property => property.Name, property => (object)property.Value.Clone(), StringComparer.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        if (value is IEnumerable<Dictionary<string, object>> dictionaries)
+            return dictionaries.ToList();
+
+        if (value is IEnumerable<object> objects)
+        {
+            return objects
+                .Select(item => item switch
+                {
+                    Dictionary<string, object> dictionary => dictionary,
+                    JsonElement { ValueKind: JsonValueKind.Object } element => element.EnumerateObject()
+                        .ToDictionary(property => property.Name, property => (object)property.Value.Clone(), StringComparer.OrdinalIgnoreCase),
+                    _ => null
+                })
+                .OfType<Dictionary<string, object>>()
+                .ToList();
+        }
+
+        return [];
+    }
+
+    private static string? GetStringProperty(Dictionary<string, object>? properties, string key)
+    {
+        var value = GetPropertyValue(properties, key);
+        return value switch
+        {
+            null => null,
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            JsonElement { ValueKind: JsonValueKind.Number } element => element.ToString(),
+            JsonElement { ValueKind: JsonValueKind.True } => "true",
+            JsonElement { ValueKind: JsonValueKind.False } => "false",
+            _ => value.ToString()
+        };
+    }
+
+    private static bool? GetBoolProperty(Dictionary<string, object>? properties, string key)
+    {
+        var value = GetPropertyValue(properties, key);
+        return value switch
+        {
+            null => null,
+            bool b => b,
+            JsonElement { ValueKind: JsonValueKind.True } => true,
+            JsonElement { ValueKind: JsonValueKind.False } => false,
+            JsonElement { ValueKind: JsonValueKind.String } element when bool.TryParse(element.GetString(), out var b) => b,
+            string s when bool.TryParse(s, out var b) => b,
+            _ => null
+        };
+    }
+
+    private static object? GetPropertyValue(Dictionary<string, object>? properties, string key)
+    {
+        if (properties is null)
+            return null;
+
+        foreach (var pair in properties)
+        {
+            if (pair.Key.Equals(key, StringComparison.OrdinalIgnoreCase))
+                return pair.Value;
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> SplitCsv(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private sealed record SchemaProject(ProjectInfo Project, string ServerName, string DatabaseName);
 }

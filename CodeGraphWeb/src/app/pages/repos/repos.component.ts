@@ -85,6 +85,40 @@ export class ReposComponent implements OnInit {
     return d ? new Date(d).toLocaleDateString() : '—';
   }
 
+  relTime(iso?: string): string {
+    if (!iso) return '-';
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return '-';
+    const diffSec = Math.round((Date.now() - then) / 1000);
+    const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+    const table: [Intl.RelativeTimeFormatUnit, number][] = [
+      ['second', 60], ['minute', 60], ['hour', 24], ['day', 30], ['month', 12],
+    ];
+    let value = diffSec;
+    let unit: Intl.RelativeTimeFormatUnit = 'second';
+    for (const [u, step] of table) {
+      unit = u;
+      if (Math.abs(value) < step) break;
+      value = Math.round(value / step);
+    }
+    if (unit === 'month' && Math.abs(value) >= 12) {
+      value = Math.round(value / 12);
+      unit = 'year';
+    }
+    return rtf.format(-value, unit);
+  }
+
+  languageKey(language?: string): string {
+    if (!language) return '';
+    const key = language.trim().toLowerCase();
+    switch (key) {
+      case 'c#': return 'csharp';
+      case 't-sql': return 'sql';
+      case 'cf': return 'coldfusion';
+      default: return key;
+    }
+  }
+
   private updateUrl() {
     const queryParams: Record<string, string | number> = {};
     if (this.page() > 1) queryParams['page'] = this.page();

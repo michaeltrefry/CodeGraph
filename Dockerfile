@@ -9,10 +9,14 @@ COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
 COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
 COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
 COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+COPY src/CodeGraph.Data.MariaDb/CodeGraph.Data.MariaDb.csproj src/CodeGraph.Data.MariaDb/
 COPY src/CodeGraph.Jobs/CodeGraph.Jobs.csproj src/CodeGraph.Jobs/
+COPY src/CodeGraph.Extractors.Ansible/CodeGraph.Extractors.Ansible.csproj src/CodeGraph.Extractors.Ansible/
 COPY src/CodeGraph.Extractors.CSharp/CodeGraph.Extractors.CSharp.csproj src/CodeGraph.Extractors.CSharp/
+COPY src/CodeGraph.Extractors.ColdFusion/CodeGraph.Extractors.ColdFusion.csproj src/CodeGraph.Extractors.ColdFusion/
 COPY src/CodeGraph.Extractors.TypeScript/CodeGraph.Extractors.TypeScript.csproj src/CodeGraph.Extractors.TypeScript/
 COPY src/CodeGraph.Extractors.Sql/CodeGraph.Extractors.Sql.csproj src/CodeGraph.Extractors.Sql/
+COPY src/CodeGraph.Extractors.Terraform/CodeGraph.Extractors.Terraform.csproj src/CodeGraph.Extractors.Terraform/
 COPY src/CodeGraph.Extractors.TreeSitter/CodeGraph.Extractors.TreeSitter.csproj src/CodeGraph.Extractors.TreeSitter/
 
 RUN dotnet restore src/CodeGraph.Api/CodeGraph.Api.csproj
@@ -73,6 +77,7 @@ RUN cd /app/tools/ts-extractor && npm ci --omit=dev
 COPY tools/ts-extractor/dist/ /app/tools/ts-extractor/dist/
 
 COPY --from=build /app/publish .
+COPY sql/migrations /app/sql/migrations
 COPY nuget.docker.config /root/.nuget/NuGet/NuGet.Config
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

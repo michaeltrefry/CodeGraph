@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
@@ -11,7 +12,11 @@ using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Models.Requests;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Metrics;
+using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
+using CodeGraph.Services.Telemetry;
+using CodeGraph.Services.Usage;
 
 namespace CodeGraph.Services.Assistant;
 
@@ -27,7 +32,10 @@ public partial class GraphAssistant(
     IWikiStore wikiStore,
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     IOptions<AnalysisOptions> optionsAccessor,
-    ILogger<GraphAssistant> logger)
+    IMetricsEventPublisher metricsEventPublisher,
+    IAssistantDebugCapture debugCapture,
+    ILogger<GraphAssistant> logger,
+    IAgentPromptService? agentPromptService = null)
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions options = optionsAccessor.Value;
@@ -44,6 +52,7 @@ public partial class GraphAssistant(
         string question,
         string? context = null,
         IReadOnlyList<ChatMessage>? history = null,
+        string? username = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var provider = ResolveAssistantProvider();
@@ -51,13 +60,13 @@ public partial class GraphAssistant(
         switch (provider)
         {
             case "anthropic":
-                await foreach (var e in AskWithAnthropicAsync(question, context, history, ct))
+                await foreach (var e in AskWithAnthropicAsync(question, context, history, username, ct))
                     yield return e;
                 yield break;
 
             case "openai":
             case "local":
-                await foreach (var e in AskWithOpenAiCompatibleAsync(provider, question, context, history, ct))
+                await foreach (var e in AskWithOpenAiCompatibleAsync(provider, question, context, history, username, ct))
                     yield return e;
                 yield break;
 
@@ -71,6 +80,7 @@ public partial class GraphAssistant(
         string question,
         string? context,
         IReadOnlyList<ChatMessage>? history,
+        string? username,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var client = CreateConfiguredAnthropicClient();
@@ -108,13 +118,15 @@ public partial class GraphAssistant(
             var textSb = new StringBuilder();
             var toolUseList = new List<PendingToolUse>();
             PendingToolUse? current = null;
+            MessageDeltaUsage? usage = null;
+            var model = ResolveAssistantModel("anthropic");
 
             int streamEventCount = 0;
             await foreach (var e in client.Messages.CreateStreaming(new MessageCreateParams
             {
-                Model = ResolveAssistantModel("anthropic"),
+                Model = model,
                 MaxTokens = options.Assistant.MaxTokens,
-                System = GetSystemPrompt(),
+                System = await GetSystemPromptAsync(),
                 Messages = messages,
                 Tools = tools
             }, ct))
@@ -150,7 +162,25 @@ public partial class GraphAssistant(
                     toolUseList.Add(current);
                     current = null;
                 }
+                else if (e.TryPickDelta(out var messageDelta))
+                {
+                    usage = messageDelta.Usage;
+                }
             }
+            await PublishAnthropicUsageAsync(usage, username, "assistant.ask", model, ct);
+            await CaptureAnthropicDebugExchangeAsync(
+                turn,
+                model,
+                messages.Count,
+                allowTextStreaming,
+                textSb.ToString(),
+                toolUseList,
+                usage,
+                streamEventCount,
+                question,
+                context,
+                history,
+                ct);
             logger.LogInformation("Turn {Turn} raw stream: {StreamEvents} SDK events, {TextLen} text chars, {ToolCount} tool blocks",
                 turn + 1, streamEventCount, textSb.Length, toolUseList.Count);
 
@@ -206,7 +236,7 @@ public partial class GraphAssistant(
                 {
                     var inputJson = tu.Input.Length > 0 ? tu.Input.ToString() : "{}";
                     var input = JsonSerializer.Deserialize<JsonElement>(inputJson);
-                    result = await ExecuteToolAsync(tu.Name, input, ct);
+                    result = await ExecuteToolAsync(tu.Name, input, username, ct);
                     logger.LogInformation("Tool {Tool} completed in {Elapsed}ms — {ResultLen} chars", tu.Name, toolSw.ElapsedMilliseconds, result.Length);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or ArgumentException)
@@ -238,19 +268,43 @@ public partial class GraphAssistant(
                 Content = "You've gathered enough information. Please synthesize everything you've found and provide a comprehensive answer to the original question. Do not call any more tools."
             });
 
+            MessageDeltaUsage? usage = null;
+            var finalTextSb = new StringBuilder();
+            var finalStreamEventCount = 0;
+            var model = ResolveAssistantModel("anthropic");
             await foreach (var e in client.Messages.CreateStreaming(new MessageCreateParams
             {
-                Model = ResolveAssistantModel("anthropic"),
+                Model = model,
                 MaxTokens = options.Assistant.MaxTokens,
-                System = GetSystemPrompt(),
+                System = await GetSystemPromptAsync(),
                 Messages = messages
             }, ct))
             {
+                finalStreamEventCount++;
                 if (e.TryPickContentBlockDelta(out var cbDelta) && cbDelta.Delta.TryPickText(out var td))
                 {
+                    finalTextSb.Append(td.Text);
                     yield return new AssistantEvent("text", td.Text);
                 }
+                else if (e.TryPickDelta(out var messageDelta))
+                {
+                    usage = messageDelta.Usage;
+                }
             }
+            await PublishAnthropicUsageAsync(usage, username, "assistant.ask", model, ct);
+            await CaptureAnthropicDebugExchangeAsync(
+                options.Assistant.MaxTurns,
+                model,
+                messages.Count,
+                allowTextStreaming: true,
+                finalTextSb.ToString(),
+                [],
+                usage,
+                finalStreamEventCount,
+                question,
+                context,
+                history,
+                ct);
         }
 
         yield return new AssistantEvent("done", "");
@@ -261,6 +315,7 @@ public partial class GraphAssistant(
         string question,
         string? context,
         IReadOnlyList<ChatMessage>? history,
+        string? username,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var userMessage = string.IsNullOrWhiteSpace(context)
@@ -297,7 +352,21 @@ public partial class GraphAssistant(
             logger.LogInformation("Agent turn {Turn}/{MaxTurns} — sending {MessageCount} messages to {Provider}",
                 turn + 1, maxTurns, messages.Count, provider);
 
-            var completion = await CompleteOpenAiCompatibleTurnAsync(http, provider, messages, tools, ct);
+            var completion = await CompleteOpenAiCompatibleTurnAsync(
+                http,
+                provider,
+                messages,
+                tools,
+                username,
+                "assistant.ask",
+                ct);
+            await CaptureOpenAiCompatibleDebugExchangeAsync(
+                provider,
+                turn,
+                messages,
+                tools,
+                completion,
+                ct);
             var choice = completion.Choices.FirstOrDefault()
                 ?? throw new InvalidOperationException($"{provider} returned no assistant choices");
             var assistantMessage = choice.Message
@@ -363,7 +432,7 @@ public partial class GraphAssistant(
                 try
                 {
                     var input = JsonSerializer.Deserialize<JsonElement>(inputJson);
-                    result = await ExecuteToolAsync(toolName, input, ct);
+                    result = await ExecuteToolAsync(toolName, input, username, ct);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or ArgumentException)
                 {
@@ -395,7 +464,21 @@ public partial class GraphAssistant(
                 Content = "You've gathered enough information. Please synthesize everything you've found and provide a comprehensive answer to the original question. Do not call any more tools."
             });
 
-            var completion = await CompleteOpenAiCompatibleTurnAsync(http, provider, messages, tools: null, ct);
+            var completion = await CompleteOpenAiCompatibleTurnAsync(
+                http,
+                provider,
+                messages,
+                tools: null,
+                username,
+                "assistant.ask",
+                ct);
+            await CaptureOpenAiCompatibleDebugExchangeAsync(
+                provider,
+                maxTurns,
+                messages,
+                tools: null,
+                completion,
+                ct);
             var finalMessage = completion.Choices.FirstOrDefault()?.Message;
             if (!string.IsNullOrWhiteSpace(finalMessage?.Content))
                 yield return new AssistantEvent("text", finalMessage.Content);
@@ -406,7 +489,23 @@ public partial class GraphAssistant(
 
     // ── Tool dispatch ────────────────────────────────────────────────────
 
-    private async Task<string> ExecuteToolAsync(string name, JsonElement input, CancellationToken ct)
+    private async Task<string> ExecuteToolAsync(string name, JsonElement input, string? username, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var result = await ExecuteToolCoreAsync(name, input);
+            await PublishToolInvocationTelemetryAsync(name, true, sw.ElapsedMilliseconds, username, null, ct);
+            return result;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            await PublishToolInvocationTelemetryAsync(name, false, sw.ElapsedMilliseconds, username, ex.GetType().Name, CancellationToken.None);
+            throw;
+        }
+    }
+
+    private async Task<string> ExecuteToolCoreAsync(string name, JsonElement input)
     {
         return name switch
         {
@@ -430,6 +529,183 @@ public partial class GraphAssistant(
         };
     }
 
+    private async Task PublishToolInvocationTelemetryAsync(
+        string toolName,
+        bool success,
+        long durationMs,
+        string? username,
+        string? errorCode,
+        CancellationToken ct)
+    {
+        try
+        {
+            await metricsEventPublisher.PublishMcpToolInvocationAsync(
+                new McpToolInvocationRecord(
+                    toolName,
+                    success,
+                    durationMs,
+                    NormalizeTelemetryUsername(username),
+                    ErrorCode: errorCode),
+                ct);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            logger.LogWarning(ex, "Failed to record assistant tool telemetry for {ToolName}", toolName);
+        }
+    }
+
+    private async Task CaptureAnthropicDebugExchangeAsync(
+        int turnIndex,
+        string model,
+        int messageCount,
+        bool allowTextStreaming,
+        string responseText,
+        IReadOnlyList<PendingToolUse> toolUseList,
+        MessageDeltaUsage? usage,
+        int streamEventCount,
+        string question,
+        string? context,
+        IReadOnlyList<ChatMessage>? history,
+        CancellationToken ct)
+    {
+        var inputTokens = ClampTokenCount(SaturatingSum(
+            PositiveOrZero(usage?.InputTokens),
+            PositiveOrZero(usage?.CacheCreationInputTokens),
+            PositiveOrZero(usage?.CacheReadInputTokens)));
+        var outputTokens = ClampTokenCount(PositiveOrZero(usage?.OutputTokens));
+        var totalTokens = ClampTokenCount(SaturatingSum(inputTokens, outputTokens));
+
+        await debugCapture.CaptureExchangeAsync(new AssistantDebugExchangeCapture(
+            TurnIndex: turnIndex,
+            Provider: "anthropic",
+            Model: model,
+            RequestBodyJson: SerializeDebugJson(new
+            {
+                provider = "anthropic",
+                model,
+                turnIndex,
+                messageCount,
+                maxTokens = options.Assistant.MaxTokens,
+                allowTextStreaming,
+                toolNames = BuildToolDefinitions().Select(tool => tool.Name).ToList()
+            }) ?? "{}",
+            RequestText: BuildInitialAssistantRequestText(question, context, history),
+            ResponseBodyJson: SerializeDebugJson(new
+            {
+                provider = "anthropic",
+                model,
+                turnIndex,
+                streamEventCount,
+                textLength = responseText.Length,
+                toolUseCount = toolUseList.Count
+            }),
+            ResponseText: responseText,
+            ToolUsesJson: SerializeToolUses(toolUseList),
+            ResponseMetadataJson: SerializeDebugJson(new { streamEventCount }),
+            InputTokens: totalTokens == 0 ? null : inputTokens,
+            OutputTokens: totalTokens == 0 ? null : outputTokens,
+            TotalTokens: totalTokens == 0 ? null : totalTokens),
+            ct);
+    }
+
+    private async Task CaptureOpenAiCompatibleDebugExchangeAsync(
+        string provider,
+        int turnIndex,
+        IReadOnlyList<OpenAiChatMessage> messages,
+        IReadOnlyList<OpenAiToolDefinition>? tools,
+        OpenAiChatCompletionResponse completion,
+        CancellationToken ct)
+    {
+        var model = FirstNonEmpty(completion.Model, ResolveAssistantModel(provider), "unknown");
+        var assistantMessage = completion.Choices.FirstOrDefault()?.Message;
+
+        await debugCapture.CaptureExchangeAsync(new AssistantDebugExchangeCapture(
+            TurnIndex: turnIndex,
+            Provider: provider,
+            Model: model,
+            RequestBodyJson: SerializeDebugJson(new
+            {
+                provider,
+                model = ResolveAssistantModel(provider),
+                turnIndex,
+                messageCount = messages.Count,
+                maxTokens = options.Assistant.MaxTokens,
+                toolNames = tools?.Select(tool => tool.Function.Name).ToList()
+            }) ?? "{}",
+            RequestText: BuildOpenAiRequestText(messages),
+            ResponseBodyJson: SerializeDebugJson(completion),
+            ResponseText: assistantMessage?.Content,
+            ToolUsesJson: SerializeDebugJson(assistantMessage?.ToolCalls?.Select(toolCall => new
+            {
+                toolCall.Id,
+                toolCall.Type,
+                Name = toolCall.Function?.Name,
+                Arguments = toolCall.Function?.Arguments
+            }).ToList()),
+            InputTokens: completion.Usage?.PromptTokens,
+            OutputTokens: completion.Usage?.CompletionTokens,
+            TotalTokens: completion.Usage?.TotalTokens),
+            ct);
+    }
+
+    private static string BuildInitialAssistantRequestText(
+        string question,
+        string? context,
+        IReadOnlyList<ChatMessage>? history)
+    {
+        var sb = new StringBuilder();
+        if (history is { Count: > 0 })
+        {
+            foreach (var message in history)
+                sb.Append(message.Role).Append(": ").AppendLine(message.Content);
+        }
+
+        if (!string.IsNullOrWhiteSpace(context))
+            sb.Append("[Context: ").Append(context).AppendLine("]");
+
+        sb.Append("user: ").Append(question);
+        return sb.ToString();
+    }
+
+    private static string BuildOpenAiRequestText(IReadOnlyList<OpenAiChatMessage> messages)
+    {
+        var sb = new StringBuilder();
+        foreach (var message in messages)
+        {
+            sb.Append(message.Role).Append(": ");
+            if (!string.IsNullOrWhiteSpace(message.Content))
+                sb.Append(message.Content);
+            if (message.ToolCalls is { Count: > 0 })
+                sb.Append(" [tool calls: ").Append(string.Join(", ", message.ToolCalls.Select(t => t.Function?.Name ?? "unknown"))).Append(']');
+            if (!string.IsNullOrWhiteSpace(message.ToolCallId))
+                sb.Append(" [tool result: ").Append(message.ToolCallId).Append(']');
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
+    private static string? SerializeToolUses(IReadOnlyList<PendingToolUse> toolUseList)
+    {
+        if (toolUseList.Count == 0)
+            return null;
+
+        return SerializeDebugJson(toolUseList.Select(toolUse => new
+        {
+            toolUse.Id,
+            toolUse.Name,
+            InputJson = toolUse.Input.Length == 0 ? "{}" : toolUse.Input.ToString()
+        }).ToList());
+    }
+
+    private static string? SerializeDebugJson<T>(T? value)
+    {
+        if (value is null)
+            return null;
+
+        return JsonSerializer.Serialize(value, CodeGraphJsonDefaults.CamelCase);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private static string? GetString(JsonElement el, string key) =>
@@ -442,23 +718,13 @@ public partial class GraphAssistant(
             ? v.GetInt32()
             : null;
 
-    private static string GetSystemPrompt() => """
-        You are an expert assistant for a codebase knowledge graph covering 620+ repositories
-        across a large multi-repository software ecosystem.
-
-        You have access to tools that query the structural graph of all repositories.
-        Use them to answer questions about service dependencies, API endpoints, events,
-        data flow, architecture, and repository health. Always search before answering.
-        For health questions, use get_project_health (single repo) or get_fleet_health (all repos).
-        When you need to see actual code, use read_node_source (by node ID) or get_code_snippet (by file path).
-
-        Shared internal contracts, event schemas, and package references are often important
-        cross-repository linking keys.
-
-        When answering, cite specific repositories, node names, and edge types.
-        Be specific and concrete — use the data from the graph, not guesses.
-        You must call at least one tool before providing any substantive answer to the user.
-        """;
+    private Task<string> GetSystemPromptAsync()
+        => AgentPromptExecution.GetEffectivePromptOrDefaultAsync(
+            agentPromptService,
+            AgentPromptCatalog.GraphAssistantSystemPromptKey,
+            AgentPromptCatalog.GraphAssistantDefaultSystemPrompt,
+            logger,
+            "graph assistant");
 
     private static string GetToolRequirementReminder() =>
         "Before answering, you must call at least one tool to ground your response in repository data. Do not answer from general knowledge alone.";
@@ -484,9 +750,11 @@ public partial class GraphAssistant(
         string provider,
         IReadOnlyList<OpenAiChatMessage> messages,
         IReadOnlyList<OpenAiToolDefinition>? tools,
+        string? username,
+        string path,
         CancellationToken ct)
     {
-        var request = CreateOpenAiCompatibleRequest(provider, messages, tools);
+        var request = await CreateOpenAiCompatibleRequestAsync(provider, messages, tools);
         using var response = await http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -494,11 +762,92 @@ public partial class GraphAssistant(
             throw new InvalidOperationException($"Status Code: {response.StatusCode} {errorBody}");
         }
 
-        return await response.Content.ReadFromJsonAsync<OpenAiChatCompletionResponse>(CodeGraphJsonDefaults.SnakeCase, ct)
+        var completion = await response.Content.ReadFromJsonAsync<OpenAiChatCompletionResponse>(CodeGraphJsonDefaults.SnakeCase, ct)
             ?? throw new InvalidOperationException($"{provider} returned a null assistant response");
+
+        await PublishOpenAiCompatibleUsageAsync(provider, completion, username, path, ct);
+        return completion;
     }
 
-    private HttpRequestMessage CreateOpenAiCompatibleRequest(
+    private async Task PublishOpenAiCompatibleUsageAsync(
+        string provider,
+        OpenAiChatCompletionResponse completion,
+        string? username,
+        string path,
+        CancellationToken ct)
+    {
+        if (completion.Usage is null)
+            return;
+
+        try
+        {
+            await metricsEventPublisher.PublishLlmUsageAsync(
+                new LlmUsageRecord(
+                    NormalizeTelemetryUsername(username) ?? "system",
+                    path,
+                    provider,
+                    FirstNonEmpty(completion.Model, ResolveAssistantModel(provider), "unknown"),
+                    completion.Usage.PromptTokens ?? 0,
+                    completion.Usage.CompletionTokens ?? 0,
+                    completion.Usage.TotalTokens ?? 0),
+                ct);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            logger.LogWarning(ex, "Failed to record assistant LLM usage telemetry for {Provider}", provider);
+        }
+    }
+
+    private async Task PublishAnthropicUsageAsync(
+        MessageDeltaUsage? usage,
+        string? username,
+        string path,
+        string model,
+        CancellationToken ct)
+    {
+        var record = BuildAnthropicUsageRecord(usage, username, path, model);
+        if (record is null)
+            return;
+
+        try
+        {
+            await metricsEventPublisher.PublishLlmUsageAsync(record, ct);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            logger.LogWarning(ex, "Failed to record assistant LLM usage telemetry for Anthropic");
+        }
+    }
+
+    internal static LlmUsageRecord? BuildAnthropicUsageRecord(
+        MessageDeltaUsage? usage,
+        string? username,
+        string path,
+        string model)
+    {
+        if (usage is null)
+            return null;
+
+        var inputTokens = SaturatingSum(
+            PositiveOrZero(usage.InputTokens),
+            PositiveOrZero(usage.CacheCreationInputTokens),
+            PositiveOrZero(usage.CacheReadInputTokens));
+        var outputTokens = PositiveOrZero(usage.OutputTokens);
+        var totalTokens = SaturatingSum(inputTokens, outputTokens);
+        if (totalTokens == 0)
+            return null;
+
+        return new LlmUsageRecord(
+            NormalizeTelemetryUsername(username) ?? "system",
+            path,
+            "anthropic",
+            FirstNonEmpty(model, "unknown"),
+            ClampTokenCount(inputTokens),
+            ClampTokenCount(outputTokens),
+            ClampTokenCount(totalTokens));
+    }
+
+    private async Task<HttpRequestMessage> CreateOpenAiCompatibleRequestAsync(
         string provider,
         IReadOnlyList<OpenAiChatMessage> messages,
         IReadOnlyList<OpenAiToolDefinition>? tools)
@@ -518,7 +867,7 @@ public partial class GraphAssistant(
         {
             Model = ResolveAssistantModel(provider),
             MaxCompletionTokens = options.Assistant.MaxTokens,
-            Messages = BuildOpenAiCompatibleMessages(messages),
+            Messages = await BuildOpenAiCompatibleMessagesAsync(messages),
             Tools = tools?.ToList()
         };
 
@@ -526,14 +875,14 @@ public partial class GraphAssistant(
         return request;
     }
 
-    private List<OpenAiChatMessage> BuildOpenAiCompatibleMessages(IReadOnlyList<OpenAiChatMessage> messages)
+    private async Task<List<OpenAiChatMessage>> BuildOpenAiCompatibleMessagesAsync(IReadOnlyList<OpenAiChatMessage> messages)
     {
         var result = new List<OpenAiChatMessage>(messages.Count + 1)
         {
             new()
             {
                 Role = "system",
-                Content = GetSystemPrompt()
+                Content = await GetSystemPromptAsync()
             }
         };
 
@@ -607,6 +956,32 @@ public partial class GraphAssistant(
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
 
+    private static string? NormalizeTelemetryUsername(string? username) =>
+        string.IsNullOrWhiteSpace(username) ? null : username.Trim().ToLowerInvariant();
+
+    private static long PositiveOrZero(long? value) =>
+        Math.Max(0, value ?? 0);
+
+    private static long SaturatingSum(params long[] values)
+    {
+        long total = 0;
+        foreach (var value in values)
+        {
+            if (value <= 0)
+                continue;
+
+            if (long.MaxValue - total < value)
+                return long.MaxValue;
+
+            total += value;
+        }
+
+        return total;
+    }
+
+    private static int ClampTokenCount(long value) =>
+        value <= 0 ? 0 : checked((int)Math.Min(value, int.MaxValue));
+
     private sealed record PendingToolUse(string Id, string Name, StringBuilder Input);
 
     private sealed class OpenAiChatCompletionRequest
@@ -621,6 +996,14 @@ public partial class GraphAssistant(
     {
         public string? Model { get; set; }
         public List<OpenAiChatCompletionChoice> Choices { get; set; } = [];
+        public OpenAiChatUsage? Usage { get; set; }
+    }
+
+    private sealed class OpenAiChatUsage
+    {
+        public int? PromptTokens { get; set; }
+        public int? CompletionTokens { get; set; }
+        public int? TotalTokens { get; set; }
     }
 
     private sealed class OpenAiChatCompletionChoice

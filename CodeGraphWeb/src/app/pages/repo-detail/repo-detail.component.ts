@@ -84,6 +84,7 @@ export class RepoDetailComponent implements OnInit {
   readonly confidenceColors = CONFIDENCE_COLORS;
   private readonly diagnosticPreviewLimit = 20;
   private reviewStreamController: AbortController | null = null;
+  private loadRequestId = 0;
 
   constructor() {
     this.destroyRef.onDestroy(() => this.abortRepositoryReviewStream());
@@ -96,6 +97,7 @@ export class RepoDetailComponent implements OnInit {
   }
 
   private loadProject(n: string) {
+    const requestId = ++this.loadRequestId;
     this.name.set(n);
     this.chatContext.setRepo(n);
     this.detail.set(null);
@@ -112,27 +114,43 @@ export class RepoDetailComponent implements OnInit {
 
     this.api.getProject(n).subscribe({
       next: d => {
+        if (requestId !== this.loadRequestId) return;
         this.detail.set(d);
         this.loading.set(false);
         this.initializeProjectDiagnosticsStates(n, d);
         this.loadLatestRepositoryReview(n);
       },
-      error: () => this.loading.set(false)
+      error: () => {
+        if (requestId !== this.loadRequestId) return;
+        this.loading.set(false);
+      }
     });
     this.api.getProjectHealth(n).subscribe({
-      next: h => this.health.set(h),
+      next: h => {
+        if (requestId !== this.loadRequestId) return;
+        this.health.set(h);
+      },
       error: () => {}
     });
     this.api.getProjectSecurity(n).subscribe({
-      next: s => this.security.set(s),
+      next: s => {
+        if (requestId !== this.loadRequestId) return;
+        this.security.set(s);
+      },
       error: () => {}
     });
     this.api.getProjectReadme(n).subscribe({
-      next: r => this.readme.set(r.content),
+      next: r => {
+        if (requestId !== this.loadRequestId) return;
+        this.readme.set(r.content);
+      },
       error: () => {}
     });
     this.api.getBatchStatus(n).subscribe({
-      next: b => this.batchStatus.set(b),
+      next: b => {
+        if (requestId !== this.loadRequestId) return;
+        this.batchStatus.set(b);
+      },
       error: () => {}
     });
   }

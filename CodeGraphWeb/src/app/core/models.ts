@@ -13,6 +13,97 @@ export interface ProjectInfo {
   properties?: Record<string, unknown>;
 }
 
+export interface SchemaListItem {
+  name: string;
+  serverName: string;
+  databaseName: string;
+  tableCount: number;
+  viewCount: number;
+  procedureCount: number;
+  indexedAt?: string;
+  language?: string;
+  framework?: string;
+  properties?: Record<string, unknown>;
+}
+
+export interface SchemaListResponse {
+  items: SchemaListItem[];
+  total: number;
+  totalTables: number;
+  totalViews: number;
+  totalProcedures: number;
+  page: number;
+  pageSize: number;
+  servers: string[];
+  databases: string[];
+}
+
+export interface SchemaCatalogResponse {
+  projectName: string;
+  serverName: string;
+  databaseName: string;
+  tables: SchemaObject[];
+  views: SchemaObject[];
+  procedures: SchemaProcedure[];
+}
+
+export interface SchemaObject {
+  id: number;
+  name: string;
+  qualifiedName: string;
+  label: string;
+  comment?: string;
+  primaryKeyColumns: string[];
+  indexes: SchemaIndex[];
+  foreignKeys: SchemaForeignKey[];
+  columns: SchemaColumn[];
+}
+
+export interface SchemaProcedure {
+  id: number;
+  name: string;
+  qualifiedName: string;
+  routineType: string;
+  comment?: string;
+  parameters: SchemaParameter[];
+}
+
+export interface SchemaColumn {
+  id: number;
+  name: string;
+  qualifiedName: string;
+  ordinal: number;
+  dataType: string;
+  nullable: boolean;
+  isPrimaryKey: boolean;
+  default?: string;
+  key?: string;
+  extra?: string;
+  comment?: string;
+}
+
+export interface SchemaIndex {
+  name: string;
+  isUnique: boolean;
+  indexType?: string;
+  columns: string[];
+}
+
+export interface SchemaForeignKey {
+  name: string;
+  columns: string[];
+  referencedTable: string;
+  referencedColumns: string[];
+}
+
+export interface SchemaParameter {
+  name: string;
+  ordinal: number;
+  mode: string;
+  dataType: string;
+  nullable: boolean;
+}
+
 export interface DatabaseIndexIssue {
   name: string;
   type: string;
@@ -41,6 +132,192 @@ export interface DatabaseHealthResponse {
   missingIndexes: string[];
   offlineIndexes: DatabaseIndexIssue[];
   duplicateGroups: DatabaseDuplicateGroup[];
+}
+
+export interface AdminUserResponse {
+  username: string;
+  createdAt: string;
+}
+
+export interface AgentPromptResponse {
+  key: string;
+  category: string;
+  categoryDisplayName: string;
+  displayName: string;
+  description: string;
+  defaultText: string;
+  effectiveText: string;
+  hasOverride: boolean;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+export interface AgentPromptGroupResponse {
+  category: string;
+  categoryDisplayName: string;
+  prompts: AgentPromptResponse[];
+}
+
+export interface DatabaseSourceResponse {
+  id: number;
+  serverName: string;
+  databaseName: string;
+  connectionString: string;
+  enabled: boolean;
+  lastSyncedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IndexerAcceptedResponse {
+  status: string;
+  message?: string;
+  runId?: number;
+  runStatusUrl?: string;
+}
+
+export interface IndexerRunResponse {
+  id: number;
+  operation: string;
+  status: string;
+  requestedByUsername?: string;
+  target?: string;
+  message?: string;
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface AuthConfigResponse {
+  enabled: boolean;
+  authority: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  endSessionUrl: string;
+  clientId: string;
+  audience: string;
+  scope: string;
+}
+
+export interface CurrentUserResponse {
+  username: string;
+  isAdmin: boolean;
+}
+
+export interface McpPersonalAccessTokenMetadata {
+  id: number;
+  tokenName: string;
+  tokenPrefix: string;
+  lastFour: string;
+  createdAtUtc: string;
+  expiresAtUtc: string;
+  revokedAtUtc?: string;
+  lastUsedAtUtc?: string;
+  lastUsedFrom?: string;
+  status: string;
+}
+
+export interface McpPersonalAccessTokenCreateResponse {
+  token: McpPersonalAccessTokenMetadata;
+  rawToken: string;
+}
+
+export interface AdminReportRangeResponse {
+  start: string;
+  end: string;
+}
+
+export interface AdminReportAppliedFiltersResponse {
+  user?: string;
+  provider?: string;
+  model?: string;
+  tool?: string;
+}
+
+export interface AdminSummaryCardResponse {
+  key: string;
+  label: string;
+  value: number;
+}
+
+export interface AdminSeriesPointResponse {
+  bucketStart: string;
+  value: number;
+}
+
+export interface AdminReportSeriesResponse {
+  key: string;
+  label: string;
+  points: AdminSeriesPointResponse[];
+}
+
+export interface AdminBreakdownItemResponse {
+  dimension: string;
+  key: string;
+  label: string;
+  value: number;
+}
+
+export interface AdminReportResponse {
+  range: AdminReportRangeResponse;
+  interval: string;
+  totals: AdminSummaryCardResponse[];
+  series: AdminReportSeriesResponse[];
+  breakdowns: AdminBreakdownItemResponse[];
+  appliedFilters: AdminReportAppliedFiltersResponse;
+}
+
+export interface AdminReportFiltersResponse {
+  users: string[];
+  providers: string[];
+  models: string[];
+  tools: string[];
+}
+
+export interface AssistantRunResponse {
+  id: number;
+  chatId: string;
+  username: string;
+  status: string;
+  question: string;
+  context?: string;
+  providerRequested?: string;
+  modelRequested?: string;
+  providerUsed?: string;
+  modelUsed?: string;
+  finalAnswer?: string;
+  warnings: string[];
+  error?: string;
+  lastSequence: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface AssistantDebugExchangeResponse {
+  exchangeIndex: number;
+  turnIndex: number;
+  provider: string;
+  model: string;
+  requestBody: unknown;
+  responseBody?: unknown;
+  requestText: string;
+  responseText?: string;
+  toolUses?: unknown;
+  requestMetadata?: unknown;
+  responseMetadata?: unknown;
+  requestId?: string;
+  responseId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  createdAt: string;
+}
+
+export interface AssistantDebugExchangeListResponse {
+  run: AssistantRunResponse;
+  exchanges: AssistantDebugExchangeResponse[];
 }
 
 export interface DotnetSdkSupportInfo {

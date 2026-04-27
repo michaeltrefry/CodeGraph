@@ -1,22 +1,173 @@
-<div class="shell">
-  <nav class="navbar">
-    <a class="nav-brand" routerLink="/">CodeGraph</a>
+<div class="shell" [attr.data-nav]="sidebarCollapsed() ? 'collapsed' : 'expanded'">
+  <aside class="nav">
+    <a class="nav-brand" routerLink="/">
+      <span class="brand-mark"></span>
+      <span class="brand-wordmark">CodeGraph</span>
+    </a>
+
     <div class="nav-links">
-      <a routerLink="/repos" routerLinkActive="active">Repositories</a>
-      <a routerLink="/graph" routerLinkActive="active">Graph</a>
-      <a routerLink="/memory" routerLinkActive="active">Memory</a>
-      <a routerLink="/clusters" routerLinkActive="active">Clusters</a>
-      <a routerLink="/impact" routerLinkActive="active">Impact</a>
-      <a routerLink="/ask" routerLinkActive="active">Ask</a>
-      <a routerLink="/wiki" routerLinkActive="active">Wiki</a>
-      <a routerLink="/settings" routerLinkActive="active">Settings</a>
+      <a routerLink="/repos" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h6l2 2h2v8H3z"/><path d="M3 7h10"/></svg>
+        <span class="nav-link-label">Repositories</span>
+      </a>
+      <a routerLink="/schemas" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><ellipse cx="8" cy="3.5" rx="5" ry="1.8"/><path d="M3 3.5v9c0 1 2.2 1.8 5 1.8s5-.8 5-1.8v-9"/><path d="M3 8c0 1 2.2 1.8 5 1.8s5-.8 5-1.8"/></svg>
+        <span class="nav-link-label">Schemas</span>
+      </a>
+      <a routerLink="/graph" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="4" r="1.6"/><circle cx="8" cy="12" r="1.6"/><path d="M5.4 5.4 7 10.4M10.6 5.4 9 10.4"/></svg>
+        <span class="nav-link-label">Graph</span>
+      </a>
+      <a routerLink="/memory" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 3h8l1 2v7l-1 2H4l-1-2V5z"/><path d="M6 7h4M6 10h4"/></svg>
+        <span class="nav-link-label">Memory</span>
+      </a>
+      <a routerLink="/clusters" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="4" cy="4" r="1.6"/><circle cx="12" cy="4" r="1.6"/><circle cx="4" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="8" cy="8" r="1.6"/><path d="M5.4 5.4 6.9 6.9M10.6 5.4 9.1 6.9M5.4 10.6l1.5-1.5M10.6 10.6 9.1 9.1"/></svg>
+        <span class="nav-link-label">Clusters</span>
+      </a>
+      <a routerLink="/impact" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r="5"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8h1.5M13 8h1.5"/></svg>
+        <span class="nav-link-label">Impact</span>
+      </a>
+
+      <div class="nav-section-spacer"></div>
+
+      <a routerLink="/ask" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h10v8H7l-3 3v-3H3z"/><path d="M6 6h4M6 8.5h2.5"/></svg>
+        <span class="nav-link-label">Ask</span>
+      </a>
+      <a routerLink="/wiki" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h7l3 3v7H3z"/><path d="M10 3v3h3M5.5 8.5h5M5.5 10.5h5"/></svg>
+        <span class="nav-link-label">Wiki</span>
+      </a>
+
+      @if (!sidebarCollapsed() && wikiNavOpen()) {
+        <div class="nav-wiki-panel">
+          @for (section of wikiSections(); track section.id) {
+            <div class="nav-wiki-section">
+              <div class="nav-wiki-section-row">
+                <a class="nav-wiki-section-link" [class.expanded]="expandedWikiSection() === section.slug" [routerLink]="['/wiki', section.slug]" routerLinkActive="active" (click)="openWikiSection(section)">
+                  {{ section.title }}
+                </a>
+                <button class="nav-wiki-section-toggle" type="button" [attr.aria-label]="expandedWikiSection() === section.slug ? 'Collapse wiki section' : 'Expand wiki section'" (click)="toggleWikiSection(section)">
+                  {{ expandedWikiSection() === section.slug ? 'v' : '>' }}
+                </button>
+              </div>
+
+              @if (expandedWikiSection() === section.slug) {
+                @if (loadingWikiTree()) {
+                  <div class="nav-wiki-loading">Loading...</div>
+                } @else if (wikiTree()) {
+                  <ul class="nav-wiki-tree">
+                    @for (node of wikiTree()!; track node.id) {
+                      <app-wiki-tree-node [node]="node" [sectionSlug]="section.slug" [parentPath]="section.slug" />
+                    }
+                  </ul>
+                }
+              }
+            </div>
+          }
+        </div>
+      }
+
+      <a routerLink="/access-tokens" routerLinkActive="active" class="nav-link">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="10.5" r="2.5"/><path d="M7.3 8.7 13 3M10.5 5.5 12 7M12 3h1.5v1.5"/></svg>
+        <span class="nav-link-label">Tokens</span>
+      </a>
+
+      @if (isAdmin()) {
+        <div class="nav-section-label">Admin</div>
+        @if (!sidebarCollapsed()) {
+          <div class="nav-admin-panel">
+            <a routerLink="/settings/operations" routerLinkActive="active" class="nav-admin-link">Operations</a>
+            <a routerLink="/settings/schedules" routerLinkActive="active" class="nav-admin-link">Schedules</a>
+            <a routerLink="/settings/db-health" routerLinkActive="active" class="nav-admin-link">DB health</a>
+            <a routerLink="/settings/reports" routerLinkActive="active" class="nav-admin-link">Reports</a>
+            <a routerLink="/settings/assistant-debug" routerLinkActive="active" class="nav-admin-link">Assistant debug</a>
+            <a routerLink="/settings/prompts" routerLinkActive="active" class="nav-admin-link">Prompts</a>
+            <a routerLink="/settings/sections" routerLinkActive="active" class="nav-admin-link">Sections</a>
+            <a routerLink="/settings/exclusions" routerLinkActive="active" class="nav-admin-link">Exclusions</a>
+            <a routerLink="/settings/database-sources" routerLinkActive="active" class="nav-admin-link">Databases</a>
+            <a routerLink="/settings/admins" routerLinkActive="active" class="nav-admin-link">Admins</a>
+          </div>
+        }
+      }
     </div>
-    <div class="nav-right">
-      <app-nav-search />
+
+    <div class="nav-footer">
+      <button class="nav-toggle" type="button" (click)="toggleSidebar()" [attr.aria-label]="sidebarCollapsed() ? 'Expand sidebar' : 'Collapse sidebar'">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/></svg>
+        <span class="nav-toggle-label">{{ sidebarCollapsed() ? 'Expand' : 'Collapse' }}</span>
+      </button>
     </div>
-  </nav>
-  <main class="content">
-    <router-outlet />
-  </main>
+  </aside>
+
+  <div class="workspace">
+    <header class="topbar">
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a class="breadcrumb-home" routerLink="/">CodeGraph</a>
+        @for (c of crumbs(); track c.url; let last = $last) {
+          <span class="sep">/</span>
+          @if (last) {
+            <span class="current">{{ c.label }}</span>
+          } @else {
+            <a [routerLink]="c.url">{{ c.label }}</a>
+          }
+        }
+      </nav>
+
+      <div class="topbar-search-slot">
+        <app-nav-search />
+      </div>
+
+      @if (authEnabled()) {
+        <details class="user-menu">
+          <summary class="user-menu-trigger" title="Account" aria-label="Account">
+            <span class="user-avatar">{{ currentUser()?.username?.slice(0, 1) || '?' }}</span>
+            <span class="user-name">{{ currentUser()?.username || 'Signed in' }}</span>
+          </summary>
+          <div class="user-popover" role="menu" aria-label="Account">
+            <div class="user-popover-heading">
+              <strong>{{ currentUser()?.username || 'Signed in' }}</strong>
+              @if (currentUser()?.isAdmin) {
+                <span>Admin</span>
+              }
+            </div>
+            <a routerLink="/access-tokens" role="menuitem">MCP tokens</a>
+            <button type="button" role="menuitem" (click)="signOut()">Sign out</button>
+          </div>
+        </details>
+      }
+
+      <div class="topbar-theme-controls">
+        <button class="topbar-icon-btn" type="button" (click)="toggleTheme()" [title]="themeToggleLabel()" [attr.aria-label]="themeToggleLabel()">
+          @if (theme() === 'dark') {
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7"/></svg>
+          } @else {
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 9.2A5.2 5.2 0 0 1 6.8 3 5.5 5.5 0 1 0 13 9.2z"/></svg>
+          }
+        </button>
+
+        <details class="accent-menu" #accentMenu>
+          <summary class="topbar-icon-btn" title="Accent color" aria-label="Accent color">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="5" r="2"/><circle cx="11" cy="5" r="2"/><circle cx="8" cy="11" r="2"/><path d="M6.5 6.4 7.4 9M9.5 6.4 8.6 9"/></svg>
+          </summary>
+          <div class="accent-popover" role="menu" aria-label="Accent color">
+            @for (accentOption of accentOptions; track accentOption) {
+              <button class="accent-swatch" [class.active]="accent() === accentOption" [attr.data-accent-option]="accentOption" type="button" role="menuitemradio" [attr.aria-checked]="accent() === accentOption" [attr.aria-label]="accentLabel(accentOption)" (click)="setAccent(accentOption); accentMenu.removeAttribute('open')">
+                <span></span>
+              </button>
+            }
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <main class="content">
+      <router-outlet />
+    </main>
+  </div>
+
   <app-chat-sidebar />
 </div>

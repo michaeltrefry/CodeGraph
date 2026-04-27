@@ -6,11 +6,11 @@
   @if (detail(); as d) {
     <!-- Breadcrumb -->
     <div class="breadcrumb">
-      <a routerLink="/repos">Repositories</a>
+      <a [routerLink]="projectBaseRoute(d.node.project)">{{ projectBaseLabel(d.node.project) }}</a>
       <span class="sep">/</span>
-      <a [routerLink]="['/repos', d.node.project]">{{ d.node.project }}</a>
+      <a [routerLink]="[projectBaseRoute(d.node.project), d.node.project]">{{ d.node.project }}</a>
       <span class="sep">/</span>
-      <a [routerLink]="['/repos', d.node.project, 'nodes']"
+      <a [routerLink]="[projectBaseRoute(d.node.project), d.node.project, 'nodes']"
          [queryParams]="{ label: d.node.label }">
         {{ icon(d.node.label) }} {{ d.node.label }}s
       </a>
@@ -39,7 +39,7 @@
         </button>
       </div>
       <div class="node-project">
-        in <a [routerLink]="['/repos', d.node.project]">{{ d.node.project }}</a>
+        in <a [routerLink]="[projectBaseRoute(d.node.project), d.node.project]">{{ d.node.project }}</a>
       </div>
     </div>
 

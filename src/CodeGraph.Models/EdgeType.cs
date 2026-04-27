@@ -44,5 +44,19 @@ public enum EdgeType
     FILE_CHANGES_WITH,
 
     // Jobs
-    SCHEDULES
+    SCHEDULES,
+
+    // Ansible / IaC
+    INCLUDES_ROLE,
+    NOTIFIES_HANDLER,
+    DEPLOYS,
+    CONFIGURES,
+
+    // Terraform / IaC
+    INCLUDES_MODULE,
+    DEPENDS_ON,
+
+    // Database schema
+    HAS_COLUMN,
+    FOREIGN_KEY
 }

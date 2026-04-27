@@ -60,6 +60,7 @@ public class JobScheduleServiceTests
             new ProcessBatchAnalysisJob(new RecordingBatchAnalysisService()),
             new LinkAndDetectJob(adminService),
             new DetectCommunitiesJob(adminService),
-            new RegenerateMcpDocsJob(new RecordingMcpDocService()));
+            new RegenerateMcpDocsJob(new RecordingMcpDocService()),
+            new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()));
     }
 }

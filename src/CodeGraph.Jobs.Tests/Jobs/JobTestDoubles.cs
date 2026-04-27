@@ -3,6 +3,7 @@ using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
+using CodeGraph.Services.Assistant;
 
 namespace CodeGraph.Jobs.Tests.Jobs;
 
@@ -80,6 +81,18 @@ internal sealed class RecordingMcpDocService : IMcpDocService
     {
         Calls++;
         return Task.CompletedTask;
+    }
+}
+
+internal sealed class RecordingAssistantRetentionCleanupService : IAssistantRetentionCleanupService
+{
+    public int Calls { get; private set; }
+    public AssistantRetentionCleanupResult Result { get; set; } = new(1, 2, 3, 4, 5, 6);
+
+    public Task<AssistantRetentionCleanupResult> CleanupAsync(CancellationToken ct = default)
+    {
+        Calls++;
+        return Task.FromResult(Result);
     }
 }
 

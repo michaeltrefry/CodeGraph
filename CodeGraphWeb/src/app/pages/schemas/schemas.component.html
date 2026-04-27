@@ -1,0 +1,131 @@
+<div class="cg-page sc-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Schemas</h1>
+      <p>
+        {{ total() }} indexed
+        @if (servers().length) {
+          · across {{ servers().length }} {{ servers().length === 1 ? 'server' : 'servers' }}
+        }
+        @if (databases().length) {
+          · {{ databases().length }} {{ databases().length === 1 ? 'database' : 'databases' }}
+        }
+      </p>
+    </div>
+  </header>
+
+  <section class="sc-stat-grid">
+    <div class="sc-stat">
+      <div class="sc-stat-label">Schemas</div>
+      <div class="sc-stat-value">{{ total().toLocaleString() }}</div>
+    </div>
+    <div class="sc-stat">
+      <div class="sc-stat-label">Tables</div>
+      <div class="sc-stat-value">{{ totalTables().toLocaleString() }}</div>
+    </div>
+    <div class="sc-stat">
+      <div class="sc-stat-label">Views</div>
+      <div class="sc-stat-value">{{ totalViews().toLocaleString() }}</div>
+    </div>
+    <div class="sc-stat">
+      <div class="sc-stat-label">Procedures</div>
+      <div class="sc-stat-value">{{ totalProcedures().toLocaleString() }}</div>
+    </div>
+  </section>
+
+  <div class="sc-filters">
+    <div class="sc-filters-left">
+      <input
+        class="sc-search"
+        type="search"
+        placeholder="Search schemas..."
+        [value]="search()"
+        (input)="onSearchInput($any($event.target).value)" />
+
+      @if (servers().length > 1) {
+        <div class="cg-segmented" role="group" aria-label="Filter by server">
+          <button type="button" [class.active]="!server()" (click)="setServer('')">All servers</button>
+          @for (s of servers(); track s) {
+            <button type="button" [class.active]="server() === s" (click)="setServer(s)">{{ s }}</button>
+          }
+        </div>
+      }
+
+      @if (databases().length > 1) {
+        <app-typeahead
+          class="sc-filter-typeahead"
+          placeholder="All databases"
+          [items]="databaseItems()"
+          [minChars]="0"
+          [showAllOption]="true"
+          allLabel="All databases"
+          [ngModel]="database()"
+          (selected)="setDatabase($event)"
+          (allSelected)="setDatabase('')" />
+      }
+    </div>
+
+    <span class="cg-small cg-mono cg-muted">{{ items().length }} shown</span>
+  </div>
+
+  @if (loading()) {
+    <div class="sc-state">Loading...</div>
+  } @else if (!items().length) {
+    <div class="sc-state">
+      No schemas found{{ search() ? ' matching "' + search() + '"' : '' }}.
+    </div>
+  } @else {
+    <div class="cg-card">
+      <table class="cg-table sc-table">
+        <thead>
+          <tr>
+            <th>Database</th>
+            <th>Server</th>
+            <th>Objects</th>
+            <th>Framework</th>
+            <th>Last indexed</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (schema of items(); track schema.name) {
+            <tr>
+              <td>
+                <div class="sc-db-cell">
+                  <a class="cg-mono-link sc-db-name" [routerLink]="['/schemas', schema.name]">
+                    {{ schema.databaseName }}
+                  </a>
+                  <span class="sc-db-id cg-faint cg-xsmall cg-mono">{{ schema.name }}</span>
+                </div>
+              </td>
+              <td class="cg-mono cg-small cg-muted">{{ schema.serverName }}</td>
+              <td class="cg-mono cg-small">
+                {{ schema.tableCount.toLocaleString() }} tables
+                <span class="cg-muted">· {{ schema.viewCount.toLocaleString() }} views · {{ schema.procedureCount.toLocaleString() }} procs</span>
+              </td>
+              <td>
+                @if (schema.framework || schema.language) {
+                  <span class="cg-chip cg-chip-mono">{{ schema.framework || schema.language }}</span>
+                } @else {
+                  <span class="cg-faint">-</span>
+                }
+              </td>
+              <td class="cg-muted cg-small">{{ relTime(schema.indexedAt) }}</td>
+              <td class="cg-cell-actions">
+                <a class="sc-row-open" [routerLink]="['/schemas', schema.name]" aria-label="Browse schema">›</a>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+
+    @if (totalPages() > 1) {
+      <div class="pagination">
+        <button class="cg-btn" type="button" (click)="prevPage()" [disabled]="page() === 1">Prev</button>
+        <span>Page {{ page() }} of {{ totalPages() }}</span>
+        <button class="cg-btn" type="button" (click)="nextPage()" [disabled]="page() === totalPages()">Next</button>
+      </div>
+    }
+  }
+</div>

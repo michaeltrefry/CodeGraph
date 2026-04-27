@@ -8,6 +8,7 @@ using CodeGraph.Models;
 using CodeGraph.Models.Exceptions;
 using CodeGraph.Services.Models;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Prompts;
 
 namespace CodeGraph.Services.Analyzers;
 
@@ -41,7 +42,9 @@ public partial class BatchAnalysisService
         try
         {
             response = await provider.ExecuteAsync(
-                new AnalysisPrompt(AnalysisPromptBuilder.SystemPrompt, promptText),
+                new AnalysisPrompt(
+                    await GetRepositoryAnalysisSystemPromptAsync("repository synthesis"),
+                    promptText),
                 new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerSynthesis),
                 ct);
         }
@@ -75,6 +78,14 @@ public partial class BatchAnalysisService
             logger.LogError(ex, "Failed to parse synthesis response for {Repo}", repoName);
         }
     }
+
+    private Task<string> GetRepositoryAnalysisSystemPromptAsync(string usage)
+        => AgentPromptExecution.GetEffectivePromptOrDefaultAsync(
+            agentPromptService,
+            AgentPromptCatalog.RepositoryAnalysisSystemPromptKey,
+            AnalysisPromptBuilder.SystemPrompt,
+            logger,
+            usage);
 
     /// <summary>
     /// Write CODEGRAPH.md files to the repo after analysis is complete.

@@ -1,51 +1,84 @@
-.filter-bar {
+/* Repositories page — CodeFlow styling.
+   Page frame, filter bar, and row primitives are provided by the global
+   .cg-* classes in styles.scss. This file only holds page-local tweaks. */
+
+.repos-filters {
   display: flex;
-  gap: 8px;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
-.search-box {
-  width: 320px;
-  padding: 8px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
+.repos-filters-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.group-typeahead {
-  width: 220px;
-}
+.repos-search {
+  width: 280px;
+  height: 30px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-family: inherit;
 
-.repo-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 16px;
-
-  th {
-    text-align: left;
-    padding: 10px 12px;
-    background: #f9fafb;
-    border-bottom: 2px solid #e5e7eb;
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    color: #6b7280;
-  }
-
-  td {
-    padding: 10px 12px;
-    border-bottom: 1px solid #f3f4f6;
-    vertical-align: middle;
-  }
-
-  tr:hover td {
-    background: #f9fafb;
+  &::placeholder { color: var(--faint); }
+  &:focus {
+    outline: none;
+    border-color: var(--accent-dim);
+    background: var(--surface-2);
   }
 }
 
-.repo-link {
-  font-weight: 500;
-  color: #2563eb;
+.repos-filter-typeahead {
+  width: min(320px, 100%);
+  flex: 0 1 320px;
+}
+
+.repos-state {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.repos-table {
+  th.cg-cell-num-head {
+    text-align: right;
+  }
+}
+
+.repo-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.repo-row-open {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  align-items: center;
+  justify-content: center;
   text-decoration: none;
-  &:hover { text-decoration: underline; }
+  font-size: 16px;
+  line-height: 1;
+
+  &:hover {
+    background: var(--surface-3);
+    color: var(--text);
+    text-decoration: none;
+  }
 }

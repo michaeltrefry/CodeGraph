@@ -1,0 +1,2 @@
+ALTER TABLE indexer_runs
+    ADD COLUMN IF NOT EXISTS args_json LONGTEXT NULL AFTER target;
