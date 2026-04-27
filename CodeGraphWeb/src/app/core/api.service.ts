@@ -45,6 +45,15 @@ import {
   AdminReportFiltersResponse,
   AdminReportResponse,
   AssistantDebugExchangeListResponse,
+  LlmAnalysisResponse,
+  LlmAnalysisWriteRequest,
+  LlmAssistantResponse,
+  LlmAssistantWriteRequest,
+  LlmProviderModelResponse,
+  LlmProviderResponse,
+  LlmProviderWriteRequest,
+  LlmReviewResponse,
+  LlmReviewWriteRequest,
   ProjectDiagnosticsResponse,
   ProjectReviewResponse,
   ProjectReviewStreamEvent,
@@ -376,6 +385,45 @@ export class ApiService {
     return this.http.get<AdminReportFiltersResponse>(`${API}/admin/reports/filters`, {
       params: this.buildReportParams(filters)
     });
+  }
+
+  // LLM configuration
+  listLlmProviders(): Observable<LlmProviderResponse[]> {
+    return this.http.get<LlmProviderResponse[]>(`${API}/admin/llm-providers`);
+  }
+
+  updateLlmProvider(provider: string, request: LlmProviderWriteRequest): Observable<LlmProviderResponse> {
+    return this.http.put<LlmProviderResponse>(
+      `${API}/admin/llm-providers/${encodeURIComponent(provider)}`,
+      request);
+  }
+
+  listLlmProviderModels(): Observable<LlmProviderModelResponse[]> {
+    return this.http.get<LlmProviderModelResponse[]>(`${API}/llm-providers/models`);
+  }
+
+  getLlmAnalysis(): Observable<LlmAnalysisResponse> {
+    return this.http.get<LlmAnalysisResponse>(`${API}/admin/llm-analysis`);
+  }
+
+  updateLlmAnalysis(request: LlmAnalysisWriteRequest): Observable<LlmAnalysisResponse> {
+    return this.http.put<LlmAnalysisResponse>(`${API}/admin/llm-analysis`, request);
+  }
+
+  getLlmReview(): Observable<LlmReviewResponse> {
+    return this.http.get<LlmReviewResponse>(`${API}/admin/llm-review`);
+  }
+
+  updateLlmReview(request: LlmReviewWriteRequest): Observable<LlmReviewResponse> {
+    return this.http.put<LlmReviewResponse>(`${API}/admin/llm-review`, request);
+  }
+
+  getLlmAssistant(): Observable<LlmAssistantResponse> {
+    return this.http.get<LlmAssistantResponse>(`${API}/admin/llm-assistant`);
+  }
+
+  updateLlmAssistant(request: LlmAssistantWriteRequest): Observable<LlmAssistantResponse> {
+    return this.http.put<LlmAssistantResponse>(`${API}/admin/llm-assistant`, request);
   }
 
   getAssistantDebugExchanges(runId: number): Observable<AssistantDebugExchangeListResponse> {

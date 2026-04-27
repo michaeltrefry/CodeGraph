@@ -21,7 +21,8 @@ public class RepositoryReviewService(
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     IOptions<AnalysisOptions> analysisOptionsAccessor,
     ILogger<RepositoryReviewService> logger,
-    IAgentPromptService? agentPromptService = null) : IRepositoryReviewService
+    IAgentPromptService? agentPromptService = null,
+    IDbBackedReviewSettingsResolver? reviewSettingsResolver = null) : IRepositoryReviewService
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
@@ -47,6 +48,7 @@ public class RepositoryReviewService(
         var reviewMode = NormalizeMode(mode);
         var repoRoot = ResolveRepoRoot(repo, repository);
         var reviewedCommitSha = ResolveReviewedCommitSha(repository, repoRoot);
+        var reviewSettings = await GetReviewSettingsAsync(ct);
 
         long? baselineReviewRunId = null;
         string? baselineCommitSha = null;
@@ -87,7 +89,7 @@ public class RepositoryReviewService(
             Status = "queued",
             ReviewMode = reviewMode,
             PromptVersion = CurrentPromptVersion,
-            ModelUsed = string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+            ModelUsed = string.IsNullOrWhiteSpace(reviewSettings.DefaultModel) ? null : reviewSettings.DefaultModel,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -159,6 +161,7 @@ public class RepositoryReviewService(
                 projectSections.Add(new RepositoryProjectReviewSectionResult(review, false, null));
             }
 
+            var reviewSettings = await GetReviewSettingsAsync(ct);
             var synthesized = await SynthesizeRepositoryReviewAsync(
                 run.Repo,
                 executionPlan.Mode,
@@ -166,6 +169,7 @@ public class RepositoryReviewService(
                 baselineReview,
                 executionPlan,
                 projectSections,
+                reviewSettings,
                 ct);
 
             var orderedFindings = projectSections
@@ -184,7 +188,7 @@ public class RepositoryReviewService(
                 .OrderBy(f => SeverityRank(f.Severity))
                 .ThenBy(f => ProjectNameSortKey(f.ProjectName))
                 .ThenBy(f => f.Title, StringComparer.OrdinalIgnoreCase)
-                .Take(Math.Max(1, analysisOptions.Review.MaxFindings))
+                .Take(Math.Max(1, reviewSettings.MaxFindings))
                 .ToList();
 
             await store.UpsertRepositoryReviewFindingsAsync(
@@ -1091,6 +1095,7 @@ public class RepositoryReviewService(
         RepositoryReviewResponse? baselineReview,
         RepositoryReviewExecutionPlan executionPlan,
         IReadOnlyList<RepositoryProjectReviewSectionResult> projectSections,
+        LlmReviewRuntimeConfig reviewSettings,
         CancellationToken ct)
     {
         var topFindings = projectSections
@@ -1135,7 +1140,7 @@ public class RepositoryReviewService(
 
         try
         {
-            var provider = providerRegistry.GetProvider();
+            var provider = providerRegistry.GetProvider(reviewSettings.DefaultProvider);
             var prompt = RepositoryReviewSynthesisPromptBuilder.Build(
                 repo,
                 mode,
@@ -1150,7 +1155,7 @@ public class RepositoryReviewService(
                     await GetRepositoryReviewSynthesisSystemPromptAsync(),
                     prompt),
                 new AnalysisRequestOptions(
-                    Model: string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+                    Model: string.IsNullOrWhiteSpace(reviewSettings.DefaultModel) ? null : reviewSettings.DefaultModel,
                     MaxTokens: Math.Min(analysisOptions.MaxTokensPerSynthesis, 4_000)),
                 ct);
 
@@ -1177,6 +1182,11 @@ public class RepositoryReviewService(
             RepositoryReviewSynthesisPromptBuilder.SystemPrompt,
             logger,
             "repository review synthesis");
+
+    private Task<LlmReviewRuntimeConfig> GetReviewSettingsAsync(CancellationToken ct) =>
+        reviewSettingsResolver is null
+            ? Task.FromResult(LlmReviewRuntimeConfig.FromOptions(analysisOptions))
+            : reviewSettingsResolver.GetReviewAsync(ct);
 
     private static RepositoryReviewSummaryModel BuildDeterministicSummary(
         string repo,

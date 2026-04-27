@@ -29,6 +29,7 @@ public static class MariaDbServiceCollectionExtensions
 
         services.AddTransient<IMigrationRunner, MariaDbMigrationRunner>();
         services.AddTransient<ConnectionStringEncryptor>();
+        services.AddTransient<IAesEncryptor>(sp => sp.GetRequiredService<ConnectionStringEncryptor>());
         services.AddTransient<IAnalysisStore, MySqlAnalysisStore>();
         services.AddTransient<IMetricsStore, MySqlMetricsStore>();
         services.AddTransient<IReviewStore, MySqlReviewStore>();
@@ -39,6 +40,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IDbHealthStore, MySqlDbHealthStore>();
         services.AddTransient<IAdminStore, MySqlAdminStore>();
         services.AddTransient<IDatabaseSourceStore, MySqlDatabaseSourceStore>();
+        services.AddTransient<ILlmConfigRepository, LlmConfigRepository>();
         services.AddTransient<IIndexerRunStore, MySqlIndexerRunStore>();
         services.AddTransient<IVectorStore, MySqlVectorStore>();
         services.AddTransient<IMemoryGraphStore, MySqlMemoryGraphStore>();

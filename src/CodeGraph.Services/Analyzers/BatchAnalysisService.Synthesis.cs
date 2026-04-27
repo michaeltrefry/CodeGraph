@@ -37,7 +37,8 @@ public partial class BatchAnalysisService
         var crossRepoEdges = await store.FindCrossRepoEdgesAsync(repoName);
         var promptText = AnalysisPromptBuilder.BuildRepoSynthesisPrompt(
             repoName, projects, crossRepoEdges, summaryPropertyName: "repoSummary");
-        var provider = providerRegistry.GetProvider();
+        var analysisSettings = await GetAnalysisSettingsAsync(ct);
+        var provider = providerRegistry.GetProvider(analysisSettings.DefaultProvider);
         AnalysisTextResponse response;
         try
         {
@@ -45,7 +46,9 @@ public partial class BatchAnalysisService
                 new AnalysisPrompt(
                     await GetRepositoryAnalysisSystemPromptAsync("repository synthesis"),
                     promptText),
-                new AnalysisRequestOptions(MaxTokens: options.MaxTokensPerSynthesis),
+                new AnalysisRequestOptions(
+                    Model: analysisSettings.DefaultModel,
+                    MaxTokens: analysisSettings.MaxTokensPerSynthesis),
                 ct);
         }
         catch (RetryableAnalysisException)

@@ -53,6 +53,6 @@ CODEGRAPH__AUTHOPTIONS__REQUIREHTTPSMETADATA=true
 CODEGRAPH__MCPOPTIONS__REQUIREPERSONALACCESSTOKEN=true
 ```
 
-Optional provider API keys can be added as individual secrets, for example `CODEGRAPH__ANALYSISOPTIONS__OPENAI__APIKEY`, `CODEGRAPH__ANALYSISOPTIONS__GEMINI__APIKEY`, or `CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__ANTHROPIC__APIKEY`.
+Optional provider API keys can be added as individual secrets, for example `CODEGRAPH__ANALYSISOPTIONS__OPENAI__APIKEY` or `CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__ANTHROPIC__APIKEY`.
 
 The production compose override in `deploy/docker-compose.production.yml` replaces local builds with GHCR images for API, indexer, memory, metrics, jobs, and web. Keep shared MariaDB/RabbitMQ settings, repository/model mounts, TLS/reverse-proxy paths, provider API keys, and internal service auth values in GitHub Actions variables/secrets rather than hand-maintaining a bundled `.env` secret.

@@ -40,6 +40,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<SettingsOverrideEntity> SettingsOverrides => Set<SettingsOverrideEntity>();
     public DbSet<AgentPromptOverrideEntity> AgentPromptOverrides => Set<AgentPromptOverrideEntity>();
     public DbSet<DatabaseSourceEntity> DatabaseSources => Set<DatabaseSourceEntity>();
+    public DbSet<LlmConfigEntryEntity> LlmConfig => Set<LlmConfigEntryEntity>();
+    public DbSet<LlmProviderModelEntity> LlmProviderModels => Set<LlmProviderModelEntity>();
     public DbSet<McpPersonalAccessTokenEntity> McpPersonalAccessTokens => Set<McpPersonalAccessTokenEntity>();
     public DbSet<McpToolInvocationEntity> McpToolInvocations => Set<McpToolInvocationEntity>();
     public DbSet<JobScheduleEntity> JobSchedules => Set<JobScheduleEntity>();
@@ -719,6 +721,26 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(d => d.CreatedAt).HasColumnName("created_at");
             e.Property(d => d.UpdatedAt).HasColumnName("updated_at");
             e.HasIndex(d => new { d.ServerName, d.DatabaseName }).IsUnique();
+        });
+
+        modelBuilder.Entity<LlmConfigEntryEntity>(e =>
+        {
+            e.ToTable("llm_config");
+            e.HasKey(c => c.ConfigKey);
+            e.Property(c => c.ConfigKey).HasColumnName("config_key").HasMaxLength(255);
+            e.Property(c => c.ConfigValue).HasColumnName("config_value").HasColumnType("LONGTEXT");
+            e.Property(c => c.UpdatedBy).HasColumnName("updated_by").HasMaxLength(255);
+            e.Property(c => c.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<LlmProviderModelEntity>(e =>
+        {
+            e.ToTable("llm_provider_models");
+            e.HasKey(m => new { m.ProviderKey, m.ModelId });
+            e.Property(m => m.ProviderKey).HasColumnName("provider_key").HasMaxLength(64);
+            e.Property(m => m.ModelId).HasColumnName("model_id").HasMaxLength(255);
+            e.Property(m => m.DisplayOrder).HasColumnName("display_order");
+            e.HasIndex(m => new { m.ProviderKey, m.DisplayOrder });
         });
     }
 

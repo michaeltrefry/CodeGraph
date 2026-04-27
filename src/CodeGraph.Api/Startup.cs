@@ -72,7 +72,8 @@ public static class Startup
             var origins = new[]
                 {
                     $"http://localhost:{Port}",
-                    "http://localhost:4200"
+                    "http://localhost:4200",
+                    "http://127.0.0.1:4200"
                 }
                 .Concat(authOptions.AllowedOrigins)
                 .Where(origin => !string.IsNullOrWhiteSpace(origin))
@@ -159,8 +160,7 @@ public static class Startup
         services.AddSingleton<AnthropicCircuitBreaker>();
         services.AddScoped<IAnalysisModelProvider, AnthropicAnalysisProvider>();
         services.AddScoped<IAnalysisModelProvider, OpenAiAnalysisProvider>();
-        services.AddScoped<IAnalysisModelProvider, GeminiAnalysisProvider>();
-        services.AddScoped<IAnalysisModelProvider, LocalAnalysisProvider>();
+        services.AddScoped<IAnalysisModelProvider, LmStudioAnalysisProvider>();
         services.AddScoped<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
         services.AddTransient<IProjectService, ProjectService>();
@@ -379,6 +379,12 @@ public static class Startup
             : storageOptions.Neo4jMigrationsPath;
         var migrationsPath = ResolveMigrationsPath(hostEnvironment.ContentRootPath, configuredMigrationsPath);
         await migrationRunner.ApplyMigrationsAsync(migrationsPath);
+
+        var llmConfigDeprecationWarningService = serviceProvider.GetService<ILlmConfigDeprecationWarningService>();
+        if (llmConfigDeprecationWarningService is not null)
+        {
+            await llmConfigDeprecationWarningService.LogWarningsAsync();
+        }
 
         var wikiSectionSeedService = serviceProvider.GetRequiredService<IWikiSectionSeedService>();
         await wikiSectionSeedService.EnsureDefaultSectionsAsync();

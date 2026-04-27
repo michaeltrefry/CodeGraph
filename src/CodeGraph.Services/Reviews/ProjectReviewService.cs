@@ -23,7 +23,8 @@ public class ProjectReviewService(
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     IOptions<AnalysisOptions> analysisOptionsAccessor,
     ILogger<ProjectReviewService> logger,
-    IAgentPromptService? agentPromptService = null) : IProjectReviewService
+    IAgentPromptService? agentPromptService = null,
+    IDbBackedReviewSettingsResolver? reviewSettingsResolver = null) : IProjectReviewService
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
@@ -47,6 +48,7 @@ public class ProjectReviewService(
         var reviewMode = NormalizeMode(mode);
         var repoRoot = ResolveRepoRoot(repo, repository);
         var reviewedCommitSha = ResolveReviewedCommitSha(repository, repoRoot);
+        var reviewSettings = await GetReviewSettingsAsync(ct);
         var reviewRun = new ProjectReviewRunEntity
         {
             Project = repo,
@@ -55,7 +57,7 @@ public class ProjectReviewService(
             Status = "queued",
             ReviewMode = reviewMode,
             PromptVersion = CurrentPromptVersion,
-            ModelUsed = string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+            ModelUsed = string.IsNullOrWhiteSpace(reviewSettings.DefaultModel) ? null : reviewSettings.DefaultModel,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -147,17 +149,18 @@ public class ProjectReviewService(
             throw new ArgumentException("Project name is required.", nameof(projectName));
         ArgumentNullException.ThrowIfNull(input);
 
-        var provider = providerRegistry.GetProvider();
+        var reviewSettings = await GetReviewSettingsAsync(ct);
+        var provider = providerRegistry.GetProvider(reviewSettings.DefaultProvider);
         var reviewMode = NormalizeMode(input.ReviewMode);
         var repository = await store.GetRepositoryByName(repo)
             ?? throw new InvalidOperationException($"Repository '{repo}' was not found.");
         var repoRoot = ResolveRepoRoot(repo, repository);
         var reviewedCommitSha = ResolveReviewedCommitSha(repository, repoRoot);
         var executionInput = NormalizeExecutionInput(input, reviewMode);
-        var context = await BuildContextAsync(repository, repo, repoRoot, projectName, reviewMode, executionInput, ct);
-        var workflow = await RunWorkflowAsync(repo, projectName, reviewMode, provider, context, ct);
+        var context = await BuildContextAsync(repository, repo, repoRoot, projectName, reviewMode, executionInput, reviewSettings, ct);
+        var workflow = await RunWorkflowAsync(repo, projectName, reviewMode, provider, context, reviewSettings, ct);
         var verifiedWorkflow = VerifyWorkflow(workflow, context);
-        var finalReview = await RunSynthesisAsync(repo, projectName, reviewMode, provider, verifiedWorkflow, ct);
+        var finalReview = await RunSynthesisAsync(repo, projectName, reviewMode, provider, verifiedWorkflow, reviewSettings, ct);
 
         var now = DateTime.UtcNow;
         return new ProjectReviewResponse(
@@ -169,7 +172,7 @@ public class ProjectReviewService(
                 "completed",
                 reviewMode,
                 CurrentPromptVersion,
-                string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+                string.IsNullOrWhiteSpace(reviewSettings.DefaultModel) ? null : reviewSettings.DefaultModel,
                 now,
                 now,
                 now,
@@ -239,6 +242,7 @@ public class ProjectReviewService(
         string projectName,
         string mode,
         ProjectReviewExecutionInput executionInput,
+        LlmReviewRuntimeConfig reviewSettings,
         CancellationToken ct)
     {
         if (repoRoot is null)
@@ -281,7 +285,7 @@ public class ProjectReviewService(
             .Take(10)
             .ToList();
 
-        var inspectionBudget = GetInspectionBudget(mode);
+        var inspectionBudget = GetInspectionBudget(mode, reviewSettings);
         var inspectionTargets = SelectInspectionTargets(
             projectNodes,
             metrics,
@@ -295,6 +299,7 @@ public class ProjectReviewService(
             inspectionTargets,
             executionInput.ChangedLineSpans,
             preferFocusedSnippets: string.Equals(mode, "update", StringComparison.OrdinalIgnoreCase),
+            reviewSettings.MaxSourceCharsPerFile,
             ct);
         var candidateTests = SelectCandidateTests(repoRoot, inspectionFiles.Select(f => f.Path).ToHashSet(StringComparer.OrdinalIgnoreCase))
             .Concat(executionInput.CandidateTests ?? [])
@@ -324,7 +329,7 @@ public class ProjectReviewService(
             RelationshipCounts: relationshipCounts,
             InspectionFiles: inspectionFiles,
             CandidateTests: candidateTests,
-            MaxFindings: Math.Min(analysisOptions.Review.MaxFindings, 20));
+            MaxFindings: Math.Min(reviewSettings.MaxFindings, 20));
     }
 
     private async Task<ProjectReviewWorkflowResult> RunWorkflowAsync(
@@ -333,6 +338,7 @@ public class ProjectReviewService(
         string mode,
         IAnalysisModelProvider provider,
         ProjectReviewContext context,
+        LlmReviewRuntimeConfig reviewSettings,
         CancellationToken ct)
     {
         var prompt = ProjectReviewWorkflowPromptBuilder.Build(
@@ -361,7 +367,7 @@ public class ProjectReviewService(
                     "project review workflow"),
                 prompt),
             new AnalysisRequestOptions(
-                Model: string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+                Model: string.IsNullOrWhiteSpace(reviewSettings.DefaultModel) ? null : reviewSettings.DefaultModel,
                 MaxTokens: Math.Min(analysisOptions.MaxTokensPerSynthesis, 8_000)),
             ct);
 
@@ -381,6 +387,7 @@ public class ProjectReviewService(
         string mode,
         IAnalysisModelProvider provider,
         ProjectReviewWorkflowResult workflow,
+        LlmReviewRuntimeConfig reviewSettings,
         CancellationToken ct)
     {
         var prompt = ProjectReviewSynthesisPromptBuilder.Build(
@@ -388,7 +395,7 @@ public class ProjectReviewService(
             projectName,
             mode,
             JsonSerializer.Serialize(workflow, CamelOpts),
-            Math.Min(workflow.Findings.Count, analysisOptions.Review.MaxFindings));
+            Math.Min(workflow.Findings.Count, reviewSettings.MaxFindings));
 
         try
         {
@@ -400,7 +407,7 @@ public class ProjectReviewService(
                         "project review synthesis"),
                     prompt),
                 new AnalysisRequestOptions(
-                    Model: string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
+                    Model: string.IsNullOrWhiteSpace(reviewSettings.DefaultModel) ? null : reviewSettings.DefaultModel,
                     MaxTokens: Math.Min(analysisOptions.MaxTokensPerSynthesis, 6_000)),
                 ct);
 
@@ -412,7 +419,7 @@ public class ProjectReviewService(
                 NormalizeStringList(synthesis.SkippedAreas).DefaultIfEmptyList(workflow.SkippedAreas),
                 NormalizeStringList(synthesis.FollowUps).DefaultIfEmptyList(workflow.FollowUps),
                 NormalizeFindings(synthesis.Findings)),
-                analysisOptions.Review.MaxFindings);
+                reviewSettings.MaxFindings);
         }
         catch (Exception ex)
         {
@@ -424,7 +431,7 @@ public class ProjectReviewService(
                 workflow.SkippedAreas,
                 workflow.FollowUps,
                 workflow.Findings),
-                analysisOptions.Review.MaxFindings);
+                reviewSettings.MaxFindings);
         }
     }
 
@@ -497,6 +504,7 @@ public class ProjectReviewService(
         IReadOnlyList<InspectionTarget> targets,
         IReadOnlyDictionary<string, IReadOnlyList<ProjectReviewLineSpan>>? changedLineSpans,
         bool preferFocusedSnippets,
+        int maxSourceCharsPerFile,
         CancellationToken ct)
     {
         var results = new List<ReviewInspectionFile>();
@@ -516,8 +524,8 @@ public class ProjectReviewService(
                 : null;
             var hasFocusedSpans = preferFocusedSnippets && focusedSpans is not null && focusedSpans.Count > 0;
             var renderedContent = hasFocusedSpans
-                ? BuildFocusedInspectionContent(lines, focusedSpans!, analysisOptions.Review.MaxSourceCharsPerFile)
-                : BuildNumberedInspectionContent(lines, analysisOptions.Review.MaxSourceCharsPerFile);
+                ? BuildFocusedInspectionContent(lines, focusedSpans!, maxSourceCharsPerFile)
+                : BuildNumberedInspectionContent(lines, maxSourceCharsPerFile);
             var reason = hasFocusedSpans
                 ? $"{target.Reason}; changed lines {FormatLineSpans(focusedSpans!)} with surrounding context"
                 : target.Reason;
@@ -673,16 +681,21 @@ public class ProjectReviewService(
         return candidate;
     }
 
-    private int GetInspectionBudget(string mode)
+    private int GetInspectionBudget(string mode, LlmReviewRuntimeConfig reviewSettings)
     {
         return NormalizeMode(mode) switch
         {
-            "update" => Math.Max(1, Math.Min(analysisOptions.Review.MaxFilesToInspect, 12)),
-            "quick" => Math.Max(1, analysisOptions.Review.MaxFilesToInspect / 2),
-            "deep" => Math.Max(1, Math.Min(analysisOptions.Review.MaxFilesToInspect * 2, 50)),
-            _ => Math.Max(1, analysisOptions.Review.MaxFilesToInspect)
+            "update" => Math.Max(1, Math.Min(reviewSettings.MaxFilesToInspect, 12)),
+            "quick" => Math.Max(1, reviewSettings.MaxFilesToInspect / 2),
+            "deep" => Math.Max(1, Math.Min(reviewSettings.MaxFilesToInspect * 2, 50)),
+            _ => Math.Max(1, reviewSettings.MaxFilesToInspect)
         };
     }
+
+    private Task<LlmReviewRuntimeConfig> GetReviewSettingsAsync(CancellationToken ct) =>
+        reviewSettingsResolver is null
+            ? Task.FromResult(LlmReviewRuntimeConfig.FromOptions(analysisOptions))
+            : reviewSettingsResolver.GetReviewAsync(ct);
 
     private static string NormalizeMode(string mode)
         => mode.Trim().ToLowerInvariant() switch

@@ -15,12 +15,13 @@ using CodeGraph.Services.Extensions;
 
 namespace CodeGraph.Services.Analyzers;
 
-public class LocalAnalysisProvider(
+public class LmStudioAnalysisProvider(
     IHttpClientFactory httpClientFactory,
     IGraphStore store,
     IOptions<AnalysisOptions> optionsAccessor,
-    ILogger<LocalAnalysisProvider> logger,
-    IServiceScopeFactory? scopeFactory = null) : IAnalysisModelProvider
+    ILogger<LmStudioAnalysisProvider> logger,
+    IServiceScopeFactory? scopeFactory = null,
+    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null) : IAnalysisModelProvider
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
     private static readonly JsonSerializerOptions SnakeOpts = CodeGraphJsonDefaults.SnakeCase;
@@ -28,11 +29,11 @@ public class LocalAnalysisProvider(
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
-    private readonly SemaphoreSlim concurrencyGate = CreateConcurrencyGate(optionsAccessor.Value.Local.MaxConcurrentRequests);
+    private readonly SemaphoreSlim concurrencyGate = CreateConcurrencyGate(optionsAccessor.Value.LmStudio.MaxConcurrentRequests);
     private readonly object batchRunnerLock = new();
     private readonly Dictionary<string, Task> batchRunners = new(StringComparer.Ordinal);
 
-    public string ProviderName => "local";
+    public string ProviderName => "lmstudio";
 
     public AnalysisProviderCapabilities Capabilities { get; } =
         new(SupportsBatch: true, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: false);
@@ -43,30 +44,31 @@ public class LocalAnalysisProvider(
         CancellationToken ct = default)
     {
         if (concurrencyGate.CurrentCount == 0)
-            logger.LogInformation("Local provider is saturated; queueing request until one of {MaxConcurrentRequests} slot(s) is free",
-                Math.Max(1, options.Local.MaxConcurrentRequests));
+            logger.LogInformation("LM Studio provider is saturated; queueing request until one of {MaxConcurrentRequests} slot(s) is free",
+                Math.Max(1, options.LmStudio.MaxConcurrentRequests));
 
         await concurrencyGate.WaitAsync(ct);
         try
         {
+            var providerConfig = await ResolveProviderConfigAsync(ct);
             var body = BuildRequestBody(
-                ResolveModel(request),
+                ResolveModel(request, providerConfig),
                 request.MaxTokens,
-                options.Local.UseJsonObjectResponseFormat,
+                options.LmStudio.UseJsonObjectResponseFormat,
                 prompt);
 
             var http = httpClientFactory.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, options.Local.TimeoutSeconds));
+            http.Timeout = TimeSpan.FromSeconds(Math.Max(1, options.LmStudio.TimeoutSeconds));
 
             HttpResponseMessage response;
             try
             {
-                response = await SendWithStructuredOutputFallbackAsync(http, body, prompt, request.MaxTokens, ct);
+                response = await SendWithStructuredOutputFallbackAsync(http, body, prompt, request.MaxTokens, providerConfig, ct);
             }
             catch (Exception ex) when (IsRetryableTransportException(ex, ct))
             {
                 throw new RetryableAnalysisException(
-                    $"Local analysis request failed transiently after waiting up to {http.Timeout.TotalSeconds:F0}s.",
+                    $"LM Studio analysis request failed transiently after waiting up to {http.Timeout.TotalSeconds:F0}s.",
                     ex);
             }
 
@@ -78,27 +80,27 @@ public class LocalAnalysisProvider(
                     if (TryRecoverCompletionFromBadRequest(errorBody, body.Model, out var recovered))
                     {
                         logger.LogWarning(
-                            "Local provider returned {Status} while parsing model output; recovered JSON from error body and will continue.",
+                            "LM Studio provider returned {Status} while parsing model output; recovered JSON from error body and will continue.",
                             (int)response.StatusCode);
                         return recovered;
                     }
 
-                    logger.LogError("Local chat completion failed {Status}: {Body}",
+                    logger.LogError("LM Studio chat completion failed {Status}: {Body}",
                         (int)response.StatusCode, errorBody);
                     response.EnsureSuccessStatusCode();
                 }
 
                 var rawBody = await response.Content.ReadAsStringAsync(ct);
-                var completion = JsonSerializer.Deserialize<LocalChatCompletionResponse>(rawBody, SnakeOpts)
-                    ?? throw new InvalidOperationException("Local provider returned null chat completion response");
+                var completion = JsonSerializer.Deserialize<LmStudioChatCompletionResponse>(rawBody, SnakeOpts)
+                    ?? throw new InvalidOperationException("LM Studio provider returned null chat completion response");
                 var text = completion.Choices
                     .Select(ExtractChoiceText)
                     .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
                 if (string.IsNullOrWhiteSpace(text))
                 {
-                    logger.LogWarning("Local provider returned an empty chat completion response body: {Body}",
+                    logger.LogWarning("LM Studio provider returned an empty chat completion response body: {Body}",
                         TruncateForLog(rawBody, 1200));
-                    throw new InvalidOperationException("Local provider returned an empty chat completion response");
+                    throw new InvalidOperationException("LM Studio provider returned an empty chat completion response");
                 }
 
                 return new AnalysisTextResponse(text, completion.Model ?? body.Model, ProviderName);
@@ -112,13 +114,14 @@ public class LocalAnalysisProvider(
 
     private async Task<HttpResponseMessage> SendWithStructuredOutputFallbackAsync(
         HttpClient http,
-        LocalChatCompletionRequest body,
+        LmStudioChatCompletionRequest body,
         AnalysisPrompt prompt,
         int? maxTokens,
+        LlmProviderRuntimeConfig providerConfig,
         CancellationToken ct)
     {
-        var url = BuildUrl(options.Local.ChatCompletionsPath);
-        var response = await http.SendAsync(CreateJsonRequest(HttpMethod.Post, url, body), ct);
+        var url = BuildUrl(providerConfig, options.LmStudio.ChatCompletionsPath);
+        var response = await http.SendAsync(CreateJsonRequest(HttpMethod.Post, url, providerConfig, body), ct);
 
         if (response.IsSuccessStatusCode ||
             !body.UsesJsonObjectResponseFormat ||
@@ -131,11 +134,11 @@ public class LocalAnalysisProvider(
         response.Dispose();
 
         logger.LogWarning(
-            "Local provider rejected structured json_object output; retrying without response_format. Response: {Body}",
+            "LM Studio provider rejected structured json_object output; retrying without response_format. Response: {Body}",
             errorBody);
 
         var fallbackBody = BuildRequestBody(body.Model, maxTokens, useJsonObjectResponseFormat: false, prompt);
-        return await http.SendAsync(CreateJsonRequest(HttpMethod.Post, url, fallbackBody), ct);
+        return await http.SendAsync(CreateJsonRequest(HttpMethod.Post, url, providerConfig, fallbackBody), ct);
     }
 
     private AnalysisTextResponse CreateRecoveredResponse(string text, string model) =>
@@ -152,7 +155,7 @@ public class LocalAnalysisProvider(
     public async Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default)
     {
         var batch = await store.GetBatchByProviderBatchIdAsync(batchId)
-            ?? throw new InvalidOperationException($"Local batch '{batchId}' was not found.");
+            ?? throw new InvalidOperationException($"LM Studio batch '{batchId}' was not found.");
 
         var requests = await store.GetBatchRequestsAsync(batch.Id);
         if (requests.Count == 0)
@@ -181,7 +184,7 @@ public class LocalAnalysisProvider(
         CancellationToken ct = default)
     {
         var batch = await store.GetBatchByProviderBatchIdAsync(batchId)
-            ?? throw new InvalidOperationException($"Local batch '{batchId}' was not found.");
+            ?? throw new InvalidOperationException($"LM Studio batch '{batchId}' was not found.");
         var requests = await store.GetBatchRequestsAsync(batch.Id);
 
         if (requestIds is not null && requestIds.Count > 0)
@@ -208,7 +211,7 @@ public class LocalAnalysisProvider(
         CancellationToken ct)
     {
         var nextAttempt = request.AttemptCount + 1;
-        var maxAttempts = Math.Max(1, options.Local.DirectFallbackMaxAttempts);
+        var maxAttempts = Math.Max(1, options.LmStudio.DirectFallbackMaxAttempts);
 
         AnalysisBatchRequestPayload? payload;
         try
@@ -217,7 +220,7 @@ public class LocalAnalysisProvider(
         }
         catch (JsonException ex)
         {
-            logger.LogError(ex, "Local batch {BatchId} request {CustomId} has invalid request payload JSON",
+            logger.LogError(ex, "LM Studio batch {BatchId} request {CustomId} has invalid request payload JSON",
                 batch.ProviderBatchId, request.CustomId);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
@@ -226,7 +229,7 @@ public class LocalAnalysisProvider(
 
         if (payload is null)
         {
-            logger.LogError("Local batch {BatchId} request {CustomId} is missing request payload JSON",
+            logger.LogError("LM Studio batch {BatchId} request {CustomId} is missing request payload JSON",
                 batch.ProviderBatchId, request.CustomId);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
@@ -242,14 +245,14 @@ public class LocalAnalysisProvider(
         catch (RetryableAnalysisException ex) when (nextAttempt < maxAttempts)
         {
             logger.LogWarning(ex,
-                "Local batch {BatchId} request {CustomId} hit a transient failure; keeping it pending (attempt {Attempt}/{MaxAttempts})",
+                "LM Studio batch {BatchId} request {CustomId} hit a transient failure; keeping it pending (attempt {Attempt}/{MaxAttempts})",
                 batch.ProviderBatchId, request.CustomId, nextAttempt, maxAttempts);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "pending", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: null);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Local batch {BatchId} request {CustomId} failed",
+            logger.LogError(ex, "LM Studio batch {BatchId} request {CustomId} failed",
                 batch.ProviderBatchId, request.CustomId);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
@@ -313,7 +316,7 @@ public class LocalAnalysisProvider(
                 if (t.IsFaulted)
                 {
                     logger.LogError(t.Exception,
-                        "Local batch runner crashed for {BatchId}",
+                        "LM Studio batch runner crashed for {BatchId}",
                         batchId);
                 }
 
@@ -385,7 +388,7 @@ public class LocalAnalysisProvider(
         }
     }
 
-    private static string? ExtractChoiceText(LocalChoice? choice)
+    private static string? ExtractChoiceText(LmStudioChoice? choice)
     {
         if (choice is null)
             return null;
@@ -459,9 +462,13 @@ public class LocalAnalysisProvider(
         return text[..maxChars] + "...";
     }
 
-    private HttpRequestMessage CreateJsonRequest(HttpMethod method, string url, object body)
+    private HttpRequestMessage CreateJsonRequest(
+        HttpMethod method,
+        string url,
+        LlmProviderRuntimeConfig providerConfig,
+        object body)
     {
-        var request = CreateRequest(method, url);
+        var request = CreateRequest(method, url, providerConfig);
         request.Content = JsonContent.Create(body, options: RequestOpts);
         return request;
     }
@@ -476,35 +483,39 @@ public class LocalAnalysisProvider(
         return JsonSerializer.Serialize(body, RequestOpts);
     }
 
-    private HttpRequestMessage CreateRequest(HttpMethod method, string url)
+    private Task<LlmProviderRuntimeConfig> ResolveProviderConfigAsync(CancellationToken ct) =>
+        providerConfigResolver?.GetProviderAsync(ProviderName, ct)
+        ?? Task.FromResult(LlmProviderRuntimeConfig.FromOptions(ProviderName, options));
+
+    private HttpRequestMessage CreateRequest(HttpMethod method, string url, LlmProviderRuntimeConfig providerConfig)
     {
         var request = new HttpRequestMessage(method, url);
 
-        if (!string.IsNullOrWhiteSpace(options.Local.ApiKey))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.Local.ApiKey);
+        if (!string.IsNullOrWhiteSpace(providerConfig.ApiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", providerConfig.ApiKey);
 
         return request;
     }
 
-    private string ResolveModel(AnalysisRequestOptions request)
+    private string ResolveModel(AnalysisRequestOptions request, LlmProviderRuntimeConfig providerConfig)
     {
         if (!string.IsNullOrWhiteSpace(request.Model))
             return request.Model;
 
-        if (!string.IsNullOrWhiteSpace(options.Local.Model))
-            return options.Local.Model;
+        if (!string.IsNullOrWhiteSpace(providerConfig.Model))
+            return providerConfig.Model;
 
         throw new InvalidOperationException(
-            "CodeGraph:AnalysisOptions:Local:Model must be configured when using the local analysis provider.");
+            "CodeGraph:AnalysisOptions:LmStudio:Model must be configured when using the LM Studio analysis provider.");
     }
 
     private static bool IsTerminalStatus(string status) =>
         string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(status, "errored", StringComparison.OrdinalIgnoreCase);
 
-    private string BuildUrl(string path)
+    private string BuildUrl(LlmProviderRuntimeConfig providerConfig, string path)
     {
-        var baseUrl = NormalizeBaseUrl(options.Local.BaseUrl).TrimEnd('/');
+        var baseUrl = NormalizeBaseUrl(providerConfig.EndpointUrl ?? options.LmStudio.BaseUrl).TrimEnd('/');
         var relative = path.StartsWith("/") ? path : $"/{path}";
         return $"{baseUrl}{relative}";
     }
@@ -529,29 +540,29 @@ public class LocalAnalysisProvider(
             RegexOptions.IgnoreCase);
     }
 
-    private static LocalChatCompletionRequest BuildRequestBody(
+    private static LmStudioChatCompletionRequest BuildRequestBody(
         string model,
         int? maxTokens,
         bool useJsonObjectResponseFormat,
         AnalysisPrompt prompt)
     {
-        return new LocalChatCompletionRequest
+        return new LmStudioChatCompletionRequest
         {
             Model = model,
             MaxTokens = maxTokens,
             ResponseFormat = useJsonObjectResponseFormat
-                ? new LocalResponseFormat { Type = "json_object" }
+                ? new LmStudioResponseFormat { Type = "json_object" }
                 : null,
             Messages =
             [
-                new LocalMessageRequest { Role = "system", Content = prompt.SystemPrompt },
-                new LocalMessageRequest { Role = "user", Content = prompt.UserPrompt }
+                new LmStudioMessageRequest { Role = "system", Content = prompt.SystemPrompt },
+                new LmStudioMessageRequest { Role = "user", Content = prompt.UserPrompt }
             ]
         };
     }
 
     private static string CreateBatchId() =>
-        $"local_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}";
+        $"lmstudio_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}";
 
     private static SemaphoreSlim CreateConcurrencyGate(int maxConcurrentRequests)
     {
@@ -573,43 +584,43 @@ public class LocalAnalysisProvider(
         return ex.InnerException is not null && IsRetryableTransportException(ex.InnerException, ct);
     }
 
-    private sealed class LocalChatCompletionRequest
+    private sealed class LmStudioChatCompletionRequest
     {
         public string Model { get; set; } = "";
         public int? MaxTokens { get; set; }
-        public LocalResponseFormat? ResponseFormat { get; set; }
-        public List<LocalMessageRequest> Messages { get; set; } = [];
+        public LmStudioResponseFormat? ResponseFormat { get; set; }
+        public List<LmStudioMessageRequest> Messages { get; set; } = [];
 
         [JsonIgnore]
         public bool UsesJsonObjectResponseFormat =>
             string.Equals(ResponseFormat?.Type, "json_object", StringComparison.OrdinalIgnoreCase);
     }
 
-    private sealed class LocalResponseFormat
+    private sealed class LmStudioResponseFormat
     {
         public string Type { get; set; } = "json_object";
     }
 
-    private sealed class LocalMessageRequest
+    private sealed class LmStudioMessageRequest
     {
         public string Role { get; set; } = "";
         public string Content { get; set; } = "";
     }
 
-    private sealed class LocalChatCompletionResponse
+    private sealed class LmStudioChatCompletionResponse
     {
         public string? Model { get; set; }
-        public List<LocalChoice> Choices { get; set; } = [];
+        public List<LmStudioChoice> Choices { get; set; } = [];
     }
 
-    private sealed class LocalChoice
+    private sealed class LmStudioChoice
     {
-        public LocalMessageResponse? Message { get; set; }
+        public LmStudioMessageResponse? Message { get; set; }
         public JsonElement? Text { get; set; }
         public JsonElement? Reasoning { get; set; }
     }
 
-    private sealed class LocalMessageResponse
+    private sealed class LmStudioMessageResponse
     {
         public JsonElement? Content { get; set; }
     }

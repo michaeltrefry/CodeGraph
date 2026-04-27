@@ -35,7 +35,9 @@ public partial class GraphAssistant(
     IMetricsEventPublisher metricsEventPublisher,
     IAssistantDebugCapture debugCapture,
     ILogger<GraphAssistant> logger,
-    IAgentPromptService? agentPromptService = null)
+    IAgentPromptService? agentPromptService = null,
+    IDbBackedAssistantSettingsResolver? assistantSettingsResolver = null,
+    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null)
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions options = optionsAccessor.Value;
@@ -55,35 +57,37 @@ public partial class GraphAssistant(
         string? username = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var provider = ResolveAssistantProvider();
+        var assistantConfig = await ResolveAssistantConfigAsync(ct);
+        var provider = assistantConfig.DefaultProvider.Trim().ToLowerInvariant();
 
         switch (provider)
         {
             case "anthropic":
-                await foreach (var e in AskWithAnthropicAsync(question, context, history, username, ct))
+                await foreach (var e in AskWithAnthropicAsync(assistantConfig, question, context, history, username, ct))
                     yield return e;
                 yield break;
 
             case "openai":
-            case "local":
-                await foreach (var e in AskWithOpenAiCompatibleAsync(provider, question, context, history, username, ct))
+            case "lmstudio":
+                await foreach (var e in AskWithOpenAiCompatibleAsync(assistantConfig, provider, question, context, history, username, ct))
                     yield return e;
                 yield break;
 
             default:
                 throw new InvalidOperationException(
-                    $"Assistant provider '{provider}' is not supported. Supported providers: anthropic, openai, local");
+                    $"Assistant provider '{provider}' is not supported. Supported providers: anthropic, openai, lmstudio");
         }
     }
 
     private async IAsyncEnumerable<AssistantEvent> AskWithAnthropicAsync(
+        LlmAssistantRuntimeConfig assistantConfig,
         string question,
         string? context,
         IReadOnlyList<ChatMessage>? history,
         string? username,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var client = CreateConfiguredAnthropicClient();
+        var client = await CreateConfiguredAnthropicClientAsync(ct);
         var userMessage = string.IsNullOrWhiteSpace(context)
             ? question
             : $"[Context: {context}]\n\n{question}";
@@ -108,10 +112,10 @@ public partial class GraphAssistant(
         bool exhaustedTurns = false;
         bool hasUsedTool = false;
 
-        for (int turn = 0; turn < options.Assistant.MaxTurns; turn++)
+        for (int turn = 0; turn < assistantConfig.MaxTurns; turn++)
         {
             logger.LogInformation("Agent turn {Turn}/{MaxTurns} — sending {MessageCount} messages to Claude",
-                turn + 1, options.Assistant.MaxTurns, messages.Count);
+                turn + 1, assistantConfig.MaxTurns, messages.Count);
             var turnSw = System.Diagnostics.Stopwatch.StartNew();
             var allowTextStreaming = hasUsedTool;
 
@@ -119,13 +123,13 @@ public partial class GraphAssistant(
             var toolUseList = new List<PendingToolUse>();
             PendingToolUse? current = null;
             MessageDeltaUsage? usage = null;
-            var model = ResolveAssistantModel("anthropic");
+            var model = assistantConfig.DefaultModel;
 
             int streamEventCount = 0;
             await foreach (var e in client.Messages.CreateStreaming(new MessageCreateParams
             {
                 Model = model,
-                MaxTokens = options.Assistant.MaxTokens,
+                MaxTokens = assistantConfig.MaxTokens,
                 System = await GetSystemPromptAsync(),
                 Messages = messages,
                 Tools = tools
@@ -171,6 +175,7 @@ public partial class GraphAssistant(
             await CaptureAnthropicDebugExchangeAsync(
                 turn,
                 model,
+                assistantConfig.MaxTokens,
                 messages.Count,
                 allowTextStreaming,
                 textSb.ToString(),
@@ -271,11 +276,11 @@ public partial class GraphAssistant(
             MessageDeltaUsage? usage = null;
             var finalTextSb = new StringBuilder();
             var finalStreamEventCount = 0;
-            var model = ResolveAssistantModel("anthropic");
+            var model = assistantConfig.DefaultModel;
             await foreach (var e in client.Messages.CreateStreaming(new MessageCreateParams
             {
                 Model = model,
-                MaxTokens = options.Assistant.MaxTokens,
+                MaxTokens = assistantConfig.MaxTokens,
                 System = await GetSystemPromptAsync(),
                 Messages = messages
             }, ct))
@@ -293,8 +298,9 @@ public partial class GraphAssistant(
             }
             await PublishAnthropicUsageAsync(usage, username, "assistant.ask", model, ct);
             await CaptureAnthropicDebugExchangeAsync(
-                options.Assistant.MaxTurns,
+                assistantConfig.MaxTurns,
                 model,
+                assistantConfig.MaxTokens,
                 messages.Count,
                 allowTextStreaming: true,
                 finalTextSb.ToString(),
@@ -311,6 +317,7 @@ public partial class GraphAssistant(
     }
 
     private async IAsyncEnumerable<AssistantEvent> AskWithOpenAiCompatibleAsync(
+        LlmAssistantRuntimeConfig assistantConfig,
         string provider,
         string question,
         string? context,
@@ -343,7 +350,7 @@ public partial class GraphAssistant(
 
         var tools = BuildOpenAiTools();
         var http = httpClientFactory.CreateClient();
-        var maxTurns = options.Assistant.MaxTurns;
+        var maxTurns = assistantConfig.MaxTurns;
         bool exhaustedTurns = false;
         bool hasUsedTool = false;
 
@@ -355,6 +362,7 @@ public partial class GraphAssistant(
             var completion = await CompleteOpenAiCompatibleTurnAsync(
                 http,
                 provider,
+                assistantConfig,
                 messages,
                 tools,
                 username,
@@ -363,6 +371,7 @@ public partial class GraphAssistant(
             await CaptureOpenAiCompatibleDebugExchangeAsync(
                 provider,
                 turn,
+                assistantConfig,
                 messages,
                 tools,
                 completion,
@@ -467,6 +476,7 @@ public partial class GraphAssistant(
             var completion = await CompleteOpenAiCompatibleTurnAsync(
                 http,
                 provider,
+                assistantConfig,
                 messages,
                 tools: null,
                 username,
@@ -475,6 +485,7 @@ public partial class GraphAssistant(
             await CaptureOpenAiCompatibleDebugExchangeAsync(
                 provider,
                 maxTurns,
+                assistantConfig,
                 messages,
                 tools: null,
                 completion,
@@ -557,6 +568,7 @@ public partial class GraphAssistant(
     private async Task CaptureAnthropicDebugExchangeAsync(
         int turnIndex,
         string model,
+        int maxTokens,
         int messageCount,
         bool allowTextStreaming,
         string responseText,
@@ -585,7 +597,7 @@ public partial class GraphAssistant(
                 model,
                 turnIndex,
                 messageCount,
-                maxTokens = options.Assistant.MaxTokens,
+                maxTokens,
                 allowTextStreaming,
                 toolNames = BuildToolDefinitions().Select(tool => tool.Name).ToList()
             }) ?? "{}",
@@ -611,12 +623,13 @@ public partial class GraphAssistant(
     private async Task CaptureOpenAiCompatibleDebugExchangeAsync(
         string provider,
         int turnIndex,
+        LlmAssistantRuntimeConfig assistantConfig,
         IReadOnlyList<OpenAiChatMessage> messages,
         IReadOnlyList<OpenAiToolDefinition>? tools,
         OpenAiChatCompletionResponse completion,
         CancellationToken ct)
     {
-        var model = FirstNonEmpty(completion.Model, ResolveAssistantModel(provider), "unknown");
+        var model = FirstNonEmpty(completion.Model, assistantConfig.DefaultModel, "unknown");
         var assistantMessage = completion.Choices.FirstOrDefault()?.Message;
 
         await debugCapture.CaptureExchangeAsync(new AssistantDebugExchangeCapture(
@@ -626,10 +639,10 @@ public partial class GraphAssistant(
             RequestBodyJson: SerializeDebugJson(new
             {
                 provider,
-                model = ResolveAssistantModel(provider),
+                model = assistantConfig.DefaultModel,
                 turnIndex,
                 messageCount = messages.Count,
-                maxTokens = options.Assistant.MaxTokens,
+                maxTokens = assistantConfig.MaxTokens,
                 toolNames = tools?.Select(tool => tool.Function.Name).ToList()
             }) ?? "{}",
             RequestText: BuildOpenAiRequestText(messages),
@@ -729,11 +742,12 @@ public partial class GraphAssistant(
     private static string GetToolRequirementReminder() =>
         "Before answering, you must call at least one tool to ground your response in repository data. Do not answer from general knowledge alone.";
 
-    private IAnthropicClient CreateConfiguredAnthropicClient()
+    private async Task<IAnthropicClient> CreateConfiguredAnthropicClientAsync(CancellationToken ct)
     {
         var client = anthropicClient;
-        var apiKey = FirstNonEmpty(options.Assistant.Anthropic.ApiKey, options.Anthropic.ApiKey);
-        var baseUrl = FirstNonEmpty(options.Assistant.Anthropic.BaseUrl, TryGetAnthropicBaseUrl(options.Anthropic.MessagesApiUrl));
+        var providerConfig = await ResolveProviderConfigAsync(LlmProviderKeys.Anthropic, ct);
+        var apiKey = providerConfig.ApiKey;
+        var baseUrl = FirstNonEmpty(providerConfig.EndpointUrl, TryGetAnthropicBaseUrl(options.Anthropic.MessagesApiUrl));
 
         if (string.IsNullOrWhiteSpace(apiKey) && string.IsNullOrWhiteSpace(baseUrl))
             return client;
@@ -748,13 +762,14 @@ public partial class GraphAssistant(
     private async Task<OpenAiChatCompletionResponse> CompleteOpenAiCompatibleTurnAsync(
         HttpClient http,
         string provider,
+        LlmAssistantRuntimeConfig assistantConfig,
         IReadOnlyList<OpenAiChatMessage> messages,
         IReadOnlyList<OpenAiToolDefinition>? tools,
         string? username,
         string path,
         CancellationToken ct)
     {
-        var request = await CreateOpenAiCompatibleRequestAsync(provider, messages, tools);
+        var request = await CreateOpenAiCompatibleRequestAsync(provider, assistantConfig, messages, tools, ct);
         using var response = await http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -765,12 +780,13 @@ public partial class GraphAssistant(
         var completion = await response.Content.ReadFromJsonAsync<OpenAiChatCompletionResponse>(CodeGraphJsonDefaults.SnakeCase, ct)
             ?? throw new InvalidOperationException($"{provider} returned a null assistant response");
 
-        await PublishOpenAiCompatibleUsageAsync(provider, completion, username, path, ct);
+        await PublishOpenAiCompatibleUsageAsync(provider, assistantConfig, completion, username, path, ct);
         return completion;
     }
 
     private async Task PublishOpenAiCompatibleUsageAsync(
         string provider,
+        LlmAssistantRuntimeConfig assistantConfig,
         OpenAiChatCompletionResponse completion,
         string? username,
         string path,
@@ -786,7 +802,7 @@ public partial class GraphAssistant(
                     NormalizeTelemetryUsername(username) ?? "system",
                     path,
                     provider,
-                    FirstNonEmpty(completion.Model, ResolveAssistantModel(provider), "unknown"),
+                    FirstNonEmpty(completion.Model, assistantConfig.DefaultModel, "unknown"),
                     completion.Usage.PromptTokens ?? 0,
                     completion.Usage.CompletionTokens ?? 0,
                     completion.Usage.TotalTokens ?? 0),
@@ -849,10 +865,12 @@ public partial class GraphAssistant(
 
     private async Task<HttpRequestMessage> CreateOpenAiCompatibleRequestAsync(
         string provider,
+        LlmAssistantRuntimeConfig assistantConfig,
         IReadOnlyList<OpenAiChatMessage> messages,
-        IReadOnlyList<OpenAiToolDefinition>? tools)
+        IReadOnlyList<OpenAiToolDefinition>? tools,
+        CancellationToken ct)
     {
-        var providerOptions = ResolveOpenAiCompatibleOptions(provider);
+        var providerOptions = await ResolveOpenAiCompatibleOptionsAsync(provider, ct);
         var url = BuildOpenAiCompatibleUrl(providerOptions);
 
         var request = new HttpRequestMessage(HttpMethod.Post, url);
@@ -865,8 +883,8 @@ public partial class GraphAssistant(
 
         var body = new OpenAiChatCompletionRequest
         {
-            Model = ResolveAssistantModel(provider),
-            MaxCompletionTokens = options.Assistant.MaxTokens,
+            Model = assistantConfig.DefaultModel,
+            MaxCompletionTokens = assistantConfig.MaxTokens,
             Messages = await BuildOpenAiCompatibleMessagesAsync(messages),
             Tools = tools?.ToList()
         };
@@ -897,29 +915,30 @@ public partial class GraphAssistant(
         return result;
     }
 
-    private AssistantOpenAiCompatibleOptions ResolveOpenAiCompatibleOptions(string provider)
+    private async Task<OpenAiCompatibleAssistantProviderOptions> ResolveOpenAiCompatibleOptionsAsync(
+        string provider,
+        CancellationToken ct)
     {
+        var providerConfig = await ResolveProviderConfigAsync(provider, ct);
         return provider switch
         {
-            "openai" => new AssistantOpenAiCompatibleOptions
-            {
-                ApiKey = FirstNonEmpty(options.Assistant.OpenAi.ApiKey, options.OpenAi.ApiKey),
-                BaseUrl = FirstNonEmpty(options.Assistant.OpenAi.BaseUrl, options.OpenAi.BaseUrl),
-                ChatCompletionsPath = FirstNonEmpty(options.Assistant.OpenAi.ChatCompletionsPath, options.OpenAi.ChatCompletionsPath),
-                Organization = FirstNonEmpty(options.Assistant.OpenAi.Organization, options.OpenAi.Organization),
-                Project = FirstNonEmpty(options.Assistant.OpenAi.Project, options.OpenAi.Project)
-            },
-            "local" => new AssistantOpenAiCompatibleOptions
-            {
-                ApiKey = FirstNonEmpty(options.Assistant.Local.ApiKey, options.Local.ApiKey),
-                BaseUrl = FirstNonEmpty(options.Assistant.Local.BaseUrl, options.Local.BaseUrl),
-                ChatCompletionsPath = FirstNonEmpty(options.Assistant.Local.ChatCompletionsPath, options.Local.ChatCompletionsPath)
-            },
+            LlmProviderKeys.OpenAi => new OpenAiCompatibleAssistantProviderOptions(
+                providerConfig.ApiKey,
+                FirstNonEmpty(providerConfig.EndpointUrl, options.OpenAi.BaseUrl),
+                FirstNonEmpty(options.OpenAi.ChatCompletionsPath, "/chat/completions"),
+                options.OpenAi.Organization,
+                options.OpenAi.Project),
+            LlmProviderKeys.LmStudio => new OpenAiCompatibleAssistantProviderOptions(
+                providerConfig.ApiKey,
+                FirstNonEmpty(providerConfig.EndpointUrl, options.LmStudio.BaseUrl),
+                FirstNonEmpty(options.LmStudio.ChatCompletionsPath, "/chat/completions"),
+                Organization: null,
+                Project: null),
             _ => throw new InvalidOperationException($"Unsupported OpenAI-compatible assistant provider '{provider}'")
         };
     }
 
-    private string BuildOpenAiCompatibleUrl(AssistantOpenAiCompatibleOptions providerOptions)
+    private string BuildOpenAiCompatibleUrl(OpenAiCompatibleAssistantProviderOptions providerOptions)
     {
         var baseUrl = providerOptions.BaseUrl.TrimEnd('/');
         var path = string.IsNullOrWhiteSpace(providerOptions.ChatCompletionsPath)
@@ -929,21 +948,20 @@ public partial class GraphAssistant(
         return $"{baseUrl}{relative}";
     }
 
-    private string ResolveAssistantProvider() =>
-        string.IsNullOrWhiteSpace(options.Assistant.Provider)
-            ? "anthropic"
-            : options.Assistant.Provider.Trim().ToLowerInvariant();
+    private Task<LlmAssistantRuntimeConfig> ResolveAssistantConfigAsync(CancellationToken ct) =>
+        assistantSettingsResolver?.GetAssistantAsync(ct)
+        ?? Task.FromResult(LlmAssistantRuntimeConfig.FromOptions(options));
 
-    private string ResolveAssistantModel(string provider) =>
-        FirstNonEmpty(
-            options.Assistant.Model,
-            provider switch
-            {
-                "openai" => options.OpenAi.Model,
-                "local" => options.Local.Model,
-                _ => null
-            },
-            options.Model);
+    private Task<LlmProviderRuntimeConfig> ResolveProviderConfigAsync(string provider, CancellationToken ct) =>
+        providerConfigResolver?.GetProviderAsync(provider, ct)
+        ?? Task.FromResult(LlmProviderRuntimeConfig.FromOptions(provider, options));
+
+    private sealed record OpenAiCompatibleAssistantProviderOptions(
+        string ApiKey,
+        string BaseUrl,
+        string ChatCompletionsPath,
+        string? Organization,
+        string? Project);
 
     private static string? TryGetAnthropicBaseUrl(string? messagesApiUrl)
     {

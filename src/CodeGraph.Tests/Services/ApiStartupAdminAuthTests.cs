@@ -8,6 +8,7 @@ using CodeGraph.Data;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors.Infrastructure;
 
 namespace CodeGraph.Tests.Services;
 
@@ -61,6 +62,22 @@ public class ApiStartupAdminAuthTests
         authorizationOptions.GetPolicy(CodeGraphAuthenticationDefaults.AdminPolicy).ShouldNotBeNull();
         authorizationOptions.GetPolicy(McpPatAuthenticationDefaults.Policy).ShouldNotBeNull();
         authorizationOptions.FallbackPolicy.ShouldNotBeNull();
+    }
+
+    [Fact]
+    public async Task ConfigureServices_AllowsLoopbackAngularDevOrigins()
+    {
+        var services = new ServiceCollection();
+
+        Startup.ConfigureServices(services, CreateConfiguration());
+
+        await using var provider = services.BuildServiceProvider();
+        var corsOptions = provider.GetRequiredService<IOptions<CorsOptions>>().Value;
+        var defaultPolicy = corsOptions.GetPolicy(corsOptions.DefaultPolicyName);
+
+        defaultPolicy.ShouldNotBeNull();
+        defaultPolicy.Origins.ShouldContain("http://localhost:4200");
+        defaultPolicy.Origins.ShouldContain("http://127.0.0.1:4200");
     }
 
     [Fact]

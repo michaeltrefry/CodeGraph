@@ -14,8 +14,7 @@ public class AnalysisProviderRegistryTests
             [
                 new FakeProvider("anthropic"),
                 new FakeProvider("openai"),
-                new FakeProvider("gemini"),
-                new FakeProvider("local")
+                new FakeProvider("lmstudio")
             ],
             Options.Create(new AnalysisOptions { DefaultProvider = "openai" }));
 
@@ -31,8 +30,7 @@ public class AnalysisProviderRegistryTests
             [
                 new FakeProvider("anthropic"),
                 new FakeProvider("openai"),
-                new FakeProvider("gemini"),
-                new FakeProvider("local")
+                new FakeProvider("lmstudio")
             ],
             Options.Create(new AnalysisOptions { DefaultProvider = "anthropic" }));
 

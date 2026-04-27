@@ -126,6 +126,65 @@ public class ProjectReviewServiceTests
     }
 
     [Fact]
+    public async Task ReviewRun_UsesDbBackedReviewSettings()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestRepo");
+
+        try
+        {
+            await SeedProjectAsync(store, repoPath);
+            var provider = new RecordingProvider(
+                """
+                {
+                  "overview": "workflow",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "candidateFindings": []
+                }
+                """,
+                """
+                {
+                  "overview": "final",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "findings": []
+                }
+                """);
+            var service = CreateService(
+                store,
+                provider,
+                reviewSettingsResolver: new FixedReviewSettingsResolver(new LlmReviewRuntimeConfig(
+                    "openai",
+                    "gpt-review",
+                    1,
+                    10_000,
+                    4,
+                    10,
+                    UpdatedBy: null,
+                    UpdatedAtUtc: null,
+                    HasDbConfig: true)));
+
+            var runId = await service.StartReviewAsync("TestRepo", "TestRepo.Api", "standard");
+            await service.ExecuteReviewRunAsync(runId);
+
+            var run = await store.GetProjectReviewRunAsync(runId);
+            run.ShouldNotBeNull();
+            run.ModelUsed.ShouldBe("gpt-review");
+            provider.Requests.Count.ShouldBe(2);
+            provider.Requests.ShouldAllBe(request => request.Model == "gpt-review");
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(repoPath)!, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task StartReviewAsync_DoesNotTurnDiagnosticsIntoAutomaticFindings()
     {
         var store = new InMemoryGraphStore();
@@ -504,7 +563,8 @@ public class ProjectReviewServiceTests
         InMemoryGraphStore store,
         RecordingProvider provider,
         int maxFilesToInspect = 3,
-        IAgentPromptService? promptService = null)
+        IAgentPromptService? promptService = null,
+        IDbBackedReviewSettingsResolver? reviewSettingsResolver = null)
     {
         var sourceOptions = Options.Create(new RepositorySourceOptions());
         var analysisOptions = Options.Create(new AnalysisOptions
@@ -526,7 +586,8 @@ public class ProjectReviewServiceTests
             sourceOptions,
             analysisOptions,
             NullLogger<ProjectReviewService>.Instance,
-            promptService);
+            promptService,
+            reviewSettingsResolver);
     }
 
     private static async Task SeedProjectAsync(InMemoryGraphStore store, string repoPath)
@@ -711,6 +772,7 @@ public class ProjectReviewServiceTests
         private readonly Queue<string> _responses = new(responses);
         public List<string> Prompts { get; } = [];
         public List<string> SystemPrompts { get; } = [];
+        public List<AnalysisRequestOptions> Requests { get; } = [];
 
         public string ProviderName => "test";
         public AnalysisProviderCapabilities Capabilities { get; } =
@@ -723,6 +785,7 @@ public class ProjectReviewServiceTests
         {
             SystemPrompts.Add(prompt.SystemPrompt);
             Prompts.Add(prompt.UserPrompt);
+            Requests.Add(request);
             return Task.FromResult(new AnalysisTextResponse(_responses.Dequeue(), "test-model", ProviderName));
         }
 
@@ -745,5 +808,10 @@ public class ProjectReviewServiceTests
     private sealed class NoOpBackgroundRunner : IProjectReviewBackgroundRunner
     {
         public Task EnqueueAsync(long reviewRunId, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private sealed class FixedReviewSettingsResolver(LlmReviewRuntimeConfig config) : IDbBackedReviewSettingsResolver
+    {
+        public Task<LlmReviewRuntimeConfig> GetReviewAsync(CancellationToken ct = default) => Task.FromResult(config);
     }
 }

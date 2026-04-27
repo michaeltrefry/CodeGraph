@@ -23,7 +23,7 @@ services:
       CodeGraph__Memory__Audience: ${CodeGraph__Memory__Audience:-codegraph-memory}
       CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
       CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
-      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
+      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-lmstudio}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
       CodeGraph__AnalysisOptions__Assistant__Provider: ${CodeGraph__AnalysisOptions__Assistant__Provider:-anthropic}
@@ -37,25 +37,22 @@ services:
       CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath:-}
       CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization:-}
       CodeGraph__AnalysisOptions__Assistant__OpenAi__Project: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Project:-}
-      CodeGraph__AnalysisOptions__Assistant__Local__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl:-}
-      CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath:-}
+      CodeGraph__AnalysisOptions__Assistant__LmStudio__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__LmStudio__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__LmStudio__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__LmStudio__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__LmStudio__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__LmStudio__ChatCompletionsPath:-}
       CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__OpenAi__BaseUrl:-https://api.openai.com/v1}
       CodeGraph__AnalysisOptions__OpenAi__Model: ${CodeGraph__AnalysisOptions__OpenAi__Model:-gpt-5}
-      CodeGraph__AnalysisOptions__Gemini__ApiKey: ${CodeGraph__AnalysisOptions__Gemini__ApiKey:-}
-      CodeGraph__AnalysisOptions__Gemini__BaseUrl: ${CodeGraph__AnalysisOptions__Gemini__BaseUrl:-https://generativelanguage.googleapis.com/v1beta}
-      CodeGraph__AnalysisOptions__Gemini__Model: ${CodeGraph__AnalysisOptions__Gemini__Model:-gemini-2.5-flash}
-      CodeGraph__AnalysisOptions__Local__ApiKey: ${CodeGraph__AnalysisOptions__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://host.docker.internal:1234/v1}
-      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-}
-      CodeGraph__AnalysisOptions__Local__TimeoutSeconds: ${CodeGraph__AnalysisOptions__Local__TimeoutSeconds:-300}
-      CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests:-1}
-      CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts:-3}
-      CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
-      CodeGraph__AnalysisOptions__Local__MaxSourceChars: ${CodeGraph__AnalysisOptions__Local__MaxSourceChars:-32000}
-      CodeGraph__AnalysisOptions__Local__MaxPromptNodes: ${CodeGraph__AnalysisOptions__Local__MaxPromptNodes:-80}
-      CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType:-8}
+      CodeGraph__AnalysisOptions__LmStudio__ApiKey: ${CodeGraph__AnalysisOptions__LmStudio__ApiKey:-}
+      CodeGraph__AnalysisOptions__LmStudio__BaseUrl: ${CodeGraph__AnalysisOptions__LmStudio__BaseUrl:-http://host.docker.internal:1234/v1}
+      CodeGraph__AnalysisOptions__LmStudio__Model: ${CodeGraph__AnalysisOptions__LmStudio__Model:-}
+      CodeGraph__AnalysisOptions__LmStudio__TimeoutSeconds: ${CodeGraph__AnalysisOptions__LmStudio__TimeoutSeconds:-300}
+      CodeGraph__AnalysisOptions__LmStudio__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__LmStudio__MaxConcurrentRequests:-1}
+      CodeGraph__AnalysisOptions__LmStudio__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__LmStudio__DirectFallbackMaxAttempts:-3}
+      CodeGraph__AnalysisOptions__LmStudio__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__LmStudio__UseJsonObjectResponseFormat:-false}
+      CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
+      CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
+      CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -139,25 +136,22 @@ services:
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
       CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
-      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
+      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-lmstudio}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__OpenAi__BaseUrl:-https://api.openai.com/v1}
       CodeGraph__AnalysisOptions__OpenAi__Model: ${CodeGraph__AnalysisOptions__OpenAi__Model:-gpt-5}
-      CodeGraph__AnalysisOptions__Gemini__ApiKey: ${CodeGraph__AnalysisOptions__Gemini__ApiKey:-}
-      CodeGraph__AnalysisOptions__Gemini__BaseUrl: ${CodeGraph__AnalysisOptions__Gemini__BaseUrl:-https://generativelanguage.googleapis.com/v1beta}
-      CodeGraph__AnalysisOptions__Gemini__Model: ${CodeGraph__AnalysisOptions__Gemini__Model:-gemini-2.5-flash}
-      CodeGraph__AnalysisOptions__Local__ApiKey: ${CodeGraph__AnalysisOptions__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://host.docker.internal:1234/v1}
-      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-}
-      CodeGraph__AnalysisOptions__Local__TimeoutSeconds: ${CodeGraph__AnalysisOptions__Local__TimeoutSeconds:-300}
-      CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests:-1}
-      CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts:-3}
-      CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
-      CodeGraph__AnalysisOptions__Local__MaxSourceChars: ${CodeGraph__AnalysisOptions__Local__MaxSourceChars:-32000}
-      CodeGraph__AnalysisOptions__Local__MaxPromptNodes: ${CodeGraph__AnalysisOptions__Local__MaxPromptNodes:-80}
-      CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType:-8}
+      CodeGraph__AnalysisOptions__LmStudio__ApiKey: ${CodeGraph__AnalysisOptions__LmStudio__ApiKey:-}
+      CodeGraph__AnalysisOptions__LmStudio__BaseUrl: ${CodeGraph__AnalysisOptions__LmStudio__BaseUrl:-http://host.docker.internal:1234/v1}
+      CodeGraph__AnalysisOptions__LmStudio__Model: ${CodeGraph__AnalysisOptions__LmStudio__Model:-}
+      CodeGraph__AnalysisOptions__LmStudio__TimeoutSeconds: ${CodeGraph__AnalysisOptions__LmStudio__TimeoutSeconds:-300}
+      CodeGraph__AnalysisOptions__LmStudio__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__LmStudio__MaxConcurrentRequests:-1}
+      CodeGraph__AnalysisOptions__LmStudio__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__LmStudio__DirectFallbackMaxAttempts:-3}
+      CodeGraph__AnalysisOptions__LmStudio__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__LmStudio__UseJsonObjectResponseFormat:-false}
+      CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
+      CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
+      CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -222,7 +216,7 @@ services:
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
-      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
+      CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-lmstudio}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
       CodeGraph__AnalysisOptions__Assistant__Provider: ${CodeGraph__AnalysisOptions__Assistant__Provider:-anthropic}
@@ -236,25 +230,22 @@ services:
       CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__ChatCompletionsPath:-}
       CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Organization:-}
       CodeGraph__AnalysisOptions__Assistant__OpenAi__Project: ${CodeGraph__AnalysisOptions__Assistant__OpenAi__Project:-}
-      CodeGraph__AnalysisOptions__Assistant__Local__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__Local__BaseUrl:-}
-      CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__Local__ChatCompletionsPath:-}
+      CodeGraph__AnalysisOptions__Assistant__LmStudio__ApiKey: ${CodeGraph__AnalysisOptions__Assistant__LmStudio__ApiKey:-}
+      CodeGraph__AnalysisOptions__Assistant__LmStudio__BaseUrl: ${CodeGraph__AnalysisOptions__Assistant__LmStudio__BaseUrl:-}
+      CodeGraph__AnalysisOptions__Assistant__LmStudio__ChatCompletionsPath: ${CodeGraph__AnalysisOptions__Assistant__LmStudio__ChatCompletionsPath:-}
       CodeGraph__AnalysisOptions__OpenAi__ApiKey: ${CodeGraph__AnalysisOptions__OpenAi__ApiKey:-}
       CodeGraph__AnalysisOptions__OpenAi__BaseUrl: ${CodeGraph__AnalysisOptions__OpenAi__BaseUrl:-https://api.openai.com/v1}
       CodeGraph__AnalysisOptions__OpenAi__Model: ${CodeGraph__AnalysisOptions__OpenAi__Model:-gpt-5}
-      CodeGraph__AnalysisOptions__Gemini__ApiKey: ${CodeGraph__AnalysisOptions__Gemini__ApiKey:-}
-      CodeGraph__AnalysisOptions__Gemini__BaseUrl: ${CodeGraph__AnalysisOptions__Gemini__BaseUrl:-https://generativelanguage.googleapis.com/v1beta}
-      CodeGraph__AnalysisOptions__Gemini__Model: ${CodeGraph__AnalysisOptions__Gemini__Model:-gemini-2.5-flash}
-      CodeGraph__AnalysisOptions__Local__ApiKey: ${CodeGraph__AnalysisOptions__Local__ApiKey:-}
-      CodeGraph__AnalysisOptions__Local__BaseUrl: ${CodeGraph__AnalysisOptions__Local__BaseUrl:-http://host.docker.internal:1234/v1}
-      CodeGraph__AnalysisOptions__Local__Model: ${CodeGraph__AnalysisOptions__Local__Model:-}
-      CodeGraph__AnalysisOptions__Local__TimeoutSeconds: ${CodeGraph__AnalysisOptions__Local__TimeoutSeconds:-300}
-      CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__Local__MaxConcurrentRequests:-1}
-      CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__Local__DirectFallbackMaxAttempts:-3}
-      CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__Local__UseJsonObjectResponseFormat:-false}
-      CodeGraph__AnalysisOptions__Local__MaxSourceChars: ${CodeGraph__AnalysisOptions__Local__MaxSourceChars:-32000}
-      CodeGraph__AnalysisOptions__Local__MaxPromptNodes: ${CodeGraph__AnalysisOptions__Local__MaxPromptNodes:-80}
-      CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__Local__MaxRelationshipTargetsPerType:-8}
+      CodeGraph__AnalysisOptions__LmStudio__ApiKey: ${CodeGraph__AnalysisOptions__LmStudio__ApiKey:-}
+      CodeGraph__AnalysisOptions__LmStudio__BaseUrl: ${CodeGraph__AnalysisOptions__LmStudio__BaseUrl:-http://host.docker.internal:1234/v1}
+      CodeGraph__AnalysisOptions__LmStudio__Model: ${CodeGraph__AnalysisOptions__LmStudio__Model:-}
+      CodeGraph__AnalysisOptions__LmStudio__TimeoutSeconds: ${CodeGraph__AnalysisOptions__LmStudio__TimeoutSeconds:-300}
+      CodeGraph__AnalysisOptions__LmStudio__MaxConcurrentRequests: ${CodeGraph__AnalysisOptions__LmStudio__MaxConcurrentRequests:-1}
+      CodeGraph__AnalysisOptions__LmStudio__DirectFallbackMaxAttempts: ${CodeGraph__AnalysisOptions__LmStudio__DirectFallbackMaxAttempts:-3}
+      CodeGraph__AnalysisOptions__LmStudio__UseJsonObjectResponseFormat: ${CodeGraph__AnalysisOptions__LmStudio__UseJsonObjectResponseFormat:-false}
+      CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
+      CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
+      CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}

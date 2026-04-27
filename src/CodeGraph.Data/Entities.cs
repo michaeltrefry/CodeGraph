@@ -511,6 +511,21 @@ public class DatabaseSourceEntity
     public DateTime UpdatedAt { get; set; }
 }
 
+public class LlmConfigEntryEntity
+{
+    public string ConfigKey { get; set; } = "";
+    public string? ConfigValue { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}
+
+public class LlmProviderModelEntity
+{
+    public string ProviderKey { get; set; } = "";
+    public string ModelId { get; set; } = "";
+    public int DisplayOrder { get; set; }
+}
+
 public class McpPersonalAccessTokenEntity
 {
     public long Id { get; set; }
