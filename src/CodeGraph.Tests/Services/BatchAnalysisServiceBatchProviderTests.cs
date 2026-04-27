@@ -8,6 +8,7 @@ using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Messaging;
+using CodeGraph.Services.Prompts;
 using CodeGraph.Tests.Extractors;
 
 namespace CodeGraph.Tests.Services;
@@ -117,6 +118,40 @@ public class BatchAnalysisServiceBatchProviderTests
         provider.LastSubmittedPrompt.ShouldNotBeNull();
         provider.LastSubmittedPrompt.ShouldContain("Methods:");
         provider.LastSubmittedPrompt.ShouldContain("async Task ProcessOrder()");
+    }
+
+    [Fact]
+    public async Task SubmitAnalysisBatch_UsesAdminPromptOverride_ForSystemPrompt()
+    {
+        var store = new InMemoryGraphStore();
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "demo-repo" });
+        var nodeId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = "demo-repo",
+            DotnetProject = "Demo.Project",
+            Label = NodeLabel.Class,
+            Name = "OrderService",
+            QualifiedName = "Demo.Project.OrderService",
+            FilePath = "OrderService.cs"
+        });
+
+        var provider = new RecordingBatchProvider(nodeId);
+        var service = new BatchAnalysisService(
+            store,
+            new SingleProviderRegistry(provider),
+            new RecordingMessageBus(),
+            new NoOpExclusionService(),
+            Options.Create(new AnalysisOptions { DefaultProvider = "local" }),
+            new LocalFileSystem(),
+            NullLogger<BatchAnalysisService>.Instance,
+            new TestAgentPromptService(new Dictionary<string, string>
+            {
+                [AgentPromptCatalog.RepositoryAnalysisSystemPromptKey] = "custom repository analysis system prompt"
+            }));
+
+        await service.SubmitAnalysisBatchAsync("demo-repo");
+
+        provider.LastSubmittedSystemPrompt.ShouldBe("custom repository analysis system prompt");
     }
 
     [Fact]
@@ -296,6 +331,7 @@ public class BatchAnalysisServiceBatchProviderTests
         public int StatusCalls { get; private set; }
         public int ResultsCalls { get; private set; }
         public string? LastSubmittedPrompt { get; private set; }
+        public string? LastSubmittedSystemPrompt { get; private set; }
 
         public string ProviderName => providerName;
 
@@ -315,6 +351,7 @@ public class BatchAnalysisServiceBatchProviderTests
         {
             SubmitCalls++;
             LastSubmittedPrompt = items.Single().Prompt.UserPrompt;
+            LastSubmittedSystemPrompt = items.Single().Prompt.SystemPrompt;
             return Task.FromResult(new AnalysisBatchSubmissionResult("batch_1", "submitted"));
         }
 

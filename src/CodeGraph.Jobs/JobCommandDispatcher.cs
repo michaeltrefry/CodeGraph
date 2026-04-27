@@ -11,7 +11,8 @@ public class JobCommandDispatcher(
     ProcessBatchAnalysisJob processBatchAnalysisJob,
     LinkAndDetectJob linkAndDetectJob,
     DetectCommunitiesJob detectCommunitiesJob,
-    RegenerateMcpDocsJob regenerateMcpDocsJob) : IJobCommandDispatcher
+    RegenerateMcpDocsJob regenerateMcpDocsJob,
+    AssistantRetentionCleanupJob assistantRetentionCleanupJob) : IJobCommandDispatcher
 {
     public IReadOnlyList<string> GetSupportedJobTypes() => JobTypes.All;
 
@@ -25,6 +26,7 @@ public class JobCommandDispatcher(
             JobTypes.LinkAndDetect => Serialize(new EmptyJobRequest()),
             JobTypes.DetectCommunities => Serialize(new EmptyJobRequest()),
             JobTypes.RegenerateMcpDocs => Serialize(new EmptyJobRequest()),
+            JobTypes.AssistantRetentionCleanup => Serialize(new EmptyJobRequest()),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }
@@ -39,6 +41,7 @@ public class JobCommandDispatcher(
             JobTypes.LinkAndDetect => linkAndDetectJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.DetectCommunities => detectCommunitiesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.RegenerateMcpDocs => regenerateMcpDocsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
+            JobTypes.AssistantRetentionCleanup => assistantRetentionCleanupJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }

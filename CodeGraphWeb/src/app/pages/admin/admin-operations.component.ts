@@ -35,19 +35,19 @@ interface OperationResult {
       <div class="op-card">
         <h3>Re-Index All</h3>
         <p>Publish ProcessRepository messages for all known repos.</p>
-        <button (click)="confirmAndRun('reIndexAll', 'Re-index ALL repositories? This may take a while.')" [disabled]="running()">Run</button>
+        <button (click)="confirmAndRun('indexer/repositories/reindex-all', 'Re-index ALL repositories? This may take a while.')" [disabled]="running()">Run</button>
       </div>
 
       <div class="op-card">
         <h3>Link &amp; Detect Clusters</h3>
         <p>Run cross-repo linking then community detection (Louvain clustering).</p>
-        <button (click)="confirmAndRun('linkAndDetect', 'Run cross-repo linking + community detection?')" [disabled]="running()">Run</button>
+        <button (click)="confirmAndRun('indexer/link-and-detect', 'Run cross-repo linking + community detection?')" [disabled]="running()">Run</button>
       </div>
 
       <div class="op-card">
         <h3>Detect Communities Only</h3>
         <p>Re-run Louvain clustering on existing cross-repo edges (no re-linking).</p>
-        <button (click)="confirmAndRun('detectCommunities', 'Re-run community detection?')" [disabled]="running()">Run</button>
+        <button (click)="confirmAndRun('indexer/communities/detect', 'Re-run community detection?')" [disabled]="running()">Run</button>
       </div>
 
       <div class="op-card">
@@ -74,7 +74,7 @@ interface OperationResult {
       <div class="op-card">
         <h3>Regenerate MCP Docs</h3>
         <p>Regenerate MCP documentation wiki pages from current tool metadata.</p>
-        <button (click)="confirmAndRun('mcp/regenerate', 'Regenerate all MCP documentation pages?')" [disabled]="running()">Run</button>
+        <button (click)="confirmAndRun('settings/mcp/regenerate', 'Regenerate all MCP documentation pages?')" [disabled]="running()">Run</button>
       </div>
     </div>
 
@@ -149,7 +149,7 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      const res = await firstValueFrom(this.http.post(`${API}/settings/${endpoint}`, {}));
+      const res = await firstValueFrom(this.http.post(`${API}/${endpoint}`, {}));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -175,7 +175,7 @@ export class AdminOperationsComponent {
         skipIfUpToDate: this.processSkipIfUpToDate,
         includeAllSource: this.processIncludeAllSource
       };
-      const res = await firstValueFrom(this.http.post(`${API}/settings/processRepos`, body));
+      const res = await firstValueFrom(this.http.post(`${API}/indexer/repositories/process`, body));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -196,7 +196,7 @@ export class AdminOperationsComponent {
       };
       if (this.discoverFilter.trim()) body['namePattern'] = this.discoverFilter.trim();
       if (this.discoverLimit && this.discoverLimit > 0) body['limit'] = this.discoverLimit;
-      const res = await firstValueFrom(this.http.post(`${API}/settings/discover`, body));
+      const res = await firstValueFrom(this.http.post(`${API}/indexer/repositories/discover`, body));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -209,7 +209,7 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
-      let url = `${API}/settings/processBatchAnalysis`;
+      let url = `${API}/indexer/batch-analysis/process`;
       if (this.batchRepo) url += `?repo=${encodeURIComponent(this.batchRepo)}`;
       const res = await firstValueFrom(this.http.post(url, {}));
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });

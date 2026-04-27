@@ -295,6 +295,14 @@ export class NodeListComponent implements OnInit {
     return this.labelIcons[this.label()] ?? '•';
   }
 
+  projectBaseRoute(): string {
+    return this.projectName().startsWith('db:') ? '/schemas' : '/repos';
+  }
+
+  projectBaseLabel(): string {
+    return this.projectName().startsWith('db:') ? 'Schemas' : 'Repositories';
+  }
+
   toggleSection(label: string) {
     this.expandedSections.update(set => {
       const next = new Set(set);

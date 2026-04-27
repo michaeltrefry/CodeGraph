@@ -33,7 +33,8 @@ public class ApiStartupInitializationTests
         });
         services.AddSingleton(Options.Create(new CodeGraphStorageOptions
         {
-            Neo4jMigrationsPath = "Migrations"
+            Provider = "MariaDb",
+            MariaDbMigrationsPath = "sql/migrations"
         }));
         services.AddSingleton(Options.Create(new RepositorySourceOptions
         {
@@ -44,7 +45,7 @@ public class ApiStartupInitializationTests
 
         await Startup.InitializeAsync(serviceProvider);
 
-        migrationRunner.AppliedPaths.ShouldBe([Path.GetFullPath(Path.Combine("/repo", "Migrations"))]);
+        migrationRunner.AppliedPaths.ShouldBe([Path.GetFullPath(Path.Combine("/repo", "sql/migrations"))]);
         exclusionService.SeededGroups.ShouldBe([["foo", "bar"]]);
         recoveryService.Calls.ShouldBe(1);
         lifecycle.ShouldBe(["migrate", "wiki", "seed", "recover"]);

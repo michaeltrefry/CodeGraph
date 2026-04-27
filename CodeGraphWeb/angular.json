@@ -112,6 +112,38 @@
             }
           },
           "defaultConfiguration": "development"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "tsconfig.spec.json",
+            "runner": "vitest",
+            "setupFiles": [
+              "src/test-setup.ts"
+            ],
+            "include": [
+              "src/**/*.spec.ts"
+            ],
+            "exclude": [
+              "src/**/*.browser.spec.ts"
+            ]
+          }
+        },
+        "test-browser": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "tsconfig.spec.json",
+            "runner": "vitest",
+            "setupFiles": [
+              "src/test-setup.ts"
+            ],
+            "include": [
+              "src/**/*.browser.spec.ts"
+            ],
+            "browsers": [
+              "chromium"
+            ]
+          }
         }
       }
     }

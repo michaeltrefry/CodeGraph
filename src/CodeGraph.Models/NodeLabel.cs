@@ -41,5 +41,23 @@ public enum NodeLabel
     Job,
 
     // Package
-    NuGetPackage
+    NuGetPackage,
+
+    // Ansible / IaC
+    Playbook,
+    Role,
+    AnsibleTask,
+    AnsibleHandler,
+    AnsibleVariable,
+
+    // Terraform / IaC
+    TerraformResource,
+    TerraformModule,
+    TerraformVariable,
+    TerraformOutput,
+    TerraformDataSource,
+
+    // Database schema
+    Database,
+    Column
 }

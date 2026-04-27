@@ -134,6 +134,20 @@ public class AnalysisBatchRequestEntity
     public DateTime? CompletedAt { get; set; }
 }
 
+public class LlmUsageEntity
+{
+    public long Id { get; set; }
+    public string EventId { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string Path { get; set; } = "";
+    public string Provider { get; set; } = "";
+    public string Model { get; set; } = "";
+    public int InputTokens { get; set; }
+    public int OutputTokens { get; set; }
+    public int TotalTokens { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
 public class NodeAnalysisEntity
 {
     public long NodeId { get; set; }
@@ -461,6 +475,70 @@ public class ExclusionRuleEntity
     public DateTime UpdatedAt { get; set; }
 }
 
+public class AdminUserEntity
+{
+    public long Id { get; set; }
+    public string Username { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class SettingsOverrideEntity
+{
+    public long Id { get; set; }
+    public string SettingsJson { get; set; } = "";
+    public string UpdatedBy { get; set; } = "";
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class AgentPromptOverrideEntity
+{
+    public long Id { get; set; }
+    public string PromptKey { get; set; } = "";
+    public string PromptText { get; set; } = "";
+    public string UpdatedBy { get; set; } = "";
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class DatabaseSourceEntity
+{
+    public long Id { get; set; }
+    public string ServerName { get; set; } = "";
+    public string DatabaseName { get; set; } = "";
+    public string ConnectionString { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public DateTime? LastSyncedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class McpPersonalAccessTokenEntity
+{
+    public long Id { get; set; }
+    public string Username { get; set; } = "";
+    public string TokenName { get; set; } = "";
+    public string TokenPrefixValue { get; set; } = "";
+    public string TokenHash { get; set; } = "";
+    public string LastFour { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+    public DateTime ExpiresAt { get; set; }
+    public DateTime? RevokedAt { get; set; }
+    public DateTime? LastUsedAt { get; set; }
+    public string? LastUsedFrom { get; set; }
+}
+
+public class McpToolInvocationEntity
+{
+    public long Id { get; set; }
+    public string EventId { get; set; } = "";
+    public string? Username { get; set; }
+    public long? TokenId { get; set; }
+    public string ToolName { get; set; } = "";
+    public bool Success { get; set; }
+    public int DurationMs { get; set; }
+    public string? ErrorCode { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
 public class JobScheduleEntity
 {
     public long Id { get; set; }
@@ -480,4 +558,108 @@ public class JobScheduleEntity
     public DateTime? LeaseExpiresUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
+}
+
+public class IndexerRunEntity
+{
+    public long Id { get; set; }
+    public string Operation { get; set; } = "";
+    public string? RequestedByUsername { get; set; }
+    public string? Target { get; set; }
+    public string? ArgsJson { get; set; }
+    public string Status { get; set; } = "queued";
+    public string? Message { get; set; }
+    public string? Error { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+}
+
+public class AssistantRunEntity
+{
+    public long Id { get; set; }
+    public string ChatId { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string Status { get; set; } = "queued";
+    public string Question { get; set; } = "";
+    public string? Context { get; set; }
+    public string? HistoryJson { get; set; }
+    public string? ProviderRequested { get; set; }
+    public string? ModelRequested { get; set; }
+    public string? ProviderUsed { get; set; }
+    public string? ModelUsed { get; set; }
+    public string? FinalAnswer { get; set; }
+    public string? WarningsJson { get; set; }
+    public string? Error { get; set; }
+    public long MessageIndexStart { get; set; }
+    public long MessageIndexEnd { get; set; }
+    public string? IdempotencyKey { get; set; }
+    public string? RequestHash { get; set; }
+    public string? ExecutionStateJson { get; set; }
+    public string? ExecutionOwner { get; set; }
+    public DateTime? LeaseExpiresAt { get; set; }
+    public DateTime? CancelRequestedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public long LastSequence { get; set; }
+}
+
+public class AssistantChatMessageEntity
+{
+    public long Id { get; set; }
+    public string Username { get; set; } = "";
+    public string ChatId { get; set; } = "";
+    public long MessageIndex { get; set; }
+    public string Role { get; set; } = "";
+    public string Content { get; set; } = "";
+    public long? SourceRunId { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class AssistantRunEventEntity
+{
+    public long Id { get; set; }
+    public long RunId { get; set; }
+    public long Sequence { get; set; }
+    public string Type { get; set; } = "";
+    public string? ContentJson { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class AssistantDebugExchangeEntity
+{
+    public long Id { get; set; }
+    public long RunId { get; set; }
+    public string ChatId { get; set; } = "";
+    public string Username { get; set; } = "";
+    public long ExchangeIndex { get; set; }
+    public int TurnIndex { get; set; }
+    public string Provider { get; set; } = "";
+    public string Model { get; set; } = "";
+    public string? RequestId { get; set; }
+    public string? ResponseId { get; set; }
+    public string? ToolUsesJson { get; set; }
+    public string? RequestMetadataJson { get; set; }
+    public string? ResponseMetadataJson { get; set; }
+    public string RequestBodyJson { get; set; } = "";
+    public string? ResponseBodyJson { get; set; }
+    public string RequestText { get; set; } = "";
+    public string? ResponseText { get; set; }
+    public int? InputTokens { get; set; }
+    public int? OutputTokens { get; set; }
+    public int? TotalTokens { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class AssistantDebugTraceAuditEntity
+{
+    public long Id { get; set; }
+    public long RunId { get; set; }
+    public string ChatId { get; set; } = "";
+    public string RunUsername { get; set; } = "";
+    public string ViewedByUsername { get; set; } = "";
+    public string? RemoteIp { get; set; }
+    public string? UserAgent { get; set; }
+    public DateTime ViewedAt { get; set; }
 }

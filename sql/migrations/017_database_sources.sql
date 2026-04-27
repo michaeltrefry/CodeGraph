@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS database_sources (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    server_name VARCHAR(255) NOT NULL,
+    database_name VARCHAR(255) NOT NULL,
+    connection_string VARCHAR(1024) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_synced_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_database_source (server_name, database_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

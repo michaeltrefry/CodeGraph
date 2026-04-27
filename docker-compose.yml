@@ -1,5 +1,5 @@
 networks:
-  mcp-shared:
+  trefry-network:
     external: true
 services:
   codegraph-api:
@@ -9,10 +9,11 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       CodeGraph__TsPort: ${CodeGraph__TsPort:-3100}
-      CodeGraph__StorageOptions__Neo4jUri: ${CodeGraph__StorageOptions__Neo4jUri:-bolt://neo4j:7687}
-      CodeGraph__StorageOptions__Neo4jUsername: ${CodeGraph__StorageOptions__Neo4jUsername:-neo4j}
-      CodeGraph__StorageOptions__Neo4jPassword: ${CodeGraph__StorageOptions__Neo4jPassword:-codegraph}
-      CodeGraph__StorageOptions__Neo4jDatabase: ${CodeGraph__StorageOptions__Neo4jDatabase:-neo4j}
+      CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
+      CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
+      CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
+      CodeGraph__McpOptions__RequirePersonalAccessToken: ${CodeGraph__McpOptions__RequirePersonalAccessToken:-false}
       CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
       CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
@@ -59,23 +60,31 @@ services:
       CodeGraph__RepositorySource__GitHub__BaseUrl: ${CodeGraph__RepositorySource__GitHub__BaseUrl:-https://api.github.com}
       CodeGraph__RepositorySource__GitHub__PersonalAccessToken: ${CodeGraph__RepositorySource__GitHub__PersonalAccessToken:-}
       CodeGraph__RepositorySource__GitHub__Organization: ${CodeGraph__RepositorySource__GitHub__Organization:-}
-      CodeGraph__AuthOptions__AdminApiKey: ${CodeGraph__AuthOptions__AdminApiKey:-}
-      CodeGraph__AuthOptions__AdminApiKeyHeaderName: ${CodeGraph__AuthOptions__AdminApiKeyHeaderName:-X-CodeGraph-Admin-Key}
+      CodeGraph__AuthOptions__Enabled: ${CodeGraph__AuthOptions__Enabled:-false}
+      CodeGraph__AuthOptions__Authority: ${CodeGraph__AuthOptions__Authority:-}
+      CodeGraph__AuthOptions__Audience: ${CodeGraph__AuthOptions__Audience:-codegraph-api}
+      CodeGraph__AuthOptions__ClientId: ${CodeGraph__AuthOptions__ClientId:-codegraph-web}
+      CodeGraph__AuthOptions__Scope: ${CodeGraph__AuthOptions__Scope:-openid profile email}
+      CodeGraph__AuthOptions__AuthorizationUrl: ${CodeGraph__AuthOptions__AuthorizationUrl:-}
+      CodeGraph__AuthOptions__TokenUrl: ${CodeGraph__AuthOptions__TokenUrl:-}
+      CodeGraph__AuthOptions__EndSessionUrl: ${CodeGraph__AuthOptions__EndSessionUrl:-}
+      CodeGraph__AuthOptions__AllowedOrigins__0: ${CodeGraph__AuthOptions__AllowedOrigins__0:-https://codegraph.trefry.net}
+      CodeGraph__AuthOptions__RequireHttpsMetadata: ${CodeGraph__AuthOptions__RequireHttpsMetadata:-true}
+      CodeGraph__AuthOptions__LocalDevUsername: ${CodeGraph__AuthOptions__LocalDevUsername:-local-admin}
+      CodeGraph__AuthOptions__LocalDevIsAdmin: ${CodeGraph__AuthOptions__LocalDevIsAdmin:-true}
+    ports:
+      - "127.0.0.1:${CODEGRAPHAPI_DOCKER_HTTPS_PORT:-5037}:5037"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos:ro
       - repos_cache:/repos/.cache
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
       - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
     restart: unless-stopped
     networks:
       - default
-      - mcp-shared
+      - trefry-network
 
   jobs:
     build:
@@ -83,10 +92,10 @@ services:
       dockerfile: Dockerfile.jobs
     environment:
       DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Development}
-      CodeGraph__StorageOptions__Neo4jUri: ${CodeGraph__StorageOptions__Neo4jUri:-bolt://neo4j:7687}
-      CodeGraph__StorageOptions__Neo4jUsername: ${CodeGraph__StorageOptions__Neo4jUsername:-neo4j}
-      CodeGraph__StorageOptions__Neo4jPassword: ${CodeGraph__StorageOptions__Neo4jPassword:-codegraph}
-      CodeGraph__StorageOptions__Neo4jDatabase: ${CodeGraph__StorageOptions__Neo4jDatabase:-neo4j}
+      CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
+      CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
+      CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-local}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
@@ -134,52 +143,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos:ro
       - repos_cache:/repos/.cache
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
     restart: unless-stopped
-
-  rabbitmq:
-    image: ${CODEGRAPH_DOCKER_RABBITMQ_IMAGE:-masstransit/rabbitmq}
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      - RABBITMQ_DEFAULT_USER=${CodeGraph__RabbitMqOptions__Username:-guest}
-      - RABBITMQ_DEFAULT_PASS=${CodeGraph__RabbitMqOptions__Password:-guest}
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    restart: unless-stopped
-
-  neo4j:
-    image: neo4j:5.26-community
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    environment:
-      - NEO4J_AUTH=${CodeGraph__StorageOptions__Neo4jUsername:-neo4j}/${CodeGraph__StorageOptions__Neo4jPassword:-codegraph}
-      - NEO4J_server_memory_heap_initial__size=512m
-      - NEO4J_server_memory_heap_max__size=1G
-      - NEO4J_server_memory_pagecache_size=512m
-    volumes:
-      - ${CODEGRAPH_DOCKER_NEO4J_DATA_MOUNT:-./.cache/neo4j/data}:/data
-      - ${CODEGRAPH_DOCKER_NEO4J_LOGS_MOUNT:-./.cache/neo4j/logs}:/logs
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
+    networks:
+      - trefry-network
 
   codegraph-web:
     build:
@@ -197,4 +165,3 @@ services:
 
 volumes:
   repos_cache:
-  rabbitmq_data:

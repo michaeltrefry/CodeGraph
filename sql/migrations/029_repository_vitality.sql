@@ -1,0 +1,35 @@
+ALTER TABLE file_metrics
+    ADD COLUMN churn_30d INT NOT NULL DEFAULT 0 AFTER last_change_at,
+    ADD COLUMN churn_90d INT NOT NULL DEFAULT 0 AFTER churn_30d,
+    ADD COLUMN churn_365d INT NOT NULL DEFAULT 0 AFTER churn_90d,
+    ADD COLUMN recurring_churn_score DOUBLE NOT NULL DEFAULT 0 AFTER churn_365d,
+    ADD COLUMN bug_fix_commits_90d INT NOT NULL DEFAULT 0 AFTER recurring_churn_score,
+    ADD COLUMN bug_fix_commits_365d INT NOT NULL DEFAULT 0 AFTER bug_fix_commits_90d,
+    ADD COLUMN bug_fix_ratio_365d DOUBLE NOT NULL DEFAULT 0 AFTER bug_fix_commits_365d,
+    ADD COLUMN bug_fix_authors_365d INT NOT NULL DEFAULT 0 AFTER bug_fix_ratio_365d;
+
+CREATE TABLE IF NOT EXISTS repository_vitality_summaries (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    project VARCHAR(255) NOT NULL,
+    collaboration_mode VARCHAR(32) NOT NULL DEFAULT 'Team',
+    history_maturity VARCHAR(32) NULL,
+    has_sufficient_history_for_trends BOOLEAN NOT NULL DEFAULT FALSE,
+    activity_status VARCHAR(32) NULL,
+    firefighting_status VARCHAR(32) NULL,
+    firefighting_trend VARCHAR(32) NULL,
+    monthly_commit_counts JSON NULL,
+    velocity_last_6_months INT NOT NULL DEFAULT 0,
+    velocity_prior_6_months INT NOT NULL DEFAULT 0,
+    velocity_change_percent DOUBLE NOT NULL DEFAULT 0,
+    dormant_months_12m INT NOT NULL DEFAULT 0,
+    max_inactive_streak_months INT NOT NULL DEFAULT 0,
+    firefighting_commits_90d INT NOT NULL DEFAULT 0,
+    firefighting_commits_365d INT NOT NULL DEFAULT 0,
+    firefighting_rate_90d DOUBLE NOT NULL DEFAULT 0,
+    firefighting_rate_365d DOUBLE NOT NULL DEFAULT 0,
+    firefighting_authors_90d INT NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    UNIQUE KEY uq_repository_vitality_project (project),
+    INDEX ix_repository_vitality_activity_status (activity_status),
+    INDEX ix_repository_vitality_computed_at (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

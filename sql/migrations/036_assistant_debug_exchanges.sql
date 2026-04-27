@@ -1,0 +1,28 @@
+CREATE TABLE assistant_debug_exchanges (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT NOT NULL,
+    chat_id VARCHAR(255) NOT NULL,
+    username VARCHAR(255) NOT NULL,
+    exchange_index BIGINT NOT NULL,
+    turn_index INT NOT NULL,
+    provider VARCHAR(100) NOT NULL,
+    model VARCHAR(255) NOT NULL,
+    request_id VARCHAR(255) NULL,
+    response_id VARCHAR(255) NULL,
+    tool_uses_json JSON NULL,
+    request_metadata_json JSON NULL,
+    response_metadata_json JSON NULL,
+    request_body_json LONGTEXT NOT NULL,
+    response_body_json LONGTEXT NULL,
+    request_text LONGTEXT NOT NULL,
+    response_text LONGTEXT NULL,
+    input_tokens INT NULL,
+    output_tokens INT NULL,
+    total_tokens INT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT fk_assistant_debug_exchanges_run_id
+        FOREIGN KEY (run_id) REFERENCES assistant_runs(id) ON DELETE CASCADE,
+    UNIQUE KEY ux_assistant_debug_exchanges_run_id_exchange_index (run_id, exchange_index),
+    INDEX ix_assistant_debug_exchanges_run_id_created_at (run_id, created_at),
+    INDEX ix_assistant_debug_exchanges_username_chat_id_created_at (username, chat_id, created_at)
+) ENGINE=InnoDB;

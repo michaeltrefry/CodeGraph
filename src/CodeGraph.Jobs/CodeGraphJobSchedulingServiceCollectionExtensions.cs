@@ -13,6 +13,7 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
         services.AddTransient<LinkAndDetectJob>();
         services.AddTransient<DetectCommunitiesJob>();
         services.AddTransient<RegenerateMcpDocsJob>();
+        services.AddTransient<AssistantRetentionCleanupJob>();
         services.AddTransient<IJobCommandDispatcher, JobCommandDispatcher>();
         services.AddTransient<IJobScheduleService, JobScheduleService>();
         return services;

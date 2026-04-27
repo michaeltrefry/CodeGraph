@@ -104,6 +104,10 @@ export class NavSearchComponent implements OnDestroy {
     this.query.set('');
   }
 
+  focus(): void {
+    this.searchInput?.nativeElement.focus();
+  }
+
   onBlur() {
     // Delay to allow click on dropdown items
     setTimeout(() => this.showDropdown.set(false), 200);
@@ -116,8 +120,8 @@ export class NavSearchComponent implements OnDestroy {
   }
 
   getIcon(item: SearchResultItem): string {
-    if (item.type === 'repository') return '📦';
-    return (item.nodeLabel && LABEL_ICONS[item.nodeLabel]) || '🔹';
+    if (item.type === 'repository') return item.name.startsWith('db:') ? 'DB' : 'Repo';
+    return (item.nodeLabel && LABEL_ICONS[item.nodeLabel]) || 'Node';
   }
 
   getTypeLabel(item: SearchResultItem): string {
@@ -127,7 +131,7 @@ export class NavSearchComponent implements OnDestroy {
 
   private navigateToItem(item: SearchResultItem) {
     if (item.type === 'repository') {
-      this.router.navigate(['/repos', item.name]);
+      this.router.navigate([item.name.startsWith('db:') ? '/schemas' : '/repos', item.name]);
     } else if (item.nodeId) {
       this.router.navigate(['/nodes', item.nodeId]);
     }

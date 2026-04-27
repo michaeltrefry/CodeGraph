@@ -7,6 +7,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Reviews;
 using CodeGraph.Tests.Extractors;
 
@@ -180,6 +181,55 @@ public class ProjectReviewServiceTests
             var findings = await store.GetProjectReviewFindingsAsync(runId);
 
             findings.ShouldBeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(repoPath)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteReviewRunAsync_UsesAdminPromptOverrides_ForWorkflowAndSynthesisPrompts()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestRepo");
+
+        try
+        {
+            await SeedProjectAsync(store, repoPath);
+            var provider = new RecordingProvider(
+                """
+                {
+                  "overview": "workflow",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "candidateFindings": []
+                }
+                """,
+                """
+                {
+                  "overview": "final",
+                  "strengths": [],
+                  "reviewedAreas": [],
+                  "skippedAreas": [],
+                  "followUps": [],
+                  "findings": []
+                }
+                """);
+
+            var promptService = new TestAgentPromptService(new Dictionary<string, string>
+            {
+                [AgentPromptCatalog.CodeReviewWorkflowSystemPromptKey] = "custom workflow prompt",
+                [AgentPromptCatalog.CodeReviewSynthesisSystemPromptKey] = "custom synthesis prompt"
+            });
+            var service = CreateService(store, provider, promptService: promptService);
+
+            var runId = await service.StartReviewAsync("TestRepo", "TestRepo.Api", "standard");
+            await service.ExecuteReviewRunAsync(runId);
+
+            provider.SystemPrompts.ShouldBe(["custom workflow prompt", "custom synthesis prompt"]);
         }
         finally
         {
@@ -453,7 +503,8 @@ public class ProjectReviewServiceTests
     private static ProjectReviewService CreateService(
         InMemoryGraphStore store,
         RecordingProvider provider,
-        int maxFilesToInspect = 3)
+        int maxFilesToInspect = 3,
+        IAgentPromptService? promptService = null)
     {
         var sourceOptions = Options.Create(new RepositorySourceOptions());
         var analysisOptions = Options.Create(new AnalysisOptions
@@ -474,7 +525,8 @@ public class ProjectReviewServiceTests
             new NoOpBackgroundRunner(),
             sourceOptions,
             analysisOptions,
-            NullLogger<ProjectReviewService>.Instance);
+            NullLogger<ProjectReviewService>.Instance,
+            promptService);
     }
 
     private static async Task SeedProjectAsync(InMemoryGraphStore store, string repoPath)
@@ -658,6 +710,7 @@ public class ProjectReviewServiceTests
     {
         private readonly Queue<string> _responses = new(responses);
         public List<string> Prompts { get; } = [];
+        public List<string> SystemPrompts { get; } = [];
 
         public string ProviderName => "test";
         public AnalysisProviderCapabilities Capabilities { get; } =
@@ -668,6 +721,7 @@ public class ProjectReviewServiceTests
             AnalysisRequestOptions request,
             CancellationToken ct = default)
         {
+            SystemPrompts.Add(prompt.SystemPrompt);
             Prompts.Add(prompt.UserPrompt);
             return Task.FromResult(new AnalysisTextResponse(_responses.Dequeue(), "test-model", ProviderName));
         }

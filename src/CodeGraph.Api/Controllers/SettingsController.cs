@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using CodeGraph.Api.Auth;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using CodeGraph.Jobs;
 using CodeGraph.Data;
@@ -9,6 +11,7 @@ using CodeGraph.Services;
 namespace CodeGraph.Api.Controllers;
 
 [ApiController]
+[Authorize(Policy = CodeGraphAuthenticationDefaults.AdminPolicy)]
 [Route("api/settings")]
 public class SettingsController(
     IAdminService adminService,

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
+using CodeGraph.Data;
 using CodeGraph.Jobs.Jobs;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
@@ -35,7 +36,24 @@ public class JobCommandDispatcherTests
         result.Message.ShouldContain("published");
     }
 
-    private static JobCommandDispatcher CreateDispatcher()
+    [Fact]
+    public async Task ExecuteAsync_DispatchesAssistantRetentionCleanupJob()
+    {
+        var cleanupService = new RecordingAssistantRetentionCleanupService
+        {
+            Result = new AssistantRetentionCleanupResult(1, 1, 1, 1, 1, 1)
+        };
+        var dispatcher = CreateDispatcher(cleanupService);
+
+        var result = await dispatcher.ExecuteAsync(JobTypes.AssistantRetentionCleanup, "{}");
+
+        result.Success.ShouldBeTrue();
+        result.Message.ShouldContain("6 rows");
+        cleanupService.Calls.ShouldBe(1);
+    }
+
+    private static JobCommandDispatcher CreateDispatcher(
+        RecordingAssistantRetentionCleanupService? cleanupService = null)
     {
         var adminService = new RecordingAdminService
         {
@@ -48,6 +66,7 @@ public class JobCommandDispatcherTests
             new ProcessBatchAnalysisJob(batchService),
             new LinkAndDetectJob(adminService),
             new DetectCommunitiesJob(adminService),
-            new RegenerateMcpDocsJob(new RecordingMcpDocService()));
+            new RegenerateMcpDocsJob(new RecordingMcpDocService()),
+            new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()));
     }
 }

@@ -1,0 +1,9 @@
+<div class="page schema-detail-page">
+  <div class="breadcrumb">
+    <a routerLink="/schemas">Schemas</a>
+    <span class="sep">/</span>
+    <span class="current">{{ projectName() }}</span>
+  </div>
+
+  <app-schema-catalog [projectName]="projectName()" />
+</div>

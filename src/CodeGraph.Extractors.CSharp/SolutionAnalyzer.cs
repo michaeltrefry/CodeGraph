@@ -48,8 +48,8 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         await RestoreNuGetPackagesAsync(solutionPath, ct);
 
         using var workspace = MSBuildWorkspace.Create();
-        workspace.WorkspaceFailed += (_, e) =>
-            _logger.LogWarning("Workspace warning: {Message}", e.Diagnostic.Message);
+        workspace.RegisterWorkspaceFailedHandler(e =>
+            _logger.LogWarning("Workspace warning: {Message}", e.Diagnostic.Message));
 
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
         var results = new ConcurrentBag<ExtractionResult>();

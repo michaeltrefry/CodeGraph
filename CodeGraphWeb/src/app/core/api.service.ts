@@ -5,6 +5,8 @@ import { environment } from '../../environments/environment';
 import {
   ProjectListResponse,
   ProjectDetailResponse,
+  SchemaCatalogResponse,
+  SchemaListResponse,
   ProjectHealthResponse,
   AnalysisBatchStatus,
   NodeListResponse,
@@ -31,6 +33,17 @@ import {
   ClusterGraphResponse,
   ImpactReport,
   DatabaseHealthResponse,
+  AdminUserResponse,
+  AgentPromptGroupResponse,
+  AgentPromptResponse,
+  DatabaseSourceResponse,
+  IndexerAcceptedResponse,
+  IndexerRunResponse,
+  McpPersonalAccessTokenMetadata,
+  McpPersonalAccessTokenCreateResponse,
+  AdminReportFiltersResponse,
+  AdminReportResponse,
+  AssistantDebugExchangeListResponse,
   ProjectDiagnosticsResponse,
   ProjectReviewResponse,
   ProjectReviewStreamEvent,
@@ -52,6 +65,18 @@ export class ApiService {
     if (search) params = params.set('search', search);
     if (group) params = params.set('group', group);
     return this.http.get<ProjectListResponse>(`${API}/projects`, { params });
+  }
+
+  listSchemas(search?: string, server?: string, database?: string, page = 1, pageSize = 25): Observable<SchemaListResponse> {
+    let params = new HttpParams().set('page', page).set('pageSize', pageSize);
+    if (search) params = params.set('search', search);
+    if (server) params = params.set('server', server);
+    if (database) params = params.set('database', database);
+    return this.http.get<SchemaListResponse>(`${API}/schemas`, { params });
+  }
+
+  getSchemaCatalog(name: string): Observable<SchemaCatalogResponse> {
+    return this.http.get<SchemaCatalogResponse>(`${API}/schemas/${encodeURIComponent(name)}/catalog`);
   }
 
   getProject(name: string): Observable<ProjectDetailResponse> {
@@ -239,6 +264,122 @@ export class ApiService {
     return this.http.get<DatabaseHealthResponse>(`${API}/settings/db-health`);
   }
 
+  // Admin users
+  listAdmins(): Observable<AdminUserResponse[]> {
+    return this.http.get<AdminUserResponse[]>(`${API}/admin/admins`);
+  }
+
+  addAdmin(username: string): Observable<AdminUserResponse> {
+    return this.http.post<AdminUserResponse>(`${API}/admin/admins`, { username });
+  }
+
+  removeAdmin(username: string): Observable<void> {
+    return this.http.delete<void>(`${API}/admin/admins/${encodeURIComponent(username)}`);
+  }
+
+  // Admin prompt overrides
+  getAdminPrompts(): Observable<AgentPromptGroupResponse[]> {
+    return this.http.get<AgentPromptGroupResponse[]>(`${API}/admin/prompts`);
+  }
+
+  updateAdminPrompt(key: string, promptText: string): Observable<AgentPromptResponse> {
+    return this.http.put<AgentPromptResponse>(
+      `${API}/admin/prompts/${encodeURIComponent(key)}`,
+      { promptText });
+  }
+
+  resetAdminPrompt(key: string): Observable<void> {
+    return this.http.delete<void>(`${API}/admin/prompts/${encodeURIComponent(key)}`);
+  }
+
+  // Database sources
+  listDatabaseSources(): Observable<DatabaseSourceResponse[]> {
+    return this.http.get<DatabaseSourceResponse[]>(`${API}/database-sources`);
+  }
+
+  createDatabaseSource(request: {
+    serverName: string;
+    databaseName?: string | null;
+    connectionString: string;
+    enabled?: boolean;
+  }): Observable<DatabaseSourceResponse> {
+    return this.http.post<DatabaseSourceResponse>(`${API}/database-sources`, request);
+  }
+
+  updateDatabaseSource(id: number, request: {
+    serverName?: string;
+    databaseName?: string | null;
+    connectionString?: string;
+    enabled?: boolean;
+  }): Observable<DatabaseSourceResponse> {
+    return this.http.put<DatabaseSourceResponse>(`${API}/database-sources/${id}`, request);
+  }
+
+  deleteDatabaseSource(id: number): Observable<void> {
+    return this.http.delete<void>(`${API}/database-sources/${id}`);
+  }
+
+  generateDatabaseSourceKey(): Observable<{ key: string }> {
+    return this.http.post<{ key: string }>(`${API}/database-sources/generate-key`, {});
+  }
+
+  syncDatabaseSource(id: number): Observable<IndexerAcceptedResponse> {
+    return this.http.post<IndexerAcceptedResponse>(`${API}/database-sources/${id}/sync`, {});
+  }
+
+  syncAllDatabaseSources(): Observable<IndexerAcceptedResponse> {
+    return this.http.post<IndexerAcceptedResponse>(`${API}/database-sources/sync-all`, {});
+  }
+
+  listIndexerRuns(params?: { status?: string; operation?: string; take?: number }): Observable<IndexerRunResponse[]> {
+    let query = new HttpParams();
+    if (params?.status) query = query.set('status', params.status);
+    if (params?.operation) query = query.set('operation', params.operation);
+    if (params?.take) query = query.set('take', params.take);
+    return this.http.get<IndexerRunResponse[]>(`${API}/indexer/runs`, { params: query });
+  }
+
+  getIndexerRun(id: number): Observable<IndexerRunResponse> {
+    return this.http.get<IndexerRunResponse>(`${API}/indexer/runs/${id}`);
+  }
+
+  // User MCP personal access tokens
+  listMcpTokens(): Observable<McpPersonalAccessTokenMetadata[]> {
+    return this.http.get<McpPersonalAccessTokenMetadata[]>(`${API}/user/mcp-tokens`);
+  }
+
+  createMcpToken(name: string, expiresInDays: number): Observable<McpPersonalAccessTokenCreateResponse> {
+    return this.http.post<McpPersonalAccessTokenCreateResponse>(
+      `${API}/user/mcp-tokens`,
+      { name, expiresInDays });
+  }
+
+  revokeMcpToken(id: number): Observable<void> {
+    return this.http.delete<void>(`${API}/user/mcp-tokens/${id}`);
+  }
+
+  // Admin reports
+  getAdminReport(
+    report: 'assistant/usage' | 'assistant/activity' | 'mcp/usage' | 'code-review/usage' | 'repository-analysis/usage',
+    filters?: { start?: string; end?: string; interval?: string; user?: string; provider?: string; model?: string; tool?: string }
+  ): Observable<AdminReportResponse> {
+    return this.http.get<AdminReportResponse>(`${API}/admin/reports/${report}`, {
+      params: this.buildReportParams(filters)
+    });
+  }
+
+  getAdminReportFilters(
+    filters?: { start?: string; end?: string; interval?: string; user?: string; provider?: string; model?: string; tool?: string }
+  ): Observable<AdminReportFiltersResponse> {
+    return this.http.get<AdminReportFiltersResponse>(`${API}/admin/reports/filters`, {
+      params: this.buildReportParams(filters)
+    });
+  }
+
+  getAssistantDebugExchanges(runId: number): Observable<AssistantDebugExchangeListResponse> {
+    return this.http.get<AssistantDebugExchangeListResponse>(`${API}/ask/runs/${runId}/debug-exchanges`);
+  }
+
   // Wiki
   listSections(): Observable<WikiSection[]> {
     return this.http.get<WikiSection[]>(`${API}/wiki/sections`);
@@ -414,5 +555,26 @@ export class ApiService {
 
       if (done) break;
     }
+  }
+
+  private buildReportParams(filters?: {
+    start?: string;
+    end?: string;
+    interval?: string;
+    user?: string;
+    provider?: string;
+    model?: string;
+    tool?: string;
+  }): HttpParams {
+    let params = new HttpParams();
+    if (!filters) return params;
+    if (filters.start) params = params.set('start', filters.start);
+    if (filters.end) params = params.set('end', filters.end);
+    if (filters.interval) params = params.set('interval', filters.interval);
+    if (filters.user) params = params.set('user', filters.user);
+    if (filters.provider) params = params.set('provider', filters.provider);
+    if (filters.model) params = params.set('model', filters.model);
+    if (filters.tool) params = params.set('tool', filters.tool);
+    return params;
   }
 }

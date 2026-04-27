@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS exclusion_rules (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    target_type VARCHAR(16) NOT NULL,
+    target_value VARCHAR(512) NOT NULL,
+    exclusion_type VARCHAR(16) NOT NULL,
+    reason VARCHAR(1024) NULL,
+    created_by VARCHAR(255) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_exclusion_target (target_type, target_value)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

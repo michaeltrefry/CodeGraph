@@ -1,0 +1,24 @@
+services:
+  codegraph-api:
+    image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-api:${IMAGE_TAG:-latest}
+    build: null
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      CodeGraph__AuthOptions__Enabled: ${CodeGraph__AuthOptions__Enabled:-true}
+      CodeGraph__AuthOptions__Authority: ${CodeGraph__AuthOptions__Authority:-https://identity.trefry.net/realms/trefry}
+      CodeGraph__AuthOptions__Audience: ${CodeGraph__AuthOptions__Audience:-codegraph-api}
+      CodeGraph__AuthOptions__ClientId: ${CodeGraph__AuthOptions__ClientId:-codegraph-web}
+      CodeGraph__AuthOptions__Scope: ${CodeGraph__AuthOptions__Scope:-openid profile email}
+      CodeGraph__AuthOptions__AllowedOrigins__0: ${CodeGraph__AuthOptions__AllowedOrigins__0:-https://codegraph.trefry.net}
+      CodeGraph__AuthOptions__RequireHttpsMetadata: ${CodeGraph__AuthOptions__RequireHttpsMetadata:-true}
+      CodeGraph__McpOptions__RequirePersonalAccessToken: ${CodeGraph__McpOptions__RequirePersonalAccessToken:-true}
+
+  jobs:
+    image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-jobs:${IMAGE_TAG:-latest}
+    build: null
+    environment:
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
+
+  codegraph-web:
+    image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-web:${IMAGE_TAG:-latest}
+    build: null

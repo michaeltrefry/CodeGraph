@@ -38,6 +38,15 @@ public static class CodeGraphOptionsServiceCollectionExtensions
         services.AddOptions<RabbitMqOptions>()
             .Bind(root.GetSection(nameof(CodeGraphServiceSettings.RabbitMqOptions)));
 
+        services.AddOptions<McpOptions>()
+            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.McpOptions)));
+
+        services.AddOptions<AuthOptions>()
+            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.AuthOptions)));
+
+        services.AddOptions<AssistantRetentionOptions>()
+            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.AssistantRetentionOptions)));
+
         return services;
     }
 }

@@ -146,27 +146,35 @@ public class McpDocService(IWikiStore store, ILogger<McpDocService> logger) : IM
     private static List<ToolMetadata> ExtractToolMetadata()
     {
         var tools = new List<ToolMetadata>();
-        var methods = typeof(CodeGraphMcpServer).GetMethods(BindingFlags.Public | BindingFlags.Instance);
-
-        foreach (var method in methods)
+        var toolTypes = new[]
         {
-            var toolAttr = method.GetCustomAttribute<McpServerToolAttribute>();
-            if (toolAttr is null) continue;
+            typeof(CodeGraphMcpServer),
+            typeof(MemoryMcpServer),
+        };
 
-            var descAttr = method.GetCustomAttribute<DescriptionAttribute>();
-            var parameters = method.GetParameters()
-                .Where(p => p.GetCustomAttribute<DescriptionAttribute>() is not null)
-                .Select(p => new ParameterMetadata(
-                    p.Name ?? "",
-                    p.ParameterType.Name.ToLowerInvariant(),
-                    !p.HasDefaultValue,
-                    p.GetCustomAttribute<DescriptionAttribute>()?.Description ?? ""))
-                .ToList();
+        foreach (var toolType in toolTypes)
+        {
+            var methods = toolType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+            foreach (var method in methods)
+            {
+                var toolAttr = method.GetCustomAttribute<McpServerToolAttribute>();
+                if (toolAttr is null) continue;
 
-            tools.Add(new ToolMetadata(
-                toolAttr.Name ?? method.Name,
-                descAttr?.Description ?? "",
-                parameters));
+                var descAttr = method.GetCustomAttribute<DescriptionAttribute>();
+                var parameters = method.GetParameters()
+                    .Where(p => p.GetCustomAttribute<DescriptionAttribute>() is not null)
+                    .Select(p => new ParameterMetadata(
+                        p.Name ?? "",
+                        p.ParameterType.Name.ToLowerInvariant(),
+                        !p.HasDefaultValue,
+                        p.GetCustomAttribute<DescriptionAttribute>()?.Description ?? ""))
+                    .ToList();
+
+                tools.Add(new ToolMetadata(
+                    toolAttr.Name ?? method.Name,
+                    descAttr?.Description ?? "",
+                    parameters));
+            }
         }
 
         return tools.OrderBy(t => t.Name).ToList();

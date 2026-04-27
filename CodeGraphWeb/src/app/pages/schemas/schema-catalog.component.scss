@@ -1,0 +1,139 @@
+.catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.catalog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
+  h2 {
+    margin: 0;
+  }
+}
+
+.catalog-object {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.object-header {
+  width: 100%;
+  border: 0;
+  background: #f9fafb;
+  color: #111827;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 20px minmax(120px, 1fr) auto minmax(120px, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 12px;
+  text-align: left;
+}
+
+.object-header:hover {
+  background: #f3f4f6;
+}
+
+.expand,
+.object-kind,
+.object-summary,
+.meta {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.object-name {
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.object-kind {
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: white;
+}
+
+.object-body {
+  padding: 14px;
+  background: white;
+}
+
+.node-link {
+  display: inline-flex;
+  margin-bottom: 10px;
+  color: #2563eb;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+h3 {
+  margin: 14px 0 8px;
+  font-size: 14px;
+}
+
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+
+  th,
+  td {
+    padding: 7px 8px;
+    border-bottom: 1px solid #f3f4f6;
+    text-align: left;
+  }
+
+  th {
+    color: #6b7280;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 240px) 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 14px;
+
+  span:first-child {
+    font-weight: 600;
+  }
+}
+
+.empty {
+  color: #6b7280;
+  padding: 18px;
+  text-align: center;
+
+  &.compact {
+    padding: 8px 0;
+    text-align: left;
+  }
+}
+
+@media (max-width: 760px) {
+  .object-header {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .object-kind,
+  .object-summary {
+    grid-column: 2;
+  }
+
+  .detail-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

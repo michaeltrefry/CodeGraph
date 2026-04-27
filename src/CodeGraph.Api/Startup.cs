@@ -1,13 +1,24 @@
 using System.Text.Json.Serialization;
 using Anthropic;
+using CodeGraph.Api.Auth;
 using CodeGraph.Api.Consumers;
+using CodeGraph.Api.Middleware;
 using MassTransit;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using CodeGraph.Data;
+using CodeGraph.Data.Migration;
+using CodeGraph.Data.MariaDb;
 using CodeGraph.Data.Neo4j;
+using CodeGraph.Extractors.Ansible;
+using CodeGraph.Extractors.ColdFusion;
 using CodeGraph.Extractors.CSharp;
 using CodeGraph.Extractors.Sql;
+using CodeGraph.Extractors.Terraform;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
 using CodeGraph.Jobs;
@@ -18,9 +29,14 @@ using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Assistant;
+using CodeGraph.Services.DatabaseSchema;
+using CodeGraph.Services.Indexer;
 using CodeGraph.Services.Memory;
 using CodeGraph.Services.Messaging;
+using CodeGraph.Services.Metrics;
+using CodeGraph.Services.Migration;
 using CodeGraph.Services.Pipeline;
+using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Reviews;
 
@@ -45,9 +61,25 @@ public static class Startup
             });
 
         services.AddCors(opts => opts.AddDefaultPolicy(policy =>
-            policy.WithOrigins($"http://localhost:{Port}", "http://localhost:4200")
+        {
+            var authOptions = configuration
+                .GetSection($"{CodeGraphOptionsServiceCollectionExtensions.SectionName}:{nameof(CodeGraphServiceSettings.AuthOptions)}")
+                .Get<AuthOptions>() ?? new AuthOptions();
+            var origins = new[]
+                {
+                    $"http://localhost:{Port}",
+                    "http://localhost:4200"
+                }
+                .Concat(authOptions.AllowedOrigins)
+                .Where(origin => !string.IsNullOrWhiteSpace(origin))
+                .Select(origin => origin.Trim().TrimEnd('/'))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            policy.WithOrigins(origins)
                 .AllowAnyHeader()
-                .AllowAnyMethod()));
+                .AllowAnyMethod();
+        }));
 
         services.AddControllers();
         services.AddEndpointsApiExplorer();
@@ -61,18 +93,9 @@ public static class Startup
             });
         });
 
-        // Data stores (Neo4j)
-        services.AddSingleton<Neo4jSessionFactory>();
-        services.AddTransient<IGraphStore, Neo4jGraphStore>();
-        services.AddTransient<IMigrationRunner>(sp => sp.GetRequiredService<IGraphStore>());
-        services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
-            ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
-        services.AddTransient<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
-            ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
-        services.AddTransient<IJobScheduleStore, Neo4jJobScheduleStore>();
-        services.AddTransient<IVectorStore, Neo4jVectorStore>();
-        services.AddTransient<IWikiStore, Neo4jWikiStore>();
-        services.AddTransient<IMemoryGraphStore, Neo4jMemoryGraphStore>();
+        RegisterAuthentication(services, configuration);
+
+        RegisterPersistence(services, configuration);
 
         // Embeddings + semantic search
         services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
@@ -81,6 +104,11 @@ public static class Startup
         services.AddTransient<IndexingPipeline>();
         services.AddTransient<CrossRepoLinker>();
         services.AddTransient<GraphAssistant>();
+        services.AddScoped<IAssistantDebugCapture, AssistantDebugCapture>();
+        services.AddTransient<IAssistantConfigurationService, AssistantConfigurationService>();
+        services.AddTransient<IAssistantRunService, AssistantRunService>();
+        services.AddTransient<IAssistantRetentionCleanupService, AssistantRetentionCleanupService>();
+        services.AddSingleton<IAssistantRunBackgroundRunner, AssistantRunBackgroundRunner>();
         services.AddTransient<CodeGraphDocGenerator>();
 
         // Solution-level Roslyn analysis
@@ -106,6 +134,9 @@ public static class Startup
         // Code extractors
         services.AddTransient<ICodeExtractor, RoslynExtractor>();
         services.AddTransient<ICodeExtractor, SqlExtractor>();
+        services.AddTransient<ICodeExtractor, AnsibleExtractor>();
+        services.AddTransient<ICodeExtractor, ColdFusionExtractor>();
+        services.AddTransient<ICodeExtractor, TerraformExtractor>();
         services.AddTransient<ICodeExtractor, TypeScriptExtractor>();
         services.AddTransient<ICodeExtractor, TreeSitterExtractor>();
 
@@ -122,11 +153,11 @@ public static class Startup
         // AI analyzer
         services.AddSingleton(_ => new AnthropicClient());
         services.AddSingleton<AnthropicCircuitBreaker>();
-        services.AddSingleton<IAnalysisModelProvider, AnthropicAnalysisProvider>();
-        services.AddSingleton<IAnalysisModelProvider, OpenAiAnalysisProvider>();
-        services.AddSingleton<IAnalysisModelProvider, GeminiAnalysisProvider>();
-        services.AddSingleton<IAnalysisModelProvider, LocalAnalysisProvider>();
-        services.AddSingleton<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
+        services.AddScoped<IAnalysisModelProvider, AnthropicAnalysisProvider>();
+        services.AddScoped<IAnalysisModelProvider, OpenAiAnalysisProvider>();
+        services.AddScoped<IAnalysisModelProvider, GeminiAnalysisProvider>();
+        services.AddScoped<IAnalysisModelProvider, LocalAnalysisProvider>();
+        services.AddScoped<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
         services.AddTransient<IProjectService, ProjectService>();
         services.AddTransient<IProjectQueryService, ProjectQueryService>();
@@ -138,14 +169,24 @@ public static class Startup
         services.AddTransient<RepositoryReviewService>();
         services.AddTransient<IRepositoryReviewService>(sp => sp.GetRequiredService<RepositoryReviewService>());
         services.AddTransient<IAdminService, AdminService>();
+        services.AddTransient<IAdminReportsService, AdminReportsService>();
+        services.AddTransient<IDatabaseSchemaExtractor, DatabaseSchemaExtractor>();
+        services.AddTransient<IndexerRunExecutor>();
+        services.AddSingleton<IIndexerRunBackgroundRunner, IndexerRunBackgroundRunner>();
+        services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
+        services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
+        services.AddTransient<McpPersonalAccessTokenService>();
+        services.AddTransient<IMetricsEventPublisher, MetricsEventPublisher>();
         services.AddTransient<IGraphOverviewService, GraphOverviewService>();
         services.AddTransient<INodeQueryService, NodeQueryService>();
         services.AddTransient<ISearchService, SearchService>();
         services.AddTransient<IExclusionService, ExclusionService>();
+        services.AddTransient<Neo4jToMariaDbMigrationPlanner>();
+        services.AddTransient<INeo4jToMariaDbMigrationService, Neo4jToMariaDbMigrationService>();
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         RegisterRepoProvider(services);
@@ -248,12 +289,24 @@ public static class Startup
 
     public static void Configure(WebApplication app)
     {
-        app.UseSwagger();
-        app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "CodeGraph API v1"));
+        if (app.Environment.IsDevelopment())
+        {
+            app.UseSwagger();
+            app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "CodeGraph API v1"));
+        }
+
         app.UseCors();
         app.UseRouting();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.UseMiddleware<McpTelemetryMiddleware>();
         app.MapControllers();
-        app.MapMcp("/mcp");
+
+        var mcpEndpoint = app.MapMcp("/mcp");
+        var mcpOptions = app.Services.GetRequiredService<IOptions<McpOptions>>().Value;
+        var authOptions = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
+        if (mcpOptions.RequirePersonalAccessToken || authOptions.Enabled)
+            mcpEndpoint.RequireAuthorization(McpPatAuthenticationDefaults.Policy);
     }
 
     public static async Task InitializeAsync(IServiceProvider services)
@@ -264,7 +317,10 @@ public static class Startup
         var hostEnvironment = serviceProvider.GetRequiredService<IHostEnvironment>();
         var storageOptions = serviceProvider.GetRequiredService<IOptions<CodeGraphStorageOptions>>().Value;
         var migrationRunner = serviceProvider.GetRequiredService<IMigrationRunner>();
-        var migrationsPath = ResolveMigrationsPath(hostEnvironment.ContentRootPath, storageOptions.Neo4jMigrationsPath);
+        var configuredMigrationsPath = IsMariaDbProvider(storageOptions)
+            ? storageOptions.MariaDbMigrationsPath
+            : storageOptions.Neo4jMigrationsPath;
+        var migrationsPath = ResolveMigrationsPath(hostEnvironment.ContentRootPath, configuredMigrationsPath);
         await migrationRunner.ApplyMigrationsAsync(migrationsPath);
 
         var wikiSectionSeedService = serviceProvider.GetRequiredService<IWikiSectionSeedService>();
@@ -292,11 +348,143 @@ public static class Startup
         });
     }
 
+    private static void RegisterAuthentication(IServiceCollection services, IConfiguration configuration)
+    {
+        var authOptions = configuration
+            .GetSection($"{CodeGraphOptionsServiceCollectionExtensions.SectionName}:{nameof(CodeGraphServiceSettings.AuthOptions)}")
+            .Get<AuthOptions>() ?? new AuthOptions();
+
+        services.AddSingleton<IAuthorizationHandler, AdminAuthorizationHandler>();
+
+        services.AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = CodeGraphAuthenticationDefaults.Scheme;
+                options.DefaultChallengeScheme = CodeGraphAuthenticationDefaults.Scheme;
+            })
+            .AddPolicyScheme(CodeGraphAuthenticationDefaults.Scheme, "CodeGraph auth selector", options =>
+            {
+                options.ForwardDefaultSelector = context =>
+                {
+                    var configured = context.RequestServices.GetRequiredService<IOptions<AuthOptions>>().Value;
+                    if (!configured.Enabled)
+                        return CodeGraphAuthenticationDefaults.LocalDevScheme;
+
+                    return CodeGraphAuthenticationDefaults.JwtBearerScheme;
+                };
+            })
+            .AddScheme<AuthenticationSchemeOptions, LocalDevelopmentAuthenticationHandler>(
+                CodeGraphAuthenticationDefaults.LocalDevScheme,
+                _ => { })
+            .AddJwtBearer(CodeGraphAuthenticationDefaults.JwtBearerScheme, options =>
+            {
+                options.MapInboundClaims = false;
+                options.RequireHttpsMetadata = authOptions.RequireHttpsMetadata;
+                options.Authority = string.IsNullOrWhiteSpace(authOptions.Authority) ? null : authOptions.Authority.TrimEnd('/');
+                options.Audience = string.IsNullOrWhiteSpace(authOptions.Audience) ? null : authOptions.Audience;
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    NameClaimType = "preferred_username",
+                    RoleClaimType = "roles",
+                    ValidateAudience = HasConfiguredAudience(authOptions),
+                    ValidAudience = string.IsNullOrWhiteSpace(authOptions.Audience) ? null : authOptions.Audience,
+                    ValidAudiences = authOptions.ValidAudiences.Length > 0
+                        ? authOptions.ValidAudiences.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray()
+                        : null
+                };
+            })
+            .AddScheme<AuthenticationSchemeOptions, McpPatAuthenticationHandler>(
+                McpPatAuthenticationDefaults.Scheme,
+                _ => { });
+
+        services.AddAuthorization(options =>
+        {
+            options.AddPolicy(CodeGraphAuthenticationDefaults.UserPolicy, policy =>
+            {
+                policy.AuthenticationSchemes.Add(CodeGraphAuthenticationDefaults.Scheme);
+                policy.RequireAuthenticatedUser();
+            });
+
+            options.AddPolicy(CodeGraphAuthenticationDefaults.AdminPolicy, policy =>
+            {
+                policy.AuthenticationSchemes.Add(CodeGraphAuthenticationDefaults.Scheme);
+                policy.RequireAuthenticatedUser();
+                policy.AddRequirements(new AdminAuthorizationRequirement());
+            });
+
+            options.AddPolicy(McpPatAuthenticationDefaults.Policy, policy =>
+            {
+                policy.AuthenticationSchemes.Add(McpPatAuthenticationDefaults.Scheme);
+                policy.RequireAuthenticatedUser();
+            });
+
+            if (authOptions.Enabled)
+            {
+                options.FallbackPolicy = new AuthorizationPolicyBuilder(CodeGraphAuthenticationDefaults.Scheme)
+                    .RequireAuthenticatedUser()
+                    .Build();
+            }
+        });
+    }
+
+    private static void RegisterPersistence(IServiceCollection services, IConfiguration configuration)
+    {
+        var storageOptions = configuration
+            .GetSection($"{CodeGraphOptionsServiceCollectionExtensions.SectionName}:{nameof(CodeGraphServiceSettings.StorageOptions)}")
+            .Get<CodeGraphStorageOptions>() ?? new CodeGraphStorageOptions();
+
+        if (IsMariaDbProvider(storageOptions))
+        {
+            services.AddCodeGraphMariaDbData(options =>
+            {
+                options.ConnectionString = storageOptions.MariaDbConnectionString;
+                options.MigrationsPath = storageOptions.MariaDbMigrationsPath;
+                options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
+            });
+            services.AddSingleton<Neo4jSessionFactory>();
+            services.AddTransient<INeo4jToMariaDbGraphExporter, Neo4jGraphStore>();
+            return;
+        }
+
+        services.AddSingleton<Neo4jSessionFactory>();
+        services.AddTransient<IGraphStore, Neo4jGraphStore>();
+        services.AddTransient<INeo4jToMariaDbGraphExporter>(sp => (Neo4jGraphStore)sp.GetRequiredService<IGraphStore>());
+        services.AddTransient<IMigrationRunner>(sp => sp.GetRequiredService<IGraphStore>());
+        services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
+            ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
+        services.AddTransient<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
+            ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
+        services.AddTransient<IJobScheduleStore, Neo4jJobScheduleStore>();
+        services.AddTransient<IVectorStore, Neo4jVectorStore>();
+        services.AddTransient<IWikiStore, Neo4jWikiStore>();
+        services.AddTransient<IMemoryGraphStore, Neo4jMemoryGraphStore>();
+    }
+
+    private static bool IsMariaDbProvider(CodeGraphStorageOptions storageOptions) =>
+        storageOptions.Provider.Equals("MariaDb", StringComparison.OrdinalIgnoreCase)
+        || storageOptions.Provider.Equals("MySql", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasConfiguredAudience(AuthOptions authOptions) =>
+        !string.IsNullOrWhiteSpace(authOptions.Audience)
+        || authOptions.ValidAudiences.Any(value => !string.IsNullOrWhiteSpace(value));
+
     private static string ResolveMigrationsPath(string contentRootPath, string migrationsPath)
     {
         if (Path.IsPathRooted(migrationsPath))
             return migrationsPath;
 
-        return Path.GetFullPath(Path.Combine(contentRootPath, migrationsPath));
+        var contentRelativePath = Path.GetFullPath(Path.Combine(contentRootPath, migrationsPath));
+        if (Directory.Exists(contentRelativePath))
+            return contentRelativePath;
+
+        var directory = new DirectoryInfo(contentRootPath);
+        while (directory.Parent is not null)
+        {
+            directory = directory.Parent;
+            var ancestorRelativePath = Path.GetFullPath(Path.Combine(directory.FullName, migrationsPath));
+            if (Directory.Exists(ancestorRelativePath))
+                return ancestorRelativePath;
+        }
+
+        return contentRelativePath;
     }
 }

@@ -18,6 +18,7 @@
     <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
     <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
     <ProjectReference Include="..\CodeGraph.Data.Neo4j\CodeGraph.Data.Neo4j.csproj" />
+    <ProjectReference Include="..\CodeGraph.Data.MariaDb\CodeGraph.Data.MariaDb.csproj" />
   </ItemGroup>
 
   <ItemGroup>

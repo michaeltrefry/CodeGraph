@@ -1,0 +1,86 @@
+@if (loading()) {
+  <div class="loading">Loading schema catalog…</div>
+} @else if (error()) {
+  <div class="empty">{{ error() }}</div>
+} @else if (catalog(); as data) {
+  <section class="catalog">
+    <div class="catalog-header">
+      <div>
+        <h2>{{ data.databaseName }}</h2>
+        <div class="meta">{{ data.serverName }} · {{ objects().length }} objects</div>
+      </div>
+      <a [routerLink]="['/schemas', data.projectName, 'nodes']" class="btn-small">All nodes</a>
+    </div>
+
+    @for (item of objects(); track item.id) {
+      <div class="catalog-object">
+        <button type="button" class="object-header" (click)="toggle(item.id)">
+          <span class="expand">{{ isExpanded(item.id) ? '▼' : '▶' }}</span>
+          <span class="object-name">{{ item.name }}</span>
+          <span class="object-kind">{{ isProcedure(item) ? item.routineType : item.label }}</span>
+          <span class="object-summary">{{ summary(item) }}</span>
+        </button>
+
+        @if (isExpanded(item.id)) {
+          <div class="object-body">
+            <a [routerLink]="['/nodes', item.id]" class="node-link">Open node</a>
+            @if (item.comment) {
+              <p>{{ item.comment }}</p>
+            }
+
+            @if (isProcedure(item)) {
+              <h3>Parameters</h3>
+              @for (parameter of item.parameters; track parameter.ordinal + parameter.name) {
+                <div class="detail-row">
+                  <span>{{ parameter.name }}</span>
+                  <span>{{ formatParameter(parameter) }}</span>
+                </div>
+              } @empty {
+                <div class="empty compact">No parameters.</div>
+              }
+            } @else {
+              <h3>Columns</h3>
+              <table class="detail-table">
+                <thead><tr><th>Name</th><th>Type</th><th>Null</th><th>PK</th></tr></thead>
+                <tbody>
+                  @for (column of item.columns; track column.id + column.name) {
+                    <tr>
+                      <td>{{ column.name }}</td>
+                      <td>{{ column.dataType || '-' }}</td>
+                      <td>{{ column.nullable ? 'YES' : 'NO' }}</td>
+                      <td>{{ column.isPrimaryKey ? 'YES' : 'NO' }}</td>
+                    </tr>
+                  } @empty {
+                    <tr><td colspan="4" class="empty compact">No columns.</td></tr>
+                  }
+                </tbody>
+              </table>
+
+              @if (item.indexes.length) {
+                <h3>Indexes</h3>
+                @for (index of item.indexes; track index.name) {
+                  <div class="detail-row">
+                    <span>{{ index.name }}</span>
+                    <span>{{ index.isUnique ? 'unique' : 'non-unique' }} · {{ index.columns.join(', ') }}</span>
+                  </div>
+                }
+              }
+
+              @if (item.foreignKeys.length) {
+                <h3>Foreign Keys</h3>
+                @for (foreignKey of item.foreignKeys; track foreignKey.name) {
+                  <div class="detail-row">
+                    <span>{{ foreignKey.name }}</span>
+                    <span>{{ formatForeignKey(foreignKey) }}</span>
+                  </div>
+                }
+              }
+            }
+          </div>
+        }
+      </div>
+    } @empty {
+      <div class="empty">No schema objects found.</div>
+    }
+  </section>
+}

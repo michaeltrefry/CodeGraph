@@ -1,0 +1,17 @@
+ALTER TABLE analysis_batches
+    ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(64) NOT NULL DEFAULT 'native_batch' AFTER provider_name,
+    ADD COLUMN IF NOT EXISTS include_all_source BOOLEAN NOT NULL DEFAULT FALSE AFTER execution_mode;
+
+ALTER TABLE analysis_batch_requests
+    ADD COLUMN IF NOT EXISTS sequence INT NOT NULL DEFAULT 0 AFTER batch_id,
+    ADD COLUMN IF NOT EXISTS request_payload_json LONGTEXT NULL AFTER node_label,
+    ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0 AFTER status,
+    ADD COLUMN IF NOT EXISTS response_text LONGTEXT NULL AFTER attempt_count,
+    ADD COLUMN IF NOT EXISTS model_used VARCHAR(100) NULL AFTER response_text;
+
+ALTER TABLE file_metrics
+    MODIFY COLUMN churn_30d DOUBLE NOT NULL DEFAULT 0,
+    MODIFY COLUMN churn_90d DOUBLE NOT NULL DEFAULT 0,
+    MODIFY COLUMN churn_365d DOUBLE NOT NULL DEFAULT 0,
+    MODIFY COLUMN bug_fix_commits_90d DOUBLE NOT NULL DEFAULT 0,
+    MODIFY COLUMN bug_fix_commits_365d DOUBLE NOT NULL DEFAULT 0;

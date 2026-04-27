@@ -1,0 +1,149 @@
+/* ==========================================================================
+   CodeGraph design tokens — CodeFlow system
+   --------------------------------------------------------------------------
+   Source of truth is design_handoff_codegraph/source/codegraph.css. Keep
+   these blocks in sync with that file when the design evolves.
+
+   - Theme-agnostic primitives (type scale, radii, semantic colors, accent,
+     transitions) live under :root.
+   - Surface / text palette is theme-scoped: [data-theme="dark"|"light"].
+   - Accent swaps via [data-accent="indigo"|"cyan"|"green"|"amber"].
+   - Font swaps via [data-font="plex"|"geist"|"inter"].
+
+   Legacy --cg-* tokens are preserved as aliases so existing component
+   styles continue to resolve. New screens should consume the primary
+   tokens (--bg, --surface, --text, --accent, --font-mono, etc.) directly.
+   ========================================================================== */
+
+:root {
+  /* ---- type pairings (swapped via [data-font]) ---- */
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ---- type scale ---- */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-h3: 18px;
+  --fs-h2: 22px;
+  --fs-h1: 28px;
+
+  /* ---- radii ---- */
+  --radius-sm: 4px;
+  --radius:    6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* ---- semantic colors (shared across themes) ---- */
+  --sem-green:  #3FB950;
+  --sem-amber:  #D29922;
+  --sem-red:    #F85149;
+  --sem-blue:   #58A6FF;
+  --sem-purple: #BC8CFF;
+  --sem-cyan:   #2EA3F2;
+
+  /* ---- accent (default: indigo) ---- */
+  --accent:      oklch(0.66 0.16 265);
+  --accent-weak: oklch(0.66 0.16 265 / 0.14);
+  --accent-dim:  oklch(0.66 0.16 265 / 0.28);
+  --accent-ink:  oklch(0.82 0.11 265);
+
+  /* ---- motion ---- */
+  --transition: 140ms cubic-bezier(.3,.6,.3,1);
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+
+/* ==========================================================================
+   THEMES
+   ========================================================================== */
+[data-theme="dark"] {
+  --bg:         #0B0C0E;
+  --surface:    #131519;
+  --surface-2:  #1A1D22;
+  --surface-3:  #22262C;
+  --border:     #23272E;
+  --border-2:   #2E333B;
+  --hairline:   #1D2026;
+
+  --text:       #E7E9EE;
+  --text-2:     #B8BDC8;
+  --muted:      #8B92A1;
+  --faint:      #5A6070;
+
+  --ok-bg:      color-mix(in oklab, var(--sem-green) 14%, transparent);
+  --warn-bg:    color-mix(in oklab, var(--sem-amber) 14%, transparent);
+  --err-bg:     color-mix(in oklab, var(--sem-red) 14%, transparent);
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg:         #FAFAF7;
+  --surface:    #FFFFFF;
+  --surface-2:  #F4F4EE;
+  --surface-3:  #EDECE5;
+  --border:     #E5E4DC;
+  --border-2:   #D6D4C8;
+  --hairline:   #EDECE5;
+
+  --text:       #15171C;
+  --text-2:     #3B3F49;
+  --muted:      #6B6F7A;
+  --faint:      #9A9EA8;
+
+  --ok-bg:      color-mix(in oklab, var(--sem-green) 10%, transparent);
+  --warn-bg:    color-mix(in oklab, var(--sem-amber) 12%, transparent);
+  --err-bg:     color-mix(in oklab, var(--sem-red) 10%, transparent);
+
+  color-scheme: light;
+}
+
+/* ==========================================================================
+   ACCENT SWATCHES
+   ========================================================================== */
+[data-accent="indigo"] { --accent: oklch(0.66 0.16 265); --accent-weak: oklch(0.66 0.16 265 / .14); --accent-dim: oklch(0.66 0.16 265 / .28); --accent-ink: oklch(0.82 0.11 265); }
+[data-accent="cyan"]   { --accent: oklch(0.72 0.14 210); --accent-weak: oklch(0.72 0.14 210 / .14); --accent-dim: oklch(0.72 0.14 210 / .28); --accent-ink: oklch(0.84 0.09 210); }
+[data-accent="green"]  { --accent: oklch(0.72 0.15 150); --accent-weak: oklch(0.72 0.15 150 / .14); --accent-dim: oklch(0.72 0.15 150 / .28); --accent-ink: oklch(0.84 0.10 150); }
+[data-accent="amber"]  { --accent: oklch(0.76 0.15 75);  --accent-weak: oklch(0.76 0.15 75  / .14); --accent-dim: oklch(0.76 0.15 75  / .28); --accent-ink: oklch(0.86 0.10 75); }
+
+/* ==========================================================================
+   FONT PAIRINGS
+   ========================================================================== */
+[data-font="plex"]  { --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif; --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
+[data-font="geist"] { --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;         --font-mono: 'Geist Mono', ui-monospace, Menlo, monospace; }
+[data-font="inter"] { --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;         --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
+
+/* ==========================================================================
+   LEGACY ALIASES
+   --------------------------------------------------------------------------
+   Existing component styles reference --cg-* tokens. We resolve them
+   through the new system so nothing breaks today. New code should NOT
+   use --cg-* — consume the primary tokens directly.
+   ========================================================================== */
+:root {
+  --cg-surface-bg:     var(--surface);
+  --cg-surface-subtle: var(--surface-2);
+  --cg-surface-muted:  var(--surface-2);
+  --cg-surface-info:   color-mix(in oklab, var(--sem-blue)   12%, var(--surface));
+  --cg-surface-warm:   color-mix(in oklab, var(--sem-amber)  12%, var(--surface));
+  --cg-surface-alert:  color-mix(in oklab, var(--sem-amber)  10%, var(--surface));
+
+  --cg-border-default: var(--border);
+  --cg-border-strong:  var(--border-2);
+  --cg-border-soft:    var(--hairline);
+  --cg-border-warm:    color-mix(in oklab, var(--sem-amber)  50%, var(--border));
+  --cg-border-alert:   color-mix(in oklab, var(--sem-amber)  35%, var(--border));
+
+  --cg-text-strong: var(--text);
+  --cg-text-body:   var(--text-2);
+  --cg-text-muted:  var(--muted);
+  --cg-text-soft:   var(--faint);
+  --cg-text-accent: var(--accent-ink);
+
+  --cg-radius-sm: var(--radius-md);   /* existing 8px */
+  --cg-radius-md: var(--radius-lg);   /* existing 10px */
+  --cg-radius-lg: 12px;               /* one-off — no new token at this size */
+}

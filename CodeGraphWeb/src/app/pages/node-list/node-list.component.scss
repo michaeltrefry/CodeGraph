@@ -1,258 +1,269 @@
-.meta {
-  font-size: 13px;
-  color: #6b7280;
-  margin-bottom: 16px;
-}
-
-// --- Analysis card ---
-
-.analysis-card {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 16px 20px;
-  margin-bottom: 16px;
-}
-
-.analysis-summary {
-  line-height: 1.6;
-  color: #374151;
-  font-size: 13px;
-  white-space: pre-wrap;
-}
-
-.analysis-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.confidence-pill {
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 600;
-  color: white;
-  white-space: nowrap;
-}
-
-.analysis-stat {
-  font-size: 12px;
-  color: #6b7280;
-}
-
-// --- Sections ---
-
-.section {
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  margin-bottom: 12px;
-  overflow: hidden;
-}
-
-.section-header {
+.nl-crumbs {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 16px;
-  cursor: pointer;
-  user-select: none;
-  background: #f9fafb;
-  border-bottom: 1px solid transparent;
-  transition: background 0.1s;
-
-  &:hover { background: #f3f4f6; }
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
 }
 
-.section-expand {
-  font-size: 10px;
-  color: #9ca3af;
-  width: 14px;
+.nl-sep {
+  color: var(--faint);
+  flex: 0 0 auto;
+}
+
+.nl-crumbs a,
+.nl-container-name {
+  color: var(--accent-ink);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+}
+
+.nl-current,
+.nl-container-desc,
+.nl-member-name,
+.nl-member-prop,
+.nl-node-qn,
+.nl-node-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nl-state {
+  padding: 42px 16px;
+  color: var(--muted);
+  text-align: center;
+  font-size: var(--fs-md);
+}
+
+.nl-analysis {
+  gap: 10px;
+}
+
+.nl-analysis-summary {
+  color: var(--text-2);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.nl-analysis-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nl-confidence-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+
+  &.confidence-high {
+    background: var(--ok-bg);
+    border-color: color-mix(in oklab, var(--sem-green) 30%, var(--border));
+    color: var(--sem-green);
+  }
+
+  &.confidence-medium {
+    background: var(--warn-bg);
+    border-color: color-mix(in oklab, var(--sem-amber) 30%, var(--border));
+    color: var(--sem-amber);
+  }
+
+  &.confidence-low {
+    background: var(--err-bg);
+    border-color: color-mix(in oklab, var(--sem-red) 30%, var(--border));
+    color: var(--sem-red);
+  }
+}
+
+.nl-section {
+  overflow: hidden;
+}
+
+.nl-section-header {
+  background: var(--surface);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 16px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  user-select: none;
+  transition: background var(--transition);
+
+  &:hover {
+    background: var(--surface-2);
+  }
+}
+
+.nl-section-expand,
+.nl-container-expand {
+  color: var(--faint);
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
   text-align: center;
 }
 
-.section-icon {
-  font-size: 18px;
+.nl-section-expand {
+  width: 14px;
 }
 
-.section-label {
+.nl-section-label {
+  color: var(--text);
+  font-size: var(--fs-lg);
   font-weight: 600;
-  font-size: 15px;
-  color: #111827;
 }
 
-.section-count {
-  font-size: 12px;
-  color: #6b7280;
-  background: #e5e7eb;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-weight: 500;
-}
-
-.expand-all-btn {
+.nl-expand-all {
   margin-left: auto;
-  padding: 2px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  background: white;
-  cursor: pointer;
-  font-size: 11px;
-  color: #6b7280;
+  color: var(--accent-ink);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
 
-  &:hover { background: #f3f4f6; color: #374151; }
+  &:hover {
+    background: var(--accent-weak);
+    color: var(--accent);
+  }
 }
 
-.section-body {
-  padding: 4px 0;
+.nl-section-body {
+  border-top: 1px solid var(--hairline);
 }
 
-// --- Container nodes (Class, Interface, etc.) ---
+.nl-container-node {
+  border-bottom: 1px solid var(--hairline);
 
-.container-node {
-  border-bottom: 1px solid #f3f4f6;
-
-  &:last-child { border-bottom: none; }
+  &:last-child {
+    border-bottom: 0;
+  }
 }
 
-.container-header {
+.nl-container-header {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 16px 10px 24px;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--transition);
 
-  &:hover { background: #fafbfc; }
+  &:hover {
+    background: var(--surface-2);
+  }
 }
 
-.container-expand {
-  font-size: 9px;
-  color: #9ca3af;
+.nl-container-expand {
   width: 12px;
-  text-align: center;
 }
 
-.container-name {
-  font-weight: 600;
-  font-size: 14px;
-  color: #2563eb;
-  text-decoration: none;
-
-  &:hover { text-decoration: underline; }
-}
-
-.member-count {
-  font-size: 11px;
-  color: #9ca3af;
-  white-space: nowrap;
-}
-
-.container-desc {
-  font-size: 12px;
-  color: #6b7280;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.nl-container-desc {
+  color: var(--muted);
   flex: 1;
+  font-size: var(--fs-sm);
   min-width: 0;
 }
 
-// --- Member rows ---
-
-.member-list {
-  padding: 2px 0 6px;
-  background: #fafbfc;
+.nl-container-name {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  min-width: 0;
 }
 
-.member-row {
+.nl-member-list {
+  background: var(--surface-2);
+  border-top: 1px solid var(--hairline);
+  padding: 2px 0 6px;
+}
+
+.nl-member-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 5px 16px 5px 52px;
   text-decoration: none;
-  font-size: 13px;
-  transition: background 0.1s;
+  font-size: var(--fs-md);
+  transition: background var(--transition);
 
-  &:hover { background: #eff6ff; }
+  &:hover {
+    background: var(--accent-weak);
+    text-decoration: none;
+  }
 }
 
-.member-icon {
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
-.member-label-tag {
-  font-size: 10px;
-  color: #6b7280;
-  background: #e5e7eb;
-  padding: 0 5px;
-  border-radius: 3px;
+.nl-member-name {
+  color: var(--text);
   font-weight: 500;
-  flex-shrink: 0;
-  text-transform: lowercase;
+  min-width: 0;
 }
 
-.member-name {
-  font-weight: 500;
-  color: #111827;
-}
-
-.member-prop {
-  font-size: 11px;
-  color: #6b7280;
-  font-family: 'Consolas', 'Fira Code', monospace;
+.nl-member-prop {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
   margin-left: auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 300px;
+  max-width: min(42vw, 420px);
 }
 
-// --- Standalone node cards ---
-
-.node-card {
+.nl-node-row {
   display: block;
   padding: 10px 16px 10px 24px;
   text-decoration: none;
-  border-bottom: 1px solid #f3f4f6;
-  transition: background 0.1s;
+  border-bottom: 1px solid var(--hairline);
+  transition: background var(--transition);
 
-  &:last-child { border-bottom: none; }
-  &:hover { background: #eff6ff; }
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &:hover {
+    background: var(--accent-weak);
+    text-decoration: none;
+  }
 }
 
-.node-name {
+.nl-node-name {
+  color: var(--text);
+  font-size: var(--fs-lg);
   font-weight: 600;
-  font-size: 14px;
-  color: #111827;
 }
 
-.node-qn {
-  font-size: 12px;
-  color: #6b7280;
-  font-family: 'Consolas', 'Fira Code', monospace;
+.nl-node-qn {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
   margin-top: 1px;
 }
 
-.node-desc {
-  font-size: 12px;
-  color: #6b7280;
+.nl-node-desc {
+  color: var(--muted);
+  font-size: var(--fs-sm);
   margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.node-prop {
-  font-size: 12px;
-  color: #374151;
-  margin-top: 3px;
-  font-family: 'Consolas', 'Fira Code', monospace;
-  background: #f9fafb;
-  padding: 2px 6px;
-  border-radius: 4px;
+.nl-node-prop {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
   display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  margin-top: 4px;
+  padding: 2px 6px;
 }

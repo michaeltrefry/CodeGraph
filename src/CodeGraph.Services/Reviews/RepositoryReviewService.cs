@@ -7,6 +7,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Prompts;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -19,7 +20,8 @@ public class RepositoryReviewService(
     IRepositoryReviewBackgroundRunner backgroundRunner,
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     IOptions<AnalysisOptions> analysisOptionsAccessor,
-    ILogger<RepositoryReviewService> logger) : IRepositoryReviewService
+    ILogger<RepositoryReviewService> logger,
+    IAgentPromptService? agentPromptService = null) : IRepositoryReviewService
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
@@ -1144,7 +1146,9 @@ public class RepositoryReviewService(
                 topFindings);
 
             var response = await provider.ExecuteAsync(
-                new AnalysisPrompt(RepositoryReviewSynthesisPromptBuilder.SystemPrompt, prompt),
+                new AnalysisPrompt(
+                    await GetRepositoryReviewSynthesisSystemPromptAsync(),
+                    prompt),
                 new AnalysisRequestOptions(
                     Model: string.IsNullOrWhiteSpace(analysisOptions.Review.Model) ? null : analysisOptions.Review.Model,
                     MaxTokens: Math.Min(analysisOptions.MaxTokensPerSynthesis, 4_000)),
@@ -1165,6 +1169,14 @@ public class RepositoryReviewService(
             return BuildDeterministicSummary(repo, mode, reviewedCommitSha, executionPlan, projectSections);
         }
     }
+
+    private Task<string> GetRepositoryReviewSynthesisSystemPromptAsync()
+        => AgentPromptExecution.GetEffectivePromptOrDefaultAsync(
+            agentPromptService,
+            AgentPromptCatalog.RepositoryReviewSynthesisSystemPromptKey,
+            RepositoryReviewSynthesisPromptBuilder.SystemPrompt,
+            logger,
+            "repository review synthesis");
 
     private static RepositoryReviewSummaryModel BuildDeterministicSummary(
         string repo,
