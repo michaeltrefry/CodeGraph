@@ -33,7 +33,13 @@ The working inventory is tracked in [plans/standalone-rebase-inventory.md](/User
 ```text
 CodeGraph/
 ├── src/
-│   ├── CodeGraph.Api/                   # ASP.NET Core API host, MCP host, controllers, MassTransit consumers
+│   ├── CodeGraph.Api/                   # ASP.NET Core API host, MCP host, controllers
+│   ├── CodeGraph.Host.Shared/           # Shared host/auth/health infrastructure for split services
+│   ├── CodeGraph.Indexer.Client/        # Typed HTTP client for indexer operations
+│   ├── CodeGraph.Indexer.Host/          # Standalone indexing execution host and consumers
+│   ├── CodeGraph.Memory.Client/         # Typed HTTP client for memory operations
+│   ├── CodeGraph.Memory.Host/           # Standalone memory API and async write consumer
+│   ├── CodeGraph.Metrics/               # Standalone telemetry consumer and persistence host
 │   ├── CodeGraph.Models/                # Domain models, request/response DTOs, messages, memory contracts
 │   ├── CodeGraph.Services/              # Analysis, indexing, query engine, assistant, reviews, memory, wiki
 │   ├── CodeGraph.Data/                  # Store interfaces and shared entities
@@ -58,10 +64,12 @@ CodeGraph/
 ```text
 Models <- Data <- Services <- Extractors.*
                          <- Api
+                         <- Indexer.Host
+                         <- Memory.Host
                          <- Jobs
 ```
 
-`CodeGraph.Api` hosts the REST API, the MCP endpoint, and the MassTransit consumers. `CodeGraph.Jobs` runs scheduled and manual background jobs. `CodeGraphWeb` is the Angular UI. MariaDB/MySQL is the primary datastore, RabbitMQ backs the event-driven pipeline, and Neo4j remains only as a temporary compatibility/export provider during the standalone rebase.
+`CodeGraph.Api` hosts the REST API and MCP endpoint. `CodeGraph.Indexer.Host` owns indexing execution, indexer MassTransit consumers, schema sync, TypeScript sidecar warmup, durable run execution, and `/api/indexer` run/status endpoints. `CodeGraph.Indexer.Client` lets API and jobs delegate work to that host when `CodeGraph:Indexer:BaseUrl` is configured. `CodeGraph.Memory.Host` owns the memory REST surface and async memory-write consumer, while `CodeGraph.Memory.Client` lets API/MCP delegate memory operations when `CodeGraph:Memory:BaseUrl` is configured. `CodeGraph.Metrics` consumes LLM usage and MCP tool invocation events and persists telemetry into MariaDB. `CodeGraph.Jobs` runs scheduled and manual triggers. `CodeGraphWeb` is the Angular UI. MariaDB/MySQL is the primary datastore, RabbitMQ backs the event-driven pipeline, and Neo4j remains only as a temporary compatibility/export provider during the standalone rebase.
 
 ## Key Capabilities
 
@@ -148,6 +156,9 @@ Useful settings to know:
 | `CodeGraph:StorageOptions:*` | MariaDB provider, migration, encryption-key, and embedding model settings |
 | `CodeGraph:AuthOptions:*` | Standalone auth settings: local dev identity by default, optional OIDC/JWT authority/audience/client/scope/CORS settings |
 | `CodeGraph:McpOptions:RequirePersonalAccessToken` | Require issued MCP PATs for `/mcp`; defaults off for local dev. When OAuth auth is enabled, `/mcp` is PAT-only even if this is not set. |
+| `CodeGraph:Indexer:BaseUrl` | Optional remote indexer host URL, for example `http://localhost:5042`; when empty, API keeps the local integrated indexer fallback. |
+| `CodeGraph:Memory:BaseUrl` | Optional remote memory host URL, for example `http://localhost:5039`; when empty, API/MCP keep the local memory fallback. |
+| `CodeGraph:InternalServiceAuth:*` | HMAC internal service identity used by API/jobs clients when talking to split hosts. Disabled by default for local development. |
 | `CodeGraph:AssistantRetentionOptions:*` | Stale assistant run and assistant history/debug retention settings used by the jobs cleanup task |
 | `CodeGraph:RepositorySource:Provider` | Choose `Folder`, `GitHub`, or `GitLab` |
 | `CodeGraph:RepositorySource:Folder:RootPath` | Local repo root when using the folder provider |
@@ -168,6 +179,15 @@ dotnet build CodeGraph.sln
 # API + MCP host
 dotnet run --project src/CodeGraph.Api
 
+# Indexer host
+dotnet run --project src/CodeGraph.Indexer.Host
+
+# Memory host
+dotnet run --project src/CodeGraph.Memory.Host
+
+# Metrics host
+dotnet run --project src/CodeGraph.Metrics
+
 # Jobs host / schedule runner
 dotnet run --project src/CodeGraph.Jobs
 
@@ -182,6 +202,11 @@ Default endpoints:
 - API: [http://localhost:5037](http://localhost:5037)
 - Swagger: [http://localhost:5037/swagger](http://localhost:5037/swagger)
 - MCP: [http://localhost:5037/mcp](http://localhost:5037/mcp)
+- Indexer host: [http://localhost:5042](http://localhost:5042)
+- Indexer sidecar health: [http://localhost:5042/health/sidecar](http://localhost:5042/health/sidecar)
+- Memory host: [http://localhost:5039](http://localhost:5039)
+- Memory write health: [http://localhost:5039/health/memory-write](http://localhost:5039/health/memory-write)
+- Metrics host: [http://localhost:5041](http://localhost:5041)
 - Web UI: [http://localhost:4200](http://localhost:4200)
 
 ### 3. Run with Docker Compose
@@ -205,6 +230,9 @@ By default it binds only to `127.0.0.1:8443` so it does not take over shared hos
 The compose stack includes the CodeGraph application services:
 
 - `codegraph-api`
+- `codegraph-indexer`
+- `codegraph-memory`
+- `codegraph-metrics`
 - `jobs`
 - `codegraph-web`
 
@@ -220,6 +248,11 @@ Docker HTTPS endpoints:
 - API: [https://localhost:8443/api](https://localhost:8443/api)
 - Swagger: [https://localhost:8443/swagger](https://localhost:8443/swagger)
 - MCP: [https://localhost:8443/mcp](https://localhost:8443/mcp)
+- Indexer host: [http://localhost:5042](http://localhost:5042)
+- Indexer sidecar health: [http://localhost:5042/health/sidecar](http://localhost:5042/health/sidecar)
+- Memory host: [http://localhost:5039](http://localhost:5039)
+- Memory write health: [http://localhost:5039/health/memory-write](http://localhost:5039/health/memory-write)
+- Metrics host: [http://localhost:5041](http://localhost:5041)
 
 ### Public trefry.net OAuth deployment
 
@@ -254,8 +287,8 @@ Register the SPA client in `identity.trefry.net` with redirect URI `https://code
 
 GitHub Actions workflows live under `.github/workflows`:
 
-- `ci.yml` runs on pull requests and pushes to `main`/`codex/**`. It restores, builds, and tests the .NET solution; builds and tests the Angular app; runs the browser shell smoke; and validates Docker image builds for API, jobs, and web.
-- `deploy.yml` runs on `main` and can be started manually. It publishes API, jobs, and web images to GHCR, then deploys through SSH when the repository or environment variable `CODEGRAPH_DEPLOY_ENABLED=true`.
+- `ci.yml` runs on pull requests and pushes to `main`/`codex/**`. It restores, builds, and tests the .NET solution; builds and tests the Angular app; runs the browser shell smoke; and validates Docker image builds for API, jobs, indexer, memory, metrics, and web.
+- `deploy.yml` runs on `main` and can be started manually. It publishes API, jobs, indexer, memory, metrics, and web images to GHCR, then deploys through SSH when the repository or environment variable `CODEGRAPH_DEPLOY_ENABLED=true`.
 
 Deployment uses `docker-compose.yml` plus `deploy/docker-compose.production.yml` on the host. Required GitHub environment secrets are documented in [deploy/README.md](/Users/michael/Repos/CodeGraph/deploy/README.md).
 
@@ -329,6 +362,11 @@ The authoritative REST contract is the Swagger UI at [http://localhost:5037/swag
 |---|---|
 | `POST /api/memory/claims/store` | Queue claim-centric memory writes |
 | `GET /api/memory/writes/{receiptId}` | Check durable write status |
+| `GET /api/memory/writes/diagnostics` | Inspect queued, stale, retrying, and failed memory writes |
+| `GET /api/memory/diagnostics` | Inspect claim-graph counts, orphan rows, and memory write health |
+| `POST /api/memory/cleanup/by-source` | Dry-run or delete claim-centric memory from one source and rebuild affected projections |
+| `POST /api/memory/cleanup/test-data` | Dry-run or delete memory from test/fixture/dev sources |
+| `POST /api/memory/cleanup/by-ids` | Dry-run or delete specific claim/entity IDs |
 | `GET /api/memory/search` | Search memory claims/entities |
 | `POST /api/memory/subgraph` | Fetch a bounded structured subgraph |
 | `GET /api/memory/entities/{id}/bundle` | Entity bundle with nearby claims |
@@ -338,8 +376,6 @@ The authoritative REST contract is the Swagger UI at [http://localhost:5037/swag
 | `POST /api/memory/render-summary` | Render a human-readable summary |
 | `GET /api/memory/query` | Convenience query returning structure plus summary |
 | `GET /api/memory/graph` | Paginated global memory graph snapshot |
-| `POST /api/memory/migrate-legacy` | Legacy relationship migration |
-| `POST /api/memory/migrate-observations` | Observation migration |
 
 ### Settings, operations, and wiki
 
@@ -347,13 +383,13 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 
 | Route | Purpose |
 |---|---|
-| `POST /api/settings/processRepos` | Queue one or more repositories |
-| `POST /api/settings/reIndexAll` | Re-index all known repos |
-| `POST /api/settings/link` | Run cross-repo linking |
-| `POST /api/settings/detectCommunities` | Re-run community detection |
-| `POST /api/settings/linkAndDetect` | Link then detect communities |
-| `POST /api/settings/processBatchAnalysis` | Resume/process pending batch analysis |
-| `POST /api/settings/discover` | Discover repositories from the configured source |
+| `POST /api/settings/processRepos` | Legacy route that queues durable processing for one or more repositories |
+| `POST /api/settings/reIndexAll` | Legacy route that queues durable re-indexing for all known repos |
+| `POST /api/settings/link` | Legacy route that queues durable cross-repo linking |
+| `POST /api/settings/detectCommunities` | Legacy route that queues durable community detection |
+| `POST /api/settings/linkAndDetect` | Legacy route that queues durable link-then-detect work |
+| `POST /api/settings/processBatchAnalysis` | Legacy route that queues durable batch-analysis result processing |
+| `POST /api/settings/discover` | Legacy route that queues durable repository discovery |
 | `GET /api/settings/db-health` | MariaDB schema/index health diagnostics |
 | `GET/POST/PUT/DELETE /api/settings/schedules...` | Embedded job scheduling |
 | `GET/POST/PUT/DELETE /api/settings/sections...` | Wiki section management |
@@ -366,8 +402,6 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 | `GET/POST/DELETE /api/admin/admins...` | Standalone admin-user management backed by MariaDB |
 | `GET/PUT/DELETE /api/admin/prompts...` | Admin prompt catalog and prompt override management for analysis, review, and Ask assistant system prompts |
 | `GET /api/admin/reports...` | Assistant, MCP, review, and repository-analysis usage reports |
-| `GET /api/migration/neo4j-to-mariadb/dry-run` | Ordered Neo4j-to-MariaDB migration plan with live counts for the repositories/graph slice |
-| `POST /api/migration/neo4j-to-mariadb/repositories-graph/run` | Execute the first Neo4j-to-MariaDB migration slice for repositories, graph nodes/edges, and cross-repo edges with returned checkpoints |
 | `GET/POST/PUT/DELETE /api/database-sources...` | Database source configuration with masked connection strings |
 | `POST /api/database-sources/{id}/sync` and `POST /api/database-sources/sync-all` | Queue and start durable schema-sync indexer runs |
 | `POST /api/indexer/repositories/process` | Queue durable processing for specific repositories |
@@ -442,8 +476,6 @@ Example client config:
 - `get_claim_bundle`
 - `expand_memory_frontier`
 - `render_memory_summary`
-- `migrate_legacy_memory_graph`
-- `migrate_memory_observations`
 
 The API also exposes MCP resources and can regenerate wiki-backed MCP documentation from current tool metadata.
 

@@ -2,10 +2,6 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
-      - 'codex/**'
 
 permissions:
   contents: read
@@ -100,6 +96,36 @@ jobs:
           tags: codegraph-jobs:ci
           cache-from: type=gha,scope=jobs
           cache-to: type=gha,scope=jobs,mode=max
+
+      - name: Build indexer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.indexer
+          push: false
+          tags: codegraph-indexer:ci
+          cache-from: type=gha,scope=indexer
+          cache-to: type=gha,scope=indexer,mode=max
+
+      - name: Build memory image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.memory
+          push: false
+          tags: codegraph-memory:ci
+          cache-from: type=gha,scope=memory
+          cache-to: type=gha,scope=memory,mode=max
+
+      - name: Build metrics image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.metrics
+          push: false
+          tags: codegraph-metrics:ci
+          cache-from: type=gha,scope=metrics
+          cache-to: type=gha,scope=metrics,mode=max
 
       - name: Build web image
         uses: docker/build-push-action@v6

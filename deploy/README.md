@@ -1,9 +1,12 @@
 # Production Deployment
 
-GitHub Actions publishes three images to GHCR on `main` and can deploy them to the public host:
+GitHub Actions publishes six images to GHCR on `main` and can deploy them to the public host:
 
 - `ghcr.io/<owner>/codegraph-api:<sha>`
 - `ghcr.io/<owner>/codegraph-jobs:<sha>`
+- `ghcr.io/<owner>/codegraph-indexer:<sha>`
+- `ghcr.io/<owner>/codegraph-memory:<sha>`
+- `ghcr.io/<owner>/codegraph-metrics:<sha>`
 - `ghcr.io/<owner>/codegraph-web:<sha>`
 
 The deployment job is gated by the repository/environment variable:
@@ -40,4 +43,4 @@ CodeGraph__AuthOptions__RequireHttpsMetadata=true
 CodeGraph__McpOptions__RequirePersonalAccessToken=true
 ```
 
-The production compose override in `deploy/docker-compose.production.yml` replaces local builds with GHCR images. Keep shared MariaDB/RabbitMQ settings, repository/model mounts, TLS/reverse-proxy paths, and provider API keys in `CODEGRAPH_PROD_ENV`.
+The production compose override in `deploy/docker-compose.production.yml` replaces local builds with GHCR images for API, indexer, memory, metrics, jobs, and web. Keep shared MariaDB/RabbitMQ settings, repository/model mounts, TLS/reverse-proxy paths, provider API keys, and `CodeGraph__InternalServiceAuth__HmacKey` in `CODEGRAPH_PROD_ENV`.

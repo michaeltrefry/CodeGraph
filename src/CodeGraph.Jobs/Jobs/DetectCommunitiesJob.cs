@@ -1,18 +1,18 @@
-using CodeGraph.Services;
+using CodeGraph.Indexer.Client;
 
 namespace CodeGraph.Jobs.Jobs;
 
 public class DetectCommunitiesJob(
-    IAdminService adminService) : IJobCommand<EmptyJobRequest>
+    IIndexerClient indexerClient) : IJobCommand<EmptyJobRequest>
 {
     public async Task<JobExecutionResult> ExecuteAsync(EmptyJobRequest request, CancellationToken ct = default)
     {
         var startedAtUtc = DateTime.UtcNow;
-        await adminService.DetectCommunitiesAsync(ct);
+        var response = await indexerClient.StartDetectCommunitiesAsync(IndexerClientJobUser.Username, ct);
 
         return new JobExecutionResult(
             Success: true,
-            Message: "Community detection completed.",
+            Message: response.Message ?? $"Queued community detection as run {response.RunId}.",
             StartedAtUtc: startedAtUtc,
             CompletedAtUtc: DateTime.UtcNow);
     }

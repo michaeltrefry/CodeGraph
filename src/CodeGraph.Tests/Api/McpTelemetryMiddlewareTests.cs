@@ -6,6 +6,7 @@ using CodeGraph.Services.Metrics;
 using CodeGraph.Services.Telemetry;
 using CodeGraph.Services.Usage;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
 
@@ -17,6 +18,9 @@ public class McpTelemetryMiddlewareTests
     public async Task InvokeAsync_RecordsToolInvocation_AndLeavesBodyReadable()
     {
         var publisher = new RecordingMetricsEventPublisher();
+        using var serviceProvider = new ServiceCollection()
+            .AddSingleton<IMetricsEventPublisher>(publisher)
+            .BuildServiceProvider(validateScopes: true);
         string? downstreamBody = null;
         var middleware = new McpTelemetryMiddleware(
             async context =>
@@ -25,7 +29,7 @@ public class McpTelemetryMiddlewareTests
                 downstreamBody = await reader.ReadToEndAsync();
                 context.Response.StatusCode = StatusCodes.Status200OK;
             },
-            publisher,
+            serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<McpTelemetryMiddleware>.Instance);
 
         var context = new DefaultHttpContext();

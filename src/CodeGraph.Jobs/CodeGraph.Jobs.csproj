@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
+    <ProjectReference Include="..\CodeGraph.Indexer.Client\CodeGraph.Indexer.Client.csproj" />
     <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
     <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
     <ProjectReference Include="..\CodeGraph.Data.Neo4j\CodeGraph.Data.Neo4j.csproj" />

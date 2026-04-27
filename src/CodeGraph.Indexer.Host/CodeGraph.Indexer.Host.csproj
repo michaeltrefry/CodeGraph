@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="10.*" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.*" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="7.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeGraph.Host.Shared\CodeGraph.Host.Shared.csproj" />
+    <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
+    <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
+    <ProjectReference Include="..\CodeGraph.Data.MariaDb\CodeGraph.Data.MariaDb.csproj" />
+    <ProjectReference Include="..\CodeGraph.Data.Neo4j\CodeGraph.Data.Neo4j.csproj" />
+    <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.Ansible\CodeGraph.Extractors.Ansible.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.CSharp\CodeGraph.Extractors.CSharp.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.ColdFusion\CodeGraph.Extractors.ColdFusion.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.Sql\CodeGraph.Extractors.Sql.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.Terraform\CodeGraph.Extractors.Terraform.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.TreeSitter\CodeGraph.Extractors.TreeSitter.csproj" />
+    <ProjectReference Include="..\CodeGraph.Extractors.TypeScript\CodeGraph.Extractors.TypeScript.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="bin\publish\**">
+      <PackagePath>content/</PackagePath>
+      <Pack>true</Pack>
+    </Content>
+    <None Remove="*.cache" />
+  </ItemGroup>
+</Project>

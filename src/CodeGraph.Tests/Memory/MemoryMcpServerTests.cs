@@ -17,11 +17,10 @@ public class MemoryMcpServerTests
     public async Task StoreMemoryV2_AcceptsTypedArgumentsAndReturnsStructuredAck()
     {
         var bus = new FakeMessageBus();
-        var memoryService = CreateMemoryService();
+        var memoryOperations = CreateMemoryOperations(bus);
 
         var response = await MemoryMcpServer.StoreMemoryV2(
-            memoryService,
-            bus,
+            memoryOperations,
             NullLogger<MemoryMcpServer>.Instance,
             source: "thread-123",
             claims:
@@ -50,8 +49,7 @@ public class MemoryMcpServerTests
     public async Task StoreMemoryV2_RejectsMixedTypedAndJsonInput()
     {
         var response = await MemoryMcpServer.StoreMemoryV2(
-            CreateMemoryService(),
-            new FakeMessageBus(),
+            CreateMemoryOperations(new FakeMessageBus()),
             NullLogger<MemoryMcpServer>.Instance,
             data: """{"claims":[{"subject":"michael","predicate":"prefers","valueText":"clean slate design"}]}""",
             claims:
@@ -85,7 +83,9 @@ public class MemoryMcpServerTests
             ClaimsWritten = 1,
         });
 
-        var response = await MemoryMcpServer.GetMemoryWriteStatus("memory_write_123", memoryService);
+        var response = await MemoryMcpServer.GetMemoryWriteStatus(
+            "memory_write_123",
+            new LocalMemoryOperationsService(memoryService, new FakeMessageBus()));
 
         using var document = JsonDocument.Parse(response);
         document.RootElement.GetProperty("id").GetString().ShouldBe("memory_write_123");
@@ -109,6 +109,9 @@ public class MemoryMcpServerTests
             store,
             NullLogger<MemoryService>.Instance);
     }
+
+    private static IMemoryOperationsService CreateMemoryOperations(FakeMessageBus bus, FakeMemoryGraphStore? store = null)
+        => new LocalMemoryOperationsService(CreateMemoryService(store), bus);
 
     private sealed class FakeMessageBus : IMessageBus
     {

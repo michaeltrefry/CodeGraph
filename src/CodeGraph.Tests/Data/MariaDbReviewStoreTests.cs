@@ -71,7 +71,7 @@ public class MariaDbReviewStoreTests
                 {
                     DotnetProject = "CodeGraph.Api",
                     Source = "roslyn",
-                    DiagnosticKey = "CodeGraph.Api:error:Widget.cs:5:CS1002",
+                    DiagnosticKey = $"CodeGraph.Api:error:Widget.cs:5:CS1002:{new string('x', 400)}",
                     DiagnosticId = "CS1002",
                     Severity = "error",
                     Message = "Missing semicolon",
@@ -83,6 +83,7 @@ public class MariaDbReviewStoreTests
 
             var diagnostics = await store.GetProjectDiagnosticsAsync("CodeGraph", "CodeGraph.Api");
             diagnostics.Select(d => d.Severity).ShouldBe(["error", "warning"]);
+            diagnostics.First().DiagnosticKey.Length.ShouldBeLessThanOrEqualTo(ProjectDiagnosticKey.MaxLength);
 
             await store.UpsertProjectDiagnosticsBatchAsync("CodeGraph",
             [

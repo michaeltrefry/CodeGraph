@@ -5,6 +5,8 @@ WORKDIR /src
 COPY nuget.docker.config nuget.config
 COPY CodeGraph.sln .
 COPY src/CodeGraph.Jobs/CodeGraph.Jobs.csproj src/CodeGraph.Jobs/
+COPY src/CodeGraph.Host.Shared/CodeGraph.Host.Shared.csproj src/CodeGraph.Host.Shared/
+COPY src/CodeGraph.Indexer.Client/CodeGraph.Indexer.Client.csproj src/CodeGraph.Indexer.Client/
 COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
 COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
 COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
@@ -17,7 +19,7 @@ RUN dotnet restore src/CodeGraph.Jobs/CodeGraph.Jobs.csproj
 COPY src/ src/
 RUN dotnet publish src/CodeGraph.Jobs/CodeGraph.Jobs.csproj -c Release -o /app/publish --no-restore
 
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 COPY --from=build /app/publish .

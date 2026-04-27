@@ -1,23 +1,23 @@
 using CodeGraph.Models.Requests;
-using CodeGraph.Services;
+using CodeGraph.Indexer.Client;
 
 namespace CodeGraph.Jobs.Jobs;
 
 public class DiscoverRepositoriesJob(
-    IAdminService adminService,
+    IIndexerClient indexerClient,
     ILogger<DiscoverRepositoriesJob> logger) : IJobCommand<DiscoverRequest>
 {
     public async Task<JobExecutionResult> ExecuteAsync(DiscoverRequest request, CancellationToken ct = default)
     {
         var startedAtUtc = DateTime.UtcNow;
-        var response = await adminService.DiscoverAsync(request);
+        var response = await indexerClient.StartDiscoverAsync(IndexerClientJobUser.Username, request, ct);
         logger.LogInformation(
-            "Discovered {NewProjects} new projects. Skipped {SkippedProjects} existing. Published {PublishedProjects} for processing.",
-            response.NewCount, response.Skipped, response.Published);
+            "Queued repository discovery through indexer host as run {RunId}.",
+            response.RunId);
 
         return new JobExecutionResult(
             Success: true,
-            Message: $"Discovered {response.Discovered}, matched {response.Matched}, published {response.Published}.",
+            Message: response.Message ?? $"Queued repository discovery as run {response.RunId}.",
             StartedAtUtc: startedAtUtc,
             CompletedAtUtc: DateTime.UtcNow);
     }

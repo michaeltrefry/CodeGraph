@@ -7,6 +7,7 @@ using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
+using CodeGraph.Services.Indexer;
 
 namespace CodeGraph.Api.Controllers;
 
@@ -14,7 +15,7 @@ namespace CodeGraph.Api.Controllers;
 [Authorize(Policy = CodeGraphAuthenticationDefaults.AdminPolicy)]
 [Route("api/settings")]
 public class SettingsController(
-    IAdminService adminService,
+    IIndexerOperationsService indexerOperations,
     IJobScheduleService jobScheduleService,
     IDbHealthStore dbHealthStore,
     IExclusionService exclusionService,
@@ -27,7 +28,9 @@ public class SettingsController(
     /// Publish ProcessRepository messages for one or more repos.
     /// </summary>
     [HttpPost("processRepos")]
-    public async Task<ActionResult<ProcessReposResponse>> ProcessRepositories([FromBody] ProcessRequest request)
+    public async Task<ActionResult<IndexerAcceptedResponse>> ProcessRepositories(
+        [FromBody] ProcessRequest request,
+        CancellationToken ct)
     {
         if (request.Repos is not { Count: > 0 })
             return BadRequest("At least one repo entry is required.");
@@ -37,7 +40,8 @@ public class SettingsController(
 
         try
         {
-            return Ok(await adminService.ProcessRepositoriesAsync(request));
+            var accepted = await indexerOperations.StartProcessRepositoriesAsync(GetUsername(), request, ct);
+            return Accepted(accepted.RunStatusUrl, accepted);
         }
         catch (ArgumentException ex)
         {
@@ -49,57 +53,63 @@ public class SettingsController(
     /// Re-index all known repos.
     /// </summary>
     [HttpPost("reIndexAll")]
-    public async Task<ActionResult<ProcessReposResponse>> ReIndexAllRepos()
+    public async Task<ActionResult<IndexerAcceptedResponse>> ReIndexAllRepos(CancellationToken ct)
     {
-        return Ok(await adminService.ReIndexAllAsync());
+        var accepted = await indexerOperations.StartReIndexAllAsync(GetUsername(), ct);
+        return Accepted(accepted.RunStatusUrl, accepted);
     }
 
     /// <summary>
     /// Run cross-repo linking across all indexed repositories.
     /// </summary>
     [HttpPost("link")]
-    public async Task<ActionResult> Link()
+    public async Task<ActionResult<IndexerAcceptedResponse>> Link(CancellationToken ct)
     {
-        await adminService.LinkAsync(HttpContext.RequestAborted);
-        return Ok();
+        var accepted = await indexerOperations.StartLinkAsync(GetUsername(), ct);
+        return Accepted(accepted.RunStatusUrl, accepted);
     }
 
     /// <summary>
     /// Re-run community detection (Louvain clustering) on existing cross-repo edges.
     /// </summary>
     [HttpPost("detectCommunities")]
-    public async Task<ActionResult> DetectCommunities()
+    public async Task<ActionResult<IndexerAcceptedResponse>> DetectCommunities(CancellationToken ct)
     {
-        await adminService.DetectCommunitiesAsync(HttpContext.RequestAborted);
-        return Ok();
+        var accepted = await indexerOperations.StartDetectCommunitiesAsync(GetUsername(), ct);
+        return Accepted(accepted.RunStatusUrl, accepted);
     }
 
     /// <summary>
     /// Run cross-repo linking then community detection in one operation.
     /// </summary>
     [HttpPost("linkAndDetect")]
-    public async Task<ActionResult> LinkAndDetect()
+    public async Task<ActionResult<IndexerAcceptedResponse>> LinkAndDetect(CancellationToken ct)
     {
-        await adminService.LinkAndDetectAsync(HttpContext.RequestAborted);
-        return Ok();
+        var accepted = await indexerOperations.StartLinkAndDetectAsync(GetUsername(), ct);
+        return Accepted(accepted.RunStatusUrl, accepted);
     }
 
     [HttpPost("processBatchAnalysis")]
-    public async Task<ActionResult> ProcessBatchAnalysis(string? repo = null)
+    public async Task<ActionResult<IndexerAcceptedResponse>> ProcessBatchAnalysis(
+        string? repo = null,
+        CancellationToken ct = default)
     {
-        await adminService.ProcessBatchAnalysisAsync(repo);
-        return Ok();
+        var accepted = await indexerOperations.StartProcessBatchAnalysisAsync(GetUsername(), repo, ct);
+        return Accepted(accepted.RunStatusUrl, accepted);
     }
 
     /// <summary>
     /// Discover repositories from the configured source provider, then publish a ProcessRepository message for each.
     /// </summary>
     [HttpPost("discover")]
-    public async Task<ActionResult<DiscoverResponse>> Discover([FromBody] DiscoverRequest? request = null)
+    public async Task<ActionResult<IndexerAcceptedResponse>> Discover(
+        [FromBody] DiscoverRequest? request = null,
+        CancellationToken ct = default)
     {
         try
         {
-            return Ok(await adminService.DiscoverAsync(request));
+            var accepted = await indexerOperations.StartDiscoverAsync(GetUsername(), request, ct);
+            return Accepted(accepted.RunStatusUrl, accepted);
         }
         catch (RegexParseException ex)
         {
@@ -330,4 +340,10 @@ public class SettingsController(
         await mcpDocService.RegenerateAsync();
         return Ok(new { message = "MCP documentation regenerated." });
     }
+
+    private string GetUsername() =>
+        User.FindFirst("preferred_username")?.Value
+        ?? User.FindFirst("name")?.Value
+        ?? User.Identity?.Name
+        ?? "unknown";
 }

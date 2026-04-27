@@ -4,6 +4,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -18,7 +19,8 @@ public class LocalAnalysisProvider(
     IHttpClientFactory httpClientFactory,
     IGraphStore store,
     IOptions<AnalysisOptions> optionsAccessor,
-    ILogger<LocalAnalysisProvider> logger) : IAnalysisModelProvider
+    ILogger<LocalAnalysisProvider> logger,
+    IServiceScopeFactory? scopeFactory = null) : IAnalysisModelProvider
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
     private static readonly JsonSerializerOptions SnakeOpts = CodeGraphJsonDefaults.SnakeCase;
@@ -200,6 +202,7 @@ public class LocalAnalysisProvider(
     }
 
     private async Task ProcessPendingBatchRequestAsync(
+        IGraphStore batchStore,
         StoredAnalysisBatch batch,
         AnalysisBatchRequestEntity request,
         CancellationToken ct)
@@ -216,7 +219,7 @@ public class LocalAnalysisProvider(
         {
             logger.LogError(ex, "Local batch {BatchId} request {CustomId} has invalid request payload JSON",
                 batch.ProviderBatchId, request.CustomId);
-            await store.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
+            await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
             return;
         }
@@ -225,7 +228,7 @@ public class LocalAnalysisProvider(
         {
             logger.LogError("Local batch {BatchId} request {CustomId} is missing request payload JSON",
                 batch.ProviderBatchId, request.CustomId);
-            await store.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
+            await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
             return;
         }
@@ -233,7 +236,7 @@ public class LocalAnalysisProvider(
         try
         {
             var response = await ExecuteAsync(payload.Prompt, payload.Request, ct);
-            await store.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "succeeded", nextAttempt,
+            await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "succeeded", nextAttempt,
                 responseText: response.Text, modelUsed: response.ModelUsed, completedAt: DateTime.UtcNow);
         }
         catch (RetryableAnalysisException ex) when (nextAttempt < maxAttempts)
@@ -241,14 +244,14 @@ public class LocalAnalysisProvider(
             logger.LogWarning(ex,
                 "Local batch {BatchId} request {CustomId} hit a transient failure; keeping it pending (attempt {Attempt}/{MaxAttempts})",
                 batch.ProviderBatchId, request.CustomId, nextAttempt, maxAttempts);
-            await store.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "pending", nextAttempt,
+            await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "pending", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: null);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Local batch {BatchId} request {CustomId} failed",
                 batch.ProviderBatchId, request.CustomId);
-            await store.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
+            await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
         }
     }
@@ -333,16 +336,19 @@ public class LocalAnalysisProvider(
 
     private async Task RunBatchInBackgroundAsync(string batchId)
     {
+        using var scope = scopeFactory?.CreateScope();
+        var batchStore = scope?.ServiceProvider.GetRequiredService<IGraphStore>() ?? store;
+
         while (true)
         {
-            var batch = await store.GetBatchByProviderBatchIdAsync(batchId);
+            var batch = await batchStore.GetBatchByProviderBatchIdAsync(batchId);
             if (batch is null)
                 return;
 
-            var requests = await store.GetBatchRequestsAsync(batch.Id);
+            var requests = await batchStore.GetBatchRequestsAsync(batch.Id);
             if (requests.Count == 0)
             {
-                await store.UpdateBatchStatusAsync(batch.Id, "submitted", 0, completedAt: null);
+                await batchStore.UpdateBatchStatusAsync(batch.Id, "submitted", 0, completedAt: null);
                 return;
             }
 
@@ -355,16 +361,16 @@ public class LocalAnalysisProvider(
 
             if (pendingRequest is null)
             {
-                await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
+                await batchStore.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
                 return;
             }
 
             var priorAttemptCount = pendingRequest.AttemptCount;
-            await ProcessPendingBatchRequestAsync(batch, pendingRequest, CancellationToken.None);
+            await ProcessPendingBatchRequestAsync(batchStore, batch, pendingRequest, CancellationToken.None);
 
-            requests = await store.GetBatchRequestsAsync(batch.Id);
+            requests = await batchStore.GetBatchRequestsAsync(batch.Id);
             completedCount = requests.Count(r => IsTerminalStatus(r.Status));
-            await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
+            await batchStore.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
 
             var updatedRequest = requests.FirstOrDefault(r => string.Equals(r.CustomId, pendingRequest.CustomId, StringComparison.Ordinal));
             if (updatedRequest is null)

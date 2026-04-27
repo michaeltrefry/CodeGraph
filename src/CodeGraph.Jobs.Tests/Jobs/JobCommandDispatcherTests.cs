@@ -52,20 +52,33 @@ public class JobCommandDispatcherTests
         cleanupService.Calls.ShouldBe(1);
     }
 
-    private static JobCommandDispatcher CreateDispatcher(
-        RecordingAssistantRetentionCleanupService? cleanupService = null)
+    [Fact]
+    public async Task ExecuteAsync_DispatchesDetectCommunitiesThroughIndexerClient()
     {
-        var adminService = new RecordingAdminService
+        var indexerClient = new RecordingIndexerClient();
+        var dispatcher = CreateDispatcher(indexerClient: indexerClient);
+
+        var result = await dispatcher.ExecuteAsync(JobTypes.DetectCommunities, "{}");
+
+        result.Success.ShouldBeTrue();
+        result.Message.ShouldContain("Queued indexer run");
+        indexerClient.DetectCommunitiesCalls.ShouldBe(1);
+    }
+
+    private static JobCommandDispatcher CreateDispatcher(
+        RecordingAssistantRetentionCleanupService? cleanupService = null,
+        RecordingIndexerClient? indexerClient = null)
+    {
+        indexerClient ??= new RecordingIndexerClient
         {
-            NextDiscoverResponse = new DiscoverResponse(3, 2, 1, 1, 0, ["Orders.Api"])
+            NextAcceptedResponse = new IndexerAcceptedResponse("queued", "Queued discovery; published work.", 100, "/api/indexer/runs/100")
         };
-        var batchService = new RecordingBatchAnalysisService();
         return new JobCommandDispatcher(
-            new DiscoverRepositoriesJob(adminService, NullLogger<DiscoverRepositoriesJob>.Instance),
-            new ReIndexAllRepositoriesJob(adminService),
-            new ProcessBatchAnalysisJob(batchService),
-            new LinkAndDetectJob(adminService),
-            new DetectCommunitiesJob(adminService),
+            new DiscoverRepositoriesJob(indexerClient, NullLogger<DiscoverRepositoriesJob>.Instance),
+            new ReIndexAllRepositoriesJob(indexerClient),
+            new ProcessBatchAnalysisJob(indexerClient),
+            new LinkAndDetectJob(indexerClient),
+            new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(new RecordingMcpDocService()),
             new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()));
     }

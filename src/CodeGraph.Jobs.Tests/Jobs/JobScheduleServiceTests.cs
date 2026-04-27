@@ -50,16 +50,13 @@ public class JobScheduleServiceTests
 
     private static JobCommandDispatcher CreateDispatcher()
     {
-        var adminService = new RecordingAdminService
-        {
-            NextDiscoverResponse = new(0, 0, 0, 0, 0, [])
-        };
+        var indexerClient = new RecordingIndexerClient();
         return new JobCommandDispatcher(
-            new DiscoverRepositoriesJob(adminService, NullLogger<DiscoverRepositoriesJob>.Instance),
-            new ReIndexAllRepositoriesJob(adminService),
-            new ProcessBatchAnalysisJob(new RecordingBatchAnalysisService()),
-            new LinkAndDetectJob(adminService),
-            new DetectCommunitiesJob(adminService),
+            new DiscoverRepositoriesJob(indexerClient, NullLogger<DiscoverRepositoriesJob>.Instance),
+            new ReIndexAllRepositoriesJob(indexerClient),
+            new ProcessBatchAnalysisJob(indexerClient),
+            new LinkAndDetectJob(indexerClient),
+            new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(new RecordingMcpDocService()),
             new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()));
     }

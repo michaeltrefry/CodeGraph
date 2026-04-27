@@ -1,18 +1,18 @@
-using CodeGraph.Services;
+using CodeGraph.Indexer.Client;
 
 namespace CodeGraph.Jobs.Jobs;
 
 public class LinkAndDetectJob(
-    IAdminService adminService) : IJobCommand<EmptyJobRequest>
+    IIndexerClient indexerClient) : IJobCommand<EmptyJobRequest>
 {
     public async Task<JobExecutionResult> ExecuteAsync(EmptyJobRequest request, CancellationToken ct = default)
     {
         var startedAtUtc = DateTime.UtcNow;
-        await adminService.LinkAndDetectAsync(ct);
+        var response = await indexerClient.StartLinkAndDetectAsync(IndexerClientJobUser.Username, ct);
 
         return new JobExecutionResult(
             Success: true,
-            Message: "Cross-repo linking and community detection completed.",
+            Message: response.Message ?? $"Queued linking and community detection as run {response.RunId}.",
             StartedAtUtc: startedAtUtc,
             CompletedAtUtc: DateTime.UtcNow);
     }

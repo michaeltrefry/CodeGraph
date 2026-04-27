@@ -1,4 +1,5 @@
-using CodeGraph.Data;
+using CodeGraph.Models.Messages;
+using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Telemetry;
 using CodeGraph.Services.Usage;
 using Microsoft.Extensions.Logging;
@@ -6,23 +7,23 @@ using Microsoft.Extensions.Logging;
 namespace CodeGraph.Services.Metrics;
 
 public class MetricsEventPublisher(
-    IMetricsEventStore store,
+    IMessageBus messageBus,
     ILogger<MetricsEventPublisher> logger) : IMetricsEventPublisher
 {
     public async Task<LlmUsageRecord> PublishLlmUsageAsync(LlmUsageRecord usage, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
 
-        var normalized = Normalize(usage);
+        var normalized = MetricsEventNormalizer.Normalize(usage);
         logger.LogInformation(
-            "Recording LLM usage for {Path} via {Provider}/{Model} user {Username} tokens {TotalTokens}",
+            "Publishing LLM usage for {Path} via {Provider}/{Model} user {Username} tokens {TotalTokens}",
             normalized.Path,
             normalized.Provider,
             normalized.Model,
             normalized.Username,
             normalized.TotalTokens);
 
-        await store.CreateLlmUsageAsync(ToEntity(normalized));
+        await messageBus.PublishAsync(ToMessage(normalized), ct);
         return normalized;
     }
 
@@ -30,11 +31,13 @@ public class MetricsEventPublisher(
         IEnumerable<LlmUsageRecord> usage,
         CancellationToken ct = default)
     {
-        var normalized = usage.Select(Normalize).ToList();
+        var normalized = usage.Select(MetricsEventNormalizer.Normalize).ToList();
         foreach (var record in normalized)
             ct.ThrowIfCancellationRequested();
 
-        await store.CreateLlmUsageBatchAsync(normalized.Select(ToEntity));
+        foreach (var record in normalized)
+            await messageBus.PublishAsync(ToMessage(record), ct);
+
         return normalized;
     }
 
@@ -44,21 +47,21 @@ public class MetricsEventPublisher(
     {
         ct.ThrowIfCancellationRequested();
 
-        var normalized = Normalize(invocation);
+        var normalized = MetricsEventNormalizer.Normalize(invocation);
         logger.LogInformation(
-            "Recording MCP tool invocation for {ToolName} success {Success} user {Username} durationMs {DurationMs}",
+            "Publishing MCP tool invocation for {ToolName} success {Success} user {Username} durationMs {DurationMs}",
             normalized.ToolName,
             normalized.Success,
             normalized.Username ?? "anonymous",
             normalized.DurationMs);
 
-        await store.CreateMcpToolInvocationAsync(ToEntity(normalized));
+        await messageBus.PublishAsync(ToMessage(normalized), ct);
         return normalized;
     }
 
-    private static LlmUsageEntity ToEntity(LlmUsageRecord usage) => new()
+    private static LlmUsageRecorded ToMessage(LlmUsageRecord usage) => new()
     {
-        EventId = string.IsNullOrWhiteSpace(usage.EventId) ? Guid.NewGuid().ToString("N") : usage.EventId.Trim(),
+        EventId = usage.EventId ?? Guid.NewGuid().ToString("N"),
         Username = usage.Username,
         Path = usage.Path,
         Provider = usage.Provider,
@@ -69,9 +72,9 @@ public class MetricsEventPublisher(
         CreatedAt = usage.CreatedAt ?? DateTime.UtcNow
     };
 
-    private static McpToolInvocationEntity ToEntity(McpToolInvocationRecord invocation) => new()
+    private static McpToolInvocationRecorded ToMessage(McpToolInvocationRecord invocation) => new()
     {
-        EventId = string.IsNullOrWhiteSpace(invocation.EventId) ? Guid.NewGuid().ToString("N") : invocation.EventId.Trim(),
+        EventId = invocation.EventId ?? Guid.NewGuid().ToString("N"),
         Username = invocation.Username,
         TokenId = invocation.TokenId,
         ToolName = invocation.ToolName,
@@ -80,46 +83,4 @@ public class MetricsEventPublisher(
         ErrorCode = invocation.ErrorCode,
         CreatedAt = invocation.CreatedAt ?? DateTime.UtcNow
     };
-
-    private static LlmUsageRecord Normalize(LlmUsageRecord usage)
-    {
-        var inputTokens = Math.Max(0, usage.InputTokens);
-        var outputTokens = Math.Max(0, usage.OutputTokens);
-        var totalTokens = usage.TotalTokens > 0 ? usage.TotalTokens : inputTokens + outputTokens;
-
-        return usage with
-        {
-            Username = string.IsNullOrWhiteSpace(usage.Username) ? "system" : usage.Username.Trim().ToLowerInvariant(),
-            Path = string.IsNullOrWhiteSpace(usage.Path) ? "Unknown" : usage.Path.Trim(),
-            Provider = string.IsNullOrWhiteSpace(usage.Provider) ? "unknown" : usage.Provider.Trim(),
-            Model = string.IsNullOrWhiteSpace(usage.Model) ? "unknown" : usage.Model.Trim(),
-            InputTokens = inputTokens,
-            OutputTokens = outputTokens,
-            TotalTokens = Math.Max(0, totalTokens),
-            CreatedAt = usage.CreatedAt ?? DateTime.UtcNow
-        };
-    }
-
-    private static McpToolInvocationRecord Normalize(McpToolInvocationRecord invocation)
-    {
-        return invocation with
-        {
-            Username = string.IsNullOrWhiteSpace(invocation.Username)
-                ? null
-                : invocation.Username.Trim().ToLowerInvariant(),
-            ToolName = string.IsNullOrWhiteSpace(invocation.ToolName) ? "unknown_tool" : invocation.ToolName.Trim(),
-            DurationMs = Math.Max(0, invocation.DurationMs),
-            ErrorCode = NormalizeErrorCode(invocation.ErrorCode),
-            CreatedAt = invocation.CreatedAt ?? DateTime.UtcNow
-        };
-    }
-
-    private static string? NormalizeErrorCode(string? errorCode)
-    {
-        if (string.IsNullOrWhiteSpace(errorCode))
-            return null;
-
-        var normalized = errorCode.Trim();
-        return normalized.Length <= 255 ? normalized : normalized[..255];
-    }
 }

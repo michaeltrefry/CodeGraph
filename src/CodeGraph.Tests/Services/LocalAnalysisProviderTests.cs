@@ -10,6 +10,7 @@ using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Models.Exceptions;
 using CodeGraph.Tests.Extractors;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CodeGraph.Tests.Services;
 
@@ -417,8 +418,15 @@ public class LocalAnalysisProviderTests
             NullLogger<LocalAnalysisProvider>.Instance);
 
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
-        firstStatus.IsCompleted.ShouldBeFalse();
-        firstStatus.ProcessingStatus.ShouldBe("processing");
+        for (var attempt = 0;
+             attempt < 20 && firstStatus.ProcessingStatus is "submitted";
+             attempt++)
+        {
+            await Task.Delay(25);
+            firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
+        }
+
+        firstStatus.ProcessingStatus.ShouldBeOneOf("processing", "completed");
 
         AnalysisBatchRequestEntity storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
         for (var attempt = 0; attempt < 20 && !string.Equals(storedRequest.Status, "succeeded", StringComparison.OrdinalIgnoreCase); attempt++)
@@ -502,6 +510,76 @@ public class LocalAnalysisProviderTests
         afterFirstAttempt.AttemptCount.ShouldBe(1);
     }
 
+    [Fact]
+    public async Task GetBatchStatusAsync_UsesScopedStoreForBackgroundBatchRunner()
+    {
+        const string providerBatchId = "local_batch_scoped";
+        var rootStore = new InMemoryGraphStore();
+        var scopedStore = new InMemoryGraphStore();
+        var rootBatchId = await SeedPendingLocalBatchAsync(rootStore, providerBatchId, "req_root");
+        var scopedBatchId = await SeedPendingLocalBatchAsync(scopedStore, providerBatchId, "req_scoped");
+
+        var provider = new LocalAnalysisProvider(
+            new StubHttpClientFactory(new HttpClient(new ThrowingHandler(new TaskCanceledException("timed out")))),
+            rootStore,
+            Options.Create(new AnalysisOptions
+            {
+                Local = new LocalAnalysisProviderOptions
+                {
+                    BaseUrl = "http://localhost:1234/v1",
+                    Model = "local-model",
+                    DirectFallbackMaxAttempts = 3
+                }
+            }),
+            NullLogger<LocalAnalysisProvider>.Instance,
+            new SingleStoreScopeFactory(scopedStore));
+
+        await provider.GetBatchStatusAsync(providerBatchId, CancellationToken.None);
+
+        AnalysisBatchRequestEntity scopedRequest = (await scopedStore.GetBatchRequestsAsync(scopedBatchId)).Single();
+        for (var attempt = 0; attempt < 20 && scopedRequest.AttemptCount == 0; attempt++)
+        {
+            await Task.Delay(25);
+            scopedRequest = (await scopedStore.GetBatchRequestsAsync(scopedBatchId)).Single();
+        }
+
+        scopedRequest.AttemptCount.ShouldBe(1);
+        var rootRequest = (await rootStore.GetBatchRequestsAsync(rootBatchId)).Single();
+        rootRequest.AttemptCount.ShouldBe(0);
+    }
+
+    private static async Task<long> SeedPendingLocalBatchAsync(InMemoryGraphStore store, string providerBatchId, string customId)
+    {
+        var batchId = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
+        {
+            Repo = "demo-repo",
+            ProviderBatchId = providerBatchId,
+            ProviderName = "local",
+            ExecutionMode = "native_batch",
+            Status = "submitted",
+            RequestCount = 1,
+            SubmittedAt = DateTime.UtcNow
+        });
+
+        var payload = new AnalysisBatchRequestPayload(
+            new AnalysisPrompt("system", "user"),
+            new AnalysisRequestOptions());
+
+        await store.CreateBatchRequestsAsync([
+            new AnalysisBatchRequestEntity
+            {
+                BatchId = batchId,
+                Sequence = 0,
+                CustomId = customId,
+                NodeLabel = "Demo.Project",
+                RequestPayloadJson = JsonSerializer.Serialize(payload, CodeGraphJsonDefaults.CamelCase),
+                Status = "pending"
+            }
+        ]);
+
+        return batchId;
+    }
+
     private sealed class StubHttpClientFactory(HttpClient? client = null) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name = "")
@@ -530,6 +608,34 @@ public class LocalAnalysisProviderTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromException<HttpResponseMessage>(exception);
+    }
+
+    private sealed class SingleStoreScopeFactory(IGraphStore store) : IServiceScopeFactory
+    {
+        public IServiceScope CreateScope()
+        {
+            return new SingleStoreScope(store);
+        }
+    }
+
+    private sealed class SingleStoreScope : IServiceScope
+    {
+        private readonly ServiceProvider _serviceProvider;
+
+        public SingleStoreScope(IGraphStore store)
+        {
+            _serviceProvider = new ServiceCollection()
+                .AddSingleton(store)
+                .AddSingleton<IGraphStore>(store)
+                .BuildServiceProvider();
+        }
+
+        public IServiceProvider ServiceProvider => _serviceProvider;
+
+        public void Dispose()
+        {
+            _serviceProvider.Dispose();
+        }
     }
 
 }

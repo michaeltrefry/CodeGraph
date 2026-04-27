@@ -6,6 +6,65 @@ public interface IMemoryGraphStore
 {
     Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt);
     Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId);
+    Task<MemoryWriteDiagnosticsResult> GetWriteDiagnosticsAsync(
+        int staleAfterMinutes = 15,
+        int sampleLimit = 10)
+    {
+        return Task.FromResult(new MemoryWriteDiagnosticsResult
+        {
+            StaleAfterMinutes = staleAfterMinutes,
+        });
+    }
+    Task<MemoryDiagnosticsResult> GetDiagnosticsAsync(int staleAfterMinutes = 15, int sampleLimit = 10)
+    {
+        var writeDiagnostics = new MemoryWriteDiagnosticsResult
+        {
+            StaleAfterMinutes = staleAfterMinutes,
+        };
+
+        return Task.FromResult(new MemoryDiagnosticsResult
+        {
+            EmbeddingAvailable = false,
+            RetrievalDegraded = true,
+            WriteDegraded = false,
+            HealthSignals = ["memory_diagnostics_unavailable"],
+            WriteDiagnostics = writeDiagnostics,
+        });
+    }
+    Task<MemoryCleanupResult> DeleteMemoryBySourceAsync(string source, bool dryRun, CancellationToken ct = default)
+    {
+        return Task.FromResult(new MemoryCleanupResult
+        {
+            Scope = "source",
+            DryRun = dryRun,
+            NoOp = true,
+            Sources = string.IsNullOrWhiteSpace(source) ? [] : [source.Trim()],
+        });
+    }
+    Task<MemoryCleanupResult> DeleteMemoryTestDataAsync(bool dryRun, CancellationToken ct = default)
+    {
+        return Task.FromResult(new MemoryCleanupResult
+        {
+            Scope = "test_data",
+            DryRun = dryRun,
+            NoOp = true,
+        });
+    }
+    Task<MemoryCleanupResult> DeleteMemoryByIdsAsync(
+        IReadOnlyList<string> claimIds,
+        IReadOnlyList<string> entityIds,
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        return Task.FromResult(new MemoryCleanupResult
+        {
+            Scope = "explicit_items",
+            DryRun = dryRun,
+            NoOp = true,
+            ClaimIds = claimIds,
+            EntityIds = entityIds,
+        });
+    }
     Task UpdateWriteReceiptStatusAsync(string receiptId, MemoryWriteReceiptStatus status, StoreMemoryResult? result = null,
         string? errorMessage = null);
     Task UpsertEntitiesBatchAsync(IReadOnlyList<MemoryEntity> entities);

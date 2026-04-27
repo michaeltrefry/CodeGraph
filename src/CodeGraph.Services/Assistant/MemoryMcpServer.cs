@@ -5,7 +5,6 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using CodeGraph.Models.Memory;
 using CodeGraph.Services.Memory;
-using CodeGraph.Services.Messaging;
 
 namespace CodeGraph.Services.Assistant;
 
@@ -29,8 +28,7 @@ public class MemoryMcpServer
         Evidence format: { "claimId": "optional-claim-id", "evidenceType": "conversation", "sourceRef": "thread-123", "snippet": "..." }
         """)]
     public static async Task<string> StoreMemoryV2(
-        MemoryService memoryService,
-        IMessageBus messageBus,
+        IMemoryOperationsService memoryOperations,
         ILogger<MemoryMcpServer> logger,
         [Description("Source identifier (e.g. 'claude_conversation', 'document')")] string source = "mcp",
         [Description("Legacy JSON object with 'entities', 'claims', and optional 'evidence' arrays")] string? data = null,
@@ -51,11 +49,10 @@ public class MemoryMcpServer
         if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
             return SerializeError("empty_input", "No entities, claims, or evidence provided.");
 
-        var ack = await memoryService.QueueClaimsAsync(
+        var ack = await memoryOperations.QueueClaimsAsync(
             extraction,
             source,
-            hasData ? "json" : "typed",
-            messageBus);
+            hasData ? "json" : "typed");
 
         return JsonSerializer.Serialize(ack, JsonOptions);
     }
@@ -64,9 +61,9 @@ public class MemoryMcpServer
     [Description("Get the durable status of a queued memory write by receipt id.")]
     public static async Task<string> GetMemoryWriteStatus(
         [Description("Memory write receipt id")] string receiptId,
-        MemoryService memoryService)
+        IMemoryOperationsService memoryOperations)
     {
-        var receipt = await memoryService.GetWriteReceiptAsync(receiptId);
+        var receipt = await memoryOperations.GetWriteReceiptAsync(receiptId);
         return receipt == null
             ? SerializeError("not_found", $"Memory write receipt '{receiptId}' was not found.")
             : JsonSerializer.Serialize(receipt, JsonOptions);
@@ -76,14 +73,14 @@ public class MemoryMcpServer
     [Description("Search the memory graph for information about a topic. Returns structured JSON with entities, conflicts, the bounded subgraph, and a rendered summary.")]
     public static async Task<string> QueryMemory(
         [Description("The topic to search for")] string topic,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("How many relationship hops to traverse (default 2)")] int hops = 2,
         [Description("Maximum number of entities to return (default 20)")] int maxNodes = 20)
     {
         hops = Math.Clamp(hops, 1, 5);
         maxNodes = Math.Clamp(maxNodes, 1, 50);
 
-        var result = await memoryService.QueryAsync(topic, hops, maxNodes);
+        var result = await memoryOperations.QueryAsync(topic, hops, maxNodes);
         return JsonSerializer.Serialize(result, JsonOptions);
     }
 
@@ -91,11 +88,11 @@ public class MemoryMcpServer
     [Description("Search claim-centric memory and return top entity and claim seeds as structured JSON.")]
     public static async Task<string> SearchMemory(
         [Description("The memory query text")] string query,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("Maximum entity seeds to return")] int entityLimit = 5,
         [Description("Maximum claim seeds to return")] int claimLimit = 5)
     {
-        var result = await memoryService.SearchMemoryAsync(
+        var result = await memoryOperations.SearchMemoryAsync(
             query,
             Math.Clamp(entityLimit, 1, 25),
             Math.Clamp(claimLimit, 1, 25));
@@ -109,7 +106,7 @@ public class MemoryMcpServer
         [Description("Optional query text used to discover seeds")] string? query,
         [Description("Comma-separated seed entity ids")] string? seedEntityIds,
         [Description("Comma-separated seed claim ids")] string? seedClaimIds,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("Maximum traversal hops")] int maxHops = 2,
         [Description("Maximum entities to return")] int maxReturnedEntities = 20,
         [Description("Maximum claims to return")] int maxReturnedClaims = 40,
@@ -128,7 +125,7 @@ public class MemoryMcpServer
             IncludeConflicts = includeConflicts,
         };
 
-        var result = await memoryService.GetMemorySubgraphAsync(request);
+        var result = await memoryOperations.GetMemorySubgraphAsync(request);
         return JsonSerializer.Serialize(result, JsonOptions);
     }
 
@@ -136,12 +133,12 @@ public class MemoryMcpServer
     [Description("Inspect one memory entity deeply, including claims, neighbors, and observations.")]
     public static async Task<string> GetEntityBundle(
         [Description("The entity id")] string entityId,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("Include superseded claims")] bool includeSuperseded = false,
         [Description("Include conflicted claims")] bool includeConflicts = true,
         [Description("Maximum neighbor edges to return")] int neighborLimit = 20)
     {
-        var bundle = await memoryService.GetEntityBundleAsync(
+        var bundle = await memoryOperations.GetEntityBundleAsync(
             entityId,
             includeSuperseded,
             includeConflicts,
@@ -156,12 +153,12 @@ public class MemoryMcpServer
     [Description("Inspect one memory claim deeply, including fact-group peers, supersession, conflicts, and evidence.")]
     public static async Task<string> GetClaimBundle(
         [Description("The claim id")] string claimId,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("Include supersession chain")] bool includeSupersessionChain = true,
         [Description("Include conflicts")] bool includeConflicts = true,
         [Description("Include evidence")] bool includeEvidence = true)
     {
-        var bundle = await memoryService.GetClaimBundleAsync(
+        var bundle = await memoryOperations.GetClaimBundleAsync(
             claimId,
             includeSupersessionChain,
             includeConflicts,
@@ -177,12 +174,12 @@ public class MemoryMcpServer
     public static async Task<string> ExpandMemoryFrontier(
         [Description("Comma-separated frontier entity ids")] string? frontierEntityIds,
         [Description("Comma-separated frontier claim ids")] string? frontierClaimIds,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("Maximum additional hops to explore")] int maxAdditionalHops = 2,
         [Description("Maximum number of newly discovered nodes to return")] int frontierLimit = 20,
         [Description("Minimum score threshold for newly discovered nodes")] double minScore = 0)
     {
-        var result = await memoryService.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest
+        var result = await memoryOperations.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest
         {
             FrontierEntityIds = ParseCsv(frontierEntityIds),
             FrontierClaimIds = ParseCsv(frontierClaimIds),
@@ -199,10 +196,10 @@ public class MemoryMcpServer
     public static async Task<string> RenderMemorySummary(
         [Description("Comma-separated entity ids")] string? entityIds,
         [Description("Comma-separated claim ids")] string? claimIds,
-        MemoryService memoryService,
+        IMemoryOperationsService memoryOperations,
         [Description("Rendering style: markdown or plain")] string style = "markdown")
     {
-        var result = await memoryService.RenderMemorySummaryAsync(new MemorySummaryRenderRequest
+        var result = await memoryOperations.RenderMemorySummaryAsync(new MemorySummaryRenderRequest
         {
             EntityIds = ParseCsv(entityIds),
             ClaimIds = ParseCsv(claimIds),
@@ -210,22 +207,6 @@ public class MemoryMcpServer
         });
 
         return result.Text;
-    }
-
-    [McpServerTool(Name = "migrate_legacy_memory_graph", Title = "Migrate Legacy Memory Graph", ReadOnly = false, Destructive = false)]
-    [Description("Convert legacy RELATES_TO memory relationships into claim-centric memory records.")]
-    public static async Task<string> MigrateLegacyMemoryGraph(MemoryService memoryService)
-    {
-        var result = await memoryService.MigrateLegacyRelationshipsAsync();
-        return JsonSerializer.Serialize(result, JsonOptions);
-    }
-
-    [McpServerTool(Name = "migrate_memory_observations", Title = "Migrate Memory Observations", ReadOnly = false, Destructive = false)]
-    [Description("Convert memory observations to claim-native ABOUT links while preserving entity links.")]
-    public static async Task<string> MigrateMemoryObservations(MemoryService memoryService)
-    {
-        var result = await memoryService.MigrateObservationsAsync();
-        return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     private static List<string> ParseCsv(string? csv) =>

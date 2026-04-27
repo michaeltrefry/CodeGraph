@@ -11,11 +11,11 @@ public class DiscoverRepositoriesJobTests
     [Fact]
     public async Task SendsDiscoverRequestWithSuppliedValues()
     {
-        var adminService = new RecordingAdminService
+        var indexerClient = new RecordingIndexerClient
         {
-            NextDiscoverResponse = new DiscoverResponse(10, 8, 6, 3, 2, ["Orders.Api"])
+            NextAcceptedResponse = new IndexerAcceptedResponse("queued", "Queued repository discovery.", 123, "/api/indexer/runs/123")
         };
-        var job = new DiscoverRepositoriesJob(adminService, NullLogger<DiscoverRepositoriesJob>.Instance);
+        var job = new DiscoverRepositoriesJob(indexerClient, NullLogger<DiscoverRepositoriesJob>.Instance);
         var request = new DiscoverRequest
         {
             ShouldIndex = false,
@@ -28,14 +28,14 @@ public class DiscoverRepositoriesJobTests
 
         var result = await job.ExecuteAsync(request);
 
-        adminService.LastDiscoverRequest.ShouldNotBeNull();
-        adminService.LastDiscoverRequest.ShouldIndex.ShouldBeFalse();
-        adminService.LastDiscoverRequest.ShouldAnalyze.ShouldBeTrue();
-        adminService.LastDiscoverRequest.SkipIfUpToDate.ShouldBeFalse();
-        adminService.LastDiscoverRequest.IncludeAllSource.ShouldBeTrue();
-        adminService.LastDiscoverRequest.NamePattern.ShouldBe("orders");
-        adminService.LastDiscoverRequest.Limit.ShouldBe(25);
+        indexerClient.LastDiscoverRequest.ShouldNotBeNull();
+        indexerClient.LastDiscoverRequest.ShouldIndex.ShouldBeFalse();
+        indexerClient.LastDiscoverRequest.ShouldAnalyze.ShouldBeTrue();
+        indexerClient.LastDiscoverRequest.SkipIfUpToDate.ShouldBeFalse();
+        indexerClient.LastDiscoverRequest.IncludeAllSource.ShouldBeTrue();
+        indexerClient.LastDiscoverRequest.NamePattern.ShouldBe("orders");
+        indexerClient.LastDiscoverRequest.Limit.ShouldBe(25);
         result.Success.ShouldBeTrue();
-        result.Message.ShouldContain("published 6");
+        result.Message.ShouldContain("Queued repository discovery");
     }
 }

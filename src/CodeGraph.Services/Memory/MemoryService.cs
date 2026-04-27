@@ -84,6 +84,42 @@ public class MemoryService
         return await _store.GetWriteReceiptAsync(receiptId);
     }
 
+    public async Task<MemoryWriteDiagnosticsResult> GetWriteDiagnosticsAsync(
+        int staleAfterMinutes = 15,
+        int sampleLimit = 10)
+    {
+        return await _store.GetWriteDiagnosticsAsync(staleAfterMinutes, sampleLimit);
+    }
+
+    public async Task<MemoryDiagnosticsResult> GetDiagnosticsAsync(int staleAfterMinutes = 15, int sampleLimit = 10)
+    {
+        return await _store.GetDiagnosticsAsync(staleAfterMinutes, sampleLimit);
+    }
+
+    public async Task<MemoryCleanupResult> DeleteMemoryBySourceAsync(
+        string source,
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        return await _store.DeleteMemoryBySourceAsync(source, dryRun, ct);
+    }
+
+    public async Task<MemoryCleanupResult> DeleteMemoryTestDataAsync(
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        return await _store.DeleteMemoryTestDataAsync(dryRun, ct);
+    }
+
+    public async Task<MemoryCleanupResult> DeleteMemoryByIdsAsync(
+        IReadOnlyList<string> claimIds,
+        IReadOnlyList<string> entityIds,
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        return await _store.DeleteMemoryByIdsAsync(claimIds, entityIds, dryRun, ct);
+    }
+
     public async Task MarkWriteReceiptProcessingAsync(string receiptId)
     {
         await _store.UpdateWriteReceiptStatusAsync(receiptId, MemoryWriteReceiptStatus.Processing);
