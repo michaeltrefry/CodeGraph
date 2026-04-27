@@ -142,6 +142,7 @@ jobs:
           CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
           CODEGRAPH_DEPLOY_PATH: ${{ vars.CODEGRAPH_DEPLOY_PATH || secrets.CODEGRAPH_DEPLOY_PATH }}
           CODEGRAPH_DEPLOY_SSH_KEY: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY }}
+          CODEGRAPH_DEPLOY_SSH_KEY_B64: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY_B64 }}
           CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
           CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY: ${{ secrets.CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY }}
           CODEGRAPH__RABBITMQOPTIONS__PASSWORD: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__PASSWORD }}
@@ -154,7 +155,6 @@ jobs:
           for name in \
             CODEGRAPH_DEPLOY_HOST \
             CODEGRAPH_DEPLOY_PATH \
-            CODEGRAPH_DEPLOY_SSH_KEY \
             CODEGRAPH_DEPLOY_USER \
             CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY \
             CODEGRAPH__RABBITMQOPTIONS__PASSWORD \
@@ -167,6 +167,12 @@ jobs:
               missing=1
             fi
           done
+
+          if [ -z "$CODEGRAPH_DEPLOY_SSH_KEY" ] && [ -z "$CODEGRAPH_DEPLOY_SSH_KEY_B64" ]; then
+            echo "::error::CODEGRAPH_DEPLOY_SSH_KEY or CODEGRAPH_DEPLOY_SSH_KEY_B64 is required for production deployment"
+            missing=1
+          fi
+
           exit "$missing"
 
       - name: Create production environment file
@@ -338,11 +344,53 @@ jobs:
         env:
           CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
           CODEGRAPH_DEPLOY_SSH_KEY: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY }}
+          CODEGRAPH_DEPLOY_SSH_KEY_B64: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY_B64 }}
+          CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE }}
         run: |
+          set -eu
           mkdir -p ~/.ssh
-          printf '%s\n' "$CODEGRAPH_DEPLOY_SSH_KEY" > ~/.ssh/codegraph_deploy
+          chmod 700 ~/.ssh
+          if [ -n "$CODEGRAPH_DEPLOY_SSH_KEY" ]; then
+            printf '%s\n' "$CODEGRAPH_DEPLOY_SSH_KEY" > ~/.ssh/codegraph_deploy
+          else
+            echo "$CODEGRAPH_DEPLOY_SSH_KEY_B64" | base64 -d > ~/.ssh/codegraph_deploy
+          fi
           chmod 600 ~/.ssh/codegraph_deploy
+
+          eval "$(ssh-agent -s)" >/dev/null
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+          if [ -n "$CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE" ]; then
+            export DISPLAY=":0"
+            askpass="$(mktemp)"
+            cat > "$askpass" <<'EOF'
+          #!/bin/sh
+          printf '%s' "$CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE"
+          EOF
+            chmod 700 "$askpass"
+            export SSH_ASKPASS="$askpass"
+            setsid -w ssh-add ~/.ssh/codegraph_deploy < /dev/null
+            rm -f "$askpass"
+          else
+            ssh-add ~/.ssh/codegraph_deploy
+          fi
+
           ssh-keyscan -H "$CODEGRAPH_DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verify SSH access
+        if: steps.deploy-gate.outputs.enabled == 'true'
+        env:
+          CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
+          CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
+        run: |
+          set -eu
+          echo "Deploy target: ${CODEGRAPH_DEPLOY_USER}@${CODEGRAPH_DEPLOY_HOST}"
+          ssh-add -l
+          ssh -o BatchMode=yes -o PasswordAuthentication=no -o PubkeyAuthentication=yes \
+            -o StrictHostKeyChecking=yes \
+            "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" \
+            'echo "ssh ok: $(hostname) $(uname -srm)"'
 
       - name: Sync deployment files
         if: steps.deploy-gate.outputs.enabled == 'true'
@@ -351,9 +399,10 @@ jobs:
           CODEGRAPH_DEPLOY_PATH: ${{ vars.CODEGRAPH_DEPLOY_PATH || secrets.CODEGRAPH_DEPLOY_PATH }}
           CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
         run: |
-          ssh -i ~/.ssh/codegraph_deploy "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH'"
-          scp -i ~/.ssh/codegraph_deploy docker-compose.yml deploy/docker-compose.production.yml "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/"
-          scp -i ~/.ssh/codegraph_deploy .env.production "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/.env"
+          set -eu
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes docker-compose.yml deploy/docker-compose.production.yml "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes .env.production "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/.env"
 
       - name: Deploy over SSH
         if: steps.deploy-gate.outputs.enabled == 'true'
@@ -366,7 +415,8 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ssh -i ~/.ssh/codegraph_deploy "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" \
+          set -eu
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" \
             "cd '$CODEGRAPH_DEPLOY_PATH' && \
              echo '$GHCR_TOKEN' | docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin && \
              IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' docker compose -f docker-compose.yml -f docker-compose.production.yml pull && \
