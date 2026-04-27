@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
+import { AuthService } from './auth.service';
 import {
   ProjectListResponse,
   ProjectDetailResponse,
@@ -58,6 +59,7 @@ const API = environment.apiUrl;
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private http = inject(HttpClient);
+  private auth = inject(AuthService);
 
   // Projects
   listProjects(search?: string, group?: string, page = 1, pageSize = 25): Observable<ProjectListResponse> {
@@ -439,7 +441,7 @@ export class ApiService {
 
     const response = await fetch(`${API}/ask`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.fetchHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
       signal
     });
@@ -486,7 +488,7 @@ export class ApiService {
       `${API}/projects/${encodeURIComponent(repo)}/reviews/${reviewRunId}/stream`,
       {
         method: 'GET',
-        headers: { Accept: 'text/event-stream' },
+        headers: this.fetchHeaders({ Accept: 'text/event-stream' }),
         signal
       });
 
@@ -524,7 +526,7 @@ export class ApiService {
       `${API}/projects/${encodeURIComponent(repo)}/code-review/${reviewRunId}/stream`,
       {
         method: 'GET',
-        headers: { Accept: 'text/event-stream' },
+        headers: this.fetchHeaders({ Accept: 'text/event-stream' }),
         signal
       });
 
@@ -576,5 +578,12 @@ export class ApiService {
     if (filters.model) params = params.set('model', filters.model);
     if (filters.tool) params = params.set('tool', filters.tool);
     return params;
+  }
+
+  private fetchHeaders(headers: Record<string, string>): Record<string, string> {
+    const token = this.auth.getAccessToken();
+    return token
+      ? { ...headers, Authorization: `Bearer ${token}` }
+      : headers;
   }
 }
