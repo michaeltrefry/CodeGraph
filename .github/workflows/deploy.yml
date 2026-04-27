@@ -66,6 +66,42 @@ jobs:
           cache-from: type=gha,scope=jobs
           cache-to: type=gha,scope=jobs,mode=max
 
+      - name: Build and push indexer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.indexer
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-indexer:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-indexer:latest
+          cache-from: type=gha,scope=indexer
+          cache-to: type=gha,scope=indexer,mode=max
+
+      - name: Build and push memory image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.memory
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-memory:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-memory:latest
+          cache-from: type=gha,scope=memory
+          cache-to: type=gha,scope=memory,mode=max
+
+      - name: Build and push metrics image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.metrics
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-metrics:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-metrics:latest
+          cache-from: type=gha,scope=metrics
+          cache-to: type=gha,scope=metrics,mode=max
+
       - name: Build and push web image
         uses: docker/build-push-action@v6
         with:

@@ -1,4 +1,5 @@
-using CodeGraph.Data;
+using CodeGraph.Models.Messages;
+using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Metrics;
 using CodeGraph.Services.Telemetry;
 using CodeGraph.Services.Usage;
@@ -10,10 +11,10 @@ namespace CodeGraph.Tests.Services;
 public class MetricsEventPublisherTests
 {
     [Fact]
-    public async Task PublishLlmUsageAsync_NormalizesAndPersistsUsage()
+    public async Task PublishLlmUsageAsync_NormalizesAndPublishesUsage()
     {
-        var store = new RecordingMetricsEventStore();
-        var publisher = new MetricsEventPublisher(store, NullLogger<MetricsEventPublisher>.Instance);
+        var bus = new RecordingMessageBus();
+        var publisher = new MetricsEventPublisher(bus, NullLogger<MetricsEventPublisher>.Instance);
 
         var record = await publisher.PublishLlmUsageAsync(new LlmUsageRecord(
             " Michael ",
@@ -27,18 +28,19 @@ public class MetricsEventPublisherTests
         record.Username.ShouldBe("michael");
         record.InputTokens.ShouldBe(0);
         record.TotalTokens.ShouldBe(7);
-        var entity = store.Usage.Single();
-        entity.Username.ShouldBe("michael");
-        entity.Path.ShouldBe("Assistant");
-        entity.TotalTokens.ShouldBe(7);
-        entity.EventId.ShouldNotBeNullOrWhiteSpace();
+        record.EventId.ShouldNotBeNullOrWhiteSpace();
+        var message = bus.Published.OfType<LlmUsageRecorded>().Single();
+        message.EventId.ShouldBe(record.EventId);
+        message.Username.ShouldBe("michael");
+        message.Path.ShouldBe("Assistant");
+        message.TotalTokens.ShouldBe(7);
     }
 
     [Fact]
-    public async Task PublishMcpToolInvocationAsync_NormalizesAndPersistsInvocation()
+    public async Task PublishMcpToolInvocationAsync_NormalizesAndPublishesInvocation()
     {
-        var store = new RecordingMetricsEventStore();
-        var publisher = new MetricsEventPublisher(store, NullLogger<MetricsEventPublisher>.Instance);
+        var bus = new RecordingMessageBus();
+        var publisher = new MetricsEventPublisher(bus, NullLogger<MetricsEventPublisher>.Instance);
 
         var record = await publisher.PublishMcpToolInvocationAsync(new McpToolInvocationRecord(
             " search_graph ",
@@ -50,32 +52,21 @@ public class MetricsEventPublisherTests
         record.Username.ShouldBe("michael");
         record.DurationMs.ShouldBe(0);
         record.ErrorCode!.Length.ShouldBe(255);
-        var entity = store.Invocations.Single();
-        entity.ToolName.ShouldBe("search_graph");
-        entity.Success.ShouldBeFalse();
-        entity.DurationMs.ShouldBe(0);
+        record.EventId.ShouldNotBeNullOrWhiteSpace();
+        var message = bus.Published.OfType<McpToolInvocationRecorded>().Single();
+        message.EventId.ShouldBe(record.EventId);
+        message.ToolName.ShouldBe("search_graph");
+        message.Success.ShouldBeFalse();
+        message.DurationMs.ShouldBe(0);
     }
 
-    private sealed class RecordingMetricsEventStore : IMetricsEventStore
+    private sealed class RecordingMessageBus : IMessageBus
     {
-        public List<LlmUsageEntity> Usage { get; } = [];
-        public List<McpToolInvocationEntity> Invocations { get; } = [];
+        public List<object> Published { get; } = [];
 
-        public Task CreateLlmUsageAsync(LlmUsageEntity usage)
+        public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class
         {
-            Usage.Add(usage);
-            return Task.CompletedTask;
-        }
-
-        public Task CreateLlmUsageBatchAsync(IEnumerable<LlmUsageEntity> usage)
-        {
-            Usage.AddRange(usage);
-            return Task.CompletedTask;
-        }
-
-        public Task CreateMcpToolInvocationAsync(McpToolInvocationEntity invocation)
-        {
-            Invocations.Add(invocation);
+            Published.Add(message);
             return Task.CompletedTask;
         }
     }

@@ -1,4 +1,5 @@
 using CodeGraph.Data;
+using CodeGraph.Indexer.Client;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
@@ -71,6 +72,81 @@ internal sealed class RecordingAdminService : IAdminService
     }
 
     public Task ProcessBatchAnalysisAsync(string? repo) => throw new NotSupportedException();
+}
+
+internal sealed class RecordingIndexerClient : IIndexerClient
+{
+    public DiscoverRequest? LastDiscoverRequest { get; private set; }
+    public string? LastBatchRepo { get; private set; }
+    public int ReIndexAllCalls { get; private set; }
+    public int DetectCommunitiesCalls { get; private set; }
+    public int LinkAndDetectCalls { get; private set; }
+    public int ProcessBatchAnalysisCalls { get; private set; }
+    public IndexerAcceptedResponse NextAcceptedResponse { get; set; } =
+        new("queued", "Queued indexer run.", 99, "/api/indexer/runs/99");
+
+    public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
+        string username,
+        ProcessRequest request,
+        CancellationToken ct = default)
+        => Task.FromResult(NextAcceptedResponse);
+
+    public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
+    {
+        ReIndexAllCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerAcceptedResponse> StartDiscoverAsync(
+        string username,
+        DiscoverRequest? request = null,
+        CancellationToken ct = default)
+    {
+        LastDiscoverRequest = request;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerAcceptedResponse> StartSyncSchemaAsync(string username, long sourceId, CancellationToken ct = default)
+        => Task.FromResult(NextAcceptedResponse);
+
+    public Task<IndexerAcceptedResponse> StartSyncAllSchemasAsync(string username, CancellationToken ct = default)
+        => Task.FromResult(NextAcceptedResponse);
+
+    public Task<IndexerAcceptedResponse> StartLinkAsync(string username, CancellationToken ct = default)
+        => Task.FromResult(NextAcceptedResponse);
+
+    public Task<IndexerAcceptedResponse> StartDetectCommunitiesAsync(string username, CancellationToken ct = default)
+    {
+        DetectCommunitiesCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerAcceptedResponse> StartLinkAndDetectAsync(string username, CancellationToken ct = default)
+    {
+        LinkAndDetectCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerAcceptedResponse> StartProcessBatchAnalysisAsync(
+        string username,
+        string? repo = null,
+        CancellationToken ct = default)
+    {
+        LastBatchRepo = repo;
+        ProcessBatchAnalysisCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerRunResponse?> GetRunAsync(string username, long runId, CancellationToken ct = default)
+        => Task.FromResult<IndexerRunResponse?>(null);
+
+    public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(
+        string username,
+        string? status = null,
+        string? operation = null,
+        int take = 50,
+        CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<IndexerRunResponse>>([]);
 }
 
 internal sealed class RecordingMcpDocService : IMcpDocService

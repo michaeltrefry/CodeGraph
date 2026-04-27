@@ -1,0 +1,31 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Copy NuGet config and project files for restore
+COPY nuget.docker.config nuget.config
+COPY CodeGraph.sln .
+COPY src/CodeGraph.Memory.Host/CodeGraph.Memory.Host.csproj src/CodeGraph.Memory.Host/
+COPY src/CodeGraph.Host.Shared/CodeGraph.Host.Shared.csproj src/CodeGraph.Host.Shared/
+COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
+COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
+COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
+COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+COPY src/CodeGraph.Data.MariaDb/CodeGraph.Data.MariaDb.csproj src/CodeGraph.Data.MariaDb/
+
+RUN dotnet restore src/CodeGraph.Memory.Host/CodeGraph.Memory.Host.csproj
+
+# Copy everything and publish
+COPY src/ src/
+RUN dotnet publish src/CodeGraph.Memory.Host/CodeGraph.Memory.Host.csproj -c Release -o /app/publish --no-restore
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+
+COPY --from=build /app/publish .
+COPY sql/migrations /app/sql/migrations
+
+ENV ASPNETCORE_ENVIRONMENT=Staging
+ENV ASPNETCORE_URLS=http://+:5039
+EXPOSE 5039
+
+ENTRYPOINT ["dotnet", "CodeGraph.Memory.Host.dll"]

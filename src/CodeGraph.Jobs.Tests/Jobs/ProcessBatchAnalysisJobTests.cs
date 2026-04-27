@@ -8,27 +8,27 @@ public class ProcessBatchAnalysisJobTests
     [Fact]
     public async Task ForwardsRepoArgumentToBatchService()
     {
-        var batchService = new RecordingBatchAnalysisService();
-        var job = new ProcessBatchAnalysisJob(batchService);
+        var indexerClient = new RecordingIndexerClient();
+        var job = new ProcessBatchAnalysisJob(indexerClient);
 
         await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest
         {
             Repo = "Orders.Api"
         });
 
-        batchService.ProcessCompletedCalls.ShouldBe(1);
-        batchService.ProcessedRepo.ShouldBe("Orders.Api");
+        indexerClient.ProcessBatchAnalysisCalls.ShouldBe(1);
+        indexerClient.LastBatchRepo.ShouldBe("Orders.Api");
     }
 
     [Fact]
     public async Task MissingRepoArgument_ProcessesAllBatches()
     {
-        var batchService = new RecordingBatchAnalysisService();
-        var job = new ProcessBatchAnalysisJob(batchService);
+        var indexerClient = new RecordingIndexerClient();
+        var job = new ProcessBatchAnalysisJob(indexerClient);
 
         await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest());
 
-        batchService.ProcessCompletedCalls.ShouldBe(1);
-        batchService.ProcessedRepo.ShouldBeNull();
+        indexerClient.ProcessBatchAnalysisCalls.ShouldBe(1);
+        indexerClient.LastBatchRepo.ShouldBeNull();
     }
 }

@@ -10,6 +10,24 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
     : IMemoryGraphStore
 {
     private const string DefaultUsername = "default";
+    private static readonly HashSet<string> TestDataSources = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "test",
+        "tests",
+        "unit_test",
+        "integration_test",
+        "fixture",
+        "fixtures",
+        "seed",
+        "seeding",
+        "sandbox",
+        "debug",
+        "dev",
+        "local",
+        "playground",
+        "ci",
+    };
+
     private readonly MariaDbStorageOptions options = optionsAccessor.Value;
 
     public async Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt)
@@ -81,6 +99,770 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
         await using var connection = CreateConnection();
         var row = await connection.QuerySingleOrDefaultAsync<MemoryWriteReceiptRow>(sql, new { receiptId });
         return row?.ToModel();
+    }
+
+    public async Task<MemoryWriteDiagnosticsResult> GetWriteDiagnosticsAsync(
+        int staleAfterMinutes = 15,
+        int sampleLimit = 10)
+    {
+        await using var connection = CreateConnection();
+        var cutoff = DateTime.UtcNow.AddMinutes(-Math.Clamp(staleAfterMinutes, 1, 1440));
+        var clampedSampleLimit = Math.Clamp(sampleLimit, 1, 100);
+
+        var counts = await connection.QuerySingleAsync<MemoryWriteDiagnosticsCounts>(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS QueuedCount,
+                COALESCE(SUM(CASE WHEN status = 'queued' AND submitted_at < @cutoff THEN 1 ELSE 0 END), 0) AS StaleQueuedCount,
+                COALESCE(SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END), 0) AS ProcessingCount,
+                COALESCE(SUM(CASE WHEN status IN ('queued', 'processing') AND retryable_error_count > 1 THEN 1 ELSE 0 END), 0) AS RetryingCount,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS CompletedCount,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS FailedCount,
+                COALESCE(SUM(CASE WHEN status = 'failed' AND processing_started_at IS NULL THEN 1 ELSE 0 END), 0) AS SubmissionFailureCount,
+                COALESCE(SUM(CASE WHEN status = 'failed' AND processing_started_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS ProcessingFailureCount,
+                COALESCE(SUM(CASE WHEN status = 'processing' AND COALESCE(processing_started_at, updated_at) < @cutoff THEN 1 ELSE 0 END), 0) AS StaleProcessingCount,
+                MIN(CASE WHEN status = 'queued' THEN submitted_at ELSE NULL END) AS OldestQueuedAt,
+                MIN(CASE WHEN status = 'processing' THEN COALESCE(processing_started_at, updated_at) ELSE NULL END) AS OldestProcessingAt
+            FROM memory_write_receipts
+            WHERE username = @username;
+            """,
+            new { username = DefaultUsername, cutoff });
+
+        var staleQueued = await GetWriteReceiptSamplesAsync(
+            connection,
+            "status = 'queued' AND submitted_at < @cutoff",
+            "submitted_at ASC",
+            cutoff,
+            clampedSampleLimit);
+        var staleProcessing = await GetWriteReceiptSamplesAsync(
+            connection,
+            "status = 'processing' AND COALESCE(processing_started_at, updated_at) < @cutoff",
+            "COALESCE(processing_started_at, updated_at) ASC",
+            cutoff,
+            clampedSampleLimit);
+        var retrying = await GetWriteReceiptSamplesAsync(
+            connection,
+            "status IN ('queued', 'processing') AND retryable_error_count > 1",
+            "retryable_error_count DESC, updated_at ASC",
+            cutoff,
+            clampedSampleLimit);
+        var recentFailed = await GetWriteReceiptSamplesAsync(
+            connection,
+            "status = 'failed'",
+            "updated_at DESC",
+            cutoff,
+            clampedSampleLimit);
+
+        return new MemoryWriteDiagnosticsResult
+        {
+            Username = DefaultUsername,
+            GeneratedAtUtc = DateTime.UtcNow,
+            QueuedCount = counts.QueuedCount,
+            StaleQueuedCount = counts.StaleQueuedCount,
+            ProcessingCount = counts.ProcessingCount,
+            RetryingCount = counts.RetryingCount,
+            CompletedCount = counts.CompletedCount,
+            FailedCount = counts.FailedCount,
+            SubmissionFailureCount = counts.SubmissionFailureCount,
+            ProcessingFailureCount = counts.ProcessingFailureCount,
+            StaleProcessingCount = counts.StaleProcessingCount,
+            StaleAfterMinutes = Math.Clamp(staleAfterMinutes, 1, 1440),
+            OldestQueuedAgeMinutes = GetAgeMinutes(counts.OldestQueuedAt),
+            OldestProcessingAgeMinutes = GetAgeMinutes(counts.OldestProcessingAt),
+            StaleQueuedReceipts = staleQueued,
+            StaleProcessingReceipts = staleProcessing,
+            RetryingReceipts = retrying,
+            RecentFailedReceipts = recentFailed,
+        };
+    }
+
+    public async Task<MemoryDiagnosticsResult> GetDiagnosticsAsync(int staleAfterMinutes = 15, int sampleLimit = 10)
+    {
+        await using var connection = CreateConnection();
+
+        var counts = await connection.QuerySingleAsync<MemoryDiagnosticsCounts>(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM memory_entities_v2 WHERE username = @username) AS EntityCount,
+                (SELECT COUNT(*) FROM memory_claims WHERE username = @username) AS ClaimCount,
+                (SELECT COUNT(*) FROM memory_claims WHERE username = @username AND status = 'active') AS ActiveClaimCount,
+                (SELECT COUNT(*) FROM memory_claims WHERE username = @username AND status = 'conflicted') AS ConflictedClaimCount,
+                (SELECT COUNT(*) FROM memory_claims WHERE username = @username AND status = 'superseded') AS SupersededClaimCount,
+                (SELECT COUNT(*) FROM memory_claims WHERE username = @username AND status = 'deprecated') AS DeprecatedClaimCount,
+                (SELECT COUNT(*) FROM memory_seed_aliases WHERE username = @username) AS SeedAliasCount,
+                (SELECT COUNT(*) FROM memory_observations_v2 WHERE username = @username) AS ObservationCount,
+                (SELECT COUNT(*) FROM memory_evidence WHERE username = @username) AS EvidenceCount,
+                (
+                    SELECT COUNT(*)
+                    FROM memory_observations_v2 observation
+                    WHERE observation.username = @username
+                      AND (
+                          (observation.claim_id IS NOT NULL AND NOT EXISTS (
+                              SELECT 1 FROM memory_claims claim
+                              WHERE claim.username = @username AND claim.id = observation.claim_id
+                          ))
+                          OR (observation.related_claim_id IS NOT NULL AND NOT EXISTS (
+                              SELECT 1 FROM memory_claims claim
+                              WHERE claim.username = @username AND claim.id = observation.related_claim_id
+                          ))
+                          OR (observation.resolved_by_claim_id IS NOT NULL AND NOT EXISTS (
+                              SELECT 1 FROM memory_claims claim
+                              WHERE claim.username = @username AND claim.id = observation.resolved_by_claim_id
+                          ))
+                          OR (observation.entity_id IS NOT NULL AND NOT EXISTS (
+                              SELECT 1 FROM memory_entities_v2 entity
+                              WHERE entity.username = @username AND entity.id = observation.entity_id
+                          ))
+                      )
+                ) AS OrphanObservationCount,
+                (
+                    SELECT COUNT(*)
+                    FROM memory_evidence evidence
+                    WHERE evidence.username = @username
+                      AND (
+                          (evidence.claim_id IS NULL AND evidence.observation_id IS NULL)
+                          OR (evidence.claim_id IS NOT NULL AND NOT EXISTS (
+                              SELECT 1 FROM memory_claims claim
+                              WHERE claim.username = @username AND claim.id = evidence.claim_id
+                          ))
+                          OR (evidence.observation_id IS NOT NULL AND NOT EXISTS (
+                              SELECT 1 FROM memory_observations_v2 observation
+                              WHERE observation.username = @username AND observation.id = evidence.observation_id
+                          ))
+                      )
+                ) AS OrphanEvidenceCount;
+            """,
+            new { username = DefaultUsername });
+
+        var writeDiagnostics = await GetWriteDiagnosticsAsync(staleAfterMinutes, sampleLimit);
+        var healthSignals = BuildMemoryHealthSignals(writeDiagnostics, counts.OrphanObservationCount, counts.OrphanEvidenceCount);
+
+        return new MemoryDiagnosticsResult
+        {
+            Username = DefaultUsername,
+            GeneratedAtUtc = DateTime.UtcNow,
+            EmbeddingAvailable = true,
+            RetrievalDegraded = false,
+            WriteDegraded = healthSignals.Any(signal =>
+                signal is "stale_queued_writes" or "stale_processing_writes" or "failed_writes_present" or "writes_retrying"),
+            EntityCount = counts.EntityCount,
+            ClaimCount = counts.ClaimCount,
+            ActiveClaimCount = counts.ActiveClaimCount,
+            ConflictedClaimCount = counts.ConflictedClaimCount,
+            SupersededClaimCount = counts.SupersededClaimCount,
+            DeprecatedClaimCount = counts.DeprecatedClaimCount,
+            SeedAliasCount = counts.SeedAliasCount,
+            ObservationCount = counts.ObservationCount,
+            EvidenceCount = counts.EvidenceCount,
+            OrphanObservationCount = counts.OrphanObservationCount,
+            OrphanEvidenceCount = counts.OrphanEvidenceCount,
+            HealthSignals = healthSignals,
+            WriteDiagnostics = writeDiagnostics,
+        };
+    }
+
+    public async Task<MemoryCleanupResult> DeleteMemoryBySourceAsync(
+        string source,
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        var normalizedSource = source.Trim();
+        return await CleanupAsync(
+            "source",
+            dryRun,
+            string.IsNullOrWhiteSpace(normalizedSource) ? [] : [normalizedSource],
+            [],
+            [],
+            useTestSourceHeuristics: false,
+            ct);
+    }
+
+    public async Task<MemoryCleanupResult> DeleteMemoryTestDataAsync(
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        return await CleanupAsync(
+            "test_data",
+            dryRun,
+            [],
+            [],
+            [],
+            useTestSourceHeuristics: true,
+            ct);
+    }
+
+    public async Task<MemoryCleanupResult> DeleteMemoryByIdsAsync(
+        IReadOnlyList<string> claimIds,
+        IReadOnlyList<string> entityIds,
+        bool dryRun,
+        CancellationToken ct = default)
+    {
+        return await CleanupAsync(
+            "explicit_items",
+            dryRun,
+            [],
+            claimIds,
+            entityIds,
+            useTestSourceHeuristics: false,
+            ct);
+    }
+
+    private async Task<MemoryCleanupResult> CleanupAsync(
+        string scope,
+        bool dryRun,
+        IReadOnlyList<string> explicitSources,
+        IReadOnlyList<string> explicitClaimIds,
+        IReadOnlyList<string> explicitEntityIds,
+        bool useTestSourceHeuristics,
+        CancellationToken ct)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(ct);
+        var plan = await BuildCleanupPlanAsync(
+            connection,
+            scope,
+            explicitSources,
+            explicitClaimIds,
+            explicitEntityIds,
+            useTestSourceHeuristics);
+
+        if (plan.IsEmpty || dryRun)
+            return plan.ToResult(dryRun);
+
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        try
+        {
+            await ExecuteCleanupPlanAsync(connection, transaction, plan);
+            await transaction.CommitAsync(ct);
+            return plan.ToResult(dryRun: false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    private async Task<MemoryCleanupPlan> BuildCleanupPlanAsync(
+        MySqlConnection connection,
+        string scope,
+        IReadOnlyList<string> explicitSources,
+        IReadOnlyList<string> explicitClaimIds,
+        IReadOnlyList<string> explicitEntityIds,
+        bool useTestSourceHeuristics)
+    {
+        var now = DateTime.UtcNow;
+        var normalizedSources = explicitSources
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .Select(source => source.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var normalizedClaimIds = explicitClaimIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var normalizedEntityIds = explicitEntityIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var sourceClaims = useTestSourceHeuristics
+            ? (await connection.QueryAsync<CleanupClaimRow>(
+                """
+                SELECT id AS RowId, external_id AS Id, claim_key AS ClaimKey, fact_group_key AS FactGroupKey,
+                       subject_entity_id AS SubjectEntityRowId, predicate AS Predicate, object_entity_id AS ObjectEntityRowId,
+                       status AS Status, recorded_at AS RecordedAt, source AS Source
+                FROM memory_claims
+                WHERE username = @username;
+                """,
+                new { username = DefaultUsername }))
+                .Where(row => IsTestDataSource(row.Source))
+                .ToList()
+            : normalizedSources.Count == 0
+                ? []
+                : (await connection.QueryAsync<CleanupClaimRow>(
+                    """
+                    SELECT id AS RowId, external_id AS Id, claim_key AS ClaimKey, fact_group_key AS FactGroupKey,
+                           subject_entity_id AS SubjectEntityRowId, predicate AS Predicate, object_entity_id AS ObjectEntityRowId,
+                           status AS Status, recorded_at AS RecordedAt, source AS Source
+                    FROM memory_claims
+                    WHERE username = @username AND source IN @sources;
+                    """,
+                    new { username = DefaultUsername, sources = normalizedSources }))
+                    .ToList();
+
+        var claimsById = normalizedClaimIds.Count == 0
+            ? []
+            : (await connection.QueryAsync<CleanupClaimRow>(
+                """
+                SELECT id AS RowId, external_id AS Id, claim_key AS ClaimKey, fact_group_key AS FactGroupKey,
+                       subject_entity_id AS SubjectEntityRowId, predicate AS Predicate, object_entity_id AS ObjectEntityRowId,
+                       status AS Status, recorded_at AS RecordedAt, source AS Source
+                FROM memory_claims
+                WHERE username = @username
+                  AND (external_id IN @claimIds OR claim_key IN @claimIds);
+                """,
+                new { username = DefaultUsername, claimIds = normalizedClaimIds }))
+                .ToList();
+
+        var explicitEntities = normalizedEntityIds.Count == 0
+            ? []
+            : (await connection.QueryAsync<CleanupEntityRow>(
+                """
+                SELECT id AS RowId, external_id AS Id, canonical_id AS CanonicalId,
+                       label AS Label, canonical_name AS CanonicalName
+                FROM memory_entities_v2
+                WHERE username = @username AND external_id IN @entityIds;
+                """,
+                new { username = DefaultUsername, entityIds = normalizedEntityIds }))
+                .ToList();
+        var explicitEntityRowIds = explicitEntities.Select(entity => entity.RowId).ToHashSet();
+
+        var claimsForExplicitEntities = explicitEntityRowIds.Count == 0
+            ? []
+            : (await connection.QueryAsync<CleanupClaimRow>(
+                """
+                SELECT id AS RowId, external_id AS Id, claim_key AS ClaimKey, fact_group_key AS FactGroupKey,
+                       subject_entity_id AS SubjectEntityRowId, predicate AS Predicate, object_entity_id AS ObjectEntityRowId,
+                       status AS Status, recorded_at AS RecordedAt, source AS Source
+                FROM memory_claims
+                WHERE username = @username
+                  AND (subject_entity_id IN @entityRowIds OR object_entity_id IN @entityRowIds);
+                """,
+                new { username = DefaultUsername, entityRowIds = explicitEntityRowIds }))
+                .ToList();
+
+        var claimsToDelete = sourceClaims
+            .Concat(claimsById)
+            .Concat(claimsForExplicitEntities)
+            .GroupBy(claim => claim.RowId)
+            .Select(group => group.First())
+            .ToList();
+        var claimRowIdsToDelete = claimsToDelete.Select(claim => claim.RowId).ToHashSet();
+
+        var matchingReceipts = useTestSourceHeuristics
+            ? (await connection.QueryAsync<CleanupReceiptRow>(
+                """
+                SELECT id AS RowId, receipt_id AS ReceiptId, source AS Source
+                FROM memory_write_receipts
+                WHERE username = @username;
+                """,
+                new { username = DefaultUsername }))
+                .Where(row => IsTestDataSource(row.Source))
+                .ToList()
+            : normalizedSources.Count == 0
+                ? []
+                : (await connection.QueryAsync<CleanupReceiptRow>(
+                    """
+                    SELECT id AS RowId, receipt_id AS ReceiptId, source AS Source
+                    FROM memory_write_receipts
+                    WHERE username = @username AND source IN @sources;
+                    """,
+                    new { username = DefaultUsername, sources = normalizedSources }))
+                    .ToList();
+
+        var sources = sourceClaims
+            .Select(claim => claim.Source)
+            .Concat(matchingReceipts.Select(receipt => receipt.Source))
+            .Concat(normalizedSources)
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(source => source, StringComparer.Ordinal)
+            .ToList();
+
+        var impactedFactGroups = claimsToDelete
+            .Select(claim => claim.FactGroupKey)
+            .Where(group => !string.IsNullOrWhiteSpace(group))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var impactedEntityRowIds = explicitEntityRowIds
+            .Concat(claimsToDelete.Select(claim => claim.SubjectEntityRowId))
+            .Concat(claimsToDelete.Where(claim => claim.ObjectEntityRowId.HasValue).Select(claim => claim.ObjectEntityRowId!.Value))
+            .ToHashSet();
+
+        if (impactedFactGroups.Count == 0 && explicitEntities.Count == 0 && sources.Count == 0)
+            return MemoryCleanupPlan.Empty(scope, now, sources, normalizedClaimIds, normalizedEntityIds);
+
+        var impactedGroupClaims = impactedFactGroups.Count == 0
+            ? []
+            : (await connection.QueryAsync<CleanupClaimRow>(
+                """
+                SELECT id AS RowId, external_id AS Id, claim_key AS ClaimKey, fact_group_key AS FactGroupKey,
+                       subject_entity_id AS SubjectEntityRowId, predicate AS Predicate, object_entity_id AS ObjectEntityRowId,
+                       status AS Status, recorded_at AS RecordedAt, source AS Source
+                FROM memory_claims
+                WHERE username = @username AND fact_group_key IN @factGroups;
+                """,
+                new { username = DefaultUsername, factGroups = impactedFactGroups }))
+                .ToList();
+        var impactedClaimRowIds = impactedGroupClaims.Select(claim => claim.RowId).ToHashSet();
+
+        var remainingClaims = impactedGroupClaims
+            .Where(claim => !claimRowIdsToDelete.Contains(claim.RowId))
+            .OrderBy(claim => claim.RecordedAt)
+            .ThenBy(claim => claim.RowId)
+            .ToList();
+        var rebuilt = BuildFactGroupRebuildArtifacts(remainingClaims, now);
+
+        var referencedEntityPairsAfterDelete = impactedEntityRowIds.Count == 0
+            ? []
+            : (await connection.QueryAsync<CleanupClaimEntityReferenceRow>(
+                """
+                SELECT subject_entity_id AS SubjectEntityRowId, object_entity_id AS ObjectEntityRowId
+                FROM memory_claims
+                WHERE username = @username
+                  AND id NOT IN @claimIdsToDelete
+                  AND (subject_entity_id IN @entityRowIds OR object_entity_id IN @entityRowIds);
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    claimIdsToDelete = claimRowIdsToDelete.Count == 0 ? [-1L] : claimRowIdsToDelete,
+                    entityRowIds = impactedEntityRowIds
+                }))
+                .ToList();
+        var referencedEntityRowIdsAfterDelete = referencedEntityPairsAfterDelete
+            .Select(reference => reference.SubjectEntityRowId)
+            .Concat(referencedEntityPairsAfterDelete.Where(reference => reference.ObjectEntityRowId.HasValue)
+                .Select(reference => reference.ObjectEntityRowId!.Value))
+            .ToHashSet();
+        var orphanEntityRowIds = impactedEntityRowIds
+            .Except(explicitEntityRowIds)
+            .Where(rowId => !referencedEntityRowIdsAfterDelete.Contains(rowId))
+            .ToHashSet();
+
+        var entitiesToDelete = explicitEntities
+            .Concat(orphanEntityRowIds.Count == 0
+                ? []
+                : await QueryEntitiesByRowIdAsync(connection, orphanEntityRowIds))
+            .GroupBy(entity => entity.RowId)
+            .Select(group => group.First())
+            .ToList();
+        var entityRowIdsToDelete = entitiesToDelete.Select(entity => entity.RowId).ToHashSet();
+
+        var claimEdgesToDelete = impactedClaimRowIds.Count == 0
+            ? 0
+            : await CountAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM memory_claim_edges
+                WHERE username = @username
+                  AND (from_claim_id IN @claimIds OR to_claim_id IN @claimIds);
+                """,
+                new { username = DefaultUsername, claimIds = impactedClaimRowIds });
+        var activeClaimsToDelete = impactedFactGroups.Count == 0
+            ? 0
+            : await CountAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM memory_active_claims
+                WHERE username = @username AND fact_group_key IN @factGroups;
+                """,
+                new { username = DefaultUsername, factGroups = impactedFactGroups });
+        var adjacencyToDelete = impactedEntityRowIds.Count == 0
+            ? 0
+            : await CountAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM memory_entity_adjacency
+                WHERE username = @username
+                  AND (from_entity_id IN @entityRowIds OR to_entity_id IN @entityRowIds);
+                """,
+                new { username = DefaultUsername, entityRowIds = impactedEntityRowIds });
+        var entityEdgesToDelete = impactedEntityRowIds.Count == 0
+            ? 0
+            : await CountAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM memory_entity_edges
+                WHERE username = @username
+                  AND (from_entity_id IN @entityRowIds OR to_entity_id IN @entityRowIds);
+                """,
+                new { username = DefaultUsername, entityRowIds = impactedEntityRowIds });
+        var observationsToDelete = (impactedClaimRowIds.Count == 0 && entityRowIdsToDelete.Count == 0)
+            ? []
+            : (await connection.QueryAsync<CleanupObservationRow>(
+                """
+                SELECT id AS RowId
+                FROM memory_observations_v2
+                WHERE username = @username
+                  AND (
+                      (claim_id IS NOT NULL AND claim_id IN @claimRowIds)
+                      OR (related_claim_id IS NOT NULL AND related_claim_id IN @claimRowIds)
+                      OR (resolved_by_claim_id IS NOT NULL AND resolved_by_claim_id IN @claimRowIds)
+                      OR (entity_id IS NOT NULL AND entity_id IN @entityRowIds)
+                  );
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    claimRowIds = impactedClaimRowIds.Count == 0 ? [-1L] : impactedClaimRowIds,
+                    entityRowIds = entityRowIdsToDelete.Count == 0 ? [-1L] : entityRowIdsToDelete,
+                }))
+                .ToList();
+        var observationRowIdsToDelete = observationsToDelete.Select(observation => observation.RowId).ToHashSet();
+        var evidenceToDelete = (claimRowIdsToDelete.Count == 0 && observationRowIdsToDelete.Count == 0)
+            ? 0
+            : await CountAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM memory_evidence
+                WHERE username = @username
+                  AND (
+                      (claim_id IS NOT NULL AND claim_id IN @claimRowIds)
+                      OR (observation_id IS NOT NULL AND observation_id IN @observationRowIds)
+                  );
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    claimRowIds = claimRowIdsToDelete.Count == 0 ? [-1L] : claimRowIdsToDelete,
+                    observationRowIds = observationRowIdsToDelete.Count == 0 ? [-1L] : observationRowIdsToDelete,
+                });
+        var aliasesToDelete = entityRowIdsToDelete.Count == 0
+            ? 0
+            : await CountAsync(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM memory_seed_aliases
+                WHERE username = @username AND entity_id IN @entityRowIds;
+                """,
+                new { username = DefaultUsername, entityRowIds = entityRowIdsToDelete });
+
+        var updatedStatuses = rebuilt.ClaimUpdates.ToDictionary(update => update.Claim.RowId, update => update.Status);
+        var entityRelationshipRowsAfterDelete = impactedEntityRowIds.Count == 0
+            ? []
+            : (await connection.QueryAsync<CleanupClaimRow>(
+                """
+                SELECT id AS RowId, external_id AS Id, claim_key AS ClaimKey, fact_group_key AS FactGroupKey,
+                       subject_entity_id AS SubjectEntityRowId, predicate AS Predicate, object_entity_id AS ObjectEntityRowId,
+                       status AS Status, recorded_at AS RecordedAt, source AS Source
+                FROM memory_claims
+                WHERE username = @username
+                  AND id NOT IN @claimIdsToDelete
+                  AND object_entity_id IS NOT NULL
+                  AND (subject_entity_id IN @entityRowIds OR object_entity_id IN @entityRowIds);
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    claimIdsToDelete = claimRowIdsToDelete.Count == 0 ? [-1L] : claimRowIdsToDelete,
+                    entityRowIds = impactedEntityRowIds
+                }))
+                .ToList();
+        var rebuiltEntityRelationshipCount = entityRelationshipRowsAfterDelete.Count(claim =>
+        {
+            var status = updatedStatuses.TryGetValue(claim.RowId, out var updated)
+                ? updated
+                : claim.Status;
+            return IsVisibleClaimStatus(status);
+        });
+        var remainingEntityRowIds = impactedEntityRowIds.Except(entityRowIdsToDelete).ToHashSet();
+        var aliasRowsToRebuild = remainingEntityRowIds.Count == 0
+            ? []
+            : BuildSeedAliasRows(await QueryEntitiesByRowIdAsync(connection, remainingEntityRowIds), now);
+
+        return MemoryCleanupPlan.Create(
+            new MemoryCleanupRequestState(
+                scope,
+                now,
+                sources,
+                normalizedClaimIds,
+                normalizedEntityIds,
+                impactedFactGroups),
+            new MemoryCleanupDeleteState(
+                claimsToDelete,
+                entitiesToDelete,
+                claimEdgesToDelete,
+                entityEdgesToDelete,
+                adjacencyToDelete,
+                activeClaimsToDelete,
+                aliasesToDelete,
+                evidenceToDelete,
+                observationsToDelete.Count,
+                observationRowIdsToDelete,
+                matchingReceipts),
+            new MemoryCleanupRebuildState(
+                rebuilt.ClaimEdgesToAdd,
+                rebuilt.ObservationsToAdd,
+                rebuilt.ClaimUpdates,
+                orphanEntityRowIds,
+                remainingEntityRowIds,
+                rebuiltEntityRelationshipCount,
+                aliasRowsToRebuild));
+    }
+
+    private async Task ExecuteCleanupPlanAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        MemoryCleanupPlan plan)
+    {
+        await DeleteByIdsAsync(connection, transaction, "memory_evidence", "claim_id", plan.ClaimRowIdsToDelete);
+        await DeleteByIdsAsync(connection, transaction, "memory_evidence", "observation_id", plan.ObservationRowIdsToDelete);
+        await DeleteByIdsAsync(connection, transaction, "memory_observations_v2", "id", plan.ObservationRowIdsToDelete);
+        await DeleteClaimEdgesAsync(connection, transaction, plan.ImpactedClaimRowIds);
+        await DeleteActiveClaimsAsync(connection, transaction, plan.ImpactedFactGroups);
+        await DeleteEntityProjectionRowsAsync(connection, transaction, "memory_entity_adjacency", plan.ImpactedEntityRowIds);
+        await DeleteEntityProjectionRowsAsync(connection, transaction, "memory_entity_edges", plan.ImpactedEntityRowIds);
+        await DeleteByIdsAsync(connection, transaction, "memory_claims", "id", plan.ClaimRowIdsToDelete);
+        await DeleteByIdsAsync(connection, transaction, "memory_seed_aliases", "entity_id", plan.EntityRowIdsToDelete);
+        await DeleteByIdsAsync(connection, transaction, "memory_write_receipts", "id", plan.ReceiptRowIdsToDelete);
+        await DeleteByIdsAsync(connection, transaction, "memory_entities_v2", "id", plan.EntityRowIdsToDelete);
+
+        foreach (var update in plan.ClaimUpdates)
+        {
+            await connection.ExecuteAsync(
+                """
+                UPDATE memory_claims
+                SET status = @status,
+                    supersedes_claim_id = @supersedesClaimId
+                WHERE username = @username AND id = @claimRowId;
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    claimRowId = update.Claim.RowId,
+                    status = update.Status,
+                    supersedesClaimId = update.SupersedesClaimRowId,
+                },
+                transaction);
+        }
+
+        foreach (var edge in plan.RebuiltClaimEdges)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO memory_claim_edges (
+                    username, from_claim_id, to_claim_id, edge_type, weight, source, created_at)
+                VALUES (@username, @fromClaimId, @toClaimId, @edgeType, NULL, 'admin_cleanup', @createdAt);
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    fromClaimId = edge.FromClaimRowId,
+                    toClaimId = edge.ToClaimRowId,
+                    edgeType = edge.EdgeType,
+                    createdAt = edge.CreatedAt,
+                },
+                transaction);
+        }
+
+        foreach (var observation in plan.RebuiltObservations)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO memory_observations_v2 (
+                    username, external_id, legacy_claim_text, legacy_conflicts_with,
+                    legacy_source, observation_type, claim_id, related_claim_id, entity_id,
+                    message, resolution_status, created_at)
+                VALUES (
+                    @username, @externalId, @message, '', 'admin_cleanup', 'conflict',
+                    @claimRowId, @relatedClaimRowId, @entityRowId, @message, 'open', @createdAt);
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    externalId = observation.ExternalId,
+                    observation.Message,
+                    claimRowId = observation.ClaimRowId,
+                    relatedClaimRowId = observation.RelatedClaimRowId,
+                    entityRowId = observation.EntityRowId,
+                    createdAt = observation.CreatedAt,
+                },
+                transaction);
+        }
+
+        await RefreshMemoryProjectionsAsync(connection, transaction, plan);
+    }
+
+    private async Task RefreshMemoryProjectionsAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        MemoryCleanupPlan plan)
+    {
+        if (plan.ImpactedFactGroups.Count > 0)
+        {
+            await DeleteActiveClaimsAsync(connection, transaction, plan.ImpactedFactGroups);
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO memory_active_claims (
+                    username, claim_id, fact_group_key, subject_entity_id, predicate,
+                    object_entity_id, status, recorded_at, updated_at)
+                SELECT username, id, fact_group_key, subject_entity_id, predicate,
+                       object_entity_id, status, recorded_at, @now
+                FROM memory_claims
+                WHERE username = @username
+                  AND fact_group_key IN @factGroups
+                  AND status IN ('active', 'conflicted');
+                """,
+                new { username = DefaultUsername, factGroups = plan.ImpactedFactGroups, now = plan.Now },
+                transaction);
+        }
+
+        if (plan.RemainingEntityRowIds.Count == 0)
+            return;
+
+        await DeleteEntityProjectionRowsAsync(connection, transaction, "memory_entity_adjacency", plan.RemainingEntityRowIds);
+        await DeleteEntityProjectionRowsAsync(connection, transaction, "memory_entity_edges", plan.RemainingEntityRowIds);
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO memory_entity_adjacency (
+                username, from_entity_id, to_entity_id, edge_type, best_active_claim_id, updated_at)
+            SELECT username, subject_entity_id, object_entity_id, predicate, id, @now
+            FROM memory_claims
+            WHERE username = @username
+              AND object_entity_id IS NOT NULL
+              AND status IN ('active', 'conflicted')
+              AND (subject_entity_id IN @entityRowIds OR object_entity_id IN @entityRowIds);
+            """,
+            new { username = DefaultUsername, entityRowIds = plan.RemainingEntityRowIds, now = plan.Now },
+            transaction);
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO memory_entity_edges (
+                username, from_entity_id, to_entity_id, edge_type,
+                best_active_claim_id, weight, created_at, updated_at)
+            SELECT username, subject_entity_id, object_entity_id, predicate,
+                   id, NULL, @now, @now
+            FROM memory_claims
+            WHERE username = @username
+              AND object_entity_id IS NOT NULL
+              AND status IN ('active', 'conflicted')
+              AND (subject_entity_id IN @entityRowIds OR object_entity_id IN @entityRowIds);
+            """,
+            new { username = DefaultUsername, entityRowIds = plan.RemainingEntityRowIds, now = plan.Now },
+            transaction);
+
+        await DeleteByIdsAsync(connection, transaction, "memory_seed_aliases", "entity_id", plan.RemainingEntityRowIds);
+        foreach (var alias in plan.AliasRowsToRebuild)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO memory_seed_aliases (
+                    username, entity_id, alias_kind, alias_text, normalized_alias, updated_at)
+                VALUES (@username, @entityRowId, @aliasKind, @aliasText, @normalizedAlias, @updatedAt);
+                """,
+                new
+                {
+                    username = DefaultUsername,
+                    entityRowId = alias.EntityRowId,
+                    aliasKind = alias.AliasKind,
+                    aliasText = alias.AliasText,
+                    normalizedAlias = alias.NormalizedAlias,
+                    updatedAt = plan.Now,
+                },
+                transaction);
+        }
     }
 
     public async Task UpdateWriteReceiptStatusAsync(
@@ -1044,6 +1826,225 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
         return result;
     }
 
+    private static FactGroupRebuildArtifacts BuildFactGroupRebuildArtifacts(
+        IReadOnlyList<CleanupClaimRow> remainingClaims,
+        DateTime now)
+    {
+        var claimUpdates = new List<CleanupClaimUpdate>();
+        var claimEdgesToAdd = new List<CleanupClaimEdge>();
+        var observationsToAdd = new List<CleanupObservation>();
+
+        foreach (var group in remainingClaims
+                     .GroupBy(claim => claim.FactGroupKey, StringComparer.Ordinal)
+                     .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var orderedClaims = group
+                .OrderBy(claim => claim.RecordedAt)
+                .ThenBy(claim => claim.RowId)
+                .ToList();
+            var keepConflicted = orderedClaims.Count(claim =>
+                string.Equals(claim.Status, "conflicted", StringComparison.OrdinalIgnoreCase)) > 1;
+
+            if (keepConflicted)
+            {
+                foreach (var claim in orderedClaims)
+                    claimUpdates.Add(new CleanupClaimUpdate(claim, "conflicted", null));
+
+                for (var i = 1; i < orderedClaims.Count; i++)
+                {
+                    for (var j = 0; j < i; j++)
+                    {
+                        claimEdgesToAdd.Add(new CleanupClaimEdge(
+                            orderedClaims[i].RowId,
+                            orderedClaims[j].RowId,
+                            "conflicts_with",
+                            now));
+                        observationsToAdd.Add(new CleanupObservation(
+                            $"obs_cleanup_{Guid.NewGuid():N}",
+                            orderedClaims[i].RowId,
+                            orderedClaims[j].RowId,
+                            orderedClaims[i].SubjectEntityRowId,
+                            $"Conflicting claims in fact group '{group.Key}'",
+                            now));
+                    }
+                }
+
+                continue;
+            }
+
+            for (var i = 0; i < orderedClaims.Count; i++)
+            {
+                var supersedesClaimRowId = i > 0 ? orderedClaims[i - 1].RowId : (long?)null;
+                claimUpdates.Add(new CleanupClaimUpdate(
+                    orderedClaims[i],
+                    i == orderedClaims.Count - 1 ? "active" : "superseded",
+                    supersedesClaimRowId));
+
+                if (i > 0)
+                {
+                    claimEdgesToAdd.Add(new CleanupClaimEdge(
+                        orderedClaims[i].RowId,
+                        orderedClaims[i - 1].RowId,
+                        "supersedes",
+                        now));
+                }
+            }
+        }
+
+        return new FactGroupRebuildArtifacts(claimUpdates, claimEdgesToAdd, observationsToAdd);
+    }
+
+    private static async Task<int> CountAsync(MySqlConnection connection, string sql, object parameters)
+        => await connection.ExecuteScalarAsync<int>(sql, parameters);
+
+    private static async Task<List<CleanupEntityRow>> QueryEntitiesByRowIdAsync(
+        MySqlConnection connection,
+        IReadOnlyCollection<long> entityRowIds)
+    {
+        if (entityRowIds.Count == 0)
+            return [];
+
+        return (await connection.QueryAsync<CleanupEntityRow>(
+            """
+            SELECT id AS RowId, external_id AS Id, canonical_id AS CanonicalId,
+                   label AS Label, canonical_name AS CanonicalName
+            FROM memory_entities_v2
+            WHERE username = @username AND id IN @entityRowIds;
+            """,
+            new { username = DefaultUsername, entityRowIds }))
+            .ToList();
+    }
+
+    private static List<CleanupSeedAlias> BuildSeedAliasRows(
+        IReadOnlyList<CleanupEntityRow> entities,
+        DateTime now)
+    {
+        var aliases = new List<CleanupSeedAlias>();
+        foreach (var entity in entities)
+        {
+            AddAlias(aliases, entity.RowId, "external_id", entity.Id, now);
+            AddAlias(aliases, entity.RowId, "canonical_id", entity.CanonicalId, now);
+            AddAlias(aliases, entity.RowId, "label", entity.Label, now);
+            AddAlias(aliases, entity.RowId, "canonical_name", entity.CanonicalName, now);
+        }
+
+        return aliases
+            .GroupBy(alias => (alias.EntityRowId, alias.AliasKind, alias.NormalizedAlias))
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static void AddAlias(
+        ICollection<CleanupSeedAlias> aliases,
+        long entityRowId,
+        string aliasKind,
+        string? aliasText,
+        DateTime now)
+    {
+        if (string.IsNullOrWhiteSpace(aliasText))
+            return;
+
+        var trimmed = aliasText.Trim();
+        aliases.Add(new CleanupSeedAlias(
+            entityRowId,
+            aliasKind,
+            trimmed,
+            NormalizeAlias(trimmed),
+            now));
+    }
+
+    private static string NormalizeAlias(string value) => NormalizeLookupKey(value);
+
+    private static async Task DeleteByIdsAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        string tableName,
+        string columnName,
+        IReadOnlyCollection<long> ids)
+    {
+        if (ids.Count == 0)
+            return;
+
+        await connection.ExecuteAsync(
+            $"DELETE FROM {tableName} WHERE username = @username AND {columnName} IN @ids;",
+            new { username = DefaultUsername, ids },
+            transaction);
+    }
+
+    private static async Task DeleteClaimEdgesAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        IReadOnlyCollection<long> claimRowIds)
+    {
+        if (claimRowIds.Count == 0)
+            return;
+
+        await connection.ExecuteAsync(
+            """
+            DELETE FROM memory_claim_edges
+            WHERE username = @username
+              AND (from_claim_id IN @claimRowIds OR to_claim_id IN @claimRowIds);
+            """,
+            new { username = DefaultUsername, claimRowIds },
+            transaction);
+    }
+
+    private static async Task DeleteActiveClaimsAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        IReadOnlyCollection<string> factGroups)
+    {
+        if (factGroups.Count == 0)
+            return;
+
+        await connection.ExecuteAsync(
+            """
+            DELETE FROM memory_active_claims
+            WHERE username = @username AND fact_group_key IN @factGroups;
+            """,
+            new { username = DefaultUsername, factGroups },
+            transaction);
+    }
+
+    private static async Task DeleteEntityProjectionRowsAsync(
+        MySqlConnection connection,
+        MySqlTransaction transaction,
+        string tableName,
+        IReadOnlyCollection<long> entityRowIds)
+    {
+        if (entityRowIds.Count == 0)
+            return;
+
+        await connection.ExecuteAsync(
+            $"""
+            DELETE FROM {tableName}
+            WHERE username = @username
+              AND (from_entity_id IN @entityRowIds OR to_entity_id IN @entityRowIds);
+            """,
+            new { username = DefaultUsername, entityRowIds },
+            transaction);
+    }
+
+    private static bool IsTestDataSource(string source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+            return false;
+
+        var normalized = source.Trim().ToLowerInvariant();
+        if (TestDataSources.Contains(normalized))
+            return true;
+
+        return TestDataSources.Any(tag =>
+            normalized.StartsWith($"{tag}_", StringComparison.Ordinal) ||
+            normalized.StartsWith($"{tag}-", StringComparison.Ordinal) ||
+            normalized.StartsWith($"{tag}:", StringComparison.Ordinal) ||
+            normalized.StartsWith($"{tag}/", StringComparison.Ordinal));
+    }
+
+    private static bool IsVisibleClaimStatus(string status)
+        => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(status, "conflicted", StringComparison.OrdinalIgnoreCase);
+
     private MySqlConnection CreateConnection() => new(options.ConnectionString);
 
     private async Task<MemoryEntity?> GetEntityAsync(MySqlConnection connection, string entityId)
@@ -1106,6 +2107,78 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
         return await connection.QuerySingleOrDefaultAsync<long?>(
             "SELECT id FROM memory_observations_v2 WHERE username = @username AND external_id = @externalId LIMIT 1;",
             new { username = DefaultUsername, externalId });
+    }
+
+    private static async Task<List<MemoryWriteReceipt>> GetWriteReceiptSamplesAsync(
+        MySqlConnection connection,
+        string whereSql,
+        string orderBySql,
+        DateTime cutoff,
+        int limit)
+    {
+        var sql = $"""
+            SELECT receipt_id AS Id,
+                   source AS Source,
+                   input_mode AS InputMode,
+                   status AS Status,
+                   requested_nodes AS EntitiesRequested,
+                   requested_edges AS ClaimsRequested,
+                   evidence_requested AS EvidenceRequested,
+                   retryable_error_count AS AttemptCount,
+                   legacy_nodes_written AS NodesWritten,
+                   legacy_edges_written AS EdgesWritten,
+                   legacy_conflicts_detected AS ConflictsDetected,
+                   claims_inserted AS ClaimsWritten,
+                   evidence_written AS EvidenceWritten,
+                   observations_written AS ObservationsWritten,
+                   error AS ErrorMessage,
+                   submitted_at AS CreatedAt,
+                   updated_at AS UpdatedAt,
+                   processing_started_at AS StartedAt,
+                   completed_at AS CompletedAt
+            FROM memory_write_receipts
+            WHERE username = @username AND {whereSql}
+            ORDER BY {orderBySql}
+            LIMIT @limit;
+            """;
+
+        var rows = await connection.QueryAsync<MemoryWriteReceiptRow>(
+            sql,
+            new { username = DefaultUsername, cutoff, limit });
+        return rows.Select(row => row.ToModel()).ToList();
+    }
+
+    private static double? GetAgeMinutes(DateTime? startedAt)
+    {
+        if (!startedAt.HasValue)
+            return null;
+
+        return Math.Max(0, (DateTime.UtcNow - startedAt.Value).TotalMinutes);
+    }
+
+    private static List<string> BuildMemoryHealthSignals(
+        MemoryWriteDiagnosticsResult writeDiagnostics,
+        int orphanObservationCount,
+        int orphanEvidenceCount)
+    {
+        var signals = new List<string>();
+
+        if (writeDiagnostics.StaleQueuedCount > 0)
+            signals.Add("stale_queued_writes");
+
+        if (writeDiagnostics.StaleProcessingCount > 0)
+            signals.Add("stale_processing_writes");
+
+        if (writeDiagnostics.RetryingCount > 0)
+            signals.Add("writes_retrying");
+
+        if (writeDiagnostics.FailedCount > 0)
+            signals.Add("failed_writes_present");
+
+        if (orphanObservationCount > 0 || orphanEvidenceCount > 0)
+            signals.Add("orphaned_claim_graph_rows");
+
+        return signals;
     }
 
     private async Task<List<MemoryEntityEdgeRow>> QueryEntityEdgesAsync(
@@ -1298,6 +2371,255 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
         LEFT JOIN memory_entities_v2 object_entity ON object_entity.id = memory_claim.object_entity_id
         LEFT JOIN memory_claims superseded ON superseded.id = memory_claim.supersedes_claim_id
         """;
+
+    private sealed record FactGroupRebuildArtifacts(
+        IReadOnlyList<CleanupClaimUpdate> ClaimUpdates,
+        IReadOnlyList<CleanupClaimEdge> ClaimEdgesToAdd,
+        IReadOnlyList<CleanupObservation> ObservationsToAdd);
+
+    private sealed record CleanupClaimUpdate(
+        CleanupClaimRow Claim,
+        string Status,
+        long? SupersedesClaimRowId);
+
+    private sealed record CleanupClaimEdge(
+        long FromClaimRowId,
+        long ToClaimRowId,
+        string EdgeType,
+        DateTime CreatedAt);
+
+    private sealed record CleanupObservation(
+        string ExternalId,
+        long ClaimRowId,
+        long RelatedClaimRowId,
+        long EntityRowId,
+        string Message,
+        DateTime CreatedAt);
+
+    private sealed record CleanupSeedAlias(
+        long EntityRowId,
+        string AliasKind,
+        string AliasText,
+        string NormalizedAlias,
+        DateTime UpdatedAt);
+
+    private sealed record MemoryCleanupRequestState(
+        string Scope,
+        DateTime Now,
+        IReadOnlyList<string> Sources,
+        IReadOnlyList<string> RequestedClaimIds,
+        IReadOnlyList<string> RequestedEntityIds,
+        IReadOnlyList<string> ImpactedFactGroups);
+
+    private sealed record MemoryCleanupDeleteState(
+        IReadOnlyList<CleanupClaimRow> ClaimsToDelete,
+        IReadOnlyList<CleanupEntityRow> EntitiesToDelete,
+        int ClaimEdgesToDelete,
+        int EntityEdgesToDelete,
+        int AdjacencyToDelete,
+        int ActiveClaimsToDelete,
+        int AliasesToDelete,
+        int EvidenceToDelete,
+        int ObservationsToDelete,
+        IReadOnlySet<long> ObservationRowIdsToDelete,
+        IReadOnlyList<CleanupReceiptRow> ReceiptsToDelete);
+
+    private sealed record MemoryCleanupRebuildState(
+        IReadOnlyList<CleanupClaimEdge> RebuiltClaimEdges,
+        IReadOnlyList<CleanupObservation> RebuiltObservations,
+        IReadOnlyList<CleanupClaimUpdate> ClaimUpdates,
+        IReadOnlySet<long> OrphanEntityRowIds,
+        IReadOnlySet<long> RemainingEntityRowIds,
+        int RebuiltEntityRelationshipCount,
+        IReadOnlyList<CleanupSeedAlias> AliasRowsToRebuild);
+
+    private sealed class MemoryCleanupPlan
+    {
+        private MemoryCleanupPlan(
+            MemoryCleanupRequestState request,
+            MemoryCleanupDeleteState deletes,
+            MemoryCleanupRebuildState rebuild)
+        {
+            Request = request;
+            Deletes = deletes;
+            Rebuild = rebuild;
+        }
+
+        public MemoryCleanupRequestState Request { get; }
+        public MemoryCleanupDeleteState Deletes { get; }
+        public MemoryCleanupRebuildState Rebuild { get; }
+        public string Scope => Request.Scope;
+        public DateTime Now => Request.Now;
+        public IReadOnlyList<string> Sources => Request.Sources;
+        public IReadOnlyList<string> RequestedClaimIds => Request.RequestedClaimIds;
+        public IReadOnlyList<string> RequestedEntityIds => Request.RequestedEntityIds;
+        public IReadOnlyList<string> ImpactedFactGroups => Request.ImpactedFactGroups;
+        public IReadOnlyList<CleanupClaimRow> ClaimsToDelete => Deletes.ClaimsToDelete;
+        public IReadOnlyList<CleanupEntityRow> EntitiesToDelete => Deletes.EntitiesToDelete;
+        public IReadOnlySet<long> ObservationRowIdsToDelete => Deletes.ObservationRowIdsToDelete;
+        public IReadOnlyList<CleanupReceiptRow> ReceiptsToDelete => Deletes.ReceiptsToDelete;
+        public IReadOnlyList<CleanupClaimEdge> RebuiltClaimEdges => Rebuild.RebuiltClaimEdges;
+        public IReadOnlyList<CleanupObservation> RebuiltObservations => Rebuild.RebuiltObservations;
+        public IReadOnlyList<CleanupClaimUpdate> ClaimUpdates => Rebuild.ClaimUpdates;
+        public IReadOnlySet<long> OrphanEntityRowIds => Rebuild.OrphanEntityRowIds;
+        public IReadOnlySet<long> RemainingEntityRowIds => Rebuild.RemainingEntityRowIds;
+        public IReadOnlyList<CleanupSeedAlias> AliasRowsToRebuild => Rebuild.AliasRowsToRebuild;
+        public HashSet<long> ClaimRowIdsToDelete => ClaimsToDelete.Select(claim => claim.RowId).ToHashSet();
+        public HashSet<long> EntityRowIdsToDelete => EntitiesToDelete.Select(entity => entity.RowId).ToHashSet();
+        public HashSet<long> ReceiptRowIdsToDelete => ReceiptsToDelete.Select(receipt => receipt.RowId).ToHashSet();
+        public HashSet<long> ImpactedClaimRowIds => ClaimRowIdsToDelete
+            .Concat(ClaimUpdates.Select(update => update.Claim.RowId))
+            .Concat(RebuiltClaimEdges.Select(edge => edge.FromClaimRowId))
+            .Concat(RebuiltClaimEdges.Select(edge => edge.ToClaimRowId))
+            .ToHashSet();
+        public HashSet<long> ImpactedEntityRowIds => EntityRowIdsToDelete
+            .Concat(RemainingEntityRowIds)
+            .Concat(ClaimsToDelete.Select(claim => claim.SubjectEntityRowId))
+            .Concat(ClaimsToDelete.Where(claim => claim.ObjectEntityRowId.HasValue)
+                .Select(claim => claim.ObjectEntityRowId!.Value))
+            .ToHashSet();
+
+        public bool IsEmpty =>
+            ClaimsToDelete.Count == 0 &&
+            EntitiesToDelete.Count == 0 &&
+            ReceiptsToDelete.Count == 0 &&
+            Deletes.ClaimEdgesToDelete == 0 &&
+            Deletes.ObservationsToDelete == 0 &&
+            Deletes.EvidenceToDelete == 0 &&
+            Deletes.ActiveClaimsToDelete == 0 &&
+            Deletes.EntityEdgesToDelete == 0 &&
+            Deletes.AdjacencyToDelete == 0 &&
+            Deletes.AliasesToDelete == 0;
+
+        public MemoryCleanupResult ToResult(bool dryRun)
+        {
+            var entityIds = EntitiesToDelete
+                .Select(entity => entity.Id)
+                .Concat(RequestedEntityIds)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList();
+            var claimIds = ClaimsToDelete
+                .Select(claim => claim.Id)
+                .Concat(RequestedClaimIds)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList();
+
+            return new MemoryCleanupResult
+            {
+                Username = DefaultUsername,
+                Scope = Scope,
+                DryRun = dryRun,
+                NoOp = IsEmpty,
+                Sources = Sources,
+                ClaimIds = claimIds,
+                EntityIds = entityIds,
+                FactGroupsAffected = ImpactedFactGroups.Count,
+                ClaimsDeleted = ClaimsToDelete.Count,
+                EntitiesDeleted = EntitiesToDelete.Count,
+                OrphanEntitiesDeleted = OrphanEntityRowIds.Count,
+                ClaimEdgesDeleted = Deletes.ClaimEdgesToDelete,
+                ClaimEdgesRebuilt = RebuiltClaimEdges.Count,
+                EntityEdgesDeleted = Deletes.EntityEdgesToDelete,
+                EntityEdgesRebuilt = Rebuild.RebuiltEntityRelationshipCount,
+                AdjacencyDeleted = Deletes.AdjacencyToDelete,
+                AdjacencyRebuilt = Rebuild.RebuiltEntityRelationshipCount,
+                ActiveClaimsDeleted = Deletes.ActiveClaimsToDelete,
+                ActiveClaimsRebuilt = ClaimUpdates.Count(update => IsVisibleClaimStatus(update.Status)),
+                AliasesDeleted = Deletes.AliasesToDelete,
+                AliasesRebuilt = AliasRowsToRebuild.Count,
+                EvidenceDeleted = Deletes.EvidenceToDelete,
+                ObservationsDeleted = Deletes.ObservationsToDelete,
+                ObservationsRebuilt = RebuiltObservations.Count,
+                WriteReceiptsDeleted = ReceiptsToDelete.Count,
+            };
+        }
+
+        public static MemoryCleanupPlan Empty(
+            string scope,
+            DateTime now,
+            IReadOnlyList<string> sources,
+            IReadOnlyList<string> requestedClaimIds,
+            IReadOnlyList<string> requestedEntityIds)
+        {
+            return Create(
+                new MemoryCleanupRequestState(
+                    scope,
+                    now,
+                    sources,
+                    requestedClaimIds,
+                    requestedEntityIds,
+                    []),
+                new MemoryCleanupDeleteState(
+                    [],
+                    [],
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    new HashSet<long>(),
+                    []),
+                new MemoryCleanupRebuildState(
+                    [],
+                    [],
+                    [],
+                    new HashSet<long>(),
+                    new HashSet<long>(),
+                    0,
+                    []));
+        }
+
+        public static MemoryCleanupPlan Create(
+            MemoryCleanupRequestState request,
+            MemoryCleanupDeleteState deletes,
+            MemoryCleanupRebuildState rebuild)
+            => new(request, deletes, rebuild);
+    }
+
+    private sealed class CleanupClaimRow
+    {
+        public long RowId { get; set; }
+        public string Id { get; set; } = "";
+        public string ClaimKey { get; set; } = "";
+        public string FactGroupKey { get; set; } = "";
+        public long SubjectEntityRowId { get; set; }
+        public string Predicate { get; set; } = "";
+        public long? ObjectEntityRowId { get; set; }
+        public string Status { get; set; } = "active";
+        public DateTime RecordedAt { get; set; }
+        public string Source { get; set; } = "";
+    }
+
+    private sealed class CleanupEntityRow
+    {
+        public long RowId { get; set; }
+        public string Id { get; set; } = "";
+        public string? CanonicalId { get; set; }
+        public string Label { get; set; } = "";
+        public string? CanonicalName { get; set; }
+    }
+
+    private sealed class CleanupReceiptRow
+    {
+        public long RowId { get; set; }
+        public string ReceiptId { get; set; } = "";
+        public string Source { get; set; } = "";
+    }
+
+    private sealed class CleanupClaimEntityReferenceRow
+    {
+        public long SubjectEntityRowId { get; set; }
+        public long? ObjectEntityRowId { get; set; }
+    }
+
+    private sealed class CleanupObservationRow
+    {
+        public long RowId { get; set; }
+    }
 
     private sealed class MemoryEntityRow
     {
@@ -1510,5 +2832,35 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             StartedAt = StartedAt,
             CompletedAt = CompletedAt,
         };
+    }
+
+    private sealed class MemoryWriteDiagnosticsCounts
+    {
+        public int QueuedCount { get; set; }
+        public int StaleQueuedCount { get; set; }
+        public int ProcessingCount { get; set; }
+        public int RetryingCount { get; set; }
+        public int CompletedCount { get; set; }
+        public int FailedCount { get; set; }
+        public int SubmissionFailureCount { get; set; }
+        public int ProcessingFailureCount { get; set; }
+        public int StaleProcessingCount { get; set; }
+        public DateTime? OldestQueuedAt { get; set; }
+        public DateTime? OldestProcessingAt { get; set; }
+    }
+
+    private sealed class MemoryDiagnosticsCounts
+    {
+        public int EntityCount { get; set; }
+        public int ClaimCount { get; set; }
+        public int ActiveClaimCount { get; set; }
+        public int ConflictedClaimCount { get; set; }
+        public int SupersededClaimCount { get; set; }
+        public int DeprecatedClaimCount { get; set; }
+        public int SeedAliasCount { get; set; }
+        public int ObservationCount { get; set; }
+        public int EvidenceCount { get; set; }
+        public int OrphanObservationCount { get; set; }
+        public int OrphanEvidenceCount { get; set; }
     }
 }

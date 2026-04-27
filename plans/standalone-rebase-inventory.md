@@ -54,19 +54,28 @@ Inventory work is being recorded on CodeGraph branch `codex/standalone-rebase-in
 - Executable schema-sync slice: added an integrated `IndexerRunExecutor`/`IndexerRunBackgroundRunner` plus standalone `IDatabaseSchemaExtractor`/`DatabaseSchemaExtractor`. Queued schema-sync runs now start in-process after durable run creation, mark runs running/completed/failed, enumerate enabled database sources, ingest MariaDB schema objects into `db:{server}:{database}` graph projects, and refresh database-source `LastSyncedAt`. This keeps the standalone runtime useful before deciding whether to restore a separate remote indexer host.
 - Durable indexer operations slice: `indexer_runs` now carries optional `args_json`, and `/api/indexer` can queue repository processing, re-index-all, discovery, link, detect-communities, link-and-detect, batch-analysis processing, schema sync, and run-list/status operations through the same integrated background runner. The Angular admin operations surface now targets the durable indexer endpoints instead of directly invoking legacy `/api/settings` operations.
 - Neo4j-to-MariaDB migration tooling slice: added `Neo4jToMariaDbMigrationManifest.Current` as executable scaffolding for the export/import workload order: repositories, graph, wiki, analysis, reviews, metrics, vectors, memory, assistant, and jobs. `Neo4jToMariaDbMigrationPlanner.CreateDryRunReport` now turns that manifest into a typed dry-run report with ordered planned steps and explicit exporter/importer-pending notes before source-specific exporters/importers are implemented.
-- Neo4j-to-MariaDB migration API slice: the dry-run plan is now available through `GET /api/migration/neo4j-to-mariadb/dry-run` behind the admin policy via `INeo4jToMariaDbMigrationService`. Plan steps include stable `neo4j:{area}` exporter keys, `mariadb:{area}` importer keys, `CanExecute=false`, and blocking reasons until real readers/importers are implemented.
-- Neo4j-to-MariaDB repositories/graph execution slice: `CodeGraph.Data.Neo4j` now exposes a graph migration exporter for repository metadata, `CodeNode` nodes, graph relationships, and `CrossRepoEdge` records. `INeo4jToMariaDbMigrationService` uses the exporter plus the active MariaDB `IGraphStore` to import repositories, upsert graph nodes, remap Neo4j node IDs to MariaDB IDs, and insert graph/cross-repo edges. `GET /api/migration/neo4j-to-mariadb/dry-run` now includes live counts for the implemented repositories/graph areas, and `POST /api/migration/neo4j-to-mariadb/repositories-graph/run` executes that first slice with returned checkpoints and optional `indexer_runs` status updates. Remaining migration areas still need exporters/importers in manifest order.
+- Neo4j-to-MariaDB migration API slice: this previously exposed admin HTTP routes for dry-run planning and repositories/graph import execution.
+- Neo4j-to-MariaDB repositories/graph execution slice: `CodeGraph.Data.Neo4j` exposes a graph migration exporter for repository metadata, `CodeNode` nodes, graph relationships, and `CrossRepoEdge` records, with importer scaffolding that can map those records into the active MariaDB `IGraphStore`.
+- Migration endpoint removal slice: on 2026-04-27 the standalone cutover decision changed to fresh MariaDB data. The Neo4j-to-MariaDB API controller, memory migration HTTP endpoints, and memory migration MCP tools were removed from the public API/tool surface; the underlying compatibility/export scaffolding remains only as non-public reference code during the rebase.
 - Memory decoupling slice: updated MCP tool descriptions away from Neo4j-specific wording. The standalone direction remains integrated-first over `IMemoryGraphStore`/`MySqlMemoryGraphStore` and existing `MemoryService` contracts, with split memory host/client work deferred until remote-host value is clear.
 - Angular browser validation slice: the donor-style Vitest browser target has been restored as `npm run test:browser` using Playwright/Chromium. A standalone shell browser smoke spec now verifies that the top navigation renders the expected route set without creating page-level horizontal overflow, and the shell CSS wraps the nav/search layout cleanly at narrow browser widths. Validation on 2026-04-26: `npm run test:browser` passed with 1 browser test; `npm test -- --watch=false` passed with 20 jsdom tests; `npm run build` passed with only the pre-existing `repo-detail.component.scss` style-budget warning.
 - Local dev compose usability slice: `docker-compose.yml` now creates a named MCP network by default instead of requiring a pre-existing external `mcp-shared` network, and API/jobs containers mount the host repo root from `CODEGRAPH_DOCKER_REPOS_MOUNT` into `/repos` while keeping `/repos/.cache` writable through the existing named volume. `.env.example` documents `CODEGRAPH_DOCKER_REPOS_MOUNT` and `CODEGRAPH_DOCKER_MCP_NETWORK`. Validation on 2026-04-26: `docker compose config --quiet` passed.
 - Agent guidance refresh slice: repo-level `AGENTS.md` and `CLAUDE.md` now describe the current `.NET 10`, MariaDB-primary standalone architecture, expanded extractor projects, SQL migration path, and Neo4j compatibility/export boundary instead of the older `.NET 9`/Neo4j-primary shape.
+- Host shared foundation slice: `CodeGraph.Host.Shared` is now a `net10.0` project in the solution with standalone internal service auth options, a CodeGraph-owned internal identity header, HMAC token factory/validator, host descriptor registration, health-check registration, and shared activity sources. This replaces the donor Host.Shared/service-stack concept with a small standard-DI foundation that future API, Indexer.Host, Memory.Host, Metrics, and Jobs ports can consume. Validation on 2026-04-27: focused `InternalServiceTokenTests` passed with 3 tests and `dotnet build CodeGraph.sln --no-restore` passed with 0 warnings/errors.
+- Indexer client split slice: `CodeGraph.Indexer.Client` is now a `net10.0` project in the solution. It provides `IIndexerClient`, `HttpIndexerClient`, client options, DI registration, typed error handling, and internal service-token header attachment through `CodeGraph.Host.Shared`. The client targets the current durable `/api/indexer` operation surface: process repositories, reindex all, discover, schema sync, link, community detection, link-and-detect, batch-analysis processing, run lookup, and run listing. Validation on 2026-04-27: focused `HttpIndexerClientTests` passed with 4 tests and `dotnet build CodeGraph.sln --no-restore` passed with 0 warnings/errors. Remaining indexer split work is to create the deployable `CodeGraph.Indexer.Host`, move execution/consumers there, and update API/jobs delegation to use the client.
+- Indexer host split slice: `CodeGraph.Indexer.Host` is now a deployable `net10.0` web host on port `5042`. It owns the durable `/api/indexer` operation surface, `IndexerRunExecutor`/background runner, database schema extraction, TypeScript sidecar warmup and `/health/sidecar`, extractor registrations, RabbitMQ indexer consumers, and MariaDB migration/exclusion initialization. API can switch from integrated indexer execution to `RemoteIndexerOperationsService` when `CodeGraph:Indexer:BaseUrl` is configured, and jobs now trigger discovery, reindex, link/detect, and batch-analysis work through `CodeGraph.Indexer.Client`. Validation on 2026-04-27: focused indexer host/API/client tests passed with 7 tests and `dotnet build CodeGraph.sln --no-restore` passed with 0 warnings/errors. Remaining split-host work is local/dev Docker stack wiring plus later memory/metrics host parity.
+- Local/dev indexer stack slice: `Dockerfile.indexer` now builds/publishes `CodeGraph.Indexer.Host`; API and jobs Dockerfiles copy the new host-shared/indexer-client project files for restore; compose now runs `codegraph-indexer` as a distinct service on port `5042`, wires API/jobs to `http://codegraph-indexer:5042`, and keeps MariaDB/RabbitMQ external on `trefry-network`. CI/CD build and publish the indexer image alongside API/jobs/web, and production compose overrides the indexer image plus internal-service-auth settings. Validation on 2026-04-27: `docker compose config --quiet`, production compose config, workflow YAML parsing, build-stage Docker builds for API/jobs/indexer, and `dotnet build CodeGraph.sln --no-restore` all passed. Remaining local/dev stack scope waits on `CodeGraph.Metrics` existing as a deployable host.
+- Memory client/host foundation slice: `CodeGraph.Memory.Client` and `CodeGraph.Memory.Host` are now `net10.0` projects in the solution. The client provides `IMemoryClient`, `HttpMemoryClient`, options, typed error handling, transient read retry behavior, and CodeGraph internal-service-token header attachment. The host runs on port `5039`, uses `CodeGraph.Host.Shared` internal auth, exposes the current claim-centric `/api/memory` routes plus `/health/memory-write`, registers existing `CodeGraph.Services.Memory` services over `IMemoryGraphStore`, and owns the `store-memory-claims` MassTransit consumer. API/MCP memory calls now go through `IMemoryOperationsService`, which uses `CodeGraph.Memory.Client` when `CodeGraph:Memory:BaseUrl` is configured and falls back to the local `MemoryService`/message-bus path when it is empty. The memory API/client/host now also expose donor-style `GET /api/memory/writes/diagnostics`, `GET /api/memory/diagnostics`, and cleanup routes for source/test-data/explicit IDs. The MariaDB cleanup path supports dry runs and rebuilds affected active-claim, claim-edge, observation, entity-edge, adjacency, seed-alias, write-receipt, and orphan-entity projections after deletes. Validation on 2026-04-27: focused `MemoryClient|MemoryControllerCleanup|MariaDbMemoryGraphStore` tests passed with 14 tests, the backend `CodeGraph.Tests` project passed 523 tests with `--no-build`, and `dotnet build CodeGraph.sln --no-restore` passed with 0 warnings/errors. The first standalone cutover keeps memory contracts in `CodeGraph.Models`, persistence contracts/implementations in `CodeGraph.Data` and `CodeGraph.Data.MariaDb`, and memory services in `CodeGraph.Services` while preserving the deployable `CodeGraph.Memory.Host` and typed `CodeGraph.Memory.Client` boundary.
+- Local/dev memory stack slice: `Dockerfile.memory` now builds/publishes `CodeGraph.Memory.Host`; compose now runs `codegraph-memory` as a distinct service on port `5039`, wires API to `http://codegraph-memory:5039` through `CodeGraph.Memory.Client`, and leaves MariaDB/RabbitMQ external on `trefry-network`. CI/CD build and publish the memory image alongside API/jobs/indexer/web, and production compose overrides the memory image plus internal-service-auth settings. Validation on 2026-04-27: `docker compose config --quiet`, production compose config, workflow YAML parsing, and build-stage Docker builds for memory/API passed.
+- Metrics host foundation slice: `CodeGraph.Metrics` is now a deployable `net10.0` host on port `5041`. API/services publish normalized `LlmUsageRecorded` and `McpToolInvocationRecorded` events through MassTransit instead of writing telemetry directly, while the metrics host consumes those events and persists them through `IMetricsEventRecorder` and the existing MariaDB `IMetricsEventStore` with idempotent `event_id` handling. The split-host stack now includes `Dockerfile.metrics`, a `codegraph-metrics` compose service on `trefry-network`, GHCR CI/CD image wiring, and docs/env defaults. Validation on 2026-04-27: focused metrics tests, compose config, production compose config, workflow YAML parsing, Docker build-stage checks, and solution build were run for this slice.
 
 ## Solution Shape
 
-Current CodeGraph solution has 15 projects:
+Current CodeGraph solution has 21 projects:
 
 - `CodeGraph.Api`
 - `CodeGraph.Data`
+- `CodeGraph.Data.MariaDb`
 - `CodeGraph.Data.Neo4j`
 - `CodeGraph.Extractors.Ansible`
 - `CodeGraph.Extractors.ColdFusion`
@@ -75,8 +84,13 @@ Current CodeGraph solution has 15 projects:
 - `CodeGraph.Extractors.Terraform`
 - `CodeGraph.Extractors.TreeSitter`
 - `CodeGraph.Extractors.TypeScript`
+- `CodeGraph.Host.Shared`
+- `CodeGraph.Indexer.Client`
+- `CodeGraph.Indexer.Host`
 - `CodeGraph.Jobs`
 - `CodeGraph.Jobs.Tests`
+- `CodeGraph.Memory.Client`
+- `CodeGraph.Memory.Host`
 - `CodeGraph.Models`
 - `CodeGraph.Services`
 - `CodeGraph.Tests`
@@ -133,7 +147,7 @@ Donor split hosts add additional controller surfaces:
 - Jobs host: job-trigger endpoints for repository discovery, repository processing, batch result processing, link/detect, schema sync, and assistant retention cleanup
 - Metrics host: health check surface backed by MariaDB context
 
-Porting implication: decide per slice whether these remain split hosts or become integrated endpoints in the standalone API/jobs architecture.
+Porting implication: the 2026-04-27 architecture correction resolves the earlier split/collapse question. These boundaries should be restored as standalone deployable hosts and clients, with API/jobs delegating to them. The integrated API/services implementations already ported in this branch are reusable scaffolding, but they are not the final runtime shape for indexer, memory, or metrics.
 
 ## Persistence And Migrations
 
@@ -218,6 +232,121 @@ TC donor:
 
 Porting implication: TC queue, service-stack, permission, and job utility dependencies should not cross the boundary. Preserve behavior through standard ASP.NET Core hosting, standard DI, the existing message bus abstraction, MassTransit/RabbitMQ where needed, and explicit standalone auth options.
 
+## Split-Host Donor Architecture Inventory (2026-04-27)
+
+This section freezes the corrected donor/current mapping for the required split-host architecture. The donor reference is `/Users/michael/Repos/TC.CodeGraphApi`; the standalone implementation target is `/Users/michael/Repos/CodeGraph`, still on `net10.0`.
+
+### Target Deployable Boundaries
+
+| Target standalone project | Donor project | Donor port | Primary responsibilities | Current standalone status |
+| --- | --- | ---: | --- | --- |
+| `CodeGraph.Host.Shared` | `TC.CodeGraphApi.Host.Shared` | n/a | Shared host setup, OpenTelemetry wiring, internal service identity options, shared MariaDB/config registration helpers, HTTP clients for memory/indexer | Present as a standalone shared auth/health/activity-source foundation used by split hosts and typed clients. |
+| `CodeGraph.Indexer.Client` | `TC.CodeGraphApi.Indexer.Client` | n/a | Typed HTTP client for indexer operations, internal identity header/token attachment, client options/mode registration | Present. API and jobs can delegate through it when `CodeGraph:Indexer:BaseUrl` is configured. |
+| `CodeGraph.Indexer.Host` | `TC.CodeGraphApi.Indexer.Host` | 5042 | Repository indexing, repository reanalysis, discovery, schema sync, link/community operations, batch-result processing, TypeScript sidecar warmup, run status, indexer consumers | Present as a deployable host with durable indexer execution, controller routes, consumers, schema sync, and TypeScript sidecar warmup. |
+| `CodeGraph.Memory` | `TC.CodeGraphApi.Memory` | n/a | Claim-centric memory contracts, models, request DTOs, legacy bridge models, embedding/claim store interfaces | Deliberately not created for first standalone cutover. Current contracts remain in `CodeGraph.Models/Memory` to avoid churn before API/jobs recomposition. |
+| `CodeGraph.Memory.Data` | `TC.CodeGraphApi.Memory.Data` | n/a | MariaDB memory claim store, memory DbContext/records, seed alias utilities | Deliberately not created for first standalone cutover. `CodeGraph.Data` and `CodeGraph.Data.MariaDb/MySqlMemoryGraphStore.cs` remain the persistence boundary over the donor-style MariaDB memory schema. |
+| `CodeGraph.Memory.Services` | `TC.CodeGraphApi.Memory.Services` | n/a | Memory write submission/receipts, search, bundles, subgraph/frontier, cleanup, diagnostics, ONNX embeddings, legacy read adapter | Deliberately not created for first standalone cutover. Current memory services stay under `CodeGraph.Services/Memory`, composed by `CodeGraph.Memory.Host` and delegated to by API/MCP through the client boundary. |
+| `CodeGraph.Memory.Client` | `TC.CodeGraphApi.Memory.Client` | n/a | Typed HTTP client for memory search/subgraph/frontier/bundles/write status/cleanup/graph, transient retry behavior, internal identity token attachment | Present. API/MCP can delegate memory operations through it when `CodeGraph:Memory:BaseUrl` is configured, with local fallback when empty. |
+| `CodeGraph.Memory.Host` | `TC.CodeGraphApi.Memory.Host` | 5039 | Memory REST API, write health probe, `StoreMemory` consumer, memory service composition | Present as a deployable host with memory REST routes, write health, diagnostics, and the async `store-memory-claims` consumer. |
+| `CodeGraph.Metrics` | `TC.CodeGraphApi.Metrics` | 5041 | Consume LLM usage and MCP tool invocation events, normalize/idempotently persist telemetry, health endpoint | Present. `CodeGraph.Services/Metrics/MetricsEventPublisher` now publishes telemetry messages; `CodeGraph.Metrics` consumes and persists them through `IMetricsEventRecorder`. |
+| `CodeGraph.Jobs` | `TC.CodeGraphJobs` | host-specific | Scheduled triggers for repository processing, discovery, batch processing, link/detect, schema sync, assistant retention cleanup | Present, but still runs integrated jobs/services. Needs to use indexer/memory clients once split boundaries exist. |
+
+### Donor Project References And Packages
+
+All donor split-host projects target `net9.0`; every port must upgrade to `net10.0`.
+
+| Donor project | Project references | Package notes |
+| --- | --- | --- |
+| `TC.CodeGraphApi.Host.Shared` | Data, Models, Indexer.Client, Memory.Client | OpenTelemetry packages only; no TC service-stack package in the csproj, but concepts must be adapted into standalone host extensions. |
+| `TC.CodeGraphApi.Indexer.Client` | Models | `Microsoft.Extensions.DependencyInjection.Abstractions`, `Microsoft.Extensions.Http`, `Microsoft.Extensions.Options`. |
+| `TC.CodeGraphApi.Indexer.Host` | Host.Shared, Indexer.Client, Models, Data, Services, CSharp/SQL/ColdFusion/TypeScript/Ansible/Terraform extractors | `Autofac.Extensions.DependencyInjection`, `TC.Common.TcServiceStack`, `TC.Jarvis.ApiDocumentation*`. TC packages must be replaced. Add `TreeSitter` extractor in standalone if it should remain available to indexer host. |
+| `TC.CodeGraphApi.Memory` | none | `Microsoft.Extensions.Logging.Abstractions`. |
+| `TC.CodeGraphApi.Memory.Data` | Memory | `Dapper`, `MySqlConnector`, `Pomelo.EntityFrameworkCore.MySql`, `Microsoft.Extensions.Options`. Use standalone MariaDB option names/versions. |
+| `TC.CodeGraphApi.Memory.Services` | Data, Models, Memory, Memory.Data | `Microsoft.ML.OnnxRuntime`, `Microsoft.ML.Tokenizers`, `TC.Common.TcServiceStack.Queue`. Replace TC queue dependency with standalone messaging abstractions. |
+| `TC.CodeGraphApi.Memory.Client` | Memory, Memory.Services | `Microsoft.Extensions.DependencyInjection.Abstractions`, `Microsoft.Extensions.Http`, `Microsoft.Extensions.Options`. |
+| `TC.CodeGraphApi.Memory.Host` | Host.Shared, Models, Memory, Memory.Data, Memory.Services, Services | `Autofac.Extensions.DependencyInjection`, `TC.Common.TcServiceStack`, `TC.Jarvis.ApiDocumentation*`. TC packages must be replaced. |
+| `TC.CodeGraphApi.Metrics` | Host.Shared, Data, Models, Services | `Autofac.Extensions.DependencyInjection`, `TC.Common.TcServiceStack`, `TC.Jarvis.ApiDocumentation*`. TC packages must be replaced. |
+| Donor split tests | Host/client/data/service projects under test | `Microsoft.AspNetCore.Mvc.Testing 9.0.0`, EF Core test providers 9.0.0, xUnit, Shouldly, NSubstitute. Upgrade ASP.NET/EF test packages to `.NET 10` compatible versions while porting. |
+
+### Donor Runtime Surfaces To Preserve
+
+### Memory Library Split Decision
+
+For the first standalone cutover, do not create physical `CodeGraph.Memory`, `CodeGraph.Memory.Data`, or `CodeGraph.Memory.Services` projects. The runtime value of the donor split is the deployable host/client boundary, not the namespace reshuffle. The current standalone implementation already has that runtime boundary through `CodeGraph.Memory.Host`, `CodeGraph.Memory.Client`, `IMemoryOperationsService`, and `CodeGraph.Host.Shared`.
+
+Keep memory DTOs/contracts in `CodeGraph.Models/Memory`, store contracts and MariaDB implementation in `CodeGraph.Data`/`CodeGraph.Data.MariaDb`, and memory ingestion/retrieval services in `CodeGraph.Services/Memory` for the first cutover. Revisit physical library extraction only after API/jobs recomposition is stable enough for the move to be mechanical and test-backed instead of mixed with behavior changes.
+
+This decision means the completed memory split work covers the deployable boundary, API/MCP delegation, async write host ownership, diagnostics, cleanup/projection-rebuild parity, compose/CI wiring, and local fallback mode.
+
+Indexer client/host:
+
+- `IIndexerClient` covers index repository, reanalyze repository, discover, link, detect communities, link-all, sync all schemas, sync one schema, process batch results, get run, and get status.
+- `HttpIndexerClient` uses routes under `api/indexer` and attaches an internal identity header named `X-Tc-Internal-Identity`; standalone should rename this header to a CodeGraph-owned name or centralize it behind host-shared auth options.
+- `IndexerController` exposes `POST api/indexer/repositories/{name}/index`, `POST api/indexer/repositories/{name}/reanalyze`, `POST api/indexer/discover`, `POST api/indexer/link-all`, `POST api/indexer/link`, `POST api/indexer/communities/detect`, `POST api/indexer/schemas/sync-all`, `POST api/indexer/schemas/{sourceId}/sync`, `POST api/indexer/results/process`, `GET api/indexer/runs/{runId}`, and `GET api/indexer/status`.
+- `IndexerCommandService` publishes `ProcessRepository` for index/discovery work, executes reanalysis via repository processing plus batch submission, creates durable `indexer_runs` for link/community/schema operations, and reports status from `indexer_runs`, repositories, sync states, and analysis batches.
+- `IndexerRunExecutor` owns durable execution for link, detect communities, link-all, schema sync, and run failure/completion transitions. The current standalone `IndexerRunExecutor` already has a broader integrated operation set and `args_json`; preserve that improvement when moving into the host.
+- Indexer consumers to port: `AnalysisBatchSubmittedConsumer`, `AnalysisSynthesisCompletedConsumer`, `ProcessRepositoryConsumer`, `ProjectAnalysisResultsProcessedConsumer`, `RepositoryIndexingCompletedConsumer`, and `RepositoryRemovedConsumer`.
+
+Memory client/host:
+
+- `IMemoryRemoteClient` covers search, subgraph, frontier expansion, entity bundle, claim bundle, queued write, write status, write diagnostics, memory diagnostics, graph snapshot, entity-with-relationships, cleanup by source/test data/ids.
+- `HttpMemoryRemoteClient` uses routes under `api/memory`, attaches `X-Tc-Internal-Identity`, and retries transient read/query requests up to three attempts. Preserve retry behavior, but move header naming/signing into standalone host shared infrastructure.
+- `MemoryController` exposes `POST api/memory/store`, `POST api/memory/search`, `POST api/memory/subgraph`, `POST api/memory/frontier/expand`, `GET api/memory/entities/{id}/bundle`, `GET api/memory/claims/{id}/bundle`, `GET api/memory/writes/{receiptId}`, `GET api/memory/writes/diagnostics`, `GET api/memory/diagnostics`, `GET api/memory/graph`, `GET api/memory/entities/{id}`, and cleanup endpoints under `api/memory/cleanup/*`.
+- `MemoryWriteHealthController` provides a write probe that submits a synthetic extraction and polls receipt status.
+- `StoreMemoryConsumer` processes async `StoreMemory` messages through `MemoryService` and `MemoryWriteReceiptService`.
+
+Metrics host:
+
+- `LlmUsageRecordedConsumer` consumes `LlmUsageRecorded`, normalizes usernames/tokens/event IDs through `LlmUsageRecorder`, and persists to the existing LLM usage tables.
+- `McpToolInvocationRecordedConsumer` consumes `McpToolInvocationRecorded`, normalizes user/tool/error/duration/event ID through `McpTelemetryRecorder`, and persists to the MCP telemetry tables.
+- `MetricsEventPublisher` publishes `LlmUsageRecorded` and `McpToolInvocationRecorded` events through RabbitMQ/MassTransit; `CodeGraph.Metrics` records them through MariaDB-backed `IMetricsEventStore`.
+
+### TC-Specific Dependencies To Replace
+
+- Replace `TC.Common.TcServiceStack` host inheritance and `Program.cs` service-stack bootstrapping with standard ASP.NET Core `WebApplication`/generic host startup.
+- Remove Consul/service registrar behavior such as `DISABLE_SERVICE_REGISTRAR`, `TC_COLOCATION`, `HostingOptions.ConsulAgentUrl`, and Jarvis API documentation packages.
+- Replace `TC.Jarvis.DependencyInjection`/Autofac scope usage with standard Microsoft DI unless a specific local pattern demands otherwise.
+- Replace `TC.Common.TcServiceStack.Queue`/`ITcServiceBus` with the existing standalone `IMessageBus` plus MassTransit/RabbitMQ consumers. Loopback buses may remain as local/test adapters, but should implement standalone interfaces.
+- Replace `TcConsumer<T>` and `TcConsumerDefinition<T>` with plain MassTransit `IConsumer<T>` and shared retry configuration from standalone `ConsumerOptions`.
+- Replace the internal identity header name `X-Tc-Internal-Identity` with a CodeGraph-owned header and service-token/HMAC options under `CodeGraph:InternalServiceAuth` or equivalent host-shared options.
+- Keep standalone browser/API auth based on `CodeGraph:AuthOptions`, `CodeGraphUser`, and `CodeGraphAdmin`; do not import TC permission gateway or Jarvis auth assumptions.
+- Keep MariaDB and RabbitMQ external/shared on `trefry-network`; the standalone compose/deploy stack must not define owned database or broker containers.
+
+### Current Standalone Code To Harvest
+
+- Indexer scaffolding: `CodeGraph.Services/Indexer/IIndexerOperationsService.cs`, `StandaloneIndexerOperationsService.cs`, `IndexerRunExecutor.cs`, `IndexerRunBackgroundRunner.cs`, `IIndexerRunBackgroundRunner.cs`, `CodeGraph.Api/Controllers/IndexerController.cs`, `CodeGraph.Data/IIndexerRunStore.cs`, and `CodeGraph.Data.MariaDb/MySqlIndexerRunStore.cs`.
+- Indexer improvements over donor: `args_json` for durable run arguments, run listing/filtering, queued operations for process repositories, reindex all, discovery, link, detect, link-and-detect, batch analysis processing, schema sync, and sync-all.
+- Schema sync scaffolding: `CodeGraph.Services/DatabaseSchema/IDatabaseSchemaExtractor.cs` and `DatabaseSchemaExtractor.cs`.
+- Messaging: `CodeGraph.Services/Messaging/IMessageBus.cs`, `MassTransitMessageBus.cs`, and plain MassTransit consumers under `CodeGraph.Api/Consumers`.
+- Memory scaffolding: current `CodeGraph.Models/Memory`, `CodeGraph.Services/Memory/*`, `CodeGraph.Services/Assistant/MemoryMcpServer.cs`, `CodeGraph.Api/Controllers/MemoryController.cs`, `CodeGraph.Api/Consumers/StoreMemoryClaimsConsumer.cs`, `CodeGraph.Data/IMemoryGraphStore.cs`, and `CodeGraph.Data.MariaDb/MySqlMemoryGraphStore.cs`.
+- Metrics scaffolding: `CodeGraph.Services/Metrics/IMetricsEventPublisher.cs`, `MetricsEventPublisher.cs`, `CodeGraph.Data/IMetricsEventStore.cs`, and `CodeGraph.Data.MariaDb/MySqlMetricsEventStore.cs`.
+- Auth/config scaffolding: `CodeGraph.Api/Auth/*`, `CodeGraph.Services/Configuration/*`, `CodeGraph.Api/Middleware/McpTelemetryMiddleware.cs`, and the existing RabbitMQ configuration in `Startup.cs`.
+
+### Responsibilities That Must Move Out Of `CodeGraph.Api`
+
+- Repository processing consumers and heavy indexing execution should move to `CodeGraph.Indexer.Host`.
+- Batch analysis result processing, repository indexing completion follow-up, cross-repo linking, community detection, database schema sync, and TypeScript sidecar warmup should move to `CodeGraph.Indexer.Host`.
+- Async memory write consumption and claim-centric memory read/write/search/cleanup services should move to `CodeGraph.Memory.Host`/`CodeGraph.Memory.Services`, with API/MCP delegating through `CodeGraph.Memory.Client` unless explicitly running in local mode.
+- LLM usage and MCP telemetry persistence should move to `CodeGraph.Metrics` consumers; API/services should publish events rather than writing directly in normal split-host mode.
+- Jobs should trigger work through `CodeGraph.Indexer.Client` and memory/metrics clients or messages, not by owning the work inline.
+
+### Deployment And Configuration Inventory
+
+- Donor local compose runs API, Memory, Metrics, Indexer, Jobs, and Web as separate services. API depends on Memory and Indexer health; Jobs depends on Indexer health.
+- Donor local ports are API `5037`, Memory `5039`, Metrics `5041`, Indexer `5042`, Web `4200`.
+- Donor API config has `CodeGraph:Memory:BaseUrl=http://127.0.0.1:5039`, `CodeGraph:Memory:Audience=codegraph-memory`, `CodeGraph:Indexer:BaseUrl=http://127.0.0.1:5042`, and `CodeGraph:Indexer:Audience=codegraph-indexer`.
+- Donor host health checks are `/health` for Memory/Metrics and `/health/sidecar` for Indexer.
+- Current standalone compose runs API, Web, Jobs, Indexer, Memory, and Metrics, using shared MariaDB/RabbitMQ on `trefry-network`. It does not add owned MariaDB or RabbitMQ containers.
+
+### Implementation Slices Implied By This Inventory
+
+1. Port `CodeGraph.Host.Shared` first with standalone service-to-service auth, OpenTelemetry-friendly setup, shared health/config helpers, and typed client registration support.
+2. Port `CodeGraph.Indexer.Client` and adapt API/jobs to call it behind an options-controlled local/remote mode.
+3. Create `CodeGraph.Indexer.Host` and move the harvested integrated indexer executor, operations service, controller routes, consumers, extractors, schema sync, and TypeScript warmup into that host.
+4. Keep memory libraries in `CodeGraph.Models`, `CodeGraph.Data`/`CodeGraph.Data.MariaDb`, and `CodeGraph.Services` for the first standalone cutover while preserving the deployable `CodeGraph.Memory.Host` and `CodeGraph.Memory.Client` boundary.
+5. Continue split-host parity by recomposing API/jobs around the completed indexer, memory, and metrics boundaries, then restore broader donor test coverage.
+6. Update `CodeGraph.Jobs`, compose, Dockerfiles, README, and tests after the host/client projects exist.
+
 Standalone auth status:
 
 - `CodeGraph:AuthOptions:Enabled=false` keeps local development open through a synthetic `local-admin` identity.
@@ -300,12 +429,10 @@ Recommended next slices after this inventory:
 2. Treat bootstrap as in-place donor import into the existing CodeGraph repository.
 3. Port the MariaDB data provider and migration runner before replacing runtime registration.
 4. Remove TC hosting/auth/messaging dependencies at the boundary of each imported host or service, not as a separate late cleanup.
-5. Treat split host architecture decisions for indexer and memory as explicit design points before copying large surfaces.
+5. Treat split host architecture for indexer, memory, and metrics as required for this epic, not an optional collapse/integration decision.
 6. Use donor tests as acceptance criteria for each imported capability, upgraded to `net10.0`.
 
 ## Open Questions
 
 - Should `CodeGraph.Data.Neo4j` stay temporarily for export/import tooling, or be removed from runtime once MariaDB is registered?
-- Should the donor split indexer/memory hosts remain separate processes in standalone CodeGraph, or should standalone collapse them into the API/jobs host first?
 - Live Keycloak testing still needs coordinated realm/client/audience settings for `https://identity.trefry.net`.
-- Should the donor `TC.CodeGraphApi.Metrics` host become a standalone project, or should metrics publishing/reporting live inside the API/jobs services?

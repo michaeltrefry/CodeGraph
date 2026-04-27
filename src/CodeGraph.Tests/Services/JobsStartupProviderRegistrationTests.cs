@@ -1,27 +1,23 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
+using CodeGraph.Indexer.Client;
 using CodeGraph.Jobs;
-using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services;
 
 namespace CodeGraph.Tests.Services;
 
 public class JobsStartupProviderRegistrationTests
 {
-    [Theory]
-    [InlineData("anthropic", "anthropic")]
-    [InlineData("openai", "openai")]
-    [InlineData("gemini", "gemini")]
-    [InlineData("local", "local")]
-    public async Task ConfigureServices_RegistersRequestedAnalysisProvider(string defaultProvider, string expectedProvider)
+    [Fact]
+    public async Task ConfigureServices_RegistersIndexerClientWithoutAnalysisExecutionGraph()
     {
         var services = new ServiceCollection();
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["CodeGraph:AnalysisOptions:DefaultProvider"] = defaultProvider,
                 ["CodeGraph:RepositorySource:Provider"] = "Folder",
                 ["CodeGraph:RepositorySource:Folder:RootPath"] = "/tmp",
                 ["CodeGraph:StorageOptions:MariaDbConnectionString"] = "Server=localhost;Database=codegraph_tests;User ID=codegraph;Password=codegraph_test!;"
@@ -32,9 +28,10 @@ public class JobsStartupProviderRegistrationTests
 
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var registry = scope.ServiceProvider.GetRequiredService<IAnalysisProviderRegistry>();
 
-        registry.GetProvider().ProviderName.ShouldBe(expectedProvider);
+        scope.ServiceProvider.GetRequiredService<IIndexerClient>().ShouldNotBeNull();
+        services.ShouldNotContain(d => d.ServiceType.Name == "IAnalysisProviderRegistry");
+        services.ShouldNotContain(d => d.ServiceType == typeof(IAdminService));
     }
 
     [Fact]
@@ -61,6 +58,6 @@ public class JobsStartupProviderRegistrationTests
         });
 
         using var scope = provider.CreateScope();
-        scope.ServiceProvider.GetRequiredService<IAnalysisProviderRegistry>().ShouldNotBeNull();
+        scope.ServiceProvider.GetRequiredService<IIndexerClient>().ShouldNotBeNull();
     }
 }

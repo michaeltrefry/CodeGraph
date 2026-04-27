@@ -5,6 +5,9 @@ WORKDIR /src
 COPY nuget.docker.config nuget.config
 COPY CodeGraph.sln .
 COPY src/CodeGraph.Api/CodeGraph.Api.csproj src/CodeGraph.Api/
+COPY src/CodeGraph.Host.Shared/CodeGraph.Host.Shared.csproj src/CodeGraph.Host.Shared/
+COPY src/CodeGraph.Indexer.Client/CodeGraph.Indexer.Client.csproj src/CodeGraph.Indexer.Client/
+COPY src/CodeGraph.Memory.Client/CodeGraph.Memory.Client.csproj src/CodeGraph.Memory.Client/
 COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
 COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
 COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/

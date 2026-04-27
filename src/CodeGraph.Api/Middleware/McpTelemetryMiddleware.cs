@@ -8,7 +8,7 @@ namespace CodeGraph.Api.Middleware;
 
 public sealed class McpTelemetryMiddleware(
     RequestDelegate next,
-    IMetricsEventPublisher metricsEventPublisher,
+    IServiceScopeFactory scopeFactory,
     ILogger<McpTelemetryMiddleware> logger)
 {
     private static readonly PathString McpPath = new("/mcp");
@@ -66,6 +66,8 @@ public sealed class McpTelemetryMiddleware(
     {
         try
         {
+            using var scope = scopeFactory.CreateScope();
+            var metricsEventPublisher = scope.ServiceProvider.GetRequiredService<IMetricsEventPublisher>();
             await metricsEventPublisher.PublishMcpToolInvocationAsync(
                 new McpToolInvocationRecord(
                     toolName,

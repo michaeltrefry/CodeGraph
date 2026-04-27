@@ -1,0 +1,76 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Copy NuGet config and project files for restore
+COPY nuget.docker.config nuget.config
+COPY CodeGraph.sln .
+COPY src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj src/CodeGraph.Indexer.Host/
+COPY src/CodeGraph.Host.Shared/CodeGraph.Host.Shared.csproj src/CodeGraph.Host.Shared/
+COPY src/CodeGraph.Models/CodeGraph.Models.csproj src/CodeGraph.Models/
+COPY src/CodeGraph.Services/CodeGraph.Services.csproj src/CodeGraph.Services/
+COPY src/CodeGraph.Data/CodeGraph.Data.csproj src/CodeGraph.Data/
+COPY src/CodeGraph.Data.Neo4j/CodeGraph.Data.Neo4j.csproj src/CodeGraph.Data.Neo4j/
+COPY src/CodeGraph.Data.MariaDb/CodeGraph.Data.MariaDb.csproj src/CodeGraph.Data.MariaDb/
+COPY src/CodeGraph.Extractors.Ansible/CodeGraph.Extractors.Ansible.csproj src/CodeGraph.Extractors.Ansible/
+COPY src/CodeGraph.Extractors.CSharp/CodeGraph.Extractors.CSharp.csproj src/CodeGraph.Extractors.CSharp/
+COPY src/CodeGraph.Extractors.ColdFusion/CodeGraph.Extractors.ColdFusion.csproj src/CodeGraph.Extractors.ColdFusion/
+COPY src/CodeGraph.Extractors.TypeScript/CodeGraph.Extractors.TypeScript.csproj src/CodeGraph.Extractors.TypeScript/
+COPY src/CodeGraph.Extractors.Sql/CodeGraph.Extractors.Sql.csproj src/CodeGraph.Extractors.Sql/
+COPY src/CodeGraph.Extractors.Terraform/CodeGraph.Extractors.Terraform.csproj src/CodeGraph.Extractors.Terraform/
+COPY src/CodeGraph.Extractors.TreeSitter/CodeGraph.Extractors.TreeSitter.csproj src/CodeGraph.Extractors.TreeSitter/
+
+RUN dotnet restore src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj
+
+# Copy everything and publish
+COPY src/ src/
+RUN dotnet publish src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj -c Release -o /app/publish --no-restore
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
+WORKDIR /app
+
+# Install git, ssh, Node.js, and Mono for legacy .NET Framework NuGet restore
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git openssh-client curl unzip nodejs npm mono-complete && rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -o /usr/local/bin/nuget.exe && \
+    printf '#!/bin/sh\nmono /usr/local/bin/nuget.exe "$@"\n' > /usr/local/bin/nuget && \
+    chmod +x /usr/local/bin/nuget
+
+RUN echo "deb http://ports.ubuntu.com/ubuntu-ports focal-security main" > /etc/apt/sources.list.d/focal-libssl.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libssl1.1 && \
+    rm -f /etc/apt/sources.list.d/focal-libssl.list && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN dotnet new console -n _fxref -o /tmp/_fxref --no-restore && \
+    dotnet add /tmp/_fxref/_fxref.csproj package Microsoft.NETFramework.ReferenceAssemblies --version 1.0.3 --no-restore && \
+    dotnet restore /tmp/_fxref/_fxref.csproj && \
+    rm -rf /tmp/_fxref
+
+RUN mkdir -p /repos/.cache
+COPY docker/Directory.Build.props /repos/.cache/Directory.Build.props
+
+RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
+    curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
+    chmod +x /tmp/dotnet-install.sh && \
+    /tmp/dotnet-install.sh --version 2.1.802 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 6.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 7.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet && \
+    /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet && \
+    rm /tmp/dotnet-install.sh
+
+# Copy ts-extractor sidecar
+COPY tools/ts-extractor/package.json tools/ts-extractor/package-lock.json /app/tools/ts-extractor/
+RUN cd /app/tools/ts-extractor && npm ci --omit=dev
+COPY tools/ts-extractor/dist/ /app/tools/ts-extractor/dist/
+
+COPY --from=build /app/publish .
+COPY sql/migrations /app/sql/migrations
+COPY nuget.docker.config /root/.nuget/NuGet/NuGet.Config
+
+ENV ASPNETCORE_ENVIRONMENT=Staging
+ENV ASPNETCORE_URLS=http://+:5042
+EXPOSE 5042
+
+ENTRYPOINT ["dotnet", "CodeGraph.Indexer.Host.dll"]

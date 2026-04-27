@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Anthropic;
 using CodeGraph.Api.Auth;
 using CodeGraph.Api.Consumers;
+using CodeGraph.Api.Memory;
 using CodeGraph.Api.Middleware;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using CodeGraph.Api.Indexer;
 using CodeGraph.Data;
 using CodeGraph.Data.Migration;
 using CodeGraph.Data.MariaDb;
@@ -21,7 +23,9 @@ using CodeGraph.Extractors.Sql;
 using CodeGraph.Extractors.Terraform;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
+using CodeGraph.Indexer.Client;
 using CodeGraph.Jobs;
+using CodeGraph.Memory.Client;
 using ModelContextProtocol.AspNetCore;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
@@ -34,7 +38,6 @@ using CodeGraph.Services.Indexer;
 using CodeGraph.Services.Memory;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Metrics;
-using CodeGraph.Services.Migration;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
@@ -51,6 +54,7 @@ public static class Startup
         services.AddCodeGraphOptions(configuration);
 
         services.AddHttpClient();
+        services.AddHttpContextAccessor();
 
         services
             .AddMvc()
@@ -170,10 +174,7 @@ public static class Startup
         services.AddTransient<IRepositoryReviewService>(sp => sp.GetRequiredService<RepositoryReviewService>());
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IAdminReportsService, AdminReportsService>();
-        services.AddTransient<IDatabaseSchemaExtractor, DatabaseSchemaExtractor>();
-        services.AddTransient<IndexerRunExecutor>();
-        services.AddSingleton<IIndexerRunBackgroundRunner, IndexerRunBackgroundRunner>();
-        services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
+        RegisterIndexerOperations(services, configuration);
         services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
@@ -185,8 +186,6 @@ public static class Startup
         services.AddTransient<INodeQueryService, NodeQueryService>();
         services.AddTransient<ISearchService, SearchService>();
         services.AddTransient<IExclusionService, ExclusionService>();
-        services.AddTransient<Neo4jToMariaDbMigrationPlanner>();
-        services.AddTransient<INeo4jToMariaDbMigrationService, Neo4jToMariaDbMigrationService>();
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         RegisterRepoProvider(services);
@@ -198,21 +197,41 @@ public static class Startup
         services.AddTransient<MemoryObservationMigrationService>();
         services.AddTransient<MemoryRetrievalService>();
         services.AddTransient<MemoryService>();
+        RegisterMemoryOperations(services, configuration);
 
         // Messaging — IMessageBus wraps MassTransit IPublishEndpoint
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
 
-        // MassTransit + RabbitMQ
+        RegisterMessaging(services, configuration);
+        RegisterMcp(services);
+    }
+
+    private static void RegisterMessaging(IServiceCollection services, IConfiguration configuration)
+    {
+        var indexerOptions = configuration
+            .GetSection(IndexerClientOptions.SectionPath)
+            .Get<IndexerClientOptions>() ?? new IndexerClientOptions();
+        var useRemoteIndexer = !string.IsNullOrWhiteSpace(indexerOptions.BaseUrl);
+        var memoryOptions = configuration
+            .GetSection(MemoryClientOptions.SectionPath)
+            .Get<MemoryClientOptions>() ?? new MemoryClientOptions();
+        var useRemoteMemory = !string.IsNullOrWhiteSpace(memoryOptions.BaseUrl);
+
         services.AddMassTransit(x =>
         {
             x.AddDelayedMessageScheduler();
-            x.AddConsumer<ProcessRepositoryConsumer>();
-            x.AddConsumer<RepositoryIndexingCompletedConsumer>();
-            x.AddConsumer<AnalysisBatchSubmittedConsumer>();
-            x.AddConsumer<ProjectAnalysisResultsProcessedConsumer>();
-            x.AddConsumer<AnalysisSynthesisCompletedConsumer>();
-            x.AddConsumer<RepositoryRemovedConsumer>();
-            x.AddConsumer<StoreMemoryClaimsConsumer>();
+            if (!useRemoteIndexer)
+            {
+                x.AddConsumer<ProcessRepositoryConsumer>();
+                x.AddConsumer<RepositoryIndexingCompletedConsumer>();
+                x.AddConsumer<AnalysisBatchSubmittedConsumer>();
+                x.AddConsumer<ProjectAnalysisResultsProcessedConsumer>();
+                x.AddConsumer<AnalysisSynthesisCompletedConsumer>();
+                x.AddConsumer<RepositoryRemovedConsumer>();
+            }
+
+            if (!useRemoteMemory)
+                x.AddConsumer<StoreMemoryClaimsConsumer>();
 
             x.UsingRabbitMq((context, cfg) =>
             {
@@ -226,52 +245,90 @@ public static class Startup
                 });
 
                 var consumerOptions = context.GetRequiredService<IOptions<ConsumerOptions>>().Value;
-
-                cfg.ReceiveEndpoint("process-repository", e =>
+                if (!useRemoteIndexer)
                 {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<ProcessRepositoryConsumer>(context);
-                });
+                    cfg.ReceiveEndpoint("process-repository", e =>
+                    {
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<ProcessRepositoryConsumer>(context);
+                    });
+                    cfg.ReceiveEndpoint("repository-indexing-completed", e =>
+                    {
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<RepositoryIndexingCompletedConsumer>(context);
+                    });
+                    cfg.ReceiveEndpoint("analysis-batch-submitted", e =>
+                    {
+                        e.ConcurrentMessageLimit = 1;
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<AnalysisBatchSubmittedConsumer>(context);
+                    });
+                    cfg.ReceiveEndpoint("project-analysis-results-processed", e =>
+                    {
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<ProjectAnalysisResultsProcessedConsumer>(context);
+                    });
+                    cfg.ReceiveEndpoint("analysis-synthesis-completed", e =>
+                    {
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<AnalysisSynthesisCompletedConsumer>(context);
+                    });
+                    cfg.ReceiveEndpoint("repository-removed", e =>
+                    {
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<RepositoryRemovedConsumer>(context);
+                    });
+                }
 
-                cfg.ReceiveEndpoint("repository-indexing-completed", e =>
+                if (!useRemoteMemory)
                 {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<RepositoryIndexingCompletedConsumer>(context);
-                });
-
-                cfg.ReceiveEndpoint("analysis-batch-submitted", e =>
-                {
-                    e.ConcurrentMessageLimit = 1;
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<AnalysisBatchSubmittedConsumer>(context);
-                });
-
-                cfg.ReceiveEndpoint("project-analysis-results-processed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<ProjectAnalysisResultsProcessedConsumer>(context);
-                });
-
-                cfg.ReceiveEndpoint("analysis-synthesis-completed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<AnalysisSynthesisCompletedConsumer>(context);
-                });
-
-                cfg.ReceiveEndpoint("repository-removed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<RepositoryRemovedConsumer>(context);
-                });
-
-                cfg.ReceiveEndpoint("store-memory-claims", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
-                });
+                    cfg.ReceiveEndpoint("store-memory-claims", e =>
+                    {
+                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                        e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
+                    });
+                }
             });
         });
+    }
 
+    private static void RegisterMemoryOperations(IServiceCollection services, IConfiguration configuration)
+    {
+        var memoryOptions = configuration
+            .GetSection(MemoryClientOptions.SectionPath)
+            .Get<MemoryClientOptions>() ?? new MemoryClientOptions();
+
+        if (!string.IsNullOrWhiteSpace(memoryOptions.BaseUrl))
+        {
+            services.AddCodeGraphMemoryClient(configuration);
+            services.AddTransient<IMemoryOperationsService, RemoteMemoryOperationsService>();
+            return;
+        }
+
+        services.AddTransient<IMemoryOperationsService, LocalMemoryOperationsService>();
+    }
+
+    private static void RegisterIndexerOperations(IServiceCollection services, IConfiguration configuration)
+    {
+        var indexerOptions = configuration
+            .GetSection(IndexerClientOptions.SectionPath)
+            .Get<IndexerClientOptions>() ?? new IndexerClientOptions();
+
+        if (!string.IsNullOrWhiteSpace(indexerOptions.BaseUrl))
+        {
+            services.AddCodeGraphIndexerClient(configuration);
+            services.AddTransient<IIndexerOperationsService, RemoteIndexerOperationsService>();
+            return;
+        }
+
+        services.AddTransient<IDatabaseSchemaExtractor, DatabaseSchemaExtractor>();
+        services.AddTransient<IndexerRunExecutor>();
+        services.AddSingleton<IIndexerRunBackgroundRunner, IndexerRunBackgroundRunner>();
+        services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
+    }
+
+    private static void RegisterMcp(IServiceCollection services)
+    {
         // MCP server
         services.AddMcpServer(options =>
         {

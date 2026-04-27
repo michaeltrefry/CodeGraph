@@ -12,12 +12,46 @@ services:
       CodeGraph__AuthOptions__AllowedOrigins__0: ${CodeGraph__AuthOptions__AllowedOrigins__0:-https://codegraph.trefry.net}
       CodeGraph__AuthOptions__RequireHttpsMetadata: ${CodeGraph__AuthOptions__RequireHttpsMetadata:-true}
       CodeGraph__McpOptions__RequirePersonalAccessToken: ${CodeGraph__McpOptions__RequirePersonalAccessToken:-true}
+      CodeGraph__Indexer__BaseUrl: ${CodeGraph__Indexer__BaseUrl:-http://codegraph-indexer:5042}
+      CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
+      CodeGraph__Memory__BaseUrl: ${CodeGraph__Memory__BaseUrl:-http://codegraph-memory:5039}
+      CodeGraph__Memory__Audience: ${CodeGraph__Memory__Audience:-codegraph-memory}
+      CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
+      CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
+
+  codegraph-indexer:
+    image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-indexer:${IMAGE_TAG:-latest}
+    build: null
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
+      CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
+
+  codegraph-memory:
+    image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-memory:${IMAGE_TAG:-latest}
+    build: null
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
+      CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
+
+  codegraph-metrics:
+    image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-metrics:${IMAGE_TAG:-latest}
+    build: null
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
+      CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
 
   jobs:
     image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-jobs:${IMAGE_TAG:-latest}
     build: null
     environment:
       DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
+      CodeGraph__Indexer__BaseUrl: ${CodeGraph__Indexer__BaseUrl:-http://codegraph-indexer:5042}
+      CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
+      CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
+      CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
 
   codegraph-web:
     image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-web:${IMAGE_TAG:-latest}
