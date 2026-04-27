@@ -297,5 +297,5 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         int? lineStart,
         int? lineEnd,
         string message)
-        => $"{dotnetProject}|{diagnosticId}|{filePath}|{lineStart?.ToString() ?? ""}|{lineEnd?.ToString() ?? ""}|{message}";
+        => ProjectDiagnosticKey.Create(dotnetProject, diagnosticId, filePath, lineStart, lineEnd, message);
 }

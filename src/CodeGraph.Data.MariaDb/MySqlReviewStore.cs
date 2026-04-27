@@ -21,6 +21,12 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
             return;
         }
 
+        foreach (var diagnostic in diagnostics)
+        {
+            diagnostic.Project = project;
+            diagnostic.DiagnosticKey = ProjectDiagnosticKey.EnsureWithinLimit(diagnostic.DiagnosticKey);
+        }
+
         var keys = diagnostics
             .Select(d => d.DiagnosticKey)
             .Where(key => !string.IsNullOrWhiteSpace(key))
@@ -33,11 +39,6 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
                 .Where(d => d.Project == project && keys.Contains(d.DiagnosticKey))
                 .ExecuteDeleteAsync();
             DetachTrackedProjectDiagnostics(project, keys);
-        }
-
-        foreach (var diagnostic in diagnostics)
-        {
-            diagnostic.Project = project;
         }
 
         db.ProjectDiagnostics.AddRange(diagnostics);
