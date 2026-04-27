@@ -400,8 +400,9 @@ jobs:
           CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
         run: |
           set -eu
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH'"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH/docker'"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes docker-compose.yml deploy/docker-compose.production.yml "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes docker/Directory.Build.props "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/docker/Directory.Build.props"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes .env.production "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/.env"
 
       - name: Deploy over SSH

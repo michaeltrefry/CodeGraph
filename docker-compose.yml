@@ -57,7 +57,7 @@ services:
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
       CodeGraph__RepositorySource__Provider: ${CodeGraph__RepositorySource__Provider:-Folder}
-      CodeGraph__RepositorySource__ReposCachePath: ${CodeGraph__RepositorySource__ReposCachePath:-/repos/.cache}
+      CodeGraph__RepositorySource__ReposCachePath: /repos
       CodeGraph__RepositorySource__Folder__RootPath: ${CodeGraph__RepositorySource__Folder__RootPath:-/repos}
       CodeGraph__RepositorySource__GitLab__BaseUrl: ${CodeGraph__RepositorySource__GitLab__BaseUrl:-https://gitlab.example.com/}
       CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
@@ -81,8 +81,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos:ro
-      - repos_cache:/repos/.cache
+      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos
+      - ./docker/Directory.Build.props:/repos/Directory.Build.props:ro
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
       - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
     restart: unless-stopped
@@ -156,7 +156,7 @@ services:
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
       CodeGraph__RepositorySource__Provider: ${CodeGraph__RepositorySource__Provider:-Folder}
-      CodeGraph__RepositorySource__ReposCachePath: ${CodeGraph__RepositorySource__ReposCachePath:-/repos/.cache}
+      CodeGraph__RepositorySource__ReposCachePath: /repos
       CodeGraph__RepositorySource__Folder__RootPath: ${CodeGraph__RepositorySource__Folder__RootPath:-/repos}
       CodeGraph__RepositorySource__GitLab__BaseUrl: ${CodeGraph__RepositorySource__GitLab__BaseUrl:-https://gitlab.example.com/}
       CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
@@ -169,8 +169,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos:ro
-      - repos_cache:/repos/.cache
+      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos
+      - ./docker/Directory.Build.props:/repos/Directory.Build.props:ro
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
       - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
     restart: unless-stopped
@@ -255,7 +255,7 @@ services:
       CodeGraph__Indexer__BaseUrl: ${CodeGraph__Indexer__BaseUrl:-http://codegraph-indexer:5042}
       CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
       CodeGraph__RepositorySource__Provider: ${CodeGraph__RepositorySource__Provider:-Folder}
-      CodeGraph__RepositorySource__ReposCachePath: ${CodeGraph__RepositorySource__ReposCachePath:-/repos/.cache}
+      CodeGraph__RepositorySource__ReposCachePath: /repos
       CodeGraph__RepositorySource__Folder__RootPath: ${CodeGraph__RepositorySource__Folder__RootPath:-/repos}
       CodeGraph__RepositorySource__GitLab__BaseUrl: ${CodeGraph__RepositorySource__GitLab__BaseUrl:-https://gitlab.example.com/}
       CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
@@ -265,8 +265,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos:ro
-      - repos_cache:/repos/.cache
+      - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos
+      - ./docker/Directory.Build.props:/repos/Directory.Build.props:ro
     restart: unless-stopped
     depends_on:
       codegraph-indexer:
@@ -287,6 +287,3 @@ services:
       codegraph-api:
         condition: service_started
     restart: unless-stopped
-
-volumes:
-  repos_cache:

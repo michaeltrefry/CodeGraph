@@ -55,15 +55,15 @@ RUN ubuntu_mirror="http://ports.ubuntu.com/ubuntu-ports"; \
 
 # Install .NET Framework reference assemblies so Roslyn can analyze legacy Framework projects.
 # 1) Restore the ref-assemblies NuGet package into the global cache
-# 2) Place a Directory.Build.props at /repos/.cache so MSBuild picks up FrameworkPathOverride
+# 2) Place a Directory.Build.props at /repos so MSBuild picks up FrameworkPathOverride
 #    for any .NET Framework project cloned under that path
 RUN dotnet new console -n _fxref -o /tmp/_fxref --no-restore && \
     dotnet add /tmp/_fxref/_fxref.csproj package Microsoft.NETFramework.ReferenceAssemblies --version 1.0.3 --no-restore && \
     dotnet restore /tmp/_fxref/_fxref.csproj && \
     rm -rf /tmp/_fxref
 
-RUN mkdir -p /repos/.cache
-COPY docker/Directory.Build.props /repos/.cache/Directory.Build.props
+RUN mkdir -p /repos
+COPY docker/Directory.Build.props /repos/Directory.Build.props
 
 # Install compatibility SDKs needed by MSBuildWorkspace/Roslyn to analyze target repos.
 # The base sdk:10.0 image already provides .NET 10; add older channels plus .NET 9

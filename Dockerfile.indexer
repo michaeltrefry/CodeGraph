@@ -51,8 +51,8 @@ RUN dotnet new console -n _fxref -o /tmp/_fxref --no-restore && \
     dotnet restore /tmp/_fxref/_fxref.csproj && \
     rm -rf /tmp/_fxref
 
-RUN mkdir -p /repos/.cache
-COPY docker/Directory.Build.props /repos/.cache/Directory.Build.props
+RUN mkdir -p /repos
+COPY docker/Directory.Build.props /repos/Directory.Build.props
 
 RUN dotnet new globaljson 2>/dev/null; rm -f global.json && \
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
