@@ -27,6 +27,7 @@ RUN dotnet publish src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj -c R
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 WORKDIR /app
+ARG TARGETARCH
 
 # Install git, ssh, Node.js, and Mono for legacy .NET Framework NuGet restore
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -35,7 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     printf '#!/bin/sh\nmono /usr/local/bin/nuget.exe "$@"\n' > /usr/local/bin/nuget && \
     chmod +x /usr/local/bin/nuget
 
-RUN echo "deb http://ports.ubuntu.com/ubuntu-ports focal-security main" > /etc/apt/sources.list.d/focal-libssl.list && \
+RUN ubuntu_mirror="http://ports.ubuntu.com/ubuntu-ports"; \
+    if [ "${TARGETARCH:-$(dpkg --print-architecture)}" = "amd64" ]; then \
+        ubuntu_mirror="http://archive.ubuntu.com/ubuntu"; \
+    fi; \
+    echo "deb ${ubuntu_mirror} focal-security main" > /etc/apt/sources.list.d/focal-libssl.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends libssl1.1 && \
     rm -f /etc/apt/sources.list.d/focal-libssl.list && \

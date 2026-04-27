@@ -30,6 +30,7 @@ RUN dotnet publish src/CodeGraph.Api/CodeGraph.Api.csproj -c Release -o /app/pub
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 WORKDIR /app
+ARG TARGETARCH
 
 # Install git, ssh, Node.js, and Mono for legacy .NET Framework NuGet restore
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,7 +43,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Ubuntu 24.04 base image used by the .NET 10 container tags. Pull the
 # compatibility package from Ubuntu 20.04 security updates so exact global.json
 # pins like 2.1.802 can still restore/analyze older repos.
-RUN echo "deb http://ports.ubuntu.com/ubuntu-ports focal-security main" > /etc/apt/sources.list.d/focal-libssl.list && \
+RUN ubuntu_mirror="http://ports.ubuntu.com/ubuntu-ports"; \
+    if [ "${TARGETARCH:-$(dpkg --print-architecture)}" = "amd64" ]; then \
+        ubuntu_mirror="http://archive.ubuntu.com/ubuntu"; \
+    fi; \
+    echo "deb ${ubuntu_mirror} focal-security main" > /etc/apt/sources.list.d/focal-libssl.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends libssl1.1 && \
     rm -f /etc/apt/sources.list.d/focal-libssl.list && \
