@@ -26,13 +26,21 @@ CODEGRAPH_DEPLOY_PATH=/opt/codegraph
 Required GitHub production environment secrets:
 
 ```text
-CODEGRAPH_DEPLOY_SSH_KEY=<private ssh key>
+CODEGRAPH_DEPLOY_SSH_KEY=<private ssh key, or use CODEGRAPH_DEPLOY_SSH_KEY_B64>
 CODEGRAPH__STORAGEOPTIONS__MARIADBCONNECTIONSTRING=<MariaDB connection string>
 CODEGRAPH__STORAGEOPTIONS__MARIADBENCRYPTIONKEY=<32-byte encryption key>
 CODEGRAPH__RABBITMQOPTIONS__USERNAME=<RabbitMQ username>
 CODEGRAPH__RABBITMQOPTIONS__PASSWORD=<RabbitMQ password>
 CODEGRAPH__REPOSITORYSOURCE__GITHUB__PERSONALACCESSTOKEN=<GitHub token>
 CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY=<internal service HMAC key>
+```
+
+`CODEGRAPH_DEPLOY_SSH_KEY_B64` can be used instead of `CODEGRAPH_DEPLOY_SSH_KEY` when storing the private key as base64 is more convenient.
+
+Optional GitHub production environment secrets:
+
+```text
+CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE=<private ssh key passphrase>
 ```
 
 The deploy workflow builds the remote `.env` file from individual GitHub production environment variables and secrets. Public/non-sensitive app settings should be stored as environment variables, using upper-case names:
