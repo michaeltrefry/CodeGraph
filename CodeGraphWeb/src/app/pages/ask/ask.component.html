@@ -38,18 +38,11 @@
     <div class="empty-state">
       <div class="suggestions">
         <p class="suggestions-title">Try asking:</p>
-        <button class="suggestion" (click)="question.set('What services handle domain availability checks?')">
-          What services handle domain availability checks?
-        </button>
-        <button class="suggestion" (click)="question.set('Which repos have no inbound dependencies and could be archived?')">
-          Which repos have no inbound dependencies and could be archived?
-        </button>
-        <button class="suggestion" (click)="question.set('What consumes domain expiry events?')">
-          What consumes domain expiry events?
-        </button>
-        <button class="suggestion" (click)="question.set('Show me the call path for PlaceBid')">
-          Show me the call path for PlaceBid
-        </button>
+        @for (suggestion of suggestedQuestions; track suggestion) {
+          <button class="suggestion" (click)="question.set(suggestion)">
+            {{ suggestion }}
+          </button>
+        }
       </div>
     </div>
   }
