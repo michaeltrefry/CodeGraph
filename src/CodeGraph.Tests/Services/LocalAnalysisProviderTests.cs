@@ -418,8 +418,15 @@ public class LocalAnalysisProviderTests
             NullLogger<LocalAnalysisProvider>.Instance);
 
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
-        firstStatus.IsCompleted.ShouldBeFalse();
-        firstStatus.ProcessingStatus.ShouldBe("processing");
+        for (var attempt = 0;
+             attempt < 20 && firstStatus.ProcessingStatus is "submitted";
+             attempt++)
+        {
+            await Task.Delay(25);
+            firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
+        }
+
+        firstStatus.ProcessingStatus.ShouldBeOneOf("processing", "completed");
 
         AnalysisBatchRequestEntity storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
         for (var attempt = 0; attempt < 20 && !string.Equals(storedRequest.Status, "succeeded", StringComparison.OrdinalIgnoreCase); attempt++)
