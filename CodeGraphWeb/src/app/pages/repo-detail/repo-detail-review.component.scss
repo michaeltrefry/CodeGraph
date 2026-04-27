@@ -1,0 +1,346 @@
+/* Repo detail — Review section.
+   Component-scoped CodeFlow styling. Prefix: rdr-* (repo-detail-review). */
+
+:host { display: block; }
+
+.rdr-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.rdr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.rdr-title {
+  margin: 0;
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.rdr-status {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rdr-body {
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- running / spinner ---- */
+.rdr-running {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+}
+
+.rdr-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--surface-3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rdr-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes rdr-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---- meta strip ---- */
+.rdr-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.rdr-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--err-bg);
+  border: 1px solid color-mix(in oklab, var(--sem-red) 30%, var(--border));
+  color: var(--sem-red);
+  font-size: var(--fs-sm);
+}
+
+/* ---- overview ---- */
+.rdr-overview {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  line-height: 1.55;
+}
+
+/* ---- severity pills row ---- */
+.rdr-severity-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---- strengths / follow-ups section ---- */
+.rdr-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rdr-section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.rdr-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  line-height: 1.55;
+
+  li { padding: 2px 0; }
+}
+
+/* ---- toggle ---- */
+.rdr-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 8px 0;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  text-align: left;
+
+  &:hover { color: var(--accent); }
+}
+
+.rdr-toggle-caret {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* ---- buttons ---- */
+.rdr-btn {
+  appearance: none;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  white-space: nowrap;
+
+  &:hover:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--text);
+    border-color: var(--border-2);
+  }
+  &:disabled { opacity: 0.55; cursor: default; }
+
+  &.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+
+    &:hover:not(:disabled) {
+      background: color-mix(in oklab, var(--accent) 85%, black);
+    }
+  }
+}
+
+/* ---- empty state ---- */
+.rdr-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+
+  p { margin: 0; }
+}
+
+/* ================================================================
+   Project reviews
+   ================================================================ */
+.rdr-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rdr-project {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.rdr-project-head {
+  width: 100%;
+  appearance: none;
+  background: var(--surface-2);
+  border: 0;
+  padding: 10px 14px;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition);
+
+  &:hover { background: var(--surface-3); }
+}
+
+.rdr-project-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rdr-project-body {
+  padding: 12px 14px;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rdr-project-overview {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+/* ================================================================
+   Finding cards
+   ================================================================ */
+.rdr-finding {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  &[data-severity="critical"],
+  &[data-severity="high"] {
+    background: var(--err-bg);
+    border-color: color-mix(in oklab, var(--sem-red) 25%, var(--border));
+    border-left-color: var(--sem-red);
+  }
+  &[data-severity="medium"] {
+    background: var(--warn-bg);
+    border-color: color-mix(in oklab, var(--sem-amber) 25%, var(--border));
+    border-left-color: var(--sem-amber);
+  }
+  &[data-severity="low"] {
+    border-left-color: var(--sem-blue);
+  }
+}
+
+.rdr-finding-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rdr-finding-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rdr-finding-explanation {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.rdr-finding-evidence {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.rdr-finding-loc {
+  color: var(--accent-ink);
+  cursor: pointer;
+  align-self: flex-start;
+
+  &:hover { color: var(--accent); text-decoration: underline; }
+
+  &.finding-location-loading { opacity: 0.5; cursor: wait; }
+  &.finding-location-unavailable {
+    color: var(--faint);
+    cursor: default;
+    text-decoration: line-through;
+    &:hover { color: var(--faint); text-decoration: line-through; }
+  }
+}
+
+.rdr-finding-suggestion {
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--ok-bg);
+  border-radius: var(--radius-sm);
+  color: var(--sem-green);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.rdr-finding-suggestion-label {
+  font-weight: 600;
+  font-size: var(--fs-xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-right: 6px;
+}

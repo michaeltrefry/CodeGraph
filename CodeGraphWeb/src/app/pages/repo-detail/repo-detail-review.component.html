@@ -1,0 +1,164 @@
+<section class="rdr-card">
+  <header class="rdr-header">
+    <h2 class="rdr-title">Code review</h2>
+    <div class="rdr-status">
+      @if (reviewRunning) {
+        <span class="cg-chip cg-chip-accent cg-chip-dot">Running</span>
+      } @else if (review; as r) {
+        @if (r.run.status === 'completed') {
+          <span class="cg-chip cg-chip-ok cg-chip-dot">Completed</span>
+          @if (isReviewStale()) {
+            <span class="cg-chip cg-chip-warn cg-chip-dot">Stale</span>
+          }
+        } @else if (r.run.status === 'failed') {
+          <span class="cg-chip cg-chip-err cg-chip-dot">Failed</span>
+        } @else if (r.run.status === 'interrupted') {
+          <span class="cg-chip cg-chip-err cg-chip-dot">Interrupted</span>
+        }
+      }
+    </div>
+  </header>
+
+  <div class="rdr-body">
+    @if (reviewRunning) {
+      <div class="rdr-running">
+        <span class="rdr-spinner"></span>
+        <span>Review in progress · analyzing project code…</span>
+      </div>
+    } @else if (review; as r) {
+      @if (r.run.status === 'completed') {
+        <div class="rdr-meta">
+          <span class="cg-muted cg-small">
+            Reviewed {{ formatDate(r.run.completedAt) }}
+            @if (r.run.reviewedCommitSha) {
+              · commit <span class="cg-mono">{{ formatCommit(r.run.reviewedCommitSha) }}</span>
+            }
+            @if (r.run.modelUsed) {
+              · {{ r.run.modelUsed }}
+            }
+          </span>
+          <button class="rdr-btn" (click)="requestStartReview()" [disabled]="reviewLoading">
+            {{ isReviewStale() ? 'Re-run review' : 'Run again' }}
+          </button>
+        </div>
+
+        @if (r.overview) {
+          <p class="rdr-overview">{{ r.overview }}</p>
+        }
+
+        @if (r.findings.length > 0) {
+          <div class="rdr-severity-pills">
+            @for (sev of ['critical', 'high', 'medium', 'low']; track sev) {
+              @let count = reviewFindingsBySeverity(sev).length;
+              @if (count > 0) {
+                <span class="cg-chip cg-chip-dot"
+                      [class.cg-chip-err]="sev === 'critical' || sev === 'high'"
+                      [class.cg-chip-warn]="sev === 'medium'">
+                  {{ count }} {{ sev }}
+                </span>
+              }
+            }
+          </div>
+        }
+
+        @if (r.strengths.length > 0) {
+          <div class="rdr-section">
+            <div class="rdr-section-label">Strengths</div>
+            <ul class="rdr-list">
+              @for (s of r.strengths; track $index) { <li>{{ s }}</li> }
+            </ul>
+          </div>
+        }
+
+        @if (r.projectReviews.length > 0) {
+          <button class="rdr-toggle" type="button" (click)="toggleReview()">
+            {{ reviewOpen() ? 'Hide' : 'Show' }} {{ r.projectReviews.length }} project reviews · {{ r.findings.length }} findings
+            <span class="rdr-toggle-caret">{{ reviewOpen() ? '▲' : '▼' }}</span>
+          </button>
+
+          @if (reviewOpen()) {
+            <div class="rdr-projects">
+              @for (section of r.projectReviews; track section.projectName) {
+                <div class="rdr-project">
+                  <button class="rdr-project-head" type="button" (click)="toggleReviewProject(section.projectName)">
+                    <span class="cg-mono rdr-project-name">{{ section.projectName }}</span>
+                    @if (section.findings.length > 0) {
+                      <span class="cg-chip cg-chip-mono">{{ section.findings.length }} findings</span>
+                    }
+                    @if (section.reusedFromBaseline) {
+                      <span class="cg-chip cg-chip-accent">reused</span>
+                    }
+                    <span class="rdr-toggle-caret">
+                      {{ expandedReviewProject() === section.projectName ? '▲' : '▼' }}
+                    </span>
+                  </button>
+
+                  @if (expandedReviewProject() === section.projectName) {
+                    <div class="rdr-project-body">
+                      @if (section.overview) {
+                        <p class="rdr-project-overview">{{ section.overview }}</p>
+                      }
+                      @for (finding of section.findings; track $index) {
+                        <div class="rdr-finding" [attr.data-severity]="finding.severity">
+                          <div class="rdr-finding-head">
+                            <span class="cg-chip"
+                                  [class.cg-chip-err]="finding.severity === 'critical' || finding.severity === 'high'"
+                                  [class.cg-chip-warn]="finding.severity === 'medium'">
+                              {{ finding.severity }}
+                            </span>
+                            <span class="cg-xsmall cg-muted">{{ categoryLabels[finding.category] || finding.category }}</span>
+                            <span class="rdr-finding-title">{{ finding.title }}</span>
+                          </div>
+                          <p class="rdr-finding-explanation">{{ finding.explanation }}</p>
+                          @if (finding.evidence) {
+                            <p class="rdr-finding-evidence">{{ finding.evidence }}</p>
+                          }
+                          @if (finding.filePath) {
+                            <span class="rdr-finding-loc cg-mono cg-xsmall"
+                                  (click)="navigateToFinding($event, finding.filePath, finding.lineStart ?? undefined)">
+                              {{ finding.filePath }}@if (finding.lineStart) {:{{ finding.lineStart }}}
+                            </span>
+                          }
+                          @if (finding.suggestedImprovement) {
+                            <p class="rdr-finding-suggestion">
+                              <span class="rdr-finding-suggestion-label">Suggestion</span>
+                              {{ finding.suggestedImprovement }}
+                            </p>
+                          }
+                        </div>
+                      }
+                      @if (section.followUps.length > 0) {
+                        <div class="rdr-section">
+                          <div class="rdr-section-label">Follow-ups</div>
+                          <ul class="rdr-list">
+                            @for (f of section.followUps; track $index) { <li>{{ f }}</li> }
+                          </ul>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          }
+        }
+      } @else if (r.run.status === 'failed' || r.run.status === 'interrupted') {
+        <div class="rdr-meta">
+          @if (r.run.error) {
+            <p class="rdr-error">{{ r.run.error }}</p>
+          }
+          <button class="rdr-btn primary" (click)="requestStartReview()" [disabled]="reviewLoading">
+            {{ r.run.status === 'interrupted' ? 'Continue review' : 'Retry review' }}
+          </button>
+        </div>
+      }
+    } @else {
+      <div class="rdr-empty">
+        <p class="cg-muted">No code review has been run for this repository yet.</p>
+        <button class="rdr-btn primary" (click)="requestStartReview()" [disabled]="reviewLoading">
+          Run code review
+        </button>
+      </div>
+    }
+  </div>
+</section>

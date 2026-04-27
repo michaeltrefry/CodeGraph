@@ -79,6 +79,7 @@ function createBatchStatus(repo: string): AnalysisBatchStatus {
 
 function createComponent() {
   const paramMap$ = new Subject<ReturnType<typeof convertToParamMap>>();
+  const queryParamMap$ = new Subject<ReturnType<typeof convertToParamMap>>();
   const detailSubjects = new Map<string, Subject<ProjectDetailResponse>>();
   const healthSubjects = new Map<string, Subject<ProjectHealthResponse>>();
   const securitySubjects = new Map<string, Subject<ProjectSecurityResponse>>();
@@ -120,7 +121,7 @@ function createComponent() {
       { provide: ApiService, useValue: api },
       { provide: ChatContextService, useValue: { setRepo: vi.fn() } },
       { provide: Router, useValue: { navigate: vi.fn() } },
-      { provide: ActivatedRoute, useValue: { paramMap: paramMap$.asObservable() } },
+      { provide: ActivatedRoute, useValue: { paramMap: paramMap$.asObservable(), queryParamMap: queryParamMap$.asObservable() } },
       { provide: DomSanitizer, useValue: sanitizer },
       { provide: DestroyRef, useValue: { onDestroy: vi.fn() } }
     ]

@@ -1,0 +1,141 @@
+/* Repo detail — Dependencies + node-type browse.
+   Component-scoped CodeFlow styling. Prefix: rdd-* (repo-detail-dependencies). */
+
+:host { display: block; }
+
+.rdd-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.rdd-deps-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+
+  @media (max-width: 800px) { grid-template-columns: 1fr; }
+}
+
+/* ---- card frame ---- */
+.rdd-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.rdd-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.rdd-card-title {
+  margin: 0;
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.rdd-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ---- repo list ---- */
+.rdd-list {
+  list-style: none;
+  padding: 6px 0;
+  margin: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.rdd-list li {
+  border-bottom: 1px solid var(--hairline);
+}
+.rdd-list li:last-child { border-bottom: 0; }
+
+.rdd-list-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 18px;
+  font-size: var(--fs-sm);
+  transition: background var(--transition);
+
+  &:hover { background: var(--surface-2); text-decoration: none; }
+}
+
+.rdd-list-arrow {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+}
+
+.rdd-empty {
+  padding: 20px 18px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+/* ---- node-type tile grid ---- */
+.rdd-label-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 1px;
+  background: var(--hairline);
+}
+
+.rdd-label-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 16px 12px;
+  min-height: 110px;
+  background: var(--surface);
+  text-decoration: none;
+  transition: background var(--transition);
+
+  &:hover {
+    background: var(--surface-2);
+    text-decoration: none;
+  }
+}
+
+.rdd-label-icon {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.rdd-label-count {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.rdd-label-name {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-align: center;
+  word-break: break-word;
+}
+
+.rdd-label-tile:hover .rdd-label-icon { color: var(--accent-ink); }
+.rdd-label-tile:hover .rdd-label-name { color: var(--text-2); }

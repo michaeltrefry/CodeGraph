@@ -1,0 +1,378 @@
+@if (health; as h) {
+  <section class="rdh-card">
+    <header class="rdh-header">
+      <div class="rdh-header-main">
+        <div class="rdh-title-row">
+          <h2 class="rdh-title">Codebase Health</h2>
+          @if (h.repoHealth) {
+            <span class="cg-chip cg-chip-mono"
+                  [class.cg-chip-ok]="h.repoHealth.overallHealth >= 6"
+                  [class.cg-chip-warn]="h.repoHealth.overallHealth >= 4 && h.repoHealth.overallHealth < 6"
+                  [class.cg-chip-err]="h.repoHealth.overallHealth < 4">
+              {{ h.repoHealth.overallHealth.toFixed(1) }}/10 · {{ healthLabel(h.repoHealth.overallHealth) }}
+            </span>
+          }
+        </div>
+
+        @if (h.repoHealth) {
+          <div class="rdh-quick-stats">
+            <div class="rdh-qs">
+              <span class="rdh-qs-value">{{ h.repoHealth.totalFiles }}</span>
+              <span class="rdh-qs-label">files</span>
+            </div>
+            <div class="rdh-qs">
+              <span class="rdh-qs-value" [class.warn]="h.repoHealth.hotspotCount > 0">{{ h.repoHealth.hotspotCount }}</span>
+              <span class="rdh-qs-label">hotspots</span>
+            </div>
+            <div class="rdh-qs">
+              <span class="rdh-qs-value" [class.err]="h.repoHealth.alertCount > 0">{{ h.repoHealth.alertCount }}</span>
+              <span class="rdh-qs-label">alerts</span>
+            </div>
+          </div>
+        }
+
+        @if (hasExpandableContent()) {
+          <button class="rdh-toggle" type="button" (click)="toggleHealthDetails()">
+            {{ healthDetailsOpen() ? 'Hide details' : 'Show details' }}
+            <span class="rdh-toggle-caret">{{ healthDetailsOpen() ? '▲' : '▼' }}</span>
+          </button>
+        }
+      </div>
+
+      @if (dotnetSupport(); as support) {
+        <aside class="rdh-dotnet">
+          <div class="rdh-section-label">.NET support</div>
+          <div class="rdh-dotnet-status">
+            <span class="cg-chip"
+                  [style.background]="dotnetSupportBackground(support.overallStatus)"
+                  [style.color]="dotnetSupportColor(support.overallStatus)"
+                  [style.border-color]="dotnetSupportColor(support.overallStatus)">
+              {{ dotnetSupportLabel(support.overallStatus) }}
+            </span>
+          </div>
+          <p class="rdh-dotnet-summary">{{ support.summary }}</p>
+
+          @if (support.sdk; as sdk) {
+            <div class="rdh-kv">
+              <span class="rdh-kv-key">SDK</span>
+              <span class="rdh-kv-value cg-mono">
+                {{ sdk.version }}
+                @if (sdk.supportEndedOn) {
+                  <span class="cg-muted cg-xsmall">&nbsp;until {{ formatDate(sdk.supportEndedOn) }}</span>
+                }
+              </span>
+            </div>
+          }
+
+          @if (support.targetFrameworks.length > 0) {
+            <div class="rdh-kv">
+              <span class="rdh-kv-key">TFMs</span>
+              <div class="rdh-framework-chips">
+                @for (framework of support.targetFrameworks; track framework.moniker) {
+                  <span class="cg-chip cg-chip-mono"
+                        [style.background]="dotnetSupportBackground(framework.supportStatus)"
+                        [style.color]="dotnetSupportColor(framework.supportStatus)"
+                        [style.border-color]="dotnetSupportColor(framework.supportStatus)">
+                    {{ framework.displayName }}
+                  </span>
+                }
+              </div>
+            </div>
+          }
+
+          @if (hasDotnetPenalty()) {
+            <div class="rdh-penalty">
+              Health penalty: −{{ formatPenalty(h.repoHealth?.scorePenalty) }}
+            </div>
+          }
+        </aside>
+      }
+    </header>
+
+    @if (healthDetailsOpen()) {
+      <div class="rdh-body">
+        @if (h.securitySummary; as secSum) {
+          <section class="rdh-section">
+            <div class="rdh-section-head">
+              <div class="rdh-section-title">Security</div>
+              <span class="cg-chip cg-chip-mono"
+                    [class.cg-chip-ok]="secSum.securityScore >= 6"
+                    [class.cg-chip-warn]="secSum.securityScore >= 4 && secSum.securityScore < 6"
+                    [class.cg-chip-err]="secSum.securityScore < 4">
+                {{ secSum.securityScore.toFixed(1) }}/10
+              </span>
+            </div>
+            <div class="rdh-severity-pills">
+              @if (secSum.criticalCount > 0) {
+                <span class="cg-chip cg-chip-err cg-chip-dot">{{ secSum.criticalCount }} critical</span>
+              }
+              @if (secSum.highCount > 0) {
+                <span class="cg-chip cg-chip-err cg-chip-dot">{{ secSum.highCount }} high</span>
+              }
+              @if (secSum.mediumCount > 0) {
+                <span class="cg-chip cg-chip-warn cg-chip-dot">{{ secSum.mediumCount }} medium</span>
+              }
+              @if (secSum.lowCount > 0) {
+                <span class="cg-chip cg-chip-dot">{{ secSum.lowCount }} low</span>
+              }
+              @if (secSum.criticalCount === 0 && secSum.highCount === 0 && secSum.mediumCount === 0 && secSum.lowCount === 0) {
+                <span class="cg-chip cg-chip-ok cg-chip-dot">No findings</span>
+              }
+            </div>
+
+            @if (security && security.findings.length > 0) {
+              <button class="rdh-toggle" type="button" (click)="toggleSecurity()">
+                {{ securityOpen() ? 'Hide' : 'Show' }} {{ security.findings.length }} findings
+                <span class="rdh-toggle-caret">{{ securityOpen() ? '▲' : '▼' }}</span>
+              </button>
+
+              @if (securityOpen()) {
+                <div class="rdh-findings">
+                  @for (cat of ['secret', 'vulnerable_package', 'attack_surface']; track cat) {
+                    @let catFindings = securityFindings(cat);
+                    @if (catFindings.length > 0) {
+                      <div class="rdh-findings-group">
+                        <div class="rdh-section-label">
+                          @switch (cat) {
+                            @case ('secret') { Embedded secrets }
+                            @case ('vulnerable_package') { Vulnerable packages }
+                            @case ('attack_surface') { Attack surface }
+                          }
+                          <span class="cg-faint">&nbsp;· {{ catFindings.length }}</span>
+                        </div>
+                        @for (f of catFindings; track $index) {
+                          <div class="rdh-finding">
+                            <span class="cg-chip"
+                                  [class.cg-chip-err]="f.severity === 'critical' || f.severity === 'high'"
+                                  [class.cg-chip-warn]="f.severity === 'medium'">
+                              {{ f.severity }}
+                            </span>
+                            <div class="rdh-finding-body">
+                              <div class="rdh-finding-title">{{ f.title }}</div>
+                              <div class="rdh-finding-desc cg-muted cg-small">{{ f.description }}</div>
+                              @if (f.filePath) {
+                                <span class="rdh-finding-loc cg-mono cg-xsmall"
+                                      (click)="navigateToFinding($event, f.filePath!, f.lineNumber ?? undefined)">
+                                  {{ f.filePath }}@if (f.lineNumber) {:{{ f.lineNumber }}}
+                                </span>
+                              }
+                              @if (f.advisory) {
+                                <a class="rdh-finding-advisory cg-small" [href]="f.advisory" target="_blank" rel="noopener">
+                                  Advisory →
+                                </a>
+                              }
+                            </div>
+                          </div>
+                        }
+                      </div>
+                    }
+                  }
+                </div>
+              }
+            }
+          </section>
+        }
+
+        @if (h.topHotspots.length > 0) {
+          <section class="rdh-section">
+            <div class="rdh-section-title">Top hotspots</div>
+            <div class="rdh-table-wrap">
+              <table class="cg-table rdh-hotspots">
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Health</th>
+                    <th>Churn</th>
+                    <th>Complexity</th>
+                    <th>Truck</th>
+                    <th>Trust</th>
+                    <th>Risk</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (f of h.topHotspots; track f.filePath) {
+                    <tr>
+                      <td class="cg-mono cg-small">{{ f.filePath }}</td>
+                      <td class="cg-mono" [style.color]="healthColor(f.healthScore)">
+                        {{ f.healthScore.toFixed(1) }}
+                      </td>
+                      <td class="cg-cell-num">{{ f.changes }}</td>
+                      <td>
+                        <span class="cg-bar">
+                          <span class="cg-bar-track">
+                            <span class="cg-bar-fill"
+                                  [class.warn]="f.complexityScore >= 40 && f.complexityScore < 70"
+                                  [class.err]="f.complexityScore >= 70"
+                                  [style.width.%]="f.complexityScore"></span>
+                          </span>
+                          <span class="cg-bar-value">{{ f.complexityScore }}</span>
+                        </span>
+                      </td>
+                      <td class="cg-cell-num" [class.rdh-truck-warn]="f.truckFactor === 1">
+                        {{ f.truckFactor }}
+                      </td>
+                      <td class="cg-mono" [style.color]="trustColor(f.trustScore)">
+                        {{ f.trustScore.toFixed(2) }}
+                      </td>
+                      <td class="cg-mono rdh-risk-cell">
+                        <span class="rdh-risk-dot"
+                              [class.warn]="f.riskScore >= 40 && f.riskScore < 70"
+                              [class.err]="f.riskScore >= 70"></span>
+                        {{ f.riskScore.toFixed(0) }}
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </section>
+        }
+
+        @if (h.repositoryVitality; as vitality) {
+          <section class="rdh-section">
+            <div class="rdh-section-head">
+              <div>
+                <div class="rdh-section-title">Project vitality</div>
+                <p class="rdh-section-sub cg-muted">Team activity and firefighting context.</p>
+              </div>
+              <span class="cg-chip cg-chip-accent">{{ vitalityLabel(vitality.activityStatus) }}</span>
+            </div>
+
+            <div class="rdh-vitality-summary"
+                 [attr.data-tone]="vitalityTrendTone(vitality.velocityChangePercent)">
+              {{ vitalityTrendSummary(vitality) }}
+            </div>
+
+            @if (!vitality.hasSufficientHistoryForTrends) {
+              <div class="rdh-note">
+                Trend confidence is still immature for this repository — treat recent changes as directional only.
+              </div>
+            }
+
+            <div class="rdh-vitality-grid">
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">Activity</div>
+                <div class="rdh-metric-value">{{ vitalityLabel(vitality.activityStatus) }}</div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">Firefighting</div>
+                <div class="rdh-metric-value">{{ vitalityLabel(vitality.firefightingStatus) }}</div>
+                <div class="rdh-metric-meta cg-muted">{{ vitality.firefightingCommits365d }} fix-classified commits over 365d</div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">History maturity</div>
+                <div class="rdh-metric-value">{{ vitalityLabel(vitality.historyMaturity) }}</div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">6-month velocity</div>
+                <div class="rdh-metric-value" [attr.data-tone]="vitalityTrendTone(vitality.velocityChangePercent)">
+                  {{ vitalityChange(vitality.velocityChangePercent) }}
+                </div>
+                <div class="rdh-metric-meta cg-muted">
+                  {{ vitality.velocityLast6Months }} vs {{ vitality.velocityPrior6Months }} commits
+                </div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">Dormant months (12m)</div>
+                <div class="rdh-metric-value">{{ vitality.dormantMonths12m }}</div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">Max inactive streak</div>
+                <div class="rdh-metric-value">{{ vitality.maxInactiveStreakMonths }}</div>
+                <div class="rdh-metric-meta cg-muted">months</div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">Firefighting · 90d</div>
+                <div class="rdh-metric-value">{{ vitality.firefightingCommits90d }}</div>
+                <div class="rdh-metric-meta cg-muted">last 90 days</div>
+              </div>
+              <div class="rdh-metric">
+                <div class="rdh-metric-label">Firefighting rate</div>
+                <div class="rdh-metric-value">{{ (vitality.firefightingRate90d * 100).toFixed(0) }}%</div>
+                <div class="rdh-metric-meta cg-muted">last 90 days</div>
+              </div>
+            </div>
+
+            <div class="rdh-activity">
+              <div class="rdh-activity-head">
+                <div>
+                  <div class="rdh-section-label">Monthly activity</div>
+                  <p class="cg-muted cg-small" style="margin:4px 0 0;">Source-touching commits by month.</p>
+                </div>
+                <span class="cg-muted cg-small">{{ vitality.dormantMonths12m }} dormant month{{ vitality.dormantMonths12m === 1 ? '' : 's' }} in the last year</span>
+              </div>
+
+              @if (vitality.monthlyCommits.length > 0) {
+                <div class="rdh-activity-chart" aria-label="Monthly activity chart">
+                  @for (point of vitality.monthlyCommits; track point.month) {
+                    <div class="rdh-activity-col">
+                      <span class="rdh-activity-val cg-mono cg-xsmall">{{ point.commitCount }}</span>
+                      <div class="rdh-activity-track" [attr.title]="monthlyCommitTitle(point.month)">
+                        <div class="rdh-activity-fill" [style.height]="monthlyCommitHeight(point, vitality)"></div>
+                      </div>
+                      <span class="rdh-activity-label cg-faint cg-xsmall">{{ monthlyCommitLabel(point.month) }}</span>
+                    </div>
+                  }
+                </div>
+              } @else {
+                <div class="rdh-note">No monthly activity captured yet.</div>
+              }
+            </div>
+          </section>
+        }
+
+        @for (a of h.analyses; track a.dotnetProject ?? '__repo__') {
+          @if (!a.dotnetProject) {
+            <section class="rdh-section rdh-ai">
+              <div class="rdh-section-head">
+                <div class="rdh-section-title">AI health assessment</div>
+                <span class="cg-chip cg-chip-mono"
+                      [style.background]="confidenceColors[a.confidence]"
+                      [style.color]="'#fff'"
+                      [style.border-color]="confidenceColors[a.confidence]">
+                  {{ a.confidence }} confidence
+                </span>
+              </div>
+              <app-markdown class="rdh-markdown" [content]="a.analysis" />
+              <div class="cg-muted cg-small rdh-ai-meta">
+                Updated {{ formatDate(a.updatedAt) }}
+                @if (a.modelUsed) { · {{ a.modelUsed }} }
+              </div>
+            </section>
+          }
+        }
+
+        @if (h.projectHealths.length > 0) {
+          <section class="rdh-section">
+            <div class="rdh-section-title">Per-project health</div>
+            @for (ph of h.projectHealths; track ph.dotnetProject) {
+              <div class="rdh-project-row">
+                <div class="rdh-project-head">
+                  <span class="cg-mono">{{ ph.dotnetProject }}</span>
+                  <span class="cg-chip cg-chip-mono"
+                        [class.cg-chip-ok]="ph.overallHealth >= 6"
+                        [class.cg-chip-warn]="ph.overallHealth >= 4 && ph.overallHealth < 6"
+                        [class.cg-chip-err]="ph.overallHealth < 4">
+                    {{ ph.overallHealth.toFixed(1) }}
+                  </span>
+                  @if (ph.hotspotCount > 0) {
+                    <span class="cg-chip cg-chip-warn">{{ ph.hotspotCount }} hotspots</span>
+                  }
+                </div>
+                @for (a of h.analyses; track a.dotnetProject ?? '__repo__') {
+                  @if (a.dotnetProject === ph.dotnetProject) {
+                    <app-markdown class="rdh-markdown" [content]="a.analysis" />
+                    <div class="cg-muted cg-small">
+                      @if (a.modelUsed) { {{ a.modelUsed }} · }
+                      {{ a.confidence }} confidence
+                    </div>
+                  }
+                }
+              </div>
+            }
+          </section>
+        }
+      </div>
+    }
+  </section>
+}

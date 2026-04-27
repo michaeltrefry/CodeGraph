@@ -120,7 +120,16 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
 
   private simulation?: d3.Simulation<SimNode, SimLink>;
   private resizeObserver?: ResizeObserver;
-  private colorScale = d3.scaleOrdinal(d3.schemeTableau10);
+  /** First clusters use the CodeFlow cluster palette; later clusters cycle through semantic colors. */
+  private static readonly CLUSTER_PALETTE = [
+    '#6B7BE0',
+    '#3FB950',
+    '#D29922',
+    '#BC8CFF',
+    '#2EA3F2',
+    '#58A6FF',
+    '#F85149',
+  ];
 
   // D3 selection references for highlight updates
   private nodeSelection?: d3.Selection<SVGGElement, SimNode, SVGGElement, unknown>;
@@ -217,13 +226,14 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
   }
 
   getClusterColor(clusterId: number): string {
-    return this.colorScale(String(clusterId));
+    const palette = ClustersPageComponent.CLUSTER_PALETTE;
+    return palette[((clusterId % palette.length) + palette.length) % palette.length];
   }
 
   getClusterLabel(cluster: ClusterInfo): string {
     if (cluster.label) return cluster.label;
     const name = this.clusterNameMap().get(cluster.clusterId);
-    if (name) return name;
+    if (name) return this.displayRepoName(name);
     return `Cluster ${cluster.clusterId}`;
   }
 
@@ -297,7 +307,7 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       svg.append('text')
         .attr('x', width / 2).attr('y', height / 2)
         .attr('text-anchor', 'middle')
-        .attr('fill', '#9ca3af')
+        .style('fill', 'var(--muted)')
         .text('No cluster data available. Index repositories first.');
       return;
     }
@@ -375,8 +385,8 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       .selectAll<SVGLineElement, SimLink>('line')
       .data(links)
       .join('line')
-      .attr('stroke', d => d.isCrossCluster ? '#e5e7eb' : '#9ca3af')
-      .attr('stroke-opacity', d => d.isCrossCluster ? 0.3 : 0.6)
+      .style('stroke', d => d.isCrossCluster ? 'var(--sem-amber)' : 'var(--border-2)')
+      .attr('stroke-opacity', d => d.isCrossCluster ? 0.55 : 0.75)
       .attr('stroke-width', d => linkWidthScale(d.count))
       .attr('stroke-dasharray', d => d.isCrossCluster ? '4,3' : 'none');
 
@@ -406,31 +416,39 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
     // Bridge ring (betweenness centrality > 0.01)
     nodeG.filter(d => d.betweenness > 0.01)
       .append('circle')
-      .attr('r', d => d.radius + 3)
+      .attr('r', d => d.radius + 4)
       .attr('fill', 'none')
-      .attr('stroke', '#ef4444')
-      .attr('stroke-width', d => Math.min(3, 1 + d.betweenness * 20))
-      .attr('stroke-opacity', 0.7);
+      .style('stroke', 'var(--sem-amber)')
+      .attr('stroke-width', 2)
+      .attr('stroke-opacity', 0.85)
+      .attr('stroke-dasharray', '3,2');
 
     // Main circle
     nodeG.append('circle')
       .attr('r', d => d.radius)
-      .attr('fill', d => {
-        if (d.edgeCount === 0) return '#e5e7eb';
-        if (d.isFoundational) return '#9ca3af';
-        if (d.clusterId === null) return '#d1d5db';
-        return this.colorScale(String(d.clusterId));
+      .style('fill', d => {
+        if (d.edgeCount === 0) return 'var(--surface-3)';
+        if (d.isFoundational) return 'var(--muted)';
+        if (d.clusterId === null) return 'var(--faint)';
+        return this.getClusterColor(d.clusterId);
       })
-      .attr('stroke', d => d.edgeCount === 0 ? '#94a3b8' : '#fff')
+      .attr('fill-opacity', d => (d.isFoundational || d.clusterId === null || d.edgeCount === 0) ? 0.6 : 0.18)
+      .style('stroke', d => {
+        if (d.edgeCount === 0) return 'var(--faint)';
+        if (d.isFoundational) return 'var(--muted)';
+        if (d.clusterId === null) return 'var(--faint)';
+        return this.getClusterColor(d.clusterId);
+      })
       .attr('stroke-width', 1.5);
 
     // Labels
     nodeG.append('text')
-      .text(d => d.id)
-      .attr('dy', d => d.radius + 12)
+      .text(d => this.displayRepoName(d.id))
+      .attr('dy', d => d.radius + 14)
       .attr('text-anchor', 'middle')
-      .attr('font-size', '10px')
-      .attr('fill', '#374151')
+      .attr('font-size', '11px')
+      .style('font-family', 'var(--font-mono)')
+      .style('fill', 'var(--text-2)')
       .attr('pointer-events', 'none');
 
     // Tooltip
@@ -457,10 +475,10 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
     this.simulation = d3.forceSimulation<SimNode>(nodes)
       .force('link', d3.forceLink<SimNode, SimLink>(links)
         .id(d => d.id)
-        .distance(d => d.isCrossCluster ? 150 : 60))
-      .force('charge', d3.forceManyBody().strength(-120))
+        .distance(d => d.isCrossCluster ? 180 : 110))
+      .force('charge', d3.forceManyBody().strength(-220))
       .force('center', d3.forceCenter(width / 2, height / 2).strength(0.05))
-      .force('collision', d3.forceCollide<SimNode>().radius(d => d.radius + 6))
+      .force('collision', d3.forceCollide<SimNode>().radius(d => d.radius + 22))
       .force('clusterX', d3.forceX<SimNode>(d => {
         if (d.clusterId !== null && clusterCentroids.has(d.clusterId))
           return clusterCentroids.get(d.clusterId)!.x;
@@ -492,7 +510,7 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
       // Reset everything to default
       this.nodeSelection.attr('opacity', 1);
       this.linkSelection
-        .attr('stroke-opacity', d => d.isCrossCluster ? 0.3 : 0.6);
+        .attr('stroke-opacity', d => d.isCrossCluster ? 0.55 : 0.75);
       // Reset node order
       this.nodeSelection.order();
       return;
@@ -517,5 +535,12 @@ export class ClustersPageComponent implements AfterViewInit, OnDestroy {
         }
         return 0.03;
       });
+  }
+
+  private displayRepoName(name: string): string {
+    return name
+      .replace(/^TC\./, '')
+      .replace(/^CodeGraph\./, '')
+      .replace(/Api$/, '');
   }
 }

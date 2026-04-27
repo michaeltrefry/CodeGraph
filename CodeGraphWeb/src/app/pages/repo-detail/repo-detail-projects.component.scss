@@ -1,0 +1,189 @@
+/* Repo detail — Projects section.
+   Component-scoped CodeFlow styling. Prefix: rdp-* (repo-detail-projects). */
+
+:host { display: block; }
+
+.rdp-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.rdp-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.rdp-title {
+  margin: 0;
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+/* ---- list / project row ---- */
+.rdp-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.rdp-project {
+  border-bottom: 1px solid var(--hairline);
+
+  &:last-child { border-bottom: 0; }
+}
+
+.rdp-project-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  cursor: pointer;
+  transition: background var(--transition);
+
+  &:hover { background: var(--surface-2); }
+}
+
+.rdp-project-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rdp-caret {
+  font-size: 10px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+/* ---- expanded body ---- */
+.rdp-project-body {
+  padding: 4px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--surface-2);
+}
+
+.rdp-markdown {
+  display: block;
+  font-size: var(--fs-md);
+  color: var(--text-2);
+  line-height: 1.6;
+
+  p { margin: 0 0 10px; }
+  p:last-child { margin-bottom: 0; }
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--surface-3);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+}
+
+/* ---- label row (node-kind chips) ---- */
+.rdp-label-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.rdp-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  text-decoration: none;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+
+  &:hover {
+    background: var(--accent-weak);
+    border-color: var(--accent-dim);
+    color: var(--accent-ink);
+    text-decoration: none;
+  }
+}
+
+.rdp-label-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.rdp-label-name {
+  font-weight: 500;
+}
+
+.rdp-label-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  margin-left: 2px;
+}
+
+/* ---- section within an expanded project ---- */
+.rdp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rdp-section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ---- inner tables ---- */
+.rdp-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.rdp-table {
+  td, th { padding: 8px 12px; }
+  th { font-size: var(--fs-xs); }
+}
+
+/* ---- HTTP method badge ---- */
+.rdp-method {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: var(--surface-3);
+  color: var(--text-2);
+
+  &[data-method="get"]    { background: color-mix(in oklab, var(--sem-blue) 18%, var(--surface)); color: var(--sem-blue); }
+  &[data-method="post"]   { background: color-mix(in oklab, var(--sem-green) 18%, var(--surface)); color: var(--sem-green); }
+  &[data-method="put"]    { background: color-mix(in oklab, var(--sem-amber) 18%, var(--surface)); color: var(--sem-amber); }
+  &[data-method="patch"]  { background: color-mix(in oklab, var(--sem-purple) 18%, var(--surface)); color: var(--sem-purple); }
+  &[data-method="delete"] { background: color-mix(in oklab, var(--sem-red) 18%, var(--surface)); color: var(--sem-red); }
+}
+
+/* ---- chips row ---- */
+.rdp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

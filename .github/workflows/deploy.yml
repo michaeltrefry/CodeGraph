@@ -119,34 +119,257 @@ jobs:
     runs-on: ubuntu-latest
     needs: publish
     environment: production
-    if: ${{ vars.CODEGRAPH_DEPLOY_ENABLED == 'true' }}
     steps:
+      - name: Check deployment gate
+        id: deploy-gate
+        env:
+          CODEGRAPH_DEPLOY_ENABLED: ${{ vars.CODEGRAPH_DEPLOY_ENABLED }}
+        run: |
+          if [ "$CODEGRAPH_DEPLOY_ENABLED" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Production deployment is disabled. Set CODEGRAPH_DEPLOY_ENABLED=true on the production environment to enable it." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Checkout
+        if: steps.deploy-gate.outputs.enabled == 'true'
         uses: actions/checkout@v4
 
+      - name: Validate deployment configuration
+        if: steps.deploy-gate.outputs.enabled == 'true'
+        env:
+          CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
+          CODEGRAPH_DEPLOY_PATH: ${{ vars.CODEGRAPH_DEPLOY_PATH || secrets.CODEGRAPH_DEPLOY_PATH }}
+          CODEGRAPH_DEPLOY_SSH_KEY: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY }}
+          CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
+          CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY: ${{ secrets.CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY }}
+          CODEGRAPH__RABBITMQOPTIONS__PASSWORD: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__PASSWORD }}
+          CODEGRAPH__RABBITMQOPTIONS__USERNAME: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__USERNAME }}
+          CODEGRAPH__REPOSITORYSOURCE__GITHUB__PERSONALACCESSTOKEN: ${{ secrets.CODEGRAPH__REPOSITORYSOURCE__GITHUB__PERSONALACCESSTOKEN }}
+          CODEGRAPH__STORAGEOPTIONS__MARIADBCONNECTIONSTRING: ${{ secrets.CODEGRAPH__STORAGEOPTIONS__MARIADBCONNECTIONSTRING }}
+          CODEGRAPH__STORAGEOPTIONS__MARIADBENCRYPTIONKEY: ${{ secrets.CODEGRAPH__STORAGEOPTIONS__MARIADBENCRYPTIONKEY }}
+        run: |
+          missing=0
+          for name in \
+            CODEGRAPH_DEPLOY_HOST \
+            CODEGRAPH_DEPLOY_PATH \
+            CODEGRAPH_DEPLOY_SSH_KEY \
+            CODEGRAPH_DEPLOY_USER \
+            CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY \
+            CODEGRAPH__RABBITMQOPTIONS__PASSWORD \
+            CODEGRAPH__RABBITMQOPTIONS__USERNAME \
+            CODEGRAPH__REPOSITORYSOURCE__GITHUB__PERSONALACCESSTOKEN \
+            CODEGRAPH__STORAGEOPTIONS__MARIADBCONNECTIONSTRING \
+            CODEGRAPH__STORAGEOPTIONS__MARIADBENCRYPTIONKEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is required for production deployment"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Create production environment file
+        if: steps.deploy-gate.outputs.enabled == 'true'
+        env:
+          ACTIONS_VARS_JSON: ${{ toJson(vars) }}
+          SECRET_ANALYSIS_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__APIKEY }}
+          SECRET_ANALYSIS_ASSISTANT_ANTHROPIC_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__ANTHROPIC__APIKEY }}
+          SECRET_ANALYSIS_ASSISTANT_LOCAL_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__LOCAL__APIKEY }}
+          SECRET_ANALYSIS_ASSISTANT_OPENAI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__OPENAI__APIKEY }}
+          SECRET_ANALYSIS_GEMINI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__GEMINI__APIKEY }}
+          SECRET_ANALYSIS_LOCAL_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__LOCAL__APIKEY }}
+          SECRET_ANALYSIS_OPENAI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__OPENAI__APIKEY }}
+          SECRET_INTERNAL_SERVICE_AUTH_HMAC_KEY: ${{ secrets.CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY }}
+          SECRET_RABBITMQ_PASSWORD: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__PASSWORD }}
+          SECRET_RABBITMQ_USERNAME: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__USERNAME }}
+          SECRET_REPOSITORY_GITHUB_PAT: ${{ secrets.CODEGRAPH__REPOSITORYSOURCE__GITHUB__PERSONALACCESSTOKEN }}
+          SECRET_REPOSITORY_GITLAB_TOKEN: ${{ secrets.CODEGRAPH__REPOSITORYSOURCE__GITLAB__PRIVATETOKEN }}
+          SECRET_STORAGE_MARIADB_CONNECTION_STRING: ${{ secrets.CODEGRAPH__STORAGEOPTIONS__MARIADBCONNECTIONSTRING }}
+          SECRET_STORAGE_MARIADB_ENCRYPTION_KEY: ${{ secrets.CODEGRAPH__STORAGEOPTIONS__MARIADBENCRYPTIONKEY }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+
+          segment_names = {
+              "ANALYSISOPTIONS": "AnalysisOptions",
+              "ALLOWEDORIGINS": "AllowedOrigins",
+              "ANTHROPIC": "Anthropic",
+              "APIKEY": "ApiKey",
+              "ASSISTANT": "Assistant",
+              "AUDIENCE": "Audience",
+              "AUTHOPTIONS": "AuthOptions",
+              "AUTHORITY": "Authority",
+              "AUTHORIZATIONURL": "AuthorizationUrl",
+              "BASEURL": "BaseUrl",
+              "CHATCOMPLETIONSPATH": "ChatCompletionsPath",
+              "CLIENTID": "ClientId",
+              "DEFAULTPROVIDER": "DefaultProvider",
+              "DIRECTFALLBACKMAXATTEMPTS": "DirectFallbackMaxAttempts",
+              "EMBEDDINGMODELNAME": "EmbeddingModelName",
+              "EMBEDDINGMODELPATH": "EmbeddingModelPath",
+              "ENABLED": "Enabled",
+              "ENDSESSIONURL": "EndSessionUrl",
+              "FOLDER": "Folder",
+              "GEMINI": "Gemini",
+              "GITHUB": "GitHub",
+              "GITLAB": "GitLab",
+              "HMACKEY": "HmacKey",
+              "HOST": "Host",
+              "INDEXER": "Indexer",
+              "INDEXINGOPTIONS": "IndexingOptions",
+              "INTERNALSERVICEAUTH": "InternalServiceAuth",
+              "ISSUER": "Issuer",
+              "LOCAL": "Local",
+              "LOCALDEVISADMIN": "LocalDevIsAdmin",
+              "LOCALDEVUSERNAME": "LocalDevUsername",
+              "MARIADBCONNECTIONSTRING": "MariaDbConnectionString",
+              "MARIADBENCRYPTIONKEY": "MariaDbEncryptionKey",
+              "MARIADBMIGRATIONSPATH": "MariaDbMigrationsPath",
+              "MAXCONCURRENTREQUESTS": "MaxConcurrentRequests",
+              "MAXPARALLELFILES": "MaxParallelFiles",
+              "MAXPROMPTNODES": "MaxPromptNodes",
+              "MAXRELATIONSHIPTARGETSPERTYPE": "MaxRelationshipTargetsPerType",
+              "MAXSOURCECHARS": "MaxSourceChars",
+              "MAXTOKENS": "MaxTokens",
+              "MAXTURNS": "MaxTurns",
+              "MCPOPTIONS": "McpOptions",
+              "MEMORY": "Memory",
+              "MODEL": "Model",
+              "OPENAI": "OpenAi",
+              "ORGANIZATION": "Organization",
+              "PASSWORD": "Password",
+              "PERSONALACCESSTOKEN": "PersonalAccessToken",
+              "PRIVATETOKEN": "PrivateToken",
+              "PROJECT": "Project",
+              "PROVIDER": "Provider",
+              "RABBITMQOPTIONS": "RabbitMqOptions",
+              "REPOSCACHEPATH": "ReposCachePath",
+              "REPOSITORYSOURCE": "RepositorySource",
+              "REQUIREHTTPSMETADATA": "RequireHttpsMetadata",
+              "REQUIREPERSONALACCESSTOKEN": "RequirePersonalAccessToken",
+              "ROOTPATH": "RootPath",
+              "SCOPE": "Scope",
+              "STORAGEOPTIONS": "StorageOptions",
+              "TIMEOUTSECONDS": "TimeoutSeconds",
+              "TOKENURL": "TokenUrl",
+              "TSPORT": "TsPort",
+              "USERNAME": "Username",
+              "USEJSONOBJECTRESPONSEFORMAT": "UseJsonObjectResponseFormat",
+          }
+
+          pass_through_names = {
+              "ASPNETCORE_ENVIRONMENT",
+              "CODEGRAPHAPI_DOCKER_HTTPS_PORT",
+              "CODEGRAPH_DOCKER_HTTPS_PORT",
+              "CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT",
+              "CODEGRAPH_DOCKER_MODELS_MOUNT",
+              "CODEGRAPH_DOCKER_REPOS_MOUNT",
+              "CODEGRAPH_DOCKER_TLS_CERT_PATH",
+              "CODEGRAPH_DOCKER_TLS_KEY_PATH",
+              "CODEGRAPH_INDEXER_DOCKER_HTTP_PORT",
+              "CODEGRAPH_MEMORY_DOCKER_HTTP_PORT",
+              "CODEGRAPH_METRICS_DOCKER_HTTP_PORT",
+              "CODEGRAPH_SKIP_TS_SIDECAR_WARMUP",
+              "DOTNET_ENVIRONMENT",
+          }
+
+          secret_mappings = {
+              "CodeGraph__AnalysisOptions__ApiKey": "SECRET_ANALYSIS_API_KEY",
+              "CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey": "SECRET_ANALYSIS_ASSISTANT_ANTHROPIC_API_KEY",
+              "CodeGraph__AnalysisOptions__Assistant__Local__ApiKey": "SECRET_ANALYSIS_ASSISTANT_LOCAL_API_KEY",
+              "CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey": "SECRET_ANALYSIS_ASSISTANT_OPENAI_API_KEY",
+              "CodeGraph__AnalysisOptions__Gemini__ApiKey": "SECRET_ANALYSIS_GEMINI_API_KEY",
+              "CodeGraph__AnalysisOptions__Local__ApiKey": "SECRET_ANALYSIS_LOCAL_API_KEY",
+              "CodeGraph__AnalysisOptions__OpenAi__ApiKey": "SECRET_ANALYSIS_OPENAI_API_KEY",
+              "CodeGraph__InternalServiceAuth__HmacKey": "SECRET_INTERNAL_SERVICE_AUTH_HMAC_KEY",
+              "CodeGraph__RabbitMqOptions__Password": "SECRET_RABBITMQ_PASSWORD",
+              "CodeGraph__RabbitMqOptions__Username": "SECRET_RABBITMQ_USERNAME",
+              "CodeGraph__RepositorySource__GitHub__PersonalAccessToken": "SECRET_REPOSITORY_GITHUB_PAT",
+              "CodeGraph__RepositorySource__GitLab__PrivateToken": "SECRET_REPOSITORY_GITLAB_TOKEN",
+              "CodeGraph__StorageOptions__MariaDbConnectionString": "SECRET_STORAGE_MARIADB_CONNECTION_STRING",
+              "CodeGraph__StorageOptions__MariaDbEncryptionKey": "SECRET_STORAGE_MARIADB_ENCRYPTION_KEY",
+          }
+
+          def compose_key(name):
+              if not name.startswith("CODEGRAPH__"):
+                  return name
+
+              parts = name.split("__")[1:]
+              converted = []
+              for part in parts:
+                  if part.isdigit():
+                      converted.append(part)
+                      continue
+                  converted.append(segment_names.get(part, part))
+
+              return "CodeGraph__" + "__".join(converted)
+
+          def dotenv_value(value):
+              return "'" + value.replace("'", "\\'") + "'"
+
+          entries = {
+              "ASPNETCORE_ENVIRONMENT": "Production",
+              "DOTNET_ENVIRONMENT": "Production",
+          }
+
+          action_vars = json.loads(os.environ.get("ACTIONS_VARS_JSON") or "{}")
+          for name, value in action_vars.items():
+              if value is None or value == "":
+                  continue
+              if name.startswith("CODEGRAPH_DEPLOY"):
+                  continue
+              if name.startswith("CODEGRAPH__"):
+                  entries[compose_key(name)] = value
+              elif name in pass_through_names:
+                  entries[name] = value
+
+          for target_name, env_name in secret_mappings.items():
+              value = os.environ.get(env_name)
+              if value:
+                  entries[target_name] = value
+
+          with open(".env.production", "w", encoding="utf-8") as env_file:
+              for name in sorted(entries):
+                  env_file.write(f"{name}={dotenv_value(entries[name])}\n")
+          PY
+
       - name: Prepare SSH key
+        if: steps.deploy-gate.outputs.enabled == 'true'
+        env:
+          CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
+          CODEGRAPH_DEPLOY_SSH_KEY: ${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.CODEGRAPH_DEPLOY_SSH_KEY }}" > ~/.ssh/codegraph_deploy
+          printf '%s\n' "$CODEGRAPH_DEPLOY_SSH_KEY" > ~/.ssh/codegraph_deploy
           chmod 600 ~/.ssh/codegraph_deploy
-          ssh-keyscan -H "${{ secrets.CODEGRAPH_DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$CODEGRAPH_DEPLOY_HOST" >> ~/.ssh/known_hosts
 
       - name: Sync deployment files
+        if: steps.deploy-gate.outputs.enabled == 'true'
+        env:
+          CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
+          CODEGRAPH_DEPLOY_PATH: ${{ vars.CODEGRAPH_DEPLOY_PATH || secrets.CODEGRAPH_DEPLOY_PATH }}
+          CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
         run: |
-          printf '%s\n' "${{ secrets.CODEGRAPH_PROD_ENV }}" > .env.production
-          ssh -i ~/.ssh/codegraph_deploy "${{ secrets.CODEGRAPH_DEPLOY_USER }}@${{ secrets.CODEGRAPH_DEPLOY_HOST }}" "mkdir -p '${{ secrets.CODEGRAPH_DEPLOY_PATH }}'"
-          scp -i ~/.ssh/codegraph_deploy docker-compose.yml deploy/docker-compose.production.yml "${{ secrets.CODEGRAPH_DEPLOY_USER }}@${{ secrets.CODEGRAPH_DEPLOY_HOST }}:${{ secrets.CODEGRAPH_DEPLOY_PATH }}/"
-          scp -i ~/.ssh/codegraph_deploy .env.production "${{ secrets.CODEGRAPH_DEPLOY_USER }}@${{ secrets.CODEGRAPH_DEPLOY_HOST }}:${{ secrets.CODEGRAPH_DEPLOY_PATH }}/.env"
+          ssh -i ~/.ssh/codegraph_deploy "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH'"
+          scp -i ~/.ssh/codegraph_deploy docker-compose.yml deploy/docker-compose.production.yml "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/"
+          scp -i ~/.ssh/codegraph_deploy .env.production "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/.env"
 
       - name: Deploy over SSH
+        if: steps.deploy-gate.outputs.enabled == 'true'
         env:
+          CODEGRAPH_DEPLOY_HOST: ${{ vars.CODEGRAPH_DEPLOY_HOST || secrets.CODEGRAPH_DEPLOY_HOST }}
+          CODEGRAPH_DEPLOY_PATH: ${{ vars.CODEGRAPH_DEPLOY_PATH || secrets.CODEGRAPH_DEPLOY_PATH }}
+          CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
           IMAGE_TAG: ${{ needs.publish.outputs.image-tag }}
           IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ssh -i ~/.ssh/codegraph_deploy "${{ secrets.CODEGRAPH_DEPLOY_USER }}@${{ secrets.CODEGRAPH_DEPLOY_HOST }}" \
-            "cd '${{ secrets.CODEGRAPH_DEPLOY_PATH }}' && \
+          ssh -i ~/.ssh/codegraph_deploy "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" \
+            "cd '$CODEGRAPH_DEPLOY_PATH' && \
              echo '$GHCR_TOKEN' | docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin && \
              IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' docker compose -f docker-compose.yml -f docker-compose.production.yml pull && \
              IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --no-build --remove-orphans"

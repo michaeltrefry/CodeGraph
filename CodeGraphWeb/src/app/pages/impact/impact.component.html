@@ -1,176 +1,232 @@
-<div class="page">
-  <div class="page-header">
-    <h1>Blast Radius Analysis</h1>
-    <p class="subtitle">Analyze the impact of changing a code element across the graph</p>
-  </div>
+<div class="cg-page im-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Blast radius</h1>
+      <p>Trace inbound dependencies of a node or file across repositories.</p>
+    </div>
+    <div class="cg-page-header-actions">
+      <div class="cg-segmented" role="group" aria-label="Depth">
+        @for (d of [2, 3, 4, 5]; track d) {
+          <button type="button"
+                  [class.active]="depth() === d"
+                  (click)="setDepth(d)">{{ d }}</button>
+        }
+      </div>
+      <button class="im-btn" type="button"
+              (click)="analyze()"
+              [disabled]="loading() || !nodeName() || !projectName()">
+        @if (loading()) { <span class="im-spinner"></span> Re-running… }
+        @else { ↻ Re-run }
+      </button>
+    </div>
+  </header>
 
-  <!-- Search form -->
-  <div class="card search-card">
-    <div class="search-row">
-      <div class="field">
-        <label for="project">Project</label>
+  <section class="im-form-card">
+    <div class="im-form-row">
+      <div class="im-field">
+        <label class="im-field-label">Project</label>
         <app-typeahead
           [searchFn]="searchProjects"
-          [placeholder]="'e.g. orders-api'"
+          [placeholder]="'e.g. TC.OrdersApi'"
           [minChars]="2"
           [ngModel]="projectName()"
           (ngModelChange)="projectName.set($event)"
-          (selected)="onProjectSelected($event)"
-          />
+          (selected)="onProjectSelected($event)" />
       </div>
-      <div class="field field-wide">
-        <label for="node">Node name or qualified name</label>
+      <div class="im-field im-field-wide">
+        <label class="im-field-label">Node</label>
         <app-typeahead
           [searchFn]="searchNodes"
           [placeholder]="'e.g. OrderService.CreateOrder'"
           [minChars]="2"
           [ngModel]="nodeName()"
           (ngModelChange)="nodeName.set($event)"
-          (selected)="onNodeSelected($event)"
-          />
+          (selected)="onNodeSelected($event)" />
       </div>
-      <div class="field field-narrow">
-        <label for="depth">Depth</label>
-        <select id="depth" [ngModel]="depth()" (ngModelChange)="depth.set(+$event)">
-          <option [value]="1">1</option>
-          <option [value]="2">2</option>
-          <option [value]="3">3</option>
-          <option [value]="4">4</option>
-          <option [value]="5">5</option>
-        </select>
-      </div>
-      <button class="analyze-btn" (click)="analyze()" [disabled]="loading() || !nodeName() || !projectName()">
-        {{ loading() ? 'Analyzing...' : 'Analyze' }}
+      <button class="im-btn primary" type="button"
+              (click)="analyze()"
+              [disabled]="loading() || !nodeName() || !projectName()">
+        Analyze
       </button>
     </div>
-  </div>
+  </section>
 
-  <!-- Loading -->
-  @if (loading()) {
-    <div class="loading">Traversing dependency graph...</div>
-  }
-
-  <!-- Error -->
   @if (error()) {
-    <div class="card error-card">{{ error() }}</div>
+    <div class="im-banner err">{{ error() }}</div>
   }
 
-  <!-- Results -->
   @if (report(); as r) {
-    <!-- Summary cards -->
-    <div class="summary-row">
-      <div class="summary-card">
-        <span class="summary-value">{{ r.summary.totalAffected }}</span>
-        <span class="summary-label">Affected Nodes</span>
-      </div>
-      <div class="summary-card">
-        <span class="summary-value">{{ r.summary.affectedProjects.length }}</span>
-        <span class="summary-label">Projects</span>
-      </div>
-      @for (risk of riskLevels; track risk) {
-        <div class="summary-card" [style.border-color]="riskColor(risk)">
-          <span class="summary-value" [style.color]="riskColor(risk)">{{ riskCount(risk) }}</span>
-          <span class="summary-label">{{ risk }}</span>
+    <section class="im-card">
+      <div class="im-card-head">
+        <div class="im-card-head-main">
+          <span class="im-label-sm">Node</span>
+          @if (primaryChanged(); as changed) {
+            <span class="cg-mono im-fqn">{{ changed.qualifiedName || changed.name }}</span>
+          } @else {
+            <span class="cg-mono im-fqn">{{ nodeName() }}</span>
+          }
         </div>
-      }
-    </div>
-
-    <!-- Changed nodes -->
-    @if (r.changedNodes.length > 0) {
-      <div class="card">
-        <h3 class="section-title">Changed Nodes</h3>
-        @for (n of r.changedNodes; track n.nodeId) {
-          <div class="node-item changed">
-            <span class="node-icon">{{ icon(n.label) }}</span>
-            <a [routerLink]="['/nodes', n.nodeId]" class="node-name">{{ n.name }}</a>
-            <span class="badge badge-gray">{{ n.label }}</span>
-            <a [routerLink]="['/repos', n.project]" class="node-project">{{ n.project }}</a>
-          </div>
-        }
+        <div class="im-risk-tally">
+          @for (risk of riskLevels; track risk) {
+            @if (riskCount(risk) > 0) {
+              <span class="im-risk-chip" [attr.data-risk]="risk.toLowerCase()">
+                {{ riskPillLabel(risk) }}
+                <span class="im-risk-chip-value">{{ riskCount(risk) }}</span>
+              </span>
+            }
+          }
+        </div>
       </div>
-    }
 
-    <!-- Risk groups -->
-    @for (risk of riskLevels; track risk) {
-      @let nodes = nodesForRisk(risk);
-      @if (nodes.length > 0) {
-        <div class="card risk-group" [style.border-left-color]="riskColor(risk)">
-          <div class="risk-header" (click)="toggleGroup(risk)">
-            <span class="risk-indicator" [style.background]="riskColor(risk)">{{ risk | uppercase }}</span>
-            <span class="risk-count">{{ nodes.length }} node{{ nodes.length === 1 ? '' : 's' }}</span>
-            <span class="toggle-icon">{{ isExpanded(risk) ? '\u25BC' : '\u25B6' }}</span>
+      @if (treeRows().length === 0) {
+        <div class="im-empty">No affected nodes at depth {{ depth() }}.</div>
+      } @else {
+        <div class="im-split">
+          <div class="im-tree">
+            @for (n of treeRows(); track n.nodeId) {
+              <button class="im-tree-row"
+                      type="button"
+                      [class.active]="selectedNodeId() === n.nodeId"
+                      (click)="select(n.nodeId)">
+                <span class="im-tree-indent cg-mono">
+                  @for (c of indentCharacters(n.depth); track $index) {
+                    <span>{{ c }}</span>
+                  }
+                </span>
+                <span class="im-tree-label">{{ n.name }}</span>
+                @if (isCrossRepo(n)) {
+                  <span class="cg-chip cg-chip-accent">cross-repo</span>
+                }
+                <span class="im-tree-project cg-faint cg-xsmall cg-mono">{{ n.project }}</span>
+                <span class="im-risk-pill" [attr.data-risk]="n.risk.toLowerCase()">
+                  {{ riskPillLabel(n.risk) }}
+                </span>
+              </button>
+            }
           </div>
-          @if (isExpanded(risk)) {
-            <div class="risk-nodes">
-              @for (n of nodes; track n.nodeId) {
-                <div class="node-item" [style.background]="riskBg(risk)">
-                  <div class="node-main">
-                    <span class="node-icon">{{ icon(n.label) }}</span>
-                    <a [routerLink]="['/nodes', n.nodeId]" class="node-name">{{ n.name }}</a>
-                    <span class="badge badge-gray">{{ n.label }}</span>
-                    <span class="hop-badge">hop {{ n.depth }}</span>
-                    <span class="edge-badge">{{ n.edgeType }}</span>
-                    @if (n.project !== projectName()) {
-                      <span class="cross-project-badge">{{ n.project }}</span>
-                    }
+
+          <aside class="im-detail">
+            @if (selectedNode(); as sel) {
+              <div class="im-detail-label">Selected</div>
+              <div class="cg-mono im-detail-name">{{ sel.name }}</div>
+              <div class="im-detail-sub cg-muted cg-small">
+                {{ sel.label }}{{ sel.dotnetProject ? ' · ' + sel.dotnetProject : '' }}
+              </div>
+
+              <div class="im-detail-sep"></div>
+
+              <div class="im-kv-list">
+                <div class="im-kv"><span>Project</span>
+                  <a class="cg-mono-link cg-small" [routerLink]="['/repos', sel.project]">{{ sel.project }}</a>
+                </div>
+                <div class="im-kv"><span>Kind</span>
+                  <span class="cg-mono cg-small">{{ sel.label }}</span>
+                </div>
+                <div class="im-kv"><span>Edge type</span>
+                  <span class="cg-mono cg-small">{{ sel.edgeType }}</span>
+                </div>
+                <div class="im-kv"><span>Depth</span>
+                  <span class="cg-mono cg-small">{{ sel.depth }} hop{{ sel.depth === 1 ? '' : 's' }}</span>
+                </div>
+                <div class="im-kv"><span>Risk</span>
+                  <span class="im-risk-pill" [attr.data-risk]="sel.risk.toLowerCase()">
+                    {{ riskPillLabel(sel.risk) }}
+                  </span>
+                </div>
+                @if (sel.filePath) {
+                  <div class="im-kv"><span>File</span>
+                    <span class="cg-mono cg-small im-file">{{ sel.filePath }}</span>
                   </div>
-                  @if (n.riskFactors.length > 0) {
-                    <div class="risk-factors">
-                      @for (f of n.riskFactors; track f) {
-                        <span class="factor">{{ f }}</span>
-                      }
-                    </div>
+                }
+              </div>
+
+              @if (sel.riskFactors.length > 0) {
+                <div class="im-detail-sep"></div>
+                <div class="im-detail-label">Risk factors</div>
+                <div class="im-factor-list">
+                  @for (f of sel.riskFactors; track f) {
+                    <span class="cg-chip cg-chip-warn cg-chip-dot">{{ f }}</span>
                   }
                 </div>
               }
-            </div>
-          }
+
+              <div class="im-detail-sep"></div>
+              <a class="im-open-btn" [routerLink]="['/nodes', sel.nodeId]">
+                Open node →
+              </a>
+            } @else {
+              <div class="cg-muted cg-small">Select a node in the tree to see details.</div>
+            }
+          </aside>
         </div>
       }
-    }
+    </section>
 
-    <!-- Cross-repo impact -->
-    @if (r.crossRepoImpacts.length > 0) {
-      <div class="card">
-        <h3 class="section-title">Cross-Repo Impact</h3>
-        <table class="detail-table">
-          <thead>
-            <tr>
-              <td>Source</td>
-              <td>Target</td>
-              <td>Edge Type</td>
-              <td>Affected</td>
-            </tr>
-          </thead>
-          <tbody>
-            @for (c of r.crossRepoImpacts; track c.sourceProject + c.targetProject) {
-              <tr>
-                <td><a [routerLink]="['/repos', c.sourceProject]">{{ c.sourceProject }}</a></td>
-                <td><a [routerLink]="['/repos', c.targetProject]">{{ c.targetProject }}</a></td>
-                <td><code>{{ c.edgeType }}</code></td>
-                <td>{{ c.affectedNodeCount }}</td>
-              </tr>
-            }
-          </tbody>
-        </table>
-      </div>
-    }
-
-    <!-- Affected projects list -->
-    @if (r.summary.affectedProjects.length > 1) {
-      <div class="card">
-        <h3 class="section-title">All Affected Projects</h3>
-        <div class="project-chips">
-          @for (p of r.summary.affectedProjects; track p) {
-            <a [routerLink]="['/repos', p]" class="badge badge-blue project-chip">{{ p }}</a>
+    @if (r.changedNodes.length > 1) {
+      <section class="im-sub-card">
+        <div class="im-sub-card-head">
+          <span class="im-label-sm">Changed nodes</span>
+          <span class="cg-chip cg-chip-mono">{{ r.changedNodes.length }}</span>
+        </div>
+        <div class="im-changed-list">
+          @for (n of r.changedNodes; track n.nodeId) {
+            <a class="im-changed-row" [routerLink]="['/nodes', n.nodeId]">
+              <span class="cg-mono-link">{{ n.name }}</span>
+              <span class="cg-chip cg-chip-mono">{{ n.label }}</span>
+              <span class="cg-muted cg-xsmall">{{ n.project }}</span>
+            </a>
           }
         </div>
-      </div>
+      </section>
+    }
+
+    @if (r.crossRepoImpacts.length > 0) {
+      <section class="im-sub-card">
+        <div class="im-sub-card-head">
+          <span class="im-label-sm">Cross-repo impact</span>
+          <span class="cg-chip cg-chip-mono">{{ r.crossRepoImpacts.length }}</span>
+        </div>
+        <div class="im-table-wrap">
+          <table class="cg-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Target</th>
+                <th>Edge type</th>
+                <th class="cg-cell-num-head">Affected</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (c of r.crossRepoImpacts; track c.sourceProject + c.targetProject) {
+                <tr>
+                  <td><a class="cg-mono-link" [routerLink]="['/repos', c.sourceProject]">{{ c.sourceProject }}</a></td>
+                  <td><a class="cg-mono-link" [routerLink]="['/repos', c.targetProject]">{{ c.targetProject }}</a></td>
+                  <td><span class="cg-mono cg-small">{{ c.edgeType }}</span></td>
+                  <td class="cg-cell-num">{{ c.affectedNodeCount }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </section>
+    }
+
+    @if (r.summary.affectedProjects.length > 1) {
+      <section class="im-sub-card">
+        <div class="im-sub-card-head">
+          <span class="im-label-sm">Affected projects</span>
+          <span class="cg-chip cg-chip-mono">{{ r.summary.affectedProjects.length }}</span>
+        </div>
+        <div class="im-project-chips">
+          @for (p of r.summary.affectedProjects; track p) {
+            <a class="cg-chip cg-chip-mono" [routerLink]="['/repos', p]">{{ p }}</a>
+          }
+        </div>
+      </section>
     }
   }
 
-  <!-- Empty state -->
   @if (searched() && !loading() && !report() && !error()) {
-    <div class="empty">No impact data found.</div>
+    <div class="im-empty">No impact data found.</div>
   }
 </div>

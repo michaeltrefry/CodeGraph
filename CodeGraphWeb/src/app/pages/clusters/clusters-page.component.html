@@ -1,173 +1,214 @@
-<div class="clusters-page">
-  <div class="clusters-header">
-    <div class="header-left">
-      <h1>Service Clusters</h1>
-      @if (graphData()) {
-        <span class="header-stat">{{ clusters().length }} clusters / {{ graphData()!.nodes.length }} repos / modularity {{ modularity() | number:'1.4-4' }}</span>
-      }
+<div class="cg-page cp-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Service clusters</h1>
+      <p>
+        Louvain community detection
+        @if (graphData()) {
+          &middot; modularity {{ modularity() | number:'1.2-2' }}
+          &middot; {{ clusters().length }} {{ clusters().length === 1 ? 'cluster' : 'clusters' }}
+          over {{ graphData()!.nodes.length }} {{ graphData()!.nodes.length === 1 ? 'repo' : 'repos' }}
+        }
+      </p>
     </div>
-    <div class="header-actions">
-      <button [class.active]="viewMode() === 'graph'" (click)="setViewMode('graph')">Graph</button>
-      <button [class.active]="viewMode() === 'list'" (click)="setViewMode('list')">List</button>
+    <div class="cg-page-header-actions">
+      <div class="cg-segmented" role="group" aria-label="View mode">
+        <button type="button"
+                [class.active]="viewMode() === 'graph'"
+                (click)="setViewMode('graph')">Graph</button>
+        <button type="button"
+                [class.active]="viewMode() === 'list'"
+                (click)="setViewMode('list')">List</button>
+      </div>
     </div>
-  </div>
+  </header>
 
   @if (loading()) {
-    <div class="loading-message">Loading cluster data...</div>
-  } @else if (graphData() && graphData()!.nodes.length === 0) {
-    <div class="empty-message">
+    <div class="cp-state">Loading cluster data...</div>
+  } @else if (!graphData() || graphData()!.nodes.length === 0) {
+    <div class="cp-state">
       No repositories have been indexed yet.
     </div>
   } @else {
-    <div class="clusters-body">
-      <!-- Edge Type Filter Panel -->
-      @if (availableEdgeTypes().length > 0) {
-        <div class="filter-panel" [class.collapsed]="!filterPanelOpen()">
-          <div class="filter-header" (click)="filterPanelOpen.set(!filterPanelOpen())">
-            <span class="filter-title">Edge Types</span>
-            <span class="filter-toggle">{{ filterPanelOpen() ? '◂' : '▸' }}</span>
+    <div class="cp-body" [attr.data-mode]="viewMode()">
+      @if (viewMode() === 'graph') {
+        <section class="cp-graph-card">
+          <div class="cp-graph-wrapper" #wrapper>
+            <svg #svg role="img" aria-label="Service cluster graph"></svg>
           </div>
-          @if (filterPanelOpen()) {
-            <div class="filter-actions">
-              <button (click)="enableAllEdgeTypes()">All</button>
-              <button (click)="disableAllEdgeTypes()">None</button>
-            </div>
-            <div class="filter-list">
-              @for (type of availableEdgeTypes(); track type) {
-                <label class="filter-item">
-                  <input type="checkbox" [checked]="isEdgeTypeEnabled(type)" (change)="toggleEdgeType(type)" />
-                  <span class="filter-label">{{ formatEdgeType(type) }}</span>
-                </label>
+        </section>
+
+        <aside class="cp-side-panel">
+          @if (availableEdgeTypes().length > 0) {
+            <section class="cp-filter">
+              <header class="cp-filter-head" (click)="filterPanelOpen.set(!filterPanelOpen())">
+                <span class="cg-small">Edge types</span>
+                <span class="cp-filter-caret">{{ filterPanelOpen() ? 'v' : '>' }}</span>
+              </header>
+              @if (filterPanelOpen()) {
+                <div class="cp-filter-actions">
+                  <button class="cp-mini-btn" type="button" (click)="enableAllEdgeTypes()">All</button>
+                  <button class="cp-mini-btn" type="button" (click)="disableAllEdgeTypes()">None</button>
+                </div>
+                <div class="cp-filter-list">
+                  @for (type of availableEdgeTypes(); track type) {
+                    <label class="cp-filter-item">
+                      <input type="checkbox" [checked]="isEdgeTypeEnabled(type)" (change)="toggleEdgeType(type)" />
+                      <span>{{ formatEdgeType(type) }}</span>
+                    </label>
+                  }
+                </div>
+              }
+            </section>
+          }
+
+          <section class="cp-legend">
+            <div class="cp-section-label">Clusters</div>
+            <div class="cp-legend-list">
+              @for (cluster of clusters(); track cluster.clusterId) {
+                <button class="cp-legend-item"
+                        type="button"
+                        [class.selected]="selectedClusterId() === cluster.clusterId"
+                        (click)="selectCluster(cluster.clusterId)">
+                  <span class="cp-legend-dot" [style.background]="getClusterColor(cluster.clusterId)"></span>
+                  <span>{{ getClusterLabel(cluster) }}</span>
+                  <span class="cg-faint cg-mono">&middot; {{ cluster.memberCount }}</span>
+                </button>
               }
             </div>
-          }
-        </div>
+            <div class="cp-legend-divider"></div>
+            <span class="cp-legend-item static">
+              <span class="cp-legend-dot unclustered"></span>
+              <span class="cg-muted">Foundational</span>
+            </span>
+            <span class="cp-legend-item static">
+              <span class="cp-legend-dot isolated"></span>
+              <span class="cg-muted">Isolated</span>
+            </span>
+            <span class="cp-legend-item static">
+              <span class="cp-legend-ring"></span>
+              <span class="cg-muted">Bridge repo</span>
+            </span>
+          </section>
+        </aside>
+
+        @if (selectedClusterId() !== null) {
+          <aside class="cp-detail">
+            @if (loadingDetail()) {
+              <div class="cp-state">Loading...</div>
+            } @else if (clusterDetail(); as detail) {
+              <header class="cp-detail-head">
+                <div class="cp-detail-title">
+                  <span class="cp-legend-dot" [style.background]="getClusterColor(detail.clusterId)"></span>
+                  <h2>{{ getClusterLabelById(detail.clusterId) }}</h2>
+                </div>
+                <button class="cp-close" type="button" aria-label="Close cluster details"
+                        (click)="selectCluster(null)">x</button>
+              </header>
+
+              <div class="cp-stats">
+                <div class="cp-stat">
+                  <div class="cp-stat-value">{{ detail.members.length }}</div>
+                  <div class="cp-stat-label">Repos</div>
+                </div>
+                <div class="cp-stat">
+                  <div class="cp-stat-value">{{ detail.internalEdgeCount }}</div>
+                  <div class="cp-stat-label">Internal</div>
+                </div>
+                <div class="cp-stat">
+                  <div class="cp-stat-value">{{ detail.externalEdgeCount }}</div>
+                  <div class="cp-stat-label">External</div>
+                </div>
+              </div>
+
+              <div class="cp-section">
+                <div class="cp-section-label">Members</div>
+                <div class="cp-list">
+                  @for (member of detail.members; track member.projectName) {
+                    <button class="cp-list-row" type="button" (click)="navigateToRepo(member.projectName)">
+                      <span class="cg-mono cp-list-name">{{ member.projectName }}</span>
+                      @if (member.betweennessCentrality > 0.01) {
+                        <span class="cg-chip cg-chip-warn cg-chip-dot">bridge</span>
+                      }
+                      <span class="cp-list-edges cg-muted cg-xsmall cg-mono">
+                        {{ member.internalEdges }}in &middot; {{ member.externalEdges }}ext
+                      </span>
+                    </button>
+                  }
+                </div>
+              </div>
+
+              @if (detail.topConnections.length > 0) {
+                <div class="cp-section">
+                  <div class="cp-section-label">Connections</div>
+                  <div class="cp-list">
+                    @for (conn of detail.topConnections; track conn.targetClusterId) {
+                      <button class="cp-list-row" type="button" (click)="selectCluster(conn.targetClusterId)">
+                        <span class="cp-legend-dot" [style.background]="getClusterColor(conn.targetClusterId)"></span>
+                        <span class="cp-list-name">{{ getClusterLabelById(conn.targetClusterId) }}</span>
+                        <span class="cg-chip cg-chip-mono">{{ conn.edgeCount }}</span>
+                      </button>
+                    }
+                  </div>
+                </div>
+              }
+            }
+          </aside>
+        }
       }
 
-      <!-- Graph View -->
-      @if (viewMode() === 'graph') {
-        <div class="graph-panel">
-          <div class="graph-wrapper" #wrapper>
-            <svg #svg></svg>
-            <div class="graph-legend">
-              @for (cluster of clusters(); track cluster.clusterId) {
-                <span class="legend-item" (click)="selectCluster(cluster.clusterId)" [class.selected]="selectedClusterId() === cluster.clusterId">
-                  <span class="legend-dot" [style.background]="getClusterColor(cluster.clusterId)"></span>
-                  {{ getClusterLabel(cluster) }} ({{ cluster.memberCount }})
-                </span>
-              }
-              <span class="legend-item">
-                <span class="legend-dot unclustered"></span> Foundational
-              </span>
-              <span class="legend-item">
-                <span class="legend-dot isolated"></span> Isolated
-              </span>
-              <span class="legend-item bridge-item">
-                <span class="legend-ring"></span> Bridge repo
-              </span>
-            </div>
-          </div>
-        </div>
+      @if (viewMode() === 'list') {
+        <section class="cp-list-grid">
+          @for (cluster of clusters(); track cluster.clusterId) {
+            <article class="cp-cluster-card"
+                     [class.active]="selectedClusterId() === cluster.clusterId"
+                     (click)="selectCluster(cluster.clusterId)">
+              <header class="cp-cluster-card-head">
+                <span class="cp-legend-dot large" [style.background]="getClusterColor(cluster.clusterId)"></span>
+                <div class="cp-cluster-card-main">
+                  <h2>{{ getClusterLabel(cluster) }}</h2>
+                  <div class="cg-muted cg-xsmall">{{ cluster.memberCount }} {{ cluster.memberCount === 1 ? 'repo' : 'repos' }}</div>
+                </div>
+              </header>
 
-        <!-- Detail Panel -->
-        @if (selectedClusterId() !== null) {
-          <div class="detail-panel">
-            @if (loadingDetail()) {
-              <div class="loading-message">Loading...</div>
-            } @else if (clusterDetail()) {
-              <div class="detail-header">
-                <h2>{{ getClusterLabelById(clusterDetail()!.clusterId) }}</h2>
-                <button class="close-btn" (click)="selectCluster(null)">&times;</button>
-              </div>
-              <div class="detail-stats">
-                <div class="stat">
-                  <span class="stat-value">{{ clusterDetail()!.members.length }}</span>
-                  <span class="stat-label">Repos</span>
-                </div>
-                <div class="stat">
-                  <span class="stat-value">{{ clusterDetail()!.internalEdgeCount }}</span>
-                  <span class="stat-label">Internal</span>
-                </div>
-                <div class="stat">
-                  <span class="stat-value">{{ clusterDetail()!.externalEdgeCount }}</span>
-                  <span class="stat-label">External</span>
-                </div>
-              </div>
-              <h3>Members</h3>
-              <div class="member-list">
-                @for (member of clusterDetail()!.members; track member.projectName) {
-                  <div class="member-row" (click)="navigateToRepo(member.projectName)">
-                    <span class="member-name">{{ member.projectName }}</span>
-                    @if (member.betweennessCentrality > 0.01) {
-                      <span class="badge badge-red">bridge</span>
-                    }
-                    <span class="member-edges">{{ member.internalEdges }}in / {{ member.externalEdges }}ext</span>
+              @if (selectedClusterId() === cluster.clusterId && clusterDetail(); as detail) {
+                <div class="cp-cluster-card-body">
+                  <div class="cp-stats compact">
+                    <div class="cp-stat">
+                      <div class="cp-stat-value">{{ detail.internalEdgeCount }}</div>
+                      <div class="cp-stat-label">Internal</div>
+                    </div>
+                    <div class="cp-stat">
+                      <div class="cp-stat-value">{{ detail.externalEdgeCount }}</div>
+                      <div class="cp-stat-label">External</div>
+                    </div>
                   </div>
-                }
-              </div>
-              @if (clusterDetail()!.topConnections.length > 0) {
-                <h3>Connections</h3>
-                <div class="connection-list">
-                  @for (conn of clusterDetail()!.topConnections; track conn.targetClusterId) {
-                    <div class="connection-row" (click)="selectCluster(conn.targetClusterId)">
-                      <span class="connection-target">{{ getClusterLabelById(conn.targetClusterId) }}</span>
-                      <span class="connection-count">{{ conn.edgeCount }} edges</span>
-                      <span class="connection-types">{{ conn.edgeTypes.join(', ') }}</span>
+                  <div class="cp-list">
+                    @for (member of detail.members; track member.projectName) {
+                      <button class="cp-list-row" type="button"
+                              (click)="navigateToRepo(member.projectName); $event.stopPropagation()">
+                        <span class="cg-mono cp-list-name">{{ member.projectName }}</span>
+                        @if (member.betweennessCentrality > 0.01) {
+                          <span class="cg-chip cg-chip-warn cg-chip-dot">bridge</span>
+                        }
+                      </button>
+                    }
+                  </div>
+                  @if (detail.topConnections.length > 0) {
+                    <div class="cp-connections">
+                      @for (conn of detail.topConnections; track conn.targetClusterId) {
+                        <span class="cg-muted cg-small">
+                          -> {{ getClusterLabelById(conn.targetClusterId) }}
+                          <span class="cg-mono">{{ conn.edgeCount }}</span>
+                        </span>
+                      }
                     </div>
                   }
                 </div>
               }
-            }
-          </div>
-        }
-      }
-
-      <!-- List View -->
-      @if (viewMode() === 'list') {
-        <div class="list-panel">
-          @if (clusters().length === 0) {
-            <div class="empty-message">
-              No connected clusters yet. Switch to Graph view to see isolated repositories.
-            </div>
-          } @else {
-            @for (cluster of clusters(); track cluster.clusterId) {
-              <div class="cluster-card" (click)="selectCluster(cluster.clusterId)">
-                <div class="cluster-card-header">
-                  <span class="cluster-dot" [style.background]="getClusterColor(cluster.clusterId)"></span>
-                  <h2>{{ getClusterLabel(cluster) }}</h2>
-                  <span class="cluster-member-count">{{ cluster.memberCount }} repos</span>
-                </div>
-                @if (selectedClusterId() === cluster.clusterId && clusterDetail()) {
-                  <div class="cluster-card-body">
-                    <div class="detail-stats compact">
-                      <span>Internal: {{ clusterDetail()!.internalEdgeCount }}</span>
-                      <span>External: {{ clusterDetail()!.externalEdgeCount }}</span>
-                    </div>
-                    <div class="member-list compact">
-                      @for (member of clusterDetail()!.members; track member.projectName) {
-                        <div class="member-row" (click)="navigateToRepo(member.projectName); $event.stopPropagation()">
-                          <span class="member-name">{{ member.projectName }}</span>
-                          @if (member.betweennessCentrality > 0.01) {
-                            <span class="badge badge-red">bridge</span>
-                          }
-                        </div>
-                      }
-                    </div>
-                    @if (clusterDetail()!.topConnections.length > 0) {
-                      <div class="connection-list compact">
-                        @for (conn of clusterDetail()!.topConnections; track conn.targetClusterId) {
-                          <div class="connection-row">
-                            &rarr; {{ getClusterLabelById(conn.targetClusterId) }}: {{ conn.edgeCount }} edges
-                          </div>
-                        }
-                      </div>
-                    }
-                  </div>
-                }
-              </div>
-            }
+            </article>
           }
-        </div>
+        </section>
       }
     </div>
   }

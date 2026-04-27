@@ -39,6 +39,7 @@ public record SchemaObjectResponse(
     string? Comment,
     IReadOnlyList<string> PrimaryKeyColumns,
     IReadOnlyList<SchemaIndexResponse> Indexes,
+    IReadOnlyList<SchemaConstraintResponse> Constraints,
     IReadOnlyList<SchemaForeignKeyResponse> ForeignKeys,
     IReadOnlyList<SchemaColumnResponse> Columns);
 
@@ -68,6 +69,14 @@ public record SchemaIndexResponse(
     bool IsUnique,
     string? IndexType,
     IReadOnlyList<string> Columns);
+
+public record SchemaConstraintResponse(
+    string Name,
+    string ConstraintType,
+    IReadOnlyList<string> Columns,
+    string? ReferencedTable,
+    IReadOnlyList<string>? ReferencedColumns,
+    string? CheckClause);
 
 public record SchemaForeignKeyResponse(
     string Name,

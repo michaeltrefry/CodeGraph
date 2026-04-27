@@ -1,19 +1,18 @@
-import { Component, inject, signal, DestroyRef } from '@angular/core';
+import { Component, computed, inject, signal, DestroyRef } from '@angular/core';
 import { RouterLink, ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import { UpperCasePipe } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, map } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import {
   ImpactReport, ImpactSummary, AffectedNode, RiskLevel,
-  RISK_COLORS, RISK_BG_COLORS, LABEL_ICONS
+  LABEL_ICONS
 } from '../../core/models';
 import { TypeaheadComponent, TypeaheadItem } from '../../shared/typeahead.component';
 
 @Component({
   selector: 'app-impact',
-  imports: [RouterLink, FormsModule, UpperCasePipe, TypeaheadComponent],
+  imports: [RouterLink, FormsModule, TypeaheadComponent],
   templateUrl: './impact.component.html',
   styleUrl: './impact.component.scss'
 })
@@ -33,11 +32,26 @@ export class ImpactComponent {
   error = signal<string | null>(null);
   searched = signal(false);
 
-  // Expand/collapse state for risk groups
-  expandedGroups = signal<Set<RiskLevel>>(new Set(['Critical', 'High', 'Medium', 'Low']));
+  // Selection state for the detail panel
+  selectedNodeId = signal<number | null>(null);
 
   readonly riskLevels: RiskLevel[] = ['Critical', 'High', 'Medium', 'Low'];
   readonly labelIcons = LABEL_ICONS;
+
+  /** Affected nodes sorted by (depth asc, then name asc). */
+  treeRows = computed<AffectedNode[]>(() => {
+    const nodes = this.report()?.affectedNodes ?? [];
+    return [...nodes].sort((a, b) => (a.depth - b.depth) || a.name.localeCompare(b.name));
+  });
+
+  selectedNode = computed<AffectedNode | null>(() => {
+    const id = this.selectedNodeId();
+    if (id === null) return null;
+    return this.report()?.affectedNodes.find(n => n.nodeId === id) ?? null;
+  });
+
+  /** Primary changed node - use first for the header strip "NODE" label. */
+  primaryChanged = computed(() => this.report()?.changedNodes[0] ?? null);
 
   // Typeahead search functions
   searchProjects = (query: string): Observable<TypeaheadItem[]> =>
@@ -81,11 +95,14 @@ export class ImpactComponent {
     this.loading.set(true);
     this.error.set(null);
     this.searched.set(true);
+    this.selectedNodeId.set(null);
 
     this.api.getImpact(project, node, this.depth()).subscribe({
       next: report => {
         this.report.set(report);
         this.loading.set(false);
+        const first = report.affectedNodes[0];
+        if (first) this.selectedNodeId.set(first.nodeId);
       },
       error: err => {
         this.error.set(err.status === 404 ? 'No matching nodes found.' : 'Analysis failed.');
@@ -93,6 +110,36 @@ export class ImpactComponent {
         this.loading.set(false);
       }
     });
+  }
+
+  setDepth(d: number) {
+    if (d === this.depth()) return;
+    this.depth.set(d);
+    if (this.nodeName() && this.projectName()) this.analyze();
+  }
+
+  select(nodeId: number) {
+    this.selectedNodeId.set(nodeId);
+  }
+
+  isCrossRepo(n: AffectedNode): boolean {
+    const primary = this.primaryChanged();
+    return !!primary && n.project !== primary.project;
+  }
+
+  riskPillLabel(risk: RiskLevel): string {
+    switch (risk) {
+      case 'Critical': return 'crit';
+      case 'High':     return 'high';
+      case 'Medium':   return 'med';
+      case 'Low':      return 'low';
+    }
+  }
+
+  /** Returns array of indent characters for the tree row. Last is `└`, others blank. */
+  indentCharacters(depth: number): string[] {
+    if (depth <= 0) return [];
+    return Array.from({ length: depth }, (_, i) => i === depth - 1 ? '└' : ' ');
   }
 
   onProjectSelected(value: string) {
@@ -107,35 +154,11 @@ export class ImpactComponent {
     if (event.key === 'Enter') this.analyze();
   }
 
-  nodesForRisk(risk: RiskLevel): AffectedNode[] {
-    return this.report()?.affectedNodes.filter(n => n.risk === risk) ?? [];
-  }
-
-  toggleGroup(risk: RiskLevel) {
-    this.expandedGroups.update(set => {
-      const next = new Set(set);
-      next.has(risk) ? next.delete(risk) : next.add(risk);
-      return next;
-    });
-  }
-
-  isExpanded(risk: RiskLevel): boolean {
-    return this.expandedGroups().has(risk);
-  }
-
   riskCount(risk: RiskLevel): number {
     const s = this.report()?.summary;
     if (!s) return 0;
     const key = `${risk.toLowerCase()}Count` as keyof ImpactSummary;
     return (s[key] as number) ?? 0;
-  }
-
-  riskColor(risk: RiskLevel): string {
-    return RISK_COLORS[risk] ?? '#6b7280';
-  }
-
-  riskBg(risk: RiskLevel): string {
-    return RISK_BG_COLORS[risk] ?? '#f9fafb';
   }
 
   icon(label: string): string {
