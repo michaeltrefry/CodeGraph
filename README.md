@@ -236,7 +236,7 @@ The compose stack includes the CodeGraph application services:
 
 MariaDB and RabbitMQ are expected to be shared containers on the external `trefry-network`; this compose file does not create them. The default container hostnames are `mariadb` and `rabbitmq`, and you can override `CodeGraph__StorageOptions__MariaDbConnectionString` or `CodeGraph__RabbitMqOptions__Host` when your shared services use different names.
 
-By default compose mounts the parent repo folder (`../`) into the containers at `/repos`, with a writable named volume at `/repos/.cache`. Override `CODEGRAPH_DOCKER_REPOS_MOUNT` when your local repositories live somewhere else.
+By default compose mounts the parent repo folder (`../`) into the containers at `/repos` as writable; remote providers clone and update repositories directly under that path. Override `CODEGRAPH_DOCKER_REPOS_MOUNT` when your repositories should live somewhere else.
 
 Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`.
 
