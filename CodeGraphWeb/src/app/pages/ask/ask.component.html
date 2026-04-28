@@ -1,70 +1,142 @@
-<div class="ask-page">
-  <div class="ask-header">
-    <h1>Ask about the Codebase</h1>
-    <p class="subtitle">
-      Ask natural language questions about repositories, services, events, data flow, and dependencies.
-    </p>
-  </div>
+<div class="ask-shell">
+  <header class="ask-topbar">
+    <div class="ask-topbar-main">
+      <h1 class="ask-title">Ask the codebase</h1>
+      <p class="ask-subtitle cg-muted">
+        Streaming graph assistant for repositories, services, events, data flow, and dependencies.
+      </p>
+    </div>
+
+    @if (messages().length > 0) {
+      <button class="cg-btn" type="button" (click)="startNewChat()" [disabled]="streaming()">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" />
+        </svg>
+        New chat
+      </button>
+    }
+  </header>
 
   @if (messages().length > 0) {
-    <div class="messages">
-      @for (msg of messages(); track $index) {
-        <div class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
-          <div class="message-role">{{ msg.role === 'user' ? 'You' : 'Assistant' }}</div>
-          <div class="message-body">
+    <div class="ask-scroll">
+      @for (msg of messages(); track $index; let msgIndex = $index) {
+        <article class="ask-msg" [attr.data-role]="msg.role">
+          <div class="ask-msg-avatar" [attr.data-role]="msg.role">
             @if (msg.role === 'user') {
-              <p>{{ msg.chunks[0]?.text }}</p>
+              <span>You</span>
             } @else {
-              @for (chunk of msg.chunks; track $index) {
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="5" width="10" height="8" rx="1.5" />
+                <circle cx="6.5" cy="9" r="0.8" fill="currentColor" />
+                <circle cx="9.5" cy="9" r="0.8" fill="currentColor" />
+                <path d="M8 3v2M6 14v1M10 14v1" />
+              </svg>
+            }
+          </div>
+
+          <div class="ask-msg-body">
+            <div class="ask-msg-author">{{ msg.role === 'user' ? 'You' : 'CodeGraph' }}</div>
+
+            @if (msg.role === 'user') {
+              <div class="ask-bubble user">
+                {{ msg.chunks[0]?.text }}
+              </div>
+            } @else {
+              @for (chunk of msg.chunks; track $index; let chunkIndex = $index) {
                 @if (chunk.isToolUse) {
-                  <div class="tool-use">{{ chunk.text }}</div>
+                  <details class="ask-tool-call">
+                    <summary class="ask-tool-head">
+                      <span class="ask-tool-label">{{ formatToolCallName(chunk.text) }}</span>
+                      <span class="ask-tool-spacer"></span>
+                    </summary>
+                    <pre class="ask-tool-body">{{ chunk.text }}</pre>
+                  </details>
                 } @else {
-                  <div class="text-chunk" [innerHTML]="renderMarkdown(chunk.text)"></div>
+                  <div class="ask-bubble assistant">
+                    <div class="ask-bubble-actions">
+                      <button
+                        class="ask-copy-btn"
+                        type="button"
+                        (click)="copyAssistantText(chunk.text, msgIndex * 1000 + chunkIndex)"
+                        [disabled]="!chunk.text.trim()"
+                        aria-label="Copy message">
+                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <rect x="5" y="3" width="8" height="10" rx="1.5" />
+                          <rect x="3" y="5" width="8" height="10" rx="1.5" />
+                        </svg>
+                      </button>
+                      <span class="ask-copy-feedback" [class.visible]="copiedMessageIndex() === (msgIndex * 1000 + chunkIndex)">Copied</span>
+                    </div>
+                    <app-markdown [content]="chunk.text" />
+                  </div>
                 }
               }
               @if (!msg.done && !msg.error) {
-                <span class="cursor">▋</span>
+                <div class="ask-bubble assistant pending-only">
+                  <div class="ask-pending" aria-live="polite">
+                    <span class="ask-pending-dot"></span>
+                    <span class="ask-pending-label">Thinking...</span>
+                  </div>
+                </div>
               }
               @if (msg.error) {
-                <div class="error-msg">Error: {{ msg.error }}</div>
+                <div class="adm-banner err">{{ msg.error }}</div>
               }
             }
           </div>
-        </div>
+        </article>
       }
       <div #messagesEnd></div>
     </div>
   } @else {
-    <div class="empty-state">
-      <div class="suggestions">
-        <p class="suggestions-title">Try asking:</p>
-        @for (suggestion of suggestedQuestions; track suggestion) {
-          <button class="suggestion" (click)="question.set(suggestion)">
-            {{ suggestion }}
-          </button>
-        }
-      </div>
+    <div class="ask-empty">
+      <section class="ask-empty-col">
+        <div class="ask-section-label">Try asking</div>
+        <div class="ask-suggestions">
+          @for (suggestion of suggestedQuestions; track suggestion) {
+            <button class="ask-suggestion" type="button" (click)="question.set(suggestion)">
+              <span>{{ suggestion }}</span>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 8h10M9 4l4 4-4 4" />
+              </svg>
+            </button>
+          }
+        </div>
+      </section>
     </div>
   }
 
-  <div class="input-area">
-    <textarea
-      class="input-box"
-      [value]="question()"
-      (input)="question.set($any($event.target).value)"
-      (keydown)="onKeydown($event)"
-      placeholder="Ask about services, events, data flow, dependencies…"
-      [disabled]="streaming()"
-      rows="3">
-    </textarea>
-    <div class="input-actions">
-      @if (streaming()) {
-        <button class="btn-stop" (click)="stop()">Stop</button>
-      } @else {
-        <button class="btn-send" (click)="send()" [disabled]="!question().trim()">
-          Send ↵
-        </button>
-      }
+  <div class="ask-composer">
+    <div class="ask-composer-inner">
+      <textarea
+        class="cg-input ask-textarea"
+        aria-label="Ask CodeGraph a question"
+        [value]="question()"
+        (input)="question.set($any($event.target).value)"
+        (keydown)="onKeydown($event)"
+        placeholder="Ask about services, events, call paths, health..."
+        [disabled]="streaming()"
+        rows="2">
+      </textarea>
+
+      <div class="ask-composer-foot">
+        <span class="ask-composer-hint cg-muted cg-xsmall">
+          Enter sends, Shift+Enter adds a line
+        </span>
+
+        <div class="ask-composer-actions">
+          @if (streaming()) {
+            <button class="cg-btn danger" type="button" (click)="stop()">Cancel run</button>
+          } @else {
+            <button class="cg-btn primary" type="button" (click)="send()" [disabled]="!question().trim()">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2 8h10M8 4l4 4-4 4" />
+              </svg>
+              Send
+            </button>
+          }
+        </div>
+      </div>
     </div>
   </div>
 </div>

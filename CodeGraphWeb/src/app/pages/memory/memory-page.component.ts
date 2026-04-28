@@ -1,59 +1,33 @@
-import {
-  AfterViewInit,
-  Component,
-  ElementRef,
-  OnDestroy,
-  ViewChild,
-  computed,
-  effect,
-  inject,
-  signal
-} from '@angular/core';
-import { DatePipe, DecimalPipe } from '@angular/common';
-import * as d3 from 'd3';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { forkJoin } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import {
-  MemoryClaim,
   MemoryClaimBundle,
   MemoryClaimSeed,
+  MemoryDiagnostics,
   MemoryEntity,
   MemoryEntityBundle,
   MemoryEntitySeed,
-  MemoryGraphLink,
-  MemoryGraphNode,
   MemoryGraphResponse,
   MemorySearchResult
 } from '../../core/models';
-
-interface SimNode extends d3.SimulationNodeDatum {
-  id: string;
-  label: string;
-  type: string;
-  summary: string;
-  degree: number;
-  radius: number;
-}
-
-interface SimLink extends d3.SimulationLinkDatum<SimNode> {
-  relationship: string;
-}
+import { MemoryDetailPanelComponent } from './memory-detail-panel.component';
+import { MemoryGraphViewComponent } from './memory-graph-view.component';
 
 @Component({
   selector: 'app-memory-page',
   standalone: true,
-  imports: [DatePipe, DecimalPipe],
+  imports: [DecimalPipe, MemoryDetailPanelComponent, MemoryGraphViewComponent],
   templateUrl: './memory-page.component.html',
   styleUrl: './memory-page.component.scss'
 })
-export class MemoryPageComponent implements AfterViewInit, OnDestroy {
-  @ViewChild('svg', { static: false }) svgRef?: ElementRef<SVGSVGElement>;
-  @ViewChild('wrapper', { static: false }) wrapperRef?: ElementRef<HTMLDivElement>;
-
+export class MemoryPageComponent implements OnInit {
   private api = inject(ApiService);
 
   loading = signal(true);
   loadingDetail = signal(false);
+  loadingDiagnostics = signal(false);
   searching = signal(false);
 
   viewMode = signal<'graph' | 'list'>('graph');
@@ -63,6 +37,7 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
   searchText = signal('');
 
   graphData = signal<MemoryGraphResponse | null>(null);
+  diagnostics = signal<MemoryDiagnostics | null>(null);
   searchResults = signal<MemorySearchResult | null>(null);
   selectedEntityId = signal<string | null>(null);
   selectedBundle = signal<MemoryEntityBundle | null>(null);
@@ -70,27 +45,16 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
   activeTypes = signal<Set<string>>(new Set());
   private typeFiltersInitialized = signal(false);
 
-  private simulation?: d3.Simulation<SimNode, SimLink>;
-  private resizeObserver?: ResizeObserver;
-  private colorScale = d3.scaleOrdinal<string, string>(d3.schemeTableau10);
-
   readonly allNodes = computed(() => this.graphData()?.nodes ?? []);
   readonly allLinks = computed(() => this.graphData()?.links ?? []);
-  readonly availableTypes = computed(() =>
-    [...new Set(this.allNodes().map(node => node.type))]
-      .sort((a, b) => a.localeCompare(b))
-  );
-
   readonly nodes = computed(() => {
     const active = this.activeTypes();
     return this.allNodes().filter(node => active.has(node.type));
   });
-
   readonly links = computed(() => {
     const visibleNodeIds = new Set(this.nodes().map(node => node.id));
     return this.allLinks().filter(link => visibleNodeIds.has(link.source) && visibleNodeIds.has(link.target));
   });
-
   readonly degreeByNode = computed(() => {
     const degrees = new Map<string, number>();
     for (const link of this.links()) {
@@ -99,48 +63,42 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
     }
     return degrees;
   });
-
   readonly nodeLookup = computed(() => {
-    const lookup = new Map<string, MemoryGraphNode>();
+    const lookup = new Map<string, MemoryEntity>();
     for (const node of this.nodes()) {
-      lookup.set(node.id, node);
+      lookup.set(node.id, {
+        id: node.id,
+        label: node.label,
+        type: node.type,
+        summary: node.summary,
+        aliases: [],
+        source: node.source ?? '',
+        createdAt: node.createdAt,
+        updatedAt: node.updatedAt
+      });
     }
 
     const selected = this.selectedBundle()?.entity;
     if (selected) {
-      lookup.set(selected.id, {
-        id: selected.id,
-        label: selected.label,
-        type: selected.type,
-        summary: selected.summary,
-        source: selected.source,
-        createdAt: selected.createdAt,
-        updatedAt: selected.updatedAt
-      });
+      lookup.set(selected.id, selected);
     }
 
     return lookup;
   });
-
   readonly visibleNodes = computed(() =>
-    [...this.nodes()].sort((a, b) =>
-      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() ||
-      a.label.localeCompare(b.label))
+    [...this.nodes()].sort((a, b) => this.compareByRecencyAndLabel(a.updatedAt, b.updatedAt, a.label, b.label))
   );
-
   readonly hasPreviousPage = computed(() => !this.focusMode() && this.pageIndex() > 0);
   readonly hasNextPage = computed(() => {
     if (this.focusMode()) return false;
     const total = this.graphData()?.totalNodeCount ?? 0;
     return (this.pageIndex() + 1) * this.pageSize() < total;
   });
-
   readonly pageStart = computed(() => this.pageIndex() * this.pageSize() + 1);
   readonly pageEnd = computed(() => {
     const total = this.graphData()?.totalNodeCount ?? 0;
     return Math.min((this.pageIndex() + 1) * this.pageSize(), total);
   });
-
   readonly typeSummary = computed(() => {
     const counts = new Map<string, number>();
     for (const node of this.allNodes()) {
@@ -151,13 +109,11 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 8);
   });
-
   readonly searchEntityResults = computed(() => this.searchResults()?.entities ?? []);
   readonly searchClaimResults = computed(() => this.searchResults()?.claims ?? []);
-
   readonly neighborRows = computed(() => {
     const bundle = this.selectedBundle();
-    if (!bundle) return [] as Array<{ id: string; label: string; type: string; edgeType: string; updatedAt: string }>;
+    if (!bundle) return [] as Array<{ id: string; label: string; type: string; edgeType: string; updatedAt?: string }>;
 
     return bundle.neighborEdges
       .map(edge => {
@@ -168,34 +124,15 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
           label: target?.label ?? targetId,
           type: target?.type ?? 'unknown',
           edgeType: edge.edgeType,
-          updatedAt: edge.updatedAt
+          updatedAt: target?.updatedAt ?? edge.updatedAt
         };
       })
-      .sort((a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() ||
-        a.label.localeCompare(b.label));
+      .sort((a, b) => this.compareByRecencyAndLabel(a.updatedAt, b.updatedAt, a.label, b.label));
   });
 
-  readonly renderGraphEffect = effect(() => {
-    const graph = this.graphData();
-    const filteredNodes = this.nodes();
-    const filteredLinks = this.links();
-    const focusedEntityId = this.focusMode() ? this.selectedEntityId() : null;
-    if (!graph || this.loading() || this.viewMode() !== 'graph') return;
-    setTimeout(() => this.buildGraph({
-      ...graph,
-      nodes: filteredNodes,
-      links: filteredLinks
-    }, focusedEntityId), 0);
-  });
-
-  ngAfterViewInit(): void {
+  ngOnInit(): void {
+    this.loadDiagnostics();
     this.loadOverview();
-  }
-
-  ngOnDestroy(): void {
-    this.simulation?.stop();
-    this.resizeObserver?.disconnect();
   }
 
   setViewMode(mode: 'graph' | 'list'): void {
@@ -244,11 +181,7 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
   }
 
   refreshOverview(): void {
-    this.loadOverview();
-  }
-
-  resetToOverview(): void {
-    this.pageIndex.set(0);
+    this.loadDiagnostics();
     this.loadOverview();
   }
 
@@ -268,11 +201,13 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
     this.focusEntity(entity.entityId);
   }
 
-  focusEntity(entityId: string): void {
+  focusEntity(entityId: string, preserveClaimBundle = false): void {
     this.loading.set(true);
     this.loadingDetail.set(true);
     this.selectedEntityId.set(entityId);
-    this.selectedClaimBundle.set(null);
+    if (!preserveClaimBundle) {
+      this.selectedClaimBundle.set(null);
+    }
 
     forkJoin({
       graph: this.api.getMemoryEntityGraph(entityId, 500),
@@ -315,7 +250,7 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
     }).subscribe({
       next: bundle => {
         this.selectedClaimBundle.set(bundle);
-        this.focusEntity(bundle.claim.subjectEntityId);
+        this.focusEntity(bundle.claim.subjectEntityId, true);
       }
     });
   }
@@ -333,26 +268,31 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
       .replace(/\b\w/g, char => char.toUpperCase());
   }
 
-  formatClaim(claim: MemoryClaim): string {
-    const subject = this.entityName(claim.subjectEntityId);
-    const object = claim.objectEntityId ? this.entityName(claim.objectEntityId) : null;
-    const value = claim.valueText?.trim();
-    return [subject, claim.predicate, object ?? value].filter(Boolean).join(' ');
+  seedDisplayText(seed: MemoryEntitySeed | MemoryClaimSeed): string {
+    if ('normalizedText' in seed) {
+      return seed.normalizedText;
+    }
+    return seed.label;
   }
 
-  entityName(entityId: string): string {
-    return this.nodeLookup().get(entityId)?.label
-      ?? (this.selectedBundle()?.entity.id === entityId ? this.selectedBundle()!.entity.label : entityId);
+  seedMatchedFields(seed: MemoryEntitySeed | MemoryClaimSeed): string[] {
+    return seed.diagnostics?.matchedFields ?? [];
   }
 
-  scoreBreakdown(seed: MemoryEntitySeed | MemoryClaimSeed): string {
-    return Object.entries(seed.diagnostics.scoreBreakdown ?? {})
-      .map(([key, value]) => `${key}: ${value.toFixed(2)}`)
-      .join(', ');
+  formatNodeMeta(nodeId: string, updatedAt?: string): string {
+    const parts = [`${this.degreeByNode().get(nodeId) ?? 0} visible links`];
+    if (updatedAt) {
+      parts.push(`updated ${new Date(updatedAt).toLocaleString()}`);
+    }
+    return parts.join(' | ');
   }
 
   isSelectedNode(nodeId: string): boolean {
     return this.selectedEntityId() === nodeId;
+  }
+
+  formatHealthSignal(signal: string): string {
+    return this.formatType(signal);
   }
 
   loadOverview(clearDetail = true): void {
@@ -373,7 +313,18 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  private syncTypeFilters(nodes: MemoryGraphNode[]): void {
+  private loadDiagnostics(): void {
+    this.loadingDiagnostics.set(true);
+    this.api.getMemoryDiagnostics(15, 8).subscribe({
+      next: diagnostics => {
+        this.diagnostics.set(diagnostics);
+        this.loadingDiagnostics.set(false);
+      },
+      error: () => this.loadingDiagnostics.set(false)
+    });
+  }
+
+  private syncTypeFilters(nodes: MemoryGraphResponse['nodes']): void {
     const types = [...new Set(nodes.map(node => node.type))].sort((a, b) => a.localeCompare(b));
     if (types.length === 0) {
       this.activeTypes.set(new Set());
@@ -398,184 +349,12 @@ export class MemoryPageComponent implements AfterViewInit, OnDestroy {
     this.activeTypes.set(next);
   }
 
-  private buildGraph(data: MemoryGraphResponse, focusedEntityId: string | null): void {
-    if (!this.svgRef || !this.wrapperRef) return;
-
-    const svgElement = this.svgRef.nativeElement;
-    const wrapper = this.wrapperRef.nativeElement;
-    const svg = d3.select(svgElement);
-    svg.selectAll('*').remove();
-
-    const width = wrapper.clientWidth;
-    const height = wrapper.clientHeight || 620;
-    svg.attr('viewBox', `0 0 ${width} ${height}`);
-
-    this.resizeObserver?.disconnect();
-    this.resizeObserver = new ResizeObserver(entries => {
-      const { width: nextWidth, height: nextHeight } = entries[0].contentRect;
-      if (nextWidth > 0 && nextHeight > 0) {
-        svg.attr('viewBox', `0 0 ${nextWidth} ${nextHeight}`);
-        this.simulation?.force('center', d3.forceCenter(nextWidth / 2, nextHeight / 2));
-        this.simulation?.alpha(0.15).restart();
-      }
-    });
-    this.resizeObserver.observe(wrapper);
-
-    const degrees = new Map<string, number>();
-    for (const link of data.links) {
-      degrees.set(link.source, (degrees.get(link.source) ?? 0) + 1);
-      degrees.set(link.target, (degrees.get(link.target) ?? 0) + 1);
+  private compareByRecencyAndLabel(aDate: string | undefined, bDate: string | undefined, aLabel: string, bLabel: string): number {
+    const aTime = aDate ? Date.parse(aDate) : 0;
+    const bTime = bDate ? Date.parse(bDate) : 0;
+    if (bTime !== aTime) {
+      return bTime - aTime;
     }
-
-    const radiusScale = d3.scaleSqrt()
-      .domain([0, d3.max([...degrees.values()]) ?? 1])
-      .range([5, focusedEntityId ? 16 : 10]);
-
-    const nodes: SimNode[] = data.nodes.map(node => ({
-      id: node.id,
-      label: node.label,
-      type: node.type,
-      summary: node.summary,
-      degree: degrees.get(node.id) ?? 0,
-      radius: node.id === focusedEntityId ? 20 : radiusScale(degrees.get(node.id) ?? 0)
-    }));
-
-    const nodeMap = new Map(nodes.map(node => [node.id, node]));
-    const updatedAtById = new Map(data.nodes.map(node => [node.id, node.updatedAt]));
-    const links: SimLink[] = data.links
-      .filter(link => nodeMap.has(link.source) && nodeMap.has(link.target))
-      .map(link => ({
-        source: link.source,
-        target: link.target,
-        relationship: link.relationship
-      }));
-
-    if (nodes.length === 0) {
-      svg.append('text')
-        .attr('x', width / 2)
-        .attr('y', height / 2)
-        .attr('text-anchor', 'middle')
-        .attr('fill', '#9ca3af')
-        .text('No memory nodes to display.');
-      return;
-    }
-
-    const showLabels = !!focusedEntityId || nodes.length <= 80;
-    const labeledNodeIds = new Set<string>();
-    if (!showLabels) {
-      const topByDegree = [...nodes]
-        .sort((a, b) => b.degree - a.degree || a.label.localeCompare(b.label))
-        .slice(0, 16);
-
-      const topByRecency = [...nodes]
-        .sort((a, b) =>
-          new Date(updatedAtById.get(b.id) ?? 0).getTime() -
-          new Date(updatedAtById.get(a.id) ?? 0).getTime() ||
-          a.label.localeCompare(b.label))
-        .slice(0, 16);
-
-      for (const node of [...topByDegree, ...topByRecency]) {
-        labeledNodeIds.add(node.id);
-      }
-    }
-    const g = svg.append('g');
-    const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.2, 6])
-      .on('zoom', event => g.attr('transform', event.transform));
-    svg.call(zoom);
-
-    const linkSelection = g.append('g')
-      .attr('stroke', '#d1d5db')
-      .attr('stroke-opacity', 0.5)
-      .selectAll('line')
-      .data(links)
-      .join('line')
-      .attr('stroke-width', focusedEntityId ? 1.6 : 1.1);
-
-    const nodeSelection = g.append('g')
-      .selectAll<SVGGElement, SimNode>('g')
-      .data(nodes)
-      .join('g')
-      .attr('cursor', 'pointer');
-
-    const isLabelVisible = (node: SimNode) => showLabels || labeledNodeIds.has(node.id);
-
-    const labelSelection = nodeSelection.append('text')
-      .text(node => node.label)
-      .attr('display', node => isLabelVisible(node) ? null : 'none')
-      .attr('dy', node => node.radius + 12)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', focusedEntityId ? '11px' : '10px')
-      .attr('fill', '#374151')
-      .attr('pointer-events', 'none');
-
-    nodeSelection
-      .on('mouseenter', (_event, node) => {
-        if (isLabelVisible(node)) return;
-        labelSelection
-          .filter(candidate => candidate.id === node.id)
-          .attr('display', null);
-      })
-      .on('mouseleave', (_event, node) => {
-        if (isLabelVisible(node)) return;
-        labelSelection
-          .filter(candidate => candidate.id === node.id)
-          .attr('display', 'none');
-      })
-      .on('click', (_event, node) => this.focusEntity(node.id))
-      .call(d3.drag<SVGGElement, SimNode>()
-        .on('start', (event, node) => {
-          if (!event.active) this.simulation!.alphaTarget(0.3).restart();
-          node.fx = node.x;
-          node.fy = node.y;
-        })
-        .on('drag', (event, node) => {
-          node.fx = event.x;
-          node.fy = event.y;
-        })
-        .on('end', (event, node) => {
-          if (!event.active) this.simulation!.alphaTarget(0);
-          node.fx = null;
-          node.fy = null;
-        }));
-
-    nodeSelection.append('circle')
-      .attr('r', node => node.radius)
-      .attr('fill', node => this.colorScale(node.type))
-      .attr('stroke', node => node.id === focusedEntityId ? '#111827' : '#ffffff')
-      .attr('stroke-width', node => node.id === focusedEntityId ? 2.5 : 1.5)
-      .attr('opacity', node => focusedEntityId && node.id !== focusedEntityId ? 0.9 : 1);
-
-    nodeSelection.append('title')
-      .text(node => `${node.label}\n${this.formatType(node.type)}\n${node.degree} visible links${node.summary ? `\n\n${node.summary}` : ''}`);
-
-    this.simulation?.stop();
-    this.simulation = d3.forceSimulation<SimNode>(nodes)
-      .force('link', d3.forceLink<SimNode, SimLink>(links)
-        .id(node => node.id)
-        .distance(focusedEntityId ? 110 : 55))
-      .force('charge', d3.forceManyBody().strength(focusedEntityId ? -360 : -80))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide<SimNode>().radius(node => node.radius + (focusedEntityId ? 18 : 6)))
-      .force('focusX', d3.forceX<SimNode>(node => node.id === focusedEntityId ? width / 2 : width / 2)
-        .strength(node => node.id === focusedEntityId ? 0.45 : 0.03))
-      .force('focusY', d3.forceY<SimNode>(node => node.id === focusedEntityId ? height / 2 : height / 2)
-        .strength(node => node.id === focusedEntityId ? 0.45 : 0.03))
-      .on('tick', () => {
-        linkSelection
-          .attr('x1', link => (link.source as SimNode).x ?? 0)
-          .attr('y1', link => (link.source as SimNode).y ?? 0)
-          .attr('x2', link => (link.target as SimNode).x ?? 0)
-          .attr('y2', link => (link.target as SimNode).y ?? 0);
-
-        nodeSelection.attr('transform', node => `translate(${node.x ?? 0},${node.y ?? 0})`);
-      });
-
-    const focusedNode = focusedEntityId ? nodeMap.get(focusedEntityId) : null;
-    if (focusedNode) {
-      focusedNode.fx = width / 2;
-      focusedNode.fy = height / 2;
-      this.simulation.alpha(0.7).restart();
-    }
+    return aLabel.localeCompare(bLabel);
   }
 }

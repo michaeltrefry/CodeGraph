@@ -1,0 +1,193 @@
+@if (loadingDetail) {
+  <div class="mpd-state cg-muted">Loading memory details...</div>
+} @else if (selectedBundle) {
+  <header class="mpd-head">
+    <div class="mpd-head-main">
+      <h2 class="mpd-title">{{ selectedBundle.entity.label }}</h2>
+      <div class="mpd-meta">
+        <span class="cg-chip cg-chip-mono">{{ formatType(selectedBundle.entity.type) }}</span>
+        <span class="cg-mono cg-xsmall cg-muted mpd-id">{{ selectedBundle.entity.id }}</span>
+      </div>
+    </div>
+    @if (focusMode) {
+      <button class="mpd-btn" type="button" (click)="showOverview.emit()">Overview</button>
+    }
+  </header>
+
+  @if (selectedBundle.entity.summary) {
+    <p class="mpd-summary">{{ selectedBundle.entity.summary }}</p>
+  }
+
+  <div class="mpd-stats">
+    <div class="mpd-stat">
+      <div class="mpd-stat-value">{{ selectedBundle.activeClaims.length }}</div>
+      <div class="mpd-stat-label">Active</div>
+    </div>
+    <div class="mpd-stat" [class.warn]="selectedBundle.conflictingClaims.length > 0">
+      <div class="mpd-stat-value">{{ selectedBundle.conflictingClaims.length }}</div>
+      <div class="mpd-stat-label">Conflicts</div>
+    </div>
+    <div class="mpd-stat">
+      <div class="mpd-stat-value">{{ selectedBundle.neighborEdges.length }}</div>
+      <div class="mpd-stat-label">Neighbors</div>
+    </div>
+  </div>
+
+  <section class="mpd-section">
+    <div class="mpd-section-head">
+      <div class="mpd-section-label">Active claims</div>
+      @if (selectedBundle.activeClaims.length > 18) {
+        <span class="cg-chip cg-chip-mono">{{ selectedBundle.activeClaims.length }}</span>
+      }
+    </div>
+    @if (selectedBundle.activeClaims.length === 0) {
+      <div class="mpd-empty cg-muted cg-small">No active claims attached to this entity.</div>
+    } @else {
+      <div class="mpd-list">
+        @for (claim of selectedBundle.activeClaims.slice(0, 18); track claim.id) {
+          <button class="mpd-claim" type="button" (click)="inspectClaim.emit(claim.id)">
+            <span class="mpd-claim-text">{{ formatClaim(claim) }}</span>
+            <span class="mpd-claim-meta cg-muted cg-xsmall">{{ claim.recordedAt | date:'short' }}</span>
+          </button>
+        }
+      </div>
+    }
+  </section>
+
+  @if (selectedBundle.conflictingClaims.length > 0) {
+    <section class="mpd-section">
+      <div class="mpd-section-head">
+        <div class="mpd-section-label">Conflicted claims</div>
+        <span class="cg-chip cg-chip-err cg-chip-dot">{{ selectedBundle.conflictingClaims.length }}</span>
+      </div>
+      <div class="mpd-list">
+        @for (claim of selectedBundle.conflictingClaims.slice(0, 12); track claim.id) {
+          <button class="mpd-claim warning" type="button" (click)="inspectClaim.emit(claim.id)">
+            <span class="mpd-claim-text">{{ formatClaim(claim) }}</span>
+            <span class="mpd-claim-meta cg-xsmall">{{ claim.recordedAt | date:'short' }}</span>
+          </button>
+        }
+      </div>
+    </section>
+  }
+
+  @if (selectedBundle.observations.length > 0) {
+    <section class="mpd-section">
+      <div class="mpd-section-head">
+        <div class="mpd-section-label">Observations</div>
+      </div>
+      <div class="mpd-list">
+        @for (observation of selectedBundle.observations; track observation.id) {
+          <div class="mpd-observation">
+            <div class="mpd-obs-text">{{ observation.claim }}</div>
+            <div class="mpd-obs-status cg-xsmall">
+              <span class="cg-chip cg-chip-warn">{{ observation.resolved ? 'Resolved' : 'Open' }}</span>
+              @if (observation.conflictsWith) {
+                <span class="cg-muted">Conflicts with {{ observation.conflictsWith }}</span>
+              }
+            </div>
+          </div>
+        }
+      </div>
+    </section>
+  }
+
+  <section class="mpd-section">
+    <div class="mpd-section-head">
+      <div class="mpd-section-label">Neighbors</div>
+      @if (neighborRows.length > 0) {
+        <span class="cg-chip cg-chip-mono">{{ neighborRows.length }}</span>
+      }
+    </div>
+    @if (neighborRows.length === 0) {
+      <div class="mpd-empty cg-muted cg-small">No visible active neighbors in this view.</div>
+    } @else {
+      <div class="mpd-list">
+        @for (neighbor of neighborRows.slice(0, 60); track neighbor.id + ':' + neighbor.edgeType) {
+          <button class="mpd-neighbor" type="button" (click)="focusEntity.emit(neighbor.id)">
+            <span class="mpd-neighbor-name">{{ neighbor.label }}</span>
+            <span class="mpd-neighbor-meta">
+              <span class="cg-chip cg-chip-mono">{{ formatType(neighbor.type) }}</span>
+              <span class="cg-faint cg-xsmall">- {{ formatType(neighbor.edgeType) }}</span>
+            </span>
+          </button>
+        }
+      </div>
+    }
+  </section>
+
+  @if (selectedClaimBundle) {
+    <section class="mpd-section mpd-claim-detail">
+      <div class="mpd-section-head">
+        <div class="mpd-section-label">Claim detail</div>
+        <span class="cg-chip cg-chip-mono">{{ selectedClaimBundle.claim.status }}</span>
+      </div>
+      <div class="mpd-claim-main">{{ formatClaim(selectedClaimBundle.claim) }}</div>
+      <div class="mpd-claim-detail-meta cg-muted cg-xsmall">
+        Recorded {{ selectedClaimBundle.claim.recordedAt | date:'medium' }}
+      </div>
+
+      @if (selectedClaimBundle.conflicts.length > 0) {
+        <div class="mpd-claim-sub">
+          <div class="mpd-section-label">Conflicts</div>
+          <div class="mpd-list">
+            @for (claim of selectedClaimBundle.conflicts; track claim.id) {
+              <button class="mpd-claim warning" type="button" (click)="inspectClaim.emit(claim.id)">
+                <span class="mpd-claim-text">{{ formatClaim(claim) }}</span>
+              </button>
+            }
+          </div>
+        </div>
+      }
+
+      @if (selectedClaimBundle.supersessionChain.length > 0) {
+        <div class="mpd-claim-sub">
+          <div class="mpd-section-label">Supersession chain</div>
+          <div class="mpd-list">
+            @for (claim of selectedClaimBundle.supersessionChain; track claim.id) {
+              <button class="mpd-claim" type="button" (click)="inspectClaim.emit(claim.id)">
+                <span class="mpd-claim-text">{{ formatClaim(claim) }}</span>
+              </button>
+            }
+          </div>
+        </div>
+      }
+
+      @if (selectedClaimBundle.factGroupPeers.length > 0) {
+        <div class="mpd-claim-sub">
+          <div class="mpd-section-label">Fact group peers</div>
+          <div class="mpd-list">
+            @for (claim of selectedClaimBundle.factGroupPeers; track claim.id) {
+              <button class="mpd-claim" type="button" (click)="inspectClaim.emit(claim.id)">
+                <span class="mpd-claim-text">{{ formatClaim(claim) }}</span>
+              </button>
+            }
+          </div>
+        </div>
+      }
+
+      @if (selectedClaimBundle.evidence.length > 0) {
+        <div class="mpd-claim-sub">
+          <div class="mpd-section-label">Evidence</div>
+          <div class="mpd-list">
+            @for (item of selectedClaimBundle.evidence; track item.id) {
+              <div class="mpd-evidence">
+                <div class="mpd-evidence-head">
+                  <span class="cg-chip cg-chip-mono">{{ item.evidenceType }}</span>
+                  <span class="cg-mono cg-xsmall cg-muted">{{ item.sourceRef }}</span>
+                </div>
+                @if (item.snippet) {
+                  <div class="mpd-evidence-snippet">{{ item.snippet }}</div>
+                }
+              </div>
+            }
+          </div>
+        </div>
+      }
+    </section>
+  }
+} @else {
+  <div class="mpd-state cg-muted">
+    Pick a memory node to see its claims, conflicts, and local neighborhood.
+  </div>
+}

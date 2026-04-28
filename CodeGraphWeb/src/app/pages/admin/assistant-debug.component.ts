@@ -1,4 +1,4 @@
-import { DatePipe, JsonPipe } from '@angular/common';
+import { DatePipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
@@ -9,134 +9,355 @@ import { extractAdminError } from './admin-resource.helpers';
 @Component({
   selector: 'app-assistant-debug',
   standalone: true,
-  imports: [DatePipe, FormsModule, JsonPipe],
+  imports: [DatePipe, FormsModule],
   template: `
-    <div class="page-header">
+    <header class="adm-page-header">
       <div>
-        <h2>Assistant Debug</h2>
-        <p class="subtitle">Inspect captured provider exchanges for a persisted assistant run.</p>
+        <h1>Assistant Debug Traces</h1>
+        <p>Inspect captured provider request and response payloads for a persisted assistant run.</p>
       </div>
-    </div>
+      @if (debug(); as data) {
+        <span class="cg-chip cg-chip-accent cg-chip-dot">{{ data.exchanges.length }} exchanges</span>
+      }
+    </header>
 
-    <section class="section-card lookup">
-      <input type="number" min="1" [(ngModel)]="runId" placeholder="run id" (keyup.enter)="load()" />
-      <button type="button" class="primary" (click)="load()" [disabled]="loading()">Load</button>
+    <section class="adm-card debug-lookup-card">
+      <header class="debug-section-head">
+        <div>
+          <span class="adm-section-label">Lookup</span>
+          <p>Use a persisted assistant run ID to load the captured provider exchanges.</p>
+        </div>
+        @if (loading()) {
+          <span class="cg-chip cg-chip-accent cg-chip-dot">loading</span>
+        }
+      </header>
+
+      <div class="debug-lookup-row">
+        <label class="adm-field debug-run-field" for="run-id">
+          <span class="adm-field-label">Run ID</span>
+          <input
+            class="adm-input"
+            id="run-id"
+            type="number"
+            min="1"
+            [(ngModel)]="runId"
+            placeholder="42"
+            (keydown.enter)="load()" />
+        </label>
+        <button class="adm-btn primary" type="button" (click)="load()" [disabled]="loading()">Load traces</button>
+      </div>
+
+      <p class="debug-hint">
+        Endpoint shape: <code>/api/ask/runs/123/debug-exchanges</code>
+      </p>
     </section>
 
-    @if (loading()) {
-      <div class="section-card muted">Loading debug exchanges...</div>
-    } @else if (error()) {
-      <div class="banner error">{{ error() }}</div>
-    } @else if (debug(); as data) {
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h3>Run {{ data.run.id }}</h3>
-            <p class="subtitle">{{ data.run.status }} · {{ data.run.createdAt | date:'medium' }}</p>
-          </div>
-          <span class="count-pill">{{ data.exchanges.length }} exchanges</span>
+    @if (error()) {
+      <div class="adm-banner err">{{ error() }}</div>
+    }
+
+    @if (debug(); as data) {
+      <section class="adm-card debug-summary-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Run summary</span>
+          <span class="cg-chip cg-chip-mono">{{ data.run.status }}</span>
+        </header>
+        <div class="debug-stat-grid">
+          <div class="debug-stat"><span>Run</span><strong>{{ data.run.id }}</strong></div>
+          <div class="debug-stat"><span>User</span><strong>{{ data.run.username || 'n/a' }}</strong></div>
+          <div class="debug-stat"><span>Chat</span><strong>{{ data.run.chatId || 'n/a' }}</strong></div>
+          <div class="debug-stat"><span>Provider</span><strong>{{ data.run.providerUsed || data.run.providerRequested || 'n/a' }}</strong></div>
+          <div class="debug-stat"><span>Model</span><strong>{{ data.run.modelUsed || data.run.modelRequested || 'n/a' }}</strong></div>
+          <div class="debug-stat"><span>Exchanges</span><strong>{{ data.exchanges.length }}</strong></div>
         </div>
-        <p class="question">{{ data.run.question }}</p>
       </section>
 
-      @for (exchange of data.exchanges; track exchange.exchangeIndex) {
-        <section class="section-card exchange-card">
-          <div class="section-header">
-            <h3>#{{ exchange.exchangeIndex }} {{ exchange.provider }} / {{ exchange.model }}</h3>
-            <span class="muted">{{ exchange.createdAt | date:'medium' }}</span>
-          </div>
-          <div class="token-row">
-            <span>Input {{ exchange.inputTokens ?? 0 }}</span>
-            <span>Output {{ exchange.outputTokens ?? 0 }}</span>
-            <span>Total {{ exchange.totalTokens ?? 0 }}</span>
-          </div>
-          <div class="debug-grid">
-            <div>
-              <h4>Request</h4>
-              <pre>{{ exchange.requestText }}</pre>
-            </div>
-            <div>
-              <h4>Response</h4>
-              <pre>{{ exchange.responseText || 'No response text captured.' }}</pre>
-            </div>
-          </div>
-          <details>
-            <summary>Raw bodies</summary>
-            <pre>{{ { request: exchange.requestBody, response: exchange.responseBody, toolUses: exchange.toolUses } | json }}</pre>
-          </details>
-        </section>
+      <section class="adm-card debug-payload-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Question</span>
+          <span class="cg-chip cg-chip-mono">{{ data.run.createdAt | date:'medium' }}</span>
+        </header>
+        <pre class="debug-pre">{{ data.run.question }}</pre>
+      </section>
+
+      @if (data.exchanges.length === 0) {
+        <div class="adm-banner warn">
+          No debug exchanges were stored for this run. Debug capture may have been disabled, or the run may not have reached a provider call.
+        </div>
+      } @else {
+        <div class="debug-exchange-list">
+          @for (exchange of data.exchanges; track exchange.exchangeIndex) {
+            <section class="adm-card debug-exchange-card">
+              <header class="debug-exchange-header">
+                <div>
+                  <span class="adm-section-label">Exchange {{ exchange.exchangeIndex + 1 }}</span>
+                  <h2>{{ exchange.provider }} / {{ exchange.model }}</h2>
+                  <p>{{ exchange.createdAt | date:'medium' }}</p>
+                </div>
+                <div class="debug-token-summary" aria-label="Token summary">
+                  <span class="cg-chip">Total {{ exchange.totalTokens ?? 0 }}</span>
+                  <span class="cg-chip">In {{ exchange.inputTokens ?? 0 }}</span>
+                  <span class="cg-chip">Out {{ exchange.outputTokens ?? 0 }}</span>
+                </div>
+              </header>
+
+              <div class="debug-stat-grid compact">
+                <div class="debug-stat"><span>Turn</span><strong>{{ exchange.turnIndex }}</strong></div>
+                <div class="debug-stat"><span>Request ID</span><strong>{{ exchange.requestId || 'n/a' }}</strong></div>
+                <div class="debug-stat"><span>Response ID</span><strong>{{ exchange.responseId || 'n/a' }}</strong></div>
+              </div>
+
+              <div class="debug-text-columns">
+                <article class="debug-payload-panel">
+                  <h3>Request Text</h3>
+                  <pre class="debug-pre">{{ exchange.requestText || '(empty)' }}</pre>
+                </article>
+                <article class="debug-payload-panel">
+                  <h3>Response Text</h3>
+                  <pre class="debug-pre">{{ exchange.responseText || '(empty)' }}</pre>
+                </article>
+              </div>
+
+              <div class="debug-details-list">
+                <details class="debug-details">
+                  <summary>Request Body JSON</summary>
+                  <pre class="debug-pre">{{ formatJson(exchange.requestBody) }}</pre>
+                </details>
+
+                @if (exchange.responseBody) {
+                  <details class="debug-details">
+                    <summary>Response Body JSON</summary>
+                    <pre class="debug-pre">{{ formatJson(exchange.responseBody) }}</pre>
+                  </details>
+                }
+
+                @if (exchange.toolUses) {
+                  <details class="debug-details">
+                    <summary>Tool Uses JSON</summary>
+                    <pre class="debug-pre">{{ formatJson(exchange.toolUses) }}</pre>
+                  </details>
+                }
+
+                @if (exchange.requestMetadata) {
+                  <details class="debug-details">
+                    <summary>Request Metadata JSON</summary>
+                    <pre class="debug-pre">{{ formatJson(exchange.requestMetadata) }}</pre>
+                  </details>
+                }
+
+                @if (exchange.responseMetadata) {
+                  <details class="debug-details">
+                    <summary>Response Metadata JSON</summary>
+                    <pre class="debug-pre">{{ formatJson(exchange.responseMetadata) }}</pre>
+                  </details>
+                }
+              </div>
+            </section>
+          }
+        </div>
       }
     }
   `,
   styles: [`
-    :host { display: block; }
-    .page-header, .lookup, .section-header, .token-row {
+    :host {
       display: flex;
-      gap: 0.75rem;
-      align-items: flex-start;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .debug-lookup-card {
+      max-width: 720px;
+    }
+
+    .debug-section-head,
+    .debug-exchange-header {
+      display: flex;
       justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
     }
-    .page-header { margin-bottom: 1rem; }
-    h2, h3, h4 { margin: 0; color: #111827; }
-    h4 { font-size: 0.88rem; margin-bottom: 0.35rem; }
-    .subtitle, .muted { color: #6b7280; margin: 0.25rem 0 0; }
-    .section-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 1rem;
+
+    .debug-section-head p,
+    .debug-exchange-header p,
+    .debug-hint {
+      color: var(--muted);
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      margin: 4px 0 0;
     }
-    .lookup { justify-content: flex-start; }
-    input {
-      min-height: 36px;
-      width: min(240px, 100%);
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
-      padding: 0.45rem 0.6rem;
+
+    .debug-hint code {
+      color: var(--text-2);
+      font-family: var(--font-mono);
+      font-size: var(--fs-xs);
+      background: var(--surface-2);
+      border: 1px solid var(--hairline);
+      border-radius: calc(var(--radius) - 2px);
+      padding: 1px 5px;
     }
-    button {
-      min-height: 36px;
-      border: 1px solid #2563eb;
-      border-radius: 6px;
-      background: #2563eb;
-      color: white;
-      cursor: pointer;
-      padding: 0.45rem 0.8rem;
+
+    .debug-lookup-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
     }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .count-pill {
-      border-radius: 999px;
-      background: #eff6ff;
-      color: #1e40af;
-      font-size: 0.78rem;
-      font-weight: 700;
-      padding: 0.2rem 0.6rem;
+
+    .debug-run-field {
+      max-width: 260px;
     }
-    .question { color: #374151; margin: 0.85rem 0 0; }
-    .token-row { justify-content: flex-start; color: #374151; font-weight: 600; margin: 0.75rem 0; }
-    .debug-grid {
+
+    .debug-summary-card,
+    .debug-payload-card,
+    .debug-exchange-card {
+      gap: 14px;
+    }
+
+    .debug-stat-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
     }
-    pre {
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-      border-radius: 6px;
-      color: #374151;
+
+    .debug-stat-grid.compact {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .debug-stat {
+      min-width: 0;
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      padding: 10px 12px;
+    }
+
+    .debug-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .debug-stat strong {
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .debug-exchange-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .debug-exchange-header h2 {
+      color: var(--text);
+      font-size: var(--fs-h3);
+      font-weight: 600;
+      margin: 4px 0 0;
+    }
+
+    .debug-token-summary {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .debug-text-columns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .debug-payload-panel {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .debug-payload-panel h3 {
+      color: var(--text);
+      font-size: var(--fs-sm);
+      font-weight: 600;
       margin: 0;
-      max-height: 360px;
-      overflow: auto;
-      padding: 0.75rem;
-      white-space: pre-wrap;
     }
-    details { margin-top: 0.85rem; }
-    summary { color: #374151; cursor: pointer; font-weight: 600; }
-    .banner { border-radius: 8px; padding: 0.7rem 0.85rem; }
-    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+
+    .debug-pre {
+      max-height: 460px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin: 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+      line-height: 1.55;
+    }
+
+    .debug-details-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .debug-details {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .debug-details summary {
+      cursor: pointer;
+      color: var(--text-2);
+      font-size: var(--fs-sm);
+      font-weight: 600;
+      padding: 10px 12px;
+      transition: background var(--transition), color var(--transition);
+    }
+
+    .debug-details summary:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .debug-details .debug-pre {
+      border-width: 1px 0 0;
+      border-radius: 0;
+      max-height: 520px;
+    }
+
+    @media (max-width: 760px) {
+      .debug-section-head,
+      .debug-exchange-header,
+      .debug-lookup-row {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .debug-run-field {
+        max-width: none;
+      }
+
+      .debug-text-columns {
+        grid-template-columns: 1fr;
+      }
+
+      .debug-token-summary {
+        justify-content: flex-start;
+      }
+    }
   `]
 })
 export class AssistantDebugComponent {
@@ -146,6 +367,22 @@ export class AssistantDebugComponent {
   debug = signal<AssistantDebugExchangeListResponse | null>(null);
   loading = signal(false);
   error = signal('');
+
+  formatJson(value: unknown): string {
+    if (value === null || value === undefined || value === '') {
+      return '(empty)';
+    }
+
+    if (typeof value === 'string') {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 2);
+      } catch {
+        return value;
+      }
+    }
+
+    return JSON.stringify(value, null, 2);
+  }
 
   async load(): Promise<void> {
     const id = Number(this.runId);

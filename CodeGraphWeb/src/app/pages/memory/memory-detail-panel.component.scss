@@ -1,0 +1,300 @@
+/* Memory detail panel - CodeFlow styling.
+   Component-scoped. Prefix: mpd-* (memory-page-detail). */
+
+:host {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  min-width: 0;
+}
+
+.mpd-state {
+  padding: 40px 20px;
+  text-align: center;
+  font-size: var(--fs-sm);
+}
+
+.mpd-empty {
+  padding: 8px 0;
+}
+
+.mpd-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mpd-head-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.mpd-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.mpd-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.mpd-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.mpd-btn {
+  appearance: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+
+  &:hover {
+    background: var(--surface-2);
+    color: var(--text);
+    border-color: var(--border-2);
+  }
+}
+
+.mpd-summary {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--text-2);
+}
+
+.mpd-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.mpd-stat {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+
+  &.warn {
+    background: var(--warn-bg);
+    border-color: color-mix(in oklab, var(--sem-amber) 30%, var(--border));
+  }
+}
+
+.mpd-stat-value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.mpd-stat.warn .mpd-stat-value {
+  color: var(--sem-amber);
+}
+
+.mpd-stat-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mpd-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mpd-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mpd-section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mpd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mpd-claim,
+.mpd-neighbor {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+
+  &:hover {
+    background: var(--surface-3);
+    border-color: var(--border);
+  }
+}
+
+.mpd-claim {
+  border-left: 3px solid transparent;
+
+  &.warning {
+    background: var(--warn-bg);
+    border-color: color-mix(in oklab, var(--sem-amber) 25%, var(--border));
+    border-left-color: var(--sem-amber);
+    color: var(--text);
+  }
+}
+
+.mpd-claim-text {
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.mpd-claim-meta {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.mpd-claim.warning .mpd-claim-meta {
+  color: var(--sem-amber);
+}
+
+.mpd-neighbor-name {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mpd-neighbor-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mpd-observation {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--sem-amber) 25%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--warn-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mpd-obs-text {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.mpd-obs-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mpd-claim-detail {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  gap: 8px;
+}
+
+.mpd-claim-main {
+  font-size: var(--fs-md);
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.mpd-claim-detail-meta {
+  font-variant-numeric: tabular-nums;
+}
+
+.mpd-claim-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.mpd-evidence {
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mpd-evidence-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mpd-evidence-snippet {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  font-style: italic;
+  line-height: 1.45;
+  padding-left: 10px;
+  border-left: 2px solid var(--hairline);
+}

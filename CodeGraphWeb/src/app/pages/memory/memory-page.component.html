@@ -1,138 +1,207 @@
-<div class="memory-page">
-  <div class="memory-header">
-    <div class="header-copy">
-      <h1>Memory Browser</h1>
-      @if (graphData()) {
-        <span class="header-stat">
-          {{ nodes().length }} shown / {{ graphData()!.totalNodeCount }} available / {{ links().length }} visible edges
-        </span>
-      }
+<div class="cg-page mp-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Memory browser</h1>
+      <p>
+        @if (graphData()) {
+          {{ nodes().length }} shown | {{ graphData()!.totalNodeCount }} available |
+          {{ links().length }} visible edges
+        } @else {
+          Knowledge graph of entities, claims, and their provenance.
+        }
+      </p>
     </div>
-
-    <div class="header-actions">
-      <button [class.active]="viewMode() === 'graph'" (click)="setViewMode('graph')">Graph</button>
-      <button [class.active]="viewMode() === 'list'" (click)="setViewMode('list')">List</button>
+    <div class="cg-page-header-actions">
+      <div class="cg-segmented" role="group" aria-label="View mode">
+        <button type="button" [class.active]="viewMode() === 'graph'" (click)="setViewMode('graph')">Graph</button>
+        <button type="button" [class.active]="viewMode() === 'list'" (click)="setViewMode('list')">List</button>
+      </div>
+      <button class="mp-btn" type="button" (click)="refreshOverview()">Refresh</button>
     </div>
-  </div>
+  </header>
 
-  <div class="toolbar">
-    <div class="search-bar">
+  <section class="mp-toolbar">
+    <div class="mp-search">
+      <svg class="mp-search-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+        <circle cx="7" cy="7" r="5"/><path d="m11 11 3 3"/>
+      </svg>
       <input
-        type="text"
+        type="search"
+        aria-label="Search memory entities and claims"
         [value]="searchText()"
         placeholder="Search memories by entity, claim, or concept"
         (input)="updateSearchText(($any($event.target).value ?? '').toString())"
         (keydown.enter)="runSearch()" />
-      <button (click)="runSearch()" [disabled]="searching()">Search</button>
-      <button class="secondary" (click)="clearSearch()" [disabled]="!searchText() && !searchResults()">Clear</button>
+      <button class="mp-btn primary" type="button" (click)="runSearch()" [disabled]="searching()">
+        @if (searching()) { <span class="mp-spinner"></span> } @else { Search }
+      </button>
+      @if (searchText() || searchResults()) {
+        <button class="mp-btn" type="button" (click)="clearSearch()">Clear</button>
+      }
     </div>
 
-    <div class="overview-controls">
+    <div class="mp-controls">
       @if (focusMode()) {
-        <button class="secondary" (click)="loadOverview()">Back To Overview</button>
+        <button class="mp-btn" type="button" (click)="loadOverview()">Back to overview</button>
       } @else {
-        <label>
-          Show
-          <select [value]="pageSize()" (change)="changePageSize(+$any($event.target).value)">
+        <label class="mp-page-size">
+          <span class="cg-xsmall cg-muted">Show</span>
+          <select class="mp-select" [value]="pageSize()" (change)="changePageSize(+$any($event.target).value)">
             <option [value]="100">100</option>
             <option [value]="250">250</option>
             <option [value]="500">500</option>
           </select>
         </label>
-        <button class="secondary" (click)="changePage(-1)" [disabled]="!hasPreviousPage()">Prev</button>
-        <button class="secondary" (click)="changePage(1)" [disabled]="!hasNextPage()">Next</button>
+        <button class="mp-btn" type="button" (click)="changePage(-1)" [disabled]="!hasPreviousPage()">Prev</button>
+        <button class="mp-btn" type="button" (click)="changePage(1)" [disabled]="!hasNextPage()">Next</button>
         @if (graphData()) {
-          <span class="range-label">{{ pageStart() }}-{{ pageEnd() }}</span>
+          <span class="cg-xsmall cg-mono cg-muted">{{ pageStart() }}-{{ pageEnd() }}</span>
         }
       }
-      <button class="secondary" (click)="refreshOverview()">Refresh</button>
     </div>
-  </div>
+  </section>
+
+  @if (loadingDiagnostics()) {
+    <div class="mp-state cg-muted">Refreshing memory health...</div>
+  } @else if (diagnostics()) {
+    <section class="mp-diagnostics">
+      <article class="mp-diag-card">
+        <div class="mp-diag-label">Claim graph</div>
+        <div class="mp-diag-value">{{ diagnostics()!.entityCount.toLocaleString() }}</div>
+        <div class="mp-diag-meta cg-muted cg-small">
+          entities | {{ diagnostics()!.claimCount.toLocaleString() }} claims |
+          {{ diagnostics()!.observationCount.toLocaleString() }} observations
+        </div>
+      </article>
+
+      <article class="mp-diag-card" [attr.data-tone]="diagnostics()!.writeDegraded ? 'warn' : 'ok'">
+        <div class="mp-diag-label">Writes</div>
+        <div class="mp-diag-value">{{ diagnostics()!.writeDiagnostics.queuedCount + diagnostics()!.writeDiagnostics.processingCount }}</div>
+        <div class="mp-diag-meta cg-muted cg-small">
+          queued | {{ diagnostics()!.writeDiagnostics.failedCount }} failed
+        </div>
+        @if (diagnostics()!.writeDiagnostics.staleQueuedCount > 0 || diagnostics()!.writeDiagnostics.staleProcessingCount > 0) {
+          <div class="mp-diag-detail cg-muted cg-xsmall">
+            {{ diagnostics()!.writeDiagnostics.staleQueuedCount }} stale queued |
+            {{ diagnostics()!.writeDiagnostics.staleProcessingCount }} stale processing
+          </div>
+        }
+      </article>
+
+      <article class="mp-diag-card" [attr.data-tone]="(diagnostics()!.retrievalDegraded || !diagnostics()!.embeddingAvailable) ? 'warn' : 'ok'">
+        <div class="mp-diag-label">Retrieval</div>
+        <div class="mp-diag-value">{{ diagnostics()!.seedAliasCount.toLocaleString() }}</div>
+        <div class="mp-diag-meta cg-muted cg-small">
+          seed aliases | embeddings {{ diagnostics()!.embeddingAvailable ? 'ready' : 'offline' }}
+        </div>
+        @if (diagnostics()!.orphanObservationCount > 0 || diagnostics()!.orphanEvidenceCount > 0) {
+          <div class="mp-diag-detail cg-muted cg-xsmall">
+            {{ diagnostics()!.orphanObservationCount }} orphan observations |
+            {{ diagnostics()!.orphanEvidenceCount }} orphan evidence
+          </div>
+        }
+      </article>
+    </section>
+
+    @if (diagnostics()!.healthSignals.length > 0) {
+      <div class="mp-health-signals">
+        @for (signal of diagnostics()!.healthSignals; track signal) {
+          <span class="cg-chip cg-chip-warn cg-chip-dot">{{ formatHealthSignal(signal) }}</span>
+        }
+      </div>
+    }
+  }
 
   @if (searchResults()) {
-    <div class="search-results">
-      <div class="result-column">
-        <div class="result-title">Entity Matches</div>
+    <section class="mp-search-results">
+      <div class="mp-search-col">
+        <div class="mp-section-label">Entity matches</div>
         @if (searchEntityResults().length === 0) {
-          <div class="result-empty">No entity matches.</div>
+          <div class="mp-state compact cg-muted">No entity matches.</div>
         } @else {
           @for (entity of searchEntityResults(); track entity.entityId) {
-            <button class="result-card" (click)="focusSearchEntity(entity)">
-              <span class="result-name">{{ entity.label }}</span>
-              <span class="result-meta">{{ formatType(entity.type) }} · {{ entity.matchKind }} · {{ entity.score | number:'1.1-1' }}</span>
-              @if (entity.diagnostics.matchedFields.length > 0) {
-                <span class="result-detail">{{ entity.diagnostics.matchedFields.join(', ') }}</span>
+            <button class="mp-result" type="button" (click)="focusSearchEntity(entity)">
+              <span class="mp-result-name">{{ seedDisplayText(entity) }}</span>
+              <span class="mp-result-meta">
+                <span class="cg-chip cg-chip-mono">{{ entity.matchKind || entity.diagnostics.retrievalStage || 'match' }}</span>
+                <span class="cg-mono cg-faint cg-xsmall">{{ entity.score | number:'1.1-1' }}</span>
+              </span>
+              @if (seedMatchedFields(entity).length > 0) {
+                <span class="cg-muted cg-xsmall mp-result-fields">{{ seedMatchedFields(entity).join(', ') }}</span>
               }
             </button>
           }
         }
       </div>
 
-      <div class="result-column">
-        <div class="result-title">Claim Matches</div>
+      <div class="mp-search-col">
+        <div class="mp-section-label">Claim matches</div>
         @if (searchClaimResults().length === 0) {
-          <div class="result-empty">No claim matches.</div>
+          <div class="mp-state compact cg-muted">No claim matches.</div>
         } @else {
           @for (claim of searchClaimResults(); track claim.claimId) {
-            <button class="result-card" (click)="inspectSearchClaim(claim)">
-              <span class="result-name">{{ claim.normalizedText }}</span>
-              <span class="result-meta">{{ claim.matchKind }} · {{ claim.status }} · {{ claim.score | number:'1.1-1' }}</span>
-              @if (claim.diagnostics.matchedFields.length > 0) {
-                <span class="result-detail">{{ claim.diagnostics.matchedFields.join(', ') }}</span>
+            <button class="mp-result" type="button" (click)="inspectSearchClaim(claim)">
+              <span class="mp-result-name">{{ seedDisplayText(claim) }}</span>
+              <span class="mp-result-meta">
+                <span class="cg-chip cg-chip-mono">{{ claim.matchKind || claim.diagnostics.retrievalStage || 'match' }}</span>
+                <span class="cg-mono cg-faint cg-xsmall">{{ claim.score | number:'1.1-1' }}</span>
+              </span>
+              @if (seedMatchedFields(claim).length > 0) {
+                <span class="cg-muted cg-xsmall mp-result-fields">{{ seedMatchedFields(claim).join(', ') }}</span>
               }
             </button>
           }
         }
       </div>
-    </div>
+    </section>
   }
 
   @if (loading()) {
-    <div class="loading-message">Loading memory graph...</div>
+    <div class="mp-state cg-muted">Loading memory graph...</div>
   } @else if (!graphData() || allNodes().length === 0) {
-    <div class="empty-message">No memories were returned for this view.</div>
+    <div class="mp-state cg-muted">No memories were returned for this view.</div>
   } @else {
-    <div class="memory-body">
-      <div class="main-panel">
-        <div class="type-summary">
+    <div class="mp-body">
+      <div class="mp-main">
+        <div class="mp-type-summary">
           @for (type of typeSummary(); track type[0]) {
             <button
-              class="type-pill"
+              class="mp-type-pill"
+              type="button"
               [class.inactive]="!isTypeActive(type[0])"
               (click)="toggleType(type[0])">
-              {{ formatType(type[0]) }} · {{ type[1] }}
+              <span>{{ formatType(type[0]) }}</span>
+              <span class="cg-mono cg-faint">| {{ type[1] }}</span>
             </button>
           }
         </div>
 
         @if (nodes().length === 0) {
-          <div class="empty-message compact">All visible node types are filtered out.</div>
+          <div class="mp-state compact cg-muted">All visible node types are filtered out.</div>
         } @else if (viewMode() === 'graph') {
-          <div class="graph-panel">
-            <div class="graph-wrapper" #wrapper>
-              <svg #svg></svg>
-              <div class="graph-hint">
-                @if (focusMode() && selectedBundle()) {
-                  <span>Focused on {{ selectedBundle()!.entity.label }} · click a neighbor to keep walking</span>
-                } @else {
-                  <span>Showing the most recently updated memory entities in a bounded graph</span>
-                }
-              </div>
-            </div>
+          <div class="mp-graph">
+            <app-memory-graph-view
+              [nodes]="nodes()"
+              [links]="links()"
+              [focusedEntityId]="focusMode() ? selectedEntityId() : null"
+              [hint]="focusMode() && selectedBundle() ? 'Focused on ' + selectedBundle()!.entity.label + ' | click a neighbor to keep walking' : 'Showing the most recently updated memory entities in a bounded graph'"
+              [ariaLabel]="focusMode() && selectedBundle() ? 'Memory graph focused on ' + selectedBundle()!.entity.label : 'Memory graph overview'"
+              (selectEntity)="focusEntity($event)"
+            />
           </div>
         } @else {
-          <div class="list-panel">
+          <div class="mp-list">
             @for (node of visibleNodes(); track node.id) {
-              <button class="memory-row" [class.selected]="isSelectedNode(node.id)" (click)="focusEntity(node.id)">
-                <span class="memory-row-main">
-                  <span class="memory-name">{{ node.label }}</span>
-                  <span class="memory-type">{{ formatType(node.type) }}</span>
-                </span>
-                <span class="memory-row-meta">
-                  {{ degreeByNode().get(node.id) ?? 0 }} visible links · {{ node.updatedAt | date:'medium' }}
-                </span>
+              <button class="mp-row" type="button" [class.selected]="isSelectedNode(node.id)" (click)="focusEntity(node.id)">
+                <div class="mp-row-head">
+                  <span class="mp-row-name">{{ node.label }}</span>
+                  <span class="cg-chip cg-chip-mono">{{ formatType(node.type) }}</span>
+                </div>
+                <div class="mp-row-meta cg-muted cg-xsmall">
+                  {{ formatNodeMeta(node.id, node.updatedAt) }}
+                </div>
                 @if (node.summary) {
-                  <span class="memory-row-summary">{{ node.summary }}</span>
+                  <div class="mp-row-summary cg-small">{{ node.summary }}</div>
                 }
               </button>
             }
@@ -140,143 +209,18 @@
         }
       </div>
 
-      <div class="detail-panel">
-        @if (loadingDetail()) {
-          <div class="loading-message compact">Loading memory details...</div>
-        } @else if (selectedBundle()) {
-          <div class="detail-header">
-            <div>
-              <h2>{{ selectedBundle()!.entity.label }}</h2>
-              <div class="detail-meta">
-                {{ formatType(selectedBundle()!.entity.type) }} · {{ selectedBundle()!.entity.id }}
-              </div>
-            </div>
-            @if (focusMode()) {
-              <button class="secondary" (click)="loadOverview()">Overview</button>
-            }
-          </div>
-
-          @if (selectedBundle()!.entity.summary) {
-            <p class="entity-summary">{{ selectedBundle()!.entity.summary }}</p>
-          }
-
-          <div class="detail-stats">
-            <div class="stat">
-              <span class="stat-value">{{ selectedBundle()!.activeClaims.length }}</span>
-              <span class="stat-label">Active Claims</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value">{{ selectedBundle()!.conflictingClaims.length }}</span>
-              <span class="stat-label">Conflicts</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value">{{ selectedBundle()!.neighborEdges.length }}</span>
-              <span class="stat-label">Neighbors</span>
-            </div>
-          </div>
-
-          <section class="detail-section">
-            <h3>Active Claims</h3>
-            @if (selectedBundle()!.activeClaims.length === 0) {
-              <div class="detail-empty">No active claims attached to this entity.</div>
-            } @else {
-              @for (claim of selectedBundle()!.activeClaims.slice(0, 18); track claim.id) {
-                <button class="claim-row" (click)="inspectClaim(claim.id)">
-                  <span class="claim-text">{{ formatClaim(claim) }}</span>
-                  <span class="claim-meta">{{ claim.recordedAt | date:'short' }}</span>
-                </button>
-              }
-            }
-          </section>
-
-          @if (selectedBundle()!.conflictingClaims.length > 0) {
-            <section class="detail-section">
-              <h3>Conflicted Claims</h3>
-              @for (claim of selectedBundle()!.conflictingClaims.slice(0, 12); track claim.id) {
-                <button class="claim-row warning" (click)="inspectClaim(claim.id)">
-                  <span class="claim-text">{{ formatClaim(claim) }}</span>
-                  <span class="claim-meta">{{ claim.recordedAt | date:'short' }}</span>
-                </button>
-              }
-            </section>
-          }
-
-          @if (selectedBundle()!.observations.length > 0) {
-            <section class="detail-section">
-              <h3>Observations</h3>
-              @for (observation of selectedBundle()!.observations; track observation.id) {
-                <div class="observation-row">
-                  <div class="observation-claim">{{ observation.claim }}</div>
-                  <div class="observation-conflict">Conflicts with: {{ observation.conflictsWith }}</div>
-                </div>
-              }
-            </section>
-          }
-
-          <section class="detail-section">
-            <h3>Neighbors</h3>
-            @if (neighborRows().length === 0) {
-              <div class="detail-empty">No visible active neighbors in this view.</div>
-            } @else {
-              @for (neighbor of neighborRows().slice(0, 60); track neighbor.id + ':' + neighbor.edgeType) {
-                <button class="neighbor-row" (click)="focusEntity(neighbor.id)">
-                  <span class="neighbor-name">{{ neighbor.label }}</span>
-                  <span class="neighbor-meta">{{ formatType(neighbor.type) }} · {{ neighbor.edgeType }}</span>
-                </button>
-              }
-            }
-          </section>
-
-          @if (selectedClaimBundle()) {
-            <section class="detail-section claim-detail">
-              <h3>Claim Detail</h3>
-              <div class="claim-detail-main">{{ formatClaim(selectedClaimBundle()!.claim) }}</div>
-              <div class="claim-detail-meta">
-                {{ selectedClaimBundle()!.claim.status }} · {{ selectedClaimBundle()!.claim.recordedAt | date:'medium' }}
-              </div>
-
-              @if (selectedClaimBundle()!.conflicts.length > 0) {
-                <div class="claim-subsection">
-                  <strong>Conflicts</strong>
-                  @for (claim of selectedClaimBundle()!.conflicts; track claim.id) {
-                    <button class="claim-row warning" (click)="inspectClaim(claim.id)">
-                      <span class="claim-text">{{ formatClaim(claim) }}</span>
-                    </button>
-                  }
-                </div>
-              }
-
-              @if (selectedClaimBundle()!.supersessionChain.length > 0) {
-                <div class="claim-subsection">
-                  <strong>Supersession Chain</strong>
-                  @for (claim of selectedClaimBundle()!.supersessionChain; track claim.id) {
-                    <button class="claim-row" (click)="inspectClaim(claim.id)">
-                      <span class="claim-text">{{ formatClaim(claim) }}</span>
-                    </button>
-                  }
-                </div>
-              }
-
-              @if (selectedClaimBundle()!.evidence.length > 0) {
-                <div class="claim-subsection">
-                  <strong>Evidence</strong>
-                  @for (item of selectedClaimBundle()!.evidence; track item.id) {
-                    <div class="evidence-row">
-                      <div>{{ item.evidenceType }} · {{ item.sourceRef }}</div>
-                      @if (item.snippet) {
-                        <div class="evidence-snippet">{{ item.snippet }}</div>
-                      }
-                    </div>
-                  }
-                </div>
-              }
-            </section>
-          }
-        } @else {
-          <div class="empty-message compact">
-            Pick a memory node to see its claims, conflicts, and local neighborhood.
-          </div>
-        }
+      <div class="mp-detail">
+        <app-memory-detail-panel
+          [loadingDetail]="loadingDetail()"
+          [focusMode]="focusMode()"
+          [selectedBundle]="selectedBundle()"
+          [selectedClaimBundle]="selectedClaimBundle()"
+          [nodeLookup]="nodeLookup()"
+          [neighborRows]="neighborRows()"
+          (focusEntity)="focusEntity($event)"
+          (inspectClaim)="inspectClaim($event)"
+          (showOverview)="loadOverview()"
+        />
       </div>
     </div>
   }
