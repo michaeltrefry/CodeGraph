@@ -5,12 +5,12 @@ import { ApiService } from './api.service';
 import { AuthService } from './auth.service';
 
 describe('ApiService streaming requests', () => {
-  let auth: { getAccessToken: ReturnType<typeof vi.fn> };
+  let auth: { getValidAccessToken: ReturnType<typeof vi.fn> };
   let api: ApiService;
 
   beforeEach(() => {
     auth = {
-      getAccessToken: vi.fn()
+      getValidAccessToken: vi.fn()
     };
 
     const injector = Injector.create({
@@ -25,7 +25,7 @@ describe('ApiService streaming requests', () => {
   });
 
   it('attaches the OAuth bearer token to Ask streaming fetches', async () => {
-    auth.getAccessToken.mockReturnValue('token-123');
+    auth.getValidAccessToken.mockResolvedValue('token-123');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
@@ -47,7 +47,7 @@ describe('ApiService streaming requests', () => {
   });
 
   it('attaches the OAuth bearer token to review SSE fetches', async () => {
-    auth.getAccessToken.mockReturnValue('token-456');
+    auth.getValidAccessToken.mockResolvedValue('token-456');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 401,

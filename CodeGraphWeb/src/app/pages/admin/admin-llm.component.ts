@@ -525,7 +525,7 @@ export class AdminLlmComponent implements OnInit {
       const updated = await firstValueFrom(this.api.updateLlmProvider(provider.provider, request));
       const index = this.providers.findIndex(item => item.provider === provider.provider);
       this.providers[index] = { ...this.toProviderEditor(updated), message: 'Provider saved.' };
-      this.catalog = await firstValueFrom(this.api.listLlmProviderModels());
+      this.replaceCatalogModels(updated);
     } catch (err) {
       provider.error = extractAdminError(err, 'Failed to save provider');
     } finally {
@@ -604,6 +604,12 @@ export class AdminLlmComponent implements OnInit {
       message: '',
       error: ''
     };
+  }
+
+  private replaceCatalogModels(provider: LlmProviderResponse): void {
+    const otherProviders = this.catalog.filter(item => item.provider !== provider.provider);
+    const providerModels = provider.models.map(model => ({ provider: provider.provider, model }));
+    this.catalog = [...otherProviders, ...providerModels];
   }
 
   private tokenRequest(provider: ProviderEditor): LlmProviderWriteRequest['token'] {

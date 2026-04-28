@@ -116,6 +116,12 @@ describe('AdminLlmComponent', () => {
     provider.endpointUrl = ' https://api.anthropic.com ';
     provider.newModel = 'claude-opus-4-6';
     component.addProviderModel(provider);
+    api.updateLlmProvider.mockReturnValueOnce(of({
+      ...providers[0],
+      hasToken: true,
+      endpointUrl: 'https://api.anthropic.com',
+      models: ['claude-sonnet-4-6', 'claude-opus-4-6']
+    }));
 
     await component.saveProvider(provider);
 
@@ -127,6 +133,8 @@ describe('AdminLlmComponent', () => {
     });
     expect(component.providers[0].hasToken).toBe(true);
     expect(component.providers[0].message).toBe('Provider saved.');
+    expect(api.listLlmProviderModels).toHaveBeenCalledTimes(1);
+    expect(component.modelOptions('anthropic', '')).toEqual(['claude-sonnet-4-6', 'claude-opus-4-6']);
   });
 
   it('treats an initially unset provider token as a replacement write', async () => {
