@@ -113,9 +113,9 @@ public class MariaDbGraphStoreTests
                 }
             ]);
 
-            var classId = nodeIds["CodeGraph.Widget"];
-            var methodId = nodeIds["CodeGraph.Widget.Run"];
-            var dependencyId = nodeIds["Dependency.Root"];
+            var classId = nodeIds[GraphNodeKey.Create("CodeGraph", "CodeGraph.Widget")];
+            var methodId = nodeIds[GraphNodeKey.Create("CodeGraph", "CodeGraph.Widget.Run")];
+            var dependencyId = nodeIds[GraphNodeKey.Create("Dependency", "Dependency.Root")];
 
             (await store.FindNodeByIdAsync(classId))!.Name.ShouldBe("Widget");
             (await store.FindNodeByQualifiedNameAsync("CodeGraph", "CodeGraph.Widget.Run"))!.Label.ShouldBe(NodeLabel.Method);

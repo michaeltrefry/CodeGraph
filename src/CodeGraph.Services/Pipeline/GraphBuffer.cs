@@ -55,8 +55,8 @@ public class GraphBuffer
 
         foreach (var pending in _pendingEdges)
         {
-            var hasSource = qnToId.TryGetValue(pending.SourceQN, out var sourceId);
-            var hasTarget = qnToId.TryGetValue(pending.TargetQN, out var targetId);
+            var hasSource = qnToId.TryGetValue(GraphNodeKey.Create(project, pending.SourceQN), out var sourceId);
+            var hasTarget = qnToId.TryGetValue(GraphNodeKey.Create(project, pending.TargetQN), out var targetId);
 
             if (hasSource && hasTarget)
             {

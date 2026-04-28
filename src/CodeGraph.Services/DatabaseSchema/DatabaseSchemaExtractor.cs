@@ -329,8 +329,8 @@ public sealed class DatabaseSchemaExtractor(
         var edges = new List<GraphEdge>();
         foreach (var pendingEdge in pendingEdges)
         {
-            if (!qualifiedNameToId.TryGetValue(pendingEdge.SourceQualifiedName, out var sourceId) ||
-                !qualifiedNameToId.TryGetValue(pendingEdge.TargetQualifiedName, out var targetId))
+            if (!qualifiedNameToId.TryGetValue(GraphNodeKey.Create(projectName, pendingEdge.SourceQualifiedName), out var sourceId) ||
+                !qualifiedNameToId.TryGetValue(GraphNodeKey.Create(projectName, pendingEdge.TargetQualifiedName), out var targetId))
             {
                 continue;
             }

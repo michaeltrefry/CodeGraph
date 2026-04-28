@@ -232,7 +232,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         foreach (var node in nodes)
         {
             var id = await UpsertNodeAsync(node);
-            result[node.QualifiedName] = id;
+            result[GraphNodeKey.Create(node.Project, node.QualifiedName)] = id;
         }
         return result;
     }

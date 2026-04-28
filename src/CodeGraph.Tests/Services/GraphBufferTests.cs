@@ -118,8 +118,8 @@ public class GraphBufferTests
 
         var qnToId = new Dictionary<string, long>
         {
-            ["P.Src"] = 1,
-            ["P.Tgt"] = 2
+            [GraphNodeKey.Create("P", "P.Src")] = 1,
+            [GraphNodeKey.Create("P", "P.Tgt")] = 2
         };
 
         var resolved = buffer.ResolveEdges("P", qnToId);
@@ -128,5 +128,26 @@ public class GraphBufferTests
         resolved[0].SourceId.ShouldBe(1);
         resolved[0].TargetId.ShouldBe(2);
         resolved[0].Type.ShouldBe(EdgeType.CALLS);
+    }
+
+    [Fact]
+    public void ResolveEdges_UsesProjectScopedQualifiedNames()
+    {
+        var buffer = new GraphBuffer();
+        buffer.AddEdge(new PendingEdge("src/app/service.ts:Widget", "src/app/service.ts:Run", EdgeType.CALLS));
+
+        var qnToId = new Dictionary<string, long>
+        {
+            [GraphNodeKey.Create("ProjectA", "src/app/service.ts:Widget")] = 10,
+            [GraphNodeKey.Create("ProjectA", "src/app/service.ts:Run")] = 11,
+            [GraphNodeKey.Create("ProjectB", "src/app/service.ts:Widget")] = 20,
+            [GraphNodeKey.Create("ProjectB", "src/app/service.ts:Run")] = 21
+        };
+
+        var resolved = buffer.ResolveEdges("ProjectB", qnToId);
+
+        resolved.Count.ShouldBe(1);
+        resolved[0].SourceId.ShouldBe(20);
+        resolved[0].TargetId.ShouldBe(21);
     }
 }
