@@ -8,8 +8,10 @@ import { AuthConfigResponse, CurrentUserResponse } from './models';
 interface StoredTokenSet {
   accessToken: string;
   idToken?: string;
+  refreshToken?: string;
   tokenType: string;
   expiresAt: number;
+  refreshExpiresAt?: number;
 }
 
 interface StoredAuthRequest {
@@ -23,20 +25,27 @@ interface StoredAuthRequest {
 interface TokenResponse {
   access_token: string;
   id_token?: string;
+  refresh_token?: string;
   token_type?: string;
   expires_in?: number;
+  refresh_expires_in?: number;
 }
 
 const API = environment.apiUrl;
 const TOKEN_KEY = 'codegraph.oauth.tokens';
 const REQUEST_KEY = 'codegraph.oauth.request';
 const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
+const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 60_000;
+const REFRESH_TIMER_BUFFER_MS = 120_000;
+const MIN_REFRESH_DELAY_MS = 15_000;
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly router = inject(Router);
   private initializePromise?: Promise<void>;
+  private refreshPromise?: Promise<string | null>;
+  private refreshTimerId?: ReturnType<typeof setTimeout>;
 
   readonly config = signal<AuthConfigResponse | null>(null);
   readonly currentUser = signal<CurrentUserResponse | null>(null);
@@ -52,19 +61,40 @@ export class AuthService {
 
   getAccessToken(): string | null {
     const tokens = this.readTokens();
-    if (!tokens || tokens.expiresAt <= Date.now() + 60_000) {
+    if (!tokens) return null;
+    if (this.isAccessTokenUsable(tokens)) {
+      return tokens.accessToken;
+    }
+
+    if (!this.isRefreshTokenUsable(tokens)) {
       this.clearTokens();
       return null;
     }
 
-    return tokens.accessToken;
+    return null;
+  }
+
+  async getValidAccessToken(): Promise<string | null> {
+    const tokens = this.readTokens();
+    if (!tokens) return null;
+    if (this.isAccessTokenUsable(tokens)) {
+      this.scheduleRefresh(tokens);
+      return tokens.accessToken;
+    }
+
+    if (!this.isRefreshTokenUsable(tokens)) {
+      this.clearTokens();
+      return null;
+    }
+
+    return this.refreshAccessToken();
   }
 
   async ensureSignedIn(returnUrl: string): Promise<boolean> {
     await this.initialize();
     if (!this.enabled()) return true;
 
-    if (this.hasValidAccessToken()) {
+    if (await this.getValidAccessToken()) {
       await this.loadCurrentUser();
       return true;
     }
@@ -180,7 +210,7 @@ export class AuthService {
     try {
       const config = await firstValueFrom(this.http.get<AuthConfigResponse>(`${API}/auth/config`));
       this.config.set(config);
-      if (config.enabled && this.hasValidAccessToken()) {
+      if (config.enabled && await this.getValidAccessToken()) {
         await this.loadCurrentUser();
       }
     } finally {
@@ -189,7 +219,7 @@ export class AuthService {
   }
 
   private async loadCurrentUser(): Promise<void> {
-    if (!this.enabled() || !this.hasValidAccessToken()) return;
+    if (!this.enabled() || !await this.getValidAccessToken()) return;
 
     try {
       const user = await firstValueFrom(this.http.get<CurrentUserResponse>(`${API}/auth/me`));
@@ -201,7 +231,8 @@ export class AuthService {
   }
 
   private hasValidAccessToken(): boolean {
-    return this.getAccessToken() !== null;
+    const tokens = this.readTokens();
+    return !!tokens && (this.isAccessTokenUsable(tokens) || this.isRefreshTokenUsable(tokens));
   }
 
   private readTokens(): StoredTokenSet | null {
@@ -213,25 +244,96 @@ export class AuthService {
     }
   }
 
-  private storeTokens(response: TokenResponse): void {
+  private async refreshAccessToken(): Promise<string | null> {
+    this.refreshPromise ??= this.refreshAccessTokenCore();
+    try {
+      return await this.refreshPromise;
+    } finally {
+      this.refreshPromise = undefined;
+    }
+  }
+
+  private async refreshAccessTokenCore(): Promise<string | null> {
+    const tokens = this.readTokens();
+    if (!tokens?.refreshToken || !this.isRefreshTokenUsable(tokens)) {
+      this.clearSession();
+      return null;
+    }
+
+    const auth = this.config();
+    if (!auth?.enabled) return null;
+
+    try {
+      const body = new HttpParams()
+        .set('grant_type', 'refresh_token')
+        .set('client_id', auth.clientId)
+        .set('refresh_token', tokens.refreshToken);
+
+      const response = await firstValueFrom(this.http.post<TokenResponse>(
+        this.tokenUrl(auth),
+        body.toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }));
+
+      this.storeTokens(response, tokens);
+      return this.readTokens()?.accessToken ?? null;
+    } catch {
+      this.clearSession();
+      return null;
+    }
+  }
+
+  private storeTokens(response: TokenResponse, previous?: StoredTokenSet): void {
     if (!response.access_token) {
       throw new Error('Token response did not include an access token.');
     }
 
     const expiresIn = Math.max(response.expires_in ?? 3600, 60);
+    const refreshExpiresIn = response.refresh_expires_in;
     const tokens: StoredTokenSet = {
       accessToken: response.access_token,
-      idToken: response.id_token,
-      tokenType: response.token_type ?? 'Bearer',
+      idToken: response.id_token ?? previous?.idToken,
+      refreshToken: response.refresh_token ?? previous?.refreshToken,
+      tokenType: response.token_type ?? previous?.tokenType ?? 'Bearer',
       expiresAt: Date.now() + expiresIn * 1000
     };
+    if (tokens.refreshToken) {
+      tokens.refreshExpiresAt = refreshExpiresIn
+        ? Date.now() + Math.max(refreshExpiresIn, 60) * 1000
+        : previous?.refreshExpiresAt;
+    }
     sessionStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
+    this.scheduleRefresh(tokens);
   }
 
   private clearTokens(): void {
+    this.clearRefreshTimer();
     try {
       sessionStorage.removeItem(TOKEN_KEY);
     } catch {}
+  }
+
+  private scheduleRefresh(tokens: StoredTokenSet): void {
+    this.clearRefreshTimer();
+    if (!tokens.refreshToken || !this.enabled()) return;
+
+    const delay = Math.max(tokens.expiresAt - Date.now() - REFRESH_TIMER_BUFFER_MS, MIN_REFRESH_DELAY_MS);
+    this.refreshTimerId = setTimeout(() => {
+      void this.refreshAccessToken();
+    }, delay);
+  }
+
+  private clearRefreshTimer(): void {
+    if (!this.refreshTimerId) return;
+    clearTimeout(this.refreshTimerId);
+    this.refreshTimerId = undefined;
+  }
+
+  private isAccessTokenUsable(tokens: StoredTokenSet): boolean {
+    return tokens.expiresAt > Date.now() + ACCESS_TOKEN_EXPIRY_BUFFER_MS;
+  }
+
+  private isRefreshTokenUsable(tokens: StoredTokenSet): boolean {
+    return !!tokens.refreshToken && (!tokens.refreshExpiresAt || tokens.refreshExpiresAt > Date.now() + ACCESS_TOKEN_EXPIRY_BUFFER_MS);
   }
 
   private readAuthRequest(): StoredAuthRequest | null {

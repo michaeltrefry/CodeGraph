@@ -504,7 +504,7 @@ export class ApiService {
 
     const response = await fetch(`${API}/ask`, {
       method: 'POST',
-      headers: this.fetchHeaders({ 'Content-Type': 'application/json' }),
+      headers: await this.fetchHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
       signal
     });
@@ -551,7 +551,7 @@ export class ApiService {
       `${API}/projects/${encodeURIComponent(repo)}/reviews/${reviewRunId}/stream`,
       {
         method: 'GET',
-        headers: this.fetchHeaders({ Accept: 'text/event-stream' }),
+        headers: await this.fetchHeaders({ Accept: 'text/event-stream' }),
         signal
       });
 
@@ -589,7 +589,7 @@ export class ApiService {
       `${API}/projects/${encodeURIComponent(repo)}/code-review/${reviewRunId}/stream`,
       {
         method: 'GET',
-        headers: this.fetchHeaders({ Accept: 'text/event-stream' }),
+        headers: await this.fetchHeaders({ Accept: 'text/event-stream' }),
         signal
       });
 
@@ -643,8 +643,8 @@ export class ApiService {
     return params;
   }
 
-  private fetchHeaders(headers: Record<string, string>): Record<string, string> {
-    const token = this.auth.getAccessToken();
+  private async fetchHeaders(headers: Record<string, string>): Promise<Record<string, string>> {
+    const token = await this.auth.getValidAccessToken();
     return token
       ? { ...headers, Authorization: `Bearer ${token}` }
       : headers;
