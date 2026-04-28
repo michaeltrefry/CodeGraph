@@ -597,7 +597,7 @@ export class AdminLlmComponent implements OnInit {
       ...provider,
       displayName: this.providerName(provider.provider),
       endpointPlaceholder: this.endpointPlaceholder(provider.provider),
-      tokenMode: 'Preserve',
+      tokenMode: provider.hasToken ? 'Preserve' : 'Replace',
       tokenValue: '',
       newModel: '',
       saving: false,
