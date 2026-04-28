@@ -61,6 +61,8 @@ CODEGRAPH__AUTHOPTIONS__REQUIREHTTPSMETADATA=true
 CODEGRAPH__MCPOPTIONS__REQUIREPERSONALACCESSTOKEN=true
 ```
 
-Optional provider API keys can be added as individual secrets, for example `CODEGRAPH__ANALYSISOPTIONS__OPENAI__APIKEY` or `CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__ANTHROPIC__APIKEY`.
+LLM provider tokens, provider endpoints, model lists, default model selections, and analysis/review/assistant token caps are not production deployment secrets. After first boot, configure them from the admin Settings page under **LLM Configuration**; provider tokens are stored encrypted in MariaDB and are never returned by the API. If startup logs include `llm.config.deprecation`, those entries identify appsettings fallback values that should be saved through the admin page.
 
-The production compose override in `deploy/docker-compose.production.yml` replaces local builds with GHCR images for API, indexer, memory, metrics, jobs, and web. Keep shared MariaDB/RabbitMQ settings, repository/model mounts, TLS/reverse-proxy paths, provider API keys, and internal service auth values in GitHub Actions variables/secrets rather than hand-maintaining a bundled `.env` secret.
+The deploy workflow intentionally skips `CODEGRAPH__ANALYSISOPTIONS__...` production variables for LLM runtime settings. The only `AnalysisOptions` values that belong in production environment variables are non-LLM CODEGRAPH.md automation settings such as `AutoCommitDocs`, `AutoPushDocs`, and their commit author/message fields.
+
+The production compose override in `deploy/docker-compose.production.yml` replaces local builds with GHCR images for API, indexer, memory, metrics, jobs, and web. Keep shared MariaDB/RabbitMQ settings, repository mounts, TLS/reverse-proxy paths, and internal service auth values in GitHub Actions variables/secrets rather than hand-maintaining a bundled `.env` secret.

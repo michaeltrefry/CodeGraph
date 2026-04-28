@@ -115,19 +115,19 @@ Models <- Data <- Services <- Extractors.*
 
 ## AI Provider Support
 
-CodeGraph no longer assumes a single analysis backend.
+CodeGraph no longer assumes a single analysis backend. Runtime LLM configuration is managed from the admin Settings page under **LLM Configuration**.
 
-- `AnalysisOptions:DefaultProvider` selects the backend for repository/project analysis
 - Supported built-in providers are `anthropic`, `openai`, and `lmstudio`
-- `AnalysisOptions:Assistant` has its own provider/model settings for the Ask experience
 - LM Studio analysis targets OpenAI-compatible endpoints by default and is wired for tools like LM Studio
 
-Current config includes provider blocks for:
+The LLM Configuration page owns:
 
-- `CodeGraph:AnalysisOptions:Anthropic`
-- `CodeGraph:AnalysisOptions:OpenAi`
-- `CodeGraph:AnalysisOptions:LmStudio`
-- `CodeGraph:AnalysisOptions:Assistant`
+- Provider tokens, endpoint overrides, API versions, and model lists
+- Default Analysis provider/model and token/file/parallel caps
+- Default Review provider/model and review caps
+- Default Assistant provider/model, max tokens, and max turns
+
+`AnalysisOptions` still exists as a local-development and transitional fallback. Production operators should save LLM values through the admin page instead of carrying provider/model/tuning values in environment variables. Startup warnings tagged `llm.config.deprecation` identify fallback values that have not yet been migrated into the database.
 
 ## Prerequisites
 
@@ -161,10 +161,7 @@ Useful settings to know:
 | `CodeGraph:AssistantRetentionOptions:*` | Stale assistant run and assistant history/debug retention settings used by the jobs cleanup task |
 | `CodeGraph:RepositorySource:Provider` | Choose `Folder`, `GitHub`, or `GitLab` |
 | `CodeGraph:RepositorySource:Folder:RootPath` | Local repo root when using the folder provider |
-| `CodeGraph:AnalysisOptions:DefaultProvider` | Default analysis backend |
-| `CodeGraph:AnalysisOptions:Assistant:Provider` | Ask/assistant backend |
-| `CodeGraph:AnalysisOptions:OpenAi:*` | OpenAI analysis provider settings |
-| `CodeGraph:AnalysisOptions:LmStudio:*` | Local OpenAI-compatible provider settings |
+| LLM Configuration admin page | Runtime LLM provider tokens, endpoints, model lists, and Analysis/Review/Assistant defaults |
 | `CodeGraph:AnalysisOptions:AutoCommitDocs` | Auto-commit generated `CODEGRAPH.md` files |
 | `CodeGraph:AnalysisOptions:AutoPushDocs` | Auto-push generated doc commits |
 | `CodeGraph:TsPort` | TypeScript analyzer sidecar port |

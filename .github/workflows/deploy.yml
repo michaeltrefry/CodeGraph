@@ -179,12 +179,6 @@ jobs:
         if: steps.deploy-gate.outputs.enabled == 'true'
         env:
           ACTIONS_VARS_JSON: ${{ toJson(vars) }}
-          SECRET_ANALYSIS_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__APIKEY }}
-          SECRET_ANALYSIS_ASSISTANT_ANTHROPIC_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__ANTHROPIC__APIKEY }}
-          SECRET_ANALYSIS_ASSISTANT_LMSTUDIO_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__LMSTUDIO__APIKEY }}
-          SECRET_ANALYSIS_ASSISTANT_OPENAI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__ASSISTANT__OPENAI__APIKEY }}
-          SECRET_ANALYSIS_LMSTUDIO_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__LMSTUDIO__APIKEY }}
-          SECRET_ANALYSIS_OPENAI_API_KEY: ${{ secrets.CODEGRAPH__ANALYSISOPTIONS__OPENAI__APIKEY }}
           SECRET_INTERNAL_SERVICE_AUTH_HMAC_KEY: ${{ secrets.CODEGRAPH__INTERNALSERVICEAUTH__HMACKEY }}
           SECRET_RABBITMQ_PASSWORD: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__PASSWORD }}
           SECRET_RABBITMQ_USERNAME: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__USERNAME }}
@@ -264,6 +258,14 @@ jobs:
               "USEJSONOBJECTRESPONSEFORMAT": "UseJsonObjectResponseFormat",
           }
 
+          analysis_options_appsettings_allowlist = {
+              "AUTOCOMMITDOCS",
+              "AUTOPUSHDOCS",
+              "AUTOCOMMITMESSAGE",
+              "AUTOCOMMITAUTHORNAME",
+              "AUTOCOMMITAUTHOREMAIL",
+          }
+
           pass_through_names = {
               "ASPNETCORE_ENVIRONMENT",
               "CODEGRAPHAPI_DOCKER_HTTPS_PORT",
@@ -279,12 +281,6 @@ jobs:
           }
 
           secret_mappings = {
-              "CodeGraph__AnalysisOptions__ApiKey": "SECRET_ANALYSIS_API_KEY",
-              "CodeGraph__AnalysisOptions__Assistant__Anthropic__ApiKey": "SECRET_ANALYSIS_ASSISTANT_ANTHROPIC_API_KEY",
-              "CodeGraph__AnalysisOptions__Assistant__LmStudio__ApiKey": "SECRET_ANALYSIS_ASSISTANT_LMSTUDIO_API_KEY",
-              "CodeGraph__AnalysisOptions__Assistant__OpenAi__ApiKey": "SECRET_ANALYSIS_ASSISTANT_OPENAI_API_KEY",
-              "CodeGraph__AnalysisOptions__LmStudio__ApiKey": "SECRET_ANALYSIS_LMSTUDIO_API_KEY",
-              "CodeGraph__AnalysisOptions__OpenAi__ApiKey": "SECRET_ANALYSIS_OPENAI_API_KEY",
               "CodeGraph__InternalServiceAuth__HmacKey": "SECRET_INTERNAL_SERVICE_AUTH_HMAC_KEY",
               "CodeGraph__RabbitMqOptions__Password": "SECRET_RABBITMQ_PASSWORD",
               "CodeGraph__RabbitMqOptions__Username": "SECRET_RABBITMQ_USERNAME",
@@ -308,6 +304,16 @@ jobs:
 
               return "CodeGraph__" + "__".join(converted)
 
+          def is_production_llm_runtime_setting(name):
+              if not name.upper().startswith("CODEGRAPH__ANALYSISOPTIONS__"):
+                  return False
+
+              parts = name.upper().split("__")[2:]
+              if not parts:
+                  return False
+
+              return parts[0] not in analysis_options_appsettings_allowlist
+
           def dotenv_value(value):
               return "'" + value.replace("'", "\\'") + "'"
 
@@ -321,6 +327,9 @@ jobs:
               if value is None or value == "":
                   continue
               if name.startswith("CODEGRAPH_DEPLOY"):
+                  continue
+              if is_production_llm_runtime_setting(name):
+                  print(f"::notice::Skipping {name}; configure LLM providers, models, and caps in the LLM Configuration admin page.")
                   continue
               if name.startswith("CODEGRAPH__"):
                   entries[compose_key(name)] = value
