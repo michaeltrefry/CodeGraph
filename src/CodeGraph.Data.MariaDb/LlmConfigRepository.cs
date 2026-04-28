@@ -216,14 +216,14 @@ public sealed class LlmConfigRepository : ILlmConfigRepository
 
     private async Task<Dictionary<string, LlmConfigEntryEntity>> GetEntriesAsync(IEnumerable<string> keys, CancellationToken ct)
     {
-        var keyArray = keys.ToArray();
-        foreach (var key in keyArray)
+        var keyList = keys.ToList();
+        foreach (var key in keyList)
         {
             LlmConfigKeys.RequireKnownKey(key);
         }
 
         return await db.LlmConfig.AsNoTracking()
-            .Where(c => keyArray.Contains(c.ConfigKey))
+            .Where(c => keyList.Contains(c.ConfigKey))
             .ToDictionaryAsync(c => c.ConfigKey, StringComparer.OrdinalIgnoreCase, ct);
     }
 

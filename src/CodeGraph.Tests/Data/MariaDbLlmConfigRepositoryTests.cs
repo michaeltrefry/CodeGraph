@@ -26,6 +26,36 @@ public class MariaDbLlmConfigRepositoryTests
     }
 
     [Fact]
+    public async Task LlmConfigRepository_ReadsSectionEntriesWithInMemoryProvider()
+    {
+        await using var context = new CodeGraphDbContext(new DbContextOptionsBuilder<CodeGraphDbContext>()
+            .UseInMemoryDatabase($"llm-config-read-{Guid.NewGuid():N}")
+            .Options);
+        var store = new LlmConfigRepository(context, new PassthroughEncryptor());
+
+        context.LlmConfig.AddRange(
+            new LlmConfigEntryEntity
+            {
+                ConfigKey = LlmConfigKeys.ReviewDefaultProvider,
+                ConfigValue = "openai",
+                UpdatedAtUtc = DateTime.UtcNow
+            },
+            new LlmConfigEntryEntity
+            {
+                ConfigKey = LlmConfigKeys.ReviewMaxFindings,
+                ConfigValue = "12",
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+        await context.SaveChangesAsync();
+
+        var review = await store.GetReviewAsync();
+
+        review.ShouldNotBeNull();
+        review.DefaultProvider.ShouldBe("openai");
+        review.MaxFindings.ShouldBe(12);
+    }
+
+    [Fact]
     public async Task LlmConfigRepository_RoundTripsSectionsWhenConnectionIsConfigured()
     {
         var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
@@ -217,5 +247,12 @@ public class MariaDbLlmConfigRepositoryTests
         await using var conn = new MySqlConnection(builder.ConnectionString);
         await conn.OpenAsync();
         await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
+    }
+
+    private sealed class PassthroughEncryptor : IAesEncryptor
+    {
+        public string Encrypt(string plainText) => plainText;
+
+        public string Decrypt(string encrypted) => encrypted;
     }
 }
