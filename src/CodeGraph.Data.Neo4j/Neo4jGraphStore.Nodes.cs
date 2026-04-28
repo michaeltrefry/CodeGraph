@@ -112,7 +112,7 @@ public partial class Neo4jGraphStore
             batchNum++;
             var batchSw = Stopwatch.StartNew();
 
-            var batchResult = new List<(string qn, long id)>();
+            var batchResult = new List<(string project, string qn, long id)>();
 
             foreach (var group in batch.GroupBy(n => n.Label))
             {
@@ -149,15 +149,18 @@ public partial class Neo4jGraphStore
                             node.doNotTrust = n.doNotTrust
                         SET node += n.promotedProperties
                         SET node{nodeLabels}
-                        RETURN node.qualifiedName AS qualifiedName, node.appId AS appId
+                        RETURN node.project AS project, node.qualifiedName AS qualifiedName, node.appId AS appId
                         ";
 
                     var resultCursor = await tx.RunAsync(cypher,
                         new { nodes = nodeParams });
 
-                    var pairs = new List<(string qn, long id)>();
+                    var pairs = new List<(string project, string qn, long id)>();
                     await foreach (var record in resultCursor)
-                        pairs.Add((record["qualifiedName"].As<string>(), record["appId"].As<long>()));
+                        pairs.Add((
+                            record["project"].As<string>(),
+                            record["qualifiedName"].As<string>(),
+                            record["appId"].As<long>()));
                     return pairs;
                 });
 
@@ -167,8 +170,8 @@ public partial class Neo4jGraphStore
             logger.LogInformation("[Timing] Neo4j node batch {BatchNum} ({BatchSize} nodes): {ElapsedMs}ms",
                 batchNum, batch.Count, batchSw.ElapsedMilliseconds);
 
-            foreach (var (qn, id) in batchResult)
-                result[qn] = id;
+            foreach (var (project, qn, id) in batchResult)
+                result[GraphNodeKey.Create(project, qn)] = id;
         }
 
         return result;

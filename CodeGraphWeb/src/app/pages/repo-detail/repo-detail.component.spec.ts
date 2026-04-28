@@ -85,6 +85,7 @@ function createComponent() {
   const securitySubjects = new Map<string, Subject<ProjectSecurityResponse>>();
   const readmeSubjects = new Map<string, Subject<{ content: string }>>();
   const batchSubjects = new Map<string, Subject<AnalysisBatchStatus>>();
+  const destroyCallbacks: Array<() => void> = [];
 
   const getSubject = <T>(subjects: Map<string, Subject<T>>, name: string) => {
     const subject = subjects.get(name) ?? new Subject<T>();
@@ -107,6 +108,7 @@ function createComponent() {
       infoCount: 0,
       diagnostics: []
     })),
+    startRepositoryReview: vi.fn().mockReturnValue(of({ reviewRunId: 100, status: 'queued' })),
     reAnalyze: vi.fn(),
     deleteProject: vi.fn(),
     streamRepositoryReview: vi.fn()
@@ -123,7 +125,7 @@ function createComponent() {
       { provide: Router, useValue: { navigate: vi.fn() } },
       { provide: ActivatedRoute, useValue: { paramMap: paramMap$.asObservable(), queryParamMap: queryParamMap$.asObservable() } },
       { provide: DomSanitizer, useValue: sanitizer },
-      { provide: DestroyRef, useValue: { onDestroy: vi.fn() } }
+      { provide: DestroyRef, useValue: { onDestroy: vi.fn((callback: () => void) => destroyCallbacks.push(callback)) } }
     ]
   });
 
@@ -136,7 +138,9 @@ function createComponent() {
     healthSubjects,
     securitySubjects,
     readmeSubjects,
-    batchSubjects
+    batchSubjects,
+    api,
+    destroyCallbacks
   };
 }
 
@@ -175,5 +179,36 @@ describe('RepoDetailComponent', () => {
     expect(component.readme()).toBe('repo-b readme');
     expect(component.batchStatus()?.repo).toBe('repo-b');
     expect(component.loading()).toBe(false);
+  });
+
+  it('does not abort an in-flight repository review stream when the component is destroyed', async () => {
+    const { component, api, destroyCallbacks } = createComponent();
+    let capturedSignal: AbortSignal | undefined;
+    let releaseStream: (() => void) | undefined;
+
+    api.streamRepositoryReview.mockImplementation(async function* (_repo: string, _reviewRunId: number, signal?: AbortSignal) {
+      capturedSignal = signal;
+      yield {
+        type: 'progress',
+        content: {
+          reviewRunId: 100,
+          status: 'running',
+          message: 'Review is still running.'
+        }
+      };
+      await new Promise<void>(resolve => { releaseStream = resolve; });
+    });
+
+    component.name.set('repo-a');
+    component.startRepositoryReview();
+    await Promise.resolve();
+
+    expect(capturedSignal).toBeDefined();
+    destroyCallbacks.forEach(callback => callback());
+
+    expect(capturedSignal!.aborted).toBe(false);
+
+    releaseStream?.();
+    await Promise.resolve();
   });
 });

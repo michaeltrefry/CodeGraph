@@ -1,4 +1,4 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiService } from '../../core/api.service';
@@ -70,13 +70,8 @@ async function createComponent(health: ProjectHealthResponse) {
   return fixture;
 }
 
-function openDetails(fixture: ComponentFixture<RepoDetailHealthComponent>) {
-  fixture.componentInstance.toggleHealthDetails();
-  fixture.detectChanges();
-}
-
 describe('RepoDetailHealthComponent', () => {
-  it('keeps summary stats in the header and hides details by default', async () => {
+  it('keeps summary stats in the header and renders details inline', async () => {
     const fixture = await createComponent(createHealth());
     const text = fixture.nativeElement.textContent as string;
 
@@ -84,13 +79,12 @@ describe('RepoDetailHealthComponent', () => {
     expect(text).toContain('files');
     expect(text).toContain('hotspots');
     expect(text).toContain('alerts');
-    expect(text).toContain('Show details');
-    expect(text).not.toContain('Project vitality');
+    expect(text).not.toContain('Show details');
+    expect(text).toContain('Project vitality');
   });
 
-  it('renders repository vitality metrics and monthly activity bars when expanded', async () => {
+  it('renders repository vitality metrics and monthly activity bars', async () => {
     const fixture = await createComponent(createHealth());
-    openDetails(fixture);
     const text = fixture.nativeElement.textContent as string;
 
     expect(text).toContain('Project vitality');
@@ -111,7 +105,6 @@ describe('RepoDetailHealthComponent', () => {
         velocityChangePercent: -12.5
       }
     }));
-    openDetails(fixture);
 
     const text = fixture.nativeElement.textContent as string;
 
@@ -127,7 +120,6 @@ describe('RepoDetailHealthComponent', () => {
         monthlyCommits: []
       }
     }));
-    openDetails(fixture);
 
     const text = fixture.nativeElement.textContent as string;
 
@@ -135,7 +127,7 @@ describe('RepoDetailHealthComponent', () => {
     expect(fixture.nativeElement.querySelectorAll('.rdh-activity-col').length).toBe(0);
   });
 
-  it('shows project-level AI analysis inline when details are expanded', async () => {
+  it('shows project-level AI analysis inline', async () => {
     const fixture = await createComponent(createHealth({
       projectHealths: [
         {
@@ -162,7 +154,6 @@ describe('RepoDetailHealthComponent', () => {
         }
       ]
     }));
-    openDetails(fixture);
 
     const text = fixture.nativeElement.textContent as string;
 

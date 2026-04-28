@@ -150,7 +150,9 @@ public class MySqlGraphStore(
     public async Task<long> UpsertNodeAsync(GraphNode node)
     {
         var ids = await UpsertNodeBatchAsync([node]);
-        return ids.TryGetValue(Truncate(node.QualifiedName, 1000), out var id) ? id : 0;
+        return ids.TryGetValue(GraphNodeKey.Create(node.Project, Truncate(node.QualifiedName, 1000)), out var id)
+            ? id
+            : 0;
     }
 
     public async Task<Dictionary<string, long>> UpsertNodeBatchAsync(
@@ -212,13 +214,13 @@ public class MySqlGraphStore(
 
             var projects = batch.Select(n => n.Project).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var qualifiedNames = batch.Select(n => Truncate(n.QualifiedName, 1000)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var rows = await conn.QueryAsync<(long id, string qualified_name)>(
-                "SELECT id, qualified_name FROM nodes WHERE project IN @Projects AND qualified_name IN @QualifiedNames",
+            var rows = await conn.QueryAsync<(long id, string project, string qualified_name)>(
+                "SELECT id, project, qualified_name FROM nodes WHERE project IN @Projects AND qualified_name IN @QualifiedNames",
                 new { Projects = projects, QualifiedNames = qualifiedNames });
 
             foreach (var row in rows)
             {
-                result[row.qualified_name] = row.id;
+                result[GraphNodeKey.Create(row.project, row.qualified_name)] = row.id;
             }
         }
 

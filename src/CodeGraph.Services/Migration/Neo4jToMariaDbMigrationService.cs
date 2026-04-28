@@ -195,7 +195,7 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
             foreach (var sourceNode in projectNodes)
             {
                 var qualifiedName = Truncate(sourceNode.QualifiedName, 1000);
-                if (!upsertedIds.TryGetValue(qualifiedName, out var targetId))
+                if (!upsertedIds.TryGetValue(GraphNodeKey.Create(sourceNode.Project, qualifiedName), out var targetId))
                 {
                     var targetNode = await _targetStore.FindNodeByQualifiedNameAsync(sourceNode.Project, qualifiedName);
                     if (targetNode is null)

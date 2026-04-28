@@ -220,6 +220,115 @@ public class CrossRepoLinkerTests
     }
 
     [Fact]
+    public async Task Skips_Ambiguous_HttpRoute_Matches_AcrossProjects()
+    {
+        _store.AddProject("ProjectA");
+        _store.AddProject("ProjectB");
+        _store.AddProject("ProjectC");
+
+        foreach (var project in new[] { "ProjectA", "ProjectC" })
+        {
+            _store.AddNode(new GraphNode
+            {
+                Project = project,
+                Label = NodeLabel.Route,
+                Name = "GET api/status",
+                QualifiedName = $"route:{project}:GET:api/status",
+                Properties = new()
+                {
+                    ["http_method"] = "GET",
+                    ["route_template"] = "api/status"
+                }
+            });
+        }
+
+        var callerMethod = _store.AddNode(new GraphNode
+        {
+            Project = "ProjectB",
+            Label = NodeLabel.Method,
+            Name = "GetStatus",
+            QualifiedName = "ProjectB.StatusClient.GetStatus"
+        });
+
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "ProjectB",
+            SourceId = callerMethod,
+            TargetId = 0,
+            Type = EdgeType.HTTP_CALLS,
+            Properties = new()
+            {
+                ["http_method"] = "GET",
+                ["url_pattern"] = "api/status"
+            }
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.Count.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Uses_HttpCall_TargetRouteProjectHint_ToDisambiguate()
+    {
+        _store.AddProject("ProjectA");
+        _store.AddProject("ProjectB");
+        _store.AddProject("ProjectC");
+
+        foreach (var project in new[] { "ProjectA", "ProjectC" })
+        {
+            _store.AddNode(new GraphNode
+            {
+                Project = project,
+                Label = NodeLabel.Route,
+                Name = "GET api/status",
+                QualifiedName = $"route:{project}:GET:api/status",
+                Properties = new()
+                {
+                    ["http_method"] = "GET",
+                    ["route_template"] = "api/status"
+                }
+            });
+        }
+
+        var callerMethod = _store.AddNode(new GraphNode
+        {
+            Project = "ProjectB",
+            Label = NodeLabel.Method,
+            Name = "GetStatus",
+            QualifiedName = "ProjectB.StatusClient.GetStatus"
+        });
+
+        var targetStub = _store.AddNode(new GraphNode
+        {
+            Project = "ProjectB",
+            Label = NodeLabel.Route,
+            Name = "GET api/status",
+            QualifiedName = "route:ProjectA:GET:api/status"
+        });
+
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "ProjectB",
+            SourceId = callerMethod,
+            TargetId = targetStub,
+            Type = EdgeType.HTTP_CALLS,
+            Properties = new()
+            {
+                ["http_method"] = "GET",
+                ["url_pattern"] = "api/status"
+            }
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.Count.ShouldBe(1);
+        _store.CrossEdges[0].SourceProject.ShouldBe("ProjectB");
+        _store.CrossEdges[0].TargetProject.ShouldBe("ProjectA");
+        _store.CrossEdges[0].Type.ShouldBe(EdgeType.HTTP_CALLS);
+    }
+
+    [Fact]
     public async Task Links_GatewayCalls_UsingExactServiceName_Only()
     {
         _store.AddProject("OrdersApi");

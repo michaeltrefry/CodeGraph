@@ -30,13 +30,6 @@
             </div>
           </div>
         }
-
-        @if (hasExpandableContent()) {
-          <button class="rdh-toggle" type="button" (click)="toggleHealthDetails()">
-            {{ healthDetailsOpen() ? 'Hide details' : 'Show details' }}
-            <span class="rdh-toggle-caret">{{ healthDetailsOpen() ? '▲' : '▼' }}</span>
-          </button>
-        }
       </div>
 
       @if (dotnetSupport(); as support) {
@@ -89,7 +82,7 @@
       }
     </header>
 
-    @if (healthDetailsOpen()) {
+    @if (hasDetailContent()) {
       <div class="rdh-body">
         @if (h.securitySummary; as secSum) {
           <section class="rdh-section">

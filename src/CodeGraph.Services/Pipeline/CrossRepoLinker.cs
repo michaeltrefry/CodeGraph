@@ -80,9 +80,15 @@ public class CrossRepoLinker
         var projects = await _store.ListRepositoriesAsync();
         var projectNames = projects.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Batch-fetch all source nodes for HTTP_CALLS edges
-        var sourceNodeIds = httpCallEdges.Select(e => e.SourceId).Distinct().ToList();
-        var sourceNodeById = await _store.FindNodesByIdBatchAsync(sourceNodeIds);
+        // Batch-fetch endpoint nodes for HTTP_CALLS edges. The source tells us
+        // where the call came from; the target stub may carry a concrete route
+        // project hint such as route:OrdersApi:GET:api/orders/{id}.
+        var httpNodeIds = httpCallEdges
+            .SelectMany(e => new[] { e.SourceId, e.TargetId })
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+        var nodeById = await _store.FindNodesByIdBatchAsync(httpNodeIds);
 
         foreach (var edge in httpCallEdges)
         {
@@ -97,7 +103,7 @@ public class CrossRepoLinker
                 if (targetProject is null)
                     continue;
 
-                if (!sourceNodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
+                if (!nodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
                 if (sourceNode.Project == targetProject)
                     continue;
 
@@ -123,10 +129,41 @@ public class CrossRepoLinker
 
             // Try exact match first, then pattern match
             var matchedRoutes = FindMatchingRoutes(normalizedCall, httpMethod, urlPattern, routeLookup);
+            var targetNode = nodeById.GetValueOrDefault(edge.TargetId);
+            var targetProjectHint = ResolveHttpTargetProject(
+                edge.Properties.GetValueOrDefault("service_name")?.ToString(),
+                requestDto,
+                targetNode,
+                projectNames);
+
+            if (targetProjectHint is not null)
+            {
+                matchedRoutes = matchedRoutes
+                    .Where(route => route.Project.Equals(targetProjectHint, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+            else
+            {
+                var matchingProjects = matchedRoutes
+                    .Select(route => route.Project)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (matchingProjects.Count > 1)
+                {
+                    _logger.LogDebug(
+                        "Skipping ambiguous HTTP route match for {Method} {UrlPattern}: matched {ProjectCount} projects ({Projects})",
+                        httpMethod,
+                        urlPattern,
+                        matchingProjects.Count,
+                        string.Join(", ", matchingProjects.Take(10)));
+                    continue;
+                }
+            }
 
             foreach (var route in matchedRoutes)
             {
-                if (!sourceNodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
+                if (!nodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
                 if (sourceNode.Project == route.Project)
                     continue;
 
@@ -366,11 +403,60 @@ public class CrossRepoLinker
     private static string? ResolveGatewayTargetProject(
         string? serviceName, string dtoTypeQN, HashSet<string> projectNames)
     {
-        if (serviceName is not null && projectNames.Contains(serviceName))
-            return serviceName;
+        var serviceProject = ResolveProjectName(serviceName, projectNames);
+        if (serviceProject is not null)
+            return serviceProject;
 
         // Fall back to namespace convention
         return DeriveProjectFromDtoType(dtoTypeQN, projectNames);
+    }
+
+    private static string? ResolveHttpTargetProject(
+        string? serviceName,
+        string? requestDto,
+        GraphNode? targetNode,
+        HashSet<string> projectNames)
+    {
+        var serviceProject = ResolveProjectName(serviceName, projectNames);
+        if (serviceProject is not null)
+            return serviceProject;
+
+        if (targetNode is not null)
+        {
+            var routeProject = TryGetProjectFromRouteQualifiedName(targetNode.QualifiedName);
+            if (routeProject is not null && projectNames.Contains(routeProject))
+                return routeProject;
+        }
+
+        return string.IsNullOrWhiteSpace(requestDto)
+            ? null
+            : DeriveProjectFromDtoType(requestDto, projectNames);
+    }
+
+    private static string? ResolveProjectName(string? projectName, HashSet<string> projectNames)
+    {
+        if (string.IsNullOrWhiteSpace(projectName))
+            return null;
+
+        if (projectNames.Contains(projectName))
+            return projectName;
+
+        var tcProjectName = $"TC.{projectName}";
+        return projectNames.Contains(tcProjectName)
+            ? tcProjectName
+            : null;
+    }
+
+    private static string? TryGetProjectFromRouteQualifiedName(string qualifiedName)
+    {
+        var parts = qualifiedName.Split(':', 4);
+        if (parts.Length < 4 || !parts[0].Equals("route", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var project = parts[1];
+        return string.IsNullOrWhiteSpace(project) || project == "*"
+            ? null
+            : project;
     }
 
     /// <summary>
