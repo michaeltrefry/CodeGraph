@@ -6,33 +6,82 @@ import { AuthService } from '../../core/auth.service';
   selector: 'app-auth-callback',
   standalone: true,
   template: `
-    <div class="auth-callback">
-      <h1>{{ error() ? 'Sign-in failed' : 'Signing you in' }}</h1>
+    <main class="auth-shell">
+      <section class="cg-card cg-card-padded status-card">
+        <span class="cg-chip cg-chip-accent">Secure sign-in</span>
+        @if (!error()) {
+          <div class="status-spinner" aria-hidden="true"></div>
+        }
+        <h1>{{ error() ? 'Sign-in failed' : 'Signing you in' }}</h1>
       @if (error()) {
-        <p>{{ error() }}</p>
-        <button type="button" (click)="retry()">Try again</button>
+          <p class="status-error">{{ error() }}</p>
+          <button class="cg-btn primary" type="button" (click)="retry()">Try again</button>
       } @else {
-        <p>Finishing the OAuth handshake.</p>
+          <p class="status-copy">Finishing the OAuth handshake and taking you back into CodeGraph.</p>
       }
-    </div>
+      </section>
+    </main>
   `,
   styles: [`
-    :host { display: block; }
-    .auth-callback {
-      max-width: 420px;
-      margin: 12vh auto;
-      padding: 1.25rem;
+    :host {
+      display: block;
+      min-height: 100%;
+      background: var(--bg);
     }
-    h1 { margin: 0 0 0.5rem; font-size: 1.35rem; }
-    p { color: var(--color-text-muted); }
-    button {
-      min-height: 36px;
-      border: 1px solid var(--color-border-strong);
-      border-radius: 6px;
-      background: var(--color-surface);
-      color: var(--color-text);
-      cursor: pointer;
-      padding: 0.45rem 0.8rem;
+
+    .auth-shell {
+      min-height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .status-card {
+      width: min(460px, 100%);
+      align-items: center;
+      display: grid;
+      gap: 16px;
+      justify-items: center;
+      text-align: center;
+    }
+
+    .status-spinner {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 3px solid var(--accent-weak);
+      border-top-color: var(--accent);
+      animation: spin 0.85s linear infinite;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: var(--fs-h1);
+      line-height: 1.15;
+      color: var(--text);
+    }
+
+    .status-copy,
+    .status-error {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .status-error {
+      color: var(--sem-red);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .status-spinner {
+        animation: none;
+      }
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
   `]
 })

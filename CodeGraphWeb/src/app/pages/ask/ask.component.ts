@@ -1,6 +1,7 @@
-import { Component, inject, signal, ElementRef, ViewChild } from '@angular/core';
+import { Component, ElementRef, inject, OnDestroy, signal, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../core/api.service';
+import { MarkdownComponent } from '../../shared/markdown.component';
 
 interface MessageChunk {
   text: string;
@@ -17,24 +18,32 @@ interface Message {
 
 @Component({
   selector: 'app-ask',
-  imports: [FormsModule],
+  imports: [FormsModule, MarkdownComponent],
   templateUrl: './ask.component.html',
   styleUrl: './ask.component.scss'
 })
-export class AskComponent {
+export class AskComponent implements OnDestroy {
   @ViewChild('messagesEnd') private messagesEnd!: ElementRef;
+  private static readonly CopyFeedbackMs = 1400;
 
   private api = inject(ApiService);
 
   question = signal('');
   messages = signal<Message[]>([]);
   streaming = signal(false);
+  copiedMessageIndex = signal<number | null>(null);
   readonly suggestedQuestions = [
     'What are the main entry points in this codebase?',
     'How does data flow from an API endpoint to persistence?',
     'Which classes or services depend on a given component?'
   ];
   private abortController: AbortController | null = null;
+  private copyFeedbackTimeoutId: number | null = null;
+
+  ngOnDestroy(): void {
+    this.abortController?.abort();
+    this.clearCopyFeedbackTimeout();
+  }
 
   async send() {
     const q = this.question().trim();
@@ -94,7 +103,7 @@ export class AskComponent {
             return [...msgs.slice(0, -1), {
               ...last,
               toolsUsed: [...last.toolsUsed, event.content],
-              chunks: [...last.chunks, { text: `🔧 ${event.content}`, isToolUse: true }]
+              chunks: [...last.chunks, { text: event.content, isToolUse: true }]
             }];
           });
           this.scheduleScroll();
@@ -133,6 +142,16 @@ export class AskComponent {
     this.abortController?.abort();
   }
 
+  startNewChat() {
+    if (this.streaming()) {
+      return;
+    }
+
+    this.messages.set([]);
+    this.question.set('');
+    this.copiedMessageIndex.set(null);
+  }
+
   onKeydown(event: KeyboardEvent) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -161,22 +180,39 @@ export class AskComponent {
     return msg.chunks.filter(c => !c.isToolUse).map(c => c.text).join('');
   }
 
-  renderMarkdown(text: string): string {
-    // Basic markdown → HTML (no dependency needed for this level of formatting)
-    const escaped = text
-      .replace(/```([\s\S]*?)```/g, (_m, code) => `<pre><code>${this.esc(code)}</code></pre>`)
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-      .replace(/^### (.+)$/gm, '<h4>$1</h4>')
-      .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-      .replace(/^# (.+)$/gm, '<h2>$1</h2>')
-      .replace(/^- (.+)$/gm, '<li>$1</li>')
-      .replace(/\n\n/g, '<br><br>')
-      .replace(/\n/g, '<br>');
-    return escaped;
+  formatToolCallName(value: string): string {
+    const raw = value.trim();
+    if (!raw) {
+      return 'tool';
+    }
+
+    const firstLine = raw.split(/\r?\n/, 1)[0].trim();
+    return firstLine.replace(/^mcp__codegraph__/, '');
   }
 
-  private esc(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  async copyAssistantText(markdown: string, index: number): Promise<void> {
+    const normalized = markdown.trim();
+    if (!normalized) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(normalized);
+      this.copiedMessageIndex.set(index);
+      this.clearCopyFeedbackTimeout();
+      this.copyFeedbackTimeoutId = window.setTimeout(() => {
+        this.copiedMessageIndex.set(null);
+        this.copyFeedbackTimeoutId = null;
+      }, AskComponent.CopyFeedbackMs);
+    } catch {
+      this.copiedMessageIndex.set(null);
+    }
+  }
+
+  private clearCopyFeedbackTimeout() {
+    if (this.copyFeedbackTimeoutId !== null) {
+      window.clearTimeout(this.copyFeedbackTimeoutId);
+      this.copyFeedbackTimeoutId = null;
+    }
   }
 }

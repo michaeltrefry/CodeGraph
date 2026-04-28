@@ -14,6 +14,7 @@ import {
   NodeDetailResponse,
   GraphOverviewResponse,
   MemoryClaimBundle,
+  MemoryDiagnostics,
   MemoryEntityBundle,
   MemoryGraphResponse,
   MemorySearchResult,
@@ -226,6 +227,13 @@ export class ApiService {
   getMemoryEntityGraph(id: string, neighborLimit = 200): Observable<MemoryGraphResponse> {
     const params = new HttpParams().set('neighborLimit', neighborLimit);
     return this.http.get<MemoryGraphResponse>(`${API}/memory/entities/${encodeURIComponent(id)}/graph`, { params });
+  }
+
+  getMemoryDiagnostics(staleAfterMinutes = 15, sampleLimit = 10): Observable<MemoryDiagnostics> {
+    const params = new HttpParams()
+      .set('staleAfterMinutes', staleAfterMinutes)
+      .set('sampleLimit', sampleLimit);
+    return this.http.get<MemoryDiagnostics>(`${API}/memory/diagnostics`, { params });
   }
 
   searchMemory(query: string, entityLimit = 8, claimLimit = 8): Observable<MemorySearchResult> {
@@ -469,6 +477,13 @@ export class ApiService {
 
   getWikiAttachments(section: string, path: string): Observable<WikiAttachment[]> {
     return this.http.get<WikiAttachment[]>(`${API}/wiki/${encodeURIComponent(section)}/${path}/attachments`);
+  }
+
+  downloadWikiAttachment(downloadUrl: string): Observable<Blob> {
+    const url = downloadUrl.startsWith('http')
+      ? downloadUrl
+      : `${environment.baseUrl}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
+    return this.http.get(url, { responseType: 'blob' });
   }
 
   uploadWikiAttachment(section: string, path: string, file: File): Observable<WikiAttachment> {

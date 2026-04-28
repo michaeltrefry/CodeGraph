@@ -23,51 +23,52 @@ interface PromptGroupState {
   standalone: true,
   imports: [FormsModule],
   template: `
-    <div class="page-header">
+    <header class="adm-page-header">
       <div>
-        <h2>Agent Prompts</h2>
-        <p class="subtitle">Edit system prompts used by analysis, reviews, and Ask.</p>
+        <h1>Agent prompts</h1>
+        <p>Edit system prompts used by analysis, reviews, and Ask.</p>
       </div>
       @if (!loading() && !error()) {
-        <span class="count-pill">{{ promptCount() }} prompts</span>
+        <span class="cg-chip cg-chip-mono">{{ promptCount() }} prompts</span>
       }
-    </div>
+    </header>
 
     @if (loading()) {
-      <div class="section-card muted">Loading prompts...</div>
+      <div class="adm-card cg-muted">Loading prompts...</div>
     } @else if (error()) {
-      <div class="banner error">{{ error() }}</div>
+      <div class="adm-banner err">{{ error() }}</div>
     } @else {
       <div class="group-list">
         @for (group of groups(); track group.category) {
           <section class="prompt-group">
-            <div class="section-header">
+            <header class="prompt-group-head">
               <div>
-                <div class="eyebrow">Workflow</div>
+                <div class="adm-section-label">Workflow</div>
                 <h3>{{ group.categoryDisplayName }}</h3>
               </div>
-              <span class="count-pill">{{ group.prompts.length }}</span>
-            </div>
+              <span class="cg-chip cg-chip-mono">{{ group.prompts.length }}</span>
+            </header>
 
             <div class="prompt-grid">
               @for (prompt of group.prompts; track prompt.key) {
-                <article class="section-card prompt-card">
+                <article class="adm-card prompt-card">
                   <header class="prompt-head">
                     <div>
                       <h4>{{ prompt.displayName }}</h4>
                       <p>{{ prompt.description }}</p>
                     </div>
-                    <span class="status-pill" [class.active]="prompt.hasOverride">
+                    <span class="cg-chip" [class.cg-chip-accent]="prompt.hasOverride">
                       {{ prompt.hasOverride ? 'Override' : 'Default' }}
                     </span>
                   </header>
 
                   <div class="meta-row">
-                    <code>{{ prompt.key }}</code>
+                    <span class="cg-chip cg-chip-mono">{{ prompt.key }}</span>
                     <span>{{ formatAudit(prompt) }}</span>
                   </div>
 
                   <textarea
+                    class="adm-textarea prompt-textarea"
                     [ngModel]="prompt.draftText"
                     (ngModelChange)="updateDraft(prompt.key, $event)"
                     rows="12"
@@ -75,16 +76,16 @@ interface PromptGroupState {
                   ></textarea>
 
                   @if (prompt.error) {
-                    <div class="banner error">{{ prompt.error }}</div>
+                    <div class="adm-banner err">{{ prompt.error }}</div>
                   }
                   @if (prompt.message) {
-                    <div class="banner success">{{ prompt.message }}</div>
+                    <div class="adm-banner ok">{{ prompt.message }}</div>
                   }
 
                   <div class="actions">
-                    <button type="button" class="primary" (click)="save(prompt)" [disabled]="prompt.saving || !isDirty(prompt)">Save</button>
-                    <button type="button" (click)="reset(prompt)" [disabled]="prompt.saving || !prompt.hasOverride">Reset</button>
-                    <button type="button" (click)="revert(prompt)" [disabled]="prompt.saving || !isDirty(prompt)">Revert</button>
+                    <button type="button" class="adm-btn primary" (click)="save(prompt)" [disabled]="prompt.saving || !isDirty(prompt)">Save</button>
+                    <button type="button" class="adm-btn" (click)="reset(prompt)" [disabled]="prompt.saving || !prompt.hasOverride">Reset</button>
+                    <button type="button" class="adm-btn" (click)="revert(prompt)" [disabled]="prompt.saving || !isDirty(prompt)">Revert</button>
                   </div>
 
                   <details>
@@ -100,25 +101,17 @@ interface PromptGroupState {
     }
   `,
   styles: [`
-    :host { display: block; }
-    .page-header, .section-header, .prompt-head, .actions, .meta-row {
+    :host { display: flex; flex-direction: column; gap: 18px; }
+    .prompt-group-head, .prompt-head, .actions, .meta-row {
       display: flex;
       gap: 0.75rem;
       align-items: flex-start;
     }
-    .page-header, .section-header, .prompt-head { justify-content: space-between; }
-    .page-header { margin-bottom: 1rem; }
-    h2, h3, h4 { margin: 0; color: #111827; }
+    .prompt-group-head, .prompt-head { justify-content: space-between; }
+    h3, h4 { margin: 0; color: var(--text); }
     h4 { font-size: 1rem; }
-    p, .subtitle, .muted, .meta-row { color: #6b7280; }
+    p, .meta-row { color: var(--muted); }
     p { margin: 0.25rem 0 0; }
-    .eyebrow {
-      color: #6b7280;
-      font-size: 0.76rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
     .group-list { display: flex; flex-direction: column; gap: 1.25rem; }
     .prompt-group { display: flex; flex-direction: column; gap: 0.75rem; }
     .prompt-grid {
@@ -126,67 +119,28 @@ interface PromptGroupState {
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       gap: 1rem;
     }
-    .section-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 1rem;
-    }
     .prompt-card { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
-    .count-pill, .status-pill {
-      border-radius: 999px;
-      background: #f3f4f6;
-      color: #374151;
-      flex: 0 0 auto;
-      font-size: 0.78rem;
-      font-weight: 700;
-      padding: 0.2rem 0.6rem;
-    }
-    .status-pill.active { background: #eff6ff; color: #1e40af; }
     .meta-row {
       align-items: center;
       flex-wrap: wrap;
       font-size: 0.82rem;
     }
-    textarea {
-      width: 100%;
+    .prompt-textarea {
       min-height: 220px;
-      padding: 0.65rem;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.82rem;
-      line-height: 1.55;
-      resize: vertical;
     }
-    button {
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: white;
-      color: #374151;
-      cursor: pointer;
-      padding: 0.45rem 0.8rem;
-    }
-    button.primary { background: #2563eb; border-color: #2563eb; color: white; }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .banner { border-radius: 8px; padding: 0.7rem 0.85rem; }
-    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-    .banner.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
     details {
-      border: 1px solid #e5e7eb;
-      border-radius: 6px;
-      background: #f9fafb;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
       overflow: hidden;
     }
-    summary { cursor: pointer; color: #374151; font-weight: 600; padding: 0.55rem 0.7rem; }
+    summary { cursor: pointer; color: var(--text-2); font-weight: 600; padding: 0.55rem 0.7rem; }
     pre {
       margin: 0;
       max-height: 280px;
       overflow: auto;
-      border-top: 1px solid #e5e7eb;
-      color: #374151;
+      border-top: 1px solid var(--border);
+      color: var(--text);
       padding: 0.75rem;
       white-space: pre-wrap;
     }

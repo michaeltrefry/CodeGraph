@@ -11,122 +11,112 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from './admi
   standalone: true,
   imports: [DatePipe, FormsModule],
   template: `
-    <div class="page-header">
+    <header class="adm-page-header">
       <div>
-        <h2>Admin Users</h2>
-        <p class="subtitle">Manage usernames that can use protected settings and reporting surfaces.</p>
+        <h1>Admin users</h1>
+        <p>Usernames granted access to protected settings and reporting surfaces.</p>
       </div>
-    </div>
+    </header>
 
-    <section class="section-card">
-      <h3>Add Admin</h3>
-      <div class="form-row">
-        <input type="text" [(ngModel)]="newUsername" placeholder="username" (keyup.enter)="add()" />
-        <button class="primary" type="button" (click)="add()" [disabled]="saving()">Add</button>
+    <section class="adm-card">
+      <header class="adm-card-head">
+        <span class="adm-section-label">Add admin</span>
+      </header>
+      <div class="adm-form-row">
+        <label class="adm-field wide">
+          <span class="adm-field-label">Username</span>
+          <input class="adm-input" type="text" [(ngModel)]="newUsername" placeholder="Username to grant admin access" (keyup.enter)="add()" />
+        </label>
+        <button class="adm-btn primary" type="button" (click)="add()" [disabled]="saving()">Add admin</button>
       </div>
       @if (error()) {
-        <div class="banner error">{{ error() }}</div>
+        <div class="adm-banner err">{{ error() }}</div>
       }
       @if (success()) {
-        <div class="banner success">{{ success() }}</div>
+        <div class="adm-banner ok">{{ success() }}</div>
       }
     </section>
 
-    <section class="section-card">
-      <div class="section-header">
-        <h3>Current Admins</h3>
-        <span class="count-pill">{{ admins().length }}</span>
-      </div>
+    <section class="adm-card adm-card-flush">
+      <header class="adm-card-head">
+        <span class="adm-section-label">Current admins</span>
+        <span class="cg-chip cg-chip-mono">{{ admins().length }}</span>
+      </header>
 
       @if (admins().length === 0) {
-        <p class="empty">No admin users configured.</p>
+        <div class="adm-users-empty cg-muted">No admin users configured.</div>
       } @else {
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Added</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (admin of admins(); track admin.username) {
-              <tr>
-                <td><code>{{ admin.username }}</code></td>
-                <td>{{ admin.createdAt | date:'medium' }}</td>
-                <td class="actions">
-                  <button type="button" class="danger" (click)="remove(admin.username)" [disabled]="saving()">Remove</button>
-                </td>
-              </tr>
-            }
-          </tbody>
-        </table>
+        <ul class="adm-user-list">
+          @for (admin of admins(); track admin.username) {
+            <li class="adm-user-row">
+              <div class="adm-user-info">
+                <div class="adm-user-avatar">{{ userInitials(admin.username) }}</div>
+                <span class="adm-user-name cg-mono">{{ admin.username }}</span>
+                <span class="cg-chip cg-chip-accent">admin</span>
+                <span class="cg-muted cg-small">Added {{ admin.createdAt | date:'medium' }}</span>
+              </div>
+              <button class="adm-btn ghost-danger sm" type="button" (click)="remove(admin.username)" [disabled]="saving()">Remove</button>
+            </li>
+          }
+        </ul>
       }
     </section>
   `,
   styles: [`
-    :host { display: block; }
-    .page-header { margin-bottom: 1rem; }
-    h2, h3 { margin: 0; color: #111827; }
-    .subtitle { margin: 0.35rem 0 0; color: #6b7280; }
-    .section-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 1rem;
+    :host { display: flex; flex-direction: column; gap: 18px; }
+
+    .adm-user-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
     }
-    .section-header, .form-row {
+
+    .adm-user-row {
       display: flex;
-      gap: 0.75rem;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--hairline);
     }
-    .form-row { justify-content: flex-start; margin-top: 0.75rem; }
-    input {
-      width: min(420px, 100%);
-      padding: 0.5rem 0.6rem;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
+    .adm-user-row:last-child { border-bottom: 0; }
+
+    .adm-user-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+      flex-wrap: wrap;
     }
-    button {
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: white;
-      color: #374151;
-      cursor: pointer;
-      padding: 0.45rem 0.8rem;
-    }
-    button.primary { background: #2563eb; border-color: #2563eb; color: white; }
-    button.danger { color: #991b1b; border-color: #fecaca; }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .count-pill {
-      border-radius: 999px;
-      background: #eff6ff;
-      color: #1e40af;
-      font-size: 0.8rem;
+
+    .adm-user-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--sem-purple), var(--accent));
+      display: grid;
+      place-items: center;
+      font-size: var(--fs-xs);
       font-weight: 700;
-      padding: 0.2rem 0.6rem;
+      color: white;
+      flex: 0 0 auto;
     }
-    .data-table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid #e5e7eb;
-      padding: 0.6rem;
-      text-align: left;
+
+    .adm-user-name {
+      font-size: var(--fs-md);
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
     }
-    .data-table th { color: #374151; font-weight: 600; }
-    .actions { text-align: right; }
-    .empty { color: #6b7280; margin: 0.75rem 0 0; }
-    .banner {
-      border-radius: 8px;
-      margin-top: 0.75rem;
-      padding: 0.7rem 0.85rem;
+
+    .adm-users-empty {
+      padding: 28px 20px;
+      text-align: center;
+      font-size: var(--fs-sm);
     }
-    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-    .banner.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
-    code { overflow-wrap: anywhere; }
   `]
 })
 export class AdminUsersComponent implements OnInit {
@@ -198,5 +188,11 @@ export class AdminUsersComponent implements OnInit {
     } finally {
       this.saving.set(false);
     }
+  }
+
+  userInitials(username: string): string {
+    const parts = username.split(/[\s._@-]+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return username.slice(0, 2).toUpperCase();
   }
 }

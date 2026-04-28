@@ -6,19 +6,39 @@ import { RouterOutlet } from '@angular/router';
   standalone: true,
   imports: [RouterOutlet],
   template: `
-    <div class="admin-layout">
-      <div class="admin-content">
+    <div class="adm-layout">
+      <div class="adm-content">
         <router-outlet />
       </div>
     </div>
   `,
   styles: [`
-    .admin-layout {
-      min-height: 100%;
+    :host {
+      display: block;
+      height: 100%;
+      min-height: 0;
     }
 
-    .admin-content {
+    .adm-layout {
+      display: flex;
+      height: 100%;
+      min-height: 0;
+      background: var(--bg);
+    }
+
+    .adm-content {
+      flex: 1;
       min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 32px 40px 48px;
+      background: var(--bg);
+    }
+
+    @media (max-width: 760px) {
+      .adm-content {
+        padding: 20px 16px 32px;
+      }
     }
   `]
 })

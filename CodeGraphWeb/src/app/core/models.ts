@@ -962,6 +962,70 @@ export interface MemoryEvidence {
   createdAt: string;
 }
 
+export interface MemoryWriteReceipt {
+  id: string;
+  source: string;
+  inputMode: string;
+  status: 'Queued' | 'Processing' | 'Completed' | 'Failed' | string;
+  entitiesRequested: number;
+  claimsRequested: number;
+  evidenceRequested: number;
+  attemptCount: number;
+  nodesWritten: number;
+  edgesWritten: number;
+  conflictsDetected: number;
+  claimsWritten: number;
+  evidenceWritten: number;
+  observationsWritten: number;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface MemoryWriteDiagnostics {
+  username: string;
+  generatedAtUtc: string;
+  queuedCount: number;
+  staleQueuedCount: number;
+  processingCount: number;
+  retryingCount: number;
+  completedCount: number;
+  failedCount: number;
+  submissionFailureCount: number;
+  processingFailureCount: number;
+  staleProcessingCount: number;
+  staleAfterMinutes: number;
+  oldestQueuedAgeMinutes?: number;
+  oldestProcessingAgeMinutes?: number;
+  staleQueuedReceipts: MemoryWriteReceipt[];
+  staleProcessingReceipts: MemoryWriteReceipt[];
+  retryingReceipts: MemoryWriteReceipt[];
+  recentFailedReceipts: MemoryWriteReceipt[];
+}
+
+export interface MemoryDiagnostics {
+  username: string;
+  generatedAtUtc: string;
+  embeddingAvailable: boolean;
+  retrievalDegraded: boolean;
+  writeDegraded: boolean;
+  entityCount: number;
+  claimCount: number;
+  activeClaimCount: number;
+  conflictedClaimCount: number;
+  supersededClaimCount: number;
+  deprecatedClaimCount: number;
+  seedAliasCount: number;
+  observationCount: number;
+  evidenceCount: number;
+  orphanObservationCount: number;
+  orphanEvidenceCount: number;
+  healthSignals: string[];
+  writeDiagnostics: MemoryWriteDiagnostics;
+}
+
 export interface MemoryEntityBundle {
   entity: MemoryEntity;
   activeClaims: MemoryClaim[];

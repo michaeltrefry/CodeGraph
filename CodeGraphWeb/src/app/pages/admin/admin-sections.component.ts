@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { WikiSection } from '../../core/models';
 import { environment } from '../../../environments/environment';
+import { loadAdminCollection, runAdminMutation } from './admin-resource.helpers';
 
 const API = environment.apiUrl;
 
@@ -12,87 +13,102 @@ const API = environment.apiUrl;
   standalone: true,
   imports: [FormsModule],
   template: `
-    <h2>Section Management</h2>
+    <header class="adm-page-header">
+      <div>
+        <h1>Sections</h1>
+        <p>Wiki sections control user-created pages and raw-file content support.</p>
+      </div>
+    </header>
 
-    <div class="add-form">
-      <input type="text" [(ngModel)]="newTitle" placeholder="Section title" />
-      <input type="text" [(ngModel)]="newIcon" placeholder="Icon (optional)" />
-      <label>
-        <input type="checkbox" [(ngModel)]="newAllowUserPages" />
-        Allow user pages
-      </label>
-      <label>
-        <input type="checkbox" [(ngModel)]="newHasRawContent" />
-        Raw content
-      </label>
-      <button class="primary" (click)="create()">Create Section</button>
-    </div>
+    <section class="adm-card">
+      <header class="adm-card-head">
+        <span class="adm-section-label">Add section</span>
+      </header>
+      <div class="adm-form-row">
+        <label class="adm-field wide">
+          <span class="adm-field-label">Title</span>
+          <input class="adm-input" type="text" [(ngModel)]="newTitle" placeholder="Section title" />
+        </label>
+        <label class="adm-field narrow">
+          <span class="adm-field-label">Icon</span>
+          <input class="adm-input" type="text" [(ngModel)]="newIcon" placeholder="Optional" />
+        </label>
+        <label class="adm-checkbox">
+          <input type="checkbox" [(ngModel)]="newAllowUserPages" />
+          <span>Allow user pages</span>
+        </label>
+        <label class="adm-checkbox">
+          <input type="checkbox" [(ngModel)]="newHasRawContent" />
+          <span>Raw content</span>
+        </label>
+        <button class="adm-btn primary" type="button" (click)="create()">Create section</button>
+      </div>
+      @if (error()) {
+        <div class="adm-banner err">{{ error() }}</div>
+      }
+    </section>
 
-    @if (error()) {
-      <p class="error">{{ error() }}</p>
-    }
-
-    <table class="sections-table">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Slug</th>
-          <th>Icon</th>
-          <th>Order</th>
-          <th>System</th>
-          <th>User Pages</th>
-          <th>Raw Content</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        @for (section of sections(); track section.id) {
+    <section class="adm-card adm-card-flush">
+      <header class="adm-card-head">
+        <span class="adm-section-label">All sections</span>
+        <span class="cg-chip cg-chip-mono">{{ sections().length }}</span>
+      </header>
+      <table class="cg-table">
+        <thead>
           <tr>
-            <td>{{ section.title }}</td>
-            <td><code>{{ section.slug }}</code></td>
-            <td>{{ section.icon || '—' }}</td>
-            <td>{{ section.sortOrder }}</td>
-            <td>{{ section.isSystem ? 'Yes' : 'No' }}</td>
-            <td>{{ section.allowUserPages ? 'Yes' : 'No' }}</td>
-            <td>{{ section.hasRawContent ? 'Yes' : 'No' }}</td>
-            <td>
-              @if (!section.isSystem) {
-                <button class="danger-sm" (click)="remove(section)">Delete</button>
-              } @else {
-                <span class="muted">Protected</span>
-              }
-            </td>
+            <th>Title</th>
+            <th>Slug</th>
+            <th>Icon</th>
+            <th class="cg-cell-num-head">Order</th>
+            <th>System</th>
+            <th>User pages</th>
+            <th>Raw content</th>
+            <th></th>
           </tr>
-        }
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          @for (section of sections(); track section.id) {
+            <tr>
+              <td>{{ section.title }}</td>
+              <td><span class="cg-mono cg-small">{{ section.slug }}</span></td>
+              <td>{{ section.icon || '—' }}</td>
+              <td class="cg-cell-num">{{ section.sortOrder }}</td>
+              <td>
+                @if (section.isSystem) {
+                  <span class="cg-chip cg-chip-accent">system</span>
+                } @else {
+                  <span class="cg-faint cg-xsmall">—</span>
+                }
+              </td>
+              <td>
+                @if (section.allowUserPages) {
+                  <span class="cg-chip cg-chip-ok cg-chip-dot">yes</span>
+                } @else {
+                  <span class="cg-faint cg-xsmall">no</span>
+                }
+              </td>
+              <td>
+                @if (section.hasRawContent) {
+                  <span class="cg-chip cg-chip-accent">raw</span>
+                } @else {
+                  <span class="cg-faint cg-xsmall">—</span>
+                }
+              </td>
+              <td class="cg-cell-actions">
+                @if (!section.isSystem) {
+                  <button class="adm-btn ghost-danger sm" type="button" (click)="remove(section)">Delete</button>
+                } @else {
+                  <span class="cg-faint cg-xsmall">Protected</span>
+                }
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </section>
   `,
   styles: [`
-    .add-form { display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center; flex-wrap: wrap; }
-    input[type="text"] {
-      padding: 0.4rem; border-radius: 4px;
-      border: 1px solid #d1d5db;
-      background: #f9fafb; color: #111827;
-    }
-    label { font-size: 0.85rem; display: flex; align-items: center; gap: 0.3rem; color: #374151; }
-    .sections-table { width: 100%; border-collapse: collapse; }
-    .sections-table th, .sections-table td {
-      padding: 0.5rem; text-align: left; border-bottom: 1px solid #e5e7eb;
-      font-size: 0.85rem; color: #111827;
-    }
-    .sections-table th { font-weight: 600; color: #374151; }
-    code { font-size: 0.8rem; background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; color: #374151; }
-    button {
-      padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid #d1d5db;
-      background: white; color: #374151; cursor: pointer; font-size: 0.8rem;
-    }
-    button:hover { background: #f3f4f6; }
-    button.primary { background: #2563eb; border-color: transparent; color: white; }
-    button.primary:hover { background: #1d4ed8; }
-    button.danger-sm { background: #dc2626; border-color: transparent; color: white; }
-    button.danger-sm:hover { background: #b91c1c; }
-    .error { color: #ef4444; }
-    .muted { color: #9ca3af; font-size: 0.8rem; }
+    :host { display: flex; flex-direction: column; gap: 18px; }
   `]
 })
 export class AdminSectionsComponent implements OnInit {
@@ -110,42 +126,44 @@ export class AdminSectionsComponent implements OnInit {
   }
 
   async load(): Promise<void> {
-    try {
-      const sections = await firstValueFrom(this.http.get<WikiSection[]>(`${API}/settings/sections`));
-      this.sections.set(sections);
-    } catch (err: any) {
-      this.error.set(err.message || 'Failed to load sections');
-    }
+    await loadAdminCollection(
+      () => firstValueFrom(this.http.get<WikiSection[]>(`${API}/settings/sections`)),
+      this.sections,
+      this.error,
+      'Failed to load sections'
+    );
   }
 
   async create(): Promise<void> {
     this.error.set('');
     if (!this.newTitle.trim()) { this.error.set('Title is required.'); return; }
 
-    try {
-      await firstValueFrom(this.http.post(`${API}/settings/sections`, {
+    const created = await runAdminMutation(() => firstValueFrom(this.http.post(`${API}/settings/sections`, {
         title: this.newTitle.trim(),
         icon: this.newIcon.trim() || null,
         allowUserPages: this.newAllowUserPages,
         hasRawContent: this.newHasRawContent
-      }));
-      this.newTitle = '';
-      this.newIcon = '';
-      this.newAllowUserPages = true;
-      this.newHasRawContent = false;
-      await this.load();
-    } catch (err: any) {
-      this.error.set(err.error || err.message || 'Failed to create section');
-    }
+      })), {
+      error: this.error,
+      fallbackError: 'Failed to create section'
+    });
+    if (!created) return;
+
+    this.newTitle = '';
+    this.newIcon = '';
+    this.newAllowUserPages = true;
+    this.newHasRawContent = false;
+    await this.load();
   }
 
   async remove(section: WikiSection): Promise<void> {
     if (!confirm(`Delete section "${section.title}" and all its pages?`)) return;
-    try {
-      await firstValueFrom(this.http.delete(`${API}/settings/sections/${section.id}`));
+    const removed = await runAdminMutation(
+      () => firstValueFrom(this.http.delete(`${API}/settings/sections/${section.id}`)),
+      { error: this.error, fallbackError: 'Failed to delete section' }
+    );
+    if (removed) {
       await this.load();
-    } catch (err: any) {
-      this.error.set(err.error || err.message || 'Failed to delete section');
     }
   }
 }
