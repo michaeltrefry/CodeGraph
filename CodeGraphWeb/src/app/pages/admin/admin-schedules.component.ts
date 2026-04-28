@@ -41,27 +41,34 @@ interface JobTypeOption {
   standalone: true,
   imports: [FormsModule, DatePipe],
   template: `
-    <h2>Schedules</h2>
-    <p class="subtitle">Create recurring schedules for built-in maintenance and indexing jobs. All execution timestamps are stored in UTC.</p>
+    <header class="adm-page-header">
+      <div>
+        <h1>Schedules</h1>
+        <p>Create recurring schedules for maintenance and indexing jobs. Execution timestamps are stored in UTC.</p>
+      </div>
+      <button class="adm-btn" type="button" (click)="load()" [disabled]="loading()">Refresh</button>
+    </header>
 
     @if (error()) {
-      <p class="error">{{ error() }}</p>
+      <div class="adm-banner err">{{ error() }}</div>
     }
     @if (success()) {
-      <p class="success">{{ success() }}</p>
+      <div class="adm-banner ok">{{ success() }}</div>
     }
 
     <div class="schedule-layout">
-      <section class="editor-card">
-        <h3>{{ editingId() ? 'Edit Schedule' : 'New Schedule' }}</h3>
-        <label>
-          <span>Name</span>
-          <input type="text" [(ngModel)]="name" placeholder="Nightly discovery" />
+      <section class="adm-card editor-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">{{ editingId() ? 'Edit schedule' : 'New schedule' }}</span>
+        </header>
+        <label class="adm-field">
+          <span class="adm-field-label">Name</span>
+          <input class="adm-input" type="text" [(ngModel)]="name" placeholder="Nightly discovery" />
         </label>
 
-        <label>
-          <span>Job</span>
-          <select [(ngModel)]="jobType" (ngModelChange)="onJobTypeChanged()">
+        <label class="adm-field">
+          <span class="adm-field-label">Job</span>
+          <select class="adm-select" [(ngModel)]="jobType" (ngModelChange)="onJobTypeChanged()">
             @for (option of jobTypes; track option.value) {
               <option [value]="option.value">{{ option.label }}</option>
             }
@@ -70,70 +77,70 @@ interface JobTypeOption {
 
         <p class="job-help">{{ currentJobDescription() }}</p>
 
-        <label>
-          <span>Cron</span>
-          <input type="text" [(ngModel)]="cronExpression" placeholder="0 */6 * * *" />
+        <label class="adm-field">
+          <span class="adm-field-label">Cron</span>
+          <input class="adm-input" type="text" [(ngModel)]="cronExpression" placeholder="0 */6 * * *" />
         </label>
 
-        <label>
-          <span>Time Zone</span>
-          <input type="text" [(ngModel)]="timeZoneId" placeholder="America/New_York" />
+        <label class="adm-field">
+          <span class="adm-field-label">Time zone</span>
+          <input class="adm-input" type="text" [(ngModel)]="timeZoneId" placeholder="America/New_York" />
         </label>
 
-        <label class="checkbox">
+        <label class="adm-checkbox checkbox">
           <input type="checkbox" [(ngModel)]="isEnabled" />
           <span>Enabled</span>
         </label>
 
         @if (jobType === 'Discover') {
           <div class="args-grid">
-            <label class="checkbox">
+            <label class="adm-checkbox checkbox">
               <input type="checkbox" [(ngModel)]="discoverShouldIndex" />
               <span>Index</span>
             </label>
-            <label class="checkbox">
+            <label class="adm-checkbox checkbox">
               <input type="checkbox" [(ngModel)]="discoverShouldAnalyze" />
               <span>Analyze</span>
             </label>
-            <label class="checkbox">
+            <label class="adm-checkbox checkbox">
               <input type="checkbox" [(ngModel)]="discoverSkipIfUpToDate" />
               <span>Skip up-to-date</span>
             </label>
-            <label class="checkbox">
+            <label class="adm-checkbox checkbox">
               <input type="checkbox" [(ngModel)]="discoverIncludeAllSource" />
               <span>Include all source</span>
             </label>
-            <label>
-              <span>Name Regex</span>
-              <input type="text" [(ngModel)]="discoverNamePattern" placeholder="orders|billing" />
+            <label class="adm-field">
+              <span class="adm-field-label">Name regex</span>
+              <input class="adm-input" type="text" [(ngModel)]="discoverNamePattern" placeholder="orders|billing" />
             </label>
-            <label>
-              <span>Limit</span>
-              <input type="number" [(ngModel)]="discoverLimit" min="1" />
+            <label class="adm-field">
+              <span class="adm-field-label">Limit</span>
+              <input class="adm-input" type="number" [(ngModel)]="discoverLimit" min="1" />
             </label>
           </div>
         }
 
         @if (jobType === 'ProcessBatchAnalysis') {
-          <label>
-            <span>Repo Filter</span>
-            <input type="text" [(ngModel)]="batchRepo" placeholder="optional repo name" />
+          <label class="adm-field">
+            <span class="adm-field-label">Repo filter</span>
+            <input class="adm-input" type="text" [(ngModel)]="batchRepo" placeholder="optional repo name" />
           </label>
         }
 
         <div class="editor-actions">
-          <button class="primary" (click)="save()" [disabled]="saving()">{{ editingId() ? 'Update' : 'Create' }}</button>
-          <button (click)="resetForm()" [disabled]="saving()">Clear</button>
+          <button class="adm-btn primary" type="button" (click)="save()" [disabled]="saving()">{{ editingId() ? 'Update' : 'Create' }}</button>
+          <button class="adm-btn" type="button" (click)="resetForm()" [disabled]="saving()">Clear</button>
         </div>
       </section>
 
-      <section class="list-card">
-        <div class="list-header">
-          <h3>Saved Schedules</h3>
-          <button (click)="load()" [disabled]="loading()">Refresh</button>
-        </div>
+      <section class="adm-card adm-card-flush list-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Saved schedules</span>
+          <span class="cg-chip cg-chip-mono">{{ schedules().length }}</span>
+        </header>
 
-        <table class="schedule-table">
+        <table class="cg-table">
           <thead>
             <tr>
               <th>Name</th>
@@ -150,12 +157,15 @@ interface JobTypeOption {
                 <td>
                   <div class="name-cell">
                     <strong>{{ schedule.name }}</strong>
-                    <span class="meta">{{ schedule.cronExpression }} · {{ schedule.timeZoneId }}</span>
+                    <span class="cg-muted cg-small">{{ schedule.cronExpression }} · {{ schedule.timeZoneId }}</span>
                   </div>
                 </td>
                 <td>{{ schedule.jobType }}</td>
                 <td>
-                  <span class="badge" [class.badge-running]="schedule.isRunning" [class.badge-enabled]="schedule.isEnabled && !schedule.isRunning" [class.badge-disabled]="!schedule.isEnabled">
+                  <span class="cg-chip cg-chip-dot"
+                        [class.cg-chip-accent]="schedule.isRunning"
+                        [class.cg-chip-ok]="schedule.isEnabled && !schedule.isRunning"
+                        [class.cg-chip-warn]="!schedule.isEnabled">
                     {{ schedule.isRunning ? 'Running' : (schedule.isEnabled ? 'Enabled' : 'Disabled') }}
                   </span>
                 </td>
@@ -164,7 +174,7 @@ interface JobTypeOption {
                   <div class="result-cell">
                     <span>{{ schedule.lastRunStatus || 'Never run' }}</span>
                     @if (schedule.lastRunCompletedUtc) {
-                      <span class="meta">{{ schedule.lastRunCompletedUtc | date:'short' }}</span>
+                      <span class="cg-muted cg-small">{{ schedule.lastRunCompletedUtc | date:'short' }}</span>
                     }
                     @if (schedule.lastError) {
                       <span class="error-inline">{{ schedule.lastError }}</span>
@@ -173,17 +183,17 @@ interface JobTypeOption {
                 </td>
                 <td>
                   <div class="action-group">
-                    <button (click)="edit(schedule)">Edit</button>
-                    <button (click)="runNow(schedule)" [disabled]="schedule.isRunning">Run now</button>
-                    <button (click)="toggleEnabled(schedule)">{{ schedule.isEnabled ? 'Disable' : 'Enable' }}</button>
-                    <button class="danger" (click)="remove(schedule)">Delete</button>
+                    <button class="adm-btn sm" type="button" (click)="edit(schedule)">Edit</button>
+                    <button class="adm-btn sm" type="button" (click)="runNow(schedule)" [disabled]="schedule.isRunning">Run now</button>
+                    <button class="adm-btn sm" type="button" (click)="toggleEnabled(schedule)">{{ schedule.isEnabled ? 'Disable' : 'Enable' }}</button>
+                    <button class="adm-btn ghost-danger sm" type="button" (click)="remove(schedule)">Delete</button>
                   </div>
                 </td>
               </tr>
             }
             @if (schedules().length === 0) {
               <tr>
-                <td colspan="6" class="muted">No schedules configured yet.</td>
+                <td colspan="6" class="empty cg-muted">No schedules configured yet.</td>
               </tr>
             }
           </tbody>
@@ -192,63 +202,20 @@ interface JobTypeOption {
     </div>
   `,
   styles: [`
-    .subtitle { color: #6b7280; font-size: 0.92rem; margin-bottom: 1rem; }
-    .schedule-layout { display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); gap: 1rem; align-items: start; }
-    .editor-card, .list-card {
-      background: white; border: 1px solid #e5e7eb; border-radius: 10px;
-      padding: 1rem;
-    }
-    .editor-card h3, .list-card h3 { margin: 0 0 0.9rem; color: #111827; }
-    label { display: block; margin-bottom: 0.75rem; }
-    label span { display: block; font-size: 0.8rem; color: #374151; margin-bottom: 0.25rem; }
-    input[type="text"], input[type="number"], select {
-      width: 100%; padding: 0.45rem 0.55rem;
-      border-radius: 6px; border: 1px solid #d1d5db;
-      background: #f9fafb; color: #111827; font-family: inherit;
-    }
-    .checkbox {
-      display: flex; align-items: center; gap: 0.45rem;
-      margin-bottom: 0.5rem;
-    }
-    .checkbox span { margin: 0; }
-    .job-help { margin: -0.2rem 0 0.75rem; color: #6b7280; font-size: 0.82rem; }
+    :host { display: flex; flex-direction: column; gap: 18px; }
+    .schedule-layout { display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .editor-card .adm-field { flex: 0 1 auto; }
+    .job-help { margin: 0; color: var(--muted); font-size: var(--fs-sm); }
     .args-grid {
-      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.55rem 0.75rem;
-      margin-bottom: 0.75rem;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
     }
-    .editor-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
-    .list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
-    .schedule-table { width: 100%; border-collapse: collapse; }
-    .schedule-table th, .schedule-table td {
-      padding: 0.65rem 0.5rem; text-align: left; border-bottom: 1px solid #e5e7eb;
-      vertical-align: top; font-size: 0.84rem; color: #111827;
-    }
-    .schedule-table th { color: #374151; font-weight: 600; }
+    .editor-actions { display: flex; gap: 8px; margin-top: 4px; }
     .name-cell, .result-cell { display: flex; flex-direction: column; gap: 0.2rem; }
-    .meta { color: #6b7280; font-size: 0.76rem; }
-    .badge {
-      display: inline-block; padding: 0.18rem 0.48rem; border-radius: 999px;
-      font-size: 0.75rem; font-weight: 600;
-    }
-    .badge-enabled { background: #dcfce7; color: #166534; }
-    .badge-disabled { background: #f3f4f6; color: #4b5563; }
-    .badge-running { background: #dbeafe; color: #1d4ed8; }
     .action-group { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-    button {
-      padding: 0.38rem 0.72rem; border-radius: 6px; border: 1px solid #d1d5db;
-      background: white; color: #374151; cursor: pointer; font-size: 0.8rem;
-    }
-    button:hover { background: #f3f4f6; }
-    button.primary { background: #2563eb; border-color: transparent; color: white; }
-    button.primary:hover { background: #1d4ed8; }
-    button.danger { background: #dc2626; border-color: transparent; color: white; }
-    button.danger:hover { background: #b91c1c; }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .error { color: #dc2626; margin-bottom: 0.75rem; }
-    .success { color: #059669; margin-bottom: 0.75rem; }
-    .error-inline { color: #dc2626; font-size: 0.76rem; }
-    .muted { text-align: center; color: #9ca3af; }
+    .error-inline { color: var(--sem-red); font-size: var(--fs-xs); }
+    .empty { text-align: center; }
     @media (max-width: 1100px) {
       .schedule-layout { grid-template-columns: 1fr; }
     }

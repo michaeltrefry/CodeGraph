@@ -13,43 +13,43 @@ type ReportKey = 'assistant/usage' | 'assistant/activity' | 'mcp/usage' | 'code-
   standalone: true,
   imports: [DatePipe, FormsModule],
   template: `
-    <div class="page-header">
+    <header class="adm-page-header">
       <div>
-        <h2>Reports</h2>
-        <p class="subtitle">Inspect assistant, MCP, review, and repository-analysis usage.</p>
+        <h1>Reports</h1>
+        <p>Inspect assistant, MCP, review, and repository-analysis usage.</p>
       </div>
-      <button type="button" (click)="load()" [disabled]="loading()">Refresh</button>
-    </div>
+      <button class="adm-btn" type="button" (click)="load()" [disabled]="loading()">Refresh</button>
+    </header>
 
-    <section class="section-card filter-panel">
-      <label>
-        Report
-        <select [(ngModel)]="selectedReport" (ngModelChange)="load()">
+    <section class="adm-card filter-panel">
+      <label class="adm-field">
+        <span class="adm-field-label">Report</span>
+        <select class="adm-select" [(ngModel)]="selectedReport" (ngModelChange)="load()">
           @for (report of reports; track report.key) {
             <option [ngValue]="report.key">{{ report.label }}</option>
           }
         </select>
       </label>
-      <label>
-        Interval
-        <select [(ngModel)]="interval" (ngModelChange)="load()">
+      <label class="adm-field narrow">
+        <span class="adm-field-label">Interval</span>
+        <select class="adm-select" [(ngModel)]="interval" (ngModelChange)="load()">
           <option value="day">Day</option>
           <option value="week">Week</option>
           <option value="month">Month</option>
         </select>
       </label>
-      <label>
-        User
-        <select [(ngModel)]="user" (ngModelChange)="load()">
+      <label class="adm-field">
+        <span class="adm-field-label">User</span>
+        <select class="adm-select" [(ngModel)]="user" (ngModelChange)="load()">
           <option value="">All users</option>
           @for (value of filters()?.users ?? []; track value) {
             <option [value]="value">{{ value }}</option>
           }
         </select>
       </label>
-      <label>
-        Provider
-        <select [(ngModel)]="provider" (ngModelChange)="load()">
+      <label class="adm-field">
+        <span class="adm-field-label">Provider</span>
+        <select class="adm-select" [(ngModel)]="provider" (ngModelChange)="load()">
           <option value="">All providers</option>
           @for (value of filters()?.providers ?? []; track value) {
             <option [value]="value">{{ value }}</option>
@@ -59,26 +59,26 @@ type ReportKey = 'assistant/usage' | 'assistant/activity' | 'mcp/usage' | 'code-
     </section>
 
     @if (loading()) {
-      <div class="section-card muted">Loading report...</div>
+      <div class="adm-card cg-muted">Loading report...</div>
     } @else if (error()) {
-      <div class="banner error">{{ error() }}</div>
+      <div class="adm-banner err">{{ error() }}</div>
     } @else if (report(); as current) {
       <section class="summary-grid">
         @for (total of current.totals; track total.key) {
-          <article class="summary-card">
+          <article class="adm-card summary-card">
             <span>{{ total.label }}</span>
             <strong>{{ total.value }}</strong>
           </article>
         }
       </section>
 
-      <section class="section-card">
-        <div class="section-header">
-          <h3>Series</h3>
-          <span class="muted">{{ current.range.start | date:'mediumDate' }} - {{ current.range.end | date:'mediumDate' }}</span>
-        </div>
+      <section class="adm-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Series</span>
+          <span class="cg-muted cg-small">{{ current.range.start | date:'mediumDate' }} - {{ current.range.end | date:'mediumDate' }}</span>
+        </header>
         @if (current.series.length === 0) {
-          <p class="empty">No series data for this range.</p>
+          <p class="empty cg-muted">No series data for this range.</p>
         } @else {
           <div class="series-list">
             @for (series of current.series; track series.key) {
@@ -99,12 +99,14 @@ type ReportKey = 'assistant/usage' | 'assistant/activity' | 'mcp/usage' | 'code-
         }
       </section>
 
-      <section class="section-card">
-        <h3>Breakdowns</h3>
+      <section class="adm-card adm-card-flush">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Breakdowns</span>
+        </header>
         @if (current.breakdowns.length === 0) {
-          <p class="empty">No breakdowns available.</p>
+          <p class="empty cg-muted">No breakdowns available.</p>
         } @else {
-          <table class="data-table">
+          <table class="cg-table">
             <thead>
               <tr>
                 <th>Dimension</th>
@@ -117,7 +119,7 @@ type ReportKey = 'assistant/usage' | 'assistant/activity' | 'mcp/usage' | 'code-
                 <tr>
                   <td>{{ item.dimension }}</td>
                   <td>{{ item.label }}</td>
-                  <td>{{ item.value }}</td>
+                  <td class="cg-cell-num">{{ item.value }}</td>
                 </tr>
               }
             </tbody>
@@ -127,82 +129,43 @@ type ReportKey = 'assistant/usage' | 'assistant/activity' | 'mcp/usage' | 'code-
     }
   `,
   styles: [`
-    :host { display: block; }
-    .page-header, .section-header, .filter-panel {
-      display: flex;
-      gap: 0.75rem;
-      align-items: flex-start;
-      justify-content: space-between;
+    :host { display: flex; flex-direction: column; gap: 18px; }
+    .filter-panel {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.4fr) minmax(140px, 0.7fr) minmax(180px, 1fr) minmax(180px, 1fr);
+      gap: 12px;
     }
-    .page-header { margin-bottom: 1rem; }
-    h2, h3 { margin: 0; color: #111827; }
-    .subtitle, .muted, .empty { color: #6b7280; margin: 0.25rem 0 0; }
-    .filter-panel { flex-wrap: wrap; justify-content: flex-start; }
-    label { color: #374151; display: flex; flex-direction: column; font-weight: 600; gap: 0.25rem; }
-    select {
-      min-width: 180px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
-      min-height: 36px;
-      padding: 0.45rem 0.6rem;
-    }
-    button {
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: white;
-      color: #374151;
-      cursor: pointer;
-      min-height: 36px;
-      padding: 0.45rem 0.8rem;
-    }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .section-card, .summary-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 1rem;
-    }
+    .filter-panel .adm-field { flex: 0 1 auto; }
     .summary-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 0.75rem;
-      margin-bottom: 1rem;
     }
-    .summary-card { margin: 0; }
-    .summary-card span { color: #6b7280; display: block; font-weight: 600; }
-    .summary-card strong { color: #111827; display: block; font-size: 1.8rem; margin-top: 0.25rem; }
+    .summary-card span { color: var(--muted); display: block; font-weight: 600; }
+    .summary-card strong { color: var(--text); display: block; font-size: 1.8rem; margin-top: 0.25rem; }
     .series-list { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 0.75rem; }
     .series-row { display: grid; grid-template-columns: minmax(120px, 180px) 1fr; gap: 0.75rem; align-items: end; }
-    .series-label { color: #374151; font-weight: 600; }
+    .series-label { color: var(--text-2); font-weight: 600; }
     .series-bars {
       align-items: end;
-      border-bottom: 1px solid #d1d5db;
+      border-bottom: 1px solid var(--border);
       display: flex;
       gap: 4px;
       height: 120px;
       min-width: 0;
     }
     .bar {
-      background: #2563eb;
+      background: var(--accent);
       border-radius: 3px 3px 0 0;
       display: inline-block;
       min-height: 2px;
       width: 18px;
     }
-    .data-table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid #e5e7eb;
-      padding: 0.6rem;
-      text-align: left;
-    }
-    .banner { border-radius: 8px; padding: 0.7rem 0.85rem; }
-    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .empty { margin: 0; padding: 16px 20px; }
     @media (max-width: 720px) {
+      .filter-panel { grid-template-columns: 1fr; }
       .series-row { grid-template-columns: 1fr; }
-      .data-table { display: block; overflow-x: auto; }
+      .cg-table { display: block; overflow-x: auto; }
     }
   `]
 })

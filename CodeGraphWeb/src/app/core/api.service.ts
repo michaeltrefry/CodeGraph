@@ -479,6 +479,13 @@ export class ApiService {
     return this.http.get<WikiAttachment[]>(`${API}/wiki/${encodeURIComponent(section)}/${path}/attachments`);
   }
 
+  downloadWikiAttachment(downloadUrl: string): Observable<Blob> {
+    const url = downloadUrl.startsWith('http')
+      ? downloadUrl
+      : `${environment.baseUrl}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
+    return this.http.get(url, { responseType: 'blob' });
+  }
+
   uploadWikiAttachment(section: string, path: string, file: File): Observable<WikiAttachment> {
     const form = new FormData();
     form.append('file', file);

@@ -11,160 +11,349 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
   standalone: true,
   imports: [DatePipe, FormsModule],
   template: `
-    <div class="page">
-      <div class="page-header">
-        <div>
-          <h1>MCP Access Tokens</h1>
-          <p class="subtitle">Issue and revoke personal tokens for external MCP clients.</p>
+    <section class="cg-page access-page">
+      <header class="cg-page-header access-header">
+        <div class="access-header-copy">
+          <p class="access-eyebrow">Settings</p>
+          <h1>Access Tokens</h1>
+          <p>
+            Create personal access tokens for MCP clients. Tokens work for external clients and do not replace normal
+            website sign-in.
+          </p>
         </div>
+
+        <div class="access-summary-grid">
+          <article class="access-summary-card">
+            <div class="summary-value">{{ activeTokenCount() }}</div>
+            <div class="summary-label">Active tokens</div>
+            <p>{{ tokens().length }} total issued</p>
+          </article>
+          <article class="access-summary-card">
+            <div class="summary-value">Bearer</div>
+            <div class="summary-label">MCP auth</div>
+            <p><code>Authorization: Bearer &lt;token&gt;</code></p>
+          </article>
+        </div>
+      </header>
+
+      <div class="top-grid">
+        <section class="cg-card cg-card-padded access-card">
+          <div class="access-card-header">
+            <h2>Create Token</h2>
+            <p>The raw token is shown once right after creation, so copy it before you leave this page.</p>
+          </div>
+
+          <div class="form-grid">
+            <label class="cg-field">
+              <span class="cg-field-label">Friendly name</span>
+              <input class="cg-input" type="text" [(ngModel)]="newName" placeholder="Claude Desktop - Work Laptop" (keyup.enter)="create()" />
+              <small>Use the machine or client name so it is easy to revoke later.</small>
+            </label>
+            <label class="cg-field">
+              <span class="cg-field-label">Expiration</span>
+              <select class="cg-select" [(ngModel)]="expiresInDays">
+                <option [ngValue]="30">30 days</option>
+                <option [ngValue]="90">90 days</option>
+                <option [ngValue]="180">180 days</option>
+                <option [ngValue]="365">365 days</option>
+              </select>
+              <small>Choose a shorter lifetime for shared or temporary clients.</small>
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button type="button" class="cg-btn primary" (click)="create()" [disabled]="saving()">
+              {{ saving() ? 'Creating...' : 'Create token' }}
+            </button>
+          </div>
+
+          @if (rawToken()) {
+            <div class="token-reveal">
+              <div class="reveal-header">
+                <div>
+                  <h3>Copy this token now</h3>
+                  <p>This is the only time the full token value will be shown.</p>
+                </div>
+                <button type="button" class="cg-btn secondary" (click)="copyRawToken()">Copy token</button>
+              </div>
+              <pre class="token-secret"><code>{{ rawToken() }}</code></pre>
+            </div>
+          }
+
+          @if (error()) {
+            <div class="adm-banner err">{{ error() }}</div>
+          }
+          @if (success()) {
+            <div class="adm-banner ok">{{ success() }}</div>
+          }
+        </section>
+
+        <section class="cg-card cg-card-padded access-card">
+          <div class="access-card-header">
+            <h2>Using a Token</h2>
+            <p>Each token is tied to your CodeGraph identity, so MCP memory tools automatically scope to you.</p>
+          </div>
+          <ol class="guide-list">
+            <li>Create one token per machine or client so old devices can be revoked cleanly.</li>
+            <li>Store the raw token in the MCP client configuration, not in source control.</li>
+            <li>Revoke tokens you no longer recognize or use.</li>
+          </ol>
+        </section>
       </div>
 
-      <section class="card">
-        <h2>Create Token</h2>
-        <div class="form-row">
-          <input type="text" [(ngModel)]="newName" placeholder="token name" (keyup.enter)="create()" />
-          <select [(ngModel)]="expiresInDays">
-            <option [ngValue]="30">30 days</option>
-            <option [ngValue]="90">90 days</option>
-            <option [ngValue]="180">180 days</option>
-            <option [ngValue]="365">365 days</option>
-          </select>
-          <button type="button" class="primary" (click)="create()" [disabled]="saving()">Create</button>
-        </div>
-
-        @if (rawToken()) {
-          <div class="token-reveal">
-            <div>
-              <strong>New token</strong>
-              <p>This value is shown once.</p>
-            </div>
-            <code>{{ rawToken() }}</code>
-            <button type="button" (click)="copyRawToken()">Copy</button>
+      <section class="cg-card access-table-card">
+        <header class="access-card-header access-table-header">
+          <div>
+            <h2>Your Tokens</h2>
+            <p>Active, expired, and revoked tokens stay visible here so you can audit usage.</p>
           </div>
-        }
-
-        @if (error()) {
-          <div class="banner error">{{ error() }}</div>
-        }
-        @if (success()) {
-          <div class="banner success">{{ success() }}</div>
-        }
-      </section>
-
-      <section class="card">
-        <div class="section-header">
-          <h2>Current Tokens</h2>
-          <span class="count-pill">{{ tokens().length }}</span>
-        </div>
+          <span class="cg-chip cg-chip-mono">{{ tokens().length }}</span>
+        </header>
 
         @if (tokens().length === 0) {
-          <p class="empty-state">No MCP tokens have been issued.</p>
+          <div class="state-message">No MCP access tokens yet.</div>
         } @else {
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Prefix</th>
-                <th>Status</th>
-                <th>Expires</th>
-                <th>Last Used</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (token of tokens(); track token.id) {
+          <div class="table-wrap">
+            <table class="cg-table token-table">
+              <thead>
                 <tr>
-                  <td>{{ token.tokenName }}</td>
-                  <td><code>{{ token.tokenPrefix }}...{{ token.lastFour }}</code></td>
-                  <td><span class="status-pill" [attr.data-status]="token.status">{{ token.status }}</span></td>
-                  <td>{{ token.expiresAtUtc | date:'mediumDate' }}</td>
-                  <td>{{ token.lastUsedAtUtc ? (token.lastUsedAtUtc | date:'short') : 'Never' }}</td>
-                  <td class="actions">
-                    <button type="button" class="danger" (click)="revoke(token)" [disabled]="saving() || token.status !== 'active'">
-                      Revoke
-                    </button>
-                  </td>
+                  <th>Token</th>
+                  <th>Status</th>
+                  <th>Created</th>
+                  <th>Expires</th>
+                  <th>Last used</th>
+                  <th></th>
                 </tr>
-              }
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                @for (token of tokens(); track token.id) {
+                  <tr [class.row-muted]="token.status !== 'active'">
+                    <td>
+                      <div class="token-name">{{ token.tokenName }}</div>
+                      <div class="token-fragment">{{ token.tokenPrefix }}...{{ token.lastFour }}</div>
+                    </td>
+                    <td>
+                      <span
+                        class="cg-chip cg-chip-dot"
+                        [class.cg-chip-ok]="token.status === 'active'"
+                        [class.cg-chip-warn]="token.status === 'expired'"
+                        [class.cg-chip-err]="token.status === 'revoked'">
+                        {{ token.status }}
+                      </span>
+                    </td>
+                    <td>{{ token.createdAtUtc | date:'mediumDate' }}</td>
+                    <td>{{ token.expiresAtUtc | date:'mediumDate' }}</td>
+                    <td>
+                      @if (token.lastUsedAtUtc) {
+                        <div>{{ token.lastUsedAtUtc | date:'medium' }}</div>
+                      } @else {
+                        <div class="cg-muted">Never</div>
+                      }
+                      <div class="last-used-from">{{ token.lastUsedFrom || 'Origin unavailable' }}</div>
+                    </td>
+                    <td class="cg-cell-actions">
+                      <button type="button" class="cg-btn danger" (click)="revoke(token)" [disabled]="saving() || token.status !== 'active'">
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
         }
       </section>
-    </div>
+    </section>
   `,
   styles: [`
-    :host { display: block; }
-    .page-header, .section-header, .form-row, .token-reveal {
+    :host {
       display: flex;
-      gap: 0.75rem;
+      min-height: 100%;
+      background: var(--bg);
+    }
+
+    .access-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .access-header-copy {
+      min-width: 0;
+    }
+
+    .access-eyebrow {
+      margin: 0 0 6px;
+      color: var(--accent-ink);
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .access-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .access-summary-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      padding: 16px;
+    }
+
+    .summary-value {
+      font-family: var(--font-mono);
+      font-size: var(--fs-h1);
+      font-weight: 600;
+      line-height: 1;
+      color: var(--text);
+    }
+
+    .summary-label {
+      color: var(--muted);
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .access-summary-card p,
+    .access-card-header p,
+    .cg-field small,
+    .guide-list,
+    .last-used-from {
+      color: var(--muted);
+    }
+
+    .top-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .access-card {
+      display: grid;
+      gap: 18px;
+    }
+
+    .access-card-header {
+      margin-bottom: 18px;
+    }
+
+    .access-table-header {
+      display: flex;
       align-items: flex-start;
       justify-content: space-between;
+      gap: 12px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0;
     }
-    .subtitle, .empty-state, .token-reveal p { color: #6b7280; margin: 0.25rem 0 0; }
-    h1, h2 { color: #111827; }
-    h2 { font-size: 1rem; margin: 0; }
-    .form-row { justify-content: flex-start; flex-wrap: wrap; margin-top: 0.85rem; }
-    input, select {
-      min-height: 36px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
-      padding: 0.45rem 0.6rem;
+
+    .access-card-header h2,
+    .reveal-header h3 {
+      color: var(--text);
+      font-size: var(--fs-h3);
+      margin: 0;
     }
-    input { width: min(360px, 100%); }
-    button {
-      min-height: 36px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: white;
-      color: #374151;
-      cursor: pointer;
-      padding: 0.45rem 0.8rem;
+
+    .access-card-header p,
+    .reveal-header p,
+    .access-summary-card p {
+      margin: 4px 0 0;
+      line-height: 1.5;
     }
-    button.primary { background: #2563eb; border-color: #2563eb; color: white; }
-    button.danger { color: #991b1b; border-color: #fecaca; }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .token-reveal {
+
+    .form-grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
       align-items: center;
-      margin-top: 1rem;
-      border: 1px solid #bfdbfe;
-      border-radius: 8px;
-      background: #eff6ff;
-      padding: 0.8rem;
     }
-    .token-reveal code {
-      flex: 1;
-      min-width: 0;
+
+    .token-reveal {
+      display: grid;
+      gap: 12px;
+      border: 1px solid var(--accent-dim);
+      border-radius: var(--radius-lg);
+      background: var(--accent-weak);
+      padding: 14px;
+    }
+
+    .reveal-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .token-secret {
+      margin: 0;
+      max-height: 160px;
+      overflow: auto;
+      border: 1px solid var(--accent-dim);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+
+    code,
+    .token-fragment {
+      font-family: var(--font-mono);
+    }
+
+    .token-name {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .token-fragment,
+    .last-used-from {
+      font-size: var(--fs-sm);
       overflow-wrap: anywhere;
-      background: white;
     }
-    .count-pill, .status-pill {
-      border-radius: 999px;
-      background: #f3f4f6;
-      color: #374151;
-      font-size: 0.78rem;
-      font-weight: 700;
-      padding: 0.2rem 0.6rem;
-      text-transform: capitalize;
+
+    .row-muted {
+      opacity: 0.72;
     }
-    .status-pill[data-status="active"] { background: #dcfce7; color: #166534; }
-    .status-pill[data-status="revoked"] { background: #fee2e2; color: #991b1b; }
-    .data-table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid #e5e7eb;
-      padding: 0.6rem;
-      text-align: left;
-      vertical-align: middle;
+
+    .table-wrap {
+      overflow-x: auto;
     }
-    .data-table th { color: #374151; font-weight: 600; }
-    .actions { text-align: right; }
-    .banner { border-radius: 8px; margin-top: 0.75rem; padding: 0.7rem 0.85rem; }
-    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-    .banner.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+
+    .token-table {
+      min-width: 760px;
+    }
+
+    .state-message {
+      padding: 28px 20px;
+      text-align: center;
+      color: var(--muted);
+    }
+
     @media (max-width: 720px) {
-      .data-table { display: block; overflow-x: auto; }
-      .token-reveal { align-items: stretch; flex-direction: column; }
+      .access-header,
+      .top-grid,
+      .access-summary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .reveal-header,
+      .access-table-header {
+        flex-direction: column;
+      }
     }
   `]
 })
@@ -189,6 +378,10 @@ export class AccessTokensComponent implements OnInit {
       this.tokens,
       this.error,
       'Failed to load MCP tokens');
+  }
+
+  activeTokenCount(): number {
+    return this.tokens().filter(token => token.status === 'active').length;
   }
 
   async create(): Promise<void> {

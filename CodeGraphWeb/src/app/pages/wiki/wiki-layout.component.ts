@@ -6,20 +6,33 @@ import { RouterOutlet } from '@angular/router';
   standalone: true,
   imports: [RouterOutlet],
   template: `
-    <div class="wiki-layout">
-      <div class="wiki-content">
+    <div class="wk-layout">
+      <div class="wk-content">
         <router-outlet />
       </div>
     </div>
   `,
   styles: [`
-    .wiki-layout {
-      min-height: 100%;
+    :host {
+      display: block;
+      height: 100%;
     }
 
-    .wiki-content {
+    .wk-layout {
+      display: flex;
+      min-height: 100%;
+      background: var(--bg);
+    }
+
+    .wk-content {
+      flex: 1;
       min-width: 0;
-      padding: 1.5rem 2rem 3rem;
+      padding: 32px 40px 48px;
+      background: var(--bg);
+    }
+
+    @media (max-width: 720px) {
+      .wk-content { padding: 24px 20px 40px; }
     }
   `]
 })

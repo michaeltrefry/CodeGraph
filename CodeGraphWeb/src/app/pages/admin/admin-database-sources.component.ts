@@ -11,67 +11,69 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from './admi
   standalone: true,
   imports: [DatePipe, FormsModule],
   template: `
-    <div class="page-header">
+    <header class="adm-page-header">
       <div>
-        <h2>Database Sources</h2>
-        <p class="subtitle">Configure external databases whose schemas can be indexed later by the standalone indexer.</p>
+        <h1>Database sources</h1>
+        <p>Configure external databases whose schemas can be indexed by the standalone indexer.</p>
       </div>
-      <button type="button" class="primary" (click)="load()" [disabled]="saving()">Refresh</button>
-    </div>
+      <button type="button" class="adm-btn" (click)="load()" [disabled]="saving()">Refresh</button>
+    </header>
 
-    <section class="section-card">
-      <div class="section-header">
+    <section class="adm-card db-key-card">
+      <header class="db-card-head">
         <div>
-          <h3>Encryption Key</h3>
-          <p class="muted">Generate a base64 AES-256 key for CodeGraph:StorageOptions:MariaDbEncryptionKey.</p>
+          <h2>Encryption key</h2>
+          <p>Generate a base64 AES-256 key for CodeGraph:StorageOptions:MariaDbEncryptionKey.</p>
         </div>
-      </div>
+      </header>
       <div class="key-row">
-        <button type="button" (click)="generateKey()">Generate Key</button>
+        <button class="adm-btn" type="button" (click)="generateKey()">Generate Key</button>
         @if (generatedKey()) {
-          <code class="key-value">{{ generatedKey() }}</code>
-          <button type="button" (click)="copyKey()">{{ copyLabel() }}</button>
+          <span class="key-value cg-mono">{{ generatedKey() }}</span>
+          <button class="adm-btn" type="button" (click)="copyKey()">{{ copyLabel() }}</button>
         }
       </div>
     </section>
 
-    <section class="section-card">
-      <h3>Add Source</h3>
-      <div class="form-grid">
-        <label>
-          <span>Server</span>
-          <input type="text" [(ngModel)]="newServerName" placeholder="analytics-db" />
+    <section class="adm-card">
+      <header class="adm-card-head">
+        <span class="adm-section-label">Add source</span>
+      </header>
+      <div class="adm-form-row db-form-row">
+        <label class="adm-field">
+          <span class="adm-field-label">Server</span>
+          <input class="adm-input" type="text" [(ngModel)]="newServerName" placeholder="analytics-db" />
         </label>
-        <label>
-          <span>Database</span>
-          <input type="text" [(ngModel)]="newDatabaseName" placeholder="blank for all" />
+        <label class="adm-field">
+          <span class="adm-field-label">Database</span>
+          <input class="adm-input" type="text" [(ngModel)]="newDatabaseName" placeholder="blank for all" />
         </label>
-        <label class="wide">
-          <span>Connection string</span>
-          <input type="text" [(ngModel)]="newConnectionString" placeholder="Server=...;Database=...;" />
+        <label class="adm-field wide">
+          <span class="adm-field-label">Connection string</span>
+          <input class="adm-input" type="text" [(ngModel)]="newConnectionString" placeholder="Server=...;Database=...;" />
         </label>
-        <button class="primary" type="button" (click)="create()" [disabled]="saving()">Add</button>
+        <button class="adm-btn primary" type="button" (click)="create()" [disabled]="saving()">Add source</button>
       </div>
 
       @if (error()) {
-        <div class="banner error">{{ error() }}</div>
+        <div class="adm-banner err">{{ error() }}</div>
       }
       @if (success()) {
-        <div class="banner success">{{ success() }}</div>
+        <div class="adm-banner ok">{{ success() }}</div>
       }
     </section>
 
-    <section class="section-card">
-      <div class="section-header">
-        <h3>Configured Sources</h3>
+    <section class="adm-card adm-card-flush">
+      <header class="adm-card-head">
+        <span class="adm-section-label">Configured sources</span>
         <div class="section-actions">
-          <span class="count-pill">{{ sources().length }}</span>
-          <button type="button" (click)="syncAll()" [disabled]="saving() || sources().length === 0">Sync All</button>
+          <span class="cg-chip cg-chip-mono">{{ sources().length }}</span>
+          <button class="adm-btn primary" type="button" (click)="syncAll()" [disabled]="saving() || sources().length === 0">Sync All</button>
         </div>
-      </div>
+      </header>
 
       <div class="table-wrap">
-        <table class="data-table">
+        <table class="cg-table">
           <thead>
             <tr>
               <th>Server</th>
@@ -86,26 +88,26 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from './admi
           <tbody>
             @for (source of sources(); track source.id) {
               <tr>
-                <td><code>{{ source.serverName }}</code></td>
-                <td><code>{{ source.databaseName || '(all)' }}</code></td>
-                <td class="connection"><code>{{ source.connectionString }}</code></td>
+                <td><span class="cg-mono cg-small">{{ source.serverName }}</span></td>
+                <td><span class="cg-mono cg-small">{{ source.databaseName || '(all)' }}</span></td>
+                <td class="connection"><span class="cg-mono cg-small">{{ source.connectionString }}</span></td>
                 <td>
-                  <span class="status-pill" [class.active]="source.enabled">
+                  <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="source.enabled" [class.cg-chip-warn]="!source.enabled">
                     {{ source.enabled ? 'Enabled' : 'Disabled' }}
                   </span>
                 </td>
                 <td>{{ source.lastSyncedAt ? (source.lastSyncedAt | date:'short') : 'Never' }}</td>
                 <td>{{ lastRunMessage() || 'None queued' }}</td>
-                <td class="actions">
-                  <button type="button" (click)="sync(source)" [disabled]="saving() || !source.enabled">Sync</button>
-                  <button type="button" (click)="toggle(source)" [disabled]="saving()">{{ source.enabled ? 'Disable' : 'Enable' }}</button>
-                  <button type="button" class="danger" (click)="remove(source)" [disabled]="saving()">Delete</button>
+                <td class="cg-cell-actions">
+                  <button class="adm-btn primary sm" type="button" (click)="sync(source)" [disabled]="saving() || !source.enabled">Sync</button>
+                  <button class="adm-btn sm" type="button" (click)="toggle(source)" [disabled]="saving()">{{ source.enabled ? 'Disable' : 'Enable' }}</button>
+                  <button class="adm-btn ghost-danger sm" type="button" (click)="remove(source)" [disabled]="saving()">Delete</button>
                 </td>
               </tr>
             }
             @if (sources().length === 0) {
               <tr>
-                <td colspan="7" class="empty">No database sources configured.</td>
+                <td colspan="7" class="empty cg-muted">No database sources configured.</td>
               </tr>
             }
           </tbody>
@@ -114,89 +116,52 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from './admi
     </section>
   `,
   styles: [`
-    :host { display: block; }
-    .page-header, .section-header, .key-row {
+    :host { display: flex; flex-direction: column; gap: 18px; }
+    .key-row,
+    .db-card-head {
       display: flex;
       gap: 0.75rem;
       align-items: flex-start;
       justify-content: space-between;
     }
-    .page-header { margin-bottom: 1rem; }
-    h2, h3 { margin: 0; color: #111827; }
-    .subtitle, .muted { margin: 0.35rem 0 0; color: #6b7280; }
-    .section-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 1rem;
+
+    .db-card-head h2 {
+      color: var(--text);
+      font-size: var(--fs-h3);
+      margin: 0;
     }
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(180px, 1fr));
-      gap: 0.75rem;
-      align-items: end;
-      margin-top: 0.75rem;
+
+    .db-card-head p {
+      color: var(--muted);
+      margin: 4px 0 0;
     }
-    label { display: flex; flex-direction: column; gap: 0.25rem; color: #374151; font-weight: 600; }
-    label.wide { grid-column: 1 / -1; }
-    input {
-      padding: 0.5rem 0.6rem;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: #f9fafb;
-      color: #111827;
-      min-width: 0;
+
+    .db-form-row .wide {
+      flex-basis: 100%;
     }
-    button {
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      background: white;
-      color: #374151;
-      cursor: pointer;
-      padding: 0.45rem 0.8rem;
-    }
-    button.primary { background: #2563eb; border-color: #2563eb; color: white; }
-    button.danger { color: #991b1b; border-color: #fecaca; }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
     .key-row { justify-content: flex-start; flex-wrap: wrap; margin-top: 0.75rem; }
     .key-value {
       flex: 1 1 360px;
       min-width: 0;
-      border: 1px solid #e5e7eb;
-      border-radius: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      color: var(--accent-ink);
       padding: 0.45rem 0.6rem;
+      overflow-wrap: anywhere;
     }
-    .table-wrap { overflow-x: auto; margin-top: 0.75rem; }
-    .data-table { width: 100%; min-width: 820px; border-collapse: collapse; }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid #e5e7eb;
-      padding: 0.6rem;
-      text-align: left;
-      vertical-align: top;
-    }
-    .data-table th { color: #374151; font-weight: 600; }
+    .table-wrap { overflow-x: auto; }
+    .cg-table { min-width: 820px; }
     .section-actions { display: flex; align-items: center; gap: 0.5rem; }
     .connection { max-width: 320px; }
-    .actions { display: flex; justify-content: flex-end; gap: 0.4rem; }
-    .count-pill, .status-pill {
-      border-radius: 999px;
-      background: #f3f4f6;
-      color: #374151;
-      flex: 0 0 auto;
-      font-size: 0.78rem;
-      font-weight: 700;
-      padding: 0.2rem 0.6rem;
-    }
-    .status-pill.active { background: #dcfce7; color: #166534; }
-    .banner { border-radius: 8px; margin-top: 0.75rem; padding: 0.7rem 0.85rem; }
-    .banner.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-    .banner.success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
-    .empty { color: #6b7280; text-align: center; }
-    code { overflow-wrap: anywhere; white-space: normal; }
+    .empty { text-align: center; }
     @media (max-width: 760px) {
-      .page-header, .section-header { flex-direction: column; }
-      .form-grid { grid-template-columns: 1fr; }
+      .adm-card-head,
+      .db-card-head {
+        align-items: stretch;
+        flex-direction: column;
+      }
     }
   `]
 })

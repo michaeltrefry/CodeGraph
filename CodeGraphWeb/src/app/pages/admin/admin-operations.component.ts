@@ -16,110 +16,249 @@ interface OperationResult {
   standalone: true,
   imports: [FormsModule],
   template: `
-    <h2>Operations</h2>
+    <header class="adm-page-header">
+      <div>
+        <h1>Operations</h1>
+        <p>Trigger repository discovery, indexing, graph linking, MCP documentation, and cleanup jobs.</p>
+      </div>
+      @if (running()) {
+        <span class="cg-chip cg-chip-accent cg-chip-dot">running</span>
+      }
+    </header>
 
     <div class="operations-grid">
-      <div class="op-card">
-        <h3>Process Repos</h3>
-        <p>Publish ProcessRepository messages for specific repos. One repo path per line.</p>
-        <textarea [(ngModel)]="repoList" rows="4" placeholder="orders-api&#10;billing-service&#10;..."></textarea>
+      <article class="adm-card op-card op-card-wide">
+        <header class="op-card-head">
+          <div>
+            <h2>Process Repos</h2>
+            <p>Publish ProcessRepository messages for specific repos. One repo path per line.</p>
+          </div>
+          <span class="cg-chip">targeted</span>
+        </header>
+
+        <label class="adm-field">
+          <span class="adm-field-label">Repository paths</span>
+          <textarea class="adm-textarea op-textarea" [(ngModel)]="repoList" rows="4" placeholder="orders-api&#10;billing-service&#10;..."></textarea>
+        </label>
+
         <div class="options-grid">
-          <label><input type="checkbox" [(ngModel)]="processShouldIndex" /> Index</label>
-          <label><input type="checkbox" [(ngModel)]="processShouldAnalyze" /> Analyze</label>
-          <label><input type="checkbox" [(ngModel)]="processSkipIfUpToDate" /> Skip up-to-date</label>
-          <label><input type="checkbox" [(ngModel)]="processIncludeAllSource" /> Include all source</label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="processShouldIndex" /><span>Index</span></label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="processShouldAnalyze" /><span>Analyze</span></label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="processSkipIfUpToDate" /><span>Skip up-to-date</span></label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="processIncludeAllSource" /><span>Include all source</span></label>
         </div>
-        <button (click)="runProcessRepos()" [disabled]="running()">Process</button>
-      </div>
 
-      <div class="op-card">
-        <h3>Re-Index All</h3>
-        <p>Publish ProcessRepository messages for all known repos.</p>
-        <button (click)="confirmAndRun('indexer/repositories/reindex-all', 'Re-index ALL repositories? This may take a while.')" [disabled]="running()">Run</button>
-      </div>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="runProcessRepos()" [disabled]="running()">Process</button>
+        </div>
+      </article>
 
-      <div class="op-card">
-        <h3>Link &amp; Detect Clusters</h3>
-        <p>Run cross-repo linking then community detection (Louvain clustering).</p>
-        <button (click)="confirmAndRun('indexer/link-and-detect', 'Run cross-repo linking + community detection?')" [disabled]="running()">Run</button>
-      </div>
+      <article class="adm-card op-card">
+        <header class="op-card-head">
+          <div>
+            <h2>Re-Index All</h2>
+            <p>Publish ProcessRepository messages for all known repos.</p>
+          </div>
+          <span class="cg-chip cg-chip-warn">bulk</span>
+        </header>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="confirmAndRun('indexer/repositories/reindex-all', 'Re-index ALL repositories? This may take a while.')" [disabled]="running()">Run</button>
+        </div>
+      </article>
 
-      <div class="op-card">
-        <h3>Detect Communities Only</h3>
-        <p>Re-run Louvain clustering on existing cross-repo edges (no re-linking).</p>
-        <button (click)="confirmAndRun('indexer/communities/detect', 'Re-run community detection?')" [disabled]="running()">Run</button>
-      </div>
+      <article class="adm-card op-card">
+        <header class="op-card-head">
+          <div>
+            <h2>Link &amp; Detect Clusters</h2>
+            <p>Run cross-repo linking then community detection.</p>
+          </div>
+          <span class="cg-chip cg-chip-accent">graph</span>
+        </header>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="confirmAndRun('indexer/link-and-detect', 'Run cross-repo linking + community detection?')" [disabled]="running()">Run</button>
+        </div>
+      </article>
 
-      <div class="op-card">
-        <h3>Discover</h3>
-        <p>Discover repositories from the configured source provider and index new ones.</p>
-        <input type="text" [(ngModel)]="discoverFilter" placeholder="Regex filter (optional)" />
-        <input type="number" [(ngModel)]="discoverLimit" min="1" placeholder="Limit (optional)" />
+      <article class="adm-card op-card">
+        <header class="op-card-head">
+          <div>
+            <h2>Detect Communities Only</h2>
+            <p>Re-run clustering on existing cross-repo edges without re-linking.</p>
+          </div>
+          <span class="cg-chip cg-chip-accent">clusters</span>
+        </header>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="confirmAndRun('indexer/communities/detect', 'Re-run community detection?')" [disabled]="running()">Run</button>
+        </div>
+      </article>
+
+      <article class="adm-card op-card">
+        <header class="op-card-head">
+          <div>
+            <h2>Discover</h2>
+            <p>Discover repositories from the configured source provider and index new ones.</p>
+          </div>
+          <span class="cg-chip">source</span>
+        </header>
+
+        <div class="op-form-grid">
+          <label class="adm-field">
+            <span class="adm-field-label">Regex filter</span>
+            <input class="adm-input" type="text" [(ngModel)]="discoverFilter" placeholder="Optional" />
+          </label>
+          <label class="adm-field narrow">
+            <span class="adm-field-label">Limit</span>
+            <input class="adm-input" type="number" [(ngModel)]="discoverLimit" min="1" placeholder="Optional" />
+          </label>
+        </div>
+
         <div class="options-grid">
-          <label><input type="checkbox" [(ngModel)]="discoverShouldIndex" /> Index</label>
-          <label><input type="checkbox" [(ngModel)]="discoverShouldAnalyze" /> Analyze</label>
-          <label><input type="checkbox" [(ngModel)]="discoverSkipIfUpToDate" /> Skip up-to-date</label>
-          <label><input type="checkbox" [(ngModel)]="discoverIncludeAllSource" /> Include all source</label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="discoverShouldIndex" /><span>Index</span></label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="discoverShouldAnalyze" /><span>Analyze</span></label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="discoverSkipIfUpToDate" /><span>Skip up-to-date</span></label>
+          <label class="adm-checkbox"><input type="checkbox" [(ngModel)]="discoverIncludeAllSource" /><span>Include all source</span></label>
         </div>
-        <button (click)="runDiscover()" [disabled]="running()">Run</button>
-      </div>
 
-      <div class="op-card">
-        <h3>Process Batch Analysis</h3>
-        <p>Process pending batch analysis results.</p>
-        <input type="text" [(ngModel)]="batchRepo" placeholder="Repo filter (optional)" />
-        <button (click)="runBatchAnalysis()" [disabled]="running()">Run</button>
-      </div>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="runDiscover()" [disabled]="running()">Run</button>
+        </div>
+      </article>
 
-      <div class="op-card">
-        <h3>Regenerate MCP Docs</h3>
-        <p>Regenerate MCP documentation wiki pages from current tool metadata.</p>
-        <button (click)="confirmAndRun('settings/mcp/regenerate', 'Regenerate all MCP documentation pages?')" [disabled]="running()">Run</button>
-      </div>
+      <article class="adm-card op-card">
+        <header class="op-card-head">
+          <div>
+            <h2>Process Batch Analysis</h2>
+            <p>Process pending batch analysis results.</p>
+          </div>
+          <span class="cg-chip">analysis</span>
+        </header>
+        <label class="adm-field">
+          <span class="adm-field-label">Repository filter</span>
+          <input class="adm-input" type="text" [(ngModel)]="batchRepo" placeholder="Optional" />
+        </label>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="runBatchAnalysis()" [disabled]="running()">Run</button>
+        </div>
+      </article>
+
+      <article class="adm-card op-card">
+        <header class="op-card-head">
+          <div>
+            <h2>Regenerate MCP Docs</h2>
+            <p>Regenerate MCP documentation wiki pages from current tool metadata.</p>
+          </div>
+          <span class="cg-chip cg-chip-accent">wiki</span>
+        </header>
+        <div class="op-actions">
+          <button class="adm-btn primary" type="button" (click)="confirmAndRun('settings/mcp/regenerate', 'Regenerate all MCP documentation pages?')" [disabled]="running()">Run</button>
+        </div>
+      </article>
     </div>
 
     @if (result()) {
-      <div class="result" [class.error]="!result()!.success">
+      <section class="adm-card result-card" [class.error]="!result()!.success">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Last result</span>
+          <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="result()!.success" [class.cg-chip-err]="!result()!.success">
+            {{ result()!.success ? 'success' : 'failed' }}
+          </span>
+        </header>
         <pre>{{ result()!.message }}</pre>
-      </div>
+      </section>
     }
   `,
   styles: [`
-    .operations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
-    .op-card {
-      padding: 1rem; border-radius: 8px; border: 1px solid #e5e7eb;
-      background: white;
+    :host { display: flex; flex-direction: column; gap: 18px; }
+
+    .operations-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 14px;
     }
-    .op-card h3 { margin: 0 0 0.5rem; color: #111827; }
-    .op-card p { font-size: 0.85rem; color: #6b7280; margin: 0 0 0.75rem; }
-    .op-card input, .op-card textarea {
-      width: 100%; padding: 0.4rem; margin-bottom: 0.5rem; border-radius: 4px;
-      border: 1px solid #d1d5db;
-      background: #f9fafb; color: #111827; font-family: inherit; font-size: 0.85rem;
+
+    .op-card {
+      min-height: 190px;
+    }
+
+    .op-card-wide {
+      grid-column: span 2;
+    }
+
+    .op-card-head {
+      display: flex;
+      gap: 12px;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .op-card h2 {
+      color: var(--text);
+      font-size: var(--fs-h3);
+      margin: 0;
+    }
+
+    .op-card p {
+      color: var(--muted);
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      margin: 4px 0 0;
+    }
+
+    .op-textarea {
+      min-height: 112px;
       resize: vertical;
     }
+
+    .op-form-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(110px, 140px);
+      gap: 10px;
+    }
+
     .options-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.4rem 0.75rem;
-      margin-bottom: 0.75rem;
-      font-size: 0.82rem;
-      color: #374151;
+      gap: 4px 8px;
     }
-    .options-grid label {
+
+    .op-actions {
       display: flex;
-      align-items: center;
-      gap: 0.35rem;
+      justify-content: flex-end;
+      margin-top: auto;
     }
-    button {
-      padding: 0.4rem 1rem; border-radius: 6px; border: none;
-      background: #2563eb; color: white; cursor: pointer;
+
+    .result-card {
+      gap: 12px;
     }
-    button:hover { background: #1d4ed8; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .result { margin-top: 1rem; padding: 1rem; border-radius: 8px; background: #f3f4f6; color: #111827; }
-    .result.error { border-left: 3px solid #ef4444; }
-    .result pre { margin: 0; white-space: pre-wrap; font-size: 0.85rem; }
+
+    .result-card.error {
+      border-color: color-mix(in oklab, var(--sem-red) 35%, var(--border));
+    }
+
+    .result-card pre {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      margin: 0;
+      overflow-x: auto;
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 760px) {
+      .op-card-wide {
+        grid-column: auto;
+      }
+
+      .op-form-grid,
+      .options-grid {
+        grid-template-columns: 1fr;
+      }
+    }
   `]
 })
 export class AdminOperationsComponent {

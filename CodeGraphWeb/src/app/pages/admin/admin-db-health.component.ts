@@ -9,92 +9,98 @@ import { DatabaseHealthResponse } from '../../core/models';
   standalone: true,
   imports: [DatePipe],
   template: `
-    <div class="page-header">
+    <header class="adm-page-header">
       <div>
-        <h2>DB Health</h2>
-        <p class="subtitle">Check for schema drift, offline indexes, and duplicate hot spots that can hurt insert performance.</p>
+        <h1>DB health</h1>
+        <p>Check for schema drift, offline indexes, and duplicate hot spots that can hurt insert performance.</p>
       </div>
-      <button class="primary" (click)="load()" [disabled]="loading()">
+      <button class="adm-btn primary" type="button" (click)="load()" [disabled]="loading()">
         {{ loading() ? 'Refreshing…' : 'Refresh' }}
       </button>
-    </div>
+    </header>
 
     @if (error()) {
-      <div class="banner error">{{ error() }}</div>
+      <div class="adm-banner err">{{ error() }}</div>
     }
 
     @if (health(); as h) {
       <div class="summary-grid">
-        <div class="summary-card">
+        <article class="adm-card summary-card">
           <div class="summary-label">Overall</div>
           <div class="summary-value">
-            <span class="status-pill" [class.healthy]="h.status === 'healthy'" [class.warning]="h.status === 'warning'" [class.critical]="h.status === 'critical'">
+            <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="h.status === 'healthy'" [class.cg-chip-warn]="h.status === 'warning'" [class.cg-chip-err]="h.status === 'critical'">
               {{ h.status }}
             </span>
           </div>
           <div class="summary-meta">Captured {{ h.capturedAt | date:'medium' }}</div>
-        </div>
+        </article>
 
-        <div class="summary-card">
+        <article class="adm-card summary-card">
           <div class="summary-label">Constraints</div>
           <div class="summary-value">{{ h.constraintCount }}/{{ h.expectedConstraintCount }}</div>
           <div class="summary-meta">{{ h.missingConstraints.length }} missing</div>
-        </div>
+        </article>
 
-        <div class="summary-card">
+        <article class="adm-card summary-card">
           <div class="summary-label">Indexes</div>
           <div class="summary-value">{{ h.indexCount }}/{{ h.expectedIndexCount }}</div>
           <div class="summary-meta">{{ h.missingIndexes.length }} missing, {{ h.offlineIndexes.length }} offline</div>
-        </div>
+        </article>
 
-        <div class="summary-card">
+        <article class="adm-card summary-card">
           <div class="summary-label">Duplicate Hot Spots</div>
           <div class="summary-value">{{ h.duplicateGroups.length }}</div>
           <div class="summary-meta">Top 50 issue groups</div>
-        </div>
+        </article>
       </div>
 
-      <div class="section-card">
-        <div class="section-header">
-          <h3>Missing Constraints</h3>
-          <span class="section-state" [class.ok]="h.missingConstraints.length === 0">{{ h.missingConstraints.length === 0 ? 'Healthy' : h.missingConstraints.length + ' missing' }}</span>
-        </div>
+      <section class="adm-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Missing constraints</span>
+          <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="h.missingConstraints.length === 0" [class.cg-chip-warn]="h.missingConstraints.length > 0">
+            {{ h.missingConstraints.length === 0 ? 'healthy' : h.missingConstraints.length + ' missing' }}
+          </span>
+        </header>
         @if (h.missingConstraints.length === 0) {
-          <p class="empty">All expected named constraints are present.</p>
+          <p class="empty cg-muted">All expected named constraints are present.</p>
         } @else {
           <div class="chip-list">
             @for (name of h.missingConstraints; track name) {
-              <code>{{ name }}</code>
+              <span class="cg-chip cg-chip-mono">{{ name }}</span>
             }
           </div>
         }
-      </div>
+      </section>
 
-      <div class="section-card">
-        <div class="section-header">
-          <h3>Missing Indexes</h3>
-          <span class="section-state" [class.ok]="h.missingIndexes.length === 0">{{ h.missingIndexes.length === 0 ? 'Healthy' : h.missingIndexes.length + ' missing' }}</span>
-        </div>
+      <section class="adm-card">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Missing indexes</span>
+          <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="h.missingIndexes.length === 0" [class.cg-chip-warn]="h.missingIndexes.length > 0">
+            {{ h.missingIndexes.length === 0 ? 'healthy' : h.missingIndexes.length + ' missing' }}
+          </span>
+        </header>
         @if (h.missingIndexes.length === 0) {
-          <p class="empty">All expected named indexes are present.</p>
+          <p class="empty cg-muted">All expected named indexes are present.</p>
         } @else {
           <div class="chip-list">
             @for (name of h.missingIndexes; track name) {
-              <code>{{ name }}</code>
+              <span class="cg-chip cg-chip-mono">{{ name }}</span>
             }
           </div>
         }
-      </div>
+      </section>
 
-      <div class="section-card">
-        <div class="section-header">
-          <h3>Offline Indexes</h3>
-          <span class="section-state" [class.ok]="h.offlineIndexes.length === 0">{{ h.offlineIndexes.length === 0 ? 'Healthy' : h.offlineIndexes.length + ' issue(s)' }}</span>
-        </div>
+      <section class="adm-card adm-card-flush">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Offline indexes</span>
+          <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="h.offlineIndexes.length === 0" [class.cg-chip-err]="h.offlineIndexes.length > 0">
+            {{ h.offlineIndexes.length === 0 ? 'healthy' : h.offlineIndexes.length + ' issue(s)' }}
+          </span>
+        </header>
         @if (h.offlineIndexes.length === 0) {
-          <p class="empty">All tracked indexes are online.</p>
+          <p class="empty cg-muted">All tracked indexes are online.</p>
         } @else {
-          <table class="data-table">
+          <table class="cg-table">
             <thead>
               <tr>
                 <th>Name</th>
@@ -107,7 +113,7 @@ import { DatabaseHealthResponse } from '../../core/models';
             <tbody>
               @for (index of h.offlineIndexes; track index.name) {
                 <tr>
-                  <td><code>{{ index.name }}</code></td>
+                  <td><span class="cg-mono cg-small">{{ index.name }}</span></td>
                   <td>{{ index.type }}</td>
                   <td>{{ index.state }}</td>
                   <td>{{ formatTarget(index.labelsOrTypes, index.properties) }}</td>
@@ -117,17 +123,19 @@ import { DatabaseHealthResponse } from '../../core/models';
             </tbody>
           </table>
         }
-      </div>
+      </section>
 
-      <div class="section-card">
-        <div class="section-header">
-          <h3>Duplicate Hot Spots</h3>
-          <span class="section-state" [class.ok]="h.duplicateGroups.length === 0">{{ h.duplicateGroups.length === 0 ? 'Healthy' : h.duplicateGroups.length + ' issue group(s)' }}</span>
-        </div>
+      <section class="adm-card adm-card-flush">
+        <header class="adm-card-head">
+          <span class="adm-section-label">Duplicate hot spots</span>
+          <span class="cg-chip cg-chip-dot" [class.cg-chip-ok]="h.duplicateGroups.length === 0" [class.cg-chip-warn]="h.duplicateGroups.length > 0">
+            {{ h.duplicateGroups.length === 0 ? 'healthy' : h.duplicateGroups.length + ' issue group(s)' }}
+          </span>
+        </header>
         @if (h.duplicateGroups.length === 0) {
-          <p class="empty">No duplicate counter or CodeNode groups were detected in the current scan.</p>
+          <p class="empty cg-muted">No duplicate counter or CodeNode groups were detected in the current scan.</p>
         } @else {
-          <table class="data-table">
+          <table class="cg-table">
             <thead>
               <tr>
                 <th>Category</th>
@@ -140,121 +148,54 @@ import { DatabaseHealthResponse } from '../../core/models';
               @for (group of h.duplicateGroups; track duplicateTrackKey(group)) {
                 <tr>
                   <td>{{ group.category }}</td>
-                  <td><code>{{ group.key }}</code></td>
-                  <td>{{ group.count }}</td>
+                  <td><span class="cg-mono cg-small">{{ group.key }}</span></td>
+                  <td class="cg-cell-num">{{ group.count }}</td>
                   <td>{{ formatSamples(group.sampleValues) }}</td>
                 </tr>
               }
             </tbody>
           </table>
         }
-      </div>
+      </section>
     }
   `,
   styles: [`
-    :host { display: block; }
-    .page-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: flex-start;
-      margin-bottom: 1rem;
-    }
-    h2 { margin: 0 0 0.35rem; color: #111827; }
-    .subtitle { margin: 0; color: #6b7280; max-width: 60rem; }
+    :host { display: flex; flex-direction: column; gap: 18px; }
+
     .summary-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-      margin-bottom: 1rem;
+      gap: 14px;
     }
-    .summary-card, .section-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 10px;
-      padding: 1rem;
-    }
+
     .summary-label {
-      font-size: 0.82rem;
+      font-size: var(--fs-xs);
       text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: #6b7280;
-      margin-bottom: 0.35rem;
+      letter-spacing: 0.06em;
+      color: var(--muted);
     }
+
     .summary-value {
-      font-size: 1.6rem;
+      font-size: 26px;
       font-weight: 700;
-      color: #111827;
-      margin-bottom: 0.25rem;
+      color: var(--text);
     }
-    .summary-meta { color: #6b7280; font-size: 0.85rem; }
-    .status-pill, .section-state {
-      display: inline-flex;
-      align-items: center;
-      border-radius: 999px;
-      padding: 0.2rem 0.65rem;
-      font-size: 0.82rem;
-      font-weight: 600;
-      text-transform: capitalize;
+
+    .summary-meta {
+      color: var(--muted);
+      font-size: var(--fs-sm);
     }
-    .status-pill.healthy, .section-state.ok { background: #dcfce7; color: #166534; }
-    .status-pill.warning { background: #fef3c7; color: #92400e; }
-    .status-pill.critical { background: #fee2e2; color: #991b1b; }
-    .section-card { margin-bottom: 1rem; }
-    .section-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: center;
-      margin-bottom: 0.75rem;
+
+    .empty {
+      margin: 0;
+      padding: 16px 20px;
     }
-    .section-header h3 { margin: 0; color: #111827; }
-    .empty { margin: 0; color: #4b5563; }
+
     .chip-list {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.5rem;
+      gap: 8px;
     }
-    code {
-      background: #f3f4f6;
-      border-radius: 4px;
-      color: #374151;
-      padding: 0.2rem 0.45rem;
-      font-size: 0.82rem;
-    }
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    .data-table th, .data-table td {
-      padding: 0.55rem;
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
-      vertical-align: top;
-      font-size: 0.86rem;
-      color: #111827;
-    }
-    .data-table th { color: #374151; font-weight: 600; }
-    .banner {
-      border-radius: 8px;
-      padding: 0.8rem 1rem;
-      margin-bottom: 1rem;
-    }
-    .banner.error {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #991b1b;
-    }
-    button.primary {
-      padding: 0.5rem 0.9rem;
-      border-radius: 6px;
-      border: none;
-      background: #2563eb;
-      color: white;
-      cursor: pointer;
-    }
-    button.primary:hover { background: #1d4ed8; }
-    button.primary:disabled { opacity: 0.6; cursor: not-allowed; }
   `]
 })
 export class AdminDbHealthComponent implements OnInit {
