@@ -129,6 +129,18 @@ describe('AdminLlmComponent', () => {
     expect(component.providers[0].message).toBe('Provider saved.');
   });
 
+  it('treats an initially unset provider token as a replacement write', async () => {
+    await component.ngOnInit();
+    const provider = component.providers[0];
+    provider.tokenValue = 'first-token';
+
+    await component.saveProvider(provider);
+
+    expect(api.updateLlmProvider).toHaveBeenCalledWith('anthropic', expect.objectContaining({
+      token: { action: 'Replace', value: 'first-token' }
+    }));
+  });
+
   it('maps field-keyed validation errors onto default model controls', async () => {
     await component.ngOnInit();
     api.updateLlmAnalysis.mockReturnValue(throwError(() => ({
