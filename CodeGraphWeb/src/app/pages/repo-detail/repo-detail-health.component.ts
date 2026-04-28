@@ -28,27 +28,21 @@ export class RepoDetailHealthComponent implements OnChanges {
   @Input() security: ProjectSecurityResponse | null = null;
   @Input() detail: ProjectDetailResponse | null = null;
 
-  healthDetailsOpen = signal(false);
   securityOpen = signal(false);
 
   readonly confidenceColors = CONFIDENCE_COLORS;
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['projectName']) {
-      this.healthDetailsOpen.set(false);
       this.securityOpen.set(false);
     }
-  }
-
-  toggleHealthDetails() {
-    this.healthDetailsOpen.update(v => !v);
   }
 
   toggleSecurity() {
     this.securityOpen.update(v => !v);
   }
 
-  hasExpandableContent(): boolean {
+  hasDetailContent(): boolean {
     const health = this.health;
     return !!health && (
       !!health.securitySummary ||

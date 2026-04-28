@@ -99,12 +99,9 @@ export class RepoDetailComponent implements OnInit {
   readonly labelIcons = LABEL_ICONS;
   readonly confidenceColors = CONFIDENCE_COLORS;
   private readonly diagnosticPreviewLimit = 20;
+  // Keep repository review streams alive across normal SPA navigation; the run itself is server-side background work.
   private reviewStreamController: AbortController | null = null;
   private loadRequestId = 0;
-
-  constructor() {
-    this.destroyRef.onDestroy(() => this.abortRepositoryReviewStream());
-  }
 
   headerSubtitle = computed<string>(() => {
     const d = this.detail();
