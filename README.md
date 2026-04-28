@@ -214,16 +214,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
-To run the Docker stack over HTTPS locally, generate a certificate before starting compose:
-
-```bash
-mkcert -install
-mkdir -p CodeGraphWeb/certs
-mkcert -cert-file CodeGraphWeb/certs/localhost.pem -key-file CodeGraphWeb/certs/localhost-key.pem localhost 127.0.0.1 ::1
-```
-
-The compose stack terminates TLS in the `codegraph-web` container and forwards the API and MCP traffic to the internal `codegraph-api` container over the Docker network.
-By default it binds only to `127.0.0.1:8443` so it does not take over shared host ports like `80` or `443`.
+The compose stack serves the Angular UI over plain HTTP from the `codegraph-web` container and forwards API, Swagger, and MCP traffic to the internal `codegraph-api` container over the Docker network.
+By default it binds only to `127.0.0.1:4280` so it does not take over shared host ports like `80` or `443`. Public TLS should be terminated by the host reverse proxy, such as Caddy.
 
 The compose stack includes the CodeGraph application services:
 
@@ -240,12 +232,12 @@ By default compose mounts the parent repo folder (`../`) into the containers at 
 
 Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`.
 
-Docker HTTPS endpoints:
+Docker endpoints:
 
-- Web UI: [https://localhost:8443](https://localhost:8443)
-- API: [https://localhost:8443/api](https://localhost:8443/api)
-- Swagger: [https://localhost:8443/swagger](https://localhost:8443/swagger)
-- MCP: [https://localhost:8443/mcp](https://localhost:8443/mcp)
+- Web UI: [http://localhost:4280](http://localhost:4280)
+- API: [http://localhost:4280/api](http://localhost:4280/api)
+- Swagger: [http://localhost:4280/swagger](http://localhost:4280/swagger)
+- MCP: [http://localhost:4280/mcp](http://localhost:4280/mcp)
 - Indexer host: [http://localhost:5042](http://localhost:5042)
 - Indexer sidecar health: [http://localhost:5042/health/sidecar](http://localhost:5042/health/sidecar)
 - Memory host: [http://localhost:5039](http://localhost:5039)
@@ -258,7 +250,7 @@ For the public deployment, expose the services as:
 
 - Web UI: `https://codegraph.trefry.net`
 - API: `https://codegraph-api.trefry.net/api`
-- MCP: `https://codegraph-mcp.trefry.net/mcp`
+- MCP: `https://codegraph-api.trefry.net/mcp`
 - Identity provider: `https://identity.trefry.net`
 
 The Angular app uses Authorization Code + PKCE. The API validates bearer JWTs from the configured authority. MCP access is restricted to user-issued personal access tokens and should not accept browser OAuth tokens.
