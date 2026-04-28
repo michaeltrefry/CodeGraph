@@ -279,10 +279,7 @@ services:
       context: ./CodeGraphWeb
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:${CODEGRAPH_DOCKER_HTTPS_PORT:-8443}:443"
-    volumes:
-      - ${CODEGRAPH_DOCKER_TLS_CERT_PATH:-./CodeGraphWeb/certs/localhost.pem}:/etc/nginx/certs/localhost.pem:ro
-      - ${CODEGRAPH_DOCKER_TLS_KEY_PATH:-./CodeGraphWeb/certs/localhost-key.pem}:/etc/nginx/certs/localhost-key.pem:ro
+      - "127.0.0.1:${CODEGRAPH_DOCKER_HTTP_PORT:-4380}:80"
     depends_on:
       codegraph-api:
         condition: service_started
