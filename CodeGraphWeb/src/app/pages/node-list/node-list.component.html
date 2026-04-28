@@ -23,7 +23,7 @@
       <p>{{ dotnetProject() || projectName() }}</p>
     </div>
     @if (!loading()) {
-      <span class="cg-count-pill">{{ total().toLocaleString() }} nodes</span>
+      <span class="cg-count-pill">{{ displayTotal().toLocaleString() }} nodes</span>
     }
   </header>
 
@@ -60,7 +60,7 @@
         <span class="nl-section-expand">{{ isSectionExpanded(section.label) ? 'v' : '>' }}</span>
         <span class="nl-section-icon">{{ section.icon }}</span>
         <span class="nl-section-label">{{ pluralize(section.label) }}</span>
-        <span class="cg-chip cg-chip-mono">{{ section.containers.length + section.standalone.length }}</span>
+        <span class="cg-chip cg-chip-mono">{{ section.totalCount.toLocaleString() }}</span>
         @if (section.containers.length > 0 && isSectionExpanded(section.label)) {
           <span class="nl-expand-all"
                 role="button"
@@ -130,7 +130,7 @@
     </section>
   } @empty {
     @if (!loading()) {
-      <div class="nl-state">No nodes found.</div>
+      <div class="nl-state" [class.nl-state-error]="loadError()">{{ emptyStateMessage() }}</div>
     }
   }
 </div>

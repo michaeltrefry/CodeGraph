@@ -54,7 +54,9 @@ export class NodeListComponent implements OnInit {
   dotnetProject = signal('');
   allNodes = signal<GraphNode[]>([]);
   total = signal(0);
+  indexedTotal = signal(0);
   loading = signal(true);
+  loadError = signal('');
   analysis = signal<StoredProjectAnalysis | null>(null);
 
   /** Which sections are expanded (by label name) */
@@ -64,6 +66,24 @@ export class NodeListComponent implements OnInit {
 
   readonly labelIcons: Record<string, string> = LABEL_ICONS;
   readonly confidenceColors = CONFIDENCE_COLORS;
+
+  displayTotal = computed(() => {
+    const loadedTotal = this.total();
+    return loadedTotal > 0 ? loadedTotal : this.indexedTotal();
+  });
+
+  emptyStateMessage = computed(() => {
+    const total = this.displayTotal();
+    if (this.loadError()) {
+      return total > 0
+        ? `${total.toLocaleString()} nodes are indexed, but the node list could not be loaded.`
+        : 'Could not load nodes.';
+    }
+
+    return total > 0
+      ? `${total.toLocaleString()} nodes are indexed, but this response did not include any nodes.`
+      : 'No nodes found.';
+  });
 
   sections = computed<NodeSection[]>(() => {
     const nodes = this.allNodes();
@@ -242,6 +262,7 @@ export class NodeListComponent implements OnInit {
 
   load() {
     this.loading.set(true);
+    this.loadError.set('');
     // Load all nodes at once for tree building
     this.api.getProjectNodes(
       this.projectName(),
@@ -251,8 +272,9 @@ export class NodeListComponent implements OnInit {
       10000
     ).subscribe({
       next: r => {
-        this.allNodes.set(r.items);
-        this.total.set(r.total);
+        this.allNodes.set(r.items ?? []);
+        this.total.set(r.total ?? r.items?.length ?? 0);
+        this.loadError.set('');
         // Auto-expand all sections when filtered to a single label, or if few sections
         const sections = this.sections();
         if (this.label() || sections.length <= 3) {
@@ -260,12 +282,18 @@ export class NodeListComponent implements OnInit {
         }
         this.loading.set(false);
       },
-      error: () => this.loading.set(false)
+      error: () => {
+        this.loadError.set('Node list request failed.');
+        this.allNodes.set([]);
+        this.total.set(0);
+        this.loading.set(false);
+      }
     });
 
     // Load project detail to get matching analysis
     this.api.getProject(this.projectName()).subscribe({
       next: d => {
+        this.indexedTotal.set(this.countIndexedNodes(d));
         const dp = this.dotnetProject();
         if (dp) {
           // Find analysis matching the dotnet project
@@ -368,5 +396,25 @@ export class NodeListComponent implements OnInit {
     // Sort constructors first, then by label, then by name
     const labelOrder = node.label === 'Constructor' ? '0' : node.label === 'Property' ? '1' : '2';
     return `${labelOrder}_${node.name}`;
+  }
+
+  private countIndexedNodes(detail: { nodeCounts?: Record<string, number>; dotnetProjects?: Record<string, Record<string, number>> }): number {
+    const label = this.label();
+    const dotnetProject = this.dotnetProject();
+
+    if (dotnetProject) {
+      const counts = detail.dotnetProjects?.[dotnetProject] ?? this.findCaseInsensitive(detail.dotnetProjects, dotnetProject);
+      if (!counts) return 0;
+      return label ? counts[label] ?? 0 : Object.values(counts).reduce((sum, count) => sum + count, 0);
+    }
+
+    const counts = detail.nodeCounts ?? {};
+    return label ? counts[label] ?? 0 : Object.values(counts).reduce((sum, count) => sum + count, 0);
+  }
+
+  private findCaseInsensitive<T>(values: Record<string, T> | undefined, key: string): T | undefined {
+    if (!values) return undefined;
+    const match = Object.entries(values).find(([name]) => name.toLowerCase() === key.toLowerCase());
+    return match?.[1];
   }
 }
