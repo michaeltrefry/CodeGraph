@@ -1,7 +1,19 @@
 <div class="shell" [attr.data-nav]="sidebarCollapsed() ? 'collapsed' : 'expanded'">
   <aside class="nav">
     <a class="nav-brand" routerLink="/">
-      <span class="brand-mark"></span>
+      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="28" height="28" rx="7" fill="color-mix(in oklab, currentColor 13%, #10151f)"/>
+        <rect x="2.5" y="2.5" width="27" height="27" rx="6.5" stroke="color-mix(in oklab, currentColor 36%, #2d3748)"/>
+        <path d="M10 10.5 16 8l6 4.8v7.1L16 24l-6-4.1z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M10 19.9 16 15l6 4.9M16 8v7m0 0 6-2.2m-6 2.2-6-4.5" stroke="color-mix(in oklab, currentColor 70%, white)" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/>
+        <circle cx="10" cy="10.5" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #06d6a0)" stroke-width="1.8"/>
+        <circle cx="16" cy="8" r="2.5" fill="#10151f" stroke="color-mix(in oklab, currentColor 80%, white)" stroke-width="1.8"/>
+        <circle cx="22" cy="12.8" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 80%, white)" stroke-width="1.8"/>
+        <circle cx="22" cy="19.9" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #bc8cff)" stroke-width="1.8"/>
+        <circle cx="16" cy="24" r="2.5" fill="#10151f" stroke="color-mix(in oklab, currentColor 65%, #8f7bff)" stroke-width="1.8"/>
+        <circle cx="10" cy="19.9" r="2.7" fill="#10151f" stroke="color-mix(in oklab, currentColor 60%, #06d6a0)" stroke-width="1.8"/>
+        <rect x="13" y="12" width="6" height="6" rx="1.5" fill="#10151f" stroke="#e7e9ee" stroke-width="1.6"/>
+      </svg>
       <span class="brand-wordmark">CodeGraph</span>
     </a>
 
