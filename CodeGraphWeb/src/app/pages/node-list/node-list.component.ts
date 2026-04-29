@@ -48,6 +48,8 @@ export class NodeListComponent implements OnInit {
   private api = inject(ApiService);
   private route = inject(ActivatedRoute);
   private chatContext = inject(ChatContextService);
+  private readonly nodePageSize = 500;
+  private nodeLoadRequestId = 0;
 
   projectName = signal('');
   label = signal('');
@@ -261,34 +263,14 @@ export class NodeListComponent implements OnInit {
   }
 
   load() {
+    const requestId = ++this.nodeLoadRequestId;
     this.loading.set(true);
     this.loadError.set('');
-    // Load all nodes at once for tree building
-    this.api.getProjectNodes(
-      this.projectName(),
-      this.label() || undefined,
-      this.dotnetProject() || undefined,
-      1,
-      10000
-    ).subscribe({
-      next: r => {
-        this.allNodes.set(r.items ?? []);
-        this.total.set(r.total ?? r.items?.length ?? 0);
-        this.loadError.set('');
-        // Auto-expand all sections when filtered to a single label, or if few sections
-        const sections = this.sections();
-        if (this.label() || sections.length <= 3) {
-          this.expandedSections.set(new Set(sections.map(s => s.label)));
-        }
-        this.loading.set(false);
-      },
-      error: () => {
-        this.loadError.set('Node list request failed.');
-        this.allNodes.set([]);
-        this.total.set(0);
-        this.loading.set(false);
-      }
-    });
+    this.allNodes.set([]);
+    this.total.set(0);
+    this.expandedSections.set(new Set());
+    this.expandedContainers.set(new Set());
+    this.loadNodePage(requestId, 1, []);
 
     // Load project detail to get matching analysis
     this.api.getProject(this.projectName()).subscribe({
@@ -317,6 +299,47 @@ export class NodeListComponent implements OnInit {
         }
       }
     });
+  }
+
+  private loadNodePage(requestId: number, page: number, accumulatedNodes: GraphNode[]) {
+    this.api.getProjectNodes(
+      this.projectName(),
+      this.label() || undefined,
+      this.dotnetProject() || undefined,
+      page,
+      this.nodePageSize
+    ).subscribe({
+      next: r => {
+        if (requestId !== this.nodeLoadRequestId) return;
+
+        const items = r.items ?? [];
+        const nodes = [...accumulatedNodes, ...items];
+        const total = r.total ?? nodes.length;
+        this.allNodes.set(nodes);
+        this.total.set(total);
+        this.loadError.set('');
+
+        if (items.length === 0 || nodes.length >= total || items.length < this.nodePageSize) {
+          this.finishNodeLoad();
+          return;
+        }
+
+        this.loadNodePage(requestId, page + 1, nodes);
+      },
+      error: () => {
+        if (requestId !== this.nodeLoadRequestId) return;
+        this.loadError.set('Node list request failed.');
+        this.loading.set(false);
+      }
+    });
+  }
+
+  private finishNodeLoad() {
+    const sections = this.sections();
+    if (this.label() || sections.length <= 3) {
+      this.expandedSections.set(new Set(sections.map(s => s.label)));
+    }
+    this.loading.set(false);
   }
 
   icon() {

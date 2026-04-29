@@ -19,6 +19,10 @@ import {
   MemoryGraphResponse,
   MemorySearchResult,
   AssistantEvent,
+  AssistantChatSummaryResponse,
+  AssistantChatTranscriptResponse,
+  AssistantRunEventsResponse,
+  StartAssistantRunResponse,
   WikiSection,
   WikiTreeNode,
   WikiPage,
@@ -537,6 +541,88 @@ export class ApiService {
           const event = JSON.parse(line.slice(5).trim()) as AssistantEvent;
           yield event;
           if (event.type === 'done' || event.type === 'error') return;
+        } catch {
+          // ignore malformed events
+        }
+      }
+
+      if (done) break;
+    }
+  }
+
+  startAssistantRun(request: {
+    question: string;
+    context?: string;
+    history?: { role: string; content: string }[];
+    chatId?: string;
+  }): Observable<StartAssistantRunResponse> {
+    const body: Record<string, unknown> = { question: request.question };
+    if (request.context) body['context'] = request.context;
+    if (request.history?.length) body['history'] = request.history;
+    if (request.chatId) body['chatId'] = request.chatId;
+    return this.http.post<StartAssistantRunResponse>(`${API}/ask/runs`, body);
+  }
+
+  listAssistantChats(take = 20): Observable<AssistantChatSummaryResponse[]> {
+    const params = new HttpParams().set('take', take);
+    return this.http.get<AssistantChatSummaryResponse[]>(`${API}/ask/chats`, { params });
+  }
+
+  getAssistantChat(chatId: string): Observable<AssistantChatTranscriptResponse> {
+    return this.http.get<AssistantChatTranscriptResponse>(`${API}/ask/chats/${encodeURIComponent(chatId)}`);
+  }
+
+  cancelAssistantRun(runId: number): Observable<void> {
+    return this.http.post<void>(`${API}/ask/runs/${runId}/cancel`, {});
+  }
+
+  getAssistantRunEvents(runId: number, afterSequence = 0): Observable<AssistantRunEventsResponse> {
+    const params = new HttpParams().set('afterSequence', afterSequence);
+    return this.http.get<AssistantRunEventsResponse>(`${API}/ask/runs/${runId}/events`, { params });
+  }
+
+  async *streamAssistantRun(runId: number, afterSequence = 0, signal?: AbortSignal): AsyncGenerator<AssistantEvent> {
+    const response = await fetch(`${API}/ask/runs/${runId}/stream?afterSequence=${afterSequence}`, {
+      method: 'GET',
+      headers: await this.fetchHeaders({ Accept: 'text/event-stream' }),
+      signal
+    });
+
+    if (!response.ok || !response.body) {
+      yield { type: 'error', content: `HTTP ${response.status}` };
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n\n');
+      buffer = done ? '' : (lines.pop() ?? '');
+
+      for (const chunk of lines) {
+        const line = chunk.trim();
+        if (!line.startsWith('data:')) continue;
+        try {
+          const event = JSON.parse(line.slice(5).trim()) as { type: string; content: unknown };
+          if (event.type === 'completed') {
+            yield { type: 'done', content: '' };
+            return;
+          }
+
+          if (event.type === 'cancelled') {
+            yield { type: 'error', content: 'Run cancelled by user.' };
+            return;
+          }
+
+          if (event.type === 'text' || event.type === 'tool_use' || event.type === 'error') {
+            yield { type: event.type, content: typeof event.content === 'string' ? event.content : JSON.stringify(event.content ?? '') };
+            if (event.type === 'error') return;
+          }
         } catch {
           // ignore malformed events
         }
