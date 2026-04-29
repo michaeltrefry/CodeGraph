@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-labelledby="title desc">
+  <title id="title">CodeGraph icon</title>
+  <desc id="desc">A compact code intelligence graph with connected nodes.</desc>
+  <defs>
+    <linearGradient id="cg-bg" x1="5" y1="4" x2="28" y2="29" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17283b"/>
+      <stop offset="0.55" stop-color="#111820"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="cg-accent" x1="7" y1="8" x2="25" y2="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#06d6a0"/>
+      <stop offset="0.5" stop-color="#58a6ff"/>
+      <stop offset="1" stop-color="#bc8cff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="28" height="28" rx="7" fill="url(#cg-bg)"/>
+  <rect x="2.5" y="2.5" width="27" height="27" rx="6.5" fill="none" stroke="#2d3748"/>
+  <path d="M10 10.5 16 8l6 4.8v7.1L16 24l-6-4.1z" fill="none" stroke="url(#cg-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10 19.9 16 15l6 4.9M16 8v7m0 0 6-2.2m-6 2.2-6-4.5" fill="none" stroke="#78d8ff" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+  <circle cx="10" cy="10.5" r="2.7" fill="#10151f" stroke="#06d6a0" stroke-width="1.8"/>
+  <circle cx="16" cy="8" r="2.5" fill="#10151f" stroke="#58a6ff" stroke-width="1.8"/>
+  <circle cx="22" cy="12.8" r="2.7" fill="#10151f" stroke="#58a6ff" stroke-width="1.8"/>
+  <circle cx="22" cy="19.9" r="2.7" fill="#10151f" stroke="#bc8cff" stroke-width="1.8"/>
+  <circle cx="16" cy="24" r="2.5" fill="#10151f" stroke="#8f7bff" stroke-width="1.8"/>
+  <circle cx="10" cy="19.9" r="2.7" fill="#10151f" stroke="#06d6a0" stroke-width="1.8"/>
+  <rect x="13" y="12" width="6" height="6" rx="1.5" fill="#10151f" stroke="#e7e9ee" stroke-width="1.6"/>
+</svg>
