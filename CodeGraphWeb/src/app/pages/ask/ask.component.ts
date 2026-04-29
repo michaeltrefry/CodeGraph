@@ -1,5 +1,6 @@
-import { Component, ElementRef, inject, OnDestroy, signal, ViewChild } from '@angular/core';
+import { Component, ElementRef, inject, OnDestroy, OnInit, signal, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import { MarkdownComponent } from '../../shared/markdown.component';
 
@@ -22,9 +23,11 @@ interface Message {
   templateUrl: './ask.component.html',
   styleUrl: './ask.component.scss'
 })
-export class AskComponent implements OnDestroy {
+export class AskComponent implements OnInit, OnDestroy {
   @ViewChild('messagesEnd') private messagesEnd!: ElementRef;
   private static readonly CopyFeedbackMs = 1400;
+  private static readonly ActiveChatStorageKey = 'codegraph:ask:active-chat-id';
+  private static readonly NewChatSentinel = '__new__';
 
   private api = inject(ApiService);
 
@@ -32,6 +35,7 @@ export class AskComponent implements OnDestroy {
   messages = signal<Message[]>([]);
   streaming = signal(false);
   copiedMessageIndex = signal<number | null>(null);
+  activeChatId = signal<string | null>(null);
   readonly suggestedQuestions = [
     'What are the main entry points in this codebase?',
     'How does data flow from an API endpoint to persistence?',
@@ -39,6 +43,11 @@ export class AskComponent implements OnDestroy {
   ];
   private abortController: AbortController | null = null;
   private copyFeedbackTimeoutId: number | null = null;
+  private activeRunId: number | null = null;
+
+  ngOnInit(): void {
+    this.loadInitialChat();
+  }
 
   ngOnDestroy(): void {
     this.abortController?.abort();
@@ -84,7 +93,17 @@ export class AskComponent implements OnDestroy {
     let eventCount = 0;
     let textLength = 0;
     try {
-      for await (const event of this.api.ask(q, this.abortController.signal, undefined, history.length ? history : undefined)) {
+      const run = await firstValueFrom(this.api.startAssistantRun({
+        question: q,
+        history: history.length ? history : undefined,
+        chatId: this.activeChatId() ?? undefined
+      }));
+
+      this.activeChatId.set(run.chatId);
+      this.activeRunId = run.runId;
+      this.saveActiveChatId(run.chatId);
+
+      for await (const event of this.api.streamAssistantRun(run.runId, 0, this.abortController.signal)) {
         eventCount++;
         if (event.type === 'text') {
           textLength += event.content.length;
@@ -135,11 +154,15 @@ export class AskComponent implements OnDestroy {
       console.log(`[Ask] Stream finally — ${eventCount} events received, ${textLength} text chars`);
       this.streaming.set(false);
       this.abortController = null;
+      this.activeRunId = null;
     }
   }
 
   stop() {
     this.abortController?.abort();
+    if (this.activeRunId !== null) {
+      this.api.cancelAssistantRun(this.activeRunId).subscribe({ error: () => {} });
+    }
   }
 
   startNewChat() {
@@ -147,9 +170,12 @@ export class AskComponent implements OnDestroy {
       return;
     }
 
+    this.activeChatId.set(null);
+    this.activeRunId = null;
     this.messages.set([]);
     this.question.set('');
     this.copiedMessageIndex.set(null);
+    this.saveActiveChatId(AskComponent.NewChatSentinel);
   }
 
   onKeydown(event: KeyboardEvent) {
@@ -214,5 +240,127 @@ export class AskComponent implements OnDestroy {
       window.clearTimeout(this.copyFeedbackTimeoutId);
       this.copyFeedbackTimeoutId = null;
     }
+  }
+
+  private loadInitialChat() {
+    const stored = this.readActiveChatId();
+    if (stored === AskComponent.NewChatSentinel) {
+      return;
+    }
+
+    if (stored) {
+      this.loadChat(stored);
+      return;
+    }
+
+    this.api.listAssistantChats(1).subscribe({
+      next: chats => {
+        const latest = chats[0];
+        if (!latest) return;
+        this.loadChat(latest.chatId);
+      },
+      error: () => {}
+    });
+  }
+
+  private loadChat(chatId: string) {
+    this.api.getAssistantChat(chatId).subscribe({
+      next: chat => {
+        this.activeChatId.set(chat.chatId);
+        this.saveActiveChatId(chat.chatId);
+        this.messages.set(chat.messages.map(message => ({
+          role: message.role,
+          chunks: [{ text: message.content }],
+          toolsUsed: [],
+          done: true
+        })));
+
+        if (chat.activeRun) {
+          this.activeRunId = chat.activeRun.id;
+          this.messages.update(messages => [...messages, {
+            role: 'assistant',
+            chunks: [],
+            toolsUsed: [],
+            done: false
+          }]);
+          this.streaming.set(true);
+          this.abortController = new AbortController();
+          void this.watchRun(chat.activeRun.id, 0);
+        }
+
+        this.scheduleScroll();
+      },
+      error: () => {
+        this.activeChatId.set(null);
+      }
+    });
+  }
+
+  private async watchRun(runId: number, afterSequence: number) {
+    let textLength = 0;
+    try {
+      for await (const event of this.api.streamAssistantRun(runId, afterSequence, this.abortController?.signal)) {
+        if (event.type === 'text') {
+          textLength += event.content.length;
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            const lastChunk = last.chunks[last.chunks.length - 1];
+            const newChunks = lastChunk && !lastChunk.isToolUse
+              ? [...last.chunks.slice(0, -1), { ...lastChunk, text: lastChunk.text + event.content }]
+              : [...last.chunks, { text: event.content }];
+            return [...msgs.slice(0, -1), { ...last, chunks: newChunks }];
+          });
+          this.scheduleScroll();
+        } else if (event.type === 'tool_use') {
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            return [...msgs.slice(0, -1), {
+              ...last,
+              toolsUsed: [...last.toolsUsed, event.content],
+              chunks: [...last.chunks, { text: event.content, isToolUse: true }]
+            }];
+          });
+          this.scheduleScroll();
+        } else if (event.type === 'done') {
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            return [...msgs.slice(0, -1), { ...last, done: true }];
+          });
+          break;
+        } else if (event.type === 'error') {
+          this.messages.update(msgs => {
+            const last = msgs[msgs.length - 1];
+            return [...msgs.slice(0, -1), { ...last, error: event.content, done: true }];
+          });
+          break;
+        }
+      }
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        this.messages.update(msgs => {
+          const last = msgs[msgs.length - 1];
+          return [...msgs.slice(0, -1), { ...last, error: String(err), done: true }];
+        });
+      }
+    } finally {
+      console.log(`[Ask] Reconnected stream finished — ${textLength} text chars`);
+      this.streaming.set(false);
+      this.abortController = null;
+      this.activeRunId = null;
+    }
+  }
+
+  private readActiveChatId(): string | null {
+    try {
+      return window.localStorage.getItem(AskComponent.ActiveChatStorageKey);
+    } catch {
+      return null;
+    }
+  }
+
+  private saveActiveChatId(chatId: string) {
+    try {
+      window.localStorage.setItem(AskComponent.ActiveChatStorageKey, chatId);
+    } catch {}
   }
 }

@@ -1155,6 +1155,78 @@ export interface AssistantEvent {
   content: string;
 }
 
+export interface StartAssistantRunResponse {
+  runId: number;
+  chatId: string;
+  status: string;
+  streamUrl: string;
+  eventsUrl: string;
+  getUrl: string;
+}
+
+export interface AssistantRunResponse {
+  id: number;
+  chatId: string;
+  username: string;
+  status: string;
+  question: string;
+  context?: string;
+  providerRequested?: string;
+  modelRequested?: string;
+  providerUsed?: string;
+  modelUsed?: string;
+  finalAnswer?: string;
+  warnings: string[];
+  error?: string;
+  lastSequence: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface AssistantRunEventResponse {
+  sequence: number;
+  type: string;
+  content: unknown;
+  createdAt: string;
+}
+
+export interface AssistantRunEventsResponse {
+  run: AssistantRunResponse;
+  events: AssistantRunEventResponse[];
+}
+
+export interface AssistantChatMessageResponse {
+  messageIndex: number;
+  role: 'user' | 'assistant';
+  content: string;
+  sourceRunId?: number;
+  createdAt: string;
+}
+
+export interface AssistantChatSummaryResponse {
+  chatId: string;
+  title: string;
+  status: string;
+  activeRunId?: number;
+  lastActivityAt: string;
+}
+
+export interface AssistantChatTranscriptResponse {
+  chatId: string;
+  title: string;
+  messages: AssistantChatMessageResponse[];
+  activeRun?: AssistantRunResponse;
+  lastActivityAt: string;
+}
+
+export interface AssistantRunConflictResponse {
+  error: string;
+  message: string;
+  mismatchMessageIndex?: number;
+  existingRunId?: number;
+}
+
 // Wiki
 export interface WikiSection {
   id: number;

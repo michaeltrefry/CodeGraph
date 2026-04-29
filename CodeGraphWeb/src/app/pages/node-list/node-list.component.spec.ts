@@ -116,4 +116,31 @@ describe('NodeListComponent', () => {
     expect(component.sections()[0].containers).toHaveLength(1);
     expect(component.sections()[0].totalCount).toBe(2);
   });
+
+  it('loads large node lists in smaller pages', () => {
+    const nodes = Array.from({ length: 501 }, (_, index) => createNode({
+      id: index + 1,
+      name: `Node${index + 1}`,
+      qualifiedName: `AgentHarness.Node${index + 1}`
+    }));
+    const getProjectNodes = vi.fn((_name: string, _label: string | undefined, _dotnetProject: string | undefined, page: number, pageSize: number) => {
+      const start = (page - 1) * pageSize;
+      return of({
+        items: nodes.slice(start, start + pageSize),
+        total: nodes.length,
+        page,
+        pageSize
+      });
+    });
+    const { component } = createComponent({ getProjectNodes } as Partial<ApiService>);
+
+    component.ngOnInit();
+
+    expect(getProjectNodes).toHaveBeenCalledTimes(2);
+    expect(getProjectNodes).toHaveBeenNthCalledWith(1, 'AgentHarness', undefined, undefined, 1, 500);
+    expect(getProjectNodes).toHaveBeenNthCalledWith(2, 'AgentHarness', undefined, undefined, 2, 500);
+    expect(component.loading()).toBe(false);
+    expect(component.total()).toBe(501);
+    expect(component.allNodes()).toHaveLength(501);
+  });
 });
