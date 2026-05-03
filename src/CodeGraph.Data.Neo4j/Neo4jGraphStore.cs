@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Neo4j.Driver;
@@ -150,8 +151,8 @@ public partial class Neo4jGraphStore(
             }
             if (!string.IsNullOrWhiteSpace(search))
             {
-                conditions.Add("toLower(r.name) CONTAINS toLower($search)");
-                parameters["search"] = search;
+                conditions.Add("toLower(r.name) =~ $searchPattern");
+                parameters["searchPattern"] = BuildRepositorySearchRegex(search);
             }
 
             var whereClause = conditions.Count > 0
@@ -175,6 +176,19 @@ public partial class Neo4jGraphStore(
 
             return new RepositorySearchResult(items, total);
         });
+    }
+
+    private static string BuildRepositorySearchRegex(string search)
+    {
+        var trimmed = search.Trim();
+        var pattern = Regex.Escape(trimmed)
+            .Replace("\\*", ".*")
+            .Replace("%", ".*");
+
+        if (!trimmed.Contains('*') && !trimmed.Contains('%'))
+            pattern = $".*{pattern}.*";
+
+        return pattern.ToLowerInvariant();
     }
 
     public async Task<IReadOnlyList<string>> GetDistinctGroupsAsync()

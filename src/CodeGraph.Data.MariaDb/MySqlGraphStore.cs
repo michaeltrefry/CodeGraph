@@ -86,7 +86,7 @@ public class MySqlGraphStore(
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(p => EF.Functions.Like(p.Name, $"%{search}%"));
+            query = query.Where(p => EF.Functions.Like(p.Name, BuildRepositorySearchPattern(search)));
         }
 
         var total = await query.CountAsync();
@@ -97,6 +97,12 @@ public class MySqlGraphStore(
             .ToListAsync();
 
         return new RepositorySearchResult(repositories.Select(MapProjectInfo).ToList(), total);
+    }
+
+    private static string BuildRepositorySearchPattern(string search)
+    {
+        var pattern = search.Trim().Replace('*', '%');
+        return pattern.Contains('%') ? pattern : $"%{pattern}%";
     }
 
     public async Task<IReadOnlyList<string>> GetDistinctGroupsAsync()

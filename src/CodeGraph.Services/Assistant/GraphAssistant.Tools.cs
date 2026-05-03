@@ -55,16 +55,40 @@ public partial class GraphAssistant
         var projects = await store.ListRepositoriesAsync();
         if (projects.Count == 0) return "No projects indexed yet.";
 
+        return FormatProjects(projects.OrderBy(p => p.Name).ToList(), projects.Count, includeRepoUrl: false);
+    }
+
+    private async Task<string> SearchProjectsAsync(JsonElement input)
+    {
+        var search = GetString(input, "search");
+        var group = GetString(input, "group");
+        var page = Math.Max(1, GetInt(input, "page") ?? 1);
+        var pageSize = Math.Clamp(GetInt(input, "pageSize") ?? 25, 1, 100);
+
+        var result = await store.SearchRepositoriesAsync(search, group, page, pageSize);
+        if (result.TotalCount == 0)
+            return string.IsNullOrWhiteSpace(search) && string.IsNullOrWhiteSpace(group)
+                ? "No projects indexed yet."
+                : "No projects matched the search.";
+
+        return FormatProjects(result.Items, result.TotalCount, includeRepoUrl: true);
+    }
+
+    private static string FormatProjects(IReadOnlyList<ProjectInfo> projects, int totalCount, bool includeRepoUrl)
+    {
         var sb = new StringBuilder();
-        sb.AppendLine($"## Indexed Projects ({projects.Count})\n");
-        foreach (var p in projects.OrderBy(p => p.Name))
+        sb.AppendLine($"## Indexed Projects ({totalCount})\n");
+        foreach (var p in projects)
         {
             var flags = new List<string>();
             if (p.IsFoundational) flags.Add("foundational");
             if (!string.IsNullOrEmpty(p.Language)) flags.Add(p.Language);
+            if (!string.IsNullOrEmpty(p.Framework)) flags.Add(p.Framework);
             var flagStr = flags.Count > 0 ? $" [{string.Join(", ", flags)}]" : "";
             var indexed = p.IndexedAt.HasValue ? $" (indexed: {p.IndexedAt:yyyy-MM-dd})" : "";
             sb.AppendLine($"- **{p.Name}**{flagStr}{indexed}");
+            if (includeRepoUrl)
+                sb.AppendLine($"  Repo: {p.RepoUrl ?? "(unknown)"}");
         }
         return sb.ToString();
     }

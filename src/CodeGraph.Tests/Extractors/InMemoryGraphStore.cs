@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CodeGraph.Data;
 using CodeGraph.Models;
 
@@ -93,10 +94,23 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (!string.IsNullOrWhiteSpace(group))
             filtered = filtered.Where(p => string.Equals(p.SourceGroup, group, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(search))
-            filtered = filtered.Where(p => p.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
+            filtered = filtered.Where(p => IsRepositorySearchMatch(p.Name, search));
         var list = filtered.ToList();
         var items = list.OrderBy(p => p.Name).Skip((page - 1) * pageSize).Take(pageSize).ToList();
         return Task.FromResult(new RepositorySearchResult(items, list.Count));
+    }
+
+    private static bool IsRepositorySearchMatch(string name, string search)
+    {
+        var trimmed = search.Trim();
+        var pattern = Regex.Escape(trimmed)
+            .Replace("\\*", ".*")
+            .Replace("%", ".*");
+
+        if (!trimmed.Contains('*') && !trimmed.Contains('%'))
+            pattern = $".*{pattern}.*";
+
+        return Regex.IsMatch(name, $"^{pattern}$", RegexOptions.IgnoreCase);
     }
 
     public Task<IReadOnlyList<string>> GetDistinctGroupsAsync()
