@@ -522,6 +522,7 @@ public partial class GraphAssistant(
         {
             "search_graph" => await SearchGraphAsync(input),
             "list_projects" => await ListProjectsAsync(),
+            "search_projects" => await SearchProjectsAsync(input),
             "get_service_summary" => await GetServiceSummaryAsync(input),
             "trace_call_path" => await TraceCallPathAsync(input),
             "trace_data_lineage" => await TraceDataLineageAsync(input),

@@ -21,8 +21,20 @@ public partial class GraphAssistant
 
         new(
             "list_projects",
-            "List all indexed repositories with metadata.",
+            "Obsolete. Use search_projects instead. Lists indexed repositories without git repository URLs.",
             new Dictionary<string, JsonElement>(), []),
+
+        new(
+            "search_projects",
+            "Search indexed repositories by partial or wildcard name with metadata including git repository URL.",
+            new Dictionary<string, JsonElement>
+            {
+                ["search"]   = Prop("string", "Optional partial or wildcard repository name search. Supports plain substrings plus * and % wildcards."),
+                ["group"]    = Prop("string", "Optional source group filter"),
+                ["page"]     = Prop("integer", "Page number, 1-based"),
+                ["pageSize"] = Prop("integer", "Page size")
+            },
+            []),
 
         new(
             "get_service_summary",

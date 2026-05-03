@@ -60,16 +60,42 @@ public class CodeGraphMcpServer(
             """;
     }
 
+    [Obsolete("Use search_projects instead.")]
     [McpServerTool(Name = "list_projects"),
-     Description("List all indexed repositories with metadata: last indexed date, language, whether foundational.")]
+     Description("Obsolete. Use search_projects instead. Lists all indexed repositories without git repository URLs.")]
     public async Task<string> ListProjects()
     {
         var projects = await store.ListRepositoriesAsync();
         if (projects.Count == 0)
             return "No projects indexed yet.";
 
-        var lines = new List<string> { $"## Indexed Projects ({projects.Count})\n" };
-        foreach (var p in projects.OrderBy(p => p.Name))
+        return FormatProjects(projects.OrderBy(p => p.Name).ToList(), projects.Count, includeRepoUrl: false);
+    }
+
+    [McpServerTool(Name = "search_projects"),
+     Description("Search indexed repositories by partial or wildcard name with metadata including git repository URL. Returns the same markdown list shape as list_projects, with a Repo line for each project.")]
+    public async Task<string> SearchProjects(
+        [Description("Optional partial or wildcard repository name search. Supports plain substrings plus * and % wildcards.")] string? search = null,
+        [Description("Optional source group filter")] string? group = null,
+        [Description("Page number, 1-based")] int page = 1,
+        [Description("Page size")] int pageSize = 25)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var result = await store.SearchRepositoriesAsync(search, group, page, pageSize);
+        if (result.TotalCount == 0)
+            return string.IsNullOrWhiteSpace(search) && string.IsNullOrWhiteSpace(group)
+                ? "No projects indexed yet."
+                : "No projects matched the search.";
+
+        return FormatProjects(result.Items, result.TotalCount, includeRepoUrl: true);
+    }
+
+    private static string FormatProjects(IReadOnlyList<ProjectInfo> projects, int totalCount, bool includeRepoUrl)
+    {
+        var lines = new List<string> { $"## Indexed Projects ({totalCount})\n" };
+        foreach (var p in projects)
         {
             var flags = new List<string>();
             if (p.IsFoundational) flags.Add("foundational");
@@ -79,6 +105,8 @@ public class CodeGraphMcpServer(
             var flagStr = flags.Count > 0 ? $" [{string.Join(", ", flags)}]" : "";
             var indexed = p.IndexedAt != default ? $" (indexed: {p.IndexedAt:yyyy-MM-dd HH:mm})" : "";
             lines.Add($"- **{p.Name}**{flagStr}{indexed}");
+            if (includeRepoUrl)
+                lines.Add($"  Repo: {p.RepoUrl ?? "(unknown)"}");
         }
 
         return string.Join('\n', lines);
