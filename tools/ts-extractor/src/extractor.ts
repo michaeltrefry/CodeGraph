@@ -8,12 +8,15 @@ import {
 } from 'ts-morph';
 import * as path from 'path';
 import * as fs from 'fs';
+import { analyzeWorkspaceImports } from './workspaceResolver';
 import type {
   GraphNodeDto,
   PendingEdgeDto,
   UnresolvedImportDto,
   UnresolvedCallDto,
   ExtractProjectResponse,
+  ResolvedImportDto,
+  WorkspacePackageDto,
 } from './protocol';
 
 const HTTP_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head']);
@@ -44,6 +47,8 @@ export function extractProject(
 ): ExtractProjectResponse {
   const nodes: GraphNodeDto[] = [];
   const edges: PendingEdgeDto[] = [];
+  const workspacePackages: WorkspacePackageDto[] = [];
+  const resolvedImports: ResolvedImportDto[] = [];
   const unresolvedImports: UnresolvedImportDto[] = [];
   const unresolvedCalls: UnresolvedCallDto[] = [];
 
@@ -118,12 +123,28 @@ export function extractProject(
   }
   diag(`extractionLoop: ${filesProcessed} files in ${Date.now() - t0}ms`);
 
+  t0 = Date.now();
+  const workspaceResolution = analyzeWorkspaceImports(
+    projectName,
+    rootPath,
+    tsconfigPath,
+    sourceFiles,
+    log,
+  );
+  nodes.push(...workspaceResolution.nodes);
+  edges.push(...workspaceResolution.edges);
+  workspacePackages.push(...workspaceResolution.workspacePackages);
+  resolvedImports.push(...workspaceResolution.resolvedImports);
+  unresolvedImports.push(...workspaceResolution.unresolvedImports);
+  diagnostics.push(...workspaceResolution.diagnostics);
+  diag(`workspaceResolution: ${workspaceResolution.resolvedImports.length} imports in ${Date.now() - t0}ms`);
+
   // Edge type summary
   const edgeTypes: Record<string, number> = {};
   for (const e of edges) edgeTypes[e.type] = (edgeTypes[e.type] || 0) + 1;
   diagnostics.push(`Edge types: ${JSON.stringify(edgeTypes)}`);
 
-  return { nodes, edges, unresolvedImports, unresolvedCalls, diagnostics };
+  return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls, diagnostics };
 }
 
 // ── Imports ───────────────────────────────────────────────────────────────────

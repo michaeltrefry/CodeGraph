@@ -63,8 +63,8 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
         }
 
         _logger.LogInformation(
-            "TypeScript extraction complete: {Nodes} nodes, {Edges} edges",
-            result.Nodes.Count, result.Edges.Count);
+            "TypeScript extraction complete: {Nodes} nodes, {Edges} edges, {WorkspacePackages} workspace packages, {ResolvedImports} resolved imports",
+            result.Nodes.Count, result.Edges.Count, response.WorkspacePackages.Count, response.ResolvedImports.Count);
 
         return [result];
     }
