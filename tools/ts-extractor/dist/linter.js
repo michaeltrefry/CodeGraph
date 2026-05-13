@@ -41,25 +41,6 @@ const SKIP_DIRS = new Set([
     'node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.git', '.angular', 'cypress', 'e2e'
 ]);
 const LINTABLE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
-function parseEslintOutput(jsonOutput, repoPath) {
-    try {
-        const entries = JSON.parse(jsonOutput);
-        const results = [];
-        for (const entry of entries) {
-            if (entry.errorCount > 0 || entry.warningCount > 0) {
-                results.push({
-                    filePath: path.relative(repoPath, entry.filePath).replace(/\\/g, '/'),
-                    errorCount: entry.errorCount,
-                    warningCount: entry.warningCount,
-                });
-            }
-        }
-        return results;
-    }
-    catch {
-        return [];
-    }
-}
 function hasEslintConfig(repoPath) {
     const configFiles = [
         'eslint.config.js',
@@ -107,6 +88,25 @@ function findLintableFiles(repoPath) {
     walk(repoPath);
     return results;
 }
+function parseEslintOutput(jsonOutput, repoPath) {
+    try {
+        const entries = JSON.parse(jsonOutput);
+        const results = [];
+        for (const entry of entries) {
+            if (entry.errorCount > 0 || entry.warningCount > 0) {
+                results.push({
+                    filePath: path.relative(repoPath, entry.filePath).replace(/\\/g, '/'),
+                    errorCount: entry.errorCount,
+                    warningCount: entry.warningCount,
+                });
+            }
+        }
+        return results;
+    }
+    catch {
+        return [];
+    }
+}
 function lintProject(repoPath, files) {
     const diagnostics = [];
     try {
@@ -122,8 +122,7 @@ function lintProject(repoPath, files) {
             return { results: [], diagnostics };
         }
         const target = requestedFiles
-            .map(f => `"${path.relative(repoPath, f).replace(/\\/g, '/')
-            }"`)
+            .map(f => `"${path.relative(repoPath, f).replace(/\\/g, '/')}"`)
             .join(' ');
         const cmd = `npx --no-install eslint --format json --no-error-on-unmatched-pattern ${target}`;
         diagnostics.push(`Running: ${cmd} in ${repoPath}`);

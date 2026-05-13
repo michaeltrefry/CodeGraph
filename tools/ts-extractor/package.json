@@ -5,16 +5,17 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test dist/extractor.test.js",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts"
   },
   "dependencies": {
     "fastify": "^5.8.2",
-    "ts-morph": "^23.0.0"
+    "ts-morph": "^23.0.0",
+    "typescript": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "ts-node": "^10.9.0",
-    "typescript": "^5.0.0"
+    "ts-node": "^10.9.0"
   }
 }
