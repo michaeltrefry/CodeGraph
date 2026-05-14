@@ -111,9 +111,13 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
         }
     }
 
+    // Legacy narrow tools and the consolidated intent-family tools are both cataloged
+    // (additive advertisement). Legacy tools can be hidden via hub catalog policy after
+    // parity with the consolidated tools is validated.
     private static IEnumerable<McpHubToolDefinition> GetNativeToolDefinitions() =>
         GetNativeToolDefinitions(typeof(CodeGraphMcpServer))
-            .Concat(GetNativeToolDefinitions(typeof(MemoryMcpServer)));
+            .Concat(GetNativeToolDefinitions(typeof(MemoryMcpServer)))
+            .Concat(GetNativeToolDefinitions(typeof(ConsolidatedMcpServer)));
 
     private static IEnumerable<McpHubToolDefinition> GetNativeToolDefinitions(Type type)
     {

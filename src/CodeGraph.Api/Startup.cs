@@ -346,6 +346,10 @@ public static class Startup
 
     private static void RegisterMcp(IServiceCollection services)
     {
+        // Resolvable so the consolidated intent-family tools can delegate to the native
+        // CodeGraph tool implementations.
+        services.AddScoped<CodeGraphMcpServer>();
+
         // MCP server
         services.AddMcpServer(options =>
         {
@@ -356,8 +360,11 @@ public static class Startup
             };
         })
         .WithHttpTransport()
+        // Legacy narrow tools are still advertised; the consolidated intent-family tools are
+        // advertised additively. Legacy tools can be hidden via hub catalog policy after parity.
         .WithTools<CodeGraphMcpServer>()
         .WithTools<MemoryMcpServer>()
+        .WithTools<ConsolidatedMcpServer>()
         .WithTools<McpHubServer>()
         .WithResources<CodeGraphMcpResources>();
     }
