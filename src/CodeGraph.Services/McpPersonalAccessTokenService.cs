@@ -9,6 +9,7 @@ namespace CodeGraph.Services;
 
 public sealed class McpPersonalAccessTokenService(
     IMcpPersonalAccessTokenStore store,
+    IMcpHubStore hubStore,
     IOptions<CodeGraphStorageOptions> storageOptionsAccessor)
 {
     private const string TokenPrefix = "cgmcp_";
@@ -30,16 +31,21 @@ public sealed class McpPersonalAccessTokenService(
         var now = DateTime.UtcNow;
         var entities = await store.ListMcpPersonalAccessTokensAsync(normalizedUsername, cancellationToken);
 
-        return entities
-            .OrderByDescending(token => token.CreatedAt)
-            .Select(token => ToMetadata(token, now))
-            .ToList();
+        var results = new List<McpPersonalAccessTokenMetadata>();
+        foreach (var token in entities.OrderByDescending(token => token.CreatedAt))
+        {
+            var entitlements = await hubStore.GetTokenEntitlementsAsync(token.Id, cancellationToken);
+            results.Add(ToMetadata(token, now, entitlements));
+        }
+
+        return results;
     }
 
     public async Task<McpPersonalAccessTokenCreateResult> CreateForUserAsync(
         string username,
         string tokenName,
         int expiresInDays,
+        IReadOnlyCollection<string>? toolNames = null,
         CancellationToken cancellationToken = default)
     {
         var normalizedUsername = NormalizeUsername(username);
@@ -56,6 +62,16 @@ public sealed class McpPersonalAccessTokenService(
                 "pat_configuration_missing",
                 "CodeGraph:StorageOptions:MariaDbEncryptionKey must be configured as valid base64 before issuing MCP personal access tokens.");
 
+        var selectedTools = NormalizeToolNames(toolNames);
+        if (toolNames is not null)
+        {
+            var (validatedTools, errorCode, errorMessage) =
+                await ValidateSelectedToolsAsync(toolNames, cancellationToken);
+            if (errorCode is not null)
+                return Error(errorCode, errorMessage!);
+            selectedTools = validatedTools;
+        }
+
         var now = DateTime.UtcNow;
         var tokens = await store.ListMcpPersonalAccessTokensAsync(normalizedUsername, cancellationToken);
         var activeTokenCount = tokens.Count(token => token.RevokedAt is null && token.ExpiresAt > now);
@@ -71,13 +87,17 @@ public sealed class McpPersonalAccessTokenService(
             TokenHash = ComputeTokenHash(rawToken, signingKey),
             LastFour = rawToken[^4..],
             CreatedAt = now,
-            ExpiresAt = now.AddDays(expiresInDays)
+            ExpiresAt = now.AddDays(expiresInDays),
+            EntitlementMode = toolNames is null ? "all" : "selected"
         };
 
         var stored = await store.CreateMcpPersonalAccessTokenAsync(entity, cancellationToken);
+        if (toolNames is not null)
+            await hubStore.ReplaceTokenEntitlementsAsync(stored.Id, selectedTools, cancellationToken);
+
         return new McpPersonalAccessTokenCreateResult(
             Created: true,
-            Token: ToMetadata(stored, now),
+            Token: ToMetadata(stored, now, selectedTools),
             RawToken: rawToken,
             ErrorCode: null,
             ErrorMessage: null);
@@ -92,6 +112,65 @@ public sealed class McpPersonalAccessTokenService(
             id,
             DateTime.UtcNow,
             cancellationToken);
+
+    /// <summary>
+    /// Replaces the enabled tool list of an active, non-revoked token owned by the caller.
+    /// Tools are re-validated against the catalog the same way token creation validates them.
+    /// </summary>
+    public async Task<McpPersonalAccessTokenCreateResult> UpdateToolsForUserAsync(
+        string username,
+        long id,
+        IReadOnlyCollection<string> toolNames,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedUsername = NormalizeUsername(username);
+        var now = DateTime.UtcNow;
+
+        var tokens = await store.ListMcpPersonalAccessTokensAsync(normalizedUsername, cancellationToken);
+        var token = tokens.FirstOrDefault(item => item.Id == id);
+        if (token is null)
+            return Error("token_not_found", "MCP token not found.");
+        if (token.RevokedAt is not null || token.ExpiresAt <= now)
+            return Error("token_not_active", "Only active MCP tokens can have their tools edited.");
+
+        var (selectedTools, errorCode, errorMessage) =
+            await ValidateSelectedToolsAsync(toolNames, cancellationToken);
+        if (errorCode is not null)
+            return Error(errorCode, errorMessage!);
+
+        await hubStore.ReplaceTokenEntitlementsAsync(token.Id, selectedTools, cancellationToken);
+        await store.SetMcpPersonalAccessTokenEntitlementModeAsync(
+            normalizedUsername, token.Id, "selected", cancellationToken);
+        token.EntitlementMode = "selected";
+
+        return new McpPersonalAccessTokenCreateResult(
+            Created: true,
+            Token: ToMetadata(token, now, selectedTools),
+            RawToken: null,
+            ErrorCode: null,
+            ErrorMessage: null);
+    }
+
+    // Shared by token creation and tool-edit: a selection must be non-empty and every tool must
+    // be effectively entitleable (catalog enabled AND available — see Shortcut sc-1055).
+    private async Task<(IReadOnlyList<string> Tools, string? ErrorCode, string? ErrorMessage)>
+        ValidateSelectedToolsAsync(IReadOnlyCollection<string> toolNames, CancellationToken cancellationToken)
+    {
+        var selectedTools = NormalizeToolNames(toolNames);
+        if (selectedTools.Count == 0)
+            return ([], "tool_entitlement_required", "Select at least one MCP tool for this token.");
+
+        var availableTools = await hubStore.ListToolsAsync(cancellationToken);
+        var enabledTools = availableTools
+            .Where(tool => tool.Enabled && tool.IsAvailable)
+            .Select(tool => tool.ToolName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknownTools = selectedTools.Where(tool => !enabledTools.Contains(tool)).ToArray();
+        if (unknownTools.Length > 0)
+            return ([], "invalid_tool_entitlement", $"Unknown or disabled MCP tools: {string.Join(", ", unknownTools)}.");
+
+        return (selectedTools, null, null);
+    }
 
     public async Task<McpPersonalAccessTokenValidationResult?> ValidateAsync(
         string rawToken,
@@ -175,7 +254,19 @@ public sealed class McpPersonalAccessTokenService(
         return TokenPrefix + Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    private static McpPersonalAccessTokenMetadata ToMetadata(McpPersonalAccessTokenEntity entity, DateTime now)
+    private static IReadOnlyList<string> NormalizeToolNames(IReadOnlyCollection<string>? toolNames) =>
+        toolNames?
+            .Where(tool => !string.IsNullOrWhiteSpace(tool))
+            .Select(tool => tool.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+        ?? [];
+
+    private static McpPersonalAccessTokenMetadata ToMetadata(
+        McpPersonalAccessTokenEntity entity,
+        DateTime now,
+        IReadOnlyList<string> toolNames)
     {
         var status = entity.RevokedAt is not null
             ? "revoked"
@@ -193,6 +284,8 @@ public sealed class McpPersonalAccessTokenService(
             entity.RevokedAt,
             entity.LastUsedAt,
             entity.LastUsedFrom,
-            status);
+            status,
+            string.IsNullOrWhiteSpace(entity.EntitlementMode) ? "all" : entity.EntitlementMode,
+            toolNames);
     }
 }

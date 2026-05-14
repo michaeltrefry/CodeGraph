@@ -1,4 +1,5 @@
 using CodeGraph.Api.Auth;
+using CodeGraph.Data;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -9,13 +10,41 @@ namespace CodeGraph.Api.Controllers;
 [ApiController]
 [Authorize(Policy = CodeGraphAuthenticationDefaults.UserPolicy)]
 [Route("api/user/mcp-tokens")]
-public class UserMcpTokensController(McpPersonalAccessTokenService tokenService) : Controller
+public class UserMcpTokensController(
+    McpPersonalAccessTokenService tokenService,
+    IMcpHubStore hubStore) : Controller
 {
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<McpPersonalAccessTokenMetadata>>> List(CancellationToken cancellationToken)
     {
         var tokens = await tokenService.ListForUserAsync(GetNormalizedUsername(), cancellationToken);
         return Ok(tokens);
+    }
+
+    [HttpGet("tools")]
+    public async Task<ActionResult<IReadOnlyList<McpHubToolResponse>>> Tools(CancellationToken cancellationToken)
+    {
+        var tools = await hubStore.ListToolsAsync(cancellationToken);
+        return Ok(tools
+            // Effective entitlement requires both admin-owned `enabled` and system-owned
+            // `is_available` — see Shortcut sc-1055.
+            .Where(tool => tool.Enabled && tool.IsAvailable)
+            .OrderBy(tool => tool.ProviderKey)
+            .ThenBy(tool => tool.ToolName)
+            .Select(tool => new McpHubToolResponse(
+                tool.ToolName,
+                tool.ProviderKey,
+                tool.DisplayName,
+                tool.Description,
+                tool.ReadOnly,
+                tool.Destructive,
+                tool.Enabled,
+                tool.IsAvailable,
+                tool.DefaultSelected,
+                tool.AccessClass,
+                tool.RequiresCredential,
+                tool.UpdatedAtUtc))
+            .ToList());
     }
 
     [HttpPost]
@@ -25,6 +54,7 @@ public class UserMcpTokensController(McpPersonalAccessTokenService tokenService)
             GetNormalizedUsername(),
             request.Name,
             request.ExpiresInDays,
+            request.ToolNames,
             cancellationToken);
 
         if (!result.Created)
@@ -44,6 +74,30 @@ public class UserMcpTokensController(McpPersonalAccessTokenService tokenService)
         });
     }
 
+    [HttpPut("{id:long}/tools")]
+    public async Task<IActionResult> UpdateTools(
+        long id,
+        [FromBody] UpdateMcpPersonalAccessTokenToolsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await tokenService.UpdateToolsForUserAsync(
+            GetNormalizedUsername(),
+            id,
+            request.ToolNames ?? [],
+            cancellationToken);
+
+        if (!result.Created)
+        {
+            return result.ErrorCode switch
+            {
+                "token_not_found" => NotFound(new { error = result.ErrorCode, message = result.ErrorMessage }),
+                _ => BadRequest(new { error = result.ErrorCode, message = result.ErrorMessage })
+            };
+        }
+
+        return Ok(result.Token);
+    }
+
     [HttpDelete("{id:long}")]
     public async Task<IActionResult> Revoke(long id, CancellationToken cancellationToken)
     {
@@ -57,4 +111,10 @@ public class UserMcpTokensController(McpPersonalAccessTokenService tokenService)
         .ToLowerInvariant();
 }
 
-public sealed record CreateMcpPersonalAccessTokenRequest(string Name, int ExpiresInDays);
+public sealed record CreateMcpPersonalAccessTokenRequest(
+    string Name,
+    int ExpiresInDays,
+    IReadOnlyList<string>? ToolNames = null);
+
+public sealed record UpdateMcpPersonalAccessTokenToolsRequest(
+    IReadOnlyList<string>? ToolNames);

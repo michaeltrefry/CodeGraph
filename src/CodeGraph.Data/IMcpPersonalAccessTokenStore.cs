@@ -16,6 +16,11 @@ public interface IMcpPersonalAccessTokenStore
         long id,
         DateTime revokedAt,
         CancellationToken ct = default);
+    Task<bool> SetMcpPersonalAccessTokenEntitlementModeAsync(
+        string username,
+        long id,
+        string entitlementMode,
+        CancellationToken ct = default);
     Task<bool> UpdateMcpPersonalAccessTokenLastUsedAsync(
         long id,
         DateTime lastUsedAt,

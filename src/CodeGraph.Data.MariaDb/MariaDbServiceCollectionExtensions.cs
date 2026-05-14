@@ -46,6 +46,9 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IMemoryGraphStore, MySqlMemoryGraphStore>();
         services.AddTransient<IAssistantRunStore, MySqlAssistantRunStore>();
         services.AddTransient<IMcpPersonalAccessTokenStore, MySqlMcpPersonalAccessTokenStore>();
+        services.AddTransient<IMcpHubStore, MySqlMcpHubStore>();
+        services.AddTransient<IMcpSensitiveColumnStore, MySqlMcpSensitiveColumnStore>();
+        services.AddTransient<IMcpProviderCredentialStore, MySqlMcpProviderCredentialStore>();
         services.AddTransient<IMetricsEventStore, MySqlMetricsEventStore>();
         services.AddTransient<IAdminReportsStore, MySqlAdminReportsStore>();
 

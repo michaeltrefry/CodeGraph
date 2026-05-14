@@ -506,6 +506,14 @@ public class DatabaseSourceEntity
     public string DatabaseName { get; set; } = "";
     public string ConnectionString { get; set; } = "";
     public bool Enabled { get; set; } = true;
+
+    // Fail-closed gate: is this source exposed to the MCP Hub at all.
+    public bool McpHubEnabled { get; set; }
+
+    // SchemaOnly | NamedToolsOnly | AggregateOnly | ReadOnlySql.
+    public string McpExposureMode { get; set; } = "SchemaOnly";
+    public string? McpDisplayName { get; set; }
+    public string? McpEnvironment { get; set; }
     public DateTime? LastSyncedAt { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
@@ -539,6 +547,129 @@ public class McpPersonalAccessTokenEntity
     public DateTime? RevokedAt { get; set; }
     public DateTime? LastUsedAt { get; set; }
     public string? LastUsedFrom { get; set; }
+    public string EntitlementMode { get; set; } = "all";
+}
+
+public class McpPersonalAccessTokenToolEntitlementEntity
+{
+    public long TokenId { get; set; }
+    public string ToolName { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class McpHubProviderEntity
+{
+    public string ProviderKey { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string Description { get; set; } = "";
+    public bool Enabled { get; set; }
+    public bool SourceVisible { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}
+
+public class McpHubToolEntity
+{
+    public string ToolName { get; set; } = "";
+    public string ProviderKey { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string Description { get; set; } = "";
+    public bool ReadOnly { get; set; }
+    public bool Destructive { get; set; }
+
+    // Admin-owned: may this tool be used at all.
+    public bool Enabled { get; set; }
+
+    // System-owned: does the tool actually exist/work in this deployment.
+    public bool IsAvailable { get; set; } = true;
+
+    // Token-creation guidance only: pre-checked when minting a PAT.
+    public bool DefaultSelected { get; set; }
+
+    // UI grouping label: read | write | admin.
+    public string AccessClass { get; set; } = "read";
+    public bool RequiresCredential { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}
+
+public class McpHubCredentialEntity
+{
+    public string ProviderKey { get; set; } = "";
+    public string CredentialKey { get; set; } = "";
+    public string? EncryptedValue { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedAtUtc { get; set; }
+}
+
+public class McpHubConfigEntity
+{
+    public string ProviderKey { get; set; } = "";
+    public string ConfigKey { get; set; } = "";
+    public string? ConfigValue { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedAtUtc { get; set; }
+}
+
+public class McpHubAuditEntity
+{
+    public long Id { get; set; }
+    public string? Username { get; set; }
+    public long? TokenId { get; set; }
+    public string ProviderKey { get; set; } = "";
+    public string ToolName { get; set; } = "";
+    public string Action { get; set; } = "";
+    public string Operation { get; set; } = "";
+    public string? ResourceKey { get; set; }
+    public string CredentialMode { get; set; } = "none";
+    public string AuthorizationDecision { get; set; } = "unknown";
+    public string StatusClass { get; set; } = "unknown";
+    public int DurationMs { get; set; }
+    public bool Success { get; set; }
+    public string? Message { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+}
+
+public class McpProviderCredentialEntity
+{
+    public long Id { get; set; }
+    public string ProviderKey { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string CredentialKey { get; set; } = "";
+    public string? EncryptedValue { get; set; }
+
+    // Non-reversible fingerprint of the secret, safe to show in the UI.
+    public string? TokenFingerprint { get; set; }
+
+    // Provider-side identity captured at validation (e.g. Shortcut member name/mention).
+    // Note: this is NOT required to match the CodeGraph username.
+    public string? ProviderIdentity { get; set; }
+
+    // unverified | valid | invalid
+    public string ValidationState { get; set; } = "unverified";
+    public string? ValidationMessage { get; set; }
+    public DateTime? LastValidatedAtUtc { get; set; }
+    public DateTime? LastAttemptAtUtc { get; set; }
+    public DateTime? ExpiresAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}
+
+public class McpSensitiveColumnEntity
+{
+    public long Id { get; set; }
+    public string SourceKey { get; set; } = "*";
+    public string TableName { get; set; } = "*";
+    public string ColumnName { get; set; } = "";
+    public string? Reason { get; set; }
+
+    // Manual override that explicitly un-flags a column the patterns would otherwise deny.
+    public bool Allowed { get; set; }
+
+    // Distinguishes admin-entered rows from pattern-seeded rows so re-seeding never clobbers them.
+    public bool IsManual { get; set; }
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
 }
 
 public class McpToolInvocationEntity

@@ -87,6 +87,44 @@ public class MySqlDatabaseSourceStore(
         return true;
     }
 
+    public async Task<DatabaseSourceEntity?> UpdateMcpExposureAsync(
+        long id,
+        bool? mcpHubEnabled,
+        string? mcpExposureMode,
+        string? mcpDisplayName,
+        string? mcpEnvironment)
+    {
+        var source = await db.DatabaseSources.FirstOrDefaultAsync(d => d.Id == id);
+        if (source is null)
+        {
+            return null;
+        }
+
+        if (mcpHubEnabled is not null)
+        {
+            source.McpHubEnabled = mcpHubEnabled.Value;
+        }
+
+        if (mcpExposureMode is not null)
+        {
+            source.McpExposureMode = mcpExposureMode;
+        }
+
+        if (mcpDisplayName is not null)
+        {
+            source.McpDisplayName = string.IsNullOrWhiteSpace(mcpDisplayName) ? null : mcpDisplayName.Trim();
+        }
+
+        if (mcpEnvironment is not null)
+        {
+            source.McpEnvironment = string.IsNullOrWhiteSpace(mcpEnvironment) ? null : mcpEnvironment.Trim();
+        }
+
+        source.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        return CloneDecrypted(source);
+    }
+
     public async Task UpdateLastSyncedAsync(long id)
     {
         var source = await db.DatabaseSources.FirstOrDefaultAsync(d => d.Id == id);
@@ -113,6 +151,10 @@ public class MySqlDatabaseSourceStore(
             DatabaseName = source.DatabaseName,
             ConnectionString = connectionString,
             Enabled = source.Enabled,
+            McpHubEnabled = source.McpHubEnabled,
+            McpExposureMode = source.McpExposureMode,
+            McpDisplayName = source.McpDisplayName,
+            McpEnvironment = source.McpEnvironment,
             LastSyncedAt = source.LastSyncedAt,
             CreatedAt = source.CreatedAt,
             UpdatedAt = source.UpdatedAt

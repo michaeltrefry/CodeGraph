@@ -159,6 +159,10 @@ export const routes: Routes = [
             loadComponent: () => import('./pages/admin/admin-llm.component').then(m => m.AdminLlmComponent)
           },
           {
+            path: 'mcp-hub',
+            loadComponent: () => import('./pages/admin/admin-mcp-hub.component').then(m => m.AdminMcpHubComponent)
+          },
+          {
             path: 'assistant-debug',
             loadComponent: () => import('./pages/admin/assistant-debug.component').then(m => m.AssistantDebugComponent)
           }
