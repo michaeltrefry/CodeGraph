@@ -119,6 +119,7 @@ public class MemoryLegacyMigrationServiceTests
     private sealed class FakeEmbeddingService : IEmbeddingService
     {
         public bool IsAvailable => false;
+        public string ModelName => "test";
         public int Dimensions => 0;
         public float[] GenerateEmbedding(string text) => [];
         public IReadOnlyList<float[]> GenerateEmbeddings(IReadOnlyList<string> texts) => [];

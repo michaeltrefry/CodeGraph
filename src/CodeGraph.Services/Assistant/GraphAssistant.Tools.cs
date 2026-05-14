@@ -477,4 +477,37 @@ public partial class GraphAssistant
         sb.AppendLine(page.Content);
         return sb.ToString();
     }
+
+    private async Task<string> SearchConventionsAsync(JsonElement input)
+    {
+        if (conventionEmbeddingService is null)
+            return "Convention semantic search is not configured.";
+
+        var query = GetString(input, "query") ?? "";
+        if (string.IsNullOrWhiteSpace(query))
+            return "query is required.";
+
+        var topK = GetInt(input, "topK") ?? 10;
+        var results = await conventionEmbeddingService.SearchAsync(query, topK);
+        if (results.Count == 0)
+            return "No convention chunks matched the search.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"## Convention Search Results ({results.Count})");
+        sb.AppendLine();
+
+        foreach (var result in results)
+        {
+            sb.AppendLine($"### {result.Title} / chunk {result.ChunkIndex}");
+            sb.AppendLine($"- Slug: `{result.Slug}`");
+            sb.AppendLine($"- Section: {result.SectionPath}");
+            sb.AppendLine($"- Revision: {result.Revision}");
+            sb.AppendLine($"- Score: {result.Score:F3}");
+            sb.AppendLine();
+            sb.AppendLine(result.Excerpt);
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
 }

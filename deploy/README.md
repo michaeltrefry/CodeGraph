@@ -43,6 +43,16 @@ Optional GitHub production environment secrets:
 CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE=<private ssh key passphrase>
 ```
 
+Embedding model files are downloaded on the remote host during deployment if they are missing. By default the deploy helper writes to `${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}/embeddings/nomic-embed-text-v1.5/`, which is the same directory mounted into containers at `/models`.
+
+Optional GitHub production environment variables for the embedding download:
+
+```text
+CODEGRAPH_DOCKER_MODELS_MOUNT=/opt/codegraph/models
+CODEGRAPH_EMBEDDING_MODEL_ONNX_URL=https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx?download=true
+CODEGRAPH_EMBEDDING_MODEL_VOCAB_URL=https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/vocab.txt?download=true
+```
+
 The deploy workflow builds the remote `.env` file from individual GitHub production environment variables and secrets. Public/non-sensitive app settings should be stored as environment variables, using upper-case names:
 
 ```bash

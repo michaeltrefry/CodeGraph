@@ -1,11 +1,13 @@
 using System.Text.RegularExpressions;
 using CodeGraph.Data;
+using CodeGraph.Models.Messages;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
+using CodeGraph.Services.Messaging;
 
 namespace CodeGraph.Services;
 
-public partial class WikiService(IWikiStore store) : IWikiService
+public partial class WikiService(IWikiStore store, IMessageBus? messageBus = null) : IWikiService
 {
     private const int MaxDepth = 3; // 0-indexed, so 4 levels total
 
@@ -119,6 +121,7 @@ public partial class WikiService(IWikiStore store) : IWikiService
         var entity = CreatePageEntity(section.Id, null, slug, request, author, 0, nextSort);
         entity = await store.CreatePageAsync(entity);
         await store.CreateRevisionAsync(CreateRevisionSnapshot(entity));
+        await PublishWikiPageChangedAsync(entity, section.Slug, "created");
         return ToPageListItem(entity);
     }
 
@@ -140,6 +143,7 @@ public partial class WikiService(IWikiStore store) : IWikiService
         var entity = CreatePageEntity(parent.SectionId, parent.Id, slug, request, author, parent.Depth + 1, nextSort);
         entity = await store.CreatePageAsync(entity);
         await store.CreateRevisionAsync(CreateRevisionSnapshot(entity));
+        await PublishWikiPageChangedAsync(entity, section.Slug, "created");
         return ToPageListItem(entity);
     }
 
@@ -158,6 +162,7 @@ public partial class WikiService(IWikiStore store) : IWikiService
 
         await store.CreateRevisionAsync(CreateRevisionSnapshot(page));
         await store.UpdatePageAsync(page);
+        await PublishWikiPageChangedAsync(page, sectionSlug, "updated");
         return ToPageListItem(page);
     }
 
@@ -166,7 +171,9 @@ public partial class WikiService(IWikiStore store) : IWikiService
         var page = await ResolvePage(sectionSlug, path);
         if (page is null) return false;
 
+        var section = await store.GetSectionByIdAsync(page.SectionId);
         await store.DeletePageAsync(page);
+        await PublishWikiPageChangedAsync(page, section?.Slug ?? sectionSlug, "deleted");
         return true;
     }
 
@@ -201,6 +208,8 @@ public partial class WikiService(IWikiStore store) : IWikiService
 
         page.UpdatedAt = DateTime.UtcNow;
         await store.UpdatePageAsync(page);
+        var section = await store.GetSectionByIdAsync(page.SectionId);
+        await PublishWikiPageChangedAsync(page, section?.Slug ?? sectionSlug, "updated");
         return true;
     }
 
@@ -278,6 +287,23 @@ public partial class WikiService(IWikiStore store) : IWikiService
             Author = page.Author,
             CreatedAt = DateTime.UtcNow
         };
+    }
+
+    private async Task PublishWikiPageChangedAsync(WikiPageEntity page, string sectionSlug, string changeType)
+    {
+        if (messageBus is null)
+            return;
+
+        await messageBus.PublishAsync(new WikiPageChanged
+        {
+            PageId = page.Id,
+            SectionId = page.SectionId,
+            SectionSlug = sectionSlug,
+            PageSlug = page.Slug,
+            Revision = page.Revision,
+            ChangeType = changeType,
+            OccurredAtUtc = DateTime.UtcNow
+        });
     }
 
     private static string Slugify(string title)

@@ -6,9 +6,12 @@ using MySqlConnector;
 
 namespace CodeGraph.Data.MariaDb;
 
-public class MySqlVectorStore(IOptions<MariaDbStorageOptions> optionsAccessor) : IVectorStore
+public class MySqlVectorStore(
+    IOptions<MariaDbStorageOptions> optionsAccessor,
+    IOptions<CodeGraphStorageOptions>? storageOptionsAccessor = null) : IVectorStore
 {
     private readonly MariaDbStorageOptions options = optionsAccessor.Value;
+    private readonly CodeGraphStorageOptions storageOptions = storageOptionsAccessor?.Value ?? new CodeGraphStorageOptions();
 
     static MySqlVectorStore()
     {
@@ -30,16 +33,20 @@ public class MySqlVectorStore(IOptions<MariaDbStorageOptions> optionsAccessor) :
         foreach (var batch in items.Chunk(options.BatchSize))
         {
             await conn.ExecuteAsync("""
-                INSERT INTO embeddings (entity_type, entity_key, embedding_json)
-                VALUES (@EntityType, @EntityKey, @EmbeddingJson)
+                INSERT INTO embeddings (entity_type, entity_key, embedding_json, model_name, dimensions)
+                VALUES (@EntityType, @EntityKey, @EmbeddingJson, @ModelName, @Dimensions)
                 ON DUPLICATE KEY UPDATE
                     embedding_json = VALUES(embedding_json),
+                    model_name = VALUES(model_name),
+                    dimensions = VALUES(dimensions),
                     updated_at = CURRENT_TIMESTAMP(3)
                 """, batch.Select(item => new
             {
                 EntityType = item.entityType,
                 EntityKey = item.entityKey,
-                EmbeddingJson = JsonSerializer.Serialize(item.embedding)
+                EmbeddingJson = JsonSerializer.Serialize(item.embedding),
+                ModelName = storageOptions.EmbeddingModelName,
+                Dimensions = storageOptions.EmbeddingDimensions
             }));
         }
     }
@@ -54,9 +61,24 @@ public class MySqlVectorStore(IOptions<MariaDbStorageOptions> optionsAccessor) :
 
         var rows = await conn.QueryAsync<EmbeddingRow>(
             entityType is null
-                ? "SELECT entity_type, entity_key, embedding_json FROM embeddings"
-                : "SELECT entity_type, entity_key, embedding_json FROM embeddings WHERE entity_type = @EntityType",
-            new { EntityType = entityType });
+                ? """
+                  SELECT entity_type, entity_key, embedding_json
+                  FROM embeddings
+                  WHERE model_name = @ModelName AND dimensions = @Dimensions
+                  """
+                : """
+                  SELECT entity_type, entity_key, embedding_json
+                  FROM embeddings
+                  WHERE entity_type = @EntityType
+                    AND model_name = @ModelName
+                    AND dimensions = @Dimensions
+                  """,
+            new
+            {
+                EntityType = entityType,
+                ModelName = storageOptions.EmbeddingModelName,
+                Dimensions = storageOptions.EmbeddingDimensions
+            });
 
         return rows
             .Select(row => new VectorSearchResult(
@@ -76,6 +98,15 @@ public class MySqlVectorStore(IOptions<MariaDbStorageOptions> optionsAccessor) :
             DELETE FROM embeddings
             WHERE entity_type = @EntityType AND entity_key = @EntityKey
             """, new { EntityType = entityType, EntityKey = entityKey });
+    }
+
+    public async Task DeleteEmbeddingsByKeyPrefixAsync(string entityType, string entityKeyPrefix)
+    {
+        await using var conn = await GetOpenConnectionAsync();
+        await conn.ExecuteAsync("""
+            DELETE FROM embeddings
+            WHERE entity_type = @EntityType AND entity_key LIKE CONCAT(@EntityKeyPrefix, '%')
+            """, new { EntityType = entityType, EntityKeyPrefix = entityKeyPrefix });
     }
 
     private async Task<MySqlConnection> GetOpenConnectionAsync()

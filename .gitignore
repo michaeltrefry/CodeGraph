@@ -30,6 +30,7 @@ Thumbs.db
 node_modules/
 
 # Scratch / temp files
+.claude/worktrees/
 build.log
 build_exit.txt
 build_minimal.txt

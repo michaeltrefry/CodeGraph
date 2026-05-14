@@ -17,6 +17,7 @@ using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Telemetry;
 using CodeGraph.Services.Usage;
+using CodeGraph.Services.WikiRag;
 
 namespace CodeGraph.Services.Assistant;
 
@@ -37,7 +38,8 @@ public partial class GraphAssistant(
     ILogger<GraphAssistant> logger,
     IAgentPromptService? agentPromptService = null,
     IDbBackedAssistantSettingsResolver? assistantSettingsResolver = null,
-    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null)
+    IDbBackedLlmProviderConfigResolver? providerConfigResolver = null,
+    IConventionEmbeddingService? conventionEmbeddingService = null)
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
     private readonly AnalysisOptions options = optionsAccessor.Value;
@@ -537,6 +539,7 @@ public partial class GraphAssistant(
             "get_graph_schema" => GetGraphSchema(),
             "list_conventions" => await ListConventionsAsync(),
             "get_convention" => await GetConventionAsync(input),
+            "search_conventions" => await SearchConventionsAsync(input),
             _ => $"Unknown tool: {name}"
         };
     }

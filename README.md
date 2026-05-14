@@ -227,7 +227,7 @@ MariaDB and RabbitMQ are expected to be shared containers on the external `trefr
 
 By default compose mounts the parent repo folder (`../`) into the containers at `/repos/workspace` as writable; remote providers clone and update repositories directly under that path. Override `CODEGRAPH_DOCKER_REPOS_MOUNT` when your host repositories should live somewhere else, or `CODEGRAPH_CONTAINER_REPOS_ROOT` if the in-container path must change.
 
-Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/all-MiniLM-L6-v2/model.onnx`.
+Embeddings are expected under `/models` in containers. The default model path is `/models/embeddings/nomic-embed-text-v1.5/model.onnx`; the production deploy helper downloads the model and `vocab.txt` into the host model cache when they are missing.
 
 Docker endpoints:
 

@@ -22,27 +22,10 @@ public class OnnxEmbeddingServiceTests : IDisposable
     }
 
     [Fact]
-    public void ResolveModelPath_FallsBackFromModelsMount_ToLegacyDockerMount()
-    {
-        var mountedRoot = Path.Combine(_tempDir, "models");
-        var legacyRoot = Path.Combine(_tempDir, "legacy-models");
-        var legacyModelPath = Path.Combine(legacyRoot, "embeddings", "all-MiniLM-L6-v2", "model.onnx");
-        Directory.CreateDirectory(Path.GetDirectoryName(legacyModelPath)!);
-        File.WriteAllText(legacyModelPath, "test");
-
-        OnnxEmbeddingService.ResolveModelPath(
-            Path.Combine(mountedRoot, "embeddings", "all-MiniLM-L6-v2", "model.onnx"),
-            [(mountedRoot + Path.DirectorySeparatorChar, legacyRoot + Path.DirectorySeparatorChar)])
-            .ShouldBe(legacyModelPath);
-    }
-
-    [Fact]
-    public void ResolveModelPath_ReturnsNull_WhenNeitherConfiguredNorFallbackPathExists()
+    public void ResolveModelPath_ReturnsNull_WhenConfiguredPathDoesNotExist()
     {
         OnnxEmbeddingService.ResolveModelPath(
-            Path.Combine(_tempDir, "models", "embeddings", "all-MiniLM-L6-v2", "model.onnx"),
-            [(Path.Combine(_tempDir, "models") + Path.DirectorySeparatorChar,
-              Path.Combine(_tempDir, "missing-legacy-models") + Path.DirectorySeparatorChar)])
+            Path.Combine(_tempDir, "models", "embeddings", "nomic-embed-text-v1.5", "model.onnx"))
             .ShouldBeNull();
     }
 

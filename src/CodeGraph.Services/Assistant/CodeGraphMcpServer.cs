@@ -11,6 +11,7 @@ using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.WikiRag;
 
 namespace CodeGraph.Services.Assistant;
 
@@ -22,7 +23,8 @@ public class CodeGraphMcpServer(
     IWikiStore wikiStore,
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     ICommunityDetectionService communityDetection,
-    IImpactAnalysisService impactAnalysis)
+    IImpactAnalysisService impactAnalysis,
+    IConventionEmbeddingService? conventionEmbeddingService = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -814,6 +816,38 @@ public class CodeGraphMcpServer(
         sb.AppendLine($"# {page.Title}");
         sb.AppendLine($"*Revision {page.Revision} by {page.Author} — updated {page.UpdatedAt:yyyy-MM-dd}*\n");
         sb.AppendLine(page.Content);
+        return sb.ToString();
+    }
+
+    [McpServerTool(Name = "search_conventions"),
+     Description("Search company convention documents using hybrid BM25 lexical scoring and dense semantic retrieval over markdown-aware chunks.")]
+    public async Task<string> SearchConventionsAsync(
+        [Description("Natural-language query for the convention content.")] string query,
+        [Description("Maximum number of chunks to return.")] int topK = 10)
+    {
+        if (conventionEmbeddingService is null)
+            return "Convention semantic search is not configured.";
+
+        var results = await conventionEmbeddingService.SearchAsync(query, topK);
+        if (results.Count == 0)
+            return "No convention chunks matched the search.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"## Convention Search Results ({results.Count})");
+        sb.AppendLine();
+
+        foreach (var result in results)
+        {
+            sb.AppendLine($"### {result.Title} / chunk {result.ChunkIndex}");
+            sb.AppendLine($"- Slug: `{result.Slug}`");
+            sb.AppendLine($"- Section: {result.SectionPath}");
+            sb.AppendLine($"- Revision: {result.Revision}");
+            sb.AppendLine($"- Score: {result.Score:F3}");
+            sb.AppendLine();
+            sb.AppendLine(result.Excerpt);
+            sb.AppendLine();
+        }
+
         return sb.ToString();
     }
 
