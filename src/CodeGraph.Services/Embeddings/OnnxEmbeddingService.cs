@@ -10,7 +10,7 @@ using CodeGraph.Data;
 namespace CodeGraph.Services.Embeddings;
 
 /// <summary>
-/// Generates text embeddings using an ONNX model (e.g. all-MiniLM-L6-v2).
+/// Generates text embeddings using an ONNX model (e.g. nomic-embed-text-v1.5).
 /// The model is loaded lazily on first use. If no model path is configured,
 /// IsAvailable returns false and all operations return zero vectors.
 /// </summary>
@@ -38,6 +38,7 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
         }
     }
 
+    public string ModelName => _options.EmbeddingModelName;
     public int Dimensions => _options.EmbeddingDimensions;
 
     public float[] GenerateEmbedding(string text)
@@ -103,42 +104,14 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
         var attentionMaskTensor = new DenseTensor<long>(attentionMask, [1, tokens.Length]);
         var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [1, tokens.Length]);
 
-        var inputs = new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor("input_ids", inputIdsTensor),
-            NamedOnnxValue.CreateFromTensor("attention_mask", attentionMaskTensor),
-            NamedOnnxValue.CreateFromTensor("token_type_ids", tokenTypeIdsTensor)
-        };
+        var inputs = BuildInputs(inputIdsTensor, attentionMaskTensor, tokenTypeIdsTensor);
 
         try
         {
             using var results = _session.Run(inputs);
             var output = results.First().AsTensor<float>();
 
-            // Mean pooling over token dimension
-            var embedding = new float[Dimensions];
-            var tokenCount = tokens.Length;
-
-            for (int t = 0; t < tokenCount; t++)
-            {
-                for (int d = 0; d < Dimensions && d < output.Dimensions[2]; d++)
-                {
-                    embedding[d] += output[0, t, d];
-                }
-            }
-
-            for (int d = 0; d < Dimensions; d++)
-                embedding[d] /= tokenCount;
-
-            // L2 normalize
-            var norm = MathF.Sqrt(embedding.Sum(x => x * x));
-            if (norm > 0)
-            {
-                for (int d = 0; d < Dimensions; d++)
-                    embedding[d] /= norm;
-            }
-
-            return embedding;
+            return PoolEmbedding(output, 0, tokens.Length);
         }
         catch (Exception ex)
         {
@@ -183,12 +156,7 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
             var attentionMaskTensor = new DenseTensor<long>(attentionMask, [batchSize, maxLen]);
             var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [batchSize, maxLen]);
 
-            var inputs = new List<NamedOnnxValue>
-            {
-                NamedOnnxValue.CreateFromTensor("input_ids", inputIdsTensor),
-                NamedOnnxValue.CreateFromTensor("attention_mask", attentionMaskTensor),
-                NamedOnnxValue.CreateFromTensor("token_type_ids", tokenTypeIdsTensor)
-            };
+            var inputs = BuildInputs(inputIdsTensor, attentionMaskTensor, tokenTypeIdsTensor);
 
             using var results = _session.Run(inputs);
             var output = results.First().AsTensor<float>();
@@ -196,30 +164,7 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
             var embeddings = new List<float[]>(batchSize);
             for (int b = 0; b < batchSize; b++)
             {
-                var tokenCount = allTokens[b].Length;
-                var embedding = new float[Dimensions];
-
-                // Mean pooling over non-padded tokens only
-                for (int t = 0; t < tokenCount; t++)
-                {
-                    for (int d = 0; d < Dimensions && d < output.Dimensions[2]; d++)
-                    {
-                        embedding[d] += output[b, t, d];
-                    }
-                }
-
-                for (int d = 0; d < Dimensions; d++)
-                    embedding[d] /= tokenCount;
-
-                // L2 normalize
-                var norm = MathF.Sqrt(embedding.Sum(x => x * x));
-                if (norm > 0)
-                {
-                    for (int d = 0; d < Dimensions; d++)
-                        embedding[d] /= norm;
-                }
-
-                embeddings.Add(embedding);
+                embeddings.Add(PoolEmbedding(output, b, allTokens[b].Length));
             }
 
             return embeddings;
@@ -231,8 +176,61 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
         }
     }
 
-    private int[] Tokenize(string text, int maxLength = 128)
+    private List<NamedOnnxValue> BuildInputs(
+        DenseTensor<long> inputIdsTensor,
+        DenseTensor<long> attentionMaskTensor,
+        DenseTensor<long> tokenTypeIdsTensor)
     {
+        var inputs = new List<NamedOnnxValue>();
+        if (_session is null)
+            return inputs;
+
+        var inputNames = _session.InputMetadata.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (inputNames.Contains("input_ids"))
+            inputs.Add(NamedOnnxValue.CreateFromTensor("input_ids", inputIdsTensor));
+        if (inputNames.Contains("attention_mask"))
+            inputs.Add(NamedOnnxValue.CreateFromTensor("attention_mask", attentionMaskTensor));
+        if (inputNames.Contains("token_type_ids"))
+            inputs.Add(NamedOnnxValue.CreateFromTensor("token_type_ids", tokenTypeIdsTensor));
+
+        return inputs;
+    }
+
+    private float[] PoolEmbedding(Microsoft.ML.OnnxRuntime.Tensors.Tensor<float> output, int batchIndex, int tokenCount)
+    {
+        var embedding = new float[Dimensions];
+        tokenCount = Math.Max(1, tokenCount);
+
+        if (output.Dimensions.Length == 2)
+        {
+            for (var d = 0; d < Dimensions && d < output.Dimensions[1]; d++)
+                embedding[d] = output[batchIndex, d];
+        }
+        else
+        {
+            for (var t = 0; t < tokenCount && t < output.Dimensions[1]; t++)
+            {
+                for (var d = 0; d < Dimensions && d < output.Dimensions[2]; d++)
+                    embedding[d] += output[batchIndex, t, d];
+            }
+
+            for (var d = 0; d < Dimensions; d++)
+                embedding[d] /= tokenCount;
+        }
+
+        var norm = MathF.Sqrt(embedding.Sum(x => x * x));
+        if (norm > 0)
+        {
+            for (var d = 0; d < Dimensions; d++)
+                embedding[d] /= norm;
+        }
+
+        return embedding;
+    }
+
+    private int[] Tokenize(string text)
+    {
+        var maxLength = Math.Clamp(_options.EmbeddingMaxTokens, 8, 8192);
         if (_bertTokenizer is not null)
         {
             var encoded = _bertTokenizer.EncodeToIds(text, maxLength,
@@ -316,34 +314,9 @@ public sealed class OnnxEmbeddingService : IEmbeddingService, IDisposable
     }
 
     internal static string? ResolveModelPath(string? configuredPath) =>
-        ResolveModelPath(configuredPath, [
-            ("/models/", "/models-legacy/"),
-            ("/models/", "/Users/michael/Repos/llm/models/"),
-            ("/models-legacy/", "/models/"),
-            ("/Users/michael/Repos/llm/models/", "/models/")
-        ]);
-
-    internal static string? ResolveModelPath(
-        string? configuredPath,
-        IReadOnlyList<(string FromPrefix, string ToPrefix)> fallbackMappings)
-    {
-        if (string.IsNullOrWhiteSpace(configuredPath))
-            return null;
-
-        var candidates = new List<string> { configuredPath };
-
-        foreach (var (fromPrefix, toPrefix) in fallbackMappings)
-        {
-            if (!configuredPath.StartsWith(fromPrefix, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            candidates.Add(toPrefix + configuredPath[fromPrefix.Length..]);
-        }
-
-        return candidates
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault(File.Exists);
-    }
+        string.IsNullOrWhiteSpace(configuredPath) || !File.Exists(configuredPath)
+            ? null
+            : configuredPath;
 
     public void Dispose()
     {

@@ -9,6 +9,7 @@ public static class JobTypes
     public const string DetectCommunities = "DetectCommunities";
     public const string RegenerateMcpDocs = "RegenerateMcpDocs";
     public const string AssistantRetentionCleanup = "AssistantRetentionCleanup";
+    public const string IngestConventionEmbeddings = "IngestConventionEmbeddings";
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -18,6 +19,7 @@ public static class JobTypes
         LinkAndDetect,
         DetectCommunities,
         RegenerateMcpDocs,
-        AssistantRetentionCleanup
+        AssistantRetentionCleanup,
+        IngestConventionEmbeddings
     ];
 }

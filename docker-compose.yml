@@ -21,8 +21,10 @@ services:
       CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
       CodeGraph__Memory__BaseUrl: ${CodeGraph__Memory__BaseUrl:-http://codegraph-memory:5039}
       CodeGraph__Memory__Audience: ${CodeGraph__Memory__Audience:-codegraph-memory}
-      CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
-      CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
+      CodeGraph__StorageOptions__EmbeddingDimensions: 768
+      CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
+      CodeGraph__StorageOptions__EmbeddingModelName: nomic-embed-text-v1.5
+      CodeGraph__StorageOptions__EmbeddingModelPath: /models/embeddings/nomic-embed-text-v1.5/model.onnx
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-lmstudio}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
@@ -83,7 +85,6 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
-      - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
     restart: unless-stopped
     depends_on:
       codegraph-metrics:
@@ -133,8 +134,10 @@ services:
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
-      CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
-      CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
+      CodeGraph__StorageOptions__EmbeddingDimensions: 768
+      CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
+      CodeGraph__StorageOptions__EmbeddingModelName: nomic-embed-text-v1.5
+      CodeGraph__StorageOptions__EmbeddingModelPath: /models/embeddings/nomic-embed-text-v1.5/model.onnx
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-lmstudio}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
@@ -170,7 +173,6 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
-      - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
     restart: unless-stopped
     networks:
       - default
@@ -189,8 +191,10 @@ services:
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
-      CodeGraph__StorageOptions__EmbeddingModelName: ${CodeGraph__StorageOptions__EmbeddingModelName:-all-MiniLM-L6-v2}
-      CodeGraph__StorageOptions__EmbeddingModelPath: ${CodeGraph__StorageOptions__EmbeddingModelPath:-/models/embeddings/all-MiniLM-L6-v2/model.onnx}
+      CodeGraph__StorageOptions__EmbeddingDimensions: 768
+      CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
+      CodeGraph__StorageOptions__EmbeddingModelName: nomic-embed-text-v1.5
+      CodeGraph__StorageOptions__EmbeddingModelPath: /models/embeddings/nomic-embed-text-v1.5/model.onnx
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -198,7 +202,6 @@ services:
       - "127.0.0.1:${CODEGRAPH_MEMORY_DOCKER_HTTP_PORT:-5039}:5039"
     volumes:
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
-      - ${CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT:-../llm/models}:/models-legacy
     restart: unless-stopped
     networks:
       - default
@@ -214,6 +217,10 @@ services:
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
+      CodeGraph__StorageOptions__EmbeddingDimensions: 768
+      CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
+      CodeGraph__StorageOptions__EmbeddingModelName: nomic-embed-text-v1.5
+      CodeGraph__StorageOptions__EmbeddingModelPath: /models/embeddings/nomic-embed-text-v1.5/model.onnx
       CodeGraph__AnalysisOptions__DefaultProvider: ${CodeGraph__AnalysisOptions__DefaultProvider:-lmstudio}
       CodeGraph__AnalysisOptions__Model: ${CodeGraph__AnalysisOptions__Model:-claude-sonnet-4-6}
       CodeGraph__AnalysisOptions__ApiKey: ${CodeGraph__AnalysisOptions__ApiKey:-}
@@ -264,6 +271,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
+      - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
     restart: unless-stopped
     depends_on:
       codegraph-indexer:

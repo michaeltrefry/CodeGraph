@@ -42,6 +42,7 @@ using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Reviews;
+using CodeGraph.Services.WikiRag;
 
 namespace CodeGraph.Api;
 
@@ -105,6 +106,8 @@ public static class Startup
         // Embeddings + semantic search
         services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
         services.AddTransient<ISemanticSearchService, SemanticSearchService>();
+        services.AddTransient<IMarkdownWikiChunker, MarkdownWikiChunker>();
+        services.AddTransient<IConventionEmbeddingService, ConventionEmbeddingService>();
         services.AddTransient<GraphQueryEngine>();
         services.AddTransient<IndexingPipeline>();
         services.AddTransient<CrossRepoLinker>();
@@ -233,6 +236,8 @@ public static class Startup
             if (!useRemoteMemory)
                 x.AddConsumer<StoreMemoryClaimsConsumer>();
 
+            x.AddConsumer<WikiPageChangedConsumer>();
+
             x.UsingRabbitMq((context, cfg) =>
             {
                 cfg.UseDelayedMessageScheduler();
@@ -288,6 +293,12 @@ public static class Startup
                         e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
                     });
                 }
+
+                cfg.ReceiveEndpoint("wiki-page-changed", e =>
+                {
+                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
+                    e.ConfigureConsumer<WikiPageChangedConsumer>(context);
+                });
             });
         });
     }

@@ -19,6 +19,7 @@ public class CodeGraphStorageOptions
 
     // Embeddings
     public string? EmbeddingModelPath { get; set; }
-    public int EmbeddingDimensions { get; set; } = 384;
-    public string EmbeddingModelName { get; set; } = "all-MiniLM-L6-v2";
+    public int EmbeddingDimensions { get; set; } = 768;
+    public string EmbeddingModelName { get; set; } = "nomic-embed-text-v1.5";
+    public int EmbeddingMaxTokens { get; set; } = 8192;
 }

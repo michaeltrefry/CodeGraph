@@ -268,6 +268,9 @@ jobs:
 
           pass_through_names = {
               "ASPNETCORE_ENVIRONMENT",
+              "CODEGRAPH_EMBEDDING_MODEL_NAME",
+              "CODEGRAPH_EMBEDDING_MODEL_ONNX_URL",
+              "CODEGRAPH_EMBEDDING_MODEL_VOCAB_URL",
               "CODEGRAPHAPI_DOCKER_HTTPS_PORT",
               "CODEGRAPH_DOCKER_LEGACY_MODELS_MOUNT",
               "CODEGRAPH_DOCKER_MODELS_MOUNT",
@@ -407,8 +410,9 @@ jobs:
           CODEGRAPH_DEPLOY_USER: ${{ vars.CODEGRAPH_DEPLOY_USER || secrets.CODEGRAPH_DEPLOY_USER }}
         run: |
           set -eu
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH/docker'"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" "mkdir -p '$CODEGRAPH_DEPLOY_PATH/deploy' '$CODEGRAPH_DEPLOY_PATH/docker'"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes docker-compose.yml deploy/docker-compose.production.yml "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes deploy/ensure-embedding-models.sh "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/deploy/ensure-embedding-models.sh"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes docker/Directory.Build.props "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/docker/Directory.Build.props"
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes .env.production "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/.env"
 
@@ -427,5 +431,6 @@ jobs:
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST" \
             "cd '$CODEGRAPH_DEPLOY_PATH' && \
              echo '$GHCR_TOKEN' | docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin && \
+             IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' sh deploy/ensure-embedding-models.sh && \
              IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' docker compose -f docker-compose.yml -f docker-compose.production.yml pull && \
              IMAGE_PREFIX='$IMAGE_PREFIX' IMAGE_TAG='$IMAGE_TAG' docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --no-build --remove-orphans"

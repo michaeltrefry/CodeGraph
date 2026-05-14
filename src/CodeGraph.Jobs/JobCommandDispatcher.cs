@@ -12,7 +12,8 @@ public class JobCommandDispatcher(
     LinkAndDetectJob linkAndDetectJob,
     DetectCommunitiesJob detectCommunitiesJob,
     RegenerateMcpDocsJob regenerateMcpDocsJob,
-    AssistantRetentionCleanupJob assistantRetentionCleanupJob) : IJobCommandDispatcher
+    AssistantRetentionCleanupJob assistantRetentionCleanupJob,
+    IngestConventionEmbeddingsJob ingestConventionEmbeddingsJob) : IJobCommandDispatcher
 {
     public IReadOnlyList<string> GetSupportedJobTypes() => JobTypes.All;
 
@@ -27,6 +28,7 @@ public class JobCommandDispatcher(
             JobTypes.DetectCommunities => Serialize(new EmptyJobRequest()),
             JobTypes.RegenerateMcpDocs => Serialize(new EmptyJobRequest()),
             JobTypes.AssistantRetentionCleanup => Serialize(new EmptyJobRequest()),
+            JobTypes.IngestConventionEmbeddings => Serialize(new EmptyJobRequest()),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }
@@ -42,6 +44,7 @@ public class JobCommandDispatcher(
             JobTypes.DetectCommunities => detectCommunitiesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.RegenerateMcpDocs => regenerateMcpDocsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.AssistantRetentionCleanup => assistantRetentionCleanupJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
+            JobTypes.IngestConventionEmbeddings => ingestConventionEmbeddingsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }

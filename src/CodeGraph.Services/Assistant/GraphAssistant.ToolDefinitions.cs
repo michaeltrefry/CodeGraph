@@ -160,6 +160,16 @@ public partial class GraphAssistant
                 ["name"] = Prop("string", "Convention slug (e.g., 'gateway-pattern', 'messaging-pattern')")
             },
             ["name"]),
+
+        new(
+            "search_conventions",
+            "Search convention documents using hybrid BM25 lexical scoring and dense semantic retrieval over markdown-aware chunks.",
+            new Dictionary<string, JsonElement>
+            {
+                ["query"] = Prop("string", "Natural-language query for convention content"),
+                ["topK"] = Prop("integer", "Maximum number of chunks to return")
+            },
+            ["query"]),
     ];
 
     private static List<ToolUnion> BuildAnthropicTools() =>

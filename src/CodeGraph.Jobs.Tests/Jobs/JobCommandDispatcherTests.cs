@@ -5,6 +5,7 @@ using CodeGraph.Data;
 using CodeGraph.Jobs.Jobs;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
+using CodeGraph.Services.WikiRag;
 
 namespace CodeGraph.Jobs.Tests.Jobs;
 
@@ -80,6 +81,15 @@ public class JobCommandDispatcherTests
             new LinkAndDetectJob(indexerClient),
             new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(new RecordingMcpDocService()),
-            new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()));
+            new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()),
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()));
+    }
+
+    private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService
+    {
+        public Task<int> IngestAllAsync(CancellationToken ct = default) => Task.FromResult(0);
+        public Task<int> ReindexPageAsync(long pageId, bool deleted, CancellationToken ct = default) => Task.FromResult(0);
+        public Task<IReadOnlyList<ConventionSearchResult>> SearchAsync(string query, int topK = 10, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<ConventionSearchResult>>([]);
     }
 }

@@ -6,6 +6,8 @@ using CodeGraph.Jobs.Jobs;
 using CodeGraph.Services;
 using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Embeddings;
+using CodeGraph.Services.WikiRag;
 
 namespace CodeGraph.Jobs;
 
@@ -21,6 +23,9 @@ public static class Startup
         services.AddSingleton<IFileSystem, LocalFileSystem>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<IAssistantRetentionCleanupService, AssistantRetentionCleanupService>();
+        services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
+        services.AddTransient<IMarkdownWikiChunker, MarkdownWikiChunker>();
+        services.AddTransient<IConventionEmbeddingService, ConventionEmbeddingService>();
         services.AddCodeGraphJobScheduling();
         services.AddHostedService<ScheduleRunnerWorker>();
     }
@@ -46,6 +51,7 @@ public static class Startup
         services.AddTransient<IGraphStore, Neo4jGraphStore>();
         services.AddTransient<IJobScheduleStore, Neo4jJobScheduleStore>();
         services.AddTransient<IWikiStore, Neo4jWikiStore>();
+        services.AddTransient<IVectorStore, Neo4jVectorStore>();
         services.AddTransient<IDbHealthStore>(sp => sp.GetRequiredService<IGraphStore>() as IDbHealthStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
         services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore

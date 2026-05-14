@@ -112,4 +112,15 @@ public class Neo4jVectorStore(Neo4jSessionFactory sessionFactory) : IVectorStore
                 new { entityType, entityKey });
         });
     }
+
+    public async Task DeleteEmbeddingsByKeyPrefixAsync(string entityType, string entityKeyPrefix)
+    {
+        await using var session = sessionFactory.GetSession();
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync(
+                "MATCH (e:Embedding {entityType: $entityType}) WHERE e.entityKey STARTS WITH $entityKeyPrefix DELETE e",
+                new { entityType, entityKeyPrefix });
+        });
+    }
 }

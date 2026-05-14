@@ -7,6 +7,7 @@ public interface IVectorStore
     Task<IReadOnlyList<VectorSearchResult>> SearchSimilarAsync(
         float[] queryEmbedding, string? entityType = null, int topK = 10, double minScore = 0.5);
     Task DeleteEmbeddingsAsync(string entityType, string entityKey);
+    Task DeleteEmbeddingsByKeyPrefixAsync(string entityType, string entityKeyPrefix);
 }
 
 public record VectorSearchResult(string EntityType, string EntityKey, double Score);
