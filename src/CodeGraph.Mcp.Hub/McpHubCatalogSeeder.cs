@@ -24,12 +24,15 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
         new("codegraph", "CodeGraph", "Native CodeGraph graph, memory, convention, repository, and schema tools.", EnabledByDefault: true, SourceVisible: true),
         new("shortcut", "Shortcut", "Delegated Shortcut project tracking tools using provider credentials."),
         new("rabbitmq", "RabbitMQ", "Read-only RabbitMQ management API inspection tools."),
-        new("mysql", "MySQL", "Schema catalog and guarded read-only SQL tools.")
+        new("mysql", "MySQL", "Schema catalog and guarded read-only SQL tools."),
+        // Shim provider: tools are not seeded here — an admin sets discoveryUrl/discoveryToken
+        // and runs discovery, which populates provider_type='shim' tools (disabled by default).
+        new("shortcut-shim", "Shortcut (MCP shim)", "Downstream Shortcut MCP server discovered and proxied through the hub shim. Configure discoveryUrl/discoveryToken, then run discovery.")
     ];
 
     private static readonly McpHubToolDefinition[] ProviderTools =
     [
-        new("mcp_hub_catalog", "codegraph", "MCP Hub catalog", "List MCP providers, tools, entitlement flags, and enabled state.", EnabledByDefault: true, DefaultSelected: true),
+        new("mcp_hub_catalog", "codegraph", "MCP Hub catalog", "List MCP providers, tools, entitlement flags, and enabled state.", EnabledByDefault: true, DefaultSelected: true, ProviderType: "native"),
         new("shortcut_search_epics", "shortcut", "Search Shortcut epics", "Search Shortcut epics through the delegated Shortcut provider.", RequiresCredential: true),
         new("shortcut_search_stories", "shortcut", "Search Shortcut stories", "Search Shortcut stories through the delegated Shortcut provider.", RequiresCredential: true),
         new("rabbitmq_list_queues", "rabbitmq", "List RabbitMQ queues", "List queues through the RabbitMQ management API.", RequiresCredential: true),
@@ -63,6 +66,7 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
             {
                 ToolName = tool.ToolName,
                 ProviderKey = tool.ProviderKey,
+                ProviderType = tool.ProviderType,
                 DisplayName = tool.DisplayName,
                 Description = tool.Description,
                 ReadOnly = tool.ReadOnly,
@@ -147,7 +151,8 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
                 // UI grouping label derived from the tool's declared MCP hints. Note that many
                 // CodeGraph tool attributes do not set ReadOnly = true, so they fall into "write"
                 // here — tightening those attribute hints is separate attribute-hygiene work.
-                AccessClass: readOnly ? "read" : "write");
+                AccessClass: readOnly ? "read" : "write",
+                ProviderType: "native");
         }
     }
 

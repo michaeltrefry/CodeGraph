@@ -34,6 +34,7 @@ public class UserMcpTokensController(
             .Select(tool => new McpHubToolResponse(
                 tool.ToolName,
                 tool.ProviderKey,
+                tool.ProviderType,
                 tool.DisplayName,
                 tool.Description,
                 tool.ReadOnly,

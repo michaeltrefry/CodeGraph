@@ -810,6 +810,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.HasKey(tool => tool.ToolName);
             e.Property(tool => tool.ToolName).HasColumnName("tool_name");
             e.Property(tool => tool.ProviderKey).HasColumnName("provider_key");
+            e.Property(tool => tool.ProviderType).HasColumnName("provider_type");
             e.Property(tool => tool.DisplayName).HasColumnName("display_name");
             e.Property(tool => tool.Description).HasColumnName("description");
             e.Property(tool => tool.ReadOnly).HasColumnName("read_only");
@@ -819,6 +820,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(tool => tool.DefaultSelected).HasColumnName("default_selected");
             e.Property(tool => tool.AccessClass).HasColumnName("access_class");
             e.Property(tool => tool.RequiresCredential).HasColumnName("requires_credential");
+            e.Property(tool => tool.InputSchema).HasColumnName("input_schema");
             e.Property(tool => tool.CreatedAtUtc).HasColumnName("created_at_utc");
             e.Property(tool => tool.UpdatedAtUtc).HasColumnName("updated_at_utc");
             e.HasIndex(tool => tool.ProviderKey);
@@ -854,6 +856,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(audit => audit.Username).HasColumnName("username");
             e.Property(audit => audit.TokenId).HasColumnName("token_id");
             e.Property(audit => audit.ProviderKey).HasColumnName("provider_key");
+            e.Property(audit => audit.ProviderType).HasColumnName("provider_type");
             e.Property(audit => audit.ToolName).HasColumnName("tool_name");
             e.Property(audit => audit.Action).HasColumnName("action");
             e.Property(audit => audit.Operation).HasColumnName("operation");

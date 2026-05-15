@@ -10,6 +10,9 @@ public static class McpHubServiceCollectionExtensions
     {
         services.AddTransient<McpHubCatalogSeeder>();
         services.AddTransient<McpHubService>();
+        services.AddTransient<McpShimDiscoveryService>();
+        services.AddTransient<McpShimService>();
+        services.TryAddSingleton<IMcpShimClient, McpClientShimClient>();
         services.AddSingleton<SensitiveColumnPolicy>();
         services.AddSingleton<MySqlSourceExposurePolicy>();
         services.AddHostedService<McpHubCatalogHostedService>();

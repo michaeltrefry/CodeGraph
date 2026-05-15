@@ -236,7 +236,8 @@ public sealed class McpHubService(
         int durationMs,
         bool success,
         string? message,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string providerType = "provider")
     {
         try
         {
@@ -245,6 +246,7 @@ public sealed class McpHubService(
                 Username = Normalize(username),
                 TokenId = tokenId,
                 ProviderKey = providerKey,
+                ProviderType = NormalizeAuditValue(providerType, "provider"),
                 ToolName = toolName,
                 Action = action,
                 Operation = NormalizeAuditValue(operation, "invoke"),
@@ -472,6 +474,7 @@ public sealed class McpHubService(
         new(
             entity.ToolName,
             entity.ProviderKey,
+            entity.ProviderType,
             entity.DisplayName,
             entity.Description,
             entity.ReadOnly,

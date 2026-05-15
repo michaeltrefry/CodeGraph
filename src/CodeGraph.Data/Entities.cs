@@ -572,6 +572,11 @@ public class McpHubToolEntity
 {
     public string ToolName { get; set; } = "";
     public string ProviderKey { get; set; } = "";
+
+    // System-owned: native | provider | shim. Native CodeGraph tools and first-party
+    // provider tools are catalog-seeded; shim tools are discovered from a downstream MCP server.
+    public string ProviderType { get; set; } = "native";
+
     public string DisplayName { get; set; } = "";
     public string Description { get; set; } = "";
     public bool ReadOnly { get; set; }
@@ -589,6 +594,11 @@ public class McpHubToolEntity
     // UI grouping label: read | write | admin.
     public string AccessClass { get; set; } = "read";
     public bool RequiresCredential { get; set; }
+
+    // JSON input schema captured from a downstream MCP server during discovery. Null for
+    // native/provider tools, whose schema is served by the MCP SDK.
+    public string? InputSchema { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
 }
@@ -617,6 +627,10 @@ public class McpHubAuditEntity
     public string? Username { get; set; }
     public long? TokenId { get; set; }
     public string ProviderKey { get; set; } = "";
+
+    // native | provider | shim — which kind of provider served the invocation.
+    public string ProviderType { get; set; } = "provider";
+
     public string ToolName { get; set; } = "";
     public string Action { get; set; } = "";
     public string Operation { get; set; } = "";

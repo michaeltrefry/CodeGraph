@@ -43,14 +43,17 @@ public sealed class MySqlMcpHubStore(CodeGraphDbContext db, IAesEncryptor encryp
         else
         {
             existing.ProviderKey = tool.ProviderKey;
+            existing.ProviderType = tool.ProviderType;
             existing.DisplayName = tool.DisplayName;
             existing.Description = tool.Description;
             existing.ReadOnly = tool.ReadOnly;
             existing.Destructive = tool.Destructive;
             existing.RequiresCredential = tool.RequiresCredential;
-            // is_available is system-owned — refreshed on every reseed. Enabled / DefaultSelected
-            // / AccessClass are admin-owned and intentionally left untouched here.
+            // is_available, provider_type, and input_schema are system-owned — refreshed on
+            // every reseed / discovery. Enabled / DefaultSelected / AccessClass are admin-owned
+            // and intentionally left untouched here.
             existing.IsAvailable = tool.IsAvailable;
+            existing.InputSchema = tool.InputSchema;
             existing.UpdatedAtUtc = tool.UpdatedAtUtc;
         }
 

@@ -15,6 +15,7 @@ public sealed record McpHubProviderResponse(
 public sealed record McpHubToolResponse(
     string ToolName,
     string ProviderKey,
+    string ProviderType,
     string DisplayName,
     string Description,
     bool ReadOnly,
@@ -69,11 +70,18 @@ public sealed record McpProviderCredentialWriteResult(
     string? ProviderIdentity,
     string? Message);
 
+public sealed record McpShimDiscoveryResponse(
+    string ProviderKey,
+    int DiscoveredCount,
+    int RetiredCount,
+    IReadOnlyList<string> ToolNames);
+
 public sealed record McpHubAuditResponse(
     long Id,
     string? Username,
     long? TokenId,
     string ProviderKey,
+    string ProviderType,
     string ToolName,
     string Action,
     string Operation,

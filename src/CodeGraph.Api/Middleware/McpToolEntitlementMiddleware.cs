@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeGraph.Data;
+using CodeGraph.Mcp.Hub;
 using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -101,7 +102,7 @@ public sealed class McpToolEntitlementMiddleware(
                 return;
             }
 
-            await next(context);
+            await DispatchAsync(context, tool, request);
             return;
         }
 
@@ -109,7 +110,7 @@ public sealed class McpToolEntitlementMiddleware(
         {
             if (await store.IsTokenEntitledAsync(tokenId.Value, toolName, context.RequestAborted))
             {
-                await next(context);
+                await DispatchAsync(context, tool, request);
                 return;
             }
         }
@@ -119,6 +120,51 @@ public sealed class McpToolEntitlementMiddleware(
         }
 
         await RejectAsync(context, "tool_not_entitled", $"This MCP token is not entitled to call '{toolName}'.");
+    }
+
+    // Hands an entitled tools/call to its server. Native and first-party-provider tools are
+    // [McpServerTool] methods served by the MCP SDK, so the request continues down the pipeline.
+    // Shim tools have no SDK method — the hub forwards them to the downstream MCP server and
+    // writes the JSON-RPC response itself.
+    private async Task DispatchAsync(HttpContext context, McpHubToolEntity tool, McpRequest request)
+    {
+        if (!string.Equals(tool.ProviderType, "shim", StringComparison.OrdinalIgnoreCase))
+        {
+            await next(context);
+            return;
+        }
+
+        using var scope = scopeFactory.CreateScope();
+        var shim = scope.ServiceProvider.GetRequiredService<McpShimService>();
+        var resultNode = await shim.ForwardAsync(
+            tool,
+            ConvertArguments(request.Arguments),
+            ResolveUsername(context),
+            ResolveTokenId(context),
+            context.RequestAborted);
+
+        var response = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = request.Id?.DeepClone(),
+            ["result"] = resultNode,
+        };
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(
+            response.ToJsonString(new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            context.RequestAborted);
+    }
+
+    private static IReadOnlyDictionary<string, object?>? ConvertArguments(JsonNode? argumentsNode)
+    {
+        if (argumentsNode is not JsonObject argumentsObject)
+            return null;
+
+        var arguments = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var property in argumentsObject)
+            arguments[property.Key] = property.Value?.DeepClone();
+        return arguments;
     }
 
     private async Task InvokeAndFilterToolsListAsync(HttpContext context, RequestDelegate next)
@@ -168,8 +214,10 @@ public sealed class McpToolEntitlementMiddleware(
 
         using var scope = scopeFactory.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IMcpHubStore>();
-        var allowed = await GetVisibleToolNamesAsync(store, ResolveTokenId(context), context.RequestAborted);
+        var (allowed, visibleShimTools) =
+            await GetVisibleToolsAsync(store, ResolveTokenId(context), context.RequestAborted);
 
+        // Drop SDK-advertised tools the caller is not allowed to see.
         for (var i = toolsArray.Count - 1; i >= 0; i--)
         {
             var name = toolsArray[i]?["name"]?.GetValue<string>();
@@ -177,10 +225,23 @@ public sealed class McpToolEntitlementMiddleware(
                 toolsArray.RemoveAt(i);
         }
 
+        // Inject shim tools. They are discovered from a downstream MCP server and have no
+        // [McpServerTool] method, so the SDK never lists them — the hub advertises them here
+        // from the catalog so an entitled caller can discover and then call them.
+        var present = toolsArray
+            .Select(item => item?["name"]?.GetValue<string>())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var shimTool in visibleShimTools)
+        {
+            if (present.Add(shimTool.ToolName))
+                toolsArray.Add(BuildShimToolListEntry(shimTool));
+        }
+
         return root.ToJsonString(new JsonSerializerOptions(JsonSerializerDefaults.Web));
     }
 
-    private async Task<HashSet<string>> GetVisibleToolNamesAsync(
+    private async Task<(HashSet<string> Names, List<McpHubToolEntity> ShimTools)> GetVisibleToolsAsync(
         IMcpHubStore store,
         long? tokenId,
         CancellationToken ct)
@@ -188,7 +249,7 @@ public sealed class McpToolEntitlementMiddleware(
         // Fail closed: when a PAT is required but the request carried no resolvable token id,
         // the caller sees an empty tool list rather than the full enabled catalog.
         if (tokenId is null && requiresPersonalAccessToken)
-            return [];
+            return ([], []);
 
         var providers = await store.ListProvidersAsync(ct);
         var enabledProviders = providers
@@ -197,6 +258,7 @@ public sealed class McpToolEntitlementMiddleware(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var visible = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var shimTools = new List<McpHubToolEntity>();
         foreach (var tool in await store.ListToolsAsync(ct))
         {
             if (!tool.Enabled || !tool.IsAvailable || !enabledProviders.Contains(tool.ProviderKey))
@@ -206,10 +268,44 @@ public sealed class McpToolEntitlementMiddleware(
                 continue;
 
             visible.Add(tool.ToolName);
+            if (string.Equals(tool.ProviderType, "shim", StringComparison.OrdinalIgnoreCase))
+                shimTools.Add(tool);
         }
 
-        return visible;
+        return (visible, shimTools);
     }
+
+    private static JsonObject BuildShimToolListEntry(McpHubToolEntity tool)
+    {
+        JsonNode inputSchema;
+        if (string.IsNullOrWhiteSpace(tool.InputSchema))
+        {
+            inputSchema = new JsonObject { ["type"] = "object" };
+        }
+        else
+        {
+            try
+            {
+                inputSchema = JsonNode.Parse(tool.InputSchema) ?? new JsonObject { ["type"] = "object" };
+            }
+            catch (JsonException)
+            {
+                inputSchema = new JsonObject { ["type"] = "object" };
+            }
+        }
+
+        return new JsonObject
+        {
+            ["name"] = tool.ToolName,
+            ["description"] = tool.Description,
+            ["inputSchema"] = inputSchema,
+        };
+    }
+
+    private static string? ResolveUsername(HttpContext context) =>
+        context.User.FindFirstValue("preferred_username")
+        ?? context.User.FindFirstValue("username")
+        ?? context.User.Identity?.Name;
 
     private static async Task RejectAsync(HttpContext context, string code, string message)
     {
@@ -247,15 +343,29 @@ public sealed class McpToolEntitlementMiddleware(
             if (!string.Equals(methodName, "tools/call", StringComparison.Ordinal))
                 return new(methodName, null);
 
+            // The JSON-RPC id is echoed back when the hub itself answers a shim tools/call.
+            var id = root.TryGetProperty("id", out var idElement)
+                ? JsonNode.Parse(idElement.GetRawText())
+                : null;
+
             if (!root.TryGetProperty("params", out var parameters) ||
                 parameters.ValueKind != JsonValueKind.Object ||
                 !parameters.TryGetProperty("name", out var name) ||
                 name.ValueKind != JsonValueKind.String)
             {
-                return new(methodName, null);
+                return new(methodName, null, id);
             }
 
-            return new(methodName, string.IsNullOrWhiteSpace(name.GetString()) ? null : name.GetString()!.Trim());
+            var arguments = parameters.TryGetProperty("arguments", out var argumentsElement) &&
+                            argumentsElement.ValueKind == JsonValueKind.Object
+                ? JsonNode.Parse(argumentsElement.GetRawText())
+                : null;
+
+            return new(
+                methodName,
+                string.IsNullOrWhiteSpace(name.GetString()) ? null : name.GetString()!.Trim(),
+                id,
+                arguments);
         }
         catch (JsonException)
         {
@@ -265,5 +375,9 @@ public sealed class McpToolEntitlementMiddleware(
         }
     }
 
-    private sealed record McpRequest(string? Method, string? ToolName);
+    private sealed record McpRequest(
+        string? Method,
+        string? ToolName,
+        JsonNode? Id = null,
+        JsonNode? Arguments = null);
 }
