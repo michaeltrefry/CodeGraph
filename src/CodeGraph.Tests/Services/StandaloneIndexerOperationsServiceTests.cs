@@ -235,6 +235,7 @@ public class StandaloneIndexerOperationsServiceTests
         public Task<DatabaseSourceEntity?> GetAsync(long id) => Task.FromResult(_sources.GetValueOrDefault(id));
         public Task<DatabaseSourceEntity> CreateAsync(DatabaseSourceEntity entity) => throw new NotSupportedException();
         public Task<DatabaseSourceEntity?> UpdateAsync(long id, string? serverName, string? databaseName, string? connectionString, bool? enabled) => throw new NotSupportedException();
+        public Task<DatabaseSourceEntity?> UpdateMcpExposureAsync(long id, bool? mcpHubEnabled, string? mcpExposureMode, string? mcpDisplayName, string? mcpEnvironment) => throw new NotSupportedException();
         public Task<bool> DeleteAsync(long id) => throw new NotSupportedException();
         public Task UpdateLastSyncedAsync(long id) => Task.CompletedTask;
     }

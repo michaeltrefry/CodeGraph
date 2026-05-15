@@ -47,6 +47,11 @@ import {
   IndexerRunResponse,
   McpPersonalAccessTokenMetadata,
   McpPersonalAccessTokenCreateResponse,
+  McpHubAuditResponse,
+  McpHubCatalogResponse,
+  McpHubConfigResponse,
+  McpHubCredentialResponse,
+  McpHubToolResponse,
   AdminReportFiltersResponse,
   AdminReportResponse,
   AssistantDebugExchangeListResponse,
@@ -371,14 +376,64 @@ export class ApiService {
     return this.http.get<McpPersonalAccessTokenMetadata[]>(`${API}/user/mcp-tokens`);
   }
 
-  createMcpToken(name: string, expiresInDays: number): Observable<McpPersonalAccessTokenCreateResponse> {
+  listUserMcpTools(): Observable<McpHubToolResponse[]> {
+    return this.http.get<McpHubToolResponse[]>(`${API}/user/mcp-tokens/tools`);
+  }
+
+  createMcpToken(name: string, expiresInDays: number, toolNames?: string[]): Observable<McpPersonalAccessTokenCreateResponse> {
     return this.http.post<McpPersonalAccessTokenCreateResponse>(
       `${API}/user/mcp-tokens`,
-      { name, expiresInDays });
+      { name, expiresInDays, toolNames });
+  }
+
+  updateMcpTokenTools(id: number, toolNames: string[]): Observable<McpPersonalAccessTokenMetadata> {
+    return this.http.put<McpPersonalAccessTokenMetadata>(
+      `${API}/user/mcp-tokens/${id}/tools`,
+      { toolNames });
   }
 
   revokeMcpToken(id: number): Observable<void> {
     return this.http.delete<void>(`${API}/user/mcp-tokens/${id}`);
+  }
+
+  getMcpHubCatalog(): Observable<McpHubCatalogResponse> {
+    return this.http.get<McpHubCatalogResponse>(`${API}/admin/mcp-hub/catalog`);
+  }
+
+  updateMcpHubProvider(providerKey: string, request: { enabled?: boolean; sourceVisible?: boolean }): Observable<void> {
+    return this.http.put<void>(`${API}/admin/mcp-hub/providers/${encodeURIComponent(providerKey)}`, request);
+  }
+
+  updateMcpHubTool(
+    toolName: string,
+    request: { enabled?: boolean; defaultSelected?: boolean; accessClass?: string },
+  ): Observable<void> {
+    return this.http.put<void>(`${API}/admin/mcp-hub/tools/${encodeURIComponent(toolName)}`, request);
+  }
+
+  listMcpHubCredentials(): Observable<McpHubCredentialResponse[]> {
+    return this.http.get<McpHubCredentialResponse[]>(`${API}/admin/mcp-hub/credentials`);
+  }
+
+  setMcpHubCredential(providerKey: string, credentialKey: string, value: string): Observable<void> {
+    return this.http.put<void>(
+      `${API}/admin/mcp-hub/credentials/${encodeURIComponent(providerKey)}/${encodeURIComponent(credentialKey)}`,
+      { value });
+  }
+
+  listMcpHubConfig(): Observable<McpHubConfigResponse[]> {
+    return this.http.get<McpHubConfigResponse[]>(`${API}/admin/mcp-hub/config`);
+  }
+
+  setMcpHubConfig(providerKey: string, configKey: string, value: string | null): Observable<void> {
+    return this.http.put<void>(
+      `${API}/admin/mcp-hub/config/${encodeURIComponent(providerKey)}/${encodeURIComponent(configKey)}`,
+      { value });
+  }
+
+  listMcpHubAudit(limit = 100): Observable<McpHubAuditResponse[]> {
+    const params = new HttpParams().set('limit', limit);
+    return this.http.get<McpHubAuditResponse[]>(`${API}/admin/mcp-hub/audit`, { params });
   }
 
   // Admin reports

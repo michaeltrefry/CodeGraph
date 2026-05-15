@@ -226,11 +226,76 @@ export interface McpPersonalAccessTokenMetadata {
   lastUsedAtUtc?: string;
   lastUsedFrom?: string;
   status: string;
+  entitlementMode: string;
+  toolNames: string[];
 }
 
 export interface McpPersonalAccessTokenCreateResponse {
   token: McpPersonalAccessTokenMetadata;
   rawToken: string;
+}
+
+export interface McpHubCatalogResponse {
+  providers: McpHubProviderResponse[];
+  tools: McpHubToolResponse[];
+}
+
+export interface McpHubProviderResponse {
+  providerKey: string;
+  displayName: string;
+  description: string;
+  enabled: boolean;
+  sourceVisible: boolean;
+  updatedAtUtc: string;
+}
+
+export interface McpHubToolResponse {
+  toolName: string;
+  providerKey: string;
+  displayName: string;
+  description: string;
+  readOnly: boolean;
+  destructive: boolean;
+  enabled: boolean;
+  isAvailable: boolean;
+  defaultSelected: boolean;
+  accessClass: string;
+  requiresCredential: boolean;
+  updatedAtUtc: string;
+}
+
+export interface McpHubCredentialResponse {
+  providerKey: string;
+  credentialKey: string;
+  hasValue: boolean;
+  updatedAtUtc?: string;
+  updatedBy?: string;
+}
+
+export interface McpHubConfigResponse {
+  providerKey: string;
+  configKey: string;
+  configValue?: string;
+  updatedAtUtc?: string;
+  updatedBy?: string;
+}
+
+export interface McpHubAuditResponse {
+  id: number;
+  username?: string;
+  tokenId?: number;
+  providerKey: string;
+  toolName: string;
+  action: string;
+  operation: string;
+  resourceKey?: string;
+  credentialMode: string;
+  authorizationDecision: string;
+  statusClass: string;
+  durationMs: number;
+  success: boolean;
+  message?: string;
+  createdAtUtc: string;
 }
 
 export interface AdminReportRangeResponse {

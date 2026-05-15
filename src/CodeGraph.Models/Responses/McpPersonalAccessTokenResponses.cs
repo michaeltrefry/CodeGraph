@@ -10,7 +10,9 @@ public sealed record McpPersonalAccessTokenMetadata(
     DateTime? RevokedAtUtc,
     DateTime? LastUsedAtUtc,
     string? LastUsedFrom,
-    string Status);
+    string Status,
+    string EntitlementMode,
+    IReadOnlyList<string> ToolNames);
 
 public sealed record McpPersonalAccessTokenCreateResult(
     bool Created,

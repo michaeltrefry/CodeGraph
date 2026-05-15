@@ -43,6 +43,14 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<LlmConfigEntryEntity> LlmConfig => Set<LlmConfigEntryEntity>();
     public DbSet<LlmProviderModelEntity> LlmProviderModels => Set<LlmProviderModelEntity>();
     public DbSet<McpPersonalAccessTokenEntity> McpPersonalAccessTokens => Set<McpPersonalAccessTokenEntity>();
+    public DbSet<McpPersonalAccessTokenToolEntitlementEntity> McpPersonalAccessTokenToolEntitlements => Set<McpPersonalAccessTokenToolEntitlementEntity>();
+    public DbSet<McpHubProviderEntity> McpHubProviders => Set<McpHubProviderEntity>();
+    public DbSet<McpHubToolEntity> McpHubTools => Set<McpHubToolEntity>();
+    public DbSet<McpHubCredentialEntity> McpHubCredentials => Set<McpHubCredentialEntity>();
+    public DbSet<McpHubConfigEntity> McpHubConfig => Set<McpHubConfigEntity>();
+    public DbSet<McpHubAuditEntity> McpHubAudit => Set<McpHubAuditEntity>();
+    public DbSet<McpSensitiveColumnEntity> McpSensitiveColumns => Set<McpSensitiveColumnEntity>();
+    public DbSet<McpProviderCredentialEntity> McpProviderCredentials => Set<McpProviderCredentialEntity>();
     public DbSet<McpToolInvocationEntity> McpToolInvocations => Set<McpToolInvocationEntity>();
     public DbSet<JobScheduleEntity> JobSchedules => Set<JobScheduleEntity>();
     public DbSet<IndexerRunEntity> IndexerRuns => Set<IndexerRunEntity>();
@@ -717,6 +725,10 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(d => d.DatabaseName).HasColumnName("database_name");
             e.Property(d => d.ConnectionString).HasColumnName("connection_string");
             e.Property(d => d.Enabled).HasColumnName("enabled");
+            e.Property(d => d.McpHubEnabled).HasColumnName("mcp_hub_enabled");
+            e.Property(d => d.McpExposureMode).HasColumnName("mcp_exposure_mode");
+            e.Property(d => d.McpDisplayName).HasColumnName("mcp_display_name");
+            e.Property(d => d.McpEnvironment).HasColumnName("mcp_environment");
             e.Property(d => d.LastSyncedAt).HasColumnName("last_synced_at");
             e.Property(d => d.CreatedAt).HasColumnName("created_at");
             e.Property(d => d.UpdatedAt).HasColumnName("updated_at");
@@ -761,11 +773,144 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(token => token.RevokedAt).HasColumnName("revoked_at");
             e.Property(token => token.LastUsedAt).HasColumnName("last_used_at");
             e.Property(token => token.LastUsedFrom).HasColumnName("last_used_from");
+            e.Property(token => token.EntitlementMode).HasColumnName("entitlement_mode");
             e.HasIndex(token => token.Username);
             e.HasIndex(token => token.ExpiresAt);
             e.HasIndex(token => token.RevokedAt);
             e.HasIndex(token => new { token.Username, token.RevokedAt, token.ExpiresAt });
             e.HasIndex(token => token.TokenHash).IsUnique();
+        });
+
+        modelBuilder.Entity<McpPersonalAccessTokenToolEntitlementEntity>(e =>
+        {
+            e.ToTable("mcp_personal_access_token_tool_entitlements");
+            e.HasKey(entitlement => new { entitlement.TokenId, entitlement.ToolName });
+            e.Property(entitlement => entitlement.TokenId).HasColumnName("token_id");
+            e.Property(entitlement => entitlement.ToolName).HasColumnName("tool_name");
+            e.Property(entitlement => entitlement.CreatedAt).HasColumnName("created_at");
+            e.HasIndex(entitlement => entitlement.ToolName);
+        });
+
+        modelBuilder.Entity<McpHubProviderEntity>(e =>
+        {
+            e.ToTable("mcp_hub_providers");
+            e.HasKey(provider => provider.ProviderKey);
+            e.Property(provider => provider.ProviderKey).HasColumnName("provider_key");
+            e.Property(provider => provider.DisplayName).HasColumnName("display_name");
+            e.Property(provider => provider.Description).HasColumnName("description");
+            e.Property(provider => provider.Enabled).HasColumnName("enabled");
+            e.Property(provider => provider.SourceVisible).HasColumnName("source_visible");
+            e.Property(provider => provider.CreatedAtUtc).HasColumnName("created_at_utc");
+            e.Property(provider => provider.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<McpHubToolEntity>(e =>
+        {
+            e.ToTable("mcp_hub_tools");
+            e.HasKey(tool => tool.ToolName);
+            e.Property(tool => tool.ToolName).HasColumnName("tool_name");
+            e.Property(tool => tool.ProviderKey).HasColumnName("provider_key");
+            e.Property(tool => tool.ProviderType).HasColumnName("provider_type");
+            e.Property(tool => tool.DisplayName).HasColumnName("display_name");
+            e.Property(tool => tool.Description).HasColumnName("description");
+            e.Property(tool => tool.ReadOnly).HasColumnName("read_only");
+            e.Property(tool => tool.Destructive).HasColumnName("destructive");
+            e.Property(tool => tool.Enabled).HasColumnName("enabled");
+            e.Property(tool => tool.IsAvailable).HasColumnName("is_available");
+            e.Property(tool => tool.DefaultSelected).HasColumnName("default_selected");
+            e.Property(tool => tool.AccessClass).HasColumnName("access_class");
+            e.Property(tool => tool.RequiresCredential).HasColumnName("requires_credential");
+            e.Property(tool => tool.InputSchema).HasColumnName("input_schema");
+            e.Property(tool => tool.CreatedAtUtc).HasColumnName("created_at_utc");
+            e.Property(tool => tool.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            e.HasIndex(tool => tool.ProviderKey);
+        });
+
+        modelBuilder.Entity<McpHubCredentialEntity>(e =>
+        {
+            e.ToTable("mcp_hub_credentials");
+            e.HasKey(credential => new { credential.ProviderKey, credential.CredentialKey });
+            e.Property(credential => credential.ProviderKey).HasColumnName("provider_key");
+            e.Property(credential => credential.CredentialKey).HasColumnName("credential_key");
+            e.Property(credential => credential.EncryptedValue).HasColumnName("encrypted_value");
+            e.Property(credential => credential.UpdatedBy).HasColumnName("updated_by");
+            e.Property(credential => credential.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<McpHubConfigEntity>(e =>
+        {
+            e.ToTable("mcp_hub_config");
+            e.HasKey(config => new { config.ProviderKey, config.ConfigKey });
+            e.Property(config => config.ProviderKey).HasColumnName("provider_key");
+            e.Property(config => config.ConfigKey).HasColumnName("config_key");
+            e.Property(config => config.ConfigValue).HasColumnName("config_value");
+            e.Property(config => config.UpdatedBy).HasColumnName("updated_by");
+            e.Property(config => config.UpdatedAtUtc).HasColumnName("updated_at_utc");
+        });
+
+        modelBuilder.Entity<McpHubAuditEntity>(e =>
+        {
+            e.ToTable("mcp_hub_audit");
+            e.HasKey(audit => audit.Id);
+            e.Property(audit => audit.Id).HasColumnName("id");
+            e.Property(audit => audit.Username).HasColumnName("username");
+            e.Property(audit => audit.TokenId).HasColumnName("token_id");
+            e.Property(audit => audit.ProviderKey).HasColumnName("provider_key");
+            e.Property(audit => audit.ProviderType).HasColumnName("provider_type");
+            e.Property(audit => audit.ToolName).HasColumnName("tool_name");
+            e.Property(audit => audit.Action).HasColumnName("action");
+            e.Property(audit => audit.Operation).HasColumnName("operation");
+            e.Property(audit => audit.ResourceKey).HasColumnName("resource_key");
+            e.Property(audit => audit.CredentialMode).HasColumnName("credential_mode");
+            e.Property(audit => audit.AuthorizationDecision).HasColumnName("authorization_decision");
+            e.Property(audit => audit.StatusClass).HasColumnName("status_class");
+            e.Property(audit => audit.DurationMs).HasColumnName("duration_ms");
+            e.Property(audit => audit.Success).HasColumnName("success");
+            e.Property(audit => audit.Message).HasColumnName("message");
+            e.Property(audit => audit.CreatedAtUtc).HasColumnName("created_at_utc");
+            e.HasIndex(audit => audit.CreatedAtUtc);
+            e.HasIndex(audit => new { audit.ProviderKey, audit.ToolName, audit.CreatedAtUtc });
+            e.HasIndex(audit => new { audit.TokenId, audit.CreatedAtUtc });
+            e.HasIndex(audit => new { audit.ProviderKey, audit.ResourceKey, audit.CreatedAtUtc });
+        });
+
+        modelBuilder.Entity<McpSensitiveColumnEntity>(e =>
+        {
+            e.ToTable("mcp_sensitive_columns");
+            e.HasKey(column => column.Id);
+            e.Property(column => column.Id).HasColumnName("id");
+            e.Property(column => column.SourceKey).HasColumnName("source_key");
+            e.Property(column => column.TableName).HasColumnName("table_name");
+            e.Property(column => column.ColumnName).HasColumnName("column_name");
+            e.Property(column => column.Reason).HasColumnName("reason");
+            e.Property(column => column.Allowed).HasColumnName("allowed");
+            e.Property(column => column.IsManual).HasColumnName("is_manual");
+            e.Property(column => column.CreatedAtUtc).HasColumnName("created_at_utc");
+            e.Property(column => column.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            e.HasIndex(column => new { column.SourceKey, column.TableName, column.ColumnName }).IsUnique();
+            e.HasIndex(column => column.ColumnName);
+        });
+
+        modelBuilder.Entity<McpProviderCredentialEntity>(e =>
+        {
+            e.ToTable("mcp_provider_credentials");
+            e.HasKey(credential => credential.Id);
+            e.Property(credential => credential.Id).HasColumnName("id");
+            e.Property(credential => credential.ProviderKey).HasColumnName("provider_key");
+            e.Property(credential => credential.Username).HasColumnName("username");
+            e.Property(credential => credential.CredentialKey).HasColumnName("credential_key");
+            e.Property(credential => credential.EncryptedValue).HasColumnName("encrypted_value");
+            e.Property(credential => credential.TokenFingerprint).HasColumnName("token_fingerprint");
+            e.Property(credential => credential.ProviderIdentity).HasColumnName("provider_identity");
+            e.Property(credential => credential.ValidationState).HasColumnName("validation_state");
+            e.Property(credential => credential.ValidationMessage).HasColumnName("validation_message");
+            e.Property(credential => credential.LastValidatedAtUtc).HasColumnName("last_validated_at_utc");
+            e.Property(credential => credential.LastAttemptAtUtc).HasColumnName("last_attempt_at_utc");
+            e.Property(credential => credential.ExpiresAtUtc).HasColumnName("expires_at_utc");
+            e.Property(credential => credential.CreatedAtUtc).HasColumnName("created_at_utc");
+            e.Property(credential => credential.UpdatedAtUtc).HasColumnName("updated_at_utc");
+            e.HasIndex(credential => new { credential.ProviderKey, credential.Username, credential.CredentialKey }).IsUnique();
+            e.HasIndex(credential => credential.Username);
         });
 
         modelBuilder.Entity<McpToolInvocationEntity>(e =>

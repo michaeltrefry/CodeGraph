@@ -53,6 +53,25 @@ public sealed class MySqlMcpPersonalAccessTokenStore(CodeGraphDbContext db) : IM
         return true;
     }
 
+    public async Task<bool> SetMcpPersonalAccessTokenEntitlementModeAsync(
+        string username,
+        long id,
+        string entitlementMode,
+        CancellationToken ct = default)
+    {
+        var token = await db.McpPersonalAccessTokens
+            .FirstOrDefaultAsync(item => item.Id == id && item.Username == username, ct);
+
+        if (token is null)
+        {
+            return false;
+        }
+
+        token.EntitlementMode = entitlementMode;
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
     public async Task<bool> UpdateMcpPersonalAccessTokenLastUsedAsync(
         long id,
         DateTime lastUsedAt,

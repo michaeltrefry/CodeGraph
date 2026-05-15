@@ -70,6 +70,24 @@ public class DatabaseSourcesController(
         return updated is null ? NotFound() : Ok(ToResponse(updated));
     }
 
+    [HttpPut("{id:long}/mcp-exposure")]
+    public async Task<ActionResult<DatabaseSourceResponse>> UpdateMcpExposure(
+        long id,
+        [FromBody] UpdateDatabaseSourceMcpExposureRequest request)
+    {
+        if (request.McpExposureMode is not null && !McpSourceExposureModes.IsValid(request.McpExposureMode))
+            return BadRequest($"McpExposureMode must be one of: {string.Join(", ", McpSourceExposureModes.All)}.");
+
+        var updated = await sourceStore.UpdateMcpExposureAsync(
+            id,
+            request.McpHubEnabled,
+            request.McpExposureMode,
+            request.McpDisplayName,
+            request.McpEnvironment);
+
+        return updated is null ? NotFound() : Ok(ToResponse(updated));
+    }
+
     [HttpDelete("{id:long}")]
     public async Task<ActionResult> Delete(long id)
     {
@@ -132,7 +150,11 @@ public class DatabaseSourcesController(
         e.Enabled,
         e.LastSyncedAt,
         e.CreatedAt,
-        e.UpdatedAt);
+        e.UpdatedAt,
+        e.McpHubEnabled,
+        e.McpExposureMode,
+        e.McpDisplayName,
+        e.McpEnvironment);
 
     private static string MaskConnectionString(string connectionString)
     {

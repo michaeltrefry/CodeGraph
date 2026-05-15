@@ -19,6 +19,7 @@
     <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
     <ProjectReference Include="..\CodeGraph.Indexer.Client\CodeGraph.Indexer.Client.csproj" />
     <ProjectReference Include="..\CodeGraph.Memory.Client\CodeGraph.Memory.Client.csproj" />
+    <ProjectReference Include="..\CodeGraph.Mcp.Hub\CodeGraph.Mcp.Hub.csproj" />
     <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
     <ProjectReference Include="..\CodeGraph.Extractors.Ansible\CodeGraph.Extractors.Ansible.csproj" />
     <ProjectReference Include="..\CodeGraph.Extractors.CSharp\CodeGraph.Extractors.CSharp.csproj" />

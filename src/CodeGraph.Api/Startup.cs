@@ -25,6 +25,7 @@ using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
 using CodeGraph.Indexer.Client;
 using CodeGraph.Jobs;
+using CodeGraph.Mcp.Hub;
 using CodeGraph.Memory.Client;
 using ModelContextProtocol.AspNetCore;
 using CodeGraph.Services;
@@ -206,6 +207,11 @@ public static class Startup
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
 
         RegisterMessaging(services, configuration);
+        services.AddCodeGraphMcpHub();
+        // Persistence (RegisterPersistence, above) has already registered the durable hub stores
+        // when MariaDB is the provider; this fills in the in-memory fallback only for the
+        // interfaces still unregistered — exactly one active registration per store (sc-1062).
+        services.AddCodeGraphMcpHubInMemoryStoreFallback();
         RegisterMcp(services);
     }
 
@@ -340,6 +346,10 @@ public static class Startup
 
     private static void RegisterMcp(IServiceCollection services)
     {
+        // Resolvable so the consolidated intent-family tools can delegate to the native
+        // CodeGraph tool implementations.
+        services.AddScoped<CodeGraphMcpServer>();
+
         // MCP server
         services.AddMcpServer(options =>
         {
@@ -350,8 +360,12 @@ public static class Startup
             };
         })
         .WithHttpTransport()
+        // Legacy narrow tools are still advertised; the consolidated intent-family tools are
+        // advertised additively. Legacy tools can be hidden via hub catalog policy after parity.
         .WithTools<CodeGraphMcpServer>()
         .WithTools<MemoryMcpServer>()
+        .WithTools<ConsolidatedMcpServer>()
+        .WithTools<McpHubServer>()
         .WithResources<CodeGraphMcpResources>();
     }
 
@@ -367,6 +381,7 @@ public static class Startup
         app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseMiddleware<McpToolEntitlementMiddleware>();
         app.UseMiddleware<McpTelemetryMiddleware>();
         app.MapControllers();
 

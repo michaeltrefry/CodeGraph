@@ -29,4 +29,8 @@ public record DatabaseSourceResponse(
     bool Enabled,
     DateTime? LastSyncedAt,
     DateTime CreatedAt,
-    DateTime UpdatedAt);
+    DateTime UpdatedAt,
+    bool McpHubEnabled,
+    string McpExposureMode,
+    string? McpDisplayName,
+    string? McpEnvironment);

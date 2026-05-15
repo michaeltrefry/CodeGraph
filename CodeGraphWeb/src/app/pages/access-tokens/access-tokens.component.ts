@@ -3,8 +3,8 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/api.service';
-import { McpPersonalAccessTokenMetadata } from '../../core/models';
-import { extractAdminError, loadAdminCollection, runAdminMutation } from '../admin/admin-resource.helpers';
+import { McpHubToolResponse, McpPersonalAccessTokenMetadata } from '../../core/models';
+import { extractAdminError, runAdminMutation } from '../admin/admin-resource.helpers';
 
 @Component({
   selector: 'app-access-tokens',
@@ -53,12 +53,43 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
               <span class="cg-field-label">Expiration</span>
               <select class="cg-select" [(ngModel)]="expiresInDays">
                 <option [ngValue]="30">30 days</option>
+                <option [ngValue]="60">60 days</option>
                 <option [ngValue]="90">90 days</option>
-                <option [ngValue]="180">180 days</option>
-                <option [ngValue]="365">365 days</option>
               </select>
               <small>Choose a shorter lifetime for shared or temporary clients.</small>
             </label>
+          </div>
+
+          <div class="tool-picker">
+            <div class="tool-picker-header">
+              <div>
+                <h3>Tool access</h3>
+                <p>Select the exact MCP tools this token can call.</p>
+              </div>
+              <div class="button-row">
+                <button type="button" class="cg-btn secondary" (click)="selectReadOnlyTools()">Read-only</button>
+                <button type="button" class="cg-btn secondary" (click)="selectAllTools()">All</button>
+              </div>
+            </div>
+            @if (tools().length === 0) {
+              <div class="state-message compact">No enabled MCP tools are available yet.</div>
+            } @else {
+              <div class="tool-grid">
+                @for (tool of tools(); track tool.toolName) {
+                  <label class="tool-option" [class.disabled-tool]="!tool.enabled">
+                    <input
+                      type="checkbox"
+                      [checked]="isToolSelected(tool.toolName)"
+                      [disabled]="!tool.enabled"
+                      (change)="toggleTool(tool.toolName, $any($event.target).checked)" />
+                    <span>
+                      <strong>{{ tool.displayName || tool.toolName }}</strong>
+                      <small>{{ tool.providerKey }} / {{ tool.readOnly ? 'read-only' : 'write' }}</small>
+                    </span>
+                  </label>
+                }
+              </div>
+            }
           </div>
 
           <div class="button-row">
@@ -119,6 +150,7 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
                 <tr>
                   <th>Token</th>
                   <th>Status</th>
+                  <th>Tool access</th>
                   <th>Created</th>
                   <th>Expires</th>
                   <th>Last used</th>
@@ -141,6 +173,12 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
                         {{ token.status }}
                       </span>
                     </td>
+                    <td>
+                      <div class="tool-access">
+                        <span class="cg-chip cg-chip-mono">{{ token.entitlementMode }}</span>
+                        <small>{{ token.toolNames.length ? token.toolNames.join(', ') : 'All registered tools' }}</small>
+                      </div>
+                    </td>
                     <td>{{ token.createdAtUtc | date:'mediumDate' }}</td>
                     <td>{{ token.expiresAtUtc | date:'mediumDate' }}</td>
                     <td>
@@ -152,11 +190,63 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
                       <div class="last-used-from">{{ token.lastUsedFrom || 'Origin unavailable' }}</div>
                     </td>
                     <td class="cg-cell-actions">
+                      <button
+                        type="button"
+                        class="cg-btn secondary"
+                        (click)="editingTokenId() === token.id ? cancelEditTools() : startEditTools(token)"
+                        [disabled]="saving() || token.status !== 'active'">
+                        {{ editingTokenId() === token.id ? 'Close' : 'Edit tools' }}
+                      </button>
                       <button type="button" class="cg-btn danger" (click)="revoke(token)" [disabled]="saving() || token.status !== 'active'">
                         Revoke
                       </button>
                     </td>
                   </tr>
+                  @if (editingTokenId() === token.id) {
+                    <tr class="tool-edit-row">
+                      <td colspan="7">
+                        <div class="tool-picker">
+                          <div class="tool-picker-header">
+                            <div>
+                              <h3>Edit tool access — {{ token.tokenName }}</h3>
+                              <p>Replace the exact MCP tools this token can call.</p>
+                            </div>
+                            <div class="button-row">
+                              <button type="button" class="cg-btn secondary" (click)="selectEditReadOnlyTools()">Read-only</button>
+                              <button type="button" class="cg-btn secondary" (click)="selectEditAllTools()">All</button>
+                            </div>
+                          </div>
+                          @if (tools().length === 0) {
+                            <div class="state-message compact">No enabled MCP tools are available yet.</div>
+                          } @else {
+                            <div class="tool-grid">
+                              @for (tool of tools(); track tool.toolName) {
+                                <label class="tool-option" [class.disabled-tool]="!tool.enabled">
+                                  <input
+                                    type="checkbox"
+                                    [checked]="isEditToolSelected(tool.toolName)"
+                                    [disabled]="!tool.enabled"
+                                    (change)="toggleEditTool(tool.toolName, $any($event.target).checked)" />
+                                  <span>
+                                    <strong>{{ tool.displayName || tool.toolName }}</strong>
+                                    <small>{{ tool.providerKey }} / {{ tool.readOnly ? 'read-only' : 'write' }}</small>
+                                  </span>
+                                </label>
+                              }
+                            </div>
+                          }
+                          <div class="button-row">
+                            <button type="button" class="cg-btn primary" (click)="saveEditTools(token)" [disabled]="saving()">
+                              {{ saving() ? 'Saving...' : 'Save tools' }}
+                            </button>
+                            <button type="button" class="cg-btn secondary" (click)="cancelEditTools()" [disabled]="saving()">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  }
                 }
               </tbody>
             </table>
@@ -281,6 +371,69 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
       align-items: center;
     }
 
+    .tool-picker {
+      display: grid;
+      gap: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      background: var(--surface-2);
+    }
+
+    .tool-picker-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .tool-picker-header h3 {
+      margin: 0;
+      color: var(--text);
+      font-size: var(--fs-h4);
+    }
+
+    .tool-picker-header p {
+      margin: 4px 0 0;
+      color: var(--muted);
+    }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .tool-option {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 8px;
+      align-items: flex-start;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 10px;
+    }
+
+    .tool-option strong,
+    .tool-option small,
+    .tool-access small {
+      display: block;
+      overflow-wrap: anywhere;
+    }
+
+    .tool-option small,
+    .tool-access small {
+      color: var(--muted);
+      font-size: var(--fs-xs);
+    }
+
+    .disabled-tool {
+      opacity: 0.55;
+    }
+
     .token-reveal {
       display: grid;
       gap: 12px;
@@ -343,6 +496,15 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
       color: var(--muted);
     }
 
+    .state-message.compact {
+      padding: 14px;
+    }
+
+    .tool-edit-row td {
+      padding: 12px 20px;
+      background: var(--surface-2);
+    }
+
     @media (max-width: 720px) {
       .access-header,
       .top-grid,
@@ -351,7 +513,8 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from '../adm
       }
 
       .reveal-header,
-      .access-table-header {
+      .access-table-header,
+      .tool-picker-header {
         flex-direction: column;
       }
     }
@@ -361,6 +524,10 @@ export class AccessTokensComponent implements OnInit {
   private api = inject(ApiService);
 
   tokens = signal<McpPersonalAccessTokenMetadata[]>([]);
+  tools = signal<McpHubToolResponse[]>([]);
+  selectedToolNames = signal<Set<string>>(new Set());
+  editingTokenId = signal<number | null>(null);
+  editToolNames = signal<Set<string>>(new Set());
   error = signal('');
   success = signal('');
   rawToken = signal('');
@@ -373,11 +540,19 @@ export class AccessTokensComponent implements OnInit {
   }
 
   async load(): Promise<void> {
-    await loadAdminCollection(
-      () => firstValueFrom(this.api.listMcpTokens()),
-      this.tokens,
-      this.error,
-      'Failed to load MCP tokens');
+    try {
+      const [tokens, tools] = await Promise.all([
+        firstValueFrom(this.api.listMcpTokens()),
+        firstValueFrom(this.api.listUserMcpTools())
+      ]);
+      this.tokens.set(tokens);
+      this.tools.set(tools);
+      if (this.selectedToolNames().size === 0) {
+        this.selectReadOnlyTools();
+      }
+    } catch (err) {
+      this.error.set(extractAdminError(err, 'Failed to load MCP tokens'));
+    }
   }
 
   activeTokenCount(): number {
@@ -397,13 +572,106 @@ export class AccessTokensComponent implements OnInit {
 
     this.saving.set(true);
     try {
-      const created = await firstValueFrom(this.api.createMcpToken(name, this.expiresInDays));
+      const selectedTools = [...this.selectedToolNames()].sort();
+      if (selectedTools.length === 0) {
+        this.error.set('Select at least one MCP tool.');
+        return;
+      }
+
+      const created = await firstValueFrom(this.api.createMcpToken(name, this.expiresInDays, selectedTools));
       this.rawToken.set(created.rawToken);
       this.success.set(`Created ${created.token.tokenName}.`);
       this.newName = '';
       await this.load();
     } catch (err) {
       this.error.set(extractAdminError(err, 'Failed to create MCP token'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  isToolSelected(toolName: string): boolean {
+    return this.selectedToolNames().has(toolName);
+  }
+
+  toggleTool(toolName: string, checked: boolean): void {
+    const next = new Set(this.selectedToolNames());
+    if (checked) next.add(toolName);
+    else next.delete(toolName);
+    this.selectedToolNames.set(next);
+  }
+
+  selectReadOnlyTools(): void {
+    this.selectedToolNames.set(new Set(
+      this.tools()
+        .filter(tool => tool.enabled && tool.readOnly)
+        .map(tool => tool.toolName)));
+  }
+
+  selectAllTools(): void {
+    this.selectedToolNames.set(new Set(
+      this.tools()
+        .filter(tool => tool.enabled)
+        .map(tool => tool.toolName)));
+  }
+
+  startEditTools(token: McpPersonalAccessTokenMetadata): void {
+    this.error.set('');
+    this.success.set('');
+    this.editingTokenId.set(token.id);
+    this.editToolNames.set(new Set(token.toolNames));
+  }
+
+  cancelEditTools(): void {
+    this.editingTokenId.set(null);
+  }
+
+  isEditToolSelected(toolName: string): boolean {
+    return this.editToolNames().has(toolName);
+  }
+
+  toggleEditTool(toolName: string, checked: boolean): void {
+    const next = new Set(this.editToolNames());
+    if (checked) next.add(toolName);
+    else next.delete(toolName);
+    this.editToolNames.set(next);
+  }
+
+  selectEditReadOnlyTools(): void {
+    this.editToolNames.set(new Set(
+      this.tools()
+        .filter(tool => tool.enabled && tool.readOnly)
+        .map(tool => tool.toolName)));
+  }
+
+  selectEditAllTools(): void {
+    this.editToolNames.set(new Set(
+      this.tools()
+        .filter(tool => tool.enabled)
+        .map(tool => tool.toolName)));
+  }
+
+  async saveEditTools(token: McpPersonalAccessTokenMetadata): Promise<void> {
+    const selectedTools = [...this.editToolNames()].sort();
+    if (selectedTools.length === 0) {
+      this.error.set('Select at least one MCP tool.');
+      return;
+    }
+
+    this.saving.set(true);
+    try {
+      const updated = await runAdminMutation(
+        () => firstValueFrom(this.api.updateMcpTokenTools(token.id, selectedTools)),
+        {
+          error: this.error,
+          success: this.success,
+          successMessage: `Updated tool access for ${token.tokenName}.`,
+          fallbackError: 'Failed to update token tools'
+        });
+      if (updated) {
+        this.editingTokenId.set(null);
+        await this.load();
+      }
     } finally {
       this.saving.set(false);
     }

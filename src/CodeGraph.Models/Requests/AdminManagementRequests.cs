@@ -18,3 +18,9 @@ public record UpdateDatabaseSourceRequest(
     string? DatabaseName,
     string? ConnectionString,
     bool? Enabled);
+
+public record UpdateDatabaseSourceMcpExposureRequest(
+    bool? McpHubEnabled,
+    string? McpExposureMode,
+    string? McpDisplayName,
+    string? McpEnvironment);

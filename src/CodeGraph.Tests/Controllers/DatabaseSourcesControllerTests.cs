@@ -251,6 +251,32 @@ public class DatabaseSourcesControllerTests
             return Task.FromResult<DatabaseSourceEntity?>(Clone(existing));
         }
 
+        public Task<DatabaseSourceEntity?> UpdateMcpExposureAsync(
+            long id,
+            bool? mcpHubEnabled,
+            string? mcpExposureMode,
+            string? mcpDisplayName,
+            string? mcpEnvironment)
+        {
+            var existing = _sources.FirstOrDefault(s => s.Id == id);
+            if (existing is null)
+            {
+                return Task.FromResult<DatabaseSourceEntity?>(null);
+            }
+
+            if (mcpHubEnabled is not null)
+                existing.McpHubEnabled = mcpHubEnabled.Value;
+            if (mcpExposureMode is not null)
+                existing.McpExposureMode = mcpExposureMode;
+            if (mcpDisplayName is not null)
+                existing.McpDisplayName = mcpDisplayName;
+            if (mcpEnvironment is not null)
+                existing.McpEnvironment = mcpEnvironment;
+            existing.UpdatedAt = DateTime.UtcNow;
+
+            return Task.FromResult<DatabaseSourceEntity?>(Clone(existing));
+        }
+
         public Task<bool> DeleteAsync(long id)
         {
             var removed = _sources.RemoveAll(s => s.Id == id) > 0;
@@ -276,6 +302,10 @@ public class DatabaseSourcesControllerTests
             DatabaseName = entity.DatabaseName,
             ConnectionString = entity.ConnectionString,
             Enabled = entity.Enabled,
+            McpHubEnabled = entity.McpHubEnabled,
+            McpExposureMode = entity.McpExposureMode,
+            McpDisplayName = entity.McpDisplayName,
+            McpEnvironment = entity.McpEnvironment,
             LastSyncedAt = entity.LastSyncedAt,
             CreatedAt = entity.CreatedAt,
             UpdatedAt = entity.UpdatedAt

@@ -55,6 +55,7 @@ public class McpPersonalAccessTokenServiceTests
     {
         var service = new McpPersonalAccessTokenService(
             new InMemoryMcpPersonalAccessTokenStore(),
+            new InMemoryMcpHubStore(),
             Options.Create(new CodeGraphStorageOptions { MariaDbEncryptionKey = "not-base64" }));
 
         var result = await service.CreateForUserAsync("michael", "Desktop", 30);
@@ -62,6 +63,119 @@ public class McpPersonalAccessTokenServiceTests
         result.Created.ShouldBeFalse();
         result.ErrorCode.ShouldBe("pat_configuration_missing");
     }
+
+    [Fact]
+    public async Task CreateForUserAsync_StoresSelectedToolEntitlements()
+    {
+        var store = new InMemoryMcpPersonalAccessTokenStore();
+        var hubStore = new InMemoryMcpHubStore();
+        var service = new McpPersonalAccessTokenService(
+            store,
+            hubStore,
+            Options.Create(new CodeGraphStorageOptions
+            {
+                MariaDbEncryptionKey = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray())
+            }));
+
+        var result = await service.CreateForUserAsync("michael", "Selected tools", 30, ["search_graph"]);
+
+        result.Created.ShouldBeTrue();
+        result.Token!.EntitlementMode.ShouldBe("selected");
+        result.Token.ToolNames.ShouldBe(["search_graph"]);
+        (await hubStore.IsTokenEntitledAsync(store.Tokens.Single().Id, "search_graph")).ShouldBeTrue();
+        (await hubStore.IsTokenEntitledAsync(store.Tokens.Single().Id, "query_memory")).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task CreateForUserAsync_RejectsUnknownSelectedTools()
+    {
+        var service = CreateService(new InMemoryMcpPersonalAccessTokenStore());
+
+        var result = await service.CreateForUserAsync("michael", "Bad tools", 30, ["missing_tool"]);
+
+        result.Created.ShouldBeFalse();
+        result.ErrorCode.ShouldBe("invalid_tool_entitlement");
+    }
+
+    [Fact]
+    public async Task CreateForUserAsync_RejectsUnavailableSelectedTools()
+    {
+        var service = CreateService(new InMemoryMcpPersonalAccessTokenStore());
+
+        // The tool is admin-enabled but is_available = false, so it is not effectively entitleable.
+        var result = await service.CreateForUserAsync("michael", "Unavailable tool", 30, ["unavailable_tool"]);
+
+        result.Created.ShouldBeFalse();
+        result.ErrorCode.ShouldBe("invalid_tool_entitlement");
+    }
+
+    [Fact]
+    public async Task UpdateToolsForUserAsync_ReplacesEnabledToolList_AndSwitchesToSelectedMode()
+    {
+        var store = new InMemoryMcpPersonalAccessTokenStore();
+        var hubStore = new InMemoryMcpHubStore();
+        var service = CreateService(store, hubStore);
+
+        // Created without a tool list -> entitlement mode "all".
+        var created = await service.CreateForUserAsync("michael", "Desktop", 30);
+        created.Created.ShouldBeTrue();
+        var tokenId = store.Tokens.Single().Id;
+
+        var updated = await service.UpdateToolsForUserAsync("michael", tokenId, ["query_memory"]);
+
+        updated.Created.ShouldBeTrue();
+        updated.Token!.EntitlementMode.ShouldBe("selected");
+        updated.Token.ToolNames.ShouldBe(["query_memory"]);
+        updated.RawToken.ShouldBeNull();
+        (await hubStore.GetTokenEntitlementsAsync(tokenId)).ShouldBe(["query_memory"]);
+        (await hubStore.IsTokenEntitledAsync(tokenId, "search_graph")).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task UpdateToolsForUserAsync_RejectsRevokedToken()
+    {
+        var store = new InMemoryMcpPersonalAccessTokenStore();
+        var service = CreateService(store);
+        await service.CreateForUserAsync("michael", "Desktop", 30);
+        var tokenId = store.Tokens.Single().Id;
+        await service.RevokeForUserAsync("michael", tokenId);
+
+        var result = await service.UpdateToolsForUserAsync("michael", tokenId, ["search_graph"]);
+
+        result.Created.ShouldBeFalse();
+        result.ErrorCode.ShouldBe("token_not_active");
+    }
+
+    [Fact]
+    public async Task UpdateToolsForUserAsync_RejectsTokenOwnedByAnotherUser()
+    {
+        var store = new InMemoryMcpPersonalAccessTokenStore();
+        var service = CreateService(store);
+        await service.CreateForUserAsync("alice", "Desktop", 30);
+        var tokenId = store.Tokens.Single().Id;
+
+        var result = await service.UpdateToolsForUserAsync("bob", tokenId, ["search_graph"]);
+
+        result.Created.ShouldBeFalse();
+        result.ErrorCode.ShouldBe("token_not_found");
+    }
+
+    [Fact]
+    public async Task UpdateToolsForUserAsync_RejectsUnknownEmptyOrUnavailableTools()
+    {
+        var store = new InMemoryMcpPersonalAccessTokenStore();
+        var service = CreateService(store);
+        await service.CreateForUserAsync("michael", "Desktop", 30);
+        var tokenId = store.Tokens.Single().Id;
+
+        (await service.UpdateToolsForUserAsync("michael", tokenId, [])).ErrorCode
+            .ShouldBe("tool_entitlement_required");
+        (await service.UpdateToolsForUserAsync("michael", tokenId, ["missing_tool"])).ErrorCode
+            .ShouldBe("invalid_tool_entitlement");
+        (await service.UpdateToolsForUserAsync("michael", tokenId, ["unavailable_tool"])).ErrorCode
+            .ShouldBe("invalid_tool_entitlement");
+    }
+
 
     [Fact]
     public void IsValidTokenFormat_AcceptsCurrentAndLegacyTokenLengths()
@@ -96,6 +210,7 @@ public class McpPersonalAccessTokenServiceTests
 
         var service = new McpPersonalAccessTokenService(
             store,
+            new InMemoryMcpHubStore(),
             Options.Create(new CodeGraphStorageOptions { MariaDbEncryptionKey = Convert.ToBase64String(signingKey) }));
 
         var validation = await service.ValidateAsync(rawToken, "127.0.0.1");
@@ -104,11 +219,17 @@ public class McpPersonalAccessTokenServiceTests
         validation.Username.ShouldBe("michael");
     }
 
-    private static McpPersonalAccessTokenService CreateService(InMemoryMcpPersonalAccessTokenStore store)
+    private static McpPersonalAccessTokenService CreateService(InMemoryMcpPersonalAccessTokenStore store) =>
+        CreateService(store, new InMemoryMcpHubStore());
+
+    private static McpPersonalAccessTokenService CreateService(
+        InMemoryMcpPersonalAccessTokenStore store,
+        IMcpHubStore hubStore)
     {
         var key = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
         return new McpPersonalAccessTokenService(
             store,
+            hubStore,
             Options.Create(new CodeGraphStorageOptions { MariaDbEncryptionKey = key }));
     }
 
@@ -159,6 +280,20 @@ public class McpPersonalAccessTokenServiceTests
             return Task.FromResult(true);
         }
 
+        public Task<bool> SetMcpPersonalAccessTokenEntitlementModeAsync(
+            string username,
+            long id,
+            string entitlementMode,
+            CancellationToken ct = default)
+        {
+            var token = Tokens.FirstOrDefault(item => item.Id == id && item.Username == username);
+            if (token is null)
+                return Task.FromResult(false);
+
+            token.EntitlementMode = entitlementMode;
+            return Task.FromResult(true);
+        }
+
         public Task<bool> UpdateMcpPersonalAccessTokenLastUsedAsync(
             long id,
             DateTime lastUsedAt,
@@ -173,5 +308,47 @@ public class McpPersonalAccessTokenServiceTests
             token.LastUsedFrom = lastUsedFrom;
             return Task.FromResult(true);
         }
+    }
+
+    private sealed class InMemoryMcpHubStore : IMcpHubStore
+    {
+        private readonly Dictionary<long, List<string>> entitlements = [];
+
+        public Task<IReadOnlyList<McpHubProviderEntity>> ListProvidersAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<McpHubProviderEntity>>([]);
+
+        public Task<IReadOnlyList<McpHubToolEntity>> ListToolsAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<McpHubToolEntity>>([
+                new() { ToolName = "search_graph", Enabled = true, IsAvailable = true },
+                new() { ToolName = "query_memory", Enabled = true, IsAvailable = true },
+                // Enabled by an admin but not available in this deployment -> not effectively entitleable.
+                new() { ToolName = "unavailable_tool", Enabled = true, IsAvailable = false }
+            ]);
+
+        public Task UpsertProviderAsync(McpHubProviderEntity provider, CancellationToken ct = default) => Task.CompletedTask;
+        public Task UpsertToolAsync(McpHubToolEntity tool, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<bool> SetProviderEnabledAsync(string providerKey, bool enabled, bool? sourceVisible, CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> UpdateToolCatalogStateAsync(string toolName, bool? enabled, bool? defaultSelected, string? accessClass, CancellationToken ct = default) => Task.FromResult(true);
+        public Task<IReadOnlyList<McpHubCredentialEntity>> ListCredentialsAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<McpHubCredentialEntity>>([]);
+        public Task<string?> GetCredentialValueAsync(string providerKey, string credentialKey, CancellationToken ct = default) => Task.FromResult<string?>(null);
+        public Task SetCredentialValueAsync(string providerKey, string credentialKey, string? value, string? updatedBy, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<McpHubConfigEntity>> ListConfigAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<McpHubConfigEntity>>([]);
+        public Task<string?> GetConfigValueAsync(string providerKey, string configKey, CancellationToken ct = default) => Task.FromResult<string?>(null);
+        public Task SetConfigValueAsync(string providerKey, string configKey, string? value, string? updatedBy, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ReplaceTokenEntitlementsAsync(long tokenId, IReadOnlyCollection<string> toolNames, CancellationToken ct = default)
+        {
+            entitlements[tokenId] = toolNames.ToList();
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<string>> GetTokenEntitlementsAsync(long tokenId, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<string>>(entitlements.GetValueOrDefault(tokenId) ?? []);
+
+        public Task<bool> IsTokenEntitledAsync(long tokenId, string toolName, CancellationToken ct = default) =>
+            Task.FromResult(!entitlements.TryGetValue(tokenId, out var tools) || tools.Contains(toolName));
+
+        public Task CreateAuditAsync(McpHubAuditEntity audit, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<McpHubAuditEntity>> ListAuditAsync(int limit, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<McpHubAuditEntity>>([]);
     }
 }

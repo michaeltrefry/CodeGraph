@@ -38,6 +38,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   admins: 'Admins',
   prompts: 'Prompts',
   llm: 'LLM config',
+  'mcp-hub': 'MCP Hub',
   'database-sources': 'Database sources',
   reports: 'Reports',
   'assistant-debug': 'Assistant debug',
