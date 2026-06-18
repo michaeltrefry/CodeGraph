@@ -257,9 +257,20 @@ import { extractAdminError, runAdminMutation } from '../admin/admin-resource.hel
   `,
   styles: [`
     :host {
-      display: flex;
+      display: block;
       min-height: 100%;
       background: var(--bg);
+    }
+
+    .access-page {
+      flex: 0 0 auto;
+      min-height: 100%;
+    }
+
+    .access-header,
+    .top-grid,
+    .access-table-card {
+      flex-shrink: 0;
     }
 
     .access-header {
