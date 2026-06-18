@@ -16,10 +16,11 @@ public sealed class McpHubService(
     IHttpClientFactory httpClientFactory,
     SensitiveColumnPolicy sensitiveColumnPolicy,
     MySqlSourceExposurePolicy sourceExposurePolicy,
-    IMcpProviderCredentialStore credentialStore,
     ILogger<McpHubService> logger)
 {
     public const string ShortcutCredentialKey = "apiToken";
+    public const string LegacyShortcutShimProviderKey = "shortcut-shim";
+    public const string LegacyShortcutShimCredentialKey = McpShimDiscoveryService.DiscoveryTokenCredentialKey;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -308,18 +309,22 @@ public sealed class McpHubService(
         }
     }
 
-    // Shortcut is a delegated provider: the call runs as the *calling user's* own credential,
-    // never a single hub-shared token. Missing user or missing credential fails closed — sc-1052.
+    // Shortcut uses the hub-shared API token. The retired shim stored the same token as
+    // shortcut-shim/discoveryToken, so keep that as a compatibility fallback.
     private async Task<HttpClient> CreateShortcutClientAsync(string? username, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(username))
-            throw new McpHubProviderPolicyException(
-                "Shortcut tools require a signed-in user with a connected Shortcut credential.");
+        var token = await store.GetCredentialValueAsync("shortcut", ShortcutCredentialKey, ct);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            token = await store.GetCredentialValueAsync(
+                LegacyShortcutShimProviderKey,
+                LegacyShortcutShimCredentialKey,
+                ct);
+        }
 
-        var token = await credentialStore.GetValueAsync("shortcut", username, ShortcutCredentialKey, ct);
         if (string.IsNullOrWhiteSpace(token))
             throw new McpHubProviderPolicyException(
-                "No Shortcut credential is connected for your account. Connect one under MCP credentials before using Shortcut tools.");
+                "No shared Shortcut API token is configured. Configure shortcut/apiToken or legacy shortcut-shim/discoveryToken in MCP Hub credentials.");
 
         return BuildShortcutClient(token);
     }
@@ -333,7 +338,7 @@ public sealed class McpHubService(
     }
 
     /// <summary>
-    /// Validates a delegated Shortcut credential by calling the Shortcut <c>member</c> endpoint.
+    /// Validates a Shortcut API token by calling the Shortcut <c>member</c> endpoint.
     /// Proves the token works and captures provider-side identity for display/audit. The
     /// provider identity is NOT required to match the CodeGraph username.
     /// </summary>

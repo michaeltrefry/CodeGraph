@@ -89,7 +89,6 @@ public class McpHubServiceTests
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
 
         var ex = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
@@ -111,7 +110,6 @@ public class McpHubServiceTests
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
 
         // No allowedQueues policy configured -> denied before any RabbitMQ request.
@@ -147,7 +145,6 @@ public class McpHubServiceTests
             factory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
 
         // Request 50 messages — the tool must cap it.
@@ -184,7 +181,6 @@ public class McpHubServiceTests
                 McpHubEnabled = false,
                 McpExposureMode = McpSourceExposureModes.ReadOnlySql,
             }),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
 
         await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
@@ -212,7 +208,6 @@ public class McpHubServiceTests
                 McpHubEnabled = true,
                 McpExposureMode = McpSourceExposureModes.SchemaOnly,
             }),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
 
         var ex = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
@@ -438,41 +433,42 @@ public class McpHubServiceTests
     }
 
     [Fact]
-    public async Task SearchShortcutEpicsAsync_FailsClosed_WhenNoUserOrNoCredential()
+    public async Task SearchShortcutEpicsAsync_FailsClosed_WhenNoSharedCredential()
     {
-        var service = ShortcutService(new InMemoryMcpProviderCredentialStore(), new EmptyHttpClientFactory());
-
-        var noUser = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
-            service.SearchShortcutEpicsAsync(null, null, CancellationToken.None));
-        noUser.Message.ShouldContain("signed-in user");
+        var service = ShortcutService(new EmptyHttpClientFactory());
 
         var noCredential = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
-            service.SearchShortcutEpicsAsync(null, "bob", CancellationToken.None));
-        noCredential.Message.ShouldContain("No Shortcut credential");
+            service.SearchShortcutEpicsAsync(null, null, CancellationToken.None));
+        noCredential.Message.ShouldContain("No shared Shortcut API token");
     }
 
     [Fact]
-    public async Task SearchShortcutEpicsAsync_UsesCallingUsersOwnCredential()
+    public async Task SearchShortcutEpicsAsync_UsesSharedNativeCredential()
     {
-        var credentials = new InMemoryMcpProviderCredentialStore();
-        await credentials.UpsertAsync(
-            new McpProviderCredentialEntity { ProviderKey = "shortcut", Username = "alice", CredentialKey = "apiToken" },
-            "alice-token");
-        var service = ShortcutService(credentials, new EmptyHttpClientFactory());
+        HttpRequestMessage? captured = null;
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            request =>
+            {
+                captured = request;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"data":[]}""") };
+            });
+        var hubStore = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        hubStore.Credentials[("shortcut", "apiToken")] = "shared-token";
+        var service = ShortcutService(factory, hubStore);
 
-        // Bob has no credential -> denied at the credential gate.
-        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
-            service.SearchShortcutEpicsAsync(null, "bob", CancellationToken.None));
+        await service.SearchShortcutEpicsAsync("owner:me", null, CancellationToken.None);
 
-        // Alice has her own credential -> passes the gate (then fails later in the HTTP layer,
-        // which is NOT a policy exception). Proves the call runs as the calling user.
-        var aliceFailure = await Should.ThrowAsync<Exception>(() =>
-            service.SearchShortcutEpicsAsync(null, "alice", CancellationToken.None));
-        aliceFailure.ShouldNotBeOfType<McpHubProviderPolicyException>();
+        captured.ShouldNotBeNull();
+        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("shared-token");
+        captured.RequestUri!.ToString().ShouldBe("https://api.app.shortcut.com/api/v3/search/epics?query=owner%3Ame");
     }
 
     [Fact]
-    public async Task InvokeShortcutApiAsync_SendsDelegatedCredential_JsonBody_AndQuery()
+    public async Task InvokeShortcutApiAsync_FallsBackToLegacyShimDiscoveryToken()
     {
         HttpRequestMessage? captured = null;
         string? capturedBody = null;
@@ -484,14 +480,15 @@ public class McpHubServiceTests
                 capturedBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"ok":true}""") };
             });
-        var credentials = new InMemoryMcpProviderCredentialStore();
-        await credentials.UpsertAsync(
-            new McpProviderCredentialEntity { ProviderKey = "shortcut", Username = "alice", CredentialKey = "apiToken" },
-            "alice-token");
-        var service = ShortcutService(credentials, factory);
+        var hubStore = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        hubStore.Credentials[("shortcut-shim", "discoveryToken")] = "legacy-shim-token";
+        var service = ShortcutService(factory, hubStore);
 
         var result = await service.InvokeShortcutApiAsync(
-            "alice",
+            null,
             HttpMethod.Put,
             "stories/123",
             """{"name":"Updated"}""",
@@ -502,7 +499,7 @@ public class McpHubServiceTests
         captured.ShouldNotBeNull();
         captured.Method.ShouldBe(HttpMethod.Put);
         captured.RequestUri!.ToString().ShouldBe("https://api.app.shortcut.com/api/v3/stories/123?query=owner%3Ame");
-        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("alice-token");
+        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("legacy-shim-token");
         capturedBody.ShouldBe("""{"name":"Updated"}""");
     }
 
@@ -515,7 +512,7 @@ public class McpHubServiceTests
             {
                 Content = new StringContent("""{"name":"Jane Doe","mention_name":"jane"}"""),
             });
-        var service = ShortcutService(new InMemoryMcpProviderCredentialStore(), factory);
+        var service = ShortcutService(factory);
 
         var result = await service.ValidateShortcutCredentialAsync("a-real-token");
 
@@ -529,7 +526,7 @@ public class McpHubServiceTests
         var factory = new StubHttpClientFactory(
             new Uri("https://api.app.shortcut.com/api/v3/"),
             _ => new HttpResponseMessage(System.Net.HttpStatusCode.Unauthorized));
-        var service = ShortcutService(new InMemoryMcpProviderCredentialStore(), factory);
+        var service = ShortcutService(factory);
 
         var result = await service.ValidateShortcutCredentialAsync("bad-token");
 
@@ -538,10 +535,10 @@ public class McpHubServiceTests
     }
 
     private static McpHubService ShortcutService(
-        IMcpProviderCredentialStore credentials,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        RecordingMcpHubStore? hubStore = null)
     {
-        var hubStore = new RecordingMcpHubStore
+        hubStore ??= new RecordingMcpHubStore
         {
             Providers = [new() { ProviderKey = "shortcut", Enabled = true }],
         };
@@ -551,7 +548,6 @@ public class McpHubServiceTests
             httpClientFactory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            credentials,
             NullLogger<McpHubService>.Instance);
     }
 
@@ -604,17 +600,16 @@ public class McpHubServiceTests
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
 
         await service.AuditAsync(
             "  Alice  ", 7, "shortcut", "shortcut_search_epics", "invoke", "Search",
-            "epics", "Delegated", "Allowed", "OK", 42, true, null, CancellationToken.None);
+            "epics", "Shared", "Allowed", "OK", 42, true, null, CancellationToken.None);
 
         var audit = store.Audit.ShouldHaveSingleItem();
         audit.Username.ShouldBe("alice");
         audit.TokenId.ShouldBe(7);
-        audit.CredentialMode.ShouldBe("delegated");
+        audit.CredentialMode.ShouldBe("shared");
         audit.AuthorizationDecision.ShouldBe("allowed");
         audit.StatusClass.ShouldBe("ok");
         audit.Success.ShouldBeTrue();
@@ -629,7 +624,6 @@ public class McpHubServiceTests
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            new InMemoryMcpProviderCredentialStore(),
             NullLogger<McpHubService>.Instance);
         return new McpHubServer(hub, new HttpContextAccessor());
     }

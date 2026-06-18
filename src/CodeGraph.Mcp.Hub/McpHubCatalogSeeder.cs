@@ -22,7 +22,7 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
     private static readonly McpHubProviderDefinition[] Providers =
     [
         new("codegraph", "CodeGraph", "Native CodeGraph graph, memory, convention, repository, and schema tools.", EnabledByDefault: true, SourceVisible: true),
-        new("shortcut", "Shortcut", "Delegated Shortcut project tracking tools using provider credentials."),
+        new("shortcut", "Shortcut", "Shortcut project tracking tools using the shared MCP Hub API token."),
         new("rabbitmq", "RabbitMQ", "Read-only RabbitMQ management API inspection tools."),
         new("mysql", "MySQL", "Schema catalog and guarded read-only SQL tools."),
         // Shim provider: tools are not seeded here — an admin sets discoveryUrl/discoveryToken
