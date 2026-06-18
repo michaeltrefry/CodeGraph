@@ -19,6 +19,7 @@ using CodeGraph.Data.Neo4j;
 using CodeGraph.Extractors.Ansible;
 using CodeGraph.Extractors.ColdFusion;
 using CodeGraph.Extractors.CSharp;
+using CodeGraph.Extractors.Rust;
 using CodeGraph.Extractors.Sql;
 using CodeGraph.Extractors.Terraform;
 using CodeGraph.Extractors.TreeSitter;
@@ -139,6 +140,9 @@ public static class Startup
 
         // NuGet reference extraction
         services.AddTransient<INuGetReferenceExtractor, NuGetReferenceExtractor>();
+
+        // Rust/Cargo analysis
+        services.AddTransient<IRustAnalyzer, RustProjectAnalyzer>();
 
         // Code extractors
         services.AddTransient<ICodeExtractor, RoslynExtractor>();

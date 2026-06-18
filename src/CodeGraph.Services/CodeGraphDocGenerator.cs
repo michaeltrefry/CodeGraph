@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using CodeGraph.Models;
 using CodeGraph.Services.Models;
 
@@ -25,6 +26,22 @@ public class CodeGraphDocGenerator
         sb.AppendLine();
         sb.AppendLine(analysis.Summary);
         sb.AppendLine();
+
+        var languageStats = ReadLanguageStats(analysis.RepositoryProperties);
+        var notableLanguages = languageStats
+            .Where(stat => stat.LocShare >= 0.10 || stat == languageStats.FirstOrDefault())
+            .ToList();
+        if (notableLanguages.Count > 1)
+        {
+            sb.AppendLine("## Languages");
+            sb.AppendLine();
+            foreach (var stat in notableLanguages)
+            {
+                sb.AppendLine(
+                    $"- **{stat.Language}**: {stat.LocShare:P0} of non-blank LOC ({stat.LocNonBlank:N0} LOC, {stat.Files:N0} files)");
+            }
+            sb.AppendLine();
+        }
 
         if (outboundDeps.Count > 0)
         {
@@ -142,4 +159,70 @@ public class CodeGraphDocGenerator
             .ToList();
         return string.Join(", ", parts);
     }
+
+    private static IReadOnlyList<LanguageStatDoc> ReadLanguageStats(
+        IReadOnlyDictionary<string, object>? properties)
+    {
+        if (properties is null ||
+            !properties.TryGetValue("languageStats", out var value) ||
+            value is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            using var doc = value switch
+            {
+                JsonElement jsonElement => JsonDocument.Parse(jsonElement.GetRawText()),
+                string jsonText => JsonDocument.Parse(jsonText),
+                _ => JsonDocument.Parse(JsonSerializer.Serialize(value))
+            };
+
+            if (doc.RootElement.ValueKind is not JsonValueKind.Object)
+                return [];
+
+            var stats = new List<LanguageStatDoc>();
+            foreach (var language in doc.RootElement.EnumerateObject())
+            {
+                if (language.Value.ValueKind is not JsonValueKind.Object)
+                    continue;
+
+                stats.Add(new LanguageStatDoc(
+                    language.Name,
+                    GetInt32(language.Value, "files"),
+                    GetInt32(language.Value, "locNonBlank"),
+                    GetDouble(language.Value, "locShare")));
+            }
+
+            return stats
+                .OrderByDescending(stat => stat.LocShare)
+                .ThenBy(stat => stat.Language, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static int GetInt32(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) &&
+        value.ValueKind is JsonValueKind.Number &&
+        value.TryGetInt32(out var result)
+            ? result
+            : 0;
+
+    private static double GetDouble(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) &&
+        value.ValueKind is JsonValueKind.Number &&
+        value.TryGetDouble(out var result)
+            ? result
+            : 0;
+
+    private sealed record LanguageStatDoc(
+        string Language,
+        int Files,
+        int LocNonBlank,
+        double LocShare);
 }
