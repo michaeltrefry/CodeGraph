@@ -7,7 +7,10 @@ public record RepoAnalysis(
     string Summary,
     ConfidenceLevel Confidence,
     string ModelUsed,
-    IReadOnlyList<ProjectAnalysis> Projects);
+    IReadOnlyList<ProjectAnalysis> Projects)
+{
+    public IReadOnlyDictionary<string, object>? RepositoryProperties { get; init; }
+}
 
 // Uses Data-layer StoredEndpoint/StoredService so results persist without mapping.
 public record ProjectAnalysis(

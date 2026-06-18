@@ -137,7 +137,10 @@ public partial class BatchAnalysisService
 
             var repoAnalysis = new RepoAnalysis(
                 repoSummary.Summary, repoSummary.Confidence,
-                repoSummary.ModelUsed ?? "unknown", projects);
+                repoSummary.ModelUsed ?? "unknown", projects)
+            {
+                RepositoryProperties = repoInfo.Properties
+            };
 
             var crossRepoEdges = await store.FindCrossRepoEdgesAsync(repoName);
             var inbound = crossRepoEdges.Where(e => e.TargetProject == repoName).ToList();

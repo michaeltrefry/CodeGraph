@@ -14,6 +14,7 @@ COPY src/CodeGraph.Data.MariaDb/CodeGraph.Data.MariaDb.csproj src/CodeGraph.Data
 COPY src/CodeGraph.Extractors.Ansible/CodeGraph.Extractors.Ansible.csproj src/CodeGraph.Extractors.Ansible/
 COPY src/CodeGraph.Extractors.CSharp/CodeGraph.Extractors.CSharp.csproj src/CodeGraph.Extractors.CSharp/
 COPY src/CodeGraph.Extractors.ColdFusion/CodeGraph.Extractors.ColdFusion.csproj src/CodeGraph.Extractors.ColdFusion/
+COPY src/CodeGraph.Extractors.Rust/CodeGraph.Extractors.Rust.csproj src/CodeGraph.Extractors.Rust/
 COPY src/CodeGraph.Extractors.TypeScript/CodeGraph.Extractors.TypeScript.csproj src/CodeGraph.Extractors.TypeScript/
 COPY src/CodeGraph.Extractors.Sql/CodeGraph.Extractors.Sql.csproj src/CodeGraph.Extractors.Sql/
 COPY src/CodeGraph.Extractors.Terraform/CodeGraph.Extractors.Terraform.csproj src/CodeGraph.Extractors.Terraform/

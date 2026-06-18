@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -20,6 +21,7 @@ public partial class IndexingPipeline
     private readonly ISolutionAnalyzer? _solutionAnalyzer;
     private readonly INuGetReferenceExtractor? _nugetExtractor;
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
+    private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
 
@@ -31,7 +33,8 @@ public partial class IndexingPipeline
         ILogger<IndexingPipeline> logger,
         ISolutionAnalyzer? solutionAnalyzer = null,
         INuGetReferenceExtractor? nugetExtractor = null,
-        ITypeScriptAnalyzer? typeScriptAnalyzer = null)
+        ITypeScriptAnalyzer? typeScriptAnalyzer = null,
+        IRustAnalyzer? rustAnalyzer = null)
     {
         _store = store;
         _extractors = extractors;
@@ -41,6 +44,7 @@ public partial class IndexingPipeline
         _solutionAnalyzer = solutionAnalyzer;
         _nugetExtractor = nugetExtractor;
         _typeScriptAnalyzer = typeScriptAnalyzer;
+        _rustAnalyzer = rustAnalyzer;
         _foundationalRepos = _options.FoundationalRepos ?? [];
     }
 
@@ -68,7 +72,7 @@ public partial class IndexingPipeline
         });
 
         var buffer = new GraphBuffer();
-        ProjectMetadata? detectedMetadata = null;
+        var detectedMetadataCandidates = new List<ProjectMetadata>();
         var context = new ExtractorContext
         {
             ProjectName = projectName,
@@ -82,6 +86,7 @@ public partial class IndexingPipeline
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
+        var languageStats = ComputeLanguageStats(files);
         var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
@@ -132,7 +137,7 @@ public partial class IndexingPipeline
                 {
                     var results = await _solutionAnalyzer.AnalyzeSolutionAsync(solutionFile, context, ct);
                     _logger.LogInformation("[Timing] Roslyn solution analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    detectedMetadata ??= SelectDominantMetadata(results.Select(r => r.Metadata));
+                    AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     specializedExtensions.Add(".cs");
                 }
@@ -172,7 +177,7 @@ public partial class IndexingPipeline
                     var results = await _typeScriptAnalyzer.AnalyzeProjectAsync(
                         tsconfig, context, ct);
                     _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    detectedMetadata ??= SelectDominantMetadata(results.Select(r => r.Metadata));
+                    AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     specializedExtensions.Add(".ts");
                 }
@@ -182,6 +187,44 @@ public partial class IndexingPipeline
                     _logger.LogWarning(ex,
                         "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
                         Path.GetRelativePath(rootPath, tsconfig));
+                }
+            }
+        }
+
+        // Rust — Cargo/SCIP project analysis when rust-analyzer + SCIP data are available.
+        if (_rustAnalyzer is not null)
+        {
+            var rootCargoManifest = Path.Combine(rootPath, "Cargo.toml");
+            var cargoManifests = _fileSystem.FileExists(rootCargoManifest)
+                ? new[] { rootCargoManifest }
+                : _fileSystem.EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
+                    .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
+                        StringComparison.OrdinalIgnoreCase))
+                    .Take(1)
+                    .ToArray();
+
+            foreach (var cargoManifest in cargoManifests)
+            {
+                _logger.LogInformation("Using Rust project analysis for {Manifest}",
+                    Path.GetRelativePath(rootPath, cargoManifest));
+                stepSw.Restart();
+                try
+                {
+                    var results = await _rustAnalyzer.AnalyzeProjectAsync(
+                        cargoManifest, context, ct);
+                    _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+                    AddMetadataCandidates(detectedMetadataCandidates, results);
+                    MergeResults(results, buffer);
+
+                    if (results.Any(r => r.Nodes.Count > 0))
+                        specializedExtensions.Add(".rs");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Rust project analysis failed for {Manifest} — falling back to per-file extraction",
+                        Path.GetRelativePath(rootPath, cargoManifest));
                 }
             }
         }
@@ -197,12 +240,15 @@ public partial class IndexingPipeline
             stepSw.Restart();
             var perFileMetadata = await ExtractFilesAsync(remainingFiles, rootPath, context, buffer, ct);
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
-            detectedMetadata ??= perFileMetadata;
+            detectedMetadataCandidates.AddRange(perFileMetadata);
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
         if (_nugetExtractor is not null)
             ExtractNuGetReferences(projectName, csprojFiles, buffer);
+
+        ApplyNodeCounts(languageStats, buffer.AllNodes);
+        var detectedMetadata = SelectDominantMetadata(detectedMetadataCandidates, languageStats);
 
         // Update repository with language/framework detected by extractors
         if (detectedMetadata is not null)
@@ -212,7 +258,7 @@ public partial class IndexingPipeline
                 Name = projectName,
                 Language = detectedMetadata.Language,
                 Framework = detectedMetadata.Framework,
-                Properties = SerializeRepositoryProperties(detectedMetadata)
+                Properties = SerializeRepositoryProperties(detectedMetadata, languageStats)
             });
         }
 
@@ -298,10 +344,10 @@ public partial class IndexingPipeline
 
     // ── Per-File Extraction ──────────────────────────────────────────────
 
-    private async Task<ProjectMetadata?> ExtractFilesAsync(List<string> files, string rootPath,
+    private async Task<IReadOnlyList<ProjectMetadata>> ExtractFilesAsync(List<string> files, string rootPath,
         ExtractorContext context, GraphBuffer buffer, CancellationToken ct)
     {
-        var metadataCounts = new ConcurrentDictionary<ProjectMetadata, int>();
+        var metadataSeen = new ConcurrentBag<ProjectMetadata>();
 
         await Parallel.ForEachAsync(files,
             new ParallelOptions
@@ -336,7 +382,7 @@ public partial class IndexingPipeline
                         buffer.AddUnresolvedImport(import);
 
                     if (result.Metadata is not null)
-                        metadataCounts.AddOrUpdate(result.Metadata, 1, (_, count) => count + 1);
+                        metadataSeen.Add(result.Metadata);
                 }
                 catch (Exception ex)
                 {
@@ -345,7 +391,7 @@ public partial class IndexingPipeline
                 }
             });
 
-        return SelectDominantMetadata(metadataCounts);
+        return metadataSeen.ToList();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
@@ -361,54 +407,214 @@ public partial class IndexingPipeline
         }
     }
 
-    private static ProjectMetadata? SelectDominantMetadata(IEnumerable<ProjectMetadata?> metadata)
-    {
-        return SelectDominantMetadata(
-            metadata
-                .Where(m => m is not null)
-                .Cast<ProjectMetadata>()
-                .GroupBy(m => m)
-                .ToDictionary(g => g.Key, g => g.Count()));
-    }
+    private static void AddMetadataCandidates(List<ProjectMetadata> candidates, IReadOnlyList<ExtractionResult> results) =>
+        candidates.AddRange(results.Select(r => r.Metadata).Where(m => m is not null).Cast<ProjectMetadata>());
 
     private static ProjectMetadata? SelectDominantMetadata(
-        IReadOnlyDictionary<ProjectMetadata, int> metadataCounts)
+        IEnumerable<ProjectMetadata?> metadata,
+        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats)
     {
-        if (metadataCounts.Count == 0)
+        var metadataByLanguage = metadata
+            .Where(m => m is not null)
+            .Cast<ProjectMetadata>()
+            .GroupBy(m => m.Language, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
+        if (languageStats.Count == 0 && metadataByLanguage.Count == 0)
             return null;
 
-        return metadataCounts
-            .GroupBy(kvp => new { kvp.Key.Language, kvp.Key.Framework }, kvp => kvp)
+        var primaryLanguage = languageStats.Values
+            .OrderByDescending(stat => stat.LocNonBlank)
+            .ThenByDescending(stat => stat.Files)
+            .ThenByDescending(stat => GetLanguagePriority(stat.Language))
+            .ThenBy(stat => stat.Language, StringComparer.OrdinalIgnoreCase)
+            .Select(stat => stat.Language)
+            .FirstOrDefault();
+
+        if (primaryLanguage is not null &&
+            metadataByLanguage.TryGetValue(primaryLanguage, out var candidates))
+        {
+            return candidates
+                .OrderByDescending(candidate => candidate.DotnetSupport is not null)
+                .ThenByDescending(candidate => string.IsNullOrWhiteSpace(candidate.Framework) ? 0 : 1)
+                .First();
+        }
+
+        if (primaryLanguage is not null)
+            return new ProjectMetadata(primaryLanguage, null);
+
+        return metadataByLanguage
+            .SelectMany(kvp => kvp.Value)
+            .GroupBy(m => new { m.Language, m.Framework })
             .Select(group =>
             {
                 var representative = group
-                    .Select(entry => entry.Key)
                     .OrderByDescending(entry => entry.DotnetSupport is not null)
                     .First();
-
-                return new KeyValuePair<ProjectMetadata, int>(
-                    representative,
-                    group.Sum(entry => entry.Value));
+                return new { Metadata = representative, Count = group.Count() };
             })
-            .OrderByDescending(kvp => kvp.Value)
-            .ThenByDescending(kvp => GetLanguagePriority(kvp.Key.Language))
-            .ThenBy(kvp => kvp.Key.Language, StringComparer.OrdinalIgnoreCase)
-            .Select(kvp => kvp.Key)
+            .OrderByDescending(kvp => kvp.Count)
+            .ThenByDescending(kvp => GetLanguagePriority(kvp.Metadata.Language))
+            .ThenBy(kvp => kvp.Metadata.Language, StringComparer.OrdinalIgnoreCase)
+            .Select(kvp => kvp.Metadata)
             .First();
     }
 
-    private static string? SerializeRepositoryProperties(ProjectMetadata metadata)
+    private string? SerializeRepositoryProperties(
+        ProjectMetadata metadata,
+        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats)
     {
-        var properties = DotnetSupportInspector.BuildRepositoryProperties(metadata.DotnetSupport);
-        return properties is null
+        var properties = DotnetSupportInspector.BuildRepositoryProperties(metadata.DotnetSupport) ??
+                         new Dictionary<string, object>(StringComparer.Ordinal);
+
+        if (languageStats.Count > 0)
+        {
+            var totalNonBlankLoc = languageStats.Values.Sum(stat => stat.LocNonBlank);
+            properties["languageStats"] = languageStats
+                .OrderByDescending(kvp => kvp.Value.LocNonBlank)
+                .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new LanguageStatsSnapshot(
+                        kvp.Value.Files,
+                        kvp.Value.LocTotal,
+                        kvp.Value.LocNonBlank,
+                        kvp.Value.NodeCount,
+                        totalNonBlankLoc == 0 ? 0 : Math.Round((double)kvp.Value.LocNonBlank / totalNonBlankLoc, 4)),
+                    StringComparer.Ordinal);
+            properties["primaryLanguageBasis"] = "locNonBlank";
+        }
+
+        return properties.Count == 0
             ? null
-            : System.Text.Json.JsonSerializer.Serialize(
+            : JsonSerializer.Serialize(
                 properties,
-                new System.Text.Json.JsonSerializerOptions
+                new JsonSerializerOptions
                 {
-                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                 });
     }
+
+    private Dictionary<string, LanguageStatAccumulator> ComputeLanguageStats(IReadOnlyList<string> files)
+    {
+        var result = new Dictionary<string, LanguageStatAccumulator>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            var language = GetLanguageForPath(file);
+            if (language is null)
+                continue;
+
+            string content;
+            try
+            {
+                content = _fileSystem.ReadAllText(file);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to count language LOC for {File}", file);
+                continue;
+            }
+
+            if (content.Length > _options.MaxFileSizeKb * 1024)
+                continue;
+
+            var stat = GetOrAddLanguageStat(result, language);
+            stat.Files++;
+            stat.LocTotal += CountLines(content);
+            stat.LocNonBlank += CountNonBlankLines(content);
+        }
+
+        return result;
+    }
+
+    private static void ApplyNodeCounts(
+        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats,
+        IEnumerable<GraphNode> nodes)
+    {
+        foreach (var node in nodes)
+        {
+            if (node.Label is NodeLabel.Repository or NodeLabel.Folder)
+                continue;
+
+            var language = GetLanguageForPath(node.FilePath);
+            if (language is null)
+                continue;
+
+            if (languageStats.TryGetValue(language, out var stat))
+                stat.NodeCount++;
+        }
+    }
+
+    private static LanguageStatAccumulator GetOrAddLanguageStat(
+        Dictionary<string, LanguageStatAccumulator> stats,
+        string language)
+    {
+        if (!stats.TryGetValue(language, out var stat))
+        {
+            stat = new LanguageStatAccumulator(language);
+            stats[language] = stat;
+        }
+
+        return stat;
+    }
+
+    private static int CountLines(string content)
+    {
+        if (content.Length == 0)
+            return 0;
+
+        var count = 1;
+        foreach (var ch in content)
+        {
+            if (ch == '\n')
+                count++;
+        }
+
+        return content.EndsWith('\n') ? count - 1 : count;
+    }
+
+    private static int CountNonBlankLines(string content) =>
+        content.Split('\n').Count(line => !string.IsNullOrWhiteSpace(line));
+
+    private static string? GetLanguageForPath(string path) =>
+        Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".cs" => "C#",
+            ".ts" or ".tsx" => "TypeScript",
+            ".js" or ".jsx" => "JavaScript",
+            ".rs" => "Rust",
+            ".py" or ".pyw" => "Python",
+            ".go" => "Go",
+            ".java" => "Java",
+            ".rb" => "Ruby",
+            ".php" => "PHP",
+            ".sh" or ".bash" or ".zsh" => "Bash",
+            ".c" or ".h" => "C",
+            ".cpp" or ".cc" or ".cxx" or ".hpp" or ".hxx" or ".hh" => "C++",
+            ".sql" => "SQL",
+            ".tf" or ".tfvars" => "Terraform",
+            ".cfm" or ".cfc" => "ColdFusion",
+            _ => null
+        };
+
+    private sealed class LanguageStatAccumulator(string language)
+    {
+        public string Language { get; } = language;
+        public int Files { get; set; }
+        public int LocTotal { get; set; }
+        public int LocNonBlank { get; set; }
+        public int NodeCount { get; set; }
+    }
+
+    private sealed record LanguageStatsSnapshot(
+        int Files,
+        int LocTotal,
+        int LocNonBlank,
+        int NodeCount,
+        double LocShare);
 
     private static int GetLanguagePriority(string language) =>
         language.ToLowerInvariant() switch

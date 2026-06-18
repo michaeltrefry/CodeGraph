@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 using Shouldly;
 using CodeGraph.Models;
 using CodeGraph.Services;
@@ -38,6 +39,50 @@ public class IndexingPipelineTests
             var repo = await store.GetRepositoryByName("DryBox");
             repo.ShouldNotBeNull();
             repo.Language.ShouldBe("C");
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_UsesNonBlankLocForPrimaryLanguage_AndPersistsLanguageStats()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-language-loc-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "a.py"), "print('a')\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "b.py"), "print('b')\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "c.py"), "print('c')\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "lib.rs"), string.Join('\n',
+                Enumerable.Range(1, 12).Select(i => $"pub fn rust_fn_{i}() {{}}")));
+
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [new MixedRustPythonMetadataExtractor()],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 2 }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+
+            await pipeline.IndexProjectAsync("MixedRepo", rootPath, ct: CancellationToken.None);
+
+            var repo = await store.GetRepositoryByName("MixedRepo");
+            repo.ShouldNotBeNull();
+            repo.Language.ShouldBe("Rust");
+            repo.Properties.ShouldNotBeNull();
+            repo.Properties.ShouldContainKey("languageStats");
+
+            var languageStats = (JsonElement)repo.Properties["languageStats"];
+            languageStats.TryGetProperty("Rust", out var rustStats).ShouldBeTrue();
+            languageStats.TryGetProperty("Python", out var pythonStats).ShouldBeTrue();
+            rustStats.GetProperty("locNonBlank").GetInt32().ShouldBe(12);
+            pythonStats.GetProperty("files").GetInt32().ShouldBe(3);
+            rustStats.GetProperty("locShare").GetDouble().ShouldBeGreaterThan(0.75);
         }
         finally
         {
@@ -206,6 +251,28 @@ public class IndexingPipelineTests
             return Task.FromResult(new ExtractionResult
             {
                 Metadata = new ProjectMetadata("C#", ".NET", support)
+            });
+        }
+    }
+
+    private sealed class MixedRustPythonMetadataExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } =
+            new HashSet<string>([".rs", ".py"], StringComparer.OrdinalIgnoreCase);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            var metadata = Path.GetExtension(filePath).Equals(".rs", StringComparison.OrdinalIgnoreCase)
+                ? new ProjectMetadata("Rust", "Cargo")
+                : new ProjectMetadata("Python", null);
+
+            return Task.FromResult(new ExtractionResult
+            {
+                Metadata = metadata
             });
         }
     }
