@@ -20,7 +20,8 @@ public partial class BatchAnalysisService
     /// </summary>
     public async Task SynthesizeRepoSummaryAsync(string repoName, string batchId, CancellationToken ct)
     {
-        var projectAnalyses = await store.GetProjectAnalysesAsync(repoName);
+        var allProjectAnalyses = await store.GetProjectAnalysesAsync(repoName);
+        var projectAnalyses = await GetProjectAnalysesForSynthesisAsync(repoName, batchId, allProjectAnalyses);
         if (projectAnalyses.Count == 0)
         {
             logger.LogWarning("No project analyses found for {Repo} — skipping synthesis", repoName);
@@ -82,6 +83,61 @@ public partial class BatchAnalysisService
         }
     }
 
+    private async Task<IReadOnlyList<StoredProjectAnalysis>> GetProjectAnalysesForSynthesisAsync(
+        string repoName,
+        string providerBatchId,
+        IReadOnlyList<StoredProjectAnalysis> projectAnalyses)
+    {
+        if (projectAnalyses.Count == 0 || string.IsNullOrWhiteSpace(providerBatchId))
+        {
+            return projectAnalyses;
+        }
+
+        var batch = await store.GetBatchByProviderBatchIdAsync(providerBatchId);
+        if (batch is null)
+        {
+            logger.LogDebug("No analysis batch record found for provider batch {BatchId}; using all stored analyses for {Repo}",
+                providerBatchId, repoName);
+            return projectAnalyses;
+        }
+
+        if (!string.Equals(batch.Repo, repoName, StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogWarning(
+                "Analysis batch {BatchId} belongs to {BatchRepo}, not {Repo}; using all stored analyses",
+                providerBatchId, batch.Repo, repoName);
+            return projectAnalyses;
+        }
+
+        var batchRequests = await store.GetBatchRequestsAsync(batch.Id);
+        var currentProjectNames = batchRequests
+            .Where(r => string.Equals(r.Status, "succeeded", StringComparison.OrdinalIgnoreCase))
+            .Select(r => r.NodeLabel)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (currentProjectNames.Count == 0)
+        {
+            logger.LogWarning(
+                "Analysis batch {BatchId} for {Repo} has no succeeded project requests; skipping stale stored analyses",
+                providerBatchId, repoName);
+            return [];
+        }
+
+        var filtered = projectAnalyses
+            .Where(pa => currentProjectNames.Contains(pa.ProjectName))
+            .ToList();
+
+        if (filtered.Count < currentProjectNames.Count)
+        {
+            logger.LogWarning(
+                "Analysis batch {BatchId} for {Repo} has {ExpectedCount} succeeded project request(s), but only {ActualCount} stored project analysis row(s) matched",
+                providerBatchId, repoName, currentProjectNames.Count, filtered.Count);
+        }
+
+        return filtered;
+    }
+
     private Task<string> GetRepositoryAnalysisSystemPromptAsync(string usage)
         => AgentPromptExecution.GetEffectivePromptOrDefaultAsync(
             agentPromptService,
@@ -105,7 +161,11 @@ public partial class BatchAnalysisService
         }
 
         var docGenerator = new CodeGraphDocGenerator();
-        var projectAnalyses = await store.GetProjectAnalysesAsync(repoName);
+        var allProjectAnalyses = await store.GetProjectAnalysesAsync(repoName);
+        var repoSummary = await store.GetRepositorySummaryAsync(repoName);
+        var projectAnalyses = repoSummary is null
+            ? allProjectAnalyses
+            : await GetProjectAnalysesForSynthesisAsync(repoName, repoSummary.SourceHash, allProjectAnalyses);
         var generatedFiles = new List<string>();
 
         // Per-project CODEGRAPH.md files
@@ -127,7 +187,6 @@ public partial class BatchAnalysisService
         }
 
         // Repo-level CODEGRAPH.md
-        var repoSummary = await store.GetRepositorySummaryAsync(repoName);
         if (repoSummary is not null)
         {
             var projects = projectAnalyses.Select(pa =>
