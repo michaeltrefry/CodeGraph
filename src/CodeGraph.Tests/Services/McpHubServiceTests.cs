@@ -14,7 +14,7 @@ namespace CodeGraph.Tests.Services;
 public class McpHubServiceTests
 {
     [Fact]
-    public async Task CatalogSeeder_DisablesExternalProviderToolsByDefault_AndOmitsWriteShortcutTool()
+    public async Task CatalogSeeder_DisablesExternalProviderToolsByDefault_AndSeedsShortcutToolSurface()
     {
         var store = new RecordingMcpHubStore();
         var seeder = new McpHubCatalogSeeder(store, new InMemoryMcpSensitiveColumnStore());
@@ -23,9 +23,13 @@ public class McpHubServiceTests
 
         store.Providers.Single(provider => provider.ProviderKey == "codegraph").Enabled.ShouldBeTrue();
         store.Providers.Single(provider => provider.ProviderKey == "shortcut").Enabled.ShouldBeFalse();
+        store.Providers.Single(provider => provider.ProviderKey == "shortcut-shim").Enabled.ShouldBeFalse();
+        store.Providers.Single(provider => provider.ProviderKey == "shortcut-shim").Description.ShouldContain("Retired");
         store.Tools.Single(tool => tool.ToolName == "mcp_hub_catalog").Enabled.ShouldBeTrue();
         store.Tools.Single(tool => tool.ToolName == "shortcut_search_epics").Enabled.ShouldBeFalse();
-        store.Tools.ShouldNotContain(tool => tool.ToolName == "shortcut_add_story_comment");
+        store.Tools.Single(tool => tool.ToolName == "stories-create-comment").ReadOnly.ShouldBeFalse();
+        store.Tools.Single(tool => tool.ToolName == "stories-create-comment").RequiresCredential.ShouldBeTrue();
+        store.Tools.Single(tool => tool.ToolName == "documents-get-by-id").ReadOnly.ShouldBeTrue();
     }
 
     [Fact]
@@ -465,6 +469,41 @@ public class McpHubServiceTests
         var aliceFailure = await Should.ThrowAsync<Exception>(() =>
             service.SearchShortcutEpicsAsync(null, "alice", CancellationToken.None));
         aliceFailure.ShouldNotBeOfType<McpHubProviderPolicyException>();
+    }
+
+    [Fact]
+    public async Task InvokeShortcutApiAsync_SendsDelegatedCredential_JsonBody_AndQuery()
+    {
+        HttpRequestMessage? captured = null;
+        string? capturedBody = null;
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            request =>
+            {
+                captured = request;
+                capturedBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"ok":true}""") };
+            });
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            new McpProviderCredentialEntity { ProviderKey = "shortcut", Username = "alice", CredentialKey = "apiToken" },
+            "alice-token");
+        var service = ShortcutService(credentials, factory);
+
+        var result = await service.InvokeShortcutApiAsync(
+            "alice",
+            HttpMethod.Put,
+            "stories/123",
+            """{"name":"Updated"}""",
+            McpHubService.BuildQuery(("query", "owner:me"), ("empty", "")),
+            CancellationToken.None);
+
+        result.ShouldBe("""{"ok":true}""");
+        captured.ShouldNotBeNull();
+        captured.Method.ShouldBe(HttpMethod.Put);
+        captured.RequestUri!.ToString().ShouldBe("https://api.app.shortcut.com/api/v3/stories/123?query=owner%3Ame");
+        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("alice-token");
+        capturedBody.ShouldBe("""{"name":"Updated"}""");
     }
 
     [Fact]
