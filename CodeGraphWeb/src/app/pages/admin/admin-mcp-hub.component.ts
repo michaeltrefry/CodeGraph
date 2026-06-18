@@ -15,7 +15,7 @@ import { extractAdminError, runAdminMutation } from './admin-resource.helpers';
       <header class="cg-page-header">
         <p class="adm-eyebrow">Admin</p>
         <h1>MCP Hub</h1>
-        <p>Manage MCP providers, exact tool entitlements, delegated credentials, and provider operations.</p>
+        <p>Manage MCP providers, exact tool entitlements, shared provider credentials, and provider operations.</p>
       </header>
 
       @if (error()) {
