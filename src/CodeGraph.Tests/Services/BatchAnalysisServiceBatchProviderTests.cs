@@ -368,6 +368,85 @@ public class BatchAnalysisServiceBatchProviderTests
         provider.LastBatchRequest.MaxTokens.ShouldBe(1234);
     }
 
+    [Fact]
+    public async Task SynthesizeRepoSummary_UsesOnlyProjectsFromCompletedBatch()
+    {
+        var store = new InMemoryGraphStore();
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "SceneWorks" });
+
+        await store.UpsertProjectAnalysisAsync("SceneWorks", new StoredProjectAnalysis(
+            Repo: "SceneWorks",
+            ProjectName: "legacy-api",
+            Summary: "SceneWorks is a FastAPI-based web API.",
+            Confidence: ConfidenceLevel.High,
+            Endpoints: [],
+            Services: [],
+            ExternalDependencies: [],
+            DatabaseTables: [],
+            ModelUsed: "old-model",
+            UpdatedAt: DateTime.UtcNow.AddDays(-10)));
+
+        await store.UpsertProjectAnalysisAsync("SceneWorks", new StoredProjectAnalysis(
+            Repo: "SceneWorks",
+            ProjectName: "desktop-app",
+            Summary: "SceneWorks is a Rust and Tauri desktop application.",
+            Confidence: ConfidenceLevel.High,
+            Endpoints: [],
+            Services: [],
+            ExternalDependencies: [],
+            DatabaseTables: [],
+            ModelUsed: "new-model",
+            UpdatedAt: DateTime.UtcNow));
+
+        var batchRecordId = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
+        {
+            Repo = "SceneWorks",
+            ProviderBatchId = "batch_current",
+            ProviderName = "lmstudio",
+            ExecutionMode = "native_batch",
+            IncludeAllSource = false,
+            Status = "completed",
+            RequestCount = 1,
+            CompletedCount = 1,
+            SubmittedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow
+        });
+
+        await store.CreateBatchRequestsAsync([
+            new AnalysisBatchRequestEntity
+            {
+                BatchId = batchRecordId,
+                Sequence = 0,
+                CustomId = "proj_SceneWorks_desktop-app",
+                NodeLabel = "desktop-app",
+                RequestPayloadJson = "{}",
+                Status = "succeeded",
+                CompletedAt = DateTime.UtcNow
+            }
+        ]);
+
+        var provider = new RecordingSynthesisProvider();
+        var service = new BatchAnalysisService(
+            store,
+            new SingleProviderRegistry(provider),
+            new RecordingMessageBus(),
+            new NoOpExclusionService(),
+            Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" }),
+            new LocalFileSystem(),
+            NullLogger<BatchAnalysisService>.Instance);
+
+        await service.SynthesizeRepoSummaryAsync("SceneWorks", "batch_current", CancellationToken.None);
+
+        provider.LastSynthesisPrompt.ShouldNotBeNull();
+        provider.LastSynthesisPrompt.ShouldContain("Rust and Tauri desktop application");
+        provider.LastSynthesisPrompt.ShouldNotContain("FastAPI-based web API");
+
+        var summary = await store.GetRepositorySummaryAsync("SceneWorks");
+        summary.ShouldNotBeNull();
+        summary.Summary.ShouldBe("Fresh SceneWorks summary.");
+        summary.SourceHash.ShouldBe("batch_current");
+    }
+
     private sealed class RecordingBatchProvider(long nodeId, string providerName = "lmstudio") : IAnalysisModelProvider
     {
         public int SubmitCalls { get; private set; }
@@ -427,6 +506,43 @@ public class BatchAnalysisServiceBatchProviderTests
                 new AnalysisBatchItemResult(customId, "succeeded", json, "qwen3")
             ]);
         }
+    }
+
+    private sealed class RecordingSynthesisProvider : IAnalysisModelProvider
+    {
+        public string? LastSynthesisPrompt { get; private set; }
+
+        public string ProviderName => "lmstudio";
+
+        public AnalysisProviderCapabilities Capabilities { get; } =
+            new(SupportsBatch: true, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: false);
+
+        public Task<AnalysisTextResponse> ExecuteAsync(
+            AnalysisPrompt prompt,
+            AnalysisRequestOptions request,
+            CancellationToken ct = default)
+        {
+            LastSynthesisPrompt = prompt.UserPrompt;
+            return Task.FromResult(new AnalysisTextResponse(
+                """{ "repoSummary": "Fresh SceneWorks summary.", "confidence": "high" }""",
+                "qwen3",
+                ProviderName));
+        }
+
+        public Task<AnalysisBatchSubmissionResult> SubmitBatchAsync(
+            IReadOnlyList<AnalysisBatchRequestItem> items,
+            AnalysisRequestOptions request,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
+            string batchId,
+            IReadOnlyList<string>? requestIds = null,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class SingleProviderRegistry(IAnalysisModelProvider provider) : IAnalysisProviderRegistry
