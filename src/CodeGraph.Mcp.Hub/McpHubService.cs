@@ -37,25 +37,67 @@ public sealed class McpHubService(
 
     public async Task<string> SearchShortcutEpicsAsync(string? query, string? username, CancellationToken ct = default)
     {
-        await EnsureProviderEnabledAsync("shortcut", ct);
-        var client = await CreateShortcutClientAsync(username, ct);
-        var url = "epics";
-        if (!string.IsNullOrWhiteSpace(query))
-            url += "?query=" + Uri.EscapeDataString(query.Trim());
-
-        using var response = await client.GetAsync(url, ct);
-        return await ReadProviderResponseAsync(response, ct);
+        return await InvokeShortcutApiAsync(
+            username,
+            HttpMethod.Get,
+            "search/epics",
+            bodyJson: null,
+            query: BuildQuery(("query", query)),
+            ct);
     }
 
     public async Task<string> SearchShortcutStoriesAsync(string? query, string? username, CancellationToken ct = default)
     {
+        return await InvokeShortcutApiAsync(
+            username,
+            HttpMethod.Get,
+            "search/stories",
+            bodyJson: null,
+            query: BuildQuery(("query", query)),
+            ct);
+    }
+
+    public async Task<string> InvokeShortcutApiAsync(
+        string? username,
+        HttpMethod method,
+        string path,
+        string? bodyJson = null,
+        IReadOnlyDictionary<string, string?>? query = null,
+        CancellationToken ct = default)
+    {
         await EnsureProviderEnabledAsync("shortcut", ct);
         var client = await CreateShortcutClientAsync(username, ct);
-        var url = "search/stories";
-        if (!string.IsNullOrWhiteSpace(query))
-            url += "?query=" + Uri.EscapeDataString(query.Trim());
+        var requestUri = BuildProviderUri(path, query);
+        using var request = new HttpRequestMessage(method, requestUri);
+        if (bodyJson is not null)
+        {
+            ValidateJsonObject(bodyJson);
+            request.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
+        }
 
-        using var response = await client.GetAsync(url, ct);
+        using var response = await client.SendAsync(request, ct);
+        return await ReadProviderResponseAsync(response, ct);
+    }
+
+    public async Task<string> UploadShortcutFileAsync(
+        string? username,
+        int storyPublicId,
+        string filePath,
+        CancellationToken ct = default)
+    {
+        await EnsureProviderEnabledAsync("shortcut", ct);
+        var client = await CreateShortcutClientAsync(username, ct);
+        if (storyPublicId <= 0)
+            throw new McpHubProviderPolicyException("storyPublicId must be positive.");
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            throw new McpHubProviderPolicyException("filePath must point to an existing local file.");
+
+        await using var stream = File.OpenRead(filePath);
+        using var content = new MultipartFormDataContent();
+        content.Add(new StringContent(storyPublicId.ToString(System.Globalization.CultureInfo.InvariantCulture)), "story_id");
+        content.Add(new StreamContent(stream), "file0", Path.GetFileName(filePath));
+
+        using var response = await client.PostAsync("files", content, ct);
         return await ReadProviderResponseAsync(response, ct);
     }
 
@@ -459,6 +501,75 @@ public sealed class McpHubService(
         }
 
         return $"{sql} LIMIT {limit}";
+    }
+
+    public static IReadOnlyDictionary<string, string?> BuildQuery(params (string Name, object? Value)[] values)
+    {
+        var query = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in values)
+        {
+            if (string.IsNullOrWhiteSpace(name) || value is null)
+                continue;
+
+            var stringValue = value switch
+            {
+                string text when string.IsNullOrWhiteSpace(text) => null,
+                string text => text.Trim(),
+                bool boolean => boolean ? "true" : "false",
+                IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                _ => value.ToString()
+            };
+
+            if (!string.IsNullOrWhiteSpace(stringValue))
+                query[name] = stringValue;
+        }
+
+        return query;
+    }
+
+    public static string JsonBody(params (string Name, object? Value)[] values)
+    {
+        var body = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (name, value) in values)
+        {
+            if (!string.IsNullOrWhiteSpace(name) && value is not null)
+                body[name] = value;
+        }
+
+        return JsonSerializer.Serialize(body, JsonOptions);
+    }
+
+    private static string BuildProviderUri(string path, IReadOnlyDictionary<string, string?>? query)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new McpHubProviderPolicyException("Shortcut API path is required.");
+
+        var trimmedPath = path.Trim().TrimStart('/');
+        if (trimmedPath.StartsWith("api/v3/", StringComparison.OrdinalIgnoreCase))
+            trimmedPath = trimmedPath["api/v3/".Length..];
+
+        if (query is null || query.Count == 0)
+            return trimmedPath;
+
+        var pairs = query
+            .Where(item => !string.IsNullOrWhiteSpace(item.Key) && !string.IsNullOrWhiteSpace(item.Value))
+            .Select(item => $"{Uri.EscapeDataString(item.Key)}={Uri.EscapeDataString(item.Value!.Trim())}")
+            .ToArray();
+        return pairs.Length == 0 ? trimmedPath : $"{trimmedPath}?{string.Join("&", pairs)}";
+    }
+
+    private static void ValidateJsonObject(string bodyJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(bodyJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                throw new McpHubProviderPolicyException("Shortcut request body must be a JSON object.");
+        }
+        catch (JsonException ex)
+        {
+            throw new McpHubProviderPolicyException($"Shortcut request body is not valid JSON: {ex.Message}");
+        }
     }
 
     private static McpHubProviderResponse ToResponse(McpHubProviderEntity entity) =>
