@@ -204,6 +204,48 @@ public class IndexingPipelineTests
         }
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_FullIndexRemovesStaleNodesAndFileHashes()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-full-index-reset-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var stalePath = Path.Combine(rootPath, "app.py");
+            await File.WriteAllTextAsync(stalePath, "class FastApiBackend:\n    pass\n");
+
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [new NodeProducingExtractor()],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+
+            await pipeline.IndexProjectAsync("SceneWorks", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("SceneWorks", "app.py")).ShouldNotBeEmpty();
+            (await store.GetFileHashesAsync("SceneWorks")).ShouldContainKey("app.py");
+
+            File.Delete(stalePath);
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "main.rs"), "pub fn axum_sidecar() {}\n");
+
+            await pipeline.IndexProjectAsync("SceneWorks", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("SceneWorks", "app.py")).ShouldBeEmpty();
+            (await store.FindNodesByFileAsync("SceneWorks", "main.rs")).ShouldNotBeEmpty();
+            var hashes = await store.GetFileHashesAsync("SceneWorks");
+            hashes.ShouldNotContainKey("app.py");
+            hashes.ShouldContainKey("main.rs");
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     private sealed class TestMetadataExtractor : ICodeExtractor
     {
         public IReadOnlySet<string> SupportedExtensions { get; } =
@@ -273,6 +315,43 @@ public class IndexingPipelineTests
             return Task.FromResult(new ExtractionResult
             {
                 Metadata = metadata
+            });
+        }
+    }
+
+    private sealed class NodeProducingExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } =
+            new HashSet<string>([".py", ".rs"], StringComparer.OrdinalIgnoreCase);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            var relPath = Path.GetRelativePath(context.RootPath, filePath);
+            var extension = Path.GetExtension(filePath);
+            var language = extension.Equals(".rs", StringComparison.OrdinalIgnoreCase)
+                ? "Rust"
+                : "Python";
+
+            return Task.FromResult(new ExtractionResult
+            {
+                Nodes =
+                [
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Class,
+                        Name = Path.GetFileNameWithoutExtension(filePath),
+                        QualifiedName = $"{context.ProjectName}.{Path.GetFileNameWithoutExtension(filePath)}",
+                        FilePath = relPath,
+                        StartLine = 1,
+                        EndLine = 1
+                    }
+                ],
+                Metadata = new ProjectMetadata(language, null)
             });
         }
     }
