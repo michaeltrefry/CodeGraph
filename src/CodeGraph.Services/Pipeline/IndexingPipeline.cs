@@ -80,8 +80,18 @@ public partial class IndexingPipeline
             FoundationalKnowledge = knowledge
         };
 
-        // Load existing file hashes for incremental indexing
-        var existingHashes = await _store.GetFileHashesAsync(projectName);
+        var isFullIndex = changedFilesOnly is null;
+        Dictionary<string, string> existingHashes;
+        if (isFullIndex)
+        {
+            await ResetProjectGraphAsync(projectName);
+            existingHashes = [];
+        }
+        else
+        {
+            // Load existing file hashes for incremental indexing.
+            existingHashes = await _store.GetFileHashesAsync(projectName);
+        }
 
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
@@ -314,6 +324,18 @@ public partial class IndexingPipeline
         return matcher.GetResultsInFullPath(rootPath)
             .Where(f => supportedExtensions.Contains(Path.GetExtension(f)))
             .ToList();
+    }
+
+    private async Task ResetProjectGraphAsync(string projectName)
+    {
+        var existingHashes = await _store.GetFileHashesAsync(projectName);
+
+        await _store.DeleteCrossRepoEdgesForProjectAsync(projectName);
+        await _store.DeleteAllEdgesForProjectAsync(projectName);
+        await _store.DeleteNodesByProjectAsync(projectName);
+
+        if (existingHashes.Count > 0)
+            await _store.DeleteFileHashesAsync(projectName, existingHashes.Keys.ToList());
     }
 
     private List<string> FilterByHash(List<string> files, string rootPath,
