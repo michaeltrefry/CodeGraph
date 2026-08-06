@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -25,125 +24,69 @@ public class GitHubRepoProvider(
 
     public async Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_github.PersonalAccessToken))
-            throw new InvalidOperationException("RepositorySource:GitHub:PersonalAccessToken is not configured.");
+        EnsureConfigured();
 
-        var allProjects = new List<DiscoveredProject>();
-        var page = 1;
-        const int perPage = 100;
+        var scopes = BuildDiscoveryScopes();
+        var repositories = new List<GitHubRepoDto>();
+        var seenRepositoryKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        while (true)
+        foreach (var scope in scopes)
         {
-            var url = !string.IsNullOrWhiteSpace(_github.Organization)
-                ? $"{_github.BaseUrl.TrimEnd('/')}/orgs/{_github.Organization}/repos?per_page={perPage}&page={page}&sort=updated&direction=desc"
-                : $"{_github.BaseUrl.TrimEnd('/')}/user/repos?per_page={perPage}&page={page}&sort=updated&direction=desc&affiliation=owner,collaborator,organization_member";
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("Authorization", $"Bearer {_github.PersonalAccessToken}");
-            request.Headers.Add("Accept", "application/vnd.github+json");
-            request.Headers.Add("User-Agent", "CodeGraph");
-            request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
-
-            using var response = await httpClient.SendAsync(request, ct);
-            response.EnsureSuccessStatusCode();
-
-            var repos = await response.Content.ReadFromJsonAsync<List<GitHubRepoDto>>(JsonOptions, ct);
-            if (repos is null || repos.Count == 0)
-                break;
-
-            foreach (var r in repos)
+            var scopedRepositories = await DiscoverScopeAsync(scope, ct);
+            foreach (var repository in scopedRepositories)
             {
-                if (r.Archived) continue;
-
-                var fullName = r.FullName ?? "";
-                var lastSlash = fullName.LastIndexOf('/');
-                var sourceGroup = lastSlash > 0 ? fullName[..lastSlash] : null;
-
-                var exclusionType = await exclusionService.GetExclusionTypeAsync(r.Name ?? "", sourceGroup);
-                if (exclusionType == "complete")
-                {
-                    logger.LogDebug("Skipping {Project} (excluded: complete)", fullName);
-                    continue;
-                }
-
-                allProjects.Add(new DiscoveredProject(
-                    r.Id,
-                    r.Name ?? "",
-                    fullName,
-                    r.CloneUrl ?? "",
-                    r.DefaultBranch ?? "main",
-                    r.UpdatedAt));
+                var key = repository.Id > 0
+                    ? $"id:{repository.Id}"
+                    : $"name:{repository.FullName}";
+                if (seenRepositoryKeys.Add(key))
+                    repositories.Add(repository);
             }
-
-            if (repos.Count < perPage)
-                break;
-
-            page++;
         }
 
-        logger.LogInformation("Discovered {Count} projects from GitHub", allProjects.Count);
+        var allProjects = new List<DiscoveredProject>();
+        foreach (var repository in repositories)
+        {
+            if (repository.Archived)
+                continue;
+
+            var fullName = repository.FullName ?? "";
+            var lastSlash = fullName.LastIndexOf('/');
+            var sourceGroup = lastSlash > 0 ? fullName[..lastSlash] : null;
+
+            var exclusionType = await exclusionService.GetExclusionTypeAsync(repository.Name ?? "", sourceGroup);
+            if (exclusionType == "complete")
+            {
+                logger.LogDebug("Skipping {Project} (excluded: complete)", fullName);
+                continue;
+            }
+
+            allProjects.Add(new DiscoveredProject(
+                repository.Id,
+                repository.Name ?? "",
+                fullName,
+                repository.CloneUrl ?? "",
+                repository.DefaultBranch ?? "main",
+                repository.UpdatedAt));
+        }
+
+        logger.LogInformation(
+            "Discovered {Count} projects from {ScopeCount} GitHub scopes",
+            allProjects.Count,
+            scopes.Count);
 
         return allProjects;
     }
 
     public async Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_github.PersonalAccessToken))
-            throw new InvalidOperationException("RepositorySource:GitHub:PersonalAccessToken is not configured.");
-
-        if (string.IsNullOrWhiteSpace(_github.Organization))
-        {
-            var discovered = await DiscoverProjectsAsync(ct);
-            var normalizedSearchTerm = NormalizeRepoName(searchTerm);
-            return discovered
-                .Where(p => p.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
-                    || p.PathWithNamespace.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
-                    || NormalizeRepoName(p.Name).Equals(normalizedSearchTerm, StringComparison.Ordinal)
-                    || NormalizeRepoName(p.PathWithNamespace).Contains(normalizedSearchTerm, StringComparison.Ordinal))
-                .ToList();
-        }
-
-        var qualifier = !string.IsNullOrWhiteSpace(_github.Organization)
-            ? $"org:{_github.Organization}"
-            : "user:@me";
-
-        var url = $"{_github.BaseUrl.TrimEnd('/')}/search/repositories?q={Uri.EscapeDataString(searchTerm)}+{qualifier}&per_page=100&sort=updated";
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Add("Authorization", $"Bearer {_github.PersonalAccessToken}");
-        request.Headers.Add("Accept", "application/vnd.github+json");
-        request.Headers.Add("User-Agent", "CodeGraph");
-        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
-
-        using var response = await httpClient.SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-
-        var searchResult = await response.Content.ReadFromJsonAsync<GitHubSearchResult>(JsonOptions, ct);
-        if (searchResult?.Items is null)
-            return [];
-
-        var results = new List<DiscoveredProject>();
-        foreach (var r in searchResult.Items)
-        {
-            if (r.Archived) continue;
-
-            var fullName = r.FullName ?? "";
-            var lastSlash = fullName.LastIndexOf('/');
-            var sourceGroup = lastSlash > 0 ? fullName[..lastSlash] : null;
-
-            var exclusionType = await exclusionService.GetExclusionTypeAsync(r.Name ?? "", sourceGroup);
-            if (exclusionType == "complete") continue;
-
-            results.Add(new DiscoveredProject(
-                r.Id,
-                r.Name ?? "",
-                fullName,
-                r.CloneUrl ?? "",
-                r.DefaultBranch ?? "main",
-                r.UpdatedAt));
-        }
-
-        return results;
+        var discovered = await DiscoverProjectsAsync(ct);
+        var normalizedSearchTerm = NormalizeRepoName(searchTerm);
+        return discovered
+            .Where(p => p.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
+                || p.PathWithNamespace.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
+                || NormalizeRepoName(p.Name).Equals(normalizedSearchTerm, StringComparison.Ordinal)
+                || NormalizeRepoName(p.PathWithNamespace).Contains(normalizedSearchTerm, StringComparison.Ordinal))
+            .ToList();
     }
 
     public async Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
@@ -163,16 +106,8 @@ public class GitHubRepoProvider(
         if (!string.IsNullOrWhiteSpace(repoUrl))
             return repoUrl;
 
-        var discovered = await TrySearchProjectsAsync(repoName, ct);
-        var resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: false);
-        if (!string.IsNullOrWhiteSpace(resolved))
-        {
-            logger.LogInformation("Resolved missing GitHub repo URL for {Repo} via search", repoName);
-            return resolved;
-        }
-
-        discovered = await DiscoverProjectsAsync(ct);
-        resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: true);
+        var discovered = await DiscoverProjectsAsync(ct);
+        var resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: true);
         if (!string.IsNullOrWhiteSpace(resolved))
         {
             logger.LogInformation("Resolved missing GitHub repo URL for {Repo} via discovery", repoName);
@@ -183,20 +118,99 @@ public class GitHubRepoProvider(
         return null;
     }
 
-    private async Task<List<DiscoveredProject>> TrySearchProjectsAsync(string repoName, CancellationToken ct)
+    private void EnsureConfigured()
     {
-        try
-        {
-            return await SearchProjectsAsync(repoName, ct);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
-        {
-            logger.LogWarning(
-                "GitHub search returned {StatusCode} for {Repo}; falling back to repository discovery",
-                ex.StatusCode, repoName);
-            return [];
-        }
+        if (string.IsNullOrWhiteSpace(_github.PersonalAccessToken))
+            throw new InvalidOperationException("RepositorySource:GitHub:PersonalAccessToken is not configured.");
     }
+
+    private List<GitHubDiscoveryScope> BuildDiscoveryScopes()
+    {
+        var users = ParseOwnerList(_github.UserAccounts);
+        var organizations = ParseOwnerList(_github.Organizations);
+        var hasMultiOwnerConfiguration = users.Count > 0 || organizations.Count > 0;
+        var legacyOrganizationOnly = !hasMultiOwnerConfiguration
+            && !string.IsNullOrWhiteSpace(_github.Organization);
+        var scopes = new List<GitHubDiscoveryScope>();
+
+        if (!legacyOrganizationOnly && (!hasMultiOwnerConfiguration || _github.IncludeAuthenticatedUser))
+        {
+            scopes.Add(new GitHubDiscoveryScope(
+                "authenticated user",
+                $"{_github.BaseUrl.TrimEnd('/')}/user/repos"));
+        }
+
+        scopes.AddRange(users.Select(user => new GitHubDiscoveryScope(
+            $"user '{user}'",
+            $"{_github.BaseUrl.TrimEnd('/')}/users/{Uri.EscapeDataString(user)}/repos")));
+
+        if (!string.IsNullOrWhiteSpace(_github.Organization))
+            organizations.Insert(0, _github.Organization.Trim());
+
+        scopes.AddRange(organizations.Select(organization => new GitHubDiscoveryScope(
+            $"organization '{organization}'",
+            $"{_github.BaseUrl.TrimEnd('/')}/orgs/{Uri.EscapeDataString(organization)}/repos")));
+
+        return scopes
+            .DistinctBy(scope => scope.RepositoryEndpoint, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<List<GitHubRepoDto>> DiscoverScopeAsync(
+        GitHubDiscoveryScope scope,
+        CancellationToken ct)
+    {
+        var repositories = new List<GitHubRepoDto>();
+        const int perPage = 100;
+
+        for (var page = 1; ; page++)
+        {
+            var separator = scope.RepositoryEndpoint.Contains('?') ? '&' : '?';
+            var url = $"{scope.RepositoryEndpoint}{separator}per_page={perPage}&page={page}&sort=updated&direction=desc";
+            if (scope.DisplayName == "authenticated user")
+                url += "&affiliation=owner,collaborator,organization_member";
+
+            using var request = CreateRequest(url);
+            using var response = await httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"GitHub repository discovery for {scope.DisplayName} failed with " +
+                    $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}). Verify the owner name and token access.",
+                    null,
+                    response.StatusCode);
+            }
+
+            var pageRepositories = await response.Content.ReadFromJsonAsync<List<GitHubRepoDto>>(JsonOptions, ct);
+            if (pageRepositories is null || pageRepositories.Count == 0)
+                break;
+
+            repositories.AddRange(pageRepositories);
+            if (pageRepositories.Count < perPage)
+                break;
+        }
+
+        logger.LogDebug(
+            "Discovered {Count} repositories from GitHub {Scope}",
+            repositories.Count,
+            scope.DisplayName);
+        return repositories;
+    }
+
+    private HttpRequestMessage CreateRequest(string url)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("Authorization", $"Bearer {_github.PersonalAccessToken}");
+        request.Headers.Add("Accept", "application/vnd.github+json");
+        request.Headers.Add("User-Agent", "CodeGraph");
+        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        return request;
+    }
+
+    private static List<string> ParseOwnerList(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static string? ResolveExactMatchUrl(string repoName, IEnumerable<DiscoveredProject> projects, bool allowPartial)
     {
@@ -286,6 +300,8 @@ public class GitHubRepoProvider(
     }
 }
 
+internal sealed record GitHubDiscoveryScope(string DisplayName, string RepositoryEndpoint);
+
 internal class GitHubRepoDto
 {
     [JsonPropertyName("id")]
@@ -308,13 +324,4 @@ internal class GitHubRepoDto
 
     [JsonPropertyName("updated_at")]
     public DateTime UpdatedAt { get; set; }
-}
-
-internal class GitHubSearchResult
-{
-    [JsonPropertyName("total_count")]
-    public int TotalCount { get; set; }
-
-    [JsonPropertyName("items")]
-    public List<GitHubRepoDto>? Items { get; set; }
 }

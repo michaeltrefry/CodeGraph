@@ -69,7 +69,12 @@ CODEGRAPH__AUTHOPTIONS__ENDSESSIONURL=https://identity.trefry.net/realms/trefry/
 CODEGRAPH__AUTHOPTIONS__ALLOWEDORIGINS__0=https://codegraph.trefry.net
 CODEGRAPH__AUTHOPTIONS__REQUIREHTTPSMETADATA=true
 CODEGRAPH__MCPOPTIONS__REQUIREPERSONALACCESSTOKEN=true
+CODEGRAPH__REPOSITORYSOURCE__GITHUB__INCLUDEAUTHENTICATEDUSER=true
+CODEGRAPH__REPOSITORYSOURCE__GITHUB__USERACCOUNTS=
+CODEGRAPH__REPOSITORYSOURCE__GITHUB__ORGANIZATIONS=SceneWorks
 ```
+
+`USERACCOUNTS` and `ORGANIZATIONS` accept comma-separated GitHub owner names. The authenticated-user scope includes repositories accessible to the configured token; named user scopes include public repositories, and organization scopes include private repositories only when the token has access.
 
 LLM provider tokens, provider endpoints, model lists, default model selections, and analysis/review/assistant token caps are not production deployment secrets. After first boot, configure them from the admin Settings page under **LLM Configuration**; provider tokens are stored encrypted in MariaDB and are never returned by the API. If startup logs include `llm.config.deprecation`, those entries identify appsettings fallback values that should be saved through the admin page.
 
