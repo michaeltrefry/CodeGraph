@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CodeGraph.Data;
@@ -10,6 +11,8 @@ namespace CodeGraph.Tests.Extractors;
 /// </summary>
 public class InMemoryGraphStore : IGraphStore, IExclusionStore
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectIndexingLocks =
+        new(StringComparer.OrdinalIgnoreCase);
     private long _nextId = 1;
     private readonly List<GraphNode> _nodes = new();
     private readonly List<GraphEdge> _edges = new();
@@ -28,6 +31,25 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private long _nextRepositoryReviewRunId = 1;
     private long _nextRepositoryReviewFindingId = 1;
     private long _nextRepositoryReviewProjectSectionId = 1;
+    public Exception? ReplacementFailure { get; set; }
+
+    public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
+        string project,
+        CancellationToken ct = default)
+    {
+        var projectLock = ProjectIndexingLocks.GetOrAdd(project, _ => new SemaphoreSlim(1, 1));
+        await projectLock.WaitAsync(ct);
+        return new InMemoryIndexingLock(projectLock);
+    }
+
+    private sealed class InMemoryIndexingLock(SemaphoreSlim projectLock) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            projectLock.Release();
+            return ValueTask.CompletedTask;
+        }
+    }
 
     public IReadOnlyList<GraphNode> Nodes => _nodes;
     public IReadOnlyList<GraphEdge> Edges => _edges;
@@ -396,6 +418,104 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
         _nodes.RemoveAll(n => nodeIds.Contains(n.Id));
         _edges.RemoveAll(e => nodeIds.Contains(e.SourceId) || nodeIds.Contains(e.TargetId));
+        return Task.CompletedTask;
+    }
+
+    public Task<int> ReplaceProjectGraphAsync(
+        string project,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges,
+        IReadOnlyDictionary<string, string> fileHashes,
+        RepositoryEntity repository,
+        SyncStateEntity? syncState,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (ReplacementFailure is not null)
+            throw ReplacementFailure;
+
+        var nextId = _nextId;
+        var replacementNodes = nodes
+            .Select(node => node with { Id = nextId++ })
+            .ToList();
+        var qnToId = replacementNodes.ToDictionary(
+            node => GraphNodeKey.Create(project, node.QualifiedName),
+            node => node.Id,
+            StringComparer.OrdinalIgnoreCase);
+        var replacementEdges = edges
+            .Where(edge =>
+                qnToId.ContainsKey(GraphNodeKey.Create(project, edge.SourceQN)) &&
+                qnToId.ContainsKey(GraphNodeKey.Create(project, edge.TargetQN)))
+            .Select(edge => new GraphEdge
+            {
+                Project = project,
+                SourceId = qnToId[GraphNodeKey.Create(project, edge.SourceQN)],
+                TargetId = qnToId[GraphNodeKey.Create(project, edge.TargetQN)],
+                Type = edge.Type,
+                Properties = edge.Properties ?? []
+            })
+            .ToList();
+
+        var oldNodeIds = _nodes
+            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            .Select(node => node.Id)
+            .ToHashSet();
+        _nodeAnalyses.Keys.Where(oldNodeIds.Contains).ToList()
+            .ForEach(nodeId => _nodeAnalyses.Remove(nodeId));
+        _crossEdges.RemoveAll(edge =>
+            edge.SourceProject.Equals(project, StringComparison.OrdinalIgnoreCase) ||
+            edge.TargetProject.Equals(project, StringComparison.OrdinalIgnoreCase));
+        _edges.RemoveAll(edge =>
+            edge.Project.Equals(project, StringComparison.OrdinalIgnoreCase) ||
+            oldNodeIds.Contains(edge.SourceId) ||
+            oldNodeIds.Contains(edge.TargetId));
+        _nodes.RemoveAll(node => oldNodeIds.Contains(node.Id));
+
+        _nodes.AddRange(replacementNodes);
+        _edges.AddRange(replacementEdges);
+        _fileHashes[project] = new Dictionary<string, string>(fileHashes, StringComparer.OrdinalIgnoreCase);
+        _ = UpsertRepositoryAsync(repository);
+        if (syncState is not null)
+            _syncStates[project] = syncState;
+        _nextId = nextId;
+
+        return Task.FromResult(replacementEdges.Count);
+    }
+
+    public Task DeleteFilesFromProjectGraphAsync(
+        string project,
+        IReadOnlyList<string> filePaths,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (filePaths.Count == 0) return Task.CompletedTask;
+
+        var paths = filePaths
+            .SelectMany(path => new[]
+            {
+                path.Replace('\\', '/'),
+                path.Replace('/', '\\')
+            })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var nodeIds = _nodes
+            .Where(node =>
+                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                paths.Contains(node.FilePath))
+            .Select(node => node.Id)
+            .ToHashSet();
+
+        _nodeAnalyses.Keys.Where(nodeIds.Contains).ToList()
+            .ForEach(nodeId => _nodeAnalyses.Remove(nodeId));
+        _crossEdges.RemoveAll(edge => nodeIds.Contains(edge.SourceNodeId) || nodeIds.Contains(edge.TargetNodeId));
+        _edges.RemoveAll(edge => nodeIds.Contains(edge.SourceId) || nodeIds.Contains(edge.TargetId));
+        _nodes.RemoveAll(node => nodeIds.Contains(node.Id));
+
+        if (_fileHashes.TryGetValue(project, out var hashes))
+        {
+            foreach (var path in paths)
+                hashes.Remove(path);
+        }
+
         return Task.CompletedTask;
     }
 

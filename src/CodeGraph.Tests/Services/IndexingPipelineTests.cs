@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using Shouldly;
+using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
@@ -205,7 +206,7 @@ public class IndexingPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_FullIndexRemovesStaleNodesAndFileHashes()
+    public async Task IndexProjectAsync_ReplacementRemovesStaleNodesHashesAndAnalysis()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-full-index-reset-{Guid.NewGuid():N}");
         Directory.CreateDirectory(rootPath);
@@ -223,21 +224,52 @@ public class IndexingPipelineTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("SceneWorks", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexProjectAsync("SceneWorks", rootPath,
+                replaceExistingGraph: true, ct: CancellationToken.None);
 
             (await store.FindNodesByFileAsync("SceneWorks", "app.py")).ShouldNotBeEmpty();
             (await store.GetFileHashesAsync("SceneWorks")).ShouldContainKey("app.py");
+            var staleNode = (await store.FindNodesByFileAsync("SceneWorks", "app.py"))
+                .First(node => node.Label == NodeLabel.Class);
+            var dependencyNodeIds = await store.UpsertNodeBatchAsync(
+            [
+                new GraphNode
+                {
+                    Project = "Dependency",
+                    Label = NodeLabel.Class,
+                    Name = "Dependency",
+                    QualifiedName = "Dependency.Root",
+                    FilePath = "dependency.rs"
+                }
+            ]);
+            await store.InsertCrossRepoEdgeAsync(new CrossRepoEdge
+            {
+                SourceProject = "SceneWorks",
+                TargetProject = "Dependency",
+                SourceNodeId = staleNode.Id,
+                TargetNodeId = dependencyNodeIds[GraphNodeKey.Create("Dependency", "Dependency.Root")],
+                Type = EdgeType.CALLS
+            });
+            await store.UpsertNodeAnalysisAsync(new NodeAnalysisEntity
+            {
+                NodeId = staleNode.Id,
+                Description = "stale FastAPI analysis",
+                Confidence = "high"
+            });
 
             File.Delete(stalePath);
             await File.WriteAllTextAsync(Path.Combine(rootPath, "main.rs"), "pub fn axum_sidecar() {}\n");
 
-            await pipeline.IndexProjectAsync("SceneWorks", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexProjectAsync("SceneWorks", rootPath,
+                replaceExistingGraph: true, ct: CancellationToken.None);
 
             (await store.FindNodesByFileAsync("SceneWorks", "app.py")).ShouldBeEmpty();
             (await store.FindNodesByFileAsync("SceneWorks", "main.rs")).ShouldNotBeEmpty();
             var hashes = await store.GetFileHashesAsync("SceneWorks");
             hashes.ShouldNotContainKey("app.py");
             hashes.ShouldContainKey("main.rs");
+            (await store.GetNodeAnalysisAsync(staleNode.Id)).ShouldBeNull();
+            (await store.FindCrossRepoEdgesAsync("SceneWorks")).ShouldBeEmpty();
         }
         finally
         {
@@ -245,6 +277,277 @@ public class IndexingPipelineTests
                 Directory.Delete(rootPath, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task IndexProjectAsync_ReplacementFailurePreservesExistingGraph()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-replacement-failure-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var filePath = Path.Combine(rootPath, "app.py");
+            await File.WriteAllTextAsync(filePath, "class ExistingBackend:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var goodPipeline = CreatePipeline(store, new NodeProducingExtractor());
+
+            await goodPipeline.IndexProjectAsync("FailureSafeRepo", rootPath,
+                replaceExistingGraph: true, ct: CancellationToken.None);
+            var nodesBefore = store.Nodes
+                .Where(node => node.Project == "FailureSafeRepo")
+                .Select(node => node.QualifiedName)
+                .Order()
+                .ToList();
+            var hashesBefore = await store.GetFileHashesAsync("FailureSafeRepo");
+            var repositoryBefore = await store.GetRepositoryByName("FailureSafeRepo");
+
+            await File.WriteAllTextAsync(filePath, "class BrokenReplacement:\n    pass\n");
+            var failingPipeline = CreatePipeline(store, new ThrowingExtractor());
+
+            await Should.ThrowAsync<AggregateException>(() =>
+                failingPipeline.IndexProjectAsync("FailureSafeRepo", rootPath,
+                    replaceExistingGraph: true, ct: CancellationToken.None));
+
+            store.Nodes.Where(node => node.Project == "FailureSafeRepo")
+                .Select(node => node.QualifiedName)
+                .Order()
+                .ShouldBe(nodesBefore);
+            (await store.GetFileHashesAsync("FailureSafeRepo")).ShouldBe(hashesBefore);
+            (await store.GetRepositoryByName("FailureSafeRepo")).ShouldBe(repositoryBefore);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_ReplacementStoreFailurePreservesExistingSnapshot()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-replacement-store-failure-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var filePath = Path.Combine(rootPath, "app.py");
+            await File.WriteAllTextAsync(filePath, "class ExistingBackend:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("StoreFailureRepo", rootPath,
+                replaceExistingGraph: true,
+                replacementSyncState: new SyncStateEntity
+                {
+                    Project = "StoreFailureRepo",
+                    LastCommitSha = "old-commit",
+                    LastSyncAt = DateTime.UtcNow,
+                    Status = "idle"
+                },
+                ct: CancellationToken.None);
+
+            var nodesBefore = store.Nodes
+                .Where(node => node.Project == "StoreFailureRepo")
+                .Select(node => node.QualifiedName)
+                .Order()
+                .ToList();
+            var hashesBefore = await store.GetFileHashesAsync("StoreFailureRepo");
+            var repositoryBefore = await store.GetRepositoryByName("StoreFailureRepo");
+            var syncStateBefore = await store.GetSyncStateAsync("StoreFailureRepo");
+
+            await File.WriteAllTextAsync(filePath, "class NewBackend:\n    pass\n");
+            store.ReplacementFailure = new InvalidOperationException("synthetic store failure");
+
+            await Should.ThrowAsync<InvalidOperationException>(() =>
+                pipeline.IndexProjectAsync("StoreFailureRepo", rootPath,
+                    replaceExistingGraph: true,
+                    replacementSyncState: new SyncStateEntity
+                    {
+                        Project = "StoreFailureRepo",
+                        LastCommitSha = "new-commit",
+                        LastSyncAt = DateTime.UtcNow,
+                        Status = "idle"
+                    },
+                    ct: CancellationToken.None));
+
+            store.Nodes.Where(node => node.Project == "StoreFailureRepo")
+                .Select(node => node.QualifiedName)
+                .Order()
+                .ShouldBe(nodesBefore);
+            (await store.GetFileHashesAsync("StoreFailureRepo")).ShouldBe(hashesBefore);
+            (await store.GetRepositoryByName("StoreFailureRepo")).ShouldBe(repositoryBefore);
+            (await store.GetSyncStateAsync("StoreFailureRepo")).ShouldBe(syncStateBefore);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_RoutineIndexRemainsHashIncremental()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-incremental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class Backend:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var extractor = new CountingExtractor();
+            var pipeline = CreatePipeline(store, extractor);
+
+            await pipeline.IndexProjectAsync("IncrementalRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexProjectAsync("IncrementalRepo", rootPath, ct: CancellationToken.None);
+
+            extractor.CallCount.ShouldBe(1);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalDeletionRemovesNodesHashesAndAnalysis()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-incremental-delete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var filePath = Path.Combine(rootPath, "app.py");
+            await File.WriteAllTextAsync(filePath, "class Backend:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("DeleteRepo", rootPath, ct: CancellationToken.None);
+            var staleNode = (await store.FindNodesByFileAsync("DeleteRepo", "app.py"))
+                .First(node => node.Label == NodeLabel.Class);
+            var dependencyNodeIds = await store.UpsertNodeBatchAsync(
+            [
+                new GraphNode
+                {
+                    Project = "Dependency",
+                    Label = NodeLabel.Class,
+                    Name = "Dependency",
+                    QualifiedName = "Dependency.Root",
+                    FilePath = "dependency.rs"
+                }
+            ]);
+            await store.InsertCrossRepoEdgeAsync(new CrossRepoEdge
+            {
+                SourceProject = "DeleteRepo",
+                TargetProject = "Dependency",
+                SourceNodeId = staleNode.Id,
+                TargetNodeId = dependencyNodeIds[GraphNodeKey.Create("Dependency", "Dependency.Root")],
+                Type = EdgeType.CALLS
+            });
+            await store.UpsertNodeAnalysisAsync(new NodeAnalysisEntity
+            {
+                NodeId = staleNode.Id,
+                Description = "stale",
+                Confidence = "high"
+            });
+
+            File.Delete(filePath);
+            await pipeline.IndexProjectAsync("DeleteRepo", rootPath,
+                changedFilesOnly: ["app.py"], ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("DeleteRepo", "app.py")).ShouldBeEmpty();
+            (await store.GetFileHashesAsync("DeleteRepo")).ShouldNotContainKey("app.py");
+            (await store.GetNodeAnalysisAsync(staleNode.Id)).ShouldBeNull();
+            (await store.FindCrossRepoEdgesAsync("DeleteRepo")).ShouldBeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalDeletionReconcilesWindowsPathSeparators()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-windows-delete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var store = new InMemoryGraphStore();
+            await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "WindowsPathRepo" });
+            var nodeIds = await store.UpsertNodeBatchAsync(
+            [
+                new GraphNode
+                {
+                    Project = "WindowsPathRepo",
+                    Label = NodeLabel.Class,
+                    Name = "Backend",
+                    QualifiedName = "WindowsPathRepo.Backend",
+                    FilePath = "src\\app.py"
+                }
+            ]);
+            var nodeId = nodeIds[GraphNodeKey.Create("WindowsPathRepo", "WindowsPathRepo.Backend")];
+            await store.UpsertNodeAnalysisAsync(new NodeAnalysisEntity
+            {
+                NodeId = nodeId,
+                Description = "stale",
+                Confidence = "high"
+            });
+            await store.UpsertFileHashBatchAsync("WindowsPathRepo", new Dictionary<string, string>
+            {
+                ["src\\app.py"] = "old-hash"
+            });
+
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("WindowsPathRepo", rootPath,
+                changedFilesOnly: ["src/app.py"], ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("WindowsPathRepo", "src\\app.py")).ShouldBeEmpty();
+            (await store.GetFileHashesAsync("WindowsPathRepo")).ShouldBeEmpty();
+            (await store.GetNodeAnalysisAsync(nodeId)).ShouldBeNull();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_SerializesReplacementForSameRepository()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-replacement-lock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class Backend:\n    pass\n");
+            var extractor = new ConcurrencyTrackingExtractor();
+            var pipeline = CreatePipeline(new InMemoryGraphStore(), extractor);
+
+            await Task.WhenAll(
+                pipeline.IndexProjectAsync("SerializedRepo", rootPath,
+                    replaceExistingGraph: true, ct: CancellationToken.None),
+                pipeline.IndexProjectAsync("SerializedRepo", rootPath,
+                    replaceExistingGraph: true, ct: CancellationToken.None));
+
+            extractor.MaxConcurrent.ShouldBe(1);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    private static IndexingPipeline CreatePipeline(InMemoryGraphStore store, ICodeExtractor extractor) =>
+        new(
+            store,
+            [extractor],
+            Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+            new LocalFileSystem(),
+            NullLogger<IndexingPipeline>.Instance);
 
     private sealed class TestMetadataExtractor : ICodeExtractor
     {
@@ -319,12 +622,12 @@ public class IndexingPipelineTests
         }
     }
 
-    private sealed class NodeProducingExtractor : ICodeExtractor
+    private class NodeProducingExtractor : ICodeExtractor
     {
         public IReadOnlySet<string> SupportedExtensions { get; } =
             new HashSet<string>([".py", ".rs"], StringComparer.OrdinalIgnoreCase);
 
-        public Task<ExtractionResult> ExtractAsync(
+        public virtual Task<ExtractionResult> ExtractAsync(
             string filePath,
             string content,
             ExtractorContext context,
@@ -353,6 +656,62 @@ public class IndexingPipelineTests
                 ],
                 Metadata = new ProjectMetadata(language, null)
             });
+        }
+    }
+
+    private sealed class ThrowingExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } = new HashSet<string>([".py"]);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default) =>
+            throw new InvalidOperationException("synthetic extraction failure");
+    }
+
+    private sealed class CountingExtractor : NodeProducingExtractor
+    {
+        public int CallCount { get; private set; }
+
+        public override Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            CallCount++;
+            return base.ExtractAsync(filePath, content, context, ct);
+        }
+    }
+
+    private sealed class ConcurrencyTrackingExtractor : NodeProducingExtractor
+    {
+        private readonly object sync = new();
+        private int active;
+        private int maxConcurrent;
+
+        public int MaxConcurrent => maxConcurrent;
+
+        public override async Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            var current = Interlocked.Increment(ref active);
+            lock (sync)
+                maxConcurrent = Math.Max(maxConcurrent, current);
+            try
+            {
+                await Task.Delay(40, ct);
+                return await base.ExtractAsync(filePath, content, context, ct);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref active);
+            }
         }
     }
 

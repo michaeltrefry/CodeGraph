@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,60 +27,64 @@ public class ProjectService(
     // Initialized lazily from config on first use.
     private static SemaphoreSlim? _repoSemaphore;
     private static int _configuredMax;
+    private static readonly object RepoSemaphoreSync = new();
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryLocks =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private SemaphoreSlim RepoSemaphore
     {
         get
         {
             var max = indexingOptions.MaxParallelRepos;
-            if (_repoSemaphore is null || _configuredMax != max)
+            lock (RepoSemaphoreSync)
             {
-                _repoSemaphore = new SemaphoreSlim(max, max);
-                _configuredMax = max;
+                if (_repoSemaphore is null || _configuredMax != max)
+                {
+                    _repoSemaphore = new SemaphoreSlim(max, max);
+                    _configuredMax = max;
+                }
+                return _repoSemaphore;
             }
-            return _repoSemaphore;
         }
     }
 
     public async Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = new CancellationToken())
     {
-        var batch = await graphStore.GetLatestBatchAsync(repo);
-        if (batch is not null && batch.Status == "in-progress")
-            return ProjectQueryService.MapBatch(batch);
-
-        // Re-analyze uses ShouldAnalyze=false to skip async analysis submission via consumer,
-        // then submits analysis directly so we can return the batch response synchronously.
-        var message = new ProcessRepository
+        return await WithRepositoryLockAsync(repo, async () =>
         {
-            Name             = repo,
-            ShouldIndex      = true,
-            ShouldAnalyze    = false,
-            SkipIfUpToDate   = false,
-            IncludeAllSource = true
-        };
+            var batch = await graphStore.GetLatestBatchAsync(repo);
+            if (batch is not null && IsActiveAnalysisBatch(batch.Status))
+                return ProjectQueryService.MapBatch(batch);
 
-        await ProcessRepository(message, cancellationToken);
+            // Re-analyze builds a complete replacement snapshot, then submits analysis
+            // directly so the API can return the new batch synchronously.
+            var message = new ProcessRepository
+            {
+                Name = repo,
+                ShouldIndex = true,
+                ShouldAnalyze = false,
+                SkipIfUpToDate = false,
+                IncludeAllSource = true,
+                ReplaceExistingGraph = true
+            };
 
-        // Submit analysis directly (synchronous path for API response)
-        var repoPath = await repoProvider.EnsureLocalAsync(repo, null, null, cancellationToken);
-        await batchService.SubmitAnalysisBatchAsync(repo, repoPath, includeAllSource: true, cancellationToken);
+            await ProcessRepositoryCore(message, cancellationToken);
 
-        var updated = await graphStore.GetLatestBatchAsync(repo);
-        return updated is not null ? ProjectQueryService.MapBatch(updated) : null;
+            var repoPath = await repoProvider.EnsureLocalAsync(repo, null, null, cancellationToken);
+            await batchService.SubmitAnalysisBatchAsync(repo, repoPath, includeAllSource: true, cancellationToken);
+
+            var updated = await graphStore.GetLatestBatchAsync(repo);
+            return updated is not null ? ProjectQueryService.MapBatch(updated) : null;
+        }, cancellationToken);
     }
 
     public async Task ProcessRepository(ProcessRepository message, CancellationToken cancellationToken = new())
     {
-        var semaphore = RepoSemaphore;
-        await semaphore.WaitAsync(cancellationToken);
-        try
+        await WithRepositoryLockAsync(message.Name, async () =>
         {
             await ProcessRepositoryCore(message, cancellationToken);
-        }
-        finally
-        {
-            semaphore.Release();
-        }
+            return true;
+        }, cancellationToken);
     }
 
     private async Task ProcessRepositoryCore(ProcessRepository message, CancellationToken cancellationToken)
@@ -125,15 +130,17 @@ public class ProjectService(
         if (message.ShouldIndex)
         {
             logger.LogInformation("Indexing {Repo}", message.Name);
-            await pipeline.IndexProjectAsync(message.Name, repoPath, repoUrl: repoUrl, sourceGroup: message.SourceGroup, ct: cancellationToken);
+            await pipeline.IndexProjectAsync(message.Name, repoPath,
+                repoUrl: repoUrl,
+                sourceGroup: message.SourceGroup,
+                replaceExistingGraph: message.ReplaceExistingGraph,
+                replacementSyncState: message.ReplaceExistingGraph
+                    ? CreateIdleSyncState(message.Name, commitSha)
+                    : null,
+                ct: cancellationToken);
 
-            await graphStore.UpsertSyncStateAsync(new SyncStateEntity
-            {
-                Project = message.Name,
-                LastCommitSha = commitSha,
-                LastSyncAt = DateTime.UtcNow,
-                Status = "idle"
-            });
+            if (!message.ReplaceExistingGraph)
+                await graphStore.UpsertSyncStateAsync(CreateIdleSyncState(message.Name, commitSha));
 
             // 3. Publish event — downstream consumers handle linking, vitals, and analysis
             await messageBus.PublishAsync(new RepositoryIndexingCompleted
@@ -163,6 +170,46 @@ public class ProjectService(
             await batchService.SubmitAnalysisBatchAsync(message.Name, repoPath, message.IncludeAllSource, cancellationToken);
         }
     }
+
+    private static bool IsActiveAnalysisBatch(string status) =>
+        status.Equals("submitted", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("in-progress", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<T> WithRepositoryLockAsync<T>(
+        string repository,
+        Func<Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        var repositoryLock = RepositoryLocks.GetOrAdd(repository, _ => new SemaphoreSlim(1, 1));
+        await repositoryLock.WaitAsync(cancellationToken);
+        try
+        {
+            var capacity = RepoSemaphore;
+            await capacity.WaitAsync(cancellationToken);
+            try
+            {
+                await using var distributedLock =
+                    await graphStore.AcquireProjectIndexingLockAsync(repository, cancellationToken);
+                return await action();
+            }
+            finally
+            {
+                capacity.Release();
+            }
+        }
+        finally
+        {
+            repositoryLock.Release();
+        }
+    }
+
+    private static SyncStateEntity CreateIdleSyncState(string project, string? commitSha) => new()
+    {
+        Project = project,
+        LastCommitSha = commitSha,
+        LastSyncAt = DateTime.UtcNow,
+        Status = "idle"
+    };
 
     public async Task<bool> DeleteRepositoryAsync(string repo)
     {

@@ -10,7 +10,7 @@ using MySqlConnector;
 
 namespace CodeGraph.Data.MariaDb;
 
-public class MySqlGraphStore(
+public partial class MySqlGraphStore(
     CodeGraphDbContext db,
     IOptions<MariaDbStorageOptions> optionsAccessor,
     ILogger<MySqlGraphStore> logger,
@@ -1114,7 +1114,7 @@ public class MySqlGraphStore(
 
     private async Task WithDeadlockRetryAsync(Func<Task> action, int maxRetries = 3)
     {
-        for (var attempt = 0;; attempt++)
+        for (var attempt = 0; ; attempt++)
         {
             try
             {
