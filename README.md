@@ -161,10 +161,43 @@ Useful settings to know:
 | `CodeGraph:AssistantRetentionOptions:*` | Stale assistant run and assistant history/debug retention settings used by the jobs cleanup task |
 | `CodeGraph:RepositorySource:Provider` | Choose `Folder`, `GitHub`, or `GitLab` |
 | `CodeGraph:RepositorySource:Folder:RootPath` | Local repo root when using the folder provider |
+| `CodeGraph:RepositorySource:GitHub:IncludeAuthenticatedUser` | Include all repositories accessible to the configured GitHub token; defaults to `true` with multi-owner settings |
+| `CodeGraph:RepositorySource:GitHub:UserAccounts` | Comma-separated additional GitHub user accounts; named-user discovery includes their public repositories |
+| `CodeGraph:RepositorySource:GitHub:Organizations` | Comma-separated GitHub organizations; token permissions determine private repository visibility |
 | LLM Configuration admin page | Runtime LLM provider tokens, endpoints, model lists, and Analysis/Review/Assistant defaults |
 | `CodeGraph:AnalysisOptions:AutoCommitDocs` | Auto-commit generated `CODEGRAPH.md` files |
 | `CodeGraph:AnalysisOptions:AutoPushDocs` | Auto-push generated doc commits |
 | `CodeGraph:TsPort` | TypeScript analyzer sidecar port |
+
+#### Index multiple GitHub accounts and organizations
+
+The GitHub provider can merge the authenticated user's accessible repositories with explicit user and organization scopes. Repositories returned by more than one scope are deduplicated by GitHub repository ID.
+
+For the personal `michaeltrefry` account plus the `SceneWorks` organization, the authenticated-user scope already covers the personal account, so configure:
+
+```json
+"RepositorySource": {
+  "Provider": "GitHub",
+  "GitHub": {
+    "BaseUrl": "https://api.github.com",
+    "PersonalAccessToken": "",
+    "IncludeAuthenticatedUser": true,
+    "UserAccounts": "",
+    "Organizations": "SceneWorks"
+  }
+}
+```
+
+The Docker/production equivalent is:
+
+```bash
+CodeGraph__RepositorySource__Provider=GitHub
+CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser=true
+CodeGraph__RepositorySource__GitHub__UserAccounts=
+CodeGraph__RepositorySource__GitHub__Organizations=SceneWorks
+```
+
+Use comma-separated values such as `SceneWorks,AnotherOrg` or `octocat,another-user` for additional scopes. `UserAccounts` uses GitHub's named-user endpoint, which returns public repositories. The authenticated-user endpoint retains private repositories that the token can access; organization scopes include private repositories only when the token has access. The legacy singular `Organization` setting remains supported and, when used alone, retains its organization-only behavior.
 
 ### 2. Run locally
 
