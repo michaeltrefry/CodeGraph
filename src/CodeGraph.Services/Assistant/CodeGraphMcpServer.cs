@@ -44,7 +44,7 @@ public class CodeGraphMcpServer(
             Repository, DotnetProject, Namespace, Folder, File, Class, Interface,
             Enum, Struct, Record, Function, Method, Property, Constructor, Delegate,
             Route, Service, Table, View, StoredProcedure, Event, Queue, Exchange,
-            Component, Module, Job, NuGetPackage
+            Component, Module, Job, NuGetPackage, Package, ExternalSymbol
 
             ## Edge Types
             CONTAINS_FILE, CONTAINS_FOLDER, CONTAINS_NAMESPACE, CONTAINS_PROJECT,

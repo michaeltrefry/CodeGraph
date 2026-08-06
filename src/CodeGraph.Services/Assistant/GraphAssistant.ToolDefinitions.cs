@@ -13,7 +13,7 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>
             {
                 ["namePattern"] = Prop("string", "Name pattern to search for (use % as wildcard)"),
-                ["label"]       = PropEnum("Filter by node type", "Class","Method","Route","Service","Event","Queue","Table","Interface","Enum","Component","Job","NuGetPackage"),
+                ["label"]       = PropEnum("Filter by node type", "Class","Method","Route","Service","Event","Queue","Table","Interface","Enum","Component","Job","NuGetPackage","Package","ExternalSymbol"),
                 ["project"]     = Prop("string", "Filter by project/repository name"),
                 ["limit"]       = Prop("integer", "Max results (default 20)")
             },

@@ -143,6 +143,7 @@ public static class Startup
 
         // Rust/Cargo analysis
         services.AddTransient<IRustAnalyzer, RustProjectAnalyzer>();
+        services.AddTransient<ICargoManifestExtractor, CargoManifestExtractor>();
 
         // Code extractors
         services.AddTransient<ICodeExtractor, RoslynExtractor>();

@@ -7,6 +7,7 @@ namespace CodeGraph.Services.Pipeline;
 
 public class CrossRepoLinker
 {
+    private const int CrossRepoNodeScanLimit = 250_000;
     private readonly IGraphStore _store;
     private readonly ILogger<CrossRepoLinker> _logger;
 
@@ -24,10 +25,12 @@ public class CrossRepoLinker
         var http = await LinkHttpRoutesAsync(ct);
         var messaging = await LinkMessagingAsync(ct);
         var nuget = await LinkNuGetPackagesAsync(ct);
+        var cargo = await LinkCargoPackagesAsync(ct);
+        var rust = await LinkRustSymbolsAsync(ct);
 
         _logger.LogInformation(
-            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet links",
-            http, messaging, nuget);
+            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Rust} Rust semantic links",
+            http, messaging, nuget, cargo, rust);
     }
 
     /// <summary>
@@ -51,10 +54,12 @@ public class CrossRepoLinker
         var http = await LinkHttpRoutesAsync(ct);
         var messaging = await LinkMessagingAsync(ct);
         var nuget = await LinkNuGetPackagesAsync(ct);
+        var cargo = await LinkCargoPackagesAsync(ct);
+        var rust = await LinkRustSymbolsAsync(ct);
 
         _logger.LogInformation(
-            "Incremental linking for {Project} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet",
-            project, http, messaging, nuget);
+            "Incremental linking for {Project} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Rust} Rust semantic",
+            project, http, messaging, nuget, cargo, rust);
     }
 
     private async Task<int> LinkHttpRoutesAsync(CancellationToken ct)
@@ -320,6 +325,240 @@ public class CrossRepoLinker
         return crossEdges.Count;
     }
 
+    private async Task<int> LinkCargoPackagesAsync(CancellationToken ct)
+    {
+        var packageNodes = await _store.FindAllNodesByLabelAsync(
+            NodeLabel.Package, CrossRepoNodeScanLimit);
+        var cargoNodes = packageNodes
+            .Where(node => PropertyEquals(node.Properties, "ecosystem", "cargo"))
+            .ToList();
+        if (cargoNodes.Count == 0)
+            return 0;
+
+        var definitionsByKey = cargoNodes
+            .Where(node => GetBoolean(node.Properties, "is_definition"))
+            .Where(node => !string.IsNullOrWhiteSpace(GetString(node.Properties, "package_key")))
+            .GroupBy(node => GetString(node.Properties, "package_key")!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+        if (definitionsByKey.Count == 0)
+            return 0;
+
+        var packageById = cargoNodes.ToDictionary(node => node.Id);
+        var referenceEdges = await _store.FindAllEdgesByTypeAsync(EdgeType.REFERENCES_PACKAGE);
+        var relevantEdges = referenceEdges
+            .Where(edge => packageById.ContainsKey(edge.TargetId))
+            .ToList();
+        if (relevantEdges.Count == 0)
+            return 0;
+
+        var sourceNodes = await _store.FindNodesByIdBatchAsync(
+            relevantEdges.Select(edge => edge.SourceId).Distinct().ToList());
+        var crossEdges = new List<CrossRepoEdge>();
+        var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var edge in relevantEdges)
+        {
+            var dependency = packageById[edge.TargetId];
+            var packageKey = GetString(dependency.Properties, "package_key");
+            if (string.IsNullOrWhiteSpace(packageKey) ||
+                !definitionsByKey.TryGetValue(packageKey, out var candidates) ||
+                !sourceNodes.TryGetValue(edge.SourceId, out var sourceNode))
+            {
+                continue;
+            }
+
+            var targetProjects = candidates
+                .Where(candidate => !candidate.Project.Equals(
+                    sourceNode.Project, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(candidate => candidate.Project, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (targetProjects.Count != 1)
+            {
+                if (targetProjects.Count > 1)
+                {
+                    _logger.LogDebug(
+                        "Skipping ambiguous Cargo package match for {PackageKey}: {ProjectCount} projects",
+                        packageKey,
+                        targetProjects.Count);
+                }
+                continue;
+            }
+
+            var targetCandidates = targetProjects[0].ToList();
+            var requestedVersion = GetString(dependency.Properties, "version");
+            var exactVersionCandidates = string.IsNullOrWhiteSpace(requestedVersion)
+                ? targetCandidates
+                : targetCandidates
+                    .Where(candidate => string.Equals(
+                        GetString(candidate.Properties, "version"),
+                        requestedVersion,
+                        StringComparison.Ordinal))
+                    .ToList();
+            var target = exactVersionCandidates.Count == 1
+                ? exactVersionCandidates[0]
+                : targetCandidates.Count == 1
+                    ? targetCandidates[0]
+                    : null;
+            if (target is null)
+            {
+                _logger.LogDebug(
+                    "Skipping ambiguous Cargo package match for {PackageKey} within {Project}",
+                    packageKey,
+                    targetProjects[0].Key);
+                continue;
+            }
+            var key = $"{edge.SourceId}\n{target.Id}\n{EdgeType.REFERENCES_PACKAGE}";
+            if (!edgeKeys.Add(key))
+                continue;
+
+            crossEdges.Add(CreateCrossRepoEdge(
+                sourceNode.Project,
+                target.Project,
+                edge.SourceId,
+                target.Id,
+                EdgeType.REFERENCES_PACKAGE,
+                new()
+                {
+                    ["ecosystem"] = "cargo",
+                    ["package_key"] = packageKey,
+                    ["package_name"] = GetString(dependency.Properties, "package_name") ?? dependency.Name,
+                    ["local_name"] = GetString(dependency.Properties, "local_name") ?? dependency.Name,
+                    ["version"] = GetString(dependency.Properties, "version") ?? "",
+                    ["confidence_band"] = "high"
+                }));
+        }
+
+        if (crossEdges.Count > 0)
+        {
+            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
+            _logger.LogInformation(
+                "Linked {Count} Cargo package reference(s) across repos", crossEdges.Count);
+        }
+
+        return crossEdges.Count;
+    }
+
+    private async Task<int> LinkRustSymbolsAsync(CancellationToken ct)
+    {
+        var externalTargets = await _store.FindAllNodesByLabelAsync(
+            NodeLabel.ExternalSymbol, CrossRepoNodeScanLimit);
+        var rustTargets = externalTargets
+            .Where(node => PropertyEquals(node.Properties, "source", "scip") &&
+                           GetBoolean(node.Properties, "scip_external"))
+            .ToDictionary(node => node.Id);
+        if (rustTargets.Count == 0)
+            return 0;
+
+        var definitionLabels = new[]
+        {
+            NodeLabel.Function,
+            NodeLabel.Method,
+            NodeLabel.Constructor,
+            NodeLabel.Class,
+            NodeLabel.Struct,
+            NodeLabel.Enum,
+            NodeLabel.Interface,
+            NodeLabel.Namespace,
+            NodeLabel.Property
+        };
+        var definitions = new List<GraphNode>();
+        foreach (var label in definitionLabels)
+        {
+            definitions.AddRange((await _store.FindAllNodesByLabelAsync(
+                    label, CrossRepoNodeScanLimit))
+                .Where(node => PropertyEquals(node.Properties, "source", "scip"))
+                .Where(node => !GetBoolean(node.Properties, "scip_external")));
+        }
+
+        var definitionsBySymbol = definitions
+            .Where(node => !string.IsNullOrWhiteSpace(GetString(node.Properties, "scip_symbol")))
+            .GroupBy(node => GetString(node.Properties, "scip_symbol")!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+        if (definitionsBySymbol.Count == 0)
+            return 0;
+
+        var semanticEdges = new List<GraphEdge>();
+        foreach (var edgeType in new[] { EdgeType.CALLS, EdgeType.USES_TYPE, EdgeType.IMPLEMENTS })
+        {
+            semanticEdges.AddRange((await _store.FindAllEdgesByTypeAsync(edgeType))
+                .Where(edge => rustTargets.ContainsKey(edge.TargetId)));
+        }
+        if (semanticEdges.Count == 0)
+            return 0;
+
+        var sourcesById = await _store.FindNodesByIdBatchAsync(
+            semanticEdges.Select(edge => edge.SourceId).Distinct().ToList());
+        var crossEdges = new List<CrossRepoEdge>();
+        var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var edge in semanticEdges)
+        {
+            var externalTarget = rustTargets[edge.TargetId];
+            var symbol = GetString(externalTarget.Properties, "scip_symbol");
+            if (string.IsNullOrWhiteSpace(symbol) ||
+                !definitionsBySymbol.TryGetValue(symbol, out var candidates) ||
+                !sourcesById.TryGetValue(edge.SourceId, out var sourceNode))
+            {
+                continue;
+            }
+
+            var targetProjects = candidates
+                .Where(candidate => !candidate.Project.Equals(
+                    sourceNode.Project, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(candidate => candidate.Project, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (targetProjects.Count != 1)
+            {
+                if (targetProjects.Count > 1)
+                {
+                    _logger.LogDebug(
+                        "Skipping ambiguous Rust SCIP symbol match for {Symbol}: {ProjectCount} projects",
+                        symbol,
+                        targetProjects.Count);
+                }
+                continue;
+            }
+
+            var targetCandidates = targetProjects[0].ToList();
+            if (targetCandidates.Count != 1)
+            {
+                _logger.LogDebug(
+                    "Skipping ambiguous Rust SCIP symbol match for {Symbol} within {Project}",
+                    symbol,
+                    targetProjects[0].Key);
+                continue;
+            }
+
+            var target = targetCandidates[0];
+            var key = $"{edge.SourceId}\n{target.Id}\n{edge.Type}";
+            if (!edgeKeys.Add(key))
+                continue;
+
+            crossEdges.Add(CreateCrossRepoEdge(
+                sourceNode.Project,
+                target.Project,
+                edge.SourceId,
+                target.Id,
+                edge.Type,
+                new()
+                {
+                    ["source"] = "scip",
+                    ["scip_symbol"] = symbol,
+                    ["confidence"] = 0.95,
+                    ["confidence_band"] = "high"
+                }));
+        }
+
+        if (crossEdges.Count > 0)
+        {
+            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
+            _logger.LogInformation(
+                "Linked {Count} Rust semantic reference(s) across repos", crossEdges.Count);
+        }
+
+        return crossEdges.Count;
+    }
+
     private static CrossRepoEdge CreateCrossRepoEdge(
         string sourceProject, string targetProject, long sourceNodeId, long targetNodeId,
         EdgeType type, Dictionary<string, object> properties) => new()
@@ -331,6 +570,22 @@ public class CrossRepoLinker
         Type = type,
         Properties = properties
     };
+
+    private static bool PropertyEquals(
+        IReadOnlyDictionary<string, object> properties,
+        string key,
+        string expected) =>
+        string.Equals(GetString(properties, key), expected, StringComparison.OrdinalIgnoreCase);
+
+    private static string? GetString(IReadOnlyDictionary<string, object> properties, string key) =>
+        properties.GetValueOrDefault(key)?.ToString();
+
+    private static bool GetBoolean(IReadOnlyDictionary<string, object> properties, string key)
+    {
+        var value = properties.GetValueOrDefault(key);
+        return value is true ||
+               bool.TryParse(value?.ToString(), out var parsed) && parsed;
+    }
 
     // ── Helpers ──────────────────────────────────────────────────────────
 

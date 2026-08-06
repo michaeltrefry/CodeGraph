@@ -206,6 +206,53 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_PersistsCargoPackagesAndDependencyEdges()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-cargo-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(rootPath, "src"));
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"), """
+                [package]
+                name = "consumer"
+                version = "0.1.0"
+
+                [dependencies]
+                provider_alias = { package = "provider", version = "1.2.3" }
+                """);
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "src", "lib.rs"),
+                "pub fn run() {}\n");
+
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [new MixedRustPythonMetadataExtractor()],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                cargoManifestExtractor: new CargoManifestExtractor());
+
+            await pipeline.IndexProjectAsync("Consumer", rootPath, ct: CancellationToken.None);
+
+            var packageNodes = store.Nodes.Where(node => node.Label == NodeLabel.Package).ToList();
+            var consumer = packageNodes.Single(node => node.Name == "consumer");
+            var provider = packageNodes.Single(node => node.Name == "provider");
+            provider.Properties["local_name"].ShouldBe("provider_alias");
+            provider.Properties["package_key"].ShouldBe("cargo:registry:crates.io:provider");
+            store.Edges.ShouldContain(edge =>
+                edge.SourceId == consumer.Id &&
+                edge.TargetId == provider.Id &&
+                edge.Type == EdgeType.REFERENCES_PACKAGE);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_ReplacementRemovesStaleNodesHashesAndAnalysis()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-full-index-reset-{Guid.NewGuid():N}");

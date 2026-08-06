@@ -15,6 +15,8 @@ public static class ScipJsonImporter
         var nodes = new List<GraphNode>();
         var edges = new List<PendingEdge>();
         var knownNodes = new Dictionary<string, DefinitionNode>(StringComparer.Ordinal);
+        var definitionsByDocument = new Dictionary<string, List<DefinitionNode>>(StringComparer.Ordinal);
+        var externalNodes = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
         var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
 
         if (!TryGetProperty(root, "documents", out var documents) ||
@@ -23,15 +25,23 @@ public static class ScipJsonImporter
             return EmptyRustResult;
         }
 
-        foreach (var document in documents.EnumerateArray())
-        {
-            var language = GetString(document, "language");
-            var relativePath = NormalizePath(GetString(document, "relativePath", "relative_path") ?? "");
-            if (!IsRustDocument(language, relativePath))
-                continue;
+        var rustDocuments = documents.EnumerateArray()
+            .Select(document => new RustDocument(
+                document,
+                NormalizePath(GetString(document, "relativePath", "relative_path") ?? ""),
+                GetString(document, "language")))
+            .Where(document => IsRustDocument(document.Language, document.RelativePath))
+            .ToList();
 
+        // Definitions must be collected across every document before resolving references.
+        // rust-analyzer is free to emit a reference before the target document appears.
+        foreach (var rustDocument in rustDocuments)
+        {
+            var document = rustDocument.Element;
+            var relativePath = rustDocument.RelativePath;
             var fileQN = $"{context.ProjectName}:{relativePath}";
             var definitions = new List<DefinitionNode>();
+            definitionsByDocument[relativePath] = definitions;
 
             if (!TryGetProperty(document, "occurrences", out var occurrences) ||
                 occurrences.ValueKind is not JsonValueKind.Array)
@@ -106,6 +116,21 @@ public static class ScipJsonImporter
                         : EdgeType.DEFINES,
                     new() { ["source"] = "scip" }));
             }
+        }
+
+        // Resolve references after the global definition pass so cross-file local calls are retained.
+        foreach (var rustDocument in rustDocuments)
+        {
+            var document = rustDocument.Element;
+            var relativePath = rustDocument.RelativePath;
+            var fileQN = $"{context.ProjectName}:{relativePath}";
+            var definitions = definitionsByDocument.GetValueOrDefault(relativePath) ?? [];
+
+            if (!TryGetProperty(document, "occurrences", out var occurrences) ||
+                occurrences.ValueKind is not JsonValueKind.Array)
+            {
+                continue;
+            }
 
             foreach (var occurrence in occurrences.EnumerateArray())
             {
@@ -117,11 +142,25 @@ public static class ScipJsonImporter
                 if ((roles & DefinitionRole) != 0)
                     continue;
 
-                var targetQN = ToQualifiedName(context.ProjectName, symbol);
-                if (!knownNodes.TryGetValue(targetQN, out var target))
-                    continue;
                 if (!TryReadSymbolRange(occurrence, out var occurrenceRange))
                     continue;
+
+                var targetQN = ToQualifiedName(context.ProjectName, symbol);
+                GraphNode targetNode;
+                if (knownNodes.TryGetValue(targetQN, out var localTarget))
+                {
+                    targetNode = localTarget.Node;
+                }
+                else
+                {
+                    targetNode = GetOrCreateExternalNode(
+                        context,
+                        symbol,
+                        symbolInfos.GetValueOrDefault(symbol),
+                        externalNodes,
+                        nodes);
+                    targetQN = targetNode.QualifiedName;
+                }
 
                 var source = FindInnermostDefinition(definitions, occurrenceRange)
                     ?? new DefinitionNode(new GraphNode
@@ -139,12 +178,13 @@ public static class ScipJsonImporter
                 AddEdge(edges, edgeKeys, new PendingEdge(
                     source.Node.QualifiedName,
                     targetQN,
-                    ReferenceEdgeType(target.Node.Label),
+                    ReferenceEdgeType(targetNode.Label, targetNode.Properties),
                     new()
                     {
                         ["source"] = "scip",
                         ["confidence"] = 0.85,
-                        ["symbol_roles"] = roles
+                        ["symbol_roles"] = roles,
+                        ["scip_symbol"] = symbol
                     }));
             }
         }
@@ -162,13 +202,25 @@ public static class ScipJsonImporter
 
                 var targetQN = ToQualifiedName(context.ProjectName, relationship.Symbol);
                 if (!knownNodes.ContainsKey(targetQN))
-                    continue;
+                {
+                    targetQN = GetOrCreateExternalNode(
+                        context,
+                        relationship.Symbol,
+                        symbolInfos.GetValueOrDefault(relationship.Symbol),
+                        externalNodes,
+                        nodes).QualifiedName;
+                }
 
                 AddEdge(edges, edgeKeys, new PendingEdge(
                     sourceQN,
                     targetQN,
                     EdgeType.IMPLEMENTS,
-                    new() { ["source"] = "scip" }));
+                    new()
+                    {
+                        ["source"] = "scip",
+                        ["scip_symbol"] = relationship.Symbol,
+                        ["confidence"] = 0.95
+                    }));
             }
         }
 
@@ -180,6 +232,48 @@ public static class ScipJsonImporter
         };
     }
 
+    private static GraphNode GetOrCreateExternalNode(
+        ExtractorContext context,
+        string symbol,
+        SymbolInfo? info,
+        Dictionary<string, GraphNode> externalNodes,
+        List<GraphNode> nodes)
+    {
+        var qualifiedName = ToExternalQualifiedName(context.ProjectName, symbol);
+        if (externalNodes.TryGetValue(qualifiedName, out var existing))
+            return existing;
+
+        var name = info?.DisplayName;
+        if (string.IsNullOrWhiteSpace(name))
+            name = DeriveDisplayName(symbol);
+
+        var properties = new Dictionary<string, object>
+        {
+            ["source"] = "scip",
+            ["scip_symbol"] = symbol,
+            ["scip_external"] = true,
+            ["confidence"] = "high"
+        };
+        if (!string.IsNullOrWhiteSpace(info?.Kind))
+            properties["scip_kind"] = info.Kind;
+        if (!string.IsNullOrWhiteSpace(info?.Documentation))
+            properties["documentation"] = info.Documentation;
+        if (!string.IsNullOrWhiteSpace(info?.Signature))
+            properties["signature"] = info.Signature;
+
+        var node = new GraphNode
+        {
+            Project = context.ProjectName,
+            Label = NodeLabel.ExternalSymbol,
+            Name = name,
+            QualifiedName = qualifiedName,
+            Properties = properties
+        };
+        externalNodes[qualifiedName] = node;
+        nodes.Add(node);
+        return node;
+    }
+
     private static ExtractionResult EmptyRustResult => new()
     {
         Metadata = new ProjectMetadata("Rust", "Cargo")
@@ -188,7 +282,8 @@ public static class ScipJsonImporter
     private static Dictionary<string, SymbolInfo> ReadSymbolInfos(JsonElement root)
     {
         var result = new Dictionary<string, SymbolInfo>(StringComparer.Ordinal);
-        if (TryGetProperty(root, "externalSymbols", out var externalSymbols) &&
+        if ((TryGetProperty(root, "externalSymbols", out var externalSymbols) ||
+             TryGetProperty(root, "external_symbols", out externalSymbols)) &&
             externalSymbols.ValueKind is JsonValueKind.Array)
         {
             foreach (var symbol in externalSymbols.EnumerateArray())
@@ -274,10 +369,22 @@ public static class ScipJsonImporter
         };
     }
 
-    private static EdgeType ReferenceEdgeType(NodeLabel targetLabel) =>
-        targetLabel is NodeLabel.Class or NodeLabel.Struct or NodeLabel.Enum or NodeLabel.Interface
+    private static EdgeType ReferenceEdgeType(
+        NodeLabel targetLabel,
+        IReadOnlyDictionary<string, object>? properties = null)
+    {
+        if (targetLabel == NodeLabel.ExternalSymbol &&
+            properties?.GetValueOrDefault("scip_kind")?.ToString() is { } kind)
+        {
+            var semanticLabel = ToNodeLabel(kind);
+            if (semanticLabel is not null)
+                targetLabel = semanticLabel.Value;
+        }
+
+        return targetLabel is NodeLabel.Class or NodeLabel.Struct or NodeLabel.Enum or NodeLabel.Interface
             ? EdgeType.USES_TYPE
             : EdgeType.CALLS;
+    }
 
     private static DefinitionNode? FindInnermostDefinition(
         IReadOnlyList<DefinitionNode> definitions,
@@ -321,7 +428,38 @@ public static class ScipJsonImporter
 
     private static bool TryReadEnclosingRange(JsonElement occurrence, out SourceRange range) =>
         TryReadRange(occurrence, "singleLineEnclosingRange", "single_line_enclosing_range", out range) ||
-        TryReadRange(occurrence, "multiLineEnclosingRange", "multi_line_enclosing_range", out range);
+        TryReadRange(occurrence, "multiLineEnclosingRange", "multi_line_enclosing_range", out range) ||
+        TryReadPackedRange(occurrence, "enclosingRange", "enclosing_range", out range);
+
+    private static bool TryReadPackedRange(
+        JsonElement parent,
+        string camelName,
+        string snakeName,
+        out SourceRange range)
+    {
+        if ((!TryGetProperty(parent, camelName, out var packed) &&
+             !TryGetProperty(parent, snakeName, out packed)) ||
+            packed.ValueKind is not JsonValueKind.Array)
+        {
+            range = SourceRange.Empty;
+            return false;
+        }
+
+        var values = packed.EnumerateArray()
+            .Select(element => element.ValueKind is JsonValueKind.Number &&
+                               element.TryGetInt32(out var value)
+                ? value
+                : -1)
+            .ToArray();
+
+        range = values.Length switch
+        {
+            3 => new SourceRange(values[0], values[1], values[0], values[2]),
+            4 => new SourceRange(values[0], values[1], values[2], values[3]),
+            _ => SourceRange.Empty
+        };
+        return values.Length is 3 or 4 && values.All(value => value >= 0);
+    }
 
     private static bool TryReadRange(
         JsonElement parent,
@@ -363,6 +501,9 @@ public static class ScipJsonImporter
 
     private static string ToQualifiedName(string projectName, string symbol) =>
         $"{projectName}:scip:{symbol}";
+
+    private static string ToExternalQualifiedName(string projectName, string symbol) =>
+        $"{projectName}:scip-external:{symbol}";
 
     private static string DeriveDisplayName(string symbol)
     {
@@ -495,6 +636,8 @@ public static class ScipJsonImporter
         IReadOnlyList<RelationshipInfo> Relationships);
 
     private sealed record RelationshipInfo(string Symbol, bool IsImplementation);
+
+    private sealed record RustDocument(JsonElement Element, string RelativePath, string? Language);
 
     private sealed record DefinitionNode(GraphNode Node, SourceRange Range);
 

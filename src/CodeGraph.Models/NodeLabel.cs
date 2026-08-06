@@ -40,8 +40,12 @@ public enum NodeLabel
     // Jobs
     Job,
 
-    // Package
+    // Packages
     NuGetPackage,
+    Package,
+
+    // Semantic targets defined outside the indexed repository
+    ExternalSymbol,
 
     // Ansible / IaC
     Playbook,

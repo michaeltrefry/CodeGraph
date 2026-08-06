@@ -22,6 +22,7 @@ public partial class IndexingPipeline
     private readonly INuGetReferenceExtractor? _nugetExtractor;
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
+    private readonly ICargoManifestExtractor? _cargoManifestExtractor;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectLocks =
@@ -36,7 +37,8 @@ public partial class IndexingPipeline
         ISolutionAnalyzer? solutionAnalyzer = null,
         INuGetReferenceExtractor? nugetExtractor = null,
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
-        IRustAnalyzer? rustAnalyzer = null)
+        IRustAnalyzer? rustAnalyzer = null,
+        ICargoManifestExtractor? cargoManifestExtractor = null)
     {
         _store = store;
         _extractors = extractors;
@@ -47,6 +49,7 @@ public partial class IndexingPipeline
         _nugetExtractor = nugetExtractor;
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
+        _cargoManifestExtractor = cargoManifestExtractor;
         _foundationalRepos = _options.FoundationalRepos ?? [];
     }
 
@@ -256,6 +259,37 @@ public partial class IndexingPipeline
                     _logger.LogWarning(ex,
                         "Rust project analysis failed for {Manifest} — falling back to per-file extraction",
                         Path.GetRelativePath(rootPath, cargoManifest));
+                }
+            }
+        }
+
+        // Cargo manifests — package definitions and dependency references for every crate/workspace member.
+        if (_cargoManifestExtractor is not null)
+        {
+            var cargoManifestPaths = _fileSystem
+                .EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
+                .Where(path => !path.Contains(
+                    $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (cargoManifestPaths.Length > 0)
+            {
+                try
+                {
+                    var cargoManifests = cargoManifestPaths.ToDictionary(
+                        path => path,
+                        path => _fileSystem.ReadAllText(path),
+                        StringComparer.OrdinalIgnoreCase);
+                    var cargoResult = _cargoManifestExtractor.Extract(cargoManifests, context);
+                    MergeResults([cargoResult], buffer);
+                    if (cargoResult.Metadata is not null)
+                        detectedMetadataCandidates.Add(cargoResult.Metadata);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Cargo manifest extraction failed for {Project}", projectName);
                 }
             }
         }
