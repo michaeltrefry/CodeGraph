@@ -218,6 +218,7 @@ jobs:
               "INDEXER": "Indexer",
               "INDEXINGOPTIONS": "IndexingOptions",
               "INTERNALSERVICEAUTH": "InternalServiceAuth",
+              "INCLUDEAUTHENTICATEDUSER": "IncludeAuthenticatedUser",
               "ISSUER": "Issuer",
               "LOCAL": "Local",
               "LOCALDEVISADMIN": "LocalDevIsAdmin",
@@ -238,6 +239,7 @@ jobs:
               "MODEL": "Model",
               "OPENAI": "OpenAi",
               "ORGANIZATION": "Organization",
+              "ORGANIZATIONS": "Organizations",
               "PASSWORD": "Password",
               "PERSONALACCESSTOKEN": "PersonalAccessToken",
               "PRIVATETOKEN": "PrivateToken",
@@ -255,6 +257,7 @@ jobs:
               "TOKENURL": "TokenUrl",
               "TSPORT": "TsPort",
               "USERNAME": "Username",
+              "USERACCOUNTS": "UserAccounts",
               "USEJSONOBJECTRESPONSEFORMAT": "UseJsonObjectResponseFormat",
           }
 

@@ -64,7 +64,26 @@ public class GitHubSourceOptions
     public string PersonalAccessToken { get; set; } = "";
 
     /// <summary>
-    /// GitHub organization to discover repos from. If empty, discovers from the authenticated user.
+    /// Whether to discover repositories available to the authenticated GitHub user.
+    /// This includes owned repositories, collaborator repositories, and repositories available
+    /// through organization membership. Applies when the multi-owner settings are used.
+    /// </summary>
+    public bool IncludeAuthenticatedUser { get; set; } = true;
+
+    /// <summary>
+    /// Comma-separated GitHub user accounts whose public repositories should be discovered.
+    /// </summary>
+    public string UserAccounts { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated GitHub organizations whose repositories should be discovered.
+    /// The configured token controls which private repositories are visible.
+    /// </summary>
+    public string Organizations { get; set; } = "";
+
+    /// <summary>
+    /// Legacy single-organization setting. When used by itself, discovery remains limited to
+    /// this organization. Prefer <see cref="Organizations"/> for new configurations.
     /// </summary>
     public string Organization { get; set; } = "";
 }

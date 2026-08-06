@@ -65,6 +65,9 @@ services:
       CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
       CodeGraph__RepositorySource__GitHub__BaseUrl: ${CodeGraph__RepositorySource__GitHub__BaseUrl:-https://api.github.com}
       CodeGraph__RepositorySource__GitHub__PersonalAccessToken: ${CodeGraph__RepositorySource__GitHub__PersonalAccessToken:-}
+      CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser: ${CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser:-true}
+      CodeGraph__RepositorySource__GitHub__UserAccounts: ${CodeGraph__RepositorySource__GitHub__UserAccounts:-}
+      CodeGraph__RepositorySource__GitHub__Organizations: ${CodeGraph__RepositorySource__GitHub__Organizations:-}
       CodeGraph__RepositorySource__GitHub__Organization: ${CodeGraph__RepositorySource__GitHub__Organization:-}
       CodeGraph__AuthOptions__Enabled: ${CodeGraph__AuthOptions__Enabled:-false}
       CodeGraph__AuthOptions__Authority: ${CodeGraph__AuthOptions__Authority:-}
@@ -164,6 +167,9 @@ services:
       CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
       CodeGraph__RepositorySource__GitHub__BaseUrl: ${CodeGraph__RepositorySource__GitHub__BaseUrl:-https://api.github.com}
       CodeGraph__RepositorySource__GitHub__PersonalAccessToken: ${CodeGraph__RepositorySource__GitHub__PersonalAccessToken:-}
+      CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser: ${CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser:-true}
+      CodeGraph__RepositorySource__GitHub__UserAccounts: ${CodeGraph__RepositorySource__GitHub__UserAccounts:-}
+      CodeGraph__RepositorySource__GitHub__Organizations: ${CodeGraph__RepositorySource__GitHub__Organizations:-}
       CodeGraph__RepositorySource__GitHub__Organization: ${CodeGraph__RepositorySource__GitHub__Organization:-}
       CODEGRAPH_SKIP_TS_SIDECAR_WARMUP: ${CODEGRAPH_SKIP_TS_SIDECAR_WARMUP:-false}
     ports:
@@ -266,6 +272,9 @@ services:
       CodeGraph__RepositorySource__GitLab__PrivateToken: ${CodeGraph__RepositorySource__GitLab__PrivateToken:-}
       CodeGraph__RepositorySource__GitHub__BaseUrl: ${CodeGraph__RepositorySource__GitHub__BaseUrl:-https://api.github.com}
       CodeGraph__RepositorySource__GitHub__PersonalAccessToken: ${CodeGraph__RepositorySource__GitHub__PersonalAccessToken:-}
+      CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser: ${CodeGraph__RepositorySource__GitHub__IncludeAuthenticatedUser:-true}
+      CodeGraph__RepositorySource__GitHub__UserAccounts: ${CodeGraph__RepositorySource__GitHub__UserAccounts:-}
+      CodeGraph__RepositorySource__GitHub__Organizations: ${CodeGraph__RepositorySource__GitHub__Organizations:-}
       CodeGraph__RepositorySource__GitHub__Organization: ${CodeGraph__RepositorySource__GitHub__Organization:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
