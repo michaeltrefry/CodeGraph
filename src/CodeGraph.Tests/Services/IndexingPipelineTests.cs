@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 using Shouldly;
 using CodeGraph.Data;
+using CodeGraph.Extractors.CSharp;
 using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
@@ -145,22 +147,65 @@ public class IndexingPipelineTests
 
             var store = new InMemoryGraphStore();
             var solutionAnalyzer = new RecordingSolutionAnalyzer();
+            var logger = new RecordingLogger<IndexingPipeline>();
             var pipeline = new IndexingPipeline(
                 store,
                 [],
-                Options.Create(new IndexingOptions()),
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "folder:Demo" }),
                 new LocalFileSystem(),
-                NullLogger<IndexingPipeline>.Instance,
+                logger,
                 solutionAnalyzer);
 
-            await pipeline.IndexProjectAsync("Demo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexProjectAsync(
+                "Demo", rootPath, repositoryToolingIdentity: "folder:Demo", ct: CancellationToken.None);
 
             solutionAnalyzer.CalledSolutionPath.ShouldBe(solutionPath);
+            solutionAnalyzer.ObservedTrust.ShouldBe(RepositoryToolingTrust.Trusted);
+            logger.Messages.ShouldContain(message =>
+                message.Contains("SECURITY-AUDIT", StringComparison.Ordinal)
+                && message.Contains("folder:Demo", StringComparison.Ordinal));
         }
         finally
         {
             if (Directory.Exists(rootPath))
                 Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_DefaultPolicy_SkipsSolutionToolingAndUsesSyntaxFallback()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-untrusted-sln-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Demo.slnx"), "<Solution />");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Demo.cs"), "public sealed class Demo {}");
+
+            var store = new InMemoryGraphStore();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer();
+            var logger = new RecordingLogger<IndexingPipeline>();
+            var pipeline = new IndexingPipeline(
+                store,
+                [new RoslynExtractor()],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                logger,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync(
+                "Demo", rootPath, repositoryToolingIdentity: "folder:Demo", ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPath.ShouldBeNull();
+            store.Nodes.ShouldContain(node => node.Name == "Demo" && node.Label == NodeLabel.Class);
+            logger.Messages.ShouldContain(message =>
+                message.Contains("SECURITY-AUDIT", StringComparison.Ordinal)
+                && message.Contains("folder:Demo", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
         }
     }
 
@@ -765,6 +810,7 @@ public class IndexingPipelineTests
     private sealed class RecordingSolutionAnalyzer : ISolutionAnalyzer
     {
         public string? CalledSolutionPath { get; private set; }
+        public RepositoryToolingTrust? ObservedTrust { get; private set; }
 
         public Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
             string solutionPath,
@@ -772,7 +818,32 @@ public class IndexingPipelineTests
             CancellationToken ct)
         {
             CalledSolutionPath = solutionPath;
+            ObservedTrust = context.RepositoryToolingTrust;
             return Task.FromResult<IReadOnlyList<ExtractionResult>>([]);
+        }
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
+    }
+
+    private sealed class NullScope : IDisposable
+    {
+        public static readonly NullScope Instance = new();
+        public void Dispose()
+        {
         }
     }
 }

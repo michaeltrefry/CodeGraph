@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <!-- Security regression fixture: repository-controlled targets must never run for untrusted indexing. -->
+  <Target Name="RepositoryControlledRestorePayload" BeforeTargets="Restore;Compile;CoreCompile;CompileDesignTime;ResolveReferences">
+    <WriteLinesToFile
+      File="$(MSBuildProjectDirectory)/restore-payload-executed.txt"
+      Lines="repository-tooling-executed"
+      Overwrite="true" />
+  </Target>
+</Project>

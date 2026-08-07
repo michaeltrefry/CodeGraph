@@ -195,6 +195,7 @@ public static class Startup
         services.AddTransient<INodeQueryService, NodeQueryService>();
         services.AddTransient<ISearchService, SearchService>();
         services.AddTransient<IExclusionService, ExclusionService>();
+        services.AddTransient<FolderRepoProvider>();
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         RegisterRepoProvider(services);

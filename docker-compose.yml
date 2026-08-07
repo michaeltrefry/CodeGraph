@@ -55,6 +55,7 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
       CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
+      CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -157,6 +158,8 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
       CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
+      # Empty by default. Provider-qualified canonical repository identities opt in exactly.
+      CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}

@@ -64,8 +64,40 @@ public class FolderRepoProvider(
             .ToList();
     }
 
-    public Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
+    public async Task<ResolvedRepository> ResolveRepositoryAsync(
+        string repoName,
+        string? localPath,
+        string? repoUrl,
+        CancellationToken ct = default)
     {
+        var resolvedPath = await ResolveLocalPathAsync(repoName, localPath, repoUrl, ct);
+        var canonicalPath = Path.GetFullPath(resolvedPath);
+        if (!Path.GetFileName(canonicalPath).Equals(repoName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Repository name '{repoName}' is inconsistent with resolved folder checkout '{canonicalPath}'.");
+        }
+
+        var canonicalRoot = Path.GetFullPath(_folder.RootPath);
+        var relativePath = Path.GetRelativePath(canonicalRoot, canonicalPath).Replace('\\', '/');
+        var isInsideRoot = relativePath != ".."
+            && !relativePath.StartsWith("../", StringComparison.Ordinal)
+            && !Path.IsPathRooted(relativePath);
+        var canonicalIdentity = isInsideRoot
+            ? $"folder:{relativePath}"
+            : $"folder-path:{canonicalPath.Replace('\\', '/')}";
+        var lastSlash = isInsideRoot ? relativePath.LastIndexOf('/') : -1;
+        var sourceGroup = lastSlash > 0 ? relativePath[..lastSlash] : null;
+
+        return new ResolvedRepository(canonicalPath, canonicalIdentity, canonicalPath, sourceGroup);
+    }
+
+    public async Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default) =>
+        (await ResolveRepositoryAsync(repoName, localPath, repoUrl, ct)).LocalPath;
+
+    private Task<string> ResolveLocalPathAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         // If explicit local path provided and exists, use it
         if (!string.IsNullOrWhiteSpace(localPath) && Directory.Exists(localPath))
             return Task.FromResult(localPath);

@@ -71,6 +71,10 @@ Models <- Data <- Services <- Extractors.*
 
 `CodeGraph.Api` hosts the REST API and MCP endpoint. `CodeGraph.Indexer.Host` owns indexing execution, indexer MassTransit consumers, schema sync, TypeScript sidecar warmup, durable run execution, and `/api/indexer` run/status endpoints. `CodeGraph.Indexer.Client` lets API and jobs delegate work to that host when `CodeGraph:Indexer:BaseUrl` is configured. `CodeGraph.Memory.Host` owns the memory REST surface and async memory-write consumer, while `CodeGraph.Memory.Client` lets API/MCP delegate memory operations when `CodeGraph:Memory:BaseUrl` is configured. `CodeGraph.Metrics` consumes LLM usage and MCP tool invocation events and persists telemetry into MariaDB. `CodeGraph.Jobs` runs scheduled and manual triggers. `CodeGraphWeb` is the Angular UI. MariaDB/MySQL is the primary datastore, RabbitMQ backs the event-driven pipeline, and Neo4j remains only as a temporary compatibility/export provider during the standalone rebase.
 
+### C# repository tooling trust
+
+C# indexing is syntax-only by default. Restore and MSBuild solution analysis can execute repository-controlled build logic, so they run only for provider-resolved identities explicitly listed in the comma-separated `CodeGraph:IndexingOptions:TrustedDotnetRepositories` setting. Identity forms are `github:https://host/owner/repo`, `gitlab:https://host/group/repo`, and `folder:relative/path`; local paths outside the configured folder root use `folder-path:/absolute/path`. Folder paths are case-sensitive on non-Windows hosts. User-supplied URL, group, and path combinations cannot grant trust unless they agree with the provider resolution. Every enabled or blocked solution-analysis decision emits a `SECURITY-AUDIT` log entry with the resolved identity. Production Compose exposes the setting as `CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES` and defaults it to empty.
+
 ## Key Capabilities
 
 ### Knowledge graph and discovery
