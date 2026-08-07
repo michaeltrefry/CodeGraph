@@ -34,6 +34,12 @@ public class ProcessRepository
     public bool IncludeAllSource { get; set; }
 
     /// <summary>
+    /// Atomically replace the existing repository graph with a freshly extracted snapshot.
+    /// Reserved for explicit re-analysis; routine indexing remains hash-incremental.
+    /// </summary>
+    public bool ReplaceExistingGraph { get; set; }
+
+    /// <summary>
     /// Compute vitals-style codebase health metrics (churn, complexity, coupling, knowledge risk).
     /// Defaults to true — set to false to skip.
     /// </summary>

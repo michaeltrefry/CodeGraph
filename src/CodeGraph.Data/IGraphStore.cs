@@ -9,6 +9,10 @@ namespace CodeGraph.Data;
 /// </summary>
 public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMigrationRunner
 {
+    Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
+        string project,
+        CancellationToken ct = default);
+
     // Repositories
     Task UpsertRepositoryAsync(RepositoryEntity repository);
     Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync();
@@ -65,6 +69,18 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMig
     // Bulk operations
     Task DeleteNodesByFileAsync(string project, string filePath);
     Task DeleteNodesByProjectAsync(string project);
+    Task<int> ReplaceProjectGraphAsync(
+        string project,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges,
+        IReadOnlyDictionary<string, string> fileHashes,
+        RepositoryEntity repository,
+        SyncStateEntity? syncState,
+        CancellationToken ct = default);
+    Task DeleteFilesFromProjectGraphAsync(
+        string project,
+        IReadOnlyList<string> filePaths,
+        CancellationToken ct = default);
 
     // File hashes (incremental indexing)
     Task<Dictionary<string, string>> GetFileHashesAsync(string project);

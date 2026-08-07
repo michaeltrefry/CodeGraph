@@ -31,6 +31,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\CodeGraph.Api\Migrations\**\*.cypher"
+             Link="Migrations\%(RecursiveDir)%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
     <Content Include="bin\publish\**">
       <PackagePath>content/</PackagePath>
       <Pack>true</Pack>

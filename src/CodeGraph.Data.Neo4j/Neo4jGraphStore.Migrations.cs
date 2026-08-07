@@ -106,7 +106,10 @@ public partial class Neo4jGraphStore
             await session.ExecuteWriteAsync(async tx =>
             {
                 await tx.RunAsync(
-                    "CREATE (m:MigrationHistory {scriptName: $scriptName, appliedAt: datetime()}) RETURN m",
+                    """
+                    MERGE (m:MigrationHistory {scriptName: $scriptName})
+                    ON CREATE SET m.appliedAt = datetime()
+                    """,
                     new { scriptName });
             });
 

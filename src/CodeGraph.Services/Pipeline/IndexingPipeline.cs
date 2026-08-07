@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
@@ -24,6 +24,8 @@ public partial class IndexingPipeline
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectLocks =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public IndexingPipeline(
         IGraphStore store,
@@ -53,23 +55,50 @@ public partial class IndexingPipeline
         IReadOnlyList<string>? changedFilesOnly = null,
         string? repoUrl = null,
         string? sourceGroup = null,
+        bool replaceExistingGraph = false,
+        SyncStateEntity? replacementSyncState = null,
         CancellationToken ct = default)
+    {
+        var projectLock = ProjectLocks.GetOrAdd(projectName, _ => new SemaphoreSlim(1, 1));
+        await projectLock.WaitAsync(ct);
+        try
+        {
+            await IndexProjectCoreAsync(projectName, rootPath, knowledge, changedFilesOnly,
+                repoUrl, sourceGroup, replaceExistingGraph, replacementSyncState, ct);
+        }
+        finally
+        {
+            projectLock.Release();
+        }
+    }
+
+    private async Task IndexProjectCoreAsync(string projectName, string rootPath,
+        FoundationalKnowledge? knowledge,
+        IReadOnlyList<string>? changedFilesOnly,
+        string? repoUrl,
+        string? sourceGroup,
+        bool replaceExistingGraph,
+        SyncStateEntity? replacementSyncState,
+        CancellationToken ct)
     {
         var pipelineSw = Stopwatch.StartNew();
         _logger.LogInformation("Indexing {Project} at {Path}", projectName, rootPath);
 
         var isFoundational = _foundationalRepos.Contains(projectName, StringComparer.OrdinalIgnoreCase);
 
-        // Ensure repository row exists before inserting nodes (FK constraint)
-        // Language/framework will be updated after extraction (detected by extractors)
-        await _store.UpsertRepositoryAsync(new RepositoryEntity
+        var repository = new RepositoryEntity
         {
             Name = projectName,
             LocalPath = rootPath,
             RepoUrl = repoUrl,
             SourceGroup = sourceGroup,
             IsFoundational = isFoundational
-        });
+        };
+
+        // Routine upserts need the repository row before node writes for the MariaDB FK.
+        // Replacement creates/updates it inside the graph transaction instead.
+        if (!replaceExistingGraph)
+            await _store.UpsertRepositoryAsync(repository);
 
         var buffer = new GraphBuffer();
         var detectedMetadataCandidates = new List<ProjectMetadata>();
@@ -80,12 +109,14 @@ public partial class IndexingPipeline
             FoundationalKnowledge = knowledge
         };
 
-        // Load existing file hashes for incremental indexing
-        var existingHashes = await _store.GetFileHashesAsync(projectName);
+        var existingHashes = replaceExistingGraph
+            ? []
+            : await _store.GetFileHashesAsync(projectName);
 
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
+        var deletedFiles = GetDeletedFiles(rootPath, changedFilesOnly);
         var languageStats = ComputeLanguageStats(files);
         var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
@@ -238,29 +269,18 @@ public partial class IndexingPipeline
         if (remainingFiles.Count > 0)
         {
             stepSw.Restart();
-            var perFileMetadata = await ExtractFilesAsync(remainingFiles, rootPath, context, buffer, ct);
+            var perFileMetadata = await ExtractFilesAsync(
+                remainingFiles, rootPath, context, buffer, replaceExistingGraph, ct);
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
             detectedMetadataCandidates.AddRange(perFileMetadata);
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
         if (_nugetExtractor is not null)
-            ExtractNuGetReferences(projectName, csprojFiles, buffer);
+            ExtractNuGetReferences(projectName, csprojFiles, buffer, replaceExistingGraph);
 
         ApplyNodeCounts(languageStats, buffer.AllNodes);
         var detectedMetadata = SelectDominantMetadata(detectedMetadataCandidates, languageStats);
-
-        // Update repository with language/framework detected by extractors
-        if (detectedMetadata is not null)
-        {
-            await _store.UpsertRepositoryAsync(new RepositoryEntity
-            {
-                Name = projectName,
-                Language = detectedMetadata.Language,
-                Framework = detectedMetadata.Framework,
-                Properties = SerializeRepositoryProperties(detectedMetadata, languageStats)
-            });
-        }
 
         // Phase 2 — Resolution
         stepSw.Restart();
@@ -273,22 +293,49 @@ public partial class IndexingPipeline
 
         // Phase 3 — Flush
         stepSw.Restart();
-        var qnToId = await _store.UpsertNodeBatchAsync(buffer.AllNodes.ToList(), ct);
-        _logger.LogInformation("[Timing] Node upsert ({NodeCount} nodes): {ElapsedMs}ms", buffer.AllNodes.Count, stepSw.ElapsedMilliseconds);
+        int edgeCount;
+        if (replaceExistingGraph)
+        {
+            edgeCount = await _store.ReplaceProjectGraphAsync(
+                projectName,
+                buffer.AllNodes.ToList(),
+                buffer.AllPendingEdges.ToList(),
+                buffer.AllFileHashes,
+                BuildRepositorySnapshot(repository, detectedMetadata, languageStats),
+                replacementSyncState,
+                ct);
+            _logger.LogInformation(
+                "[Timing] Atomic graph replacement ({NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
+                buffer.AllNodes.Count, edgeCount, stepSw.ElapsedMilliseconds);
+        }
+        else
+        {
+            var qnToId = await _store.UpsertNodeBatchAsync(buffer.AllNodes.ToList(), ct);
+            _logger.LogInformation("[Timing] Node upsert ({NodeCount} nodes): {ElapsedMs}ms", buffer.AllNodes.Count, stepSw.ElapsedMilliseconds);
 
-        stepSw.Restart();
-        var resolvedEdges = buffer.ResolveEdges(projectName, qnToId, _logger);
-        await _store.InsertEdgeBatchAsync(resolvedEdges, ct);
-        _logger.LogInformation("[Timing] Edge resolution + insert ({EdgeCount} edges): {ElapsedMs}ms", resolvedEdges.Count, stepSw.ElapsedMilliseconds);
+            stepSw.Restart();
+            var resolvedEdges = buffer.ResolveEdges(projectName, qnToId, _logger);
+            await _store.InsertEdgeBatchAsync(resolvedEdges, ct);
+            edgeCount = resolvedEdges.Count;
+            _logger.LogInformation("[Timing] Edge resolution + insert ({EdgeCount} edges): {ElapsedMs}ms", edgeCount, stepSw.ElapsedMilliseconds);
 
-        stepSw.Restart();
-        await _store.UpsertFileHashBatchAsync(projectName,
-            buffer.AllFileHashes.ToDictionary(kv => kv.Key, kv => kv.Value), ct);
-        _logger.LogInformation("[Timing] File hash upsert: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+            stepSw.Restart();
+            await _store.UpsertFileHashBatchAsync(projectName,
+                buffer.AllFileHashes.ToDictionary(kv => kv.Key, kv => kv.Value), ct);
+            await _store.DeleteFilesFromProjectGraphAsync(projectName, deletedFiles, ct);
+            _logger.LogInformation("[Timing] File hash reconciliation: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+        }
+
+        // Publish detected metadata only after the graph write succeeds.
+        if (!replaceExistingGraph && detectedMetadata is not null)
+        {
+            await _store.UpsertRepositoryAsync(
+                BuildRepositorySnapshot(repository, detectedMetadata, languageStats));
+        }
 
         pipelineSw.Stop();
         _logger.LogInformation("Indexed {Project}: {Nodes} nodes, {Edges} edges in {TotalMs}ms",
-            projectName, buffer.AllNodes.Count, resolvedEdges.Count, pipelineSw.ElapsedMilliseconds);
+            projectName, buffer.AllNodes.Count, edgeCount, pipelineSw.ElapsedMilliseconds);
     }
 
     // ── File Discovery & Hashing ─────────────────────────────────────────
@@ -316,13 +363,25 @@ public partial class IndexingPipeline
             .ToList();
     }
 
+    private List<string> GetDeletedFiles(string rootPath, IReadOnlyList<string>? changedFilesOnly)
+    {
+        if (changedFilesOnly is null)
+            return [];
+
+        return changedFilesOnly
+            .Where(path => !_fileSystem.FileExists(Path.Combine(rootPath, path)))
+            .Select(NormalizeRelativePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private List<string> FilterByHash(List<string> files, string rootPath,
         Dictionary<string, string> existingHashes, GraphBuffer buffer)
     {
         var changed = new List<string>();
         foreach (var file in files)
         {
-            var relPath = Path.GetRelativePath(rootPath, file);
+            var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
             var hash = ComputeHash(file);
             buffer.AddFileHash(relPath, hash);
 
@@ -345,9 +404,10 @@ public partial class IndexingPipeline
     // ── Per-File Extraction ──────────────────────────────────────────────
 
     private async Task<IReadOnlyList<ProjectMetadata>> ExtractFilesAsync(List<string> files, string rootPath,
-        ExtractorContext context, GraphBuffer buffer, CancellationToken ct)
+        ExtractorContext context, GraphBuffer buffer, bool failOnExtractionError, CancellationToken ct)
     {
         var metadataSeen = new ConcurrentBag<ProjectMetadata>();
+        var failures = new ConcurrentQueue<Exception>();
 
         await Parallel.ForEachAsync(files,
             new ParallelOptions
@@ -384,14 +444,35 @@ public partial class IndexingPipeline
                     if (result.Metadata is not null)
                         metadataSeen.Add(result.Metadata);
                 }
+                catch (OperationCanceledException) when (ct2.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Failed to extract {File}", filePath);
-                    // Continue — don't let one file break the pipeline
+                    if (failOnExtractionError)
+                        failures.Enqueue(new InvalidOperationException($"Failed to extract {filePath}", ex));
                 }
             });
 
+        if (!failures.IsEmpty)
+            throw new AggregateException("One or more files failed during replacement indexing.", failures);
+
         return metadataSeen.ToList();
+    }
+
+    private RepositoryEntity BuildRepositorySnapshot(
+        RepositoryEntity repository,
+        ProjectMetadata? metadata,
+        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats)
+    {
+        repository.Language = metadata?.Language;
+        repository.Framework = metadata?.Framework;
+        repository.Properties = metadata is null
+            ? null
+            : SerializeRepositoryProperties(metadata, languageStats);
+        return repository;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

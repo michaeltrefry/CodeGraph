@@ -138,7 +138,7 @@ public partial class IndexingPipeline
         => path.Replace('\\', '/').Trim('/');
 
     private void ExtractNuGetReferences(string projectName, string[] csprojFiles,
-        GraphBuffer buffer)
+        GraphBuffer buffer, bool failOnExtractionError)
     {
         foreach (var csproj in csprojFiles)
         {
@@ -168,6 +168,8 @@ public partial class IndexingPipeline
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to extract NuGet refs from {Csproj}", csproj);
+                if (failOnExtractionError)
+                    throw;
             }
         }
     }
