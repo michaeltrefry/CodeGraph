@@ -74,6 +74,7 @@ run_boundary_probe() {
 
 run_boundary_probe ""
 run_boundary_probe "folder:some-other-repository"
+run_boundary_probe "folder:maliciousrestore"
 
 test ! -e "${fixture_dir}/MaliciousRestore/restore-payload-executed.txt"
 

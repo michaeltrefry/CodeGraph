@@ -171,8 +171,9 @@ public partial class IndexingPipeline
             {
                 var solutionFile = solutionFiles[0];
                 _logger.LogWarning(
-                    "SECURITY-AUDIT: repository {Project} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
-                    projectName);
+                    "SECURITY-AUDIT: repository {Project} with provider-resolved identity {RepositoryIdentity} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
+                    projectName,
+                    repositoryToolingIdentity);
                 _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
                     Path.GetFileName(solutionFile));
                 stepSw.Restart();
@@ -203,8 +204,9 @@ public partial class IndexingPipeline
             if (hasSolution)
             {
                 _logger.LogInformation(
-                    "SECURITY-AUDIT: repository {Project} is untrusted; restore and MSBuild solution analysis are disabled, using syntax-only C# extraction",
-                    projectName);
+                    "SECURITY-AUDIT: repository {Project} with provider-resolved identity {RepositoryIdentity} is untrusted; restore and MSBuild solution analysis are disabled, using syntax-only C# extraction",
+                    projectName,
+                    repositoryToolingIdentity);
             }
         }
 
