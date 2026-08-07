@@ -32,6 +32,25 @@ jobs:
       - name: Test
         run: dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
 
+  windows-attachment-security:
+    name: Windows Attachment Security
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test Windows attachment filesystem behavior
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj
+          --configuration Release
+          --verbosity normal
+          --filter FullyQualifiedName~AttachmentServiceTests
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

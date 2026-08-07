@@ -321,17 +321,34 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         var root = ResolvePortableRoot(create: false);
         var parts = GetRelativeStorageParts(lexicalRoot, storagePath);
         var physicalPath = Path.Combine(root, parts.Page, parts.File);
-        if (!File.Exists(physicalPath))
-            return AttachmentDeletionLease.NoFile;
+        var handle = WindowsNative.CreateFile(
+            physicalPath,
+            WindowsNative.DeleteAccess | WindowsNative.FileReadAttributes,
+            FileShare.ReadWrite | FileShare.Delete,
+            IntPtr.Zero,
+            FileMode.Open,
+            WindowsNative.FileFlagOpenReparsePoint,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            if (error is WindowsNative.FileNotFound or WindowsNative.PathNotFound)
+                return AttachmentDeletionLease.NoFile;
+            throw new Win32Exception(error);
+        }
 
-        using (var stream = new FileStream(physicalPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            ValidatePortableHandle(root, stream.SafeFileHandle);
-
-        var quarantinePath = Path.Combine(
-            Path.GetDirectoryName(physicalPath)!,
-            $".delete-{Guid.NewGuid():N}");
-        File.Move(physicalPath, quarantinePath, overwrite: false);
-        return new PortableDeletionLease(physicalPath, quarantinePath);
+        try
+        {
+            RejectWindowsReparsePoint(handle);
+            ValidatePortableHandle(root, handle);
+            return new WindowsHandleDeletionLease(handle);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
     }
 
     private string ResolvePortableRoot(bool create)
@@ -407,6 +424,22 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
+    }
+
+    private static void RejectWindowsReparsePoint(SafeFileHandle handle)
+    {
+        var information = new WindowsNative.FileAttributeTagInfo();
+        if (!WindowsNative.GetFileInformationByHandleEx(
+                handle,
+                WindowsNative.FileInfoByHandleClass.FileAttributeTagInfo,
+                ref information,
+                (uint)Marshal.SizeOf<WindowsNative.FileAttributeTagInfo>()))
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        if ((information.FileAttributes & WindowsNative.FileAttributeReparsePoint) != 0)
+            throw new IOException("Attachment path resolves through a reparse point.");
     }
 
     private static (string Page, string File) GetRelativeStorageParts(string root, string storagePath)
@@ -547,11 +580,17 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         protected override void DisposeCore() => parent.Dispose();
     }
 
-    private sealed class PortableDeletionLease(string originalPath, string quarantinePath) : AttachmentDeletionLease
+    private sealed class WindowsHandleDeletionLease(SafeFileHandle handle) : AttachmentDeletionLease
     {
-        protected override void CommitCore() => File.Delete(quarantinePath);
+        protected override void CommitCore() => SetWindowsDeleteDisposition(handle, delete: true);
 
-        protected override void RollbackCore() => File.Move(quarantinePath, originalPath, overwrite: false);
+        protected override void RollbackCore()
+        {
+            // No filesystem mutation occurs until CommitCore. Keeping this exact validated
+            // object open is the quarantine and makes parent-junction swaps irrelevant.
+        }
+
+        protected override void DisposeCore() => handle.Dispose();
     }
 
     private static class UnixFlags
@@ -600,12 +639,18 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
 
     private static partial class WindowsNative
     {
+        public const int FileNotFound = 2;
+        public const int PathNotFound = 3;
+        public const uint DeleteAccess = 0x00010000;
         public const uint FileReadAttributes = 0x80;
         public const uint FileFlagBackupSemantics = 0x02000000;
+        public const uint FileFlagOpenReparsePoint = 0x00200000;
+        public const uint FileAttributeReparsePoint = 0x00000400;
 
         public enum FileInfoByHandleClass
         {
-            FileDispositionInfo = 4
+            FileDispositionInfo = 4,
+            FileAttributeTagInfo = 9
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -613,6 +658,13 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         {
             [MarshalAs(UnmanagedType.Bool)]
             public bool DeleteFile;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct FileAttributeTagInfo
+        {
+            public uint FileAttributes;
+            public uint ReparseTag;
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
@@ -631,6 +683,14 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
             [Out] char[] filePath,
             uint filePathSize,
             uint flags);
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetFileInformationByHandleEx")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetFileInformationByHandleEx(
+            SafeFileHandle file,
+            FileInfoByHandleClass fileInformationClass,
+            ref FileAttributeTagInfo fileInformation,
+            uint bufferSize);
 
         [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "SetFileInformationByHandle")]
         [return: MarshalAs(UnmanagedType.Bool)]

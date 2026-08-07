@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 using CodeGraph.Api.Controllers;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
@@ -282,6 +283,60 @@ public sealed class AttachmentServiceTests : IDisposable
         (await reader.ReadToEndAsync()).ShouldBe("still here");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteAsync_WindowsJunctionSwapCannotRedirectCommitOrRollback(
+        bool failMetadataDeletion)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var outside = Path.Combine(
+            Path.GetTempPath(), $"codegraph-junction-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outside);
+        var pageDirectory = Path.Combine(storageRoot, "1");
+        var displacedDirectory = Path.Combine(storageRoot, "displaced");
+        var store = new InMemoryWikiStore { FailAttachmentDeletion = failMetadataDeletion };
+        var service = CreateService(store);
+        var uploaded = await service.UploadAsync(
+                           1, "report.txt", "text/plain",
+                           new MemoryStream("original"u8.ToArray()), "codex")
+                       ?? throw new InvalidOperationException("Attachment upload failed.");
+        var storageName = Path.GetFileName(store.Attachments.Single().StoragePath);
+        var outsideFile = Path.Combine(outside, storageName);
+        await File.WriteAllTextAsync(outsideFile, "outside sentinel");
+
+        store.BeforeAttachmentDeletion = () =>
+        {
+            Directory.Move(pageDirectory, displacedDirectory);
+            CreateDirectoryJunction(pageDirectory, outside);
+            return Task.CompletedTask;
+        };
+
+        try
+        {
+            if (failMetadataDeletion)
+                await Should.ThrowAsync<InvalidOperationException>(() => service.DeleteAsync(uploaded.Id));
+            else
+                (await service.DeleteAsync(uploaded.Id)).ShouldBeTrue();
+
+            (await File.ReadAllTextAsync(outsideFile)).ShouldBe("outside sentinel");
+            var displacedFile = Path.Combine(displacedDirectory, storageName);
+            File.Exists(displacedFile).ShouldBe(failMetadataDeletion);
+            store.Attachments.Any(a => a.Id == uploaded.Id).ShouldBe(failMetadataDeletion);
+            if (failMetadataDeletion)
+                (await File.ReadAllTextAsync(displacedFile)).ShouldBe("original");
+        }
+        finally
+        {
+            if (Directory.Exists(pageDirectory))
+                Directory.Delete(pageDirectory);
+            if (Directory.Exists(outside))
+                Directory.Delete(outside, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task WikiController_UploadDownloadAndDelete_RoundTripsAttachment()
     {
@@ -395,6 +450,33 @@ public sealed class AttachmentServiceTests : IDisposable
                !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
     }
 
+    private static void CreateDirectoryJunction(string junctionPath, string targetPath)
+    {
+        var startInfo = new ProcessStartInfo("cmd.exe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(junctionPath);
+        startInfo.ArgumentList.Add(targetPath);
+
+        using var process = Process.Start(startInfo)
+                            ?? throw new InvalidOperationException("Could not start junction creation process.");
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Could not create test junction: {process.StandardError.ReadToEnd()} " +
+                process.StandardOutput.ReadToEnd());
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(storageRoot))
@@ -408,6 +490,7 @@ public sealed class AttachmentServiceTests : IDisposable
         public List<WikiAttachmentEntity> Attachments { get; } = [];
         public bool FailAttachmentCreation { get; init; }
         public bool FailAttachmentDeletion { get; init; }
+        public Func<Task>? BeforeAttachmentDeletion { get; set; }
 
         public void AddAttachment(WikiAttachmentEntity attachment)
         {
@@ -434,12 +517,13 @@ public sealed class AttachmentServiceTests : IDisposable
             return Task.FromResult(entity);
         }
 
-        public Task DeleteAttachmentAsync(WikiAttachmentEntity entity)
+        public async Task DeleteAttachmentAsync(WikiAttachmentEntity entity)
         {
+            if (BeforeAttachmentDeletion is not null)
+                await BeforeAttachmentDeletion();
             if (FailAttachmentDeletion)
                 throw new InvalidOperationException("metadata delete failed");
             Attachments.Remove(entity);
-            return Task.CompletedTask;
         }
 
         public Task<IReadOnlyList<WikiSectionEntity>> ListSectionsAsync() => throw new NotSupportedException();
