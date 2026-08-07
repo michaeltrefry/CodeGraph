@@ -59,6 +59,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<AssistantRunEventEntity> AssistantRunEvents => Set<AssistantRunEventEntity>();
     public DbSet<AssistantDebugExchangeEntity> AssistantDebugExchanges => Set<AssistantDebugExchangeEntity>();
     public DbSet<AssistantDebugTraceAuditEntity> AssistantDebugTraceAudits => Set<AssistantDebugTraceAuditEntity>();
+    public DbSet<ApplicationLogEntryEntity> ApplicationLogs => Set<ApplicationLogEntryEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -74,6 +75,30 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         ConfigureJobSchedules(modelBuilder);
         ConfigureIndexerRuns(modelBuilder);
         ConfigureAssistantRuns(modelBuilder);
+        ConfigureApplicationLogs(modelBuilder);
+    }
+
+    private static void ConfigureApplicationLogs(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ApplicationLogEntryEntity>(e =>
+        {
+            e.ToTable("application_logs");
+            e.HasKey(row => row.Id);
+            e.Property(row => row.Id).HasColumnName("id");
+            e.Property(row => row.OccurredAtUtc).HasColumnName("occurred_at_utc");
+            e.Property(row => row.Level).HasColumnName("level").HasMaxLength(16);
+            e.Property(row => row.Source).HasColumnName("source").HasMaxLength(128);
+            e.Property(row => row.Category).HasColumnName("category").HasMaxLength(512);
+            e.Property(row => row.EventId).HasColumnName("event_id");
+            e.Property(row => row.Message).HasColumnName("message").HasColumnType("MEDIUMTEXT");
+            e.Property(row => row.Exception).HasColumnName("exception").HasColumnType("LONGTEXT");
+            e.Property(row => row.TraceId).HasColumnName("trace_id").HasMaxLength(32);
+            e.Property(row => row.SpanId).HasColumnName("span_id").HasMaxLength(16);
+            e.Property(row => row.PropertiesJson).HasColumnName("properties_json").HasColumnType("json");
+            e.HasIndex(row => row.OccurredAtUtc);
+            e.HasIndex(row => new { row.Level, row.OccurredAtUtc });
+            e.HasIndex(row => new { row.Source, row.OccurredAtUtc });
+        });
     }
 
     private static void ConfigureRepositories(ModelBuilder modelBuilder)

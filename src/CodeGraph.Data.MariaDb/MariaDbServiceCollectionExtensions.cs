@@ -51,6 +51,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IMcpProviderCredentialStore, MySqlMcpProviderCredentialStore>();
         services.AddTransient<IMetricsEventStore, MySqlMetricsEventStore>();
         services.AddTransient<IAdminReportsStore, MySqlAdminReportsStore>();
+        services.AddTransient<IApplicationLogStore, MySqlApplicationLogStore>();
 
         return services;
     }
