@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using CodeGraph.Api.Controllers;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
@@ -6,7 +7,12 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
@@ -88,6 +94,80 @@ public sealed class AttachmentServiceTests : IDisposable
         finally
         {
             Directory.Delete(Path.Combine(storageRoot, "1"));
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StorageRoot_ResolvesAndPinsSymlinkedAncestor()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            return;
+
+        var testDirectory = Path.Combine(Path.GetTempPath(), $"codegraph-root-pin-{Guid.NewGuid():N}");
+        var firstTarget = Path.Combine(testDirectory, "first");
+        var secondTarget = Path.Combine(testDirectory, "second");
+        var link = Path.Combine(testDirectory, "current");
+        Directory.CreateDirectory(firstTarget);
+        Directory.CreateDirectory(secondTarget);
+        Directory.CreateSymbolicLink(link, firstTarget);
+        try
+        {
+            var store = new InMemoryWikiStore();
+            var service = new AttachmentService(
+                store,
+                Options.Create(new WikiOptions { AttachmentStoragePath = Path.Combine(link, "attachments") }),
+                NullLogger<AttachmentService>.Instance);
+
+            await service.UploadAsync(
+                1, "first.txt", "text/plain", new MemoryStream("first"u8.ToArray()), "codex");
+
+            Directory.Delete(link);
+            Directory.CreateSymbolicLink(link, secondTarget);
+            await service.UploadAsync(
+                1, "second.txt", "text/plain", new MemoryStream("second"u8.ToArray()), "codex");
+
+            Directory.EnumerateFiles(Path.Combine(firstTarget, "attachments", "1")).Count().ShouldBe(2);
+            Directory.Exists(Path.Combine(secondTarget, "attachments")).ShouldBeFalse();
+            await using var second = (await service.GetAsync(store.Attachments[1].Id))!.Value.Content;
+            using var reader = new StreamReader(second);
+            (await reader.ReadToEndAsync()).ShouldBe("second");
+        }
+        finally
+        {
+            Directory.Delete(link);
+            Directory.Delete(testDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UploadAndRead_RejectPageDirectorySwapToSymlink()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            return;
+
+        var outside = Path.Combine(Path.GetTempPath(), $"codegraph-swap-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outside);
+        try
+        {
+            var store = new InMemoryWikiStore();
+            var service = CreateService(store);
+            await service.UploadAsync(
+                1, "first.txt", "text/plain", new MemoryStream("first"u8.ToArray()), "codex");
+            var pageDirectory = Path.Combine(storageRoot, "1");
+            var displacedDirectory = Path.Combine(storageRoot, "displaced");
+            Directory.Move(pageDirectory, displacedDirectory);
+            Directory.CreateSymbolicLink(pageDirectory, outside);
+
+            await Should.ThrowAsync<IOException>(() => service.UploadAsync(
+                1, "second.txt", "text/plain", new MemoryStream("second"u8.ToArray()), "codex"));
+            (await service.GetAsync(store.Attachments[0].Id)).ShouldBeNull();
+            Directory.EnumerateFileSystemEntries(outside).ShouldBeEmpty();
+
+            Directory.Delete(pageDirectory);
+        }
+        finally
+        {
             Directory.Delete(outside, recursive: true);
         }
     }
@@ -181,6 +261,28 @@ public sealed class AttachmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task DeleteAsync_RestoresFileWhenMetadataDeletionFails()
+    {
+        var store = new InMemoryWikiStore { FailAttachmentDeletion = true };
+        var service = CreateService(store);
+        var uploaded = await service.UploadAsync(
+                           1, "report.txt", "text/plain", new MemoryStream("still here"u8.ToArray()), "codex")
+                       ?? throw new InvalidOperationException("Attachment upload failed.");
+        var storagePath = store.Attachments.Single().StoragePath;
+
+        await Should.ThrowAsync<InvalidOperationException>(() => service.DeleteAsync(uploaded.Id));
+
+        store.Attachments.ShouldContain(a => a.Id == uploaded.Id);
+        File.Exists(storagePath).ShouldBeTrue();
+        Directory.EnumerateFiles(Path.GetDirectoryName(storagePath)!, ".delete-*").ShouldBeEmpty();
+        var retrieved = await service.GetAsync(uploaded.Id)
+                        ?? throw new InvalidOperationException("Restored attachment could not be read.");
+        await using var content = retrieved.Content;
+        using var reader = new StreamReader(content);
+        (await reader.ReadToEndAsync()).ShouldBe("still here");
+    }
+
+    [Fact]
     public async Task WikiController_UploadDownloadAndDelete_RoundTripsAttachment()
     {
         var store = new InMemoryWikiStore();
@@ -222,6 +324,65 @@ public sealed class AttachmentServiceTests : IDisposable
         (await controller.DownloadAttachment(uploaded.Id, uploaded.Filename)).ShouldBeOfType<NotFoundResult>();
     }
 
+    [Fact]
+    public async Task WikiAttachmentRoutes_RoundTripMultipartAndEncodedDownloadOverHttp()
+    {
+        var store = new InMemoryWikiStore();
+        var options = Options.Create(new WikiOptions { AttachmentStoragePath = storageRoot });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var host = await new HostBuilder()
+            .ConfigureWebHost(webHost => webHost
+                .UseTestServer()
+                .ConfigureServices(services =>
+                {
+                    services.AddSingleton<IWikiStore>(store);
+                    services.AddSingleton<IWikiService>(new SinglePageWikiService());
+                    services.AddSingleton<IOptions<WikiOptions>>(options);
+                    services.AddSingleton<IAttachmentService, AttachmentService>();
+                    services.AddControllers().AddApplicationPart(typeof(WikiController).Assembly);
+                })
+                .Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints => endpoints.MapControllers());
+                }))
+            .StartAsync(timeout.Token);
+        using var client = host.GetTestClient();
+        using var multipart = new MultipartFormDataContent();
+        var content = new ByteArrayContent("http content"u8.ToArray());
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain");
+        multipart.Add(content, "file", "../quarterly report #1.txt");
+
+        using var uploadResponse = await client.PostAsync(
+                "/api/wiki/docs/guide/attachments", multipart, timeout.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        uploadResponse.EnsureSuccessStatusCode();
+        var uploaded = JsonSerializer.Deserialize<WikiAttachmentResponse>(
+            await uploadResponse.Content.ReadAsStringAsync(),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        uploaded.ShouldNotBeNull();
+        uploaded.Filename.ShouldBe("quarterly report #1.txt");
+        uploaded.DownloadUrl.ShouldEndWith("/quarterly%20report%20%231.txt");
+
+        using var downloadResponse = await client.GetAsync(uploaded.DownloadUrl, timeout.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        downloadResponse.EnsureSuccessStatusCode();
+        (await downloadResponse.Content.ReadAsStringAsync()).ShouldBe("http content");
+        var contentDisposition = downloadResponse.Content.Headers.ContentDisposition;
+        contentDisposition.ShouldNotBeNull();
+        contentDisposition.DispositionType.ShouldBe("attachment");
+        contentDisposition.FileName.ShouldNotBeNull();
+        contentDisposition.FileName.ShouldContain("quarterly report #1.txt");
+
+        using var deleteResponse = await client.DeleteAsync(
+                $"/api/wiki/attachments/{uploaded.Id}", timeout.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        deleteResponse.StatusCode.ShouldBe(System.Net.HttpStatusCode.NoContent);
+        using var missingResponse = await client.GetAsync(uploaded.DownloadUrl, timeout.Token)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        missingResponse.StatusCode.ShouldBe(System.Net.HttpStatusCode.NotFound);
+    }
+
     private AttachmentService CreateService(InMemoryWikiStore store) => new(
         store,
         Options.Create(new WikiOptions { AttachmentStoragePath = storageRoot }),
@@ -246,6 +407,7 @@ public sealed class AttachmentServiceTests : IDisposable
 
         public List<WikiAttachmentEntity> Attachments { get; } = [];
         public bool FailAttachmentCreation { get; init; }
+        public bool FailAttachmentDeletion { get; init; }
 
         public void AddAttachment(WikiAttachmentEntity attachment)
         {
@@ -274,6 +436,8 @@ public sealed class AttachmentServiceTests : IDisposable
 
         public Task DeleteAttachmentAsync(WikiAttachmentEntity entity)
         {
+            if (FailAttachmentDeletion)
+                throw new InvalidOperationException("metadata delete failed");
             Attachments.Remove(entity);
             return Task.CompletedTask;
         }
