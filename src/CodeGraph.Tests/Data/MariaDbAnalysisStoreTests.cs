@@ -22,11 +22,7 @@ public class MariaDbAnalysisStoreTests
     [Fact]
     public async Task MySqlAnalysisStore_RoundTripsAnalysisBatchAndGraphContextWhenConnectionIsConfigured()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            return;
-        }
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
 
         var builder = new MySqlConnectionStringBuilder(connectionString);
         var databaseName = $"codegraph_analysis_store_test_{Guid.NewGuid():N}";

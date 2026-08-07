@@ -19,11 +19,7 @@ public class MariaDbMemoryGraphStoreTests
     [Fact]
     public async Task MySqlMemoryGraphStore_RoundTripsClaimCentricMemoryWhenConnectionIsConfigured()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            return;
-        }
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
 
         var builder = new MySqlConnectionStringBuilder(connectionString);
         var databaseName = $"codegraph_memory_store_test_{Guid.NewGuid():N}";

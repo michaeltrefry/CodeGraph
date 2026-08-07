@@ -1,4 +1,4 @@
-CREATE TABLE assistant_debug_exchanges (
+CREATE TABLE IF NOT EXISTS assistant_debug_exchanges (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     run_id BIGINT NOT NULL,
     chat_id VARCHAR(255) NOT NULL,

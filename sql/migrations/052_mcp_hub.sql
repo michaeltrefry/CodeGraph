@@ -1,5 +1,5 @@
 ALTER TABLE mcp_personal_access_tokens
-    ADD COLUMN entitlement_mode VARCHAR(32) NOT NULL DEFAULT 'all' AFTER last_used_from;
+    ADD COLUMN IF NOT EXISTS entitlement_mode VARCHAR(32) NOT NULL DEFAULT 'all' AFTER last_used_from;
 
 CREATE TABLE IF NOT EXISTS mcp_personal_access_token_tool_entitlements (
     token_id BIGINT NOT NULL,

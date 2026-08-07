@@ -21,11 +21,7 @@ public class MariaDbReviewStoreTests
     [Fact]
     public async Task MySqlReviewStore_RoundTripsDiagnosticsAndReviewsWhenConnectionIsConfigured()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            return;
-        }
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
 
         var builder = new MySqlConnectionStringBuilder(connectionString);
         var databaseName = $"codegraph_review_store_test_{Guid.NewGuid():N}";

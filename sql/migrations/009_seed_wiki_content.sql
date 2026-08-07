@@ -34,14 +34,23 @@ Followed by the prompt content that Claude receives when the skill is invoked.
 
 Check the child pages below for concrete skill examples used in this project.',
 'system', 1, 0, FALSE, 0, NOW(), NOW()
-FROM wiki_sections s WHERE s.slug = 'skills';
+FROM wiki_sections s
+WHERE s.slug = 'skills'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM wiki_pages existing
+      WHERE existing.section_id = s.id
+        AND existing.parent_id IS NULL
+        AND existing.slug = 'writing-skills'
+  );
 
 -- Create revision for the skills parent page
 INSERT INTO wiki_revisions (page_id, revision, title, content, author, created_at)
 SELECT p.id, 1, p.title, p.content, 'system', NOW()
 FROM wiki_pages p
 JOIN wiki_sections s ON p.section_id = s.id
-WHERE s.slug = 'skills' AND p.slug = 'writing-skills' AND p.parent_id IS NULL;
+WHERE s.slug = 'skills' AND p.slug = 'writing-skills' AND p.parent_id IS NULL
+ON DUPLICATE KEY UPDATE page_id = VALUES(page_id);
 
 -- Child page: commit skill example
 INSERT INTO wiki_pages (section_id, parent_id, slug, title, content, author, revision, sort_order, is_auto_generated, depth, created_at, updated_at)
@@ -79,14 +88,16 @@ Review all staged and unstaged changes, then create a commit following these rul
 'system', 1, 1, FALSE, 1, NOW(), NOW()
 FROM wiki_sections s
 JOIN wiki_pages parent ON parent.section_id = s.id AND parent.slug = 'writing-skills' AND parent.parent_id IS NULL
-WHERE s.slug = 'skills';
+WHERE s.slug = 'skills'
+ON DUPLICATE KEY UPDATE section_id = VALUES(section_id);
 
 INSERT INTO wiki_revisions (page_id, revision, title, content, author, created_at)
 SELECT p.id, 1, p.title, p.content, 'system', NOW()
 FROM wiki_pages p
 JOIN wiki_pages parent ON p.parent_id = parent.id
 JOIN wiki_sections s ON p.section_id = s.id
-WHERE s.slug = 'skills' AND p.slug = 'commit-skill-example';
+WHERE s.slug = 'skills' AND p.slug = 'commit-skill-example'
+ON DUPLICATE KEY UPDATE page_id = VALUES(page_id);
 
 -- ── Agents section: sample agent page with child ──
 INSERT INTO wiki_pages (section_id, parent_id, slug, title, content, author, revision, sort_order, is_auto_generated, depth, created_at, updated_at)
@@ -126,13 +137,22 @@ tools:         # restrict available tools
 - **Return structured output** — tell the agent what format to return results in
 - **Use background mode** — for truly independent work, run agents in background',
 'system', 1, 0, FALSE, 0, NOW(), NOW()
-FROM wiki_sections s WHERE s.slug = 'agents';
+FROM wiki_sections s
+WHERE s.slug = 'agents'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM wiki_pages existing
+      WHERE existing.section_id = s.id
+        AND existing.parent_id IS NULL
+        AND existing.slug = 'writing-agents'
+  );
 
 INSERT INTO wiki_revisions (page_id, revision, title, content, author, created_at)
 SELECT p.id, 1, p.title, p.content, 'system', NOW()
 FROM wiki_pages p
 JOIN wiki_sections s ON p.section_id = s.id
-WHERE s.slug = 'agents' AND p.slug = 'writing-agents' AND p.parent_id IS NULL;
+WHERE s.slug = 'agents' AND p.slug = 'writing-agents' AND p.parent_id IS NULL
+ON DUPLICATE KEY UPDATE page_id = VALUES(page_id);
 
 -- Child page: explore agent example
 INSERT INTO wiki_pages (section_id, parent_id, slug, title, content, author, revision, sort_order, is_auto_generated, depth, created_at, updated_at)
@@ -176,14 +196,16 @@ Return a structured summary of your findings.
 'system', 1, 1, FALSE, 1, NOW(), NOW()
 FROM wiki_sections s
 JOIN wiki_pages parent ON parent.section_id = s.id AND parent.slug = 'writing-agents' AND parent.parent_id IS NULL
-WHERE s.slug = 'agents';
+WHERE s.slug = 'agents'
+ON DUPLICATE KEY UPDATE section_id = VALUES(section_id);
 
 INSERT INTO wiki_revisions (page_id, revision, title, content, author, created_at)
 SELECT p.id, 1, p.title, p.content, 'system', NOW()
 FROM wiki_pages p
 JOIN wiki_pages parent ON p.parent_id = parent.id
 JOIN wiki_sections s ON p.section_id = s.id
-WHERE s.slug = 'agents' AND p.slug = 'explore-agent-example';
+WHERE s.slug = 'agents' AND p.slug = 'explore-agent-example'
+ON DUPLICATE KEY UPDATE page_id = VALUES(page_id);
 
 -- ── General section: welcome page ──
 INSERT INTO wiki_pages (section_id, parent_id, slug, title, content, author, revision, sort_order, is_auto_generated, depth, created_at, updated_at)
@@ -211,10 +233,19 @@ This wiki is the central knowledge base for the CodeGraph platform. It contains 
 
 > **Note:** The MCP Documentation section is auto-generated and cannot have user-created pages. You can still edit the manual sections of auto-generated pages.',
 'system', 1, 0, FALSE, 0, NOW(), NOW()
-FROM wiki_sections s WHERE s.slug = 'general';
+FROM wiki_sections s
+WHERE s.slug = 'general'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM wiki_pages existing
+      WHERE existing.section_id = s.id
+        AND existing.parent_id IS NULL
+        AND existing.slug = 'welcome'
+  );
 
 INSERT INTO wiki_revisions (page_id, revision, title, content, author, created_at)
 SELECT p.id, 1, p.title, p.content, 'system', NOW()
 FROM wiki_pages p
 JOIN wiki_sections s ON p.section_id = s.id
-WHERE s.slug = 'general' AND p.slug = 'welcome' AND p.parent_id IS NULL;
+WHERE s.slug = 'general' AND p.slug = 'welcome' AND p.parent_id IS NULL
+ON DUPLICATE KEY UPDATE page_id = VALUES(page_id);

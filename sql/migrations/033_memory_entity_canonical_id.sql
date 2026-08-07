@@ -1,5 +1,5 @@
 ALTER TABLE memory_entities_v2
-    ADD COLUMN canonical_id VARCHAR(255) NULL AFTER external_id;
+    ADD COLUMN IF NOT EXISTS canonical_id VARCHAR(255) NULL AFTER external_id;
 
 UPDATE memory_entities_v2
 SET canonical_id = COALESCE(
@@ -170,12 +170,12 @@ FROM memory_entities_v2 entity_row
 JOIN tmp_memory_entity_dupes dupes
     ON dupes.loser_id = entity_row.id;
 
-DROP TEMPORARY TABLE tmp_memory_entity_dupes;
+DROP TEMPORARY TABLE IF EXISTS tmp_memory_entity_dupes;
 
-DROP TEMPORARY TABLE tmp_memory_entity_winners;
+DROP TEMPORARY TABLE IF EXISTS tmp_memory_entity_winners;
 
 ALTER TABLE memory_entities_v2
     MODIFY canonical_id VARCHAR(255) NOT NULL;
 
 ALTER TABLE memory_entities_v2
-    ADD UNIQUE KEY uq_memory_entities_v2_username_canonical_id (username, canonical_id);
+    ADD UNIQUE KEY IF NOT EXISTS uq_memory_entities_v2_username_canonical_id (username, canonical_id);

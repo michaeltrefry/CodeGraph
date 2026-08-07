@@ -1,6 +1,6 @@
 -- Migration 031: add append-only LLM usage tracking
 
-CREATE TABLE llm_usage (
+CREATE TABLE IF NOT EXISTS llm_usage (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(255) NOT NULL,
     path VARCHAR(64) NOT NULL,

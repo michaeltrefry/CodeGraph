@@ -1,4 +1,4 @@
-CREATE TABLE assistant_runs (
+CREATE TABLE IF NOT EXISTS assistant_runs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     chat_id VARCHAR(255) NOT NULL,
     username VARCHAR(255) NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE assistant_runs (
     INDEX ix_assistant_runs_status_created_at (status, created_at)
 ) ENGINE=InnoDB;
 
-CREATE TABLE assistant_run_events (
+CREATE TABLE IF NOT EXISTS assistant_run_events (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     run_id BIGINT NOT NULL,
     sequence BIGINT NOT NULL,
