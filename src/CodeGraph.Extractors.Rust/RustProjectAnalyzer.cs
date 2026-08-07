@@ -84,7 +84,13 @@ public class RustProjectAnalyzer : IRustAnalyzer
         var rustAnalyzer = FindExecutable("rust-analyzer");
         var scip = FindExecutable("scip");
         if (rustAnalyzer is null || scip is null)
+        {
+            _logger.LogWarning(
+                "Rust semantic indexing tools are unavailable (rust-analyzer: {RustAnalyzerAvailable}, scip: {ScipAvailable}); falling back to Tree-sitter",
+                rustAnalyzer is not null,
+                scip is not null);
             return null;
+        }
 
         var tempDir = Path.Combine(Path.GetTempPath(), $"codegraph-rust-scip-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
@@ -109,7 +115,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
             var printed = await RunCommandAsync(
                 scip,
-                ["print", "--json"],
+                ["print", "--json", scipPath],
                 tempDir,
                 captureStdout: true,
                 ct);

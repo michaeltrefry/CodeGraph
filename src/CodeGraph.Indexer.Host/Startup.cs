@@ -123,6 +123,7 @@ public static class Startup
         services.AddTransient<ISolutionAnalyzer, SolutionAnalyzer>();
         services.AddTransient<INuGetReferenceExtractor, NuGetReferenceExtractor>();
         services.AddTransient<IRustAnalyzer, RustProjectAnalyzer>();
+        services.AddTransient<ICargoManifestExtractor, CargoManifestExtractor>();
         services.AddTransient<ICodeExtractor, RoslynExtractor>();
         services.AddTransient<ICodeExtractor, SqlExtractor>();
         services.AddTransient<ICodeExtractor, AnsibleExtractor>();

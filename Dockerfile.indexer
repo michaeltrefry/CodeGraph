@@ -1,3 +1,5 @@
+ARG RUST_VERSION=1.97.1
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
@@ -26,9 +28,56 @@ RUN dotnet restore src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj
 COPY src/ src/
 RUN dotnet publish src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj -c Release -o /app/publish --no-restore
 
+FROM rust:${RUST_VERSION}-slim-bookworm AS rust-toolchain
+RUN rustup component add rust-src
+
+FROM debian:bookworm-slim AS rust-indexing-tools
+ARG TARGETARCH
+ARG RUST_ANALYZER_VERSION=2026-08-03
+ARG SCIP_VERSION=v0.9.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl gzip tar && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) \
+        ra_arch="x86_64"; \
+        ra_sha="769670319df8571dac91b6eab6d3a65b18b69488a6900959f2fb6157181ace9d"; \
+        scip_arch="amd64"; \
+        scip_sha="fc2e7273e110be9f35924da1066000183791e8bfdb0391355de6eaaa070fec75" ;; \
+      arm64) \
+        ra_arch="aarch64"; \
+        ra_sha="ea5cb460f1532bf3c6f399b079840e968e3c25857669cd65af36dd707ea097e8"; \
+        scip_arch="arm64"; \
+        scip_sha="e97aaf597ab6a6b6fbb1bbc43993e6efb596284aaea9c3fa5b20d75186367c5e" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL \
+      "https://github.com/rust-lang/rust-analyzer/releases/download/${RUST_ANALYZER_VERSION}/rust-analyzer-${ra_arch}-unknown-linux-gnu.gz" \
+      -o /tmp/rust-analyzer.gz; \
+    printf '%s  %s\n' "${ra_sha}" /tmp/rust-analyzer.gz | sha256sum -c -; \
+    gunzip -c /tmp/rust-analyzer.gz > /usr/local/bin/rust-analyzer; \
+    chmod +x /usr/local/bin/rust-analyzer; \
+    curl -fsSL \
+      "https://github.com/scip-code/scip/releases/download/${SCIP_VERSION}/scip-linux-${scip_arch}.tar.gz" \
+      -o /tmp/scip.tar.gz; \
+    printf '%s  %s\n' "${scip_sha}" /tmp/scip.tar.gz | sha256sum -c -; \
+    tar -xzf /tmp/scip.tar.gz -C /usr/local/bin scip; \
+    chmod +x /usr/local/bin/scip; \
+    rust-analyzer --version; \
+    scip --version
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS runtime
 WORKDIR /app
 ARG TARGETARCH
+
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:${PATH}
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-indexing-tools /usr/local/bin/rust-analyzer /usr/local/bin/rust-analyzer
+COPY --from=rust-indexing-tools /usr/local/bin/scip /usr/local/bin/scip
+RUN rustc --version && cargo --version && rust-analyzer --version && scip --version
 
 # Install git, ssh, Node.js, and Mono for legacy .NET Framework NuGet restore
 RUN apt-get update && apt-get install -y --no-install-recommends \

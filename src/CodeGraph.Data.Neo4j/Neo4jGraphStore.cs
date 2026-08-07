@@ -617,7 +617,12 @@ public partial class Neo4jGraphStore(
                 break;
 
             case NodeLabel.NuGetPackage:
+            case NodeLabel.Package:
                 labels.Add("Package");
+                break;
+
+            case NodeLabel.ExternalSymbol:
+                labels.Add("External");
                 break;
         }
 

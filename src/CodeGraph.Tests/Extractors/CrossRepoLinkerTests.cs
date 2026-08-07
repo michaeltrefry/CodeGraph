@@ -432,6 +432,230 @@ public class CrossRepoLinkerTests
     }
 
     [Fact]
+    public async Task Links_RustCalls_ByExactScipSymbolAcrossProjects()
+    {
+        const string symbol = "rust-analyzer cargo provider 1.2.3 provider/process().";
+        var callerId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.Function,
+            Name = "run",
+            QualifiedName = "Consumer:run",
+            Properties = new() { ["source"] = "scip" }
+        });
+        var externalId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.ExternalSymbol,
+            Name = "process",
+            QualifiedName = "Consumer:external:process",
+            Properties = new()
+            {
+                ["source"] = "scip",
+                ["scip_external"] = true,
+                ["scip_symbol"] = symbol
+            }
+        });
+        var definitionId = _store.AddNode(new GraphNode
+        {
+            Project = "Provider",
+            Label = NodeLabel.Function,
+            Name = "process",
+            QualifiedName = "Provider:process",
+            Properties = new()
+            {
+                ["source"] = "scip",
+                ["scip_symbol"] = symbol
+            }
+        });
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "Consumer",
+            SourceId = callerId,
+            TargetId = externalId,
+            Type = EdgeType.CALLS
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        var edge = _store.CrossEdges.Single();
+        edge.SourceProject.ShouldBe("Consumer");
+        edge.TargetProject.ShouldBe("Provider");
+        edge.SourceNodeId.ShouldBe(callerId);
+        edge.TargetNodeId.ShouldBe(definitionId);
+        edge.Type.ShouldBe(EdgeType.CALLS);
+        edge.Properties["scip_symbol"].ShouldBe(symbol);
+    }
+
+    [Fact]
+    public async Task Skips_RustSymbols_WhenExactSymbolIsAmbiguousAcrossProjects()
+    {
+        const string symbol = "rust-analyzer cargo shared 1.0.0 shared/run().";
+        var callerId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.Function,
+            Name = "caller",
+            QualifiedName = "Consumer:caller"
+        });
+        var externalId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.ExternalSymbol,
+            Name = "run",
+            QualifiedName = "Consumer:external:run",
+            Properties = new()
+            {
+                ["source"] = "scip",
+                ["scip_external"] = true,
+                ["scip_symbol"] = symbol
+            }
+        });
+        foreach (var project in new[] { "ProviderA", "ProviderB" })
+        {
+            _store.AddNode(new GraphNode
+            {
+                Project = project,
+                Label = NodeLabel.Function,
+                Name = "run",
+                QualifiedName = $"{project}:run",
+                Properties = new()
+                {
+                    ["source"] = "scip",
+                    ["scip_symbol"] = symbol
+                }
+            });
+        }
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "Consumer",
+            SourceId = callerId,
+            TargetId = externalId,
+            Type = EdgeType.CALLS
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task DoesNotLink_RustSymbols_ByDisplayNameAlone()
+    {
+        const string referencedSymbol = "rust-analyzer cargo expected 1.0.0 expected/run().";
+        const string definitionSymbol = "rust-analyzer cargo other 1.0.0 other/run().";
+        var callerId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.Function,
+            Name = "caller",
+            QualifiedName = "Consumer:caller"
+        });
+        var externalId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.ExternalSymbol,
+            Name = "run",
+            QualifiedName = "Consumer:external:run",
+            Properties = new()
+            {
+                ["source"] = "scip",
+                ["scip_external"] = true,
+                ["scip_symbol"] = referencedSymbol
+            }
+        });
+        _store.AddNode(new GraphNode
+        {
+            Project = "Provider",
+            Label = NodeLabel.Function,
+            Name = "run",
+            QualifiedName = "Provider:run",
+            Properties = new()
+            {
+                ["source"] = "scip",
+                ["scip_symbol"] = definitionSymbol
+            }
+        });
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "Consumer",
+            SourceId = callerId,
+            TargetId = externalId,
+            Type = EdgeType.CALLS
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Links_CargoAliasDependency_ByCanonicalPackageIdentity()
+    {
+        const string packageKey = "cargo:registry:crates.io:provider-lib";
+        var consumerId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.Package,
+            Name = "consumer",
+            QualifiedName = "package:consumer",
+            Properties = new()
+            {
+                ["ecosystem"] = "cargo",
+                ["is_definition"] = true,
+                ["package_key"] = "cargo:registry:crates.io:consumer"
+            }
+        });
+        var dependencyId = _store.AddNode(new GraphNode
+        {
+            Project = "Consumer",
+            Label = NodeLabel.Package,
+            Name = "provider-lib",
+            QualifiedName = "package:provider-lib-ref",
+            Properties = new()
+            {
+                ["ecosystem"] = "cargo",
+                ["is_definition"] = false,
+                ["package_key"] = packageKey,
+                ["package_name"] = "provider-lib",
+                ["local_name"] = "provider_alias",
+                ["version"] = "1.5.0"
+            }
+        });
+        var providerId = _store.AddNode(new GraphNode
+        {
+            Project = "Provider",
+            Label = NodeLabel.Package,
+            Name = "provider-lib",
+            QualifiedName = "package:provider-lib-definition",
+            Properties = new()
+            {
+                ["ecosystem"] = "cargo",
+                ["is_definition"] = true,
+                ["package_key"] = packageKey,
+                ["version"] = "1.5.0"
+            }
+        });
+        _store.AddEdge(new GraphEdge
+        {
+            Project = "Consumer",
+            SourceId = consumerId,
+            TargetId = dependencyId,
+            Type = EdgeType.REFERENCES_PACKAGE
+        });
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        var edge = _store.CrossEdges.Single();
+        edge.SourceProject.ShouldBe("Consumer");
+        edge.TargetProject.ShouldBe("Provider");
+        edge.SourceNodeId.ShouldBe(consumerId);
+        edge.TargetNodeId.ShouldBe(providerId);
+        edge.Properties["local_name"].ShouldBe("provider_alias");
+        edge.Properties["package_key"].ShouldBe(packageKey);
+    }
+
+    [Fact]
     public async Task NoOp_WhenNoData()
     {
         await _linker.LinkAsync(CancellationToken.None);

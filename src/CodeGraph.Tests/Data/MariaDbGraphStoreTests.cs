@@ -105,6 +105,22 @@ public class MariaDbGraphStoreTests
                 },
                 new GraphNode
                 {
+                    Project = "CodeGraph",
+                    Label = NodeLabel.Package,
+                    Name = "serde",
+                    QualifiedName = "cargo:serde",
+                    FilePath = "Cargo.toml"
+                },
+                new GraphNode
+                {
+                    Project = "CodeGraph",
+                    Label = NodeLabel.ExternalSymbol,
+                    Name = "Serialize",
+                    QualifiedName = "scip:rust-analyzer cargo serde Serialize",
+                    FilePath = "src/lib.rs"
+                },
+                new GraphNode
+                {
                     Project = "Dependency",
                     Label = NodeLabel.Class,
                     Name = "Dependency",
@@ -115,17 +131,23 @@ public class MariaDbGraphStoreTests
 
             var classId = nodeIds[GraphNodeKey.Create("CodeGraph", "CodeGraph.Widget")];
             var methodId = nodeIds[GraphNodeKey.Create("CodeGraph", "CodeGraph.Widget.Run")];
+            var packageId = nodeIds[GraphNodeKey.Create("CodeGraph", "cargo:serde")];
+            var externalSymbolId = nodeIds[GraphNodeKey.Create("CodeGraph", "scip:rust-analyzer cargo serde Serialize")];
             var dependencyId = nodeIds[GraphNodeKey.Create("Dependency", "Dependency.Root")];
 
             (await store.FindNodeByIdAsync(classId))!.Name.ShouldBe("Widget");
             (await store.FindNodeByQualifiedNameAsync("CodeGraph", "CodeGraph.Widget.Run"))!.Label.ShouldBe(NodeLabel.Method);
             (await store.FindNodesByNameAsync("CodeGraph", "Widget")).Single().Id.ShouldBe(classId);
             (await store.FindNodesByLabelAsync("CodeGraph", NodeLabel.Method)).Single().Id.ShouldBe(methodId);
+            (await store.FindNodesByLabelAsync("CodeGraph", NodeLabel.Package)).Single().Id.ShouldBe(packageId);
+            (await store.FindNodesByLabelAsync("CodeGraph", NodeLabel.ExternalSymbol)).Single().Id.ShouldBe(externalSymbolId);
             (await store.FindNodesByFileAsync("CodeGraph", "Widget.cs")).Count.ShouldBe(2);
             (await store.SearchNodesAsync("CodeGraph", "Wid")).Single().Id.ShouldBe(classId);
             (await store.SearchNodesCountAsync("CodeGraph", "Wid")).ShouldBe(1);
             (await store.FindAllNodesByLabelAsync(NodeLabel.Class)).Count.ShouldBe(2);
             (await store.GetNodeCountsByLabelAsync())[NodeLabel.Class].ShouldBe(2);
+            (await store.GetNodeCountsByLabelAsync())[NodeLabel.Package].ShouldBe(1);
+            (await store.GetNodeCountsByLabelAsync())[NodeLabel.ExternalSymbol].ShouldBe(1);
             (await store.GetNodeCountsByLabelForProjectAsync("CodeGraph"))["Class"].ShouldBe(1);
             (await store.FindNodesByIdBatchAsync([classId, methodId])).ShouldContainKey(methodId);
 
