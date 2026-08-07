@@ -95,7 +95,11 @@ public sealed class McpHubService(
         CancellationToken ct = default)
     {
         await EnsureProviderEnabledAsync("shortcut", ct);
-        var staged = shortcutUploadStaging.Stage(UploadOwnerKey(username, tokenId), displayName, base64Content);
+        var staged = await shortcutUploadStaging.StageAsync(
+            UploadOwnerKey(username, tokenId),
+            displayName,
+            base64Content,
+            ct);
         return JsonSerializer.Serialize(staged, JsonOptions);
     }
 
@@ -121,7 +125,7 @@ public sealed class McpHubService(
         content.Add(fileContent, "file0", lease.DisplayName);
 
         using var response = await client.PostAsync("files", content, ct);
-        var result = await ReadProviderResponseAsync(response, ct);
+        var result = await ReadProviderResponseAsync(response, ct, throwOnFailure: true);
         lease.Complete();
         return result;
     }
@@ -453,12 +457,23 @@ public sealed class McpHubService(
         return client;
     }
 
-    private static async Task<string> ReadProviderResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<string> ReadProviderResponseAsync(
+        HttpResponseMessage response,
+        CancellationToken ct,
+        bool throwOnFailure = false)
     {
         const int maxBytes = 64 * 1024;
         var body = await ReadCappedBodyAsync(response, maxBytes, ct);
         if (response.IsSuccessStatusCode)
             return string.IsNullOrWhiteSpace(body) ? "{}" : body;
+
+        if (throwOnFailure)
+        {
+            throw new HttpRequestException(
+                $"Shortcut upload failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase ?? "unknown error"}).",
+                inner: null,
+                response.StatusCode);
+        }
 
         return JsonSerializer.Serialize(new
         {

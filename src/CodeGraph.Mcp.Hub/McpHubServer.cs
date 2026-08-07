@@ -95,7 +95,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         int storyPublicId,
         string stagedFileHandle,
         CancellationToken cancellationToken = default) =>
-        InvokeAuditedAsync("shortcut", "stories-upload-file", "upload", $"story:{storyPublicId}/staged:{stagedFileHandle}", "shared",
+        InvokeAuditedAsync("shortcut", "stories-upload-file", "upload", ShortcutUploadAuditResourceKey(storyPublicId, stagedFileHandle), "shared",
             () => hub.UploadShortcutFileAsync(Username, TokenId, storyPublicId, stagedFileHandle, cancellationToken), cancellationToken);
 
     [McpServerTool(Name = "stories-assign-current-user", Title = "Assign Current User To Shortcut Story", ReadOnly = false, Destructive = false)]
@@ -598,6 +598,15 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
             ? statusFilter
             : $"{statusFilter} team:\"{team.Trim().Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 
+    private static string ShortcutUploadAuditResourceKey(int storyPublicId, string? handle)
+    {
+        var auditedHandle = handle is { Length: 64 } &&
+            handle.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')
+                ? handle
+                : "invalid-handle";
+        return $"story:{storyPublicId}/staged:{auditedHandle}";
+    }
+
     private async Task<string> InvokeAuditedAsync(
         string providerKey,
         string toolName,
@@ -626,7 +635,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
                 true,
                 null,
-                ct);
+                CancellationToken.None);
             return result;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -646,7 +655,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
                 false,
                 ex.Message,
-                ct);
+                CancellationToken.None);
             return $"Provider call failed: {ex.Message}";
         }
     }

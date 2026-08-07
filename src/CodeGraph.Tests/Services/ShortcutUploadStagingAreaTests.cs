@@ -28,12 +28,12 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
     private readonly string root = Path.Combine(Path.GetTempPath(), $"codegraph-upload-tests-{Guid.NewGuid():N}");
 
     [Fact]
-    public void StageAndOpen_UsesOwnerBoundSingleUseOpaqueHandle()
+    public async Task StageAndOpen_UsesOwnerBoundSingleUseOpaqueHandle()
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
         var content = Encoding.UTF8.GetBytes("review evidence");
 
-        var staged = staging.Stage("token:41", "evidence.md", Convert.ToBase64String(content));
+        var staged = await staging.StageAsync("token:41", "evidence.md", Convert.ToBase64String(content));
 
         staged.Handle.Length.ShouldBe(64);
         staged.Handle.ShouldNotContain("evidence");
@@ -55,10 +55,10 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
     }
 
     [Fact]
-    public void Open_RejectsConcurrentUse_AndDisposeConsumesTheHandle()
+    public async Task Open_RejectsConcurrentUse_AndDisposeConsumesTheHandle()
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
-        var staged = staging.Stage("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
+        var staged = await staging.StageAsync("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
 
         using var lease = staging.Open("token:1", staged.Handle);
         Should.Throw<McpHubProviderPolicyException>(() => staging.Open("token:1", staged.Handle))
@@ -69,11 +69,11 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
     }
 
     [Fact]
-    public void Open_RejectsAndDeletesExpiredHandle()
+    public async Task Open_RejectsAndDeletesExpiredHandle()
     {
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 8, 7, 12, 0, 0, TimeSpan.Zero));
         using var staging = new ShortcutUploadStagingArea(root, clock);
-        var staged = staging.Stage("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
+        var staged = await staging.StageAsync("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
         clock.Advance(TimeSpan.FromMinutes(16));
 
         Should.Throw<McpHubProviderPolicyException>(() => staging.Open("token:1", staged.Handle))
@@ -88,55 +88,101 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
     [InlineData("C:\\Windows\\secret.txt")]
     [InlineData("\\\\server\\share\\secret.txt")]
     [InlineData("safe.txt:stream")]
-    public void Stage_RejectsTraversalRootedAndMixedSeparatorNames(string displayName)
+    public async Task Stage_RejectsTraversalRootedAndMixedSeparatorNames(string displayName)
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
 
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", displayName, Convert.ToBase64String("content"u8.ToArray())));
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", displayName, Convert.ToBase64String("content"u8.ToArray())));
     }
 
     [Fact]
-    public void Stage_RejectsOversizedDisallowedAndMismatchedContent()
+    public async Task Stage_RejectsOversizedDisallowedAndMismatchedContent()
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
 
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "payload.exe", Convert.ToBase64String("MZ"u8.ToArray())))
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "payload.exe", Convert.ToBase64String("MZ"u8.ToArray()))))
             .Message.ShouldContain("not allowed");
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "fake.png", Convert.ToBase64String("not a png"u8.ToArray())))
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "fake.png", Convert.ToBase64String("not a png"u8.ToArray()))))
             .Message.ShouldContain("does not match");
 
         var oversizedBase64 = new string('A', ((ShortcutUploadStagingArea.MaxFileBytes + 2) / 3) * 4 + 12);
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "large.txt", oversizedBase64))
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "large.txt", oversizedBase64)))
             .Message.ShouldContain("may not exceed");
     }
 
     [Fact]
-    public void Stage_RejectsSymlinkCollisionWithoutWritingOutsideTheStagingRoot()
+    public async Task Stage_RejectsSessionDirectorySwapToSymlinkWithoutWritingOutsideTheStagingRoot()
     {
         if (OperatingSystem.IsWindows())
             return; // Windows symbolic-link creation needs an optional host privilege.
 
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
-        var outside = Path.Combine(root, "outside.txt");
-        File.WriteAllText(outside, "secret");
-        staging.BeforeStageFileCreateForTest = path => File.CreateSymbolicLink(path, outside);
+        var outside = Path.Combine(root, "outside");
+        var displaced = Path.Combine(root, "displaced-session");
+        Directory.CreateDirectory(outside);
+        staging.BeforeStageFileCreateForTest = path =>
+        {
+            Directory.Move(path, displaced);
+            Directory.CreateSymbolicLink(path, outside);
+        };
 
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray())))
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()))))
             .Message.ShouldContain("captured safely");
-        File.ReadAllText(outside).ShouldBe("secret");
-        Directory.GetFileSystemEntries(staging.SessionRoot).ShouldHaveSingleItem("a failed CreateNew must not unlink the colliding path");
+        Directory.GetFileSystemEntries(outside).ShouldBeEmpty();
     }
 
     [Fact]
-    public void Open_UsesImmutableCapturedBytes_AndNeverDeletesAnAttackerCreatedHandlePath()
+    public async Task Stage_UsesPinnedRootHandleWhenConfiguredRootIsReplaced()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // Covered by the Windows attachment-security lane with junction-capable hosts.
+
+        var displaced = root + "-displaced";
+        var outside = root + "-outside";
+        Directory.CreateDirectory(outside);
+        var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        try
+        {
+            var observedOutsideWrite = false;
+            staging.BeforeStageFileCreateForTest = _ =>
+            {
+                Directory.Move(root, displaced);
+                Directory.CreateSymbolicLink(root, outside);
+            };
+            staging.AfterStageFileCreateForTest = _ =>
+                observedOutsideWrite = Directory.EnumerateFiles(outside, "*", SearchOption.AllDirectories).Any();
+
+            var staged = await staging.StageAsync(
+                "token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
+
+            observedOutsideWrite.ShouldBeFalse("the pinned directory handle must remain the write authority after lexical root replacement");
+            Directory.GetFileSystemEntries(outside).ShouldBeEmpty();
+            using var lease = staging.Open("token:1", staged.Handle);
+            using var reader = new StreamReader(lease.Stream, leaveOpen: true);
+            reader.ReadToEnd().ShouldBe("safe");
+        }
+        finally
+        {
+            staging.Dispose();
+            if (Directory.Exists(root))
+                Directory.Delete(root);
+            if (Directory.Exists(displaced))
+                Directory.Delete(displaced, recursive: true);
+            if (Directory.Exists(outside))
+                Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Open_UsesImmutableCapturedBytes_AndNeverDeletesAnAttackerCreatedHandlePath()
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
-        var staged = staging.Stage("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
+        var staged = await staging.StageAsync("token:1", "safe.txt", Convert.ToBase64String("safe"u8.ToArray()));
         var path = Path.Combine(staging.SessionRoot, staged.Handle);
         staging.BeforeUploadLeaseForTest = candidate => File.WriteAllText(candidate, "host");
 
@@ -147,68 +193,106 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
     }
 
     [Fact]
-    public void Stage_ParsesDeclaredStructuredFormats_AndValidatesOfficePackageIdentity()
+    public async Task Stage_ParsesDeclaredStructuredFormats_AndValidatesOfficePackageIdentity()
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
 
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "bad.json", Convert.ToBase64String("not-json"u8.ToArray())));
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "bad.yaml", Convert.ToBase64String("key: [unterminated"u8.ToArray())));
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "bad.csv", Convert.ToBase64String("a,\"unterminated"u8.ToArray())));
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "fake.docx", Convert.ToBase64String(CreateZip(("payload.bin", "host data")))));
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "wrong.xlsx", Convert.ToBase64String(CreateOfficePackage(OfficeKind.Word))));
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "missing-relationship.docx", Convert.ToBase64String(CreateSpoofOfficePackage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "bad.json", Convert.ToBase64String("not-json"u8.ToArray())));
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "bad.yaml", Convert.ToBase64String("key: [unterminated"u8.ToArray())));
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "bad.csv", Convert.ToBase64String("a,\"unterminated"u8.ToArray())));
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "fake.docx", Convert.ToBase64String(CreateZip(("payload.bin", "host data")))));
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "wrong.xlsx", Convert.ToBase64String(CreateOfficePackage(OfficeKind.Word))));
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "missing-relationship.docx", Convert.ToBase64String(CreateSpoofOfficePackage(
                 "word/document.xml", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", includeRootRelationship: false))));
-        Should.Throw<McpHubProviderPolicyException>(() =>
-            staging.Stage("token:1", "wrong-root.docx", Convert.ToBase64String(CreateSpoofOfficePackage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "wrong-root.docx", Convert.ToBase64String(CreateSpoofOfficePackage(
                 "word/document.xml", "urn:not-wordprocessing", includeRootRelationship: true))));
 
         foreach (var kind in Enum.GetValues<OfficeKind>())
         {
-            var valid = staging.Stage("token:1", $"valid.{OfficeExtension(kind)}", Convert.ToBase64String(CreateOfficePackage(kind)));
+            var valid = await staging.StageAsync("token:1", $"valid.{OfficeExtension(kind)}", Convert.ToBase64String(CreateOfficePackage(kind)));
             using var lease = staging.Open("token:1", valid.Handle);
             lease.SizeBytes.ShouldBeGreaterThan(0);
         }
     }
 
     [Fact]
-    public void Stage_FullyParsesPdfAndImageFormats_InsteadOfTrustingSpoofableEnvelopes()
+    public async Task Stage_ParsesPdfAndIdentifiesImageFormats_InsteadOfTrustingSpoofableEnvelopes()
     {
         using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
 
-        Should.Throw<McpHubProviderPolicyException>(() => staging.Stage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() => staging.StageAsync(
             "token:1", "spoof.pdf", Convert.ToBase64String("%PDF-1.7\nnot objects\n%%EOF"u8.ToArray())));
-        Should.Throw<McpHubProviderPolicyException>(() => staging.Stage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() => staging.StageAsync(
             "token:1", "spoof.png", Convert.ToBase64String(CreateSpoofPngEnvelope())));
-        Should.Throw<McpHubProviderPolicyException>(() => staging.Stage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() => staging.StageAsync(
             "token:1", "spoof.jpg", Convert.ToBase64String([0xFF, 0xD8, 0xFF, 0x00, 0xFF, 0xD9])));
-        Should.Throw<McpHubProviderPolicyException>(() => staging.Stage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() => staging.StageAsync(
             "token:1", "spoof.gif", Convert.ToBase64String("GIF89a0000000;"u8.ToArray())));
-        Should.Throw<McpHubProviderPolicyException>(() => staging.Stage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() => staging.StageAsync(
             "token:1", "spoof.webp", Convert.ToBase64String(CreateSpoofWebpEnvelope())));
 
         using var image = new Image<Rgba32>(2, 2);
         using var png = new MemoryStream();
         image.SaveAsPng(png);
-        Should.Throw<McpHubProviderPolicyException>(() => staging.Stage(
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() => staging.StageAsync(
             "token:1", "wrong.jpg", Convert.ToBase64String(png.ToArray())));
-        var validImage = staging.Stage("token:1", "valid.png", Convert.ToBase64String(png.ToArray()));
+        var validImage = await staging.StageAsync("token:1", "valid.png", Convert.ToBase64String(png.ToArray()));
         using var imageLease = staging.Open("token:1", validImage.Handle);
 
         foreach (var (extension, encoded) in EncodeRemainingImageFormats(image))
         {
-            var staged = staging.Stage("token:1", $"valid.{extension}", Convert.ToBase64String(encoded));
+            var staged = await staging.StageAsync("token:1", $"valid.{extension}", Convert.ToBase64String(encoded));
             using var lease = staging.Open("token:1", staged.Handle);
             lease.SizeBytes.ShouldBe(encoded.LongLength);
         }
 
-        var validPdf = staging.Stage("token:1", "valid.pdf", Convert.ToBase64String(CreatePdf()));
+        var validPdf = await staging.StageAsync("token:1", "valid.pdf", Convert.ToBase64String(CreatePdf()));
         using var pdfLease = staging.Open("token:1", validPdf.Handle);
+    }
+
+    [Fact]
+    public async Task Stage_RejectsCompactAnimationWhoseAggregateFrameAreaExceedsTheLimitBeforePixelDecode()
+    {
+        using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        var compactBomb = CreateCompactGif(width: 1000, height: 1000, frameCount: 51);
+        compactBomb.Length.ShouldBeLessThan(4096);
+
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "compact.gif", Convert.ToBase64String(compactBomb))))
+            .Message.ShouldContain("aggregate frame area exceeds the safe limit before pixel decoding");
+    }
+
+    [Fact]
+    public async Task Stage_RejectsExcessiveImageFrameCountBeforePixelDecode()
+    {
+        using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        var excessiveFrames = CreateCompactGif(width: 1, height: 1, frameCount: 257);
+
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "many-frames.gif", Convert.ToBase64String(excessiveFrames))))
+            .Message.ShouldContain("frame count exceeds the safe limit before pixel decoding");
+    }
+
+    [Fact]
+    public async Task Stage_StopsImageIdentificationAtTheFrameSentinelBeforeMalformedTail()
+    {
+        using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        var malformedAfterSentinel = CreateCompactGif(
+            width: 1,
+            height: 1,
+            frameCount: 257,
+            appendTruncatedFrame: true);
+
+        (await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            staging.StageAsync("token:1", "bounded.gif", Convert.ToBase64String(malformedAfterSentinel))))
+            .Message.ShouldContain("frame count exceeds the safe limit before pixel decoding");
     }
 
     [Fact]
@@ -312,6 +396,7 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         result.ShouldBe("{\"ok\":true}");
         captured!.RequestUri!.ToString().ShouldBe("https://api.app.shortcut.com/api/v3/files");
         uploaded.ShouldBe("hello"u8.ToArray());
+        disposition.ShouldNotBeNull();
         disposition.ShouldContain("notes.md");
         await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
             service.UploadShortcutFileAsync("alice", 17, 123, handle));
@@ -369,6 +454,111 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         store.Audit[1].ToolName.ShouldBe("stories-upload-file");
         store.Audit[1].ResourceKey.ShouldBe($"story:123/staged:{handle}");
         store.Audit.ShouldAllBe(item => item.Success && item.AuthorizationDecision == "allowed");
+    }
+
+    [Fact]
+    public async Task Server_AuditsInvalidUploadHandleWithoutPersistingAttackerControlledText()
+    {
+        using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        var store = ShortcutStore();
+        var service = Service(
+            store,
+            new StubHttpClientFactory(_ => throw new InvalidOperationException("provider must not be called")),
+            staging);
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("preferred_username", "Alice"),
+                new Claim("mcp_pat_token_id", "17"),
+            ], "test"))
+        };
+        var server = new McpHubServer(service, new HttpContextAccessor { HttpContext = context });
+        var attackerControlledHandle = new string('z', 4096);
+
+        var result = await server.UploadShortcutStoryFile(123, attackerControlledHandle);
+
+        result.ShouldContain("invalid or expired");
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.ResourceKey.ShouldBe("story:123/staged:invalid-handle");
+        audit.ResourceKey!.ShouldNotContain(attackerControlledHandle);
+        audit.Success.ShouldBeFalse();
+        audit.AuthorizationDecision.ShouldBe("denied");
+    }
+
+    [Fact]
+    public async Task Server_AuditsProviderHttpRejectionAsFailedUpload()
+    {
+        using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        var store = ShortcutStore();
+        var service = Service(
+            store,
+            new StubHttpClientFactory(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                ReasonPhrase = "rejected",
+                Content = new StringContent("not accepted")
+            }),
+            staging);
+        var server = AuthenticatedServer(service);
+        var stageJson = await server.StageShortcutStoryFile(
+            "notes.md", Convert.ToBase64String("hello"u8.ToArray()));
+        var handle = JsonDocument.Parse(stageJson).RootElement.GetProperty("handle").GetString()!;
+        store.Audit.Clear();
+
+        var result = await server.UploadShortcutStoryFile(123, handle);
+
+        result.ShouldContain("HTTP 400");
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.Success.ShouldBeFalse();
+        audit.StatusClass.ShouldBe("provider_error");
+        audit.AuthorizationDecision.ShouldBe("allowed");
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            service.UploadShortcutFileAsync("alice", 17, 123, handle));
+    }
+
+    [Fact]
+    public async Task Server_AuditsCanceledUploadWithIndependentCancellationToken()
+    {
+        using var staging = new ShortcutUploadStagingArea(root, TimeProvider.System);
+        using var requestCancellation = new CancellationTokenSource();
+        var store = ShortcutStore();
+        store.RejectCanceledAuditTokens = true;
+        var service = Service(
+            store,
+            new StubHttpClientFactory(async (request, cancellationToken) =>
+            {
+                _ = await request.Content!.ReadAsByteArrayAsync(CancellationToken.None);
+                requestCancellation.Cancel();
+                throw new OperationCanceledException(cancellationToken);
+            }),
+            staging);
+        var server = AuthenticatedServer(service);
+        var stageJson = await server.StageShortcutStoryFile(
+            "notes.md", Convert.ToBase64String("hello"u8.ToArray()));
+        var handle = JsonDocument.Parse(stageJson).RootElement.GetProperty("handle").GetString()!;
+        store.Audit.Clear();
+
+        var result = await server.UploadShortcutStoryFile(123, handle, requestCancellation.Token);
+
+        result.ShouldContain("Provider call failed");
+        var audit = store.Audit.ShouldHaveSingleItem(
+            "the request token was canceled, so this exists only if auditing used an independent token");
+        audit.Success.ShouldBeFalse();
+        audit.StatusClass.ShouldBe("provider_error");
+        audit.ResourceKey.ShouldBe($"story:123/staged:{handle}");
+    }
+
+    private static McpHubServer AuthenticatedServer(McpHubService service)
+    {
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("preferred_username", "Alice"),
+                new Claim("mcp_pat_token_id", "17"),
+            ], "test"))
+        };
+        return new McpHubServer(service, new HttpContextAccessor { HttpContext = context });
     }
 
     private static RecordingStore ShortcutStore()
@@ -537,6 +727,47 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         return bytes;
     }
 
+    private static byte[] CreateCompactGif(
+        ushort width,
+        ushort height,
+        int frameCount,
+        bool appendTruncatedFrame = false)
+    {
+        using var output = new MemoryStream();
+        using var writer = new BinaryWriter(output, Encoding.ASCII, leaveOpen: true);
+        writer.Write("GIF89a"u8);
+        writer.Write(width);
+        writer.Write(height);
+        writer.Write((byte)0x80); // Two-entry global color table.
+        writer.Write((byte)0);
+        writer.Write((byte)0);
+        writer.Write(new byte[] { 0, 0, 0, 255, 255, 255 });
+        for (var index = 0; index < frameCount; index++)
+        {
+            writer.Write((byte)0x2C); // Image descriptor.
+            writer.Write((ushort)0);
+            writer.Write((ushort)0);
+            writer.Write((ushort)1);
+            writer.Write((ushort)1);
+            writer.Write((byte)0);
+            writer.Write((byte)2); // LZW minimum code size.
+            writer.Write((byte)2);
+            writer.Write((byte)0x44);
+            writer.Write((byte)0x01);
+            writer.Write((byte)0);
+        }
+        if (appendTruncatedFrame)
+        {
+            writer.Write((byte)0x2C);
+            writer.Write((ushort)0);
+        }
+        else
+        {
+            writer.Write((byte)0x3B);
+        }
+        return output.ToArray();
+    }
+
     private static byte[] CreateZip(params (string Name, string Content)[] files)
     {
         using var output = new MemoryStream();
@@ -588,15 +819,28 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
             Directory.Delete(root, recursive: true);
     }
 
-    private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder) : IHttpClientFactory
+    private sealed class StubHttpClientFactory : IHttpClientFactory
     {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder;
+
+        public StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder)
+            : this((request, _) => Task.FromResult(responder(request)))
+        {
+        }
+
+        public StubHttpClientFactory(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
+        {
+            this.responder = responder;
+        }
+
         public HttpClient CreateClient(string name) =>
             new(new StubHandler(responder)) { BaseAddress = new Uri("https://api.app.shortcut.com/api/v3/") };
 
-        private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+        private sealed class StubHandler(
+            Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder) : HttpMessageHandler
         {
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-                Task.FromResult(responder(request));
+                responder(request, cancellationToken);
         }
     }
 
@@ -605,6 +849,7 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         public List<McpHubProviderEntity> Providers { get; init; } = [];
         public Dictionary<(string Provider, string Key), string?> Credentials { get; } = [];
         public List<McpHubAuditEntity> Audit { get; } = [];
+        public bool RejectCanceledAuditTokens { get; set; }
         public Task<IReadOnlyList<McpHubProviderEntity>> ListProvidersAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<McpHubProviderEntity>>(Providers);
         public Task<string?> GetCredentialValueAsync(string providerKey, string credentialKey, CancellationToken ct = default) => Task.FromResult(Credentials.GetValueOrDefault((providerKey, credentialKey)));
         public Task<IReadOnlyList<McpHubToolEntity>> ListToolsAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<McpHubToolEntity>>([]);
@@ -622,6 +867,8 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         public Task<bool> IsTokenEntitledAsync(long tokenId, string toolName, CancellationToken ct = default) => throw new NotSupportedException();
         public Task CreateAuditAsync(McpHubAuditEntity audit, CancellationToken ct = default)
         {
+            if (RejectCanceledAuditTokens)
+                ct.ThrowIfCancellationRequested();
             Audit.Add(audit);
             return Task.CompletedTask;
         }

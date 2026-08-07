@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,8 +8,10 @@ using System.Xml;
 using System.Xml.Linq;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Validation;
+using CodeGraph.Services;
 using PdfSharp.Pdf.IO;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
 using YamlDotNet.Core;
 
 namespace CodeGraph.Mcp.Hub;
@@ -24,10 +27,15 @@ public sealed class ShortcutUploadStagingArea : IDisposable
     private const long MaxExpandedOfficeBytes = 40L * 1024 * 1024;
     private const int MaxOfficeEntries = 4096;
     private const int MaxContentTypesBytes = 256 * 1024;
-    private const long MaxDecodedImagePixels = 50_000_000;
-    private const string SessionPrefix = "session-";
+    private const long MaxAggregateImagePixels = 50_000_000;
+    private const int MaxImageFrames = 256;
     private static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(15);
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly DecoderOptions ImageIdentificationOptions = new()
+    {
+        MaxFrames = MaxImageFrames + 1,
+        SkipMetadata = true,
+    };
     private static readonly IReadOnlyDictionary<string, string> AllowedTypes =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -52,12 +60,15 @@ public sealed class ShortcutUploadStagingArea : IDisposable
 
     private readonly ConcurrentDictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly TimeProvider timeProvider;
+    private readonly AttachmentStorage storage;
+    private readonly long sessionId;
     private readonly string sessionRoot;
     private readonly Timer cleanupTimer;
     private long reservedBytes;
     private int disposed;
 
     internal Action<string>? BeforeStageFileCreateForTest { get; set; }
+    internal Action<string>? AfterStageFileCreateForTest { get; set; }
     internal Action<string>? BeforeUploadLeaseForTest { get; set; }
 
     public ShortcutUploadStagingArea()
@@ -69,15 +80,25 @@ public sealed class ShortcutUploadStagingArea : IDisposable
     {
         this.timeProvider = timeProvider;
         var stagingParent = CreatePrivateStagingParent(rootPath);
-        sessionRoot = CreatePrivateSessionRoot(stagingParent);
+        storage = new AttachmentStorage(stagingParent);
+        sessionId = CreateSessionId();
+        storage.EnsureContainer(sessionId);
+        sessionRoot = Path.Combine(
+            stagingParent,
+            sessionId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         cleanupTimer = new Timer(_ => MaintainSafely(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
     }
 
     internal string SessionRoot => sessionRoot;
 
-    public StagedShortcutUpload Stage(string ownerKey, string displayName, string base64Content)
+    public async Task<StagedShortcutUpload> StageAsync(
+        string ownerKey,
+        string displayName,
+        string base64Content,
+        CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        ct.ThrowIfCancellationRequested();
         CleanupExpired();
 
         if (string.IsNullOrWhiteSpace(ownerKey))
@@ -114,42 +135,42 @@ public sealed class ShortcutUploadStagingArea : IDisposable
         try
         {
             var handle = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-            var path = ContainedPath(handle);
-            BeforeStageFileCreateForTest?.Invoke(path);
-            byte[] captured;
+            BeforeStageFileCreateForTest?.Invoke(sessionRoot);
+            string? stagedPath = null;
             try
             {
-                using var stream = new FileStream(
-                    path,
-                    FileMode.CreateNew,
-                    FileAccess.ReadWrite,
-                    FileShare.Read,
-                    81920,
-                    FileOptions.WriteThrough | FileOptions.DeleteOnClose);
-                if (!OperatingSystem.IsWindows())
-                    File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-                stream.Write(bytes);
-                stream.Flush(flushToDisk: true);
-                stream.Position = 0;
-                captured = CaptureExactBytes(stream, bytes.LongLength, SHA256.HashData(bytes));
+                ct.ThrowIfCancellationRequested();
+                await using var source = new MemoryStream(bytes, writable: false);
+                var staged = await storage.CreateAsync(sessionId, source);
+                stagedPath = staged.Path;
+                if (staged.Size != bytes.LongLength)
+                    throw new McpHubProviderPolicyException("The staged upload changed size while it was being captured.");
+                AfterStageFileCreateForTest?.Invoke(stagedPath);
+                storage.DeleteCreated(stagedPath);
+                stagedPath = null;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception)
             {
-                throw new McpHubProviderPolicyException($"The staged upload could not be captured safely: {ex.Message}");
+                throw new McpHubProviderPolicyException("The staged upload could not be captured safely.");
+            }
+            finally
+            {
+                if (stagedPath is not null)
+                {
+                    try { storage.DeleteCreated(stagedPath); }
+                    catch (Exception ex) when (ex is not OutOfMemoryException) { }
+                }
             }
 
-            // DeleteOnClose makes process termination cleanup a kernel responsibility. Do not scan
-            // prior session paths on startup: same-account processes can forge any on-disk marker,
-            // so restart scavenging cannot safely distinguish our abandoned files from foreign data.
-            if (File.Exists(path))
-                throw new McpHubProviderPolicyException("The temporary upload file was not deleted after immutable capture.");
+            // The handle-anchored file is an auditable staging boundary, not the upload source.
+            // Shortcut receives only the immutable caller bytes retained below, never a host path.
 
             var now = timeProvider.GetUtcNow().UtcDateTime;
-            var entry = new Entry(ownerKey, safeName, contentType, captured, now.Add(Lifetime));
+            var entry = new Entry(ownerKey, safeName, contentType, bytes, now.Add(Lifetime));
             if (!entries.TryAdd(handle, entry))
                 throw new InvalidOperationException("Failed to allocate a unique upload handle.");
 
-            return new StagedShortcutUpload(handle, safeName, contentType, captured.LongLength, entry.ExpiresAtUtc);
+            return new StagedShortcutUpload(handle, safeName, contentType, bytes.LongLength, entry.ExpiresAtUtc);
         }
         catch
         {
@@ -190,18 +211,6 @@ public sealed class ShortcutUploadStagingArea : IDisposable
         if (entries.TryRemove(new KeyValuePair<string, Entry>(handle, entry)))
             Release(entry.Content.LongLength);
         Volatile.Write(ref entry.State, 2);
-    }
-
-    private static byte[] CaptureExactBytes(Stream stream, long expectedLength, byte[] expectedHash)
-    {
-        if (stream.Length != expectedLength || expectedLength > int.MaxValue)
-            throw new McpHubProviderPolicyException("The staged upload changed size while it was being captured.");
-        var captured = new byte[(int)expectedLength];
-        stream.ReadExactly(captured);
-        if (stream.ReadByte() != -1 ||
-            !CryptographicOperations.FixedTimeEquals(SHA256.HashData(captured), expectedHash))
-            throw new McpHubProviderPolicyException("The staged upload content changed while it was being captured.");
-        return captured;
     }
 
     private void Reserve(long size)
@@ -438,14 +447,26 @@ public sealed class ShortcutUploadStagingArea : IDisposable
     {
         try
         {
-            var info = Image.Identify(bytes);
+            var info = Image.Identify(ImageIdentificationOptions, bytes);
             if (!string.Equals(info.Metadata.DecodedImageFormat?.Name, expectedFormat, StringComparison.OrdinalIgnoreCase))
                 throw new McpHubProviderPolicyException($"The image encoding is not {expectedFormat}.");
-            if (info.Width <= 0 || info.Height <= 0 || (long)info.Width * info.Height > MaxDecodedImagePixels)
-                throw new McpHubProviderPolicyException("The decoded image dimensions exceed the safe limit.");
-            using var image = Image.Load(bytes);
-            if ((long)image.Width * image.Height * image.Frames.Count > MaxDecodedImagePixels)
-                throw new McpHubProviderPolicyException("The decoded image frame area exceeds the safe limit.");
+            if (info.Width <= 0 || info.Height <= 0)
+                throw new McpHubProviderPolicyException("The image dimensions are invalid.");
+
+            // Some single-frame decoders omit the redundant per-frame metadata entry.
+            var frameCount = Math.Max(1, info.FrameMetadataCollection.Count);
+            if (frameCount > MaxImageFrames)
+                throw new McpHubProviderPolicyException(
+                    "The image frame count exceeds the safe limit before pixel decoding.");
+
+            var aggregateFrameArea = checked((long)info.Width * info.Height * frameCount);
+            if (aggregateFrameArea > MaxAggregateImagePixels)
+                throw new McpHubProviderPolicyException(
+                    "The image aggregate frame area exceeds the safe limit before pixel decoding.");
+
+            // The upload gateway only needs to establish the declared file type and enforce resource
+            // bounds. Fully decoding untrusted pixels here would create a decompression-bomb primitive
+            // in a privileged process without making the opaque Shortcut attachment safer.
         }
         catch (McpHubProviderPolicyException)
         {
@@ -453,7 +474,7 @@ public sealed class ShortcutUploadStagingArea : IDisposable
         }
         catch (Exception ex)
         {
-            throw new McpHubProviderPolicyException($"The image cannot be fully decoded: {ex.Message}");
+            throw new McpHubProviderPolicyException($"The image metadata cannot be safely identified: {ex.Message}");
         }
     }
 
@@ -512,22 +533,21 @@ public sealed class ShortcutUploadStagingArea : IDisposable
         return Path.TrimEndingDirectorySeparator(parent);
     }
 
-    private static string CreatePrivateSessionRoot(string parent)
-    {
-        var root = Path.Combine(parent, SessionPrefix + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant());
-        if (OperatingSystem.IsWindows())
-            Directory.CreateDirectory(root);
-        else
-            Directory.CreateDirectory(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
-            throw new McpHubProviderPolicyException("The isolated upload staging root is not a real directory.");
-        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-    }
-
     private static bool IsOpaqueHandle(string? handle) =>
         handle is { Length: 64 } && handle.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
 
-    private static StringComparison PathComparison => OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    private static long CreateSessionId()
+    {
+        long value;
+        do
+        {
+            value = BitConverter.ToInt64(RandomNumberGenerator.GetBytes(sizeof(long))) & long.MaxValue;
+        } while (value == 0);
+        return value;
+    }
+
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     public void Dispose()
     {
@@ -536,10 +556,11 @@ public sealed class ShortcutUploadStagingArea : IDisposable
         cleanupTimer.Dispose();
         entries.Clear();
         Interlocked.Exchange(ref reservedBytes, 0);
-        try { Directory.Delete(sessionRoot, recursive: false); }
-        catch (DirectoryNotFoundException) { }
+        try { storage.DeleteContainerIfEmpty(sessionId); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+        catch (Win32Exception) { }
+        finally { storage.Dispose(); }
     }
 
     internal sealed class Entry(
