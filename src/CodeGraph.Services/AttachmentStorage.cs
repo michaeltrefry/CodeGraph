@@ -38,6 +38,59 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         lease.Commit();
     }
 
+    internal void EnsureContainer(long pageId)
+    {
+        var pageName = pageId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (OperatingSystem.IsWindows())
+        {
+            var root = ResolvePortableRoot(create: true);
+            var pageDirectory = Path.Combine(root, pageName);
+            CreateAndValidatePortableDirectory(root, pageDirectory);
+            using var page = OpenPortableDirectory(root, pageDirectory);
+            return;
+        }
+
+        using var rootHandle = OpenUnixRoot(create: true);
+        using var pageHandle = OpenOrCreateUnixDirectory(rootHandle.Handle, pageName);
+    }
+
+    internal void DeleteContainerIfEmpty(long pageId)
+    {
+        var pageName = pageId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (OperatingSystem.IsWindows())
+        {
+            var root = ResolvePortableRoot(create: false);
+            var pageDirectory = Path.Combine(root, pageName);
+            var handle = WindowsNative.CreateFile(
+                pageDirectory,
+                WindowsNative.DeleteAccess | WindowsNative.FileReadAttributes,
+                FileShare.ReadWrite | FileShare.Delete,
+                IntPtr.Zero,
+                FileMode.Open,
+                WindowsNative.FileFlagBackupSemantics | WindowsNative.FileFlagOpenReparsePoint,
+                IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                handle.Dispose();
+                if (error is WindowsNative.FileNotFound or WindowsNative.PathNotFound)
+                    return;
+                throw new Win32Exception(error);
+            }
+
+            using (handle)
+            {
+                RejectWindowsReparsePoint(handle);
+                ValidatePortableHandle(root, handle);
+                SetWindowsDeleteDisposition(handle, delete: true);
+            }
+            return;
+        }
+
+        using var unixRoot = OpenUnixRoot(create: false);
+        UnlinkAt(unixRoot.Handle, pageName, UnixFlags.RemoveDirectory, ignoreMissing: true);
+    }
+
     private async Task<(string Path, long Size)> CreateUnixAsync(long pageId, Stream content)
     {
         using var root = OpenUnixRoot(create: true);
@@ -556,9 +609,9 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
             throw CreateUnixException(oldName);
     }
 
-    private static void UnlinkAt(SafeFileHandle parent, string name, bool ignoreMissing)
+    private static void UnlinkAt(SafeFileHandle parent, string name, int flags = 0, bool ignoreMissing = false)
     {
-        if (UnixNative.UnlinkAt(GetFileDescriptor(parent), name, 0) == 0)
+        if (UnixNative.UnlinkAt(GetFileDescriptor(parent), name, flags) == 0)
             return;
         if (!ignoreMissing || Marshal.GetLastPInvokeError() != UnixNative.NoEntry)
             throw CreateUnixException(name);
@@ -635,6 +688,7 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         public static int NoFollow => OperatingSystem.IsMacOS() ? 0x0100 : 0x20000;
         public static int Directory => OperatingSystem.IsMacOS() ? 0x100000 : 0x10000;
         public static int CloseOnExec => OperatingSystem.IsMacOS() ? 0x1000000 : 0x80000;
+        public const int RemoveDirectory = 0x0200;
     }
 
     private static partial class UnixNative
