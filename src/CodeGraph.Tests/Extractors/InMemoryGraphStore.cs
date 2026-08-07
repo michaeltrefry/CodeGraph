@@ -55,6 +55,8 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public IReadOnlyList<GraphEdge> Edges => _edges;
     public IReadOnlyList<CrossRepoEdge> CrossEdges => _crossEdges;
     public IReadOnlyDictionary<string, ProjectSummary> Summaries => _summaries;
+    public int SchemaSearchQueryCount { get; private set; }
+    public int SchemaPageEnrichmentCount { get; private set; }
 
     public long AddNode(GraphNode node)
     {
@@ -120,6 +122,115 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var list = filtered.ToList();
         var items = list.OrderBy(p => p.Name).Skip((page - 1) * pageSize).Take(pageSize).ToList();
         return Task.FromResult(new RepositorySearchResult(items, list.Count));
+    }
+
+    public Task<SchemaRepositorySearchResult> SearchSchemaRepositoriesAsync(
+        string? search = null,
+        string? server = null,
+        string? database = null,
+        int page = 1,
+        int pageSize = 25)
+    {
+        SchemaSearchQueryCount++;
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var schemas = _projects
+            .Where(IsDatabaseSchemaProject)
+            .Select(project => new
+            {
+                Project = project,
+                ServerName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "",
+                DatabaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name)
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.ServerName) && !string.IsNullOrWhiteSpace(x.DatabaseName))
+            .ToList();
+
+        var filtered = schemas.Where(x =>
+            (string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(database) || x.DatabaseName.Equals(database, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(search) ||
+                x.Project.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.ServerName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.DatabaseName.Contains(search, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(x => x.ServerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.ServerName, StringComparer.Ordinal)
+            .ThenBy(x => x.DatabaseName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.DatabaseName, StringComparer.Ordinal)
+            .ThenBy(x => x.Project.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Project.Name, StringComparer.Ordinal)
+            .ToList();
+
+        var filteredProjects = filtered.Select(x => x.Project.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var filteredNodes = _nodes.Where(node => filteredProjects.Contains(node.Project)).ToList();
+        var pageItems = filtered
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x =>
+            {
+                SchemaPageEnrichmentCount++;
+                var projectNodes = filteredNodes.Where(node => node.Project.Equals(x.Project.Name, StringComparison.OrdinalIgnoreCase));
+                return new SchemaRepositoryItem(
+                    x.Project,
+                    x.ServerName,
+                    x.DatabaseName,
+                    projectNodes.Count(node => node.Label == NodeLabel.Table),
+                    projectNodes.Count(node => node.Label == NodeLabel.View),
+                    projectNodes.Count(node => node.Label == NodeLabel.StoredProcedure));
+            })
+            .ToList();
+
+        var serverOptions = schemas
+            .GroupBy(x => x.ServerName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Select(x => x.ServerName).Order(StringComparer.Ordinal).First())
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ThenBy(value => value, StringComparer.Ordinal)
+            .ToList();
+        var databaseOptions = schemas
+            .Where(x => string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(x => x.DatabaseName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Select(x => x.DatabaseName).Order(StringComparer.Ordinal).First())
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ThenBy(value => value, StringComparer.Ordinal)
+            .ToList();
+
+        return Task.FromResult(new SchemaRepositorySearchResult(
+            pageItems,
+            filtered.Count,
+            filteredNodes.Count(node => node.Label == NodeLabel.Table),
+            filteredNodes.Count(node => node.Label == NodeLabel.View),
+            filteredNodes.Count(node => node.Label == NodeLabel.StoredProcedure),
+            serverOptions,
+            databaseOptions));
+    }
+
+    private static bool IsDatabaseSchemaProject(ProjectInfo project) =>
+        project.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
+        GetStringProperty(project.Properties, "serverName") is not null ||
+        GetStringProperty(project.Properties, "databaseName") is not null;
+
+    private static string GetDatabaseNameFromProject(string projectName)
+    {
+        var name = projectName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
+            ? projectName[3..]
+            : projectName;
+        var slash = name.LastIndexOf('/');
+        return slash >= 0 ? name[(slash + 1)..] : name;
+    }
+
+    private static string? GetStringProperty(Dictionary<string, object>? properties, string key)
+    {
+        if (properties is null || !properties.TryGetValue(key, out var value))
+            return null;
+
+        return value switch
+        {
+            null => null,
+            string text => text,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            JsonElement element => element.ToString(),
+            _ => value.ToString()
+        };
     }
 
     private static bool IsRepositorySearchMatch(string name, string search)
