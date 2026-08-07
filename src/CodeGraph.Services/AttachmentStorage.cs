@@ -270,7 +270,7 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
                     FileAccess.ReadWrite,
                     FileShare.Delete,
                     81920,
-                    FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+                    FileOptions.Asynchronous);
             }
             catch (IOException) when (File.Exists(path) || Directory.Exists(path))
             {
@@ -282,7 +282,6 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
                 try
                 {
                     ValidatePortableHandle(root, destination.SafeFileHandle);
-                    SetWindowsDeleteDisposition(destination.SafeFileHandle, delete: false);
                     await content.CopyToAsync(destination);
                     await destination.FlushAsync();
                     return (Path.Combine(lexicalRoot, pageName, Path.GetFileName(path)), destination.Length);

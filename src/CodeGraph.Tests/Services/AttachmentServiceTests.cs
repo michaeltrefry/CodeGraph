@@ -303,7 +303,10 @@ public sealed class AttachmentServiceTests : IDisposable
                            1, "report.txt", "text/plain",
                            new MemoryStream("original"u8.ToArray()), "codex")
                        ?? throw new InvalidOperationException("Attachment upload failed.");
-        var storageName = Path.GetFileName(store.Attachments.Single().StoragePath);
+        var storagePath = store.Attachments.Single().StoragePath;
+        File.Exists(storagePath).ShouldBeTrue(
+            "the swap test must start with a durable successful upload");
+        var storageName = Path.GetFileName(storagePath);
         var outsideFile = Path.Combine(outside, storageName);
         await File.WriteAllTextAsync(outsideFile, "outside sentinel");
 
