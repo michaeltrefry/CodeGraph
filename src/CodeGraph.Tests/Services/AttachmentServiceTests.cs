@@ -336,7 +336,7 @@ public sealed class AttachmentServiceTests : IDisposable
             if (File.Exists(outsideFile))
                 File.Delete(outsideFile);
             if (Directory.Exists(pageDirectory))
-                Directory.Delete(pageDirectory);
+                Directory.Delete(pageDirectory, recursive: true);
             if (Directory.Exists(outside))
                 Directory.Delete(outside, recursive: true);
         }
