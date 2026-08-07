@@ -1,7 +1,7 @@
 ALTER TABLE assistant_runs
-    ADD COLUMN execution_state_json JSON NULL AFTER request_hash;
+    ADD COLUMN IF NOT EXISTS execution_state_json JSON NULL AFTER request_hash;
 
-CREATE TABLE assistant_debug_trace_audit (
+CREATE TABLE IF NOT EXISTS assistant_debug_trace_audit (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     run_id BIGINT NOT NULL,
     chat_id VARCHAR(255) NOT NULL,

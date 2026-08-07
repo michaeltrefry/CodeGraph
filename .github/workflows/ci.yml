@@ -14,6 +14,29 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: codegraph_test!
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      rabbitmq:
+        image: rabbitmq:3.13
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      CODEGRAPH_MARIADB_TEST_CONNECTION: Server=127.0.0.1;Port=3306;User ID=root;Password=codegraph_test!;
     steps:
       - name: Checkout
         uses: actions/checkout@v4

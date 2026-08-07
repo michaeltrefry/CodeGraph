@@ -7,6 +7,7 @@ public class Program
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder(args);
         Startup.ConfigureServices(builder.Services, builder.Configuration);
         using var host = builder.Build();
+        await Startup.InitializeAsync(host.Services);
         await host.RunAsync();
     }
 }

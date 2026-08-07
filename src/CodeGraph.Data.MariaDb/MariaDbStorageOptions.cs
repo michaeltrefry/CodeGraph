@@ -4,6 +4,7 @@ public class MariaDbStorageOptions
 {
     public string ConnectionString { get; set; } = "";
     public string MigrationsPath { get; set; } = "sql/migrations";
+    public int MigrationLockTimeoutSeconds { get; set; } = 120;
     public int BatchSize { get; set; } = 500;
 
     // Encryption key for database source connection strings and LLM tokens (AES-256, base64-encoded).

@@ -21,11 +21,7 @@ public class MariaDbMetricsStoreTests
     [Fact]
     public async Task MySqlMetricsStore_RoundTripsMetricsHealthAndSecurityWhenConnectionIsConfigured()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            return;
-        }
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
 
         var builder = new MySqlConnectionStringBuilder(connectionString);
         var databaseName = $"codegraph_metrics_store_test_{Guid.NewGuid():N}";

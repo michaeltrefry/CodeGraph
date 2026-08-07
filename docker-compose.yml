@@ -12,6 +12,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__McpOptions__RequirePersonalAccessToken: ${CodeGraph__McpOptions__RequirePersonalAccessToken:-false}
       CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-false}
@@ -113,6 +114,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
@@ -137,6 +139,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingDimensions: 768
       CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
@@ -199,6 +202,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingDimensions: 768
       CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
@@ -225,6 +229,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingDimensions: 768
       CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192

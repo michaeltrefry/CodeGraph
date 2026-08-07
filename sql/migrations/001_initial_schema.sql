@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS migration_history (
     applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB;
 
-CREATE TABLE repositories (
+CREATE TABLE IF NOT EXISTS repositories (
     name VARCHAR(255) PRIMARY KEY,
     repo_url VARCHAR(500),
     local_path VARCHAR(500),
@@ -21,7 +21,7 @@ CREATE TABLE repositories (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB;
 
-CREATE TABLE file_hashes (
+CREATE TABLE IF NOT EXISTS file_hashes (
     project VARCHAR(255) NOT NULL,
     rel_path VARCHAR(500) NOT NULL,
     content_hash VARCHAR(64) NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE file_hashes (
     FOREIGN KEY (project) REFERENCES repositories(name) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE nodes (
+CREATE TABLE IF NOT EXISTS nodes (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     project VARCHAR(255) NOT NULL,
     dotnet_project VARCHAR(255) NULL,
@@ -48,7 +48,7 @@ CREATE TABLE nodes (
     FOREIGN KEY (project) REFERENCES repositories(name) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE edges (
+CREATE TABLE IF NOT EXISTS edges (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     project VARCHAR(255) NOT NULL,
     source_id BIGINT NOT NULL,
@@ -64,7 +64,7 @@ CREATE TABLE edges (
     FOREIGN KEY (project) REFERENCES repositories(name) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE cross_repo_edges (
+CREATE TABLE IF NOT EXISTS cross_repo_edges (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     source_project VARCHAR(255) NOT NULL,
     target_project VARCHAR(255) NOT NULL,
@@ -79,7 +79,7 @@ CREATE TABLE cross_repo_edges (
     FOREIGN KEY (target_node_id) REFERENCES nodes(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE repository_summaries (
+CREATE TABLE IF NOT EXISTS repository_summaries (
     project VARCHAR(255) PRIMARY KEY,
     summary TEXT NOT NULL,
     confidence VARCHAR(10) NOT NULL DEFAULT 'medium',
@@ -90,7 +90,7 @@ CREATE TABLE repository_summaries (
     FOREIGN KEY (project) REFERENCES repositories(name) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE sync_state (
+CREATE TABLE IF NOT EXISTS sync_state (
     project VARCHAR(255) PRIMARY KEY,
     last_sync_at DATETIME(3),
     last_commit_sha VARCHAR(40),
@@ -99,7 +99,7 @@ CREATE TABLE sync_state (
     FOREIGN KEY (project) REFERENCES repositories(name) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE project_analyses (
+CREATE TABLE IF NOT EXISTS project_analyses (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     repo VARCHAR(255) NOT NULL,
     project_name VARCHAR(255) NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE project_analyses (
     FOREIGN KEY (repo) REFERENCES repositories(name) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE analysis_batches (
+CREATE TABLE IF NOT EXISTS analysis_batches (
     id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
     repo                VARCHAR(500)    NOT NULL,
     anthropic_batch_id  VARCHAR(200)    NOT NULL,
@@ -131,7 +131,7 @@ CREATE TABLE analysis_batches (
     INDEX idx_ab_anthropic  (anthropic_batch_id)
 ) ENGINE=InnoDB;
 
-CREATE TABLE analysis_batch_requests (
+CREATE TABLE IF NOT EXISTS analysis_batch_requests (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     batch_id        BIGINT          NOT NULL,
     custom_id       VARCHAR(200)    NOT NULL,
@@ -145,7 +145,7 @@ CREATE TABLE analysis_batch_requests (
     INDEX idx_abr_custom (custom_id)
 ) ENGINE=InnoDB;
 
-CREATE TABLE node_analysis (
+CREATE TABLE IF NOT EXISTS node_analysis (
     node_id     BIGINT          NOT NULL PRIMARY KEY,
     description TEXT            NOT NULL,
     confidence  VARCHAR(20)     NOT NULL DEFAULT 'medium',

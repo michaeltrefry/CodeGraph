@@ -21,11 +21,7 @@ public class MariaDbIndexerRunStoreTests
     [Fact]
     public async Task MySqlIndexerRunStore_RoundTripsRunStatusWhenConnectionIsConfigured()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            return;
-        }
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
 
         var builder = new MySqlConnectionStringBuilder(connectionString);
         var databaseName = $"codegraph_indexer_test_{Guid.NewGuid():N}";

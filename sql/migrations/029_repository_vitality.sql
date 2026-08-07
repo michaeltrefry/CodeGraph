@@ -1,12 +1,12 @@
 ALTER TABLE file_metrics
-    ADD COLUMN churn_30d INT NOT NULL DEFAULT 0 AFTER last_change_at,
-    ADD COLUMN churn_90d INT NOT NULL DEFAULT 0 AFTER churn_30d,
-    ADD COLUMN churn_365d INT NOT NULL DEFAULT 0 AFTER churn_90d,
-    ADD COLUMN recurring_churn_score DOUBLE NOT NULL DEFAULT 0 AFTER churn_365d,
-    ADD COLUMN bug_fix_commits_90d INT NOT NULL DEFAULT 0 AFTER recurring_churn_score,
-    ADD COLUMN bug_fix_commits_365d INT NOT NULL DEFAULT 0 AFTER bug_fix_commits_90d,
-    ADD COLUMN bug_fix_ratio_365d DOUBLE NOT NULL DEFAULT 0 AFTER bug_fix_commits_365d,
-    ADD COLUMN bug_fix_authors_365d INT NOT NULL DEFAULT 0 AFTER bug_fix_ratio_365d;
+    ADD COLUMN IF NOT EXISTS churn_30d INT NOT NULL DEFAULT 0 AFTER last_change_at,
+    ADD COLUMN IF NOT EXISTS churn_90d INT NOT NULL DEFAULT 0 AFTER churn_30d,
+    ADD COLUMN IF NOT EXISTS churn_365d INT NOT NULL DEFAULT 0 AFTER churn_90d,
+    ADD COLUMN IF NOT EXISTS recurring_churn_score DOUBLE NOT NULL DEFAULT 0 AFTER churn_365d,
+    ADD COLUMN IF NOT EXISTS bug_fix_commits_90d INT NOT NULL DEFAULT 0 AFTER recurring_churn_score,
+    ADD COLUMN IF NOT EXISTS bug_fix_commits_365d INT NOT NULL DEFAULT 0 AFTER bug_fix_commits_90d,
+    ADD COLUMN IF NOT EXISTS bug_fix_ratio_365d DOUBLE NOT NULL DEFAULT 0 AFTER bug_fix_commits_365d,
+    ADD COLUMN IF NOT EXISTS bug_fix_authors_365d INT NOT NULL DEFAULT 0 AFTER bug_fix_ratio_365d;
 
 CREATE TABLE IF NOT EXISTS repository_vitality_summaries (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,

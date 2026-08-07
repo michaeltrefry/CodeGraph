@@ -250,6 +250,7 @@ public static class Startup
             {
                 options.ConnectionString = storageOptions.MariaDbConnectionString;
                 options.MigrationsPath = storageOptions.MariaDbMigrationsPath;
+                options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
             return;
