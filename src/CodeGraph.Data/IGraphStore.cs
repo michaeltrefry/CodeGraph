@@ -77,6 +77,13 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMig
         RepositoryEntity repository,
         SyncStateEntity? syncState,
         CancellationToken ct = default);
+    Task<int> ReplaceProjectFilesAsync(
+        string project,
+        IReadOnlyList<string> filePaths,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges,
+        IReadOnlyDictionary<string, string> fileHashes,
+        CancellationToken ct = default);
     Task DeleteFilesFromProjectGraphAsync(
         string project,
         IReadOnlyList<string> filePaths,

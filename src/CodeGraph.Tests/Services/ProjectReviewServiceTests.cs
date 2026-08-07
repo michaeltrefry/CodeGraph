@@ -16,6 +16,54 @@ namespace CodeGraph.Tests.Services;
 public class ProjectReviewServiceTests
 {
     [Fact]
+    public async Task ReviewRun_DoesNotReadInspectionTargetOutsideRepository()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestRepo");
+
+        try
+        {
+            await SeedProjectAsync(store, repoPath);
+            await File.WriteAllTextAsync(
+                Path.Combine(Path.GetDirectoryName(repoPath)!, "secret.cs"),
+                "SECRET_OUTSIDE_REPOSITORY");
+            await store.UpsertFileMetricsBatchAsync("TestRepo",
+            [
+                new FileMetricsEntity
+                {
+                    Project = "TestRepo",
+                    DotnetProject = "TestRepo.Api",
+                    FilePath = "../secret.cs",
+                    ComplexityScore = 100,
+                    LongestFunction = 100,
+                    HealthScore = 0,
+                    RiskScore = 10,
+                    ComputedAt = DateTime.UtcNow
+                }
+            ]);
+            var provider = new RecordingProvider(
+                """
+                {"overview":"workflow","strengths":[],"reviewedAreas":[],"skippedAreas":[],"followUps":[],"candidateFindings":[]}
+                """,
+                """
+                {"overview":"final","strengths":[],"reviewedAreas":[],"skippedAreas":[],"followUps":[],"findings":[]}
+                """);
+            var service = CreateService(store, provider, maxFilesToInspect: 1);
+
+            var runId = await service.StartReviewAsync("TestRepo", "TestRepo.Api", "standard");
+            var error = await Should.ThrowAsync<InvalidOperationException>(
+                () => service.ExecuteReviewRunAsync(runId));
+
+            error.Message.ShouldContain("No source files could be loaded");
+            provider.Prompts.ShouldBeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(repoPath)!, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task StartReviewAsync_UsesDiagnosticsToSeedInspectionQueue()
     {
         var store = new InMemoryGraphStore();

@@ -158,11 +158,14 @@ public class BatchAnalysisServiceBatchProviderTests
     public async Task SubmitAnalysisBatch_ForCRepo_PrefersOwnedFirmwareFunctions_OverVendoredComponents()
     {
         var repoPath = Path.Combine(Path.GetTempPath(), $"codegraph-c-prompt-{Guid.NewGuid():N}");
+        var untrustedMessagePath = Path.Combine(Path.GetTempPath(), $"codegraph-c-untrusted-{Guid.NewGuid():N}");
         var firstPartyFile = Path.Combine(repoPath, "src/Display-Board/main/managers/display_manager.c");
         var vendoredFile = Path.Combine(repoPath, "src/Display-Board/components/espressif__esp_hosted/common/protobuf-c/protoc-c/c_message.cc");
+        var untrustedFile = Path.Combine(untrustedMessagePath, "src/Display-Board/main/managers/display_manager.c");
 
         Directory.CreateDirectory(Path.GetDirectoryName(firstPartyFile)!);
         Directory.CreateDirectory(Path.GetDirectoryName(vendoredFile)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(untrustedFile)!);
 
         try
         {
@@ -178,6 +181,7 @@ public class BatchAnalysisServiceBatchProviderTests
                     // vendored toolchain code
                 }
                 """);
+            await File.WriteAllTextAsync(untrustedFile, "SECRET_FROM_MESSAGE_PATH");
 
             var store = new InMemoryGraphStore();
             await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -221,11 +225,13 @@ public class BatchAnalysisServiceBatchProviderTests
                 new LocalFileSystem(),
                 NullLogger<BatchAnalysisService>.Instance);
 
-            await service.SubmitAnalysisBatchAsync("demo-repo", repoPath, includeAllSource: true);
+            await service.SubmitAnalysisBatchAsync("demo-repo", untrustedMessagePath, includeAllSource: true);
 
             provider.LastSubmittedPrompt.ShouldNotBeNull();
             provider.LastSubmittedPrompt.ShouldContain("[Function] demo-repo.display_manager_tick");
             provider.LastSubmittedPrompt.ShouldContain("display_manager.c");
+            provider.LastSubmittedPrompt.ShouldContain("keep UI responsive");
+            provider.LastSubmittedPrompt.ShouldNotContain("SECRET_FROM_MESSAGE_PATH");
             provider.LastSubmittedPrompt.ShouldNotContain("demo-repo.protoc_codegen_pass");
             provider.LastSubmittedPrompt.ShouldNotContain("c_message.cc");
         }
@@ -233,6 +239,53 @@ public class BatchAnalysisServiceBatchProviderTests
         {
             if (Directory.Exists(repoPath))
                 Directory.Delete(repoPath, recursive: true);
+            if (Directory.Exists(untrustedMessagePath))
+                Directory.Delete(untrustedMessagePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SubmitAnalysisBatch_DoesNotReadMessagePathForStaleNodesWithoutRepository()
+    {
+        var untrustedPath = Path.Combine(Path.GetTempPath(), $"codegraph-stale-source-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(untrustedPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(untrustedPath, "OrderService.cs"),
+                "class OrderService { string Password = \"SECRET_FROM_ARBITRARY_PATH\"; }");
+            var store = new InMemoryGraphStore();
+            var nodeId = await store.UpsertNodeAsync(new GraphNode
+            {
+                Project = "removed-repo",
+                DotnetProject = "Removed.Services",
+                Label = NodeLabel.Class,
+                Name = "OrderService",
+                QualifiedName = "Removed.Services.OrderService",
+                FilePath = "OrderService.cs",
+                StartLine = 1,
+                EndLine = 1
+            });
+            var provider = new RecordingBatchProvider(nodeId);
+            var service = new BatchAnalysisService(
+                store,
+                new SingleProviderRegistry(provider),
+                new RecordingMessageBus(),
+                new NoOpExclusionService(),
+                Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio", MaxSourceChars = 4000 }),
+                new LocalFileSystem(),
+                NullLogger<BatchAnalysisService>.Instance);
+
+            await service.SubmitAnalysisBatchAsync("removed-repo", untrustedPath, includeAllSource: true);
+
+            provider.LastSubmittedPrompt.ShouldNotBeNull();
+            provider.LastSubmittedPrompt.ShouldContain("Removed.Services.OrderService");
+            provider.LastSubmittedPrompt.ShouldNotContain("SECRET_FROM_ARBITRARY_PATH");
+        }
+        finally
+        {
+            Directory.Delete(untrustedPath, recursive: true);
         }
     }
 

@@ -2,8 +2,10 @@ using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Memory;
 using Dapper;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Shouldly;
 
 namespace CodeGraph.Tests.Data;
@@ -39,7 +41,9 @@ public class MariaDbMemoryGraphStoreTests
         {
             await runner.ApplyConfiguredMigrationsAsync();
 
-            var store = new MySqlMemoryGraphStore(storageOptions);
+            var tenantContext = new MemoryTenantContext();
+            using var tenantScope = tenantContext.Enter(MemoryTenantContext.ForAuthenticatedUser("integration-user"));
+            var store = new MySqlMemoryGraphStore(storageOptions, tenantContext);
             var receipt = new MemoryWriteReceipt
             {
                 Id = "memory_write_test",
@@ -110,6 +114,15 @@ public class MariaDbMemoryGraphStoreTests
                     Snippet = "verified",
                 }
             ]);
+            await store.CreateObservationAsync(new MemoryObservation
+            {
+                Id = "observation_1",
+                Claim = claim.Id,
+                ConflictsWith = claim.Id,
+                Source = "test",
+                AboutEntityIds = ["codegraph"],
+                AboutClaimIds = [claim.Id],
+            });
 
             (await store.GetEntityAsync("codegraph"))!.Label.ShouldBe("CodeGraph");
             (await store.GetClaimAsync(claim.Id))!.ObjectEntityId.ShouldBe("mariadb");
@@ -117,6 +130,8 @@ public class MariaDbMemoryGraphStoreTests
             (await store.GetRelationshipsAsync("codegraph")).Single().TargetId.ShouldBe("mariadb");
             (await store.GetEntityBundleAsync("codegraph"))!.ActiveClaims.Single().Id.ShouldBe(claim.Id);
             (await store.GetClaimBundleAsync(claim.Id))!.Evidence.Single().Id.ShouldBe("evidence_1");
+            (await store.GetUnresolvedObservationsAsync(["codegraph"], [claim.Id]))
+                .Single().Id.ShouldBe("observation_1");
             (await store.VectorSearchAsync([1f, 0f, 0f], topK: 1)).Single().Entity.Id.ShouldBe("codegraph");
 
             await store.UpdateWriteReceiptStatusAsync(receipt.Id, MemoryWriteReceiptStatus.Completed, new StoreMemoryResult
@@ -126,11 +141,128 @@ public class MariaDbMemoryGraphStoreTests
                 EvidenceWritten = 1,
             });
             (await store.GetWriteReceiptAsync(receipt.Id))!.ClaimsWritten.ShouldBe(1);
+
+            using (tenantContext.Enter(MemoryTenantContext.ForAuthenticatedUser("second-user")))
+            {
+                (await store.GetEntityAsync("codegraph")).ShouldBeNull();
+                (await store.GetClaimAsync(claim.Id)).ShouldBeNull();
+                (await store.GetWriteReceiptAsync(receipt.Id)).ShouldBeNull();
+                (await store.TextSearchAsync("CodeGraph", 5)).ShouldBeEmpty();
+                (await store.SearchClaimsAsync("uses mariadb", null, 5)).ShouldBeEmpty();
+                (await store.GetUnresolvedObservationsAsync(["codegraph"], [claim.Id])).ShouldBeEmpty();
+
+                await store.UpsertEntitiesBatchAsync(
+                [
+                    new MemoryEntity
+                    {
+                        Id = "codegraph",
+                        Label = "Second User CodeGraph",
+                        Type = "project",
+                        Summary = "Private second-user memory",
+                        Source = "test",
+                    }
+                ]);
+                await store.CreateWriteReceiptAsync(new MemoryWriteReceipt
+                {
+                    Id = "memory_write_second_user",
+                    Source = "test",
+                    EntitiesRequested = 1,
+                });
+                var secondUserClaim = new MemoryClaim
+                {
+                    Id = claim.Id,
+                    ClaimKey = claim.ClaimKey,
+                    FactGroupKey = claim.FactGroupKey,
+                    SubjectEntityId = "codegraph",
+                    Predicate = "owns",
+                    ValueText = "private memory",
+                    NormalizedText = "second user owns private memory",
+                    Status = MemoryClaimStatus.Active,
+                    Source = "test",
+                };
+                await store.UpsertClaimsBatchAsync([secondUserClaim]);
+                await store.CreateObservationAsync(new MemoryObservation
+                {
+                    Id = "observation_1",
+                    Claim = secondUserClaim.Id,
+                    ConflictsWith = secondUserClaim.Id,
+                    Source = "test",
+                    AboutEntityIds = ["codegraph"],
+                    AboutClaimIds = [secondUserClaim.Id],
+                });
+                await store.AddEvidenceBatchAsync(
+                [
+                    new MemoryEvidence
+                    {
+                        Id = "evidence_1",
+                        ClaimId = secondUserClaim.Id,
+                        EvidenceType = "test",
+                        SourceRef = "second-user-test",
+                    }
+                ]);
+
+                (await store.GetEntityAsync("codegraph"))!.Label.ShouldBe("Second User CodeGraph");
+                (await store.GetClaimAsync(claim.Id))!.Predicate.ShouldBe("owns");
+                (await store.GetClaimBundleAsync(claim.Id))!.Evidence.Single().SourceRef.ShouldBe("second-user-test");
+                (await store.GetUnresolvedObservationsAsync(["codegraph"], [claim.Id]))
+                    .Single().Id.ShouldBe("observation_1");
+                (await store.GetWriteReceiptAsync("memory_write_second_user")).ShouldNotBeNull();
+
+                var cleanup = await store.DeleteMemoryBySourceAsync("test", dryRun: false);
+                cleanup.Username.ShouldBe(MemoryTenantContext.ForAuthenticatedUser("second-user"));
+                cleanup.EntitiesDeleted.ShouldBe(1);
+                (await store.GetEntityAsync("codegraph")).ShouldBeNull();
+                (await store.GetWriteReceiptAsync("memory_write_second_user")).ShouldBeNull();
+            }
+
+            (await store.GetEntityAsync("codegraph"))!.Label.ShouldBe("CodeGraph");
+            (await store.GetClaimAsync(claim.Id)).ShouldNotBeNull();
+            (await store.GetClaimBundleAsync(claim.Id))!.Evidence.Single().Id.ShouldBe("evidence_1");
+            (await store.GetUnresolvedObservationsAsync(["codegraph"], [claim.Id]))
+                .Single().Id.ShouldBe("observation_1");
+            (await store.GetWriteReceiptAsync(receipt.Id)).ShouldNotBeNull();
+
+            await using (var connection = new MySqlConnection(builder.ConnectionString))
+            {
+                var policy = await connection.QuerySingleAsync<(string Status, string? Owner)>(
+                    "SELECT ownership_status AS Status, owner_username AS Owner FROM memory_tenant_ownership WHERE username = 'default';");
+                policy.Status.ShouldBe("quarantined");
+                policy.Owner.ShouldBeNull();
+            }
+
+            await using (var db = new CodeGraphDbContext(CreateOptions(builder.ConnectionString)))
+            {
+                var auditStore = new MySqlMemoryAdminAuditStore(db);
+                var auditId = await auditStore.CreatePendingAsync(new MemoryAdminAuditEntity
+                {
+                    ActorUsername = "user:admin",
+                    TargetUsername = "default",
+                    Operation = "diagnostics",
+                    DryRun = true,
+                });
+                await auditStore.SetOutcomeAsync(auditId, "completed", true, null);
+
+                var audit = await db.MemoryAdminAudit.SingleAsync();
+                audit.ActorUsername.ShouldBe("user:admin");
+                audit.TargetUsername.ShouldBe("default");
+                audit.OutcomeStatus.ShouldBe("completed");
+                audit.Succeeded.ShouldBe(true);
+                audit.CompletedAt.ShouldNotBeNull();
+            }
         }
         finally
         {
             await DropDatabaseAsync(builder.ConnectionString, databaseName);
         }
+    }
+
+    private static DbContextOptions<CodeGraphDbContext> CreateOptions(string connectionString)
+    {
+        var options = new DbContextOptionsBuilder<CodeGraphDbContext>();
+        options.UseMySql(
+            connectionString,
+            ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb));
+        return options.Options;
     }
 
     private static async Task DropDatabaseAsync(string connectionString, string databaseName)

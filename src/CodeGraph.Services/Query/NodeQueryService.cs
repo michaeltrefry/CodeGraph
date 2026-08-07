@@ -9,7 +9,6 @@ namespace CodeGraph.Services.Query;
 
 public class NodeQueryService(
     IGraphStore store,
-    IFileSystem fileSystem,
     IOptions<RepositorySourceOptions> sourceOptionsAccessor) : INodeQueryService
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
@@ -101,14 +100,13 @@ public class NodeQueryService(
         if (node is null || string.IsNullOrWhiteSpace(node.FilePath))
             return null;
 
-        var fullPath = await RepoFileResolver.ResolveAsync(
+        var content = await RepoFileResolver.ReadAllTextAsync(
             node.Project, node.FilePath, sourceOptions, store);
 
-        if (fullPath is null)
+        if (content is null)
             return null;
 
-        var content = await fileSystem.ReadAllTextAsync(fullPath);
-        var ext = Path.GetExtension(fullPath);
+        var ext = Path.GetExtension(node.FilePath);
         var language = ExtensionToLanguage.GetValueOrDefault(ext, "plaintext");
 
         return new NodeSourceResponse(node.FilePath, node.StartLine, node.EndLine, content, language);

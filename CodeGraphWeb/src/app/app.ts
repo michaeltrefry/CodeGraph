@@ -41,6 +41,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   'mcp-hub': 'MCP Hub',
   'database-sources': 'Database sources',
   reports: 'Reports',
+  logs: 'Logs',
   'assistant-debug': 'Assistant debug',
   'access-tokens': 'Access tokens'
 };

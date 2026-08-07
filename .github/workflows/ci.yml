@@ -35,8 +35,22 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/codegraph_test!
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd="cypher-shell -u neo4j -p codegraph_test! 'RETURN 1'"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     env:
       CODEGRAPH_MARIADB_TEST_CONNECTION: Server=127.0.0.1;Port=3306;User ID=root;Password=codegraph_test!;
+      CODEGRAPH_NEO4J_TEST_URI: bolt://127.0.0.1:7687
+      CODEGRAPH_NEO4J_TEST_USERNAME: neo4j
+      CODEGRAPH_NEO4J_TEST_PASSWORD: codegraph_test!
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,8 +69,8 @@ jobs:
       - name: Test
         run: dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
 
-  shortcut-upload-security-windows:
-    name: Shortcut Upload Security (Windows)
+  windows-attachment-security:
+    name: Windows Attachment Security
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -68,7 +82,37 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Run cross-platform staging security tests
-        run: dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj --configuration Release --filter "FullyQualifiedName~ShortcutUploadStagingAreaTests" --verbosity normal
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj
+          --configuration Release
+          --filter "FullyQualifiedName~ShortcutUploadStagingAreaTests"
+          --verbosity normal
+
+      - name: Test Windows attachment filesystem behavior
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj
+          --configuration Release
+          --verbosity normal
+          --filter FullyQualifiedName~AttachmentServiceTests
+
+  windows-resolver:
+    name: Windows Resolver Security
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run repository resolver security tests
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj
+          --configuration Release
+          --filter "FullyQualifiedName~RepoFileResolverTests"
+          --verbosity normal
 
   frontend:
     name: Frontend
