@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using CodeGraph.Api.Indexer;
+using CodeGraph.Api.Logging;
 using CodeGraph.Data;
 using CodeGraph.Data.Migration;
 using CodeGraph.Data.MariaDb;
@@ -534,6 +535,7 @@ public static class Startup
                 options.MigrationsPath = storageOptions.MariaDbMigrationsPath;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
+            services.AddApplicationDatabaseLogging(configuration);
             services.AddSingleton<Neo4jSessionFactory>();
             services.AddTransient<INeo4jToMariaDbGraphExporter, Neo4jGraphStore>();
             return;
