@@ -27,6 +27,18 @@ public class ExtractorContext
     /// Known foundational types and their meanings (populated after analyzing framework repos).
     /// </summary>
     public FoundationalKnowledge? FoundationalKnowledge { get; init; }
+
+    /// <summary>
+    /// Whether repository-controlled tooling may run for this indexing operation.
+    /// The default is untrusted so every caller must opt in explicitly.
+    /// </summary>
+    public RepositoryToolingTrust RepositoryToolingTrust { get; init; } = RepositoryToolingTrust.Untrusted;
+}
+
+public enum RepositoryToolingTrust
+{
+    Untrusted = 0,
+    Trusted = 1
 }
 
 public class FoundationalKnowledge

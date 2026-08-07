@@ -7,5 +7,5 @@ CREATE TABLE IF NOT EXISTS agent_prompt_overrides (
     UNIQUE KEY uq_agent_prompt_overrides_prompt_key (prompt_key)
 ) ENGINE=InnoDB;
 
-CREATE INDEX ix_agent_prompt_overrides_updated_at
+CREATE INDEX IF NOT EXISTS ix_agent_prompt_overrides_updated_at
     ON agent_prompt_overrides (updated_at);

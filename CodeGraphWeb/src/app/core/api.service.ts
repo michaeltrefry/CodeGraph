@@ -54,6 +54,8 @@ import {
   McpHubToolResponse,
   AdminReportFiltersResponse,
   AdminReportResponse,
+  ApplicationLogPageResponse,
+  ClientErrorReportRequest,
   AssistantDebugExchangeListResponse,
   LlmAnalysisResponse,
   LlmAnalysisWriteRequest,
@@ -452,6 +454,25 @@ export class ApiService {
     return this.http.get<AdminReportFiltersResponse>(`${API}/admin/reports/filters`, {
       params: this.buildReportParams(filters)
     });
+  }
+
+  getApplicationLogs(filters: {
+    page: number;
+    level?: string;
+    start?: string;
+    end?: string;
+    search?: string;
+  }): Observable<ApplicationLogPageResponse> {
+    let params = new HttpParams().set('page', filters.page);
+    if (filters.level) params = params.set('level', filters.level);
+    if (filters.start) params = params.set('start', filters.start);
+    if (filters.end) params = params.set('end', filters.end);
+    if (filters.search) params = params.set('search', filters.search);
+    return this.http.get<ApplicationLogPageResponse>(`${API}/admin/logs`, { params });
+  }
+
+  reportClientError(request: ClientErrorReportRequest): Observable<void> {
+    return this.http.post<void>(`${API}/client-errors`, request);
   }
 
   // LLM configuration

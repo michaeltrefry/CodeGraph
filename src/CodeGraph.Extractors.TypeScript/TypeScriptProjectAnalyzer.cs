@@ -53,6 +53,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
             UnresolvedCalls = response.UnresolvedCalls
                 .Select(c => new UnresolvedCall(c.CallerQN, c.CalleeName, c.ReceiverType, c.Confidence))
                 .ToList(),
+            ProcessedFiles = response.ProcessedFiles,
             Metadata = metadata,
         };
 

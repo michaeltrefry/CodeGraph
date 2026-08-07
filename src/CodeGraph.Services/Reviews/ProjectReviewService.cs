@@ -510,12 +510,14 @@ public class ProjectReviewService(
         var results = new List<ReviewInspectionFile>();
         foreach (var target in targets)
         {
-            var fullPath = RepoFileResolver.Resolve(repo, target.FilePath, sourceOptions.ReposCachePath, repoRoot)
-                ?? Path.Combine(repoRoot, target.FilePath.Replace('/', Path.DirectorySeparatorChar));
-            if (!fileSystem.FileExists(fullPath))
+            var content = await RepoFileResolver.ReadAllTextAsync(
+                repo,
+                target.FilePath,
+                sourceOptions.ReposCachePath,
+                repoRoot,
+                ct);
+            if (content is null)
                 continue;
-
-            var content = await fileSystem.ReadAllTextAsync(fullPath, ct);
             var lines = content.Replace("\r\n", "\n").Split('\n');
             var normalizedPath = NormalizePath(target.FilePath);
             var focusedSpans = changedLineSpans is not null &&
@@ -708,13 +710,13 @@ public class ProjectReviewService(
 
     private string? ResolveRepoRoot(string repo, ProjectInfo repository)
     {
-        if (!string.IsNullOrWhiteSpace(repository.LocalPath) && Directory.Exists(repository.LocalPath))
+        if (!string.IsNullOrWhiteSpace(repository.LocalPath) && fileSystem.DirectoryExists(repository.LocalPath))
             return repository.LocalPath;
 
         if (!string.IsNullOrWhiteSpace(sourceOptions.ReposCachePath))
         {
             var cachePath = Path.Combine(sourceOptions.ReposCachePath, repo);
-            if (Directory.Exists(cachePath))
+            if (fileSystem.DirectoryExists(cachePath))
                 return cachePath;
         }
 

@@ -291,11 +291,7 @@ public class ProjectQueryService(
 
     public async Task<string?> GetReadmeAsync(string name)
     {
-        var filePath = await RepoFileResolver.ResolveAsync(name, "README.md", sourceOptions, store);
-        if (filePath is null)
-            return null;
-
-        return await File.ReadAllTextAsync(filePath);
+        return await RepoFileResolver.ReadAllTextAsync(name, "README.md", sourceOptions, store);
     }
 
     // --- Mapping helpers ---

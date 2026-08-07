@@ -43,6 +43,7 @@ public class ColdFusionExtractorTests
 
         var component = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Component);
         component.Name.ShouldBe("OrderService");
+        component.FilePath.ShouldBe("OrderService.cfc");
         component.Properties["language"].ShouldBe("coldfusion");
 
         // Should have INHERITS edge to BaseService

@@ -24,11 +24,7 @@ public class MariaDbAssistantMcpTelemetryStoreTests
     [Fact]
     public async Task MariaDbStores_RoundTripAssistantMcpAndTelemetryDataWhenConnectionIsConfigured()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CODEGRAPH_MARIADB_TEST_CONNECTION");
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            return;
-        }
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
 
         var builder = new MySqlConnectionStringBuilder(connectionString);
         var databaseName = $"codegraph_assistant_mcp_test_{Guid.NewGuid():N}";

@@ -9,11 +9,11 @@
 --                  [McpServerTool] method. NULL for native/provider tools — their schema is
 --                  served by the MCP SDK.
 ALTER TABLE mcp_hub_tools
-    ADD COLUMN provider_type VARCHAR(32) NOT NULL DEFAULT 'native' AFTER provider_key,
-    ADD COLUMN input_schema LONGTEXT NULL AFTER access_class;
+    ADD COLUMN IF NOT EXISTS provider_type VARCHAR(32) NOT NULL DEFAULT 'native' AFTER provider_key,
+    ADD COLUMN IF NOT EXISTS input_schema LONGTEXT NULL AFTER access_class;
 
 -- Audit envelope: record which kind of provider served the call so shim invocations are
 -- distinguishable from native/first-party-provider invocations. Existing rows pre-date the
 -- shim, so 'provider' is the safe default for them.
 ALTER TABLE mcp_hub_audit
-    ADD COLUMN provider_type VARCHAR(32) NOT NULL DEFAULT 'provider' AFTER provider_key;
+    ADD COLUMN IF NOT EXISTS provider_type VARCHAR(32) NOT NULL DEFAULT 'provider' AFTER provider_key;

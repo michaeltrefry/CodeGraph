@@ -77,6 +77,7 @@ public class AnsibleParser
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to parse Ansible YAML {File}", _filePath);
+            return ExtractionResult.Failure(ex.Message);
         }
 
         if (_nodes.Count == 0 && _edges.Count == 0 && _discoveredReferences.Count == 0)

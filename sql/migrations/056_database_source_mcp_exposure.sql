@@ -4,7 +4,7 @@
 --   mcp_display_name / mcp_environment  admin-facing metadata
 -- Existing rows default to NOT exposed, so the MySQL provider fails closed until an admin opts a source in.
 ALTER TABLE database_sources
-    ADD COLUMN mcp_hub_enabled BOOLEAN NOT NULL DEFAULT FALSE AFTER enabled,
-    ADD COLUMN mcp_exposure_mode VARCHAR(32) NOT NULL DEFAULT 'SchemaOnly' AFTER mcp_hub_enabled,
-    ADD COLUMN mcp_display_name VARCHAR(255) NULL AFTER mcp_exposure_mode,
-    ADD COLUMN mcp_environment VARCHAR(64) NULL AFTER mcp_display_name;
+    ADD COLUMN IF NOT EXISTS mcp_hub_enabled BOOLEAN NOT NULL DEFAULT FALSE AFTER enabled,
+    ADD COLUMN IF NOT EXISTS mcp_exposure_mode VARCHAR(32) NOT NULL DEFAULT 'SchemaOnly' AFTER mcp_hub_enabled,
+    ADD COLUMN IF NOT EXISTS mcp_display_name VARCHAR(255) NULL AFTER mcp_exposure_mode,
+    ADD COLUMN IF NOT EXISTS mcp_environment VARCHAR(64) NULL AFTER mcp_display_name;

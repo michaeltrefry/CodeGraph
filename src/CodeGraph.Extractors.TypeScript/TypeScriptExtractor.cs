@@ -31,7 +31,7 @@ public class TypeScriptExtractor : ICodeExtractor
             return new ExtractionResult();
 
         if (!await _server.EnsureStartedAsync(ct))
-            return new ExtractionResult();
+            return ExtractionResult.Failure("TypeScript sidecar is unavailable.");
 
         // Write content to a temp file so the server can parse it with minimal context
         var tempDir = Path.Combine(Path.GetTempPath(), $"codegraph-ts-{Guid.NewGuid():N}");
@@ -53,7 +53,8 @@ public class TypeScriptExtractor : ICodeExtractor
                 TsconfigPath = tempTsconfig,
             }, ct);
 
-            if (response is null) return new ExtractionResult();
+            if (response is null)
+                return ExtractionResult.Failure("TypeScript sidecar returned no response.");
 
             return new ExtractionResult
             {
@@ -82,10 +83,14 @@ public class TypeScriptExtractor : ICodeExtractor
                     .ToList(),
             };
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "TypeScript per-file extraction failed for {File}", filePath);
-            return new ExtractionResult();
+            return ExtractionResult.Failure(ex.Message);
         }
         finally
         {

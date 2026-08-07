@@ -26,6 +26,8 @@ services:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
       CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
+      # Empty by default. Provider-qualified canonical repository identities opt in exactly.
+      CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
 
   codegraph-memory:
     image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-memory:${IMAGE_TAG:-latest}

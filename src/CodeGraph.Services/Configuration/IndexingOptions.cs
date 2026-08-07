@@ -26,5 +26,51 @@ public class IndexingOptions
     ];
 
     public string[] FoundationalRepos { get; set; } = [];
+
+    /// <summary>
+    /// Comma-separated canonical repository identities that may execute repository-controlled
+    /// .NET tooling (restore and MSBuild solution analysis). Identities are provider-qualified:
+    /// github:https://host/owner/repo, gitlab:https://host/group/repo, or folder:relative/path.
+    /// Folder identity paths are case-sensitive on non-Windows hosts.
+    /// Empty by default.
+    /// </summary>
+    public string TrustedDotnetRepositories { get; set; } = "";
+
+    public bool IsDotnetToolingTrusted(string? canonicalIdentity)
+    {
+        if (!TrySplitIdentity(canonicalIdentity, out var provider, out var value))
+            return false;
+
+        var valueComparison = provider is "folder" or "folder-path"
+            ? (OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+            : StringComparison.Ordinal;
+
+        return TrustedDotnetRepositories
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(trustedIdentity =>
+                TrySplitIdentity(trustedIdentity, out var trustedProvider, out var trustedValue)
+                && string.Equals(provider, trustedProvider, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(value, trustedValue, valueComparison));
+    }
+
+    private static bool TrySplitIdentity(
+        string? canonicalIdentity,
+        out string provider,
+        out string value)
+    {
+        var normalized = canonicalIdentity?.Trim().TrimEnd('/');
+        var separator = normalized?.IndexOf(':') ?? -1;
+        if (separator <= 0 || separator == normalized!.Length - 1)
+        {
+            provider = "";
+            value = "";
+            return false;
+        }
+
+        provider = normalized[..separator].ToLowerInvariant();
+        value = normalized[(separator + 1)..];
+        return true;
+    }
+
     public string? ConventionsPath { get; set; }
 }

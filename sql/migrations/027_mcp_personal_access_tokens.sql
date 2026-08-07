@@ -13,14 +13,14 @@ CREATE TABLE IF NOT EXISTS mcp_personal_access_tokens (
     UNIQUE KEY uq_mcp_personal_access_tokens_token_hash (token_hash)
 ) ENGINE=InnoDB;
 
-CREATE INDEX ix_mcp_personal_access_tokens_username
+CREATE INDEX IF NOT EXISTS ix_mcp_personal_access_tokens_username
     ON mcp_personal_access_tokens (username);
 
-CREATE INDEX ix_mcp_personal_access_tokens_expires_at
+CREATE INDEX IF NOT EXISTS ix_mcp_personal_access_tokens_expires_at
     ON mcp_personal_access_tokens (expires_at);
 
-CREATE INDEX ix_mcp_personal_access_tokens_revoked_at
+CREATE INDEX IF NOT EXISTS ix_mcp_personal_access_tokens_revoked_at
     ON mcp_personal_access_tokens (revoked_at);
 
-CREATE INDEX ix_mcp_personal_access_tokens_username_revoked_at_expires_at
+CREATE INDEX IF NOT EXISTS ix_mcp_personal_access_tokens_username_revoked_at_expires_at
     ON mcp_personal_access_tokens (username, revoked_at, expires_at);

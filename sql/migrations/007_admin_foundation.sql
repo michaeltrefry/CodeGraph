@@ -16,4 +16,5 @@ CREATE TABLE IF NOT EXISTS settings_overrides (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Seed initial admin
-INSERT INTO admin_users (username) VALUES ('mtrefry');
+INSERT INTO admin_users (username) VALUES ('mtrefry')
+ON DUPLICATE KEY UPDATE username = VALUES(username);

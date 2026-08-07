@@ -32,6 +32,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private long _nextRepositoryReviewFindingId = 1;
     private long _nextRepositoryReviewProjectSectionId = 1;
     public Exception? ReplacementFailure { get; set; }
+    public Exception? IncrementalReplacementFailure { get; set; }
 
     public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
         string project,
@@ -480,6 +481,108 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         _nextId = nextId;
 
         return Task.FromResult(replacementEdges.Count);
+    }
+
+    public Task<int> ReplaceProjectFilesAsync(
+        string project,
+        IReadOnlyList<string> filePaths,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges,
+        IReadOnlyDictionary<string, string> fileHashes,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (filePaths.Count == 0) return Task.FromResult(0);
+        if (IncrementalReplacementFailure is not null)
+            throw IncrementalReplacementFailure;
+
+        var paths = filePaths
+            .SelectMany(path => new[] { path.Replace('\\', '/'), path.Replace('/', '\\') })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var oldNodes = _nodes.Where(node =>
+                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                paths.Contains(node.FilePath))
+            .ToList();
+        var oldIds = oldNodes.Select(node => node.Id).ToHashSet();
+        var nodeById = _nodes.ToDictionary(node => node.Id);
+        var preservedIncoming = _edges
+            .Where(edge => oldIds.Contains(edge.TargetId) && !oldIds.Contains(edge.SourceId))
+            .Select(edge => new PendingEdge(
+                nodeById[edge.SourceId].QualifiedName,
+                nodeById[edge.TargetId].QualifiedName,
+                edge.Type,
+                edge.Properties))
+            .ToList();
+
+        var stagedNodes = _nodes.Where(node => !oldIds.Contains(node.Id)).ToList();
+        var stagedEdges = _edges
+            .Where(edge => !oldIds.Contains(edge.SourceId) && !oldIds.Contains(edge.TargetId))
+            .ToList();
+        var stagedCrossEdges = _crossEdges
+            .Where(edge => !oldIds.Contains(edge.SourceNodeId) && !oldIds.Contains(edge.TargetNodeId))
+            .ToList();
+        var stagedAnalyses = _nodeAnalyses
+            .Where(entry => !oldIds.Contains(entry.Key))
+            .ToDictionary(entry => entry.Key, entry => entry.Value);
+        var stagedHashes = _fileHashes.TryGetValue(project, out var existingHashes)
+            ? new Dictionary<string, string>(existingHashes, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
+            stagedHashes.Remove(path);
+
+        var nextId = _nextId;
+        var qnToId = stagedNodes
+            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(node => node.QualifiedName, node => node.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (var node in nodes.DistinctBy(node => node.QualifiedName, StringComparer.OrdinalIgnoreCase))
+        {
+            if (qnToId.ContainsKey(node.QualifiedName))
+                continue;
+            var stored = node with { Id = nextId++, Project = project };
+            stagedNodes.Add(stored);
+            qnToId[stored.QualifiedName] = stored.Id;
+        }
+
+        var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.OrdinalIgnoreCase);
+        foreach (var edge in preservedIncoming)
+            pendingByKey[$"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}"] = edge;
+        foreach (var edge in edges)
+            pendingByKey[$"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}"] = edge;
+
+        var resolved = pendingByKey.Values
+            .Where(edge => qnToId.ContainsKey(edge.SourceQN) && qnToId.ContainsKey(edge.TargetQN))
+            .Select(edge => new GraphEdge
+            {
+                Project = project,
+                SourceId = qnToId[edge.SourceQN],
+                TargetId = qnToId[edge.TargetQN],
+                Type = edge.Type,
+                Properties = edge.Properties ?? []
+            })
+            .ToList();
+        foreach (var edge in resolved)
+        {
+            stagedEdges.RemoveAll(existing => existing.SourceId == edge.SourceId &&
+                                               existing.TargetId == edge.TargetId &&
+                                               existing.Type == edge.Type);
+            stagedEdges.Add(edge);
+        }
+        foreach (var hash in fileHashes)
+            stagedHashes[hash.Key] = hash.Value;
+
+        _nodes.Clear();
+        _nodes.AddRange(stagedNodes);
+        _edges.Clear();
+        _edges.AddRange(stagedEdges);
+        _crossEdges.Clear();
+        _crossEdges.AddRange(stagedCrossEdges);
+        _nodeAnalyses.Clear();
+        foreach (var analysis in stagedAnalyses)
+            _nodeAnalyses[analysis.Key] = analysis.Value;
+        _fileHashes[project] = stagedHashes;
+        _nextId = nextId;
+
+        return Task.FromResult(resolved.Count);
     }
 
     public Task DeleteFilesFromProjectGraphAsync(

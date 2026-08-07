@@ -12,6 +12,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__McpOptions__RequirePersonalAccessToken: ${CodeGraph__McpOptions__RequirePersonalAccessToken:-false}
       CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-false}
@@ -55,6 +56,7 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
       CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
+      CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -112,6 +114,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
@@ -136,6 +139,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingDimensions: 768
       CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
@@ -157,6 +161,8 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
       CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
+      # Empty by default. Provider-qualified canonical repository identities opt in exactly.
+      CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -196,6 +202,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingDimensions: 768
       CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192
@@ -222,6 +229,7 @@ services:
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
       CodeGraph__StorageOptions__MariaDbMigrationsPath: ${CodeGraph__StorageOptions__MariaDbMigrationsPath:-/app/sql/migrations}
+      CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds: ${CodeGraph__StorageOptions__MariaDbMigrationLockTimeoutSeconds:-120}
       CodeGraph__StorageOptions__MariaDbEncryptionKey: ${CodeGraph__StorageOptions__MariaDbEncryptionKey:-}
       CodeGraph__StorageOptions__EmbeddingDimensions: 768
       CodeGraph__StorageOptions__EmbeddingMaxTokens: 8192

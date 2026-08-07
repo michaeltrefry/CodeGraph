@@ -25,5 +25,5 @@ CREATE TABLE IF NOT EXISTS memory_write_receipts (
     UNIQUE KEY uq_memory_write_receipts_receipt_id (receipt_id)
 ) ENGINE=InnoDB;
 
-CREATE INDEX ix_memory_write_receipts_username_submitted_at
+CREATE INDEX IF NOT EXISTS ix_memory_write_receipts_username_submitted_at
     ON memory_write_receipts (username, submitted_at);

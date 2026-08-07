@@ -96,6 +96,7 @@ export function extractProject(
   diag(`getSourceFiles: ${sourceFiles.length} files in ${Date.now() - t0}ms`);
 
   let filesProcessed = 0;
+  const processedFiles: string[] = [];
   for (const sourceFile of sourceFiles) {
     const absPath = sourceFile.getFilePath();
     const filePath = path.relative(rootPath, absPath).replace(/\\/g, '/');
@@ -118,6 +119,7 @@ export function extractProject(
     extractAngularRoutes(sourceFile, projectName, filePath, nodes, edges);
 
     const fileMs = Date.now() - fileT0;
+    processedFiles.push(filePath);
     filesProcessed++;
     if (fileMs > 500) diag(`SLOW file (${fileMs}ms): ${filePath}`);
   }
@@ -144,7 +146,7 @@ export function extractProject(
   for (const e of edges) edgeTypes[e.type] = (edgeTypes[e.type] || 0) + 1;
   diagnostics.push(`Edge types: ${JSON.stringify(edgeTypes)}`);
 
-  return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls, diagnostics };
+  return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls, processedFiles, diagnostics };
 }
 
 // ── Imports ───────────────────────────────────────────────────────────────────

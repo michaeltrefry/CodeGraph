@@ -345,8 +345,12 @@ public sealed class HttpMemoryClient(
 
     private void AttachIdentityHeader(HttpRequestMessage request, string username)
     {
+        var normalizedUsername = NormalizeRequired(username, nameof(username));
+        request.Headers.TryAddWithoutValidation(
+            MemoryClientIdentityDefaults.UsernameHeaderName,
+            normalizedUsername);
         var token = tokenFactory.CreateToken(
-            NormalizeRequired(username, nameof(username)),
+            normalizedUsername,
             NormalizeRequired(Options.Audience, nameof(Options.Audience)));
         if (!string.IsNullOrWhiteSpace(token))
             request.Headers.TryAddWithoutValidation(CodeGraphInternalServiceAuthenticationDefaults.HeaderName, token);

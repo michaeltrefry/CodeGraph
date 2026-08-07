@@ -22,7 +22,7 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
     public SqlGraphVisitor(ExtractorContext context, string filePath)
     {
         _context = context;
-        _filePath = filePath;
+        _filePath = Path.GetRelativePath(context.RootPath, filePath).Replace('\\', '/');
     }
 
     public ExtractionResult GetResult() => new()

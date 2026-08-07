@@ -49,6 +49,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<McpHubCredentialEntity> McpHubCredentials => Set<McpHubCredentialEntity>();
     public DbSet<McpHubConfigEntity> McpHubConfig => Set<McpHubConfigEntity>();
     public DbSet<McpHubAuditEntity> McpHubAudit => Set<McpHubAuditEntity>();
+    public DbSet<MemoryAdminAuditEntity> MemoryAdminAudit => Set<MemoryAdminAuditEntity>();
     public DbSet<McpSensitiveColumnEntity> McpSensitiveColumns => Set<McpSensitiveColumnEntity>();
     public DbSet<McpProviderCredentialEntity> McpProviderCredentials => Set<McpProviderCredentialEntity>();
     public DbSet<McpToolInvocationEntity> McpToolInvocations => Set<McpToolInvocationEntity>();
@@ -59,6 +60,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<AssistantRunEventEntity> AssistantRunEvents => Set<AssistantRunEventEntity>();
     public DbSet<AssistantDebugExchangeEntity> AssistantDebugExchanges => Set<AssistantDebugExchangeEntity>();
     public DbSet<AssistantDebugTraceAuditEntity> AssistantDebugTraceAudits => Set<AssistantDebugTraceAuditEntity>();
+    public DbSet<ApplicationLogEntryEntity> ApplicationLogs => Set<ApplicationLogEntryEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -74,6 +76,30 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         ConfigureJobSchedules(modelBuilder);
         ConfigureIndexerRuns(modelBuilder);
         ConfigureAssistantRuns(modelBuilder);
+        ConfigureApplicationLogs(modelBuilder);
+    }
+
+    private static void ConfigureApplicationLogs(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ApplicationLogEntryEntity>(e =>
+        {
+            e.ToTable("application_logs");
+            e.HasKey(row => row.Id);
+            e.Property(row => row.Id).HasColumnName("id");
+            e.Property(row => row.OccurredAtUtc).HasColumnName("occurred_at_utc");
+            e.Property(row => row.Level).HasColumnName("level").HasMaxLength(16);
+            e.Property(row => row.Source).HasColumnName("source").HasMaxLength(128);
+            e.Property(row => row.Category).HasColumnName("category").HasMaxLength(512);
+            e.Property(row => row.EventId).HasColumnName("event_id");
+            e.Property(row => row.Message).HasColumnName("message").HasColumnType("MEDIUMTEXT");
+            e.Property(row => row.Exception).HasColumnName("exception").HasColumnType("LONGTEXT");
+            e.Property(row => row.TraceId).HasColumnName("trace_id").HasMaxLength(32);
+            e.Property(row => row.SpanId).HasColumnName("span_id").HasMaxLength(16);
+            e.Property(row => row.PropertiesJson).HasColumnName("properties_json").HasColumnType("json");
+            e.HasIndex(row => row.OccurredAtUtc);
+            e.HasIndex(row => new { row.Level, row.OccurredAtUtc });
+            e.HasIndex(row => new { row.Source, row.OccurredAtUtc });
+        });
     }
 
     private static void ConfigureRepositories(ModelBuilder modelBuilder)
@@ -872,6 +898,26 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.HasIndex(audit => new { audit.ProviderKey, audit.ToolName, audit.CreatedAtUtc });
             e.HasIndex(audit => new { audit.TokenId, audit.CreatedAtUtc });
             e.HasIndex(audit => new { audit.ProviderKey, audit.ResourceKey, audit.CreatedAtUtc });
+        });
+
+        modelBuilder.Entity<MemoryAdminAuditEntity>(e =>
+        {
+            e.ToTable("memory_admin_audit");
+            e.HasKey(audit => audit.Id);
+            e.Property(audit => audit.Id).HasColumnName("id");
+            e.Property(audit => audit.CorrelationId).HasColumnName("correlation_id");
+            e.Property(audit => audit.ActorUsername).HasColumnName("actor_username");
+            e.Property(audit => audit.TargetUsername).HasColumnName("target_username");
+            e.Property(audit => audit.Operation).HasColumnName("operation");
+            e.Property(audit => audit.DryRun).HasColumnName("dry_run");
+            e.Property(audit => audit.OutcomeStatus).HasColumnName("outcome_status");
+            e.Property(audit => audit.Succeeded).HasColumnName("succeeded");
+            e.Property(audit => audit.ErrorType).HasColumnName("error_type");
+            e.Property(audit => audit.CreatedAt).HasColumnName("created_at");
+            e.Property(audit => audit.CompletedAt).HasColumnName("completed_at");
+            e.HasIndex(audit => audit.CorrelationId).IsUnique();
+            e.HasIndex(audit => new { audit.ActorUsername, audit.CreatedAt });
+            e.HasIndex(audit => new { audit.TargetUsername, audit.CreatedAt });
         });
 
         modelBuilder.Entity<McpSensitiveColumnEntity>(e =>

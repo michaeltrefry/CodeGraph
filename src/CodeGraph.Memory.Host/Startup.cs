@@ -4,8 +4,8 @@ using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Data.Neo4j;
 using CodeGraph.Host.Shared.Auth;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Host.Shared.Hosting;
-using CodeGraph.Memory.Host.Consumers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Memory;
@@ -93,6 +93,7 @@ public static class Startup
         services.AddTransient<MemoryObservationMigrationService>();
         services.AddTransient<MemoryRetrievalService>();
         services.AddTransient<MemoryService>();
+        services.AddScoped<IMemoryTenantContext, MemoryTenantContext>();
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
     }
 
@@ -100,7 +101,7 @@ public static class Startup
     {
         services.AddMassTransit(x =>
         {
-            x.AddConsumer<StoreMemoryClaimsConsumer>();
+            SharedConsumerTopology.AddMemoryConsumer(x);
 
             x.UsingRabbitMq((context, cfg) =>
             {
@@ -112,11 +113,7 @@ public static class Startup
                 });
 
                 var consumerOptions = context.GetRequiredService<IOptions<ConsumerOptions>>().Value;
-                cfg.ReceiveEndpoint("store-memory-claims", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
-                });
+                SharedConsumerTopology.ConfigureMemoryEndpoint(cfg, context, consumerOptions);
             });
         });
     }
@@ -133,6 +130,7 @@ public static class Startup
             {
                 options.ConnectionString = storageOptions.MariaDbConnectionString;
                 options.MigrationsPath = storageOptions.MariaDbMigrationsPath;
+                options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
             return;
@@ -188,8 +186,13 @@ internal static class InternalServiceAuthenticationApplicationBuilderExtensions
             var authOptions = context.RequestServices.GetRequiredService<IOptions<InternalServiceAuthOptions>>().Value;
             if (!authOptions.Enabled)
             {
-                context.User = CreatePrincipal("local-memory", "LocalInternalService");
-                await next();
+                var unsignedUsername = context.Request.Headers[MemoryClientIdentityDefaults.UsernameHeaderName]
+                    .ToString();
+                var trustedIdentity = string.IsNullOrWhiteSpace(unsignedUsername)
+                    ? "local-memory"
+                    : unsignedUsername;
+                context.User = CreatePrincipal(trustedIdentity, "LocalInternalService");
+                await InvokeInTenantScopeAsync(context, next, trustedIdentity);
                 return;
             }
 
@@ -204,8 +207,24 @@ internal static class InternalServiceAuthenticationApplicationBuilderExtensions
             }
 
             context.User = validation.Principal ?? CreatePrincipal("unknown", "CodeGraphInternalService");
-            await next();
+            var username = context.User.FindFirstValue("preferred_username")
+                           ?? context.User.FindFirstValue(ClaimTypes.Name)
+                           ?? "unknown";
+            await InvokeInTenantScopeAsync(context, next, username);
         });
+    }
+
+    private static async Task InvokeInTenantScopeAsync(
+        HttpContext context,
+        Func<Task> next,
+        string trustedIdentity)
+    {
+        var username = MemoryTenantContext.ForTrustedIdentity(trustedIdentity);
+        var tenantContext = context.RequestServices.GetRequiredService<IMemoryTenantContext>();
+        using var tenantScope = tenantContext.Enter(
+            username,
+            allowLegacyDefault: username == MemoryTenantContext.LegacyDefaultUsername);
+        await next();
     }
 
     private static ClaimsPrincipal CreatePrincipal(string username, string authenticationType)

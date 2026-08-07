@@ -70,8 +70,9 @@ public class AdminService(
             var message = new ProcessRepository
             {
                 Name             = project.Name,
-                Path             = project.LocalPath ?? "",
+                Path             = string.IsNullOrWhiteSpace(project.RepoUrl) ? project.LocalPath ?? "" : "",
                 RepoUrl          = project.RepoUrl,
+                SourceGroup      = project.SourceGroup,
                 ShouldIndex      = true,
                 ShouldAnalyze    = false,
                 SkipIfUpToDate   = false

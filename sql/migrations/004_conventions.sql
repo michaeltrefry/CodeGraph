@@ -1,5 +1,5 @@
 -- Convention pages: simple wiki for team conventions/standards
-CREATE TABLE convention_pages (
+CREATE TABLE IF NOT EXISTS convention_pages (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     slug VARCHAR(200) NOT NULL,
     title VARCHAR(500) NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE convention_pages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Revision history for convention pages
-CREATE TABLE convention_revisions (
+CREATE TABLE IF NOT EXISTS convention_revisions (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     page_id BIGINT NOT NULL,
     revision INT NOT NULL,

@@ -25,6 +25,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="Fixtures/**/*" Exclude="Fixtures/**/bin/**;Fixtures/**/obj/**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
     <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
     <ProjectReference Include="..\CodeGraph.Data.MariaDb\CodeGraph.Data.MariaDb.csproj" />

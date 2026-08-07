@@ -1,6 +1,34 @@
 -- 008_wiki.sql
 -- Phase 2: Wiki tables, convention data migration, drop old tables
 
+-- Recreate empty legacy source tables when an older runner completed this migration's
+-- DROP statements but crashed before recording migration_history. The normal path is a
+-- no-op because migration 004 already created these tables. On recovery, the empty tables
+-- make the data-copy statements parse and preserve the previously copied wiki rows.
+CREATE TABLE IF NOT EXISTS convention_pages (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    slug VARCHAR(200) NOT NULL,
+    title VARCHAR(500) NOT NULL,
+    content MEDIUMTEXT NOT NULL,
+    author VARCHAR(200) NOT NULL,
+    revision INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_convention_pages_slug (slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS convention_revisions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    page_id BIGINT NOT NULL,
+    revision INT NOT NULL,
+    title VARCHAR(500) NOT NULL,
+    content MEDIUMTEXT NOT NULL,
+    author VARCHAR(200) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_convention_revisions_page_rev (page_id, revision),
+    CONSTRAINT fk_convention_revisions_page FOREIGN KEY (page_id) REFERENCES convention_pages(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Wiki sections (admin-managed root categories)
 CREATE TABLE IF NOT EXISTS wiki_sections (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -71,7 +99,8 @@ INSERT INTO wiki_sections (slug, title, description, icon, sort_order, is_system
 ('conventions', 'Conventions', 'Team conventions and coding standards', 'scale', 1, FALSE, TRUE),
 ('skills', 'Skills', 'Claude Code skills with installable artifacts', 'zap', 2, FALSE, TRUE),
 ('agents', 'Agents', 'Claude Code subagent configurations', 'bot', 3, FALSE, TRUE),
-('mcp-documentation', 'MCP Documentation', 'Auto-generated MCP tool documentation', 'cpu', 4, TRUE, FALSE);
+('mcp-documentation', 'MCP Documentation', 'Auto-generated MCP tool documentation', 'cpu', 4, TRUE, FALSE)
+ON DUPLICATE KEY UPDATE slug = VALUES(slug);
 
 -- Migrate convention_pages → wiki_pages
 INSERT INTO wiki_pages (section_id, parent_id, slug, title, content, author, revision, sort_order, is_auto_generated, depth, created_at, updated_at)
@@ -88,7 +117,14 @@ SELECT
     0,
     cp.created_at,
     cp.updated_at
-FROM convention_pages cp;
+FROM convention_pages cp
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM wiki_pages existing
+    WHERE existing.section_id = (SELECT id FROM wiki_sections WHERE slug = 'conventions')
+      AND existing.parent_id IS NULL
+      AND existing.slug = cp.slug
+);
 
 -- Migrate convention_revisions → wiki_revisions
 INSERT INTO wiki_revisions (page_id, revision, title, content, author, created_at)
@@ -102,7 +138,8 @@ SELECT
 FROM convention_revisions cr
 JOIN convention_pages cp ON cp.id = cr.page_id
 JOIN wiki_pages wp ON wp.slug = cp.slug
-    AND wp.section_id = (SELECT id FROM wiki_sections WHERE slug = 'conventions');
+    AND wp.section_id = (SELECT id FROM wiki_sections WHERE slug = 'conventions')
+ON DUPLICATE KEY UPDATE page_id = VALUES(page_id);
 
 -- Drop old tables
 DROP TABLE IF EXISTS convention_revisions;

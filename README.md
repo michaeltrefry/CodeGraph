@@ -71,6 +71,10 @@ Models <- Data <- Services <- Extractors.*
 
 `CodeGraph.Api` hosts the REST API and MCP endpoint. `CodeGraph.Indexer.Host` owns indexing execution, indexer MassTransit consumers, schema sync, TypeScript sidecar warmup, durable run execution, and `/api/indexer` run/status endpoints. `CodeGraph.Indexer.Client` lets API and jobs delegate work to that host when `CodeGraph:Indexer:BaseUrl` is configured. `CodeGraph.Memory.Host` owns the memory REST surface and async memory-write consumer, while `CodeGraph.Memory.Client` lets API/MCP delegate memory operations when `CodeGraph:Memory:BaseUrl` is configured. `CodeGraph.Metrics` consumes LLM usage and MCP tool invocation events and persists telemetry into MariaDB. `CodeGraph.Jobs` runs scheduled and manual triggers. `CodeGraphWeb` is the Angular UI. MariaDB/MySQL is the primary datastore, RabbitMQ backs the event-driven pipeline, and Neo4j remains only as a temporary compatibility/export provider during the standalone rebase.
 
+### C# repository tooling trust
+
+C# indexing is syntax-only by default. Restore and MSBuild solution analysis can execute repository-controlled build logic, so they run only for provider-resolved identities explicitly listed in the comma-separated `CodeGraph:IndexingOptions:TrustedDotnetRepositories` setting. Identity forms are `github:https://host/owner/repo`, `gitlab:https://host/group/repo`, and `folder:relative/path`; local paths outside the configured folder root use `folder-path:/absolute/path`. Folder paths are case-sensitive on non-Windows hosts. User-supplied URL, group, and path combinations cannot grant trust unless they agree with the provider resolution. Every enabled or blocked solution-analysis decision emits a `SECURITY-AUDIT` log entry with the resolved identity. Production Compose exposes the setting as `CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES` and defaults it to empty.
+
 ## Key Capabilities
 
 ### Knowledge graph and discovery
@@ -153,6 +157,7 @@ Useful settings to know:
 | Setting | Purpose |
 |---|---|
 | `CodeGraph:StorageOptions:*` | MariaDB provider, migration, encryption-key, and embedding model settings |
+| `CodeGraph:StorageOptions:MariaDbMigrationLockTimeoutSeconds` | Maximum wait for the database-scoped startup migration lock; defaults to 120 seconds |
 | `CodeGraph:AuthOptions:*` | Standalone auth settings: local dev identity by default, optional OIDC/JWT authority/audience/client/scope/CORS settings |
 | `CodeGraph:McpOptions:RequirePersonalAccessToken` | Require issued MCP PATs for `/mcp`; defaults off for local dev. When OAuth auth is enabled, `/mcp` is PAT-only even if this is not set. |
 | `CodeGraph:Indexer:BaseUrl` | Optional remote indexer host URL, for example `http://localhost:5042`; when empty, API keeps the local integrated indexer fallback. |
@@ -257,6 +262,8 @@ The compose stack includes the CodeGraph application services:
 - `codegraph-web`
 
 MariaDB and RabbitMQ are expected to be shared containers on the external `trefry-network`; this compose file does not create them. The default container hostnames are `mariadb` and `rabbitmq`, and you can override `CodeGraph__StorageOptions__MariaDbConnectionString` or `CodeGraph__RabbitMqOptions__Host` when your shared services use different names.
+
+API, indexer, memory, metrics, and jobs initialization is gated on the same MariaDB migration protocol. The first simultaneously starting host acquires a database-scoped advisory lock and applies pending, statement-journaled migrations; the remaining hosts wait, re-read migration history, and only then continue to readiness. If MariaDB is unavailable or the configured migration-lock timeout expires, the affected host fails startup rather than serving or running workers against a partial schema.
 
 By default compose mounts the parent repo folder (`../`) into the containers at `/repos/workspace` as writable; remote providers clone and update repositories directly under that path. Override `CODEGRAPH_DOCKER_REPOS_MOUNT` when your host repositories should live somewhere else, or `CODEGRAPH_CONTAINER_REPOS_ROOT` if the in-container path must change.
 
