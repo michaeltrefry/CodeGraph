@@ -636,6 +636,7 @@ public class McpHubAuditEntity
     public string Operation { get; set; } = "";
     public string? ResourceKey { get; set; }
     public string CredentialMode { get; set; } = "none";
+    public string? ProviderIdentity { get; set; }
     public string AuthorizationDecision { get; set; } = "unknown";
     public string StatusClass { get; set; } = "unknown";
     public int DurationMs { get; set; }

@@ -164,6 +164,61 @@ public class MariaDbAssistantMcpTelemetryStoreTests
             (await tokenStore.GetMcpPersonalAccessTokenByHashAsync("hash-token"))!.Username.ShouldBe("michael");
             (await tokenStore.UpdateMcpPersonalAccessTokenLastUsedAsync(token.Id, DateTime.UtcNow, "127.0.0.1"))
                 .ShouldBeTrue();
+
+            var encryptor = new PassthroughEncryptor();
+            var hubStore = new MySqlMcpHubStore(context, encryptor);
+            (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "shortcut-shared-api")).ShouldBeFalse();
+            await hubStore.ReplaceTokenEntitlementsAsync(token.Id, ["shortcut-shared-api"]);
+            await tokenStore.SetMcpPersonalAccessTokenEntitlementModeAsync(
+                "michael", token.Id, "selected");
+            (await hubStore.IsTokenEntitledAsync(token.Id, "shortcut-shared-api")).ShouldBeTrue();
+
+            var delegatedStore = new MySqlMcpProviderCredentialStore(context, encryptor);
+            await delegatedStore.UpsertAsync(new McpProviderCredentialEntity
+            {
+                ProviderKey = "shortcut",
+                Username = "alice",
+                CredentialKey = "apiToken",
+                ValidationState = "valid",
+                ProviderIdentity = "Alice Shortcut (@alice)",
+                LastValidatedAtUtc = DateTime.UtcNow,
+            }, "alice-token");
+            await delegatedStore.UpsertAsync(new McpProviderCredentialEntity
+            {
+                ProviderKey = "shortcut",
+                Username = "bob",
+                CredentialKey = "apiToken",
+                ValidationState = "valid",
+                ProviderIdentity = "Bob Shortcut (@bob)",
+                LastValidatedAtUtc = DateTime.UtcNow,
+            }, "bob-token");
+            (await delegatedStore.GetValueAsync("shortcut", " ALICE ", "apiToken"))
+                .ShouldBe("alice-token");
+            (await delegatedStore.GetValueAsync("shortcut", "bob", "apiToken"))
+                .ShouldBe("bob-token");
+            (await delegatedStore.DeleteAsync("shortcut", "alice", "apiToken")).ShouldBeTrue();
+            (await delegatedStore.GetValueAsync("shortcut", "alice", "apiToken")).ShouldBeNull();
+
+            await hubStore.CreateAuditAsync(new McpHubAuditEntity
+            {
+                Username = "bob",
+                TokenId = token.Id,
+                ProviderKey = "shortcut",
+                ToolName = "stories-get-by-id",
+                Action = "invoke",
+                Operation = "get",
+                CredentialMode = "delegated",
+                ProviderIdentity = "Bob Shortcut (@bob)",
+                AuthorizationDecision = "allowed",
+                StatusClass = "ok",
+                Success = true,
+                CreatedAtUtc = DateTime.UtcNow,
+            });
+            var audit = (await hubStore.ListAuditAsync(10)).ShouldHaveSingleItem();
+            audit.CredentialMode.ShouldBe("delegated");
+            audit.ProviderIdentity.ShouldBe("Bob Shortcut (@bob)");
+
             (await tokenStore.RevokeMcpPersonalAccessTokenAsync("michael", token.Id, DateTime.UtcNow)).ShouldBeTrue();
 
             var metricsStore = new MySqlMetricsEventStore(storageOptions);
@@ -226,5 +281,11 @@ public class MariaDbAssistantMcpTelemetryStoreTests
         await using var conn = new MySqlConnection(builder.ConnectionString);
         await conn.OpenAsync();
         await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
+    }
+
+    private sealed class PassthroughEncryptor : IAesEncryptor
+    {
+        public string Encrypt(string plaintext) => plaintext;
+        public string Decrypt(string ciphertext) => ciphertext;
     }
 }

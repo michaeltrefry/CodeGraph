@@ -23,18 +23,30 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     }
 
     [McpServerTool(Name = "shortcut_search_epics", Title = "Search Shortcut Epics", ReadOnly = true)]
-    [Description("Search Shortcut epics through the shared MCP Hub Shortcut API token.")]
+    [Description("Search Shortcut epics as the authenticated caller using their delegated credential.")]
     public async Task<string> SearchShortcutEpics(
         [Description("Optional Shortcut search query.")] string? query = null,
         CancellationToken cancellationToken = default) =>
-        await InvokeAuditedAsync("shortcut", "shortcut_search_epics", "search", "epics", "shared", () => hub.SearchShortcutEpicsAsync(query, Username, cancellationToken), cancellationToken);
+        await InvokeShortcutAuditedAsync("shortcut_search_epics", "search", "epics", credential =>
+            hub.InvokeShortcutApiAsync(
+                credential,
+                HttpMethod.Get,
+                "search/epics",
+                query: McpHubService.BuildQuery(("query", query)),
+                ct: cancellationToken), cancellationToken);
 
     [McpServerTool(Name = "shortcut_search_stories", Title = "Search Shortcut Stories", ReadOnly = true)]
-    [Description("Search Shortcut stories through the shared MCP Hub Shortcut API token.")]
+    [Description("Search Shortcut stories as the authenticated caller using their delegated credential.")]
     public async Task<string> SearchShortcutStories(
         [Description("Optional Shortcut search query.")] string? query = null,
         CancellationToken cancellationToken = default) =>
-        await InvokeAuditedAsync("shortcut", "shortcut_search_stories", "search", "stories", "shared", () => hub.SearchShortcutStoriesAsync(query, Username, cancellationToken), cancellationToken);
+        await InvokeShortcutAuditedAsync("shortcut_search_stories", "search", "stories", credential =>
+            hub.InvokeShortcutApiAsync(
+                credential,
+                HttpMethod.Get,
+                "search/stories",
+                query: McpHubService.BuildQuery(("query", query)),
+                ct: cancellationToken), cancellationToken);
 
     [McpServerTool(Name = "stories-get-by-id", Title = "Get Shortcut Story", ReadOnly = true)]
     [Description("Get a Shortcut story by public ID.")]
@@ -54,14 +66,14 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     [McpServerTool(Name = "stories-get-branch-name", Title = "Get Shortcut Story Branch Name", ReadOnly = true)]
     [Description("Get the recommended git branch name for a story.")]
     public Task<string> GetShortcutStoryBranchName(int storyPublicId, CancellationToken cancellationToken = default) =>
-        InvokeAuditedAsync("shortcut", "stories-get-branch-name", "get", $"story:{storyPublicId}", "shared", async () =>
+        InvokeShortcutAuditedAsync("stories-get-branch-name", "get", $"story:{storyPublicId}", async credential =>
         {
-            var storyJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, $"stories/{storyPublicId}", ct: cancellationToken);
+            var storyJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, $"stories/{storyPublicId}", ct: cancellationToken);
             using var storyDoc = JsonDocument.Parse(storyJson);
             if (TryGetString(storyDoc.RootElement, "formatted_vcs_branch_name") is { Length: > 0 } existing)
                 return existing;
 
-            var memberJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, "member", ct: cancellationToken);
+            var memberJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, "member", ct: cancellationToken);
             using var memberDoc = JsonDocument.Parse(memberJson);
             var mention = TryGetString(memberDoc.RootElement, "mention_name") ?? "shortcut";
             var name = TryGetString(storyDoc.RootElement, "name") ?? $"story-{storyPublicId}";
@@ -81,8 +93,8 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     [McpServerTool(Name = "stories-upload-file", Title = "Upload Shortcut Story File", ReadOnly = false, Destructive = false)]
     [Description("Upload a local file and attach it to a Shortcut story.")]
     public Task<string> UploadShortcutStoryFile(int storyPublicId, string filePath, CancellationToken cancellationToken = default) =>
-        InvokeAuditedAsync("shortcut", "stories-upload-file", "upload", $"story:{storyPublicId}", "shared",
-            () => hub.UploadShortcutFileAsync(Username, storyPublicId, filePath, cancellationToken), cancellationToken);
+        InvokeShortcutAuditedAsync("stories-upload-file", "upload", $"story:{storyPublicId}",
+            credential => hub.UploadShortcutFileAsync(credential, storyPublicId, filePath, cancellationToken), cancellationToken);
 
     [McpServerTool(Name = "stories-assign-current-user", Title = "Assign Current User To Shortcut Story", ReadOnly = false, Destructive = false)]
     [Description("Assign the current Shortcut API user as a story owner.")]
@@ -103,8 +115,8 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     [McpServerTool(Name = "stories-create-subtask", Title = "Create Shortcut Story Subtask", ReadOnly = false, Destructive = false)]
     [Description("Create a new story as a sub-task of another story. bodyJson is merged with parent_story_id.")]
     public Task<string> CreateShortcutStorySubtask(int parentStoryPublicId, string bodyJson, CancellationToken cancellationToken = default) =>
-        InvokeAuditedAsync("shortcut", "stories-create-subtask", "create", $"story:{parentStoryPublicId}", "shared", () =>
-            hub.InvokeShortcutApiAsync(Username, HttpMethod.Post, "stories", MergeJson(bodyJson, ("parent_story_id", parentStoryPublicId)), ct: cancellationToken), cancellationToken);
+        InvokeShortcutAuditedAsync("stories-create-subtask", "create", $"story:{parentStoryPublicId}", credential =>
+            hub.InvokeShortcutApiAsync(credential, HttpMethod.Post, "stories", MergeJson(bodyJson, ("parent_story_id", parentStoryPublicId)), ct: cancellationToken), cancellationToken);
 
     [McpServerTool(Name = "stories-add-subtask", Title = "Add Shortcut Story Subtask", ReadOnly = false, Destructive = false)]
     [Description("Add an existing story as a sub-task of another story.")]
@@ -274,21 +286,21 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     [McpServerTool(Name = "workflows-get-default", Title = "Get Default Shortcut Workflow", ReadOnly = true)]
     [Description("Get the default Shortcut workflow for a team or workspace.")]
     public Task<string> GetDefaultShortcutWorkflow(string? teamPublicId = null, CancellationToken cancellationToken = default) =>
-        InvokeAuditedAsync("shortcut", "workflows-get-default", "get", teamPublicId ?? "workspace", "shared", async () =>
+        InvokeShortcutAuditedAsync("workflows-get-default", "get", teamPublicId ?? "workspace", async credential =>
         {
             if (!string.IsNullOrWhiteSpace(teamPublicId))
             {
-                var teamJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, $"groups/{Uri.EscapeDataString(teamPublicId)}", ct: cancellationToken);
+                var teamJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, $"groups/{Uri.EscapeDataString(teamPublicId)}", ct: cancellationToken);
                 using var teamDoc = JsonDocument.Parse(teamJson);
                 if (TryGetInt(teamDoc.RootElement, "default_workflow_id") is { } teamWorkflowId)
-                    return await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, $"workflows/{teamWorkflowId}", ct: cancellationToken);
+                    return await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, $"workflows/{teamWorkflowId}", ct: cancellationToken);
             }
 
-            var memberJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, "member", ct: cancellationToken);
+            var memberJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, "member", ct: cancellationToken);
             using var memberDoc = JsonDocument.Parse(memberJson);
             if (memberDoc.RootElement.TryGetProperty("workspace2", out var workspace)
                 && TryGetInt(workspace, "default_workflow_id") is { } workflowId)
-                return await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, $"workflows/{workflowId}", ct: cancellationToken);
+                return await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, $"workflows/{workflowId}", ct: cancellationToken);
 
             return """{"message":"No default workflow found."}""";
         }, cancellationToken);
@@ -311,12 +323,12 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     [McpServerTool(Name = "users-get-current-teams", Title = "Get Current Shortcut User Teams", ReadOnly = true)]
     [Description("Get the current Shortcut user's teams.")]
     public Task<string> GetCurrentShortcutUserTeams(CancellationToken cancellationToken = default) =>
-        InvokeAuditedAsync("shortcut", "users-get-current-teams", "list", "member:teams", "shared", async () =>
+        InvokeShortcutAuditedAsync("users-get-current-teams", "list", "member:teams", async credential =>
         {
-            var memberJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, "member", ct: cancellationToken);
+            var memberJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, "member", ct: cancellationToken);
             using var memberDoc = JsonDocument.Parse(memberJson);
             var userId = TryGetString(memberDoc.RootElement, "id");
-            var teamsJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, "groups", ct: cancellationToken);
+            var teamsJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, "groups", ct: cancellationToken);
             if (userId is null)
                 return teamsJson;
             using var teamsDoc = JsonDocument.Parse(teamsJson);
@@ -380,6 +392,23 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     public Task<string> GetShortcutDocument(string docId, CancellationToken cancellationToken = default) =>
         ShortcutGet("documents-get-by-id", $"documents/{Uri.EscapeDataString(docId)}", "get", $"document:{docId}", cancellationToken, ("content_format", "markdown"));
 
+    [McpServerTool(Name = "shortcut-shared-api", Title = "Invoke Shortcut as shared service account", ReadOnly = false, Destructive = true)]
+    [Description("Administrative generic Shortcut API access using the explicitly configured shared credential. This tool requires explicit PAT selection.")]
+    public Task<string> InvokeSharedShortcutApi(
+        string method,
+        string path,
+        string? bodyJson = null,
+        string? queryJson = null,
+        CancellationToken cancellationToken = default) =>
+        InvokeShortcutAuditedAsync(
+            "shortcut-shared-api",
+            method,
+            path,
+            credential => hub.InvokeSharedShortcutApiAsync(
+                credential, method, path, bodyJson, queryJson, cancellationToken),
+            cancellationToken,
+            sharedOnly: true);
+
     [McpServerTool(Name = "rabbitmq_list_queues", Title = "List RabbitMQ Queues", ReadOnly = true)]
     [Description("List RabbitMQ queues through the configured management API.")]
     public async Task<string> ListRabbitMqQueues(
@@ -438,14 +467,14 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         string? resourceKey,
         CancellationToken ct,
         params (string Name, object? Value)[] query) =>
-        InvokeAuditedAsync("shortcut", toolName, operation, resourceKey, "shared",
-            () => hub.InvokeShortcutApiAsync(
-                Username,
+        InvokeShortcutAuditedAsync(toolName, operation, resourceKey,
+            credential => hub.InvokeShortcutApiAsync(
+                credential,
                 HttpMethod.Get,
                 path,
                 bodyJson: null,
                 query: McpHubService.BuildQuery(query),
-                ct),
+                ct: ct),
             ct);
 
     private Task<string> ShortcutSend(
@@ -456,8 +485,8 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         string operation,
         string? resourceKey,
         CancellationToken ct) =>
-        InvokeAuditedAsync("shortcut", toolName, operation, resourceKey, "shared",
-            () => hub.InvokeShortcutApiAsync(Username, method, path, bodyJson, ct: ct),
+        InvokeShortcutAuditedAsync(toolName, operation, resourceKey,
+            credential => hub.InvokeShortcutApiAsync(credential, method, path, bodyJson, ct: ct),
             ct);
 
     private Task<string> ChangeCurrentUserAssignment(
@@ -465,13 +494,13 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         bool assign,
         string toolName,
         CancellationToken ct) =>
-        InvokeAuditedAsync("shortcut", toolName, assign ? "assign" : "unassign", $"story:{storyPublicId}", "shared", async () =>
+        InvokeShortcutAuditedAsync(toolName, assign ? "assign" : "unassign", $"story:{storyPublicId}", async credential =>
         {
-            var storyJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, $"stories/{storyPublicId}", ct: ct);
+            var storyJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, $"stories/{storyPublicId}", ct: ct);
             using var storyDoc = JsonDocument.Parse(storyJson);
             var owners = GetStringArray(storyDoc.RootElement, "owner_ids").ToList();
 
-            var memberJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, "member", ct: ct);
+            var memberJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, "member", ct: ct);
             using var memberDoc = JsonDocument.Parse(memberJson);
             var userId = TryGetString(memberDoc.RootElement, "id")
                 ?? throw new McpHubProviderPolicyException("Shortcut current member response did not include an id.");
@@ -493,7 +522,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 return JsonSerializer.Serialize(new { message = assign ? "Current user is already an owner." : "Current user was not an owner." });
 
             return await hub.InvokeShortcutApiAsync(
-                Username,
+                credential,
                 HttpMethod.Put,
                 $"stories/{storyPublicId}",
                 McpHubService.JsonBody(("owner_ids", owners)),
@@ -505,13 +534,13 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         string toolName,
         Func<IReadOnlyList<string>, IReadOnlyList<string>> update,
         CancellationToken ct) =>
-        InvokeAuditedAsync("shortcut", toolName, "external-links", $"story:{storyPublicId}", "shared", async () =>
+        InvokeShortcutAuditedAsync(toolName, "external-links", $"story:{storyPublicId}", async credential =>
         {
-            var storyJson = await hub.InvokeShortcutApiAsync(Username, HttpMethod.Get, $"stories/{storyPublicId}", ct: ct);
+            var storyJson = await hub.InvokeShortcutApiAsync(credential, HttpMethod.Get, $"stories/{storyPublicId}", ct: ct);
             using var storyDoc = JsonDocument.Parse(storyJson);
             var links = update(GetStringArray(storyDoc.RootElement, "external_links"));
             return await hub.InvokeShortcutApiAsync(
-                Username,
+                credential,
                 HttpMethod.Put,
                 $"stories/{storyPublicId}",
                 McpHubService.JsonBody(("external_links", links)),
@@ -584,6 +613,63 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
             ? statusFilter
             : $"{statusFilter} team:\"{team.Trim().Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 
+    private async Task<string> InvokeShortcutAuditedAsync(
+        string toolName,
+        string operation,
+        string? resourceKey,
+        Func<ResolvedShortcutCredential, Task<string>> action,
+        CancellationToken ct,
+        bool sharedOnly = false)
+    {
+        var sw = Stopwatch.StartNew();
+        ResolvedShortcutCredential? credential = null;
+        try
+        {
+            credential = sharedOnly
+                ? await hub.ResolveSharedShortcutCredentialForInvocationAsync(ct)
+                : await hub.ResolveShortcutCredentialForInvocationAsync(Username, TokenId, ct);
+            var result = await action(credential);
+            await hub.AuditAsync(
+                Username,
+                TokenId,
+                "shortcut",
+                toolName,
+                "invoke",
+                operation,
+                resourceKey,
+                credential.CredentialMode,
+                "allowed",
+                "ok",
+                (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
+                true,
+                null,
+                ct,
+                providerIdentity: credential.ProviderIdentity);
+            return result;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            var statusClass = ex is McpHubProviderPolicyException ? "policy_denied" : "provider_error";
+            await hub.AuditAsync(
+                Username,
+                TokenId,
+                "shortcut",
+                toolName,
+                "invoke",
+                operation,
+                resourceKey,
+                credential?.CredentialMode ?? (sharedOnly ? "shared" : "delegated"),
+                statusClass == "policy_denied" ? "denied" : "allowed",
+                statusClass,
+                (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
+                false,
+                ex.Message,
+                ct,
+                providerIdentity: credential?.ProviderIdentity);
+            return $"Provider call failed: {ex.Message}";
+        }
+    }
+
     private async Task<string> InvokeAuditedAsync(
         string providerKey,
         string toolName,
@@ -594,6 +680,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
+        string? providerIdentity = null;
         try
         {
             var result = await action();
@@ -611,7 +698,8 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
                 true,
                 null,
-                ct);
+                ct,
+                providerIdentity: providerIdentity);
             return result;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -631,7 +719,8 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
                 false,
                 ex.Message,
-                ct);
+                ct,
+                providerIdentity: providerIdentity);
             return $"Provider call failed: {ex.Message}";
         }
     }

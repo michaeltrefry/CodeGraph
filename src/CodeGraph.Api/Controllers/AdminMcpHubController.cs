@@ -227,6 +227,7 @@ public sealed class AdminMcpHubController(
             entity.Operation,
             entity.ResourceKey,
             entity.CredentialMode,
+            entity.ProviderIdentity,
             entity.AuthorizationDecision,
             entity.StatusClass,
             entity.DurationMs,

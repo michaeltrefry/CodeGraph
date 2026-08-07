@@ -16,11 +16,16 @@ public sealed class McpHubService(
     IHttpClientFactory httpClientFactory,
     SensitiveColumnPolicy sensitiveColumnPolicy,
     MySqlSourceExposurePolicy sourceExposurePolicy,
-    ILogger<McpHubService> logger)
+    ILogger<McpHubService> logger,
+    IMcpProviderCredentialStore? credentialStore = null)
 {
     public const string ShortcutCredentialKey = "apiToken";
     public const string LegacyShortcutShimProviderKey = "shortcut-shim";
     public const string LegacyShortcutShimCredentialKey = McpShimDiscoveryService.DiscoveryTokenCredentialKey;
+    public const string SharedShortcutModeConfigKey = "allowSharedCredentialMode";
+
+    private readonly IMcpProviderCredentialStore delegatedCredentialStore =
+        credentialStore ?? new InMemoryMcpProviderCredentialStore();
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -36,7 +41,11 @@ public sealed class McpHubService(
             tools.Select(ToResponse).ToList());
     }
 
-    public async Task<string> SearchShortcutEpicsAsync(string? query, string? username, CancellationToken ct = default)
+    public async Task<string> SearchShortcutEpicsAsync(
+        string? query,
+        string? username,
+        CancellationToken ct = default,
+        long? tokenId = null)
     {
         return await InvokeShortcutApiAsync(
             username,
@@ -44,10 +53,15 @@ public sealed class McpHubService(
             "search/epics",
             bodyJson: null,
             query: BuildQuery(("query", query)),
-            ct);
+            ct: ct,
+            tokenId: tokenId);
     }
 
-    public async Task<string> SearchShortcutStoriesAsync(string? query, string? username, CancellationToken ct = default)
+    public async Task<string> SearchShortcutStoriesAsync(
+        string? query,
+        string? username,
+        CancellationToken ct = default,
+        long? tokenId = null)
     {
         return await InvokeShortcutApiAsync(
             username,
@@ -55,7 +69,8 @@ public sealed class McpHubService(
             "search/stories",
             bodyJson: null,
             query: BuildQuery(("query", query)),
-            ct);
+            ct: ct,
+            tokenId: tokenId);
     }
 
     public async Task<string> InvokeShortcutApiAsync(
@@ -64,12 +79,57 @@ public sealed class McpHubService(
         string path,
         string? bodyJson = null,
         IReadOnlyDictionary<string, string?>? query = null,
+        CancellationToken ct = default,
+        long? tokenId = null)
+    {
+        var credential = await ResolveShortcutCredentialForInvocationAsync(username, tokenId, ct);
+        return await InvokeShortcutApiAsync(credential, method, path, bodyJson, query, ct);
+    }
+
+    internal async Task<string> InvokeShortcutApiAsync(
+        ResolvedShortcutCredential credential,
+        HttpMethod method,
+        string path,
+        string? bodyJson = null,
+        IReadOnlyDictionary<string, string?>? query = null,
         CancellationToken ct = default)
     {
-        await EnsureProviderEnabledAsync("shortcut", ct);
-        var client = await CreateShortcutClientAsync(username, ct);
+        var client = BuildShortcutClient(credential.Token);
         var requestUri = BuildProviderUri(path, query);
         using var request = new HttpRequestMessage(method, requestUri);
+        if (bodyJson is not null)
+        {
+            ValidateJsonObject(bodyJson);
+            request.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
+        }
+
+        using var response = await client.SendAsync(request, ct);
+        return await ReadProviderResponseAsync(response, ct);
+    }
+
+    public async Task<string> InvokeSharedShortcutApiAsync(
+        string method,
+        string path,
+        string? bodyJson = null,
+        string? queryJson = null,
+        CancellationToken ct = default)
+    {
+        var credential = await ResolveSharedShortcutCredentialForInvocationAsync(ct);
+        return await InvokeSharedShortcutApiAsync(credential, method, path, bodyJson, queryJson, ct);
+    }
+
+    internal async Task<string> InvokeSharedShortcutApiAsync(
+        ResolvedShortcutCredential credential,
+        string method,
+        string path,
+        string? bodyJson = null,
+        string? queryJson = null,
+        CancellationToken ct = default)
+    {
+        var httpMethod = ParseSharedShortcutMethod(method);
+        var requestUri = BuildProviderUri(path, ParseSharedShortcutQuery(queryJson));
+        var client = BuildShortcutClient(credential.Token);
+        using var request = new HttpRequestMessage(httpMethod, requestUri);
         if (bodyJson is not null)
         {
             ValidateJsonObject(bodyJson);
@@ -84,10 +144,20 @@ public sealed class McpHubService(
         string? username,
         int storyPublicId,
         string filePath,
+        CancellationToken ct = default,
+        long? tokenId = null)
+    {
+        var credential = await ResolveShortcutCredentialForInvocationAsync(username, tokenId, ct);
+        return await UploadShortcutFileAsync(credential, storyPublicId, filePath, ct);
+    }
+
+    internal async Task<string> UploadShortcutFileAsync(
+        ResolvedShortcutCredential credential,
+        int storyPublicId,
+        string filePath,
         CancellationToken ct = default)
     {
-        await EnsureProviderEnabledAsync("shortcut", ct);
-        var client = await CreateShortcutClientAsync(username, ct);
+        var client = BuildShortcutClient(credential.Token);
         if (storyPublicId <= 0)
             throw new McpHubProviderPolicyException("storyPublicId must be positive.");
         if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
@@ -280,7 +350,8 @@ public sealed class McpHubService(
         bool success,
         string? message,
         CancellationToken ct = default,
-        string providerType = "provider")
+        string providerType = "provider",
+        string? providerIdentity = null)
     {
         try
         {
@@ -295,6 +366,7 @@ public sealed class McpHubService(
                 Operation = NormalizeAuditValue(operation, "invoke"),
                 ResourceKey = Normalize(resourceKey),
                 CredentialMode = NormalizeAuditValue(credentialMode, "none"),
+                ProviderIdentity = string.IsNullOrWhiteSpace(providerIdentity) ? null : providerIdentity.Trim(),
                 AuthorizationDecision = NormalizeAuditValue(authorizationDecision, "unknown"),
                 StatusClass = NormalizeAuditValue(statusClass, "unknown"),
                 DurationMs = Math.Max(0, durationMs),
@@ -309,9 +381,83 @@ public sealed class McpHubService(
         }
     }
 
-    // Shortcut uses the hub-shared API token. The retired shim stored the same token as
-    // shortcut-shim/discoveryToken, so keep that as a compatibility fallback.
-    private async Task<HttpClient> CreateShortcutClientAsync(string? username, CancellationToken ct)
+    internal async Task<ResolvedShortcutCredential> ResolveShortcutCredentialForInvocationAsync(
+        string? username,
+        long? tokenId,
+        CancellationToken ct)
+    {
+        await EnsureProviderEnabledAsync("shortcut", ct);
+        return await ResolveShortcutCredentialAsync(username, tokenId, ct);
+    }
+
+    internal async Task<ResolvedShortcutCredential> ResolveSharedShortcutCredentialForInvocationAsync(
+        CancellationToken ct)
+    {
+        await EnsureProviderEnabledAsync("shortcut", ct);
+        var enabled = await store.GetConfigValueAsync("shortcut", SharedShortcutModeConfigKey, ct);
+        if (!bool.TryParse(enabled, out var sharedModeEnabled) || !sharedModeEnabled)
+            throw new McpHubProviderPolicyException(
+                $"Shared Shortcut credential mode is disabled. An administrator must set shortcut/{SharedShortcutModeConfigKey}=true.");
+
+        return new ResolvedShortcutCredential(
+            await GetSharedShortcutTokenAsync(ct),
+            "shared",
+            ProviderIdentity: null);
+    }
+
+    private async Task<ResolvedShortcutCredential> ResolveShortcutCredentialAsync(
+        string? username,
+        long? tokenId,
+        CancellationToken ct)
+    {
+        if (tokenId is long resolvedTokenId && await IsSharedShortcutModeEntitledAsync(resolvedTokenId, ct))
+        {
+            var sharedToken = await GetSharedShortcutTokenAsync(ct);
+            return new ResolvedShortcutCredential(sharedToken, "shared", ProviderIdentity: null);
+        }
+
+        return await ResolveDelegatedShortcutCredentialAsync(username, ct);
+    }
+
+    private async Task<bool> IsSharedShortcutModeEntitledAsync(long tokenId, CancellationToken ct)
+    {
+        var enabled = await store.GetConfigValueAsync("shortcut", SharedShortcutModeConfigKey, ct);
+        return bool.TryParse(enabled, out var sharedModeEnabled)
+            && sharedModeEnabled
+            && await store.IsTokenEntitledAsync(tokenId, "shortcut-shared-api", ct);
+    }
+
+    private async Task<ResolvedShortcutCredential> ResolveDelegatedShortcutCredentialAsync(
+        string? username,
+        CancellationToken ct)
+    {
+        var normalizedUsername = Normalize(username);
+        if (normalizedUsername is null)
+            throw new McpHubProviderPolicyException(
+                "An authenticated CodeGraph user is required for delegated Shortcut calls.");
+
+        var metadata = await delegatedCredentialStore.GetAsync(
+            "shortcut", normalizedUsername, ShortcutCredentialKey, ct);
+        if (metadata is null)
+            throw new McpHubProviderPolicyException(
+                $"No delegated Shortcut credential is connected for '{normalizedUsername}'.");
+        if (!string.Equals(metadata.ValidationState, "valid", StringComparison.OrdinalIgnoreCase))
+            throw new McpHubProviderPolicyException(
+                $"The delegated Shortcut credential for '{normalizedUsername}' is not valid.");
+        if (metadata.ExpiresAtUtc is DateTime expiresAtUtc && expiresAtUtc <= DateTime.UtcNow)
+            throw new McpHubProviderPolicyException(
+                $"The delegated Shortcut credential for '{normalizedUsername}' has expired.");
+
+        var token = await delegatedCredentialStore.GetValueAsync(
+            "shortcut", normalizedUsername, ShortcutCredentialKey, ct);
+        if (string.IsNullOrWhiteSpace(token))
+            throw new McpHubProviderPolicyException(
+                $"The delegated Shortcut credential for '{normalizedUsername}' has no usable secret.");
+
+        return new ResolvedShortcutCredential(token.Trim(), "delegated", metadata.ProviderIdentity);
+    }
+
+    private async Task<string> GetSharedShortcutTokenAsync(CancellationToken ct)
     {
         var token = await store.GetCredentialValueAsync("shortcut", ShortcutCredentialKey, ct);
         if (string.IsNullOrWhiteSpace(token))
@@ -326,7 +472,33 @@ public sealed class McpHubService(
             throw new McpHubProviderPolicyException(
                 "No shared Shortcut API token is configured. Configure shortcut/apiToken or legacy shortcut-shim/discoveryToken in MCP Hub credentials.");
 
-        return BuildShortcutClient(token);
+        return token.Trim();
+    }
+
+    private static HttpMethod ParseSharedShortcutMethod(string method) =>
+        method.Trim().ToUpperInvariant() switch
+        {
+            "GET" => HttpMethod.Get,
+            "POST" => HttpMethod.Post,
+            "PUT" => HttpMethod.Put,
+            "PATCH" => HttpMethod.Patch,
+            "DELETE" => HttpMethod.Delete,
+            _ => throw new McpHubProviderPolicyException("Shared Shortcut calls support GET, POST, PUT, PATCH, and DELETE only.")
+        };
+
+    private static IReadOnlyDictionary<string, string?>? ParseSharedShortcutQuery(string? queryJson)
+    {
+        if (string.IsNullOrWhiteSpace(queryJson))
+            return null;
+        try
+        {
+            var query = JsonSerializer.Deserialize<Dictionary<string, string?>>(queryJson);
+            return query ?? throw new McpHubProviderPolicyException("Shortcut queryJson must be a JSON object.");
+        }
+        catch (JsonException ex)
+        {
+            throw new McpHubProviderPolicyException($"Shortcut queryJson is not valid JSON: {ex.Message}");
+        }
     }
 
     private HttpClient BuildShortcutClient(string token)
@@ -550,6 +722,13 @@ public sealed class McpHubService(
             throw new McpHubProviderPolicyException("Shortcut API path is required.");
 
         var trimmedPath = path.Trim().TrimStart('/');
+        if (Uri.TryCreate(trimmedPath, UriKind.Absolute, out _) ||
+            trimmedPath.Contains('\\') ||
+            trimmedPath.Split('/', StringSplitOptions.RemoveEmptyEntries).Any(segment => segment == "..") ||
+            trimmedPath.Contains('#'))
+        {
+            throw new McpHubProviderPolicyException("Shortcut API path must be a relative api/v3 path.");
+        }
         if (trimmedPath.StartsWith("api/v3/", StringComparison.OrdinalIgnoreCase))
             trimmedPath = trimmedPath["api/v3/".Length..];
 
@@ -615,3 +794,8 @@ public sealed record DelegatedCredentialValidationResult(
     bool IsValid,
     string? ProviderIdentity,
     string? Message);
+
+internal sealed record ResolvedShortcutCredential(
+    string Token,
+    string CredentialMode,
+    string? ProviderIdentity);

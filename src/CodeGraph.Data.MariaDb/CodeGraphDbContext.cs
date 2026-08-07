@@ -888,6 +888,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(audit => audit.Operation).HasColumnName("operation");
             e.Property(audit => audit.ResourceKey).HasColumnName("resource_key");
             e.Property(audit => audit.CredentialMode).HasColumnName("credential_mode");
+            e.Property(audit => audit.ProviderIdentity).HasColumnName("provider_identity");
             e.Property(audit => audit.AuthorizationDecision).HasColumnName("authorization_decision");
             e.Property(audit => audit.StatusClass).HasColumnName("status_class");
             e.Property(audit => audit.DurationMs).HasColumnName("duration_ms");

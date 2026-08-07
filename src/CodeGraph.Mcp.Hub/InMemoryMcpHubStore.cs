@@ -160,7 +160,13 @@ internal sealed class InMemoryMcpHubStore : IMcpHubStore
 
     public Task<bool> IsTokenEntitledAsync(long tokenId, string toolName, CancellationToken ct = default)
     {
-        lock (gate) return Task.FromResult(!entitlements.TryGetValue(tokenId, out var names) || names.Contains(toolName, StringComparer.OrdinalIgnoreCase));
+        lock (gate)
+        {
+            var hasSelectedTools = entitlements.TryGetValue(tokenId, out var names);
+            if (McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(toolName))
+                return Task.FromResult(hasSelectedTools && names!.Contains(toolName, StringComparer.OrdinalIgnoreCase));
+            return Task.FromResult(!hasSelectedTools || names!.Contains(toolName, StringComparer.OrdinalIgnoreCase));
+        }
     }
 
     public Task CreateAuditAsync(McpHubAuditEntity item, CancellationToken ct = default)
