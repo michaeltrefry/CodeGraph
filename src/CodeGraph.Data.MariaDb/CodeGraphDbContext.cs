@@ -49,6 +49,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<McpHubCredentialEntity> McpHubCredentials => Set<McpHubCredentialEntity>();
     public DbSet<McpHubConfigEntity> McpHubConfig => Set<McpHubConfigEntity>();
     public DbSet<McpHubAuditEntity> McpHubAudit => Set<McpHubAuditEntity>();
+    public DbSet<MemoryAdminAuditEntity> MemoryAdminAudit => Set<MemoryAdminAuditEntity>();
     public DbSet<McpSensitiveColumnEntity> McpSensitiveColumns => Set<McpSensitiveColumnEntity>();
     public DbSet<McpProviderCredentialEntity> McpProviderCredentials => Set<McpProviderCredentialEntity>();
     public DbSet<McpToolInvocationEntity> McpToolInvocations => Set<McpToolInvocationEntity>();
@@ -897,6 +898,26 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.HasIndex(audit => new { audit.ProviderKey, audit.ToolName, audit.CreatedAtUtc });
             e.HasIndex(audit => new { audit.TokenId, audit.CreatedAtUtc });
             e.HasIndex(audit => new { audit.ProviderKey, audit.ResourceKey, audit.CreatedAtUtc });
+        });
+
+        modelBuilder.Entity<MemoryAdminAuditEntity>(e =>
+        {
+            e.ToTable("memory_admin_audit");
+            e.HasKey(audit => audit.Id);
+            e.Property(audit => audit.Id).HasColumnName("id");
+            e.Property(audit => audit.CorrelationId).HasColumnName("correlation_id");
+            e.Property(audit => audit.ActorUsername).HasColumnName("actor_username");
+            e.Property(audit => audit.TargetUsername).HasColumnName("target_username");
+            e.Property(audit => audit.Operation).HasColumnName("operation");
+            e.Property(audit => audit.DryRun).HasColumnName("dry_run");
+            e.Property(audit => audit.OutcomeStatus).HasColumnName("outcome_status");
+            e.Property(audit => audit.Succeeded).HasColumnName("succeeded");
+            e.Property(audit => audit.ErrorType).HasColumnName("error_type");
+            e.Property(audit => audit.CreatedAt).HasColumnName("created_at");
+            e.Property(audit => audit.CompletedAt).HasColumnName("completed_at");
+            e.HasIndex(audit => audit.CorrelationId).IsUnique();
+            e.HasIndex(audit => new { audit.ActorUsername, audit.CreatedAt });
+            e.HasIndex(audit => new { audit.TargetUsername, audit.CreatedAt });
         });
 
         modelBuilder.Entity<McpSensitiveColumnEntity>(e =>

@@ -1,4 +1,5 @@
 using CodeGraph.Api.Auth;
+using CodeGraph.Data;
 using CodeGraph.Memory.Client;
 using CodeGraph.Models.Memory;
 using CodeGraph.Services.Memory;
@@ -135,8 +136,6 @@ public sealed class RemoteMemoryOperationsService(
     private string ResolveUsername()
     {
         var user = httpContextAccessor.HttpContext?.User;
-        return user?.GetUsername()?.Trim().ToLowerInvariant() is { Length: > 0 } username
-            ? username
-            : "system";
+        return MemoryTenantContext.ForAuthenticatedUser(user?.GetUsername());
     }
 }

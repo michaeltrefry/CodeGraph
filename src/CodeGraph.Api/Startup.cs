@@ -208,6 +208,7 @@ public static class Startup
         services.AddTransient<MemoryObservationMigrationService>();
         services.AddTransient<MemoryRetrievalService>();
         services.AddTransient<MemoryService>();
+        services.AddScoped<IMemoryTenantContext, MemoryTenantContext>();
         RegisterMemoryOperations(services, configuration);
 
         // Messaging — IMessageBus wraps MassTransit IPublishEndpoint
@@ -326,10 +327,12 @@ public static class Startup
         {
             services.AddCodeGraphMemoryClient(configuration);
             services.AddTransient<IMemoryOperationsService, RemoteMemoryOperationsService>();
+            services.AddTransient<IMemoryAdministrationService, RemoteMemoryAdministrationService>();
             return;
         }
 
         services.AddTransient<IMemoryOperationsService, LocalMemoryOperationsService>();
+        services.AddTransient<IMemoryAdministrationService, LocalMemoryAdministrationService>();
     }
 
     private static void RegisterIndexerOperations(IServiceCollection services, IConfiguration configuration)
@@ -388,6 +391,9 @@ public static class Startup
         app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
+        // Endpoint-specific schemes such as MCP PAT authenticate inside authorization. Tenant
+        // binding must therefore run after authorization has installed the final principal.
+        app.UseMiddleware<MemoryTenantScopeMiddleware>();
         app.UseMiddleware<McpToolEntitlementMiddleware>();
         app.UseMiddleware<McpTelemetryMiddleware>();
         app.MapControllers();
