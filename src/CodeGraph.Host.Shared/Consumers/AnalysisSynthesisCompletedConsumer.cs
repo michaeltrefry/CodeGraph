@@ -2,7 +2,7 @@ using MassTransit;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services.Analyzers;
 
-namespace CodeGraph.Api.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 /// <summary>
 /// Writes CODEGRAPH.md files to the repo after analysis synthesis completes.

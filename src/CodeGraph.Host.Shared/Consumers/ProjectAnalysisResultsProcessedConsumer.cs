@@ -4,7 +4,7 @@ using CodeGraph.Models.Exceptions;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Messaging;
 
-namespace CodeGraph.Indexer.Host.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 /// <summary>
 /// Triggers repo-level synthesis after per-project analysis results are stored.

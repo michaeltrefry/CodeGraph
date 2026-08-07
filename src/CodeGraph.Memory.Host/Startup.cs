@@ -4,8 +4,8 @@ using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Data.Neo4j;
 using CodeGraph.Host.Shared.Auth;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Host.Shared.Hosting;
-using CodeGraph.Memory.Host.Consumers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Memory;
@@ -101,7 +101,7 @@ public static class Startup
     {
         services.AddMassTransit(x =>
         {
-            x.AddConsumer<StoreMemoryClaimsConsumer>();
+            SharedConsumerTopology.AddMemoryConsumer(x);
 
             x.UsingRabbitMq((context, cfg) =>
             {
@@ -113,11 +113,7 @@ public static class Startup
                 });
 
                 var consumerOptions = context.GetRequiredService<IOptions<ConsumerOptions>>().Value;
-                cfg.ReceiveEndpoint("store-memory-claims", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
-                });
+                SharedConsumerTopology.ConfigureMemoryEndpoint(cfg, context, consumerOptions);
             });
         });
     }
