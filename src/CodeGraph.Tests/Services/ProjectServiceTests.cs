@@ -1,5 +1,7 @@
 using CodeGraph.Data;
+using CodeGraph.Extractors.CSharp;
 using CodeGraph.Models;
+using CodeGraph.Models.Messages;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
@@ -15,6 +17,112 @@ namespace CodeGraph.Tests.Services;
 
 public class ProjectServiceTests
 {
+    [Fact]
+    public async Task ProcessRepository_FolderProviderCarriesCanonicalIdentityIntoTrustPolicy()
+    {
+        var providerRoot = Path.Combine(Path.GetTempPath(), $"codegraph-provider-trust-{Guid.NewGuid():N}");
+        var repoPath = Path.Combine(providerRoot, "MaliciousRestore");
+        CopyFixture(repoPath);
+
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var options = Options.Create(new IndexingOptions
+            {
+                MaxParallelFiles = 1,
+                MaxParallelRepos = 1,
+                TrustedDotnetRepositories = "folder:MaliciousRestore"
+            });
+            var pipeline = new IndexingPipeline(
+                store,
+                [new RoslynExtractor()],
+                options,
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                new SolutionAnalyzer(
+                    NullLogger<SolutionAnalyzer>.Instance,
+                    new LintResultCache(),
+                    new DiagnosticDetailCache()));
+            var provider = CreateFolderProvider(providerRoot);
+            var service = new ProjectService(
+                store,
+                new RecordingBatchAnalysisService(store),
+                new NoOpMessageBus(),
+                provider,
+                pipeline,
+                options,
+                NullLogger<ProjectService>.Instance);
+
+            await service.ProcessRepository(new ProcessRepository
+            {
+                Name = "MaliciousRestore",
+                RepoUrl = repoPath,
+                ShouldIndex = true,
+                ShouldAnalyze = false,
+                SkipIfUpToDate = false
+            });
+
+            File.Exists(Path.Combine(repoPath, "restore-payload-executed.txt")).ShouldBeTrue();
+        }
+        finally
+        {
+            Directory.Delete(providerRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ProcessRepository_RejectsSourceGroupThatDisagreesWithResolvedCheckout()
+    {
+        var providerRoot = Path.Combine(Path.GetTempPath(), $"codegraph-provider-mismatch-{Guid.NewGuid():N}");
+        var repoPath = Path.Combine(providerRoot, "attacker", "MaliciousRestore");
+        CopyFixture(repoPath);
+
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var options = Options.Create(new IndexingOptions
+            {
+                MaxParallelFiles = 1,
+                MaxParallelRepos = 1,
+                TrustedDotnetRepositories = "folder:trusted/MaliciousRestore"
+            });
+            var pipeline = new IndexingPipeline(
+                store,
+                [new RoslynExtractor()],
+                options,
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                new SolutionAnalyzer(
+                    NullLogger<SolutionAnalyzer>.Instance,
+                    new LintResultCache(),
+                    new DiagnosticDetailCache()));
+            var service = new ProjectService(
+                store,
+                new RecordingBatchAnalysisService(store),
+                new NoOpMessageBus(),
+                CreateFolderProvider(providerRoot),
+                pipeline,
+                options,
+                NullLogger<ProjectService>.Instance);
+
+            var exception = await Should.ThrowAsync<InvalidOperationException>(() =>
+                service.ProcessRepository(new ProcessRepository
+                {
+                    Name = "MaliciousRestore",
+                    RepoUrl = repoPath,
+                    SourceGroup = "trusted",
+                    ShouldIndex = true
+                }));
+
+            exception.Message.ShouldContain("inconsistent with provider-resolved identity");
+            File.Exists(Path.Combine(repoPath, "restore-payload-executed.txt")).ShouldBeFalse();
+        }
+        finally
+        {
+            Directory.Delete(providerRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task ReAnalyzeRepository_ReplacesGraphAndCoalescesConcurrentRequests()
     {
@@ -137,8 +245,33 @@ public class ProjectServiceTests
         }
     }
 
+    private static FolderRepoProvider CreateFolderProvider(string providerRoot) => new(
+        Options.Create(new RepositorySourceOptions
+        {
+            Provider = RepositorySourceProvider.Folder,
+            Folder = new FolderSourceOptions { RootPath = providerRoot }
+        }),
+        new NoOpExclusionService(),
+        NullLogger<FolderRepoProvider>.Instance);
+
+    private static void CopyFixture(string destination)
+    {
+        Directory.CreateDirectory(destination);
+        Directory.CreateDirectory(Path.Combine(destination, ".git"));
+        var source = Path.Combine(AppContext.BaseDirectory, "Fixtures", "MaliciousRestore");
+        foreach (var file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+    }
+
     private sealed class FixedRepoProvider(string rootPath) : IRepoProvider
     {
+        public Task<ResolvedRepository> ResolveRepositoryAsync(
+            string repoName,
+            string? localPath,
+            string? repoUrl,
+            CancellationToken ct = default) =>
+            Task.FromResult(new ResolvedRepository(rootPath, $"folder:{repoName}", rootPath, null));
+
         public Task<string> EnsureLocalAsync(
             string repoName,
             string? localPath,
@@ -158,6 +291,29 @@ public class ProjectServiceTests
     {
         public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class =>
             Task.CompletedTask;
+    }
+
+    private sealed class NoOpExclusionService : IExclusionService
+    {
+        public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) =>
+            Task.FromResult<string?>(null);
+
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) =>
+            Task.FromResult(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+        public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() =>
+            Task.FromResult<IReadOnlyList<ExclusionRuleEntity>>([]);
+
+        public Task<ExclusionRuleEntity> CreateRuleAsync(
+            string targetType, string targetValue, string exclusionType, string? reason, string createdBy) =>
+            throw new NotSupportedException();
+
+        public Task<ExclusionRuleEntity?> UpdateRuleAsync(long id, string exclusionType, string? reason) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteRuleAsync(long id) => throw new NotSupportedException();
+
+        public Task SeedFromConfigAsync(IReadOnlyList<string> excludedGroups) => Task.CompletedTask;
     }
 
     private sealed class RecordingBatchAnalysisService(InMemoryGraphStore store) : IBatchAnalysisService

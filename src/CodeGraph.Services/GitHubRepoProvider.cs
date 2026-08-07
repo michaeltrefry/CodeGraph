@@ -89,17 +89,35 @@ public class GitHubRepoProvider(
             .ToList();
     }
 
-    public async Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
+    public async Task<ResolvedRepository> ResolveRepositoryAsync(
+        string repoName,
+        string? localPath,
+        string? repoUrl,
+        CancellationToken ct = default)
     {
         if (!string.IsNullOrWhiteSpace(localPath) && Directory.Exists(localPath))
         {
+            if (!string.IsNullOrWhiteSpace(repoUrl))
+                throw new InvalidOperationException("GitHub repository resolution cannot combine a local path with a remote URL.");
             logger.LogDebug("Using local path for {Repo}: {Path}", repoName, localPath);
-            return localPath;
+            var canonicalPath = Path.GetFullPath(localPath);
+            return new ResolvedRepository(
+                canonicalPath,
+                $"github-path:{canonicalPath.Replace('\\', '/')}",
+                null,
+                null);
         }
 
         repoUrl = await ResolveRepoUrlAsync(repoName, repoUrl, ct);
-        return await EnsureCachedAsync(repoName, repoUrl, ToCloneUrl, ct);
+        if (string.IsNullOrWhiteSpace(repoUrl))
+            throw new InvalidOperationException($"Unable to resolve GitHub repository URL for '{repoName}'.");
+        var (canonicalIdentity, sourceGroup) = RepositoryIdentity.FromRemote("github", repoName, repoUrl);
+        var resolvedPath = await EnsureCachedAsync(repoName, repoUrl, ToCloneUrl, ct);
+        return new ResolvedRepository(resolvedPath, canonicalIdentity, repoUrl, sourceGroup);
     }
+
+    public async Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default) =>
+        (await ResolveRepositoryAsync(repoName, localPath, repoUrl, ct)).LocalPath;
 
     internal async Task<string?> ResolveRepoUrlAsync(string repoName, string? repoUrl, CancellationToken ct = default)
     {

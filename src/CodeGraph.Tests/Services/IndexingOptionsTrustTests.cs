@@ -8,24 +8,22 @@ public sealed class IndexingOptionsTrustTests
     [Fact]
     public void IsDotnetToolingTrusted_DefaultsToUntrusted()
     {
-        new IndexingOptions().IsDotnetToolingTrusted(
-            "Demo", "https://github.com/example/Demo", "example").ShouldBeFalse();
+        new IndexingOptions().IsDotnetToolingTrusted("github:https://github.com/example/Demo")
+            .ShouldBeFalse();
     }
 
     [Theory]
-    [InlineData("https://github.com/example/Demo", "https://github.com/example/Demo/", "other", true)]
-    [InlineData("example/Demo", "https://github.com/other/Demo", "example", true)]
-    [InlineData("local:Demo", null, null, true)]
-    [InlineData("local:Demo", "https://github.com/attacker/Demo", "attacker", false)]
-    [InlineData("example/Demo", "https://github.com/attacker/Demo", "attacker", false)]
+    [InlineData("github:https://github.com/example/Demo", "github:https://github.com/example/Demo/", true)]
+    [InlineData("folder:group/Demo", "folder:group/Demo", true)]
+    [InlineData("github:https://github.com/example/Demo", "github:https://github.com/attacker/Demo", false)]
+    [InlineData("folder:group/Demo", "folder:attacker/Demo", false)]
     public void IsDotnetToolingTrusted_RequiresExactCanonicalIdentity(
         string trustedIdentity,
-        string? repoUrl,
-        string? sourceGroup,
+        string? resolvedIdentity,
         bool expected)
     {
         var options = new IndexingOptions { TrustedDotnetRepositories = trustedIdentity };
 
-        options.IsDotnetToolingTrusted("Demo", repoUrl, sourceGroup).ShouldBe(expected);
+        options.IsDotnetToolingTrusted(resolvedIdentity).ShouldBe(expected);
     }
 }

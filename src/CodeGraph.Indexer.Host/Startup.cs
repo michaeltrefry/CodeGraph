@@ -158,6 +158,7 @@ public static class Startup
         services.AddSingleton<IIndexerRunBackgroundRunner, IndexerRunBackgroundRunner>();
         services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
 
+        services.AddTransient<FolderRepoProvider>();
         RegisterRepoProvider(services);
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();

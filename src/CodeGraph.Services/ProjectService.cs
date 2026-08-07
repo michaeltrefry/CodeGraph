@@ -70,7 +70,7 @@ public class ProjectService(
 
             await ProcessRepositoryCore(message, cancellationToken);
 
-            var repoPath = await repoProvider.EnsureLocalAsync(repo, null, null, cancellationToken);
+            var repoPath = (await repoProvider.ResolveRepositoryAsync(repo, null, null, cancellationToken)).LocalPath;
             await batchService.SubmitAnalysisBatchAsync(repo, repoPath, includeAllSource: true, cancellationToken);
 
             var updated = await graphStore.GetLatestBatchAsync(repo);
@@ -98,20 +98,19 @@ public class ProjectService(
                 repoUrl = repo.RepoUrl;
         }
 
-        if (string.IsNullOrWhiteSpace(message.SourceGroup) && !string.IsNullOrWhiteSpace(repoUrl))
+        var resolvedRepository = await repoProvider.ResolveRepositoryAsync(
+            message.Name, message.Path, repoUrl, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(message.SourceGroup)
+            && !string.Equals(message.SourceGroup.Trim().Trim('/'), resolvedRepository.SourceGroup,
+                StringComparison.OrdinalIgnoreCase))
         {
-            // Extract group from URL path (e.g. "https://host/group/subgroup/project.git" → "group/subgroup")
-            if (Uri.TryCreate(repoUrl, UriKind.Absolute, out var uri))
-            {
-                var path = uri.AbsolutePath.Trim('/');
-                var pathWithNamespace = path.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
-                    ? path[..^4] : path;
-                var lastSlash = pathWithNamespace.LastIndexOf('/');
-                message.SourceGroup = lastSlash > 0 ? pathWithNamespace[..lastSlash] : null;
-            }
+            throw new InvalidOperationException(
+                $"Repository source group '{message.SourceGroup}' is inconsistent with provider-resolved identity '{resolvedRepository.CanonicalIdentity}'.");
         }
 
-        var repoPath = await repoProvider.EnsureLocalAsync(message.Name, message.Path, repoUrl, cancellationToken);
+        var repoPath = resolvedRepository.LocalPath;
+        repoUrl = resolvedRepository.RepoUrl;
+        var sourceGroup = resolvedRepository.SourceGroup;
 
         // 1. Skip if up to date
         if (message.SkipIfUpToDate)
@@ -132,7 +131,8 @@ public class ProjectService(
             logger.LogInformation("Indexing {Repo}", message.Name);
             await pipeline.IndexProjectAsync(message.Name, repoPath,
                 repoUrl: repoUrl,
-                sourceGroup: message.SourceGroup,
+                sourceGroup: sourceGroup,
+                repositoryToolingIdentity: resolvedRepository.CanonicalIdentity,
                 replaceExistingGraph: message.ReplaceExistingGraph,
                 replacementSyncState: message.ReplaceExistingGraph
                     ? CreateIdleSyncState(message.Name, commitSha)

@@ -44,6 +44,21 @@ public class FolderRepoProviderTests : IDisposable
         resolved.ShouldBe(repoPath);
     }
 
+    [Fact]
+    public async Task ResolveRepositoryAsync_DerivesCanonicalIdentityFromResolvedFolderCheckout()
+    {
+        var repoPath = CreateRepo(Path.Combine("group-b", "orders-api"));
+        var provider = CreateProvider();
+
+        var resolved = await provider.ResolveRepositoryAsync(
+            "orders-api", localPath: null, repoUrl: repoPath);
+
+        resolved.LocalPath.ShouldBe(repoPath);
+        resolved.CanonicalIdentity.ShouldBe("folder:group-b/orders-api");
+        resolved.SourceGroup.ShouldBe("group-b");
+        resolved.RepoUrl.ShouldBe(repoPath);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootPath))

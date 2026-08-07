@@ -58,6 +58,7 @@ public partial class IndexingPipeline
         IReadOnlyList<string>? changedFilesOnly = null,
         string? repoUrl = null,
         string? sourceGroup = null,
+        string? repositoryToolingIdentity = null,
         bool replaceExistingGraph = false,
         SyncStateEntity? replacementSyncState = null,
         CancellationToken ct = default)
@@ -67,7 +68,7 @@ public partial class IndexingPipeline
         try
         {
             await IndexProjectCoreAsync(projectName, rootPath, knowledge, changedFilesOnly,
-                repoUrl, sourceGroup, replaceExistingGraph, replacementSyncState, ct);
+                repoUrl, sourceGroup, repositoryToolingIdentity, replaceExistingGraph, replacementSyncState, ct);
         }
         finally
         {
@@ -80,6 +81,7 @@ public partial class IndexingPipeline
         IReadOnlyList<string>? changedFilesOnly,
         string? repoUrl,
         string? sourceGroup,
+        string? repositoryToolingIdentity,
         bool replaceExistingGraph,
         SyncStateEntity? replacementSyncState,
         CancellationToken ct)
@@ -105,7 +107,7 @@ public partial class IndexingPipeline
 
         var buffer = new GraphBuffer();
         var detectedMetadataCandidates = new List<ProjectMetadata>();
-        var dotnetToolingTrusted = _options.IsDotnetToolingTrusted(projectName, repoUrl, sourceGroup);
+        var dotnetToolingTrusted = _options.IsDotnetToolingTrusted(repositoryToolingIdentity);
         var context = new ExtractorContext
         {
             ProjectName = projectName,

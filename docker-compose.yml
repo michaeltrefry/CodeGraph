@@ -158,7 +158,7 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars: ${CodeGraph__AnalysisOptions__LmStudio__MaxSourceChars:-32000}
       CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
-      # Empty by default. Canonical repo URLs, source-group/name, or local:name opt in exactly.
+      # Empty by default. Provider-qualified canonical repository identities opt in exactly.
       CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}

@@ -1,8 +1,5 @@
-using CodeGraph.Extractors.CSharp;
+using CodeGraph.Models.Messages;
 using CodeGraph.Services;
-using CodeGraph.Services.Analyzers;
-using CodeGraph.Services.Extractors;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CodeGraph.Indexer.Host;
 
@@ -10,11 +7,11 @@ internal static class IndexerSecurityBoundaryValidator
 {
     internal const string Command = "--validate-untrusted-csharp-boundary";
 
-    public static async Task<int?> TryRunAsync(string[] args)
-    {
-        if (args.Length == 0 || !string.Equals(args[0], Command, StringComparison.Ordinal))
-            return null;
+    public static bool IsRequested(string[] args) =>
+        args.Length > 0 && string.Equals(args[0], Command, StringComparison.Ordinal);
 
+    public static async Task<int> RunAsync(IServiceProvider services, string[] args)
+    {
         if (args.Length != 3)
         {
             Console.Error.WriteLine($"Usage: {Command} <solution-path> <marker-path>");
@@ -35,19 +32,18 @@ internal static class IndexerSecurityBoundaryValidator
             return 64;
         }
 
-        var analyzer = new SolutionAnalyzer(
-            NullLogger<SolutionAnalyzer>.Instance,
-            new LintResultCache(),
-            new DiagnosticDetailCache());
-        await analyzer.AnalyzeSolutionAsync(
-            solutionPath,
-            new ExtractorContext
-            {
-                ProjectName = "untrusted-boundary-validation",
-                RootPath = Path.GetDirectoryName(solutionPath)!,
-                RepositoryToolingTrust = RepositoryToolingTrust.Untrusted
-            },
-            CancellationToken.None);
+        var repositoryPath = Path.GetDirectoryName(solutionPath)!;
+        var projectService = services.GetRequiredService<IProjectService>();
+        await projectService.ProcessRepository(new ProcessRepository
+        {
+            Name = Path.GetFileName(repositoryPath),
+            RepoUrl = repositoryPath,
+            ShouldIndex = true,
+            ShouldAnalyze = false,
+            SkipIfUpToDate = false,
+            IncludeAllSource = true,
+            ShouldComputeVitals = false
+        });
 
         if (File.Exists(markerPath))
         {

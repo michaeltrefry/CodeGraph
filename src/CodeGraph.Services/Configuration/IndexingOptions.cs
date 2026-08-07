@@ -29,29 +29,18 @@ public class IndexingOptions
 
     /// <summary>
     /// Comma-separated canonical repository identities that may execute repository-controlled
-    /// .NET tooling (restore and MSBuild solution analysis). Use a repository URL,
-    /// source-group/name, or local:name for local-folder repositories. Empty by default.
+    /// .NET tooling (restore and MSBuild solution analysis). Identities are provider-qualified:
+    /// github:https://host/owner/repo, gitlab:https://host/group/repo, or folder:relative/path.
+    /// Empty by default.
     /// </summary>
     public string TrustedDotnetRepositories { get; set; } = "";
 
-    public bool IsDotnetToolingTrusted(string projectName, string? repoUrl, string? sourceGroup)
-    {
-        var trustedIdentities = TrustedDotnetRepositories
+    public bool IsDotnetToolingTrusted(string? canonicalIdentity) =>
+        !string.IsNullOrWhiteSpace(canonicalIdentity)
+        && TrustedDotnetRepositories
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(identity => identity.TrimEnd('/'))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        if (!string.IsNullOrWhiteSpace(repoUrl) && trustedIdentities.Contains(repoUrl.Trim().TrimEnd('/')))
-            return true;
-
-        if (!string.IsNullOrWhiteSpace(sourceGroup)
-            && trustedIdentities.Contains($"{sourceGroup.Trim().Trim('/')}/{projectName}"))
-            return true;
-
-        return string.IsNullOrWhiteSpace(repoUrl)
-            && string.IsNullOrWhiteSpace(sourceGroup)
-            && trustedIdentities.Contains($"local:{projectName}");
-    }
+            .Contains(canonicalIdentity.Trim().TrimEnd('/'), StringComparer.OrdinalIgnoreCase);
 
     public string? ConventionsPath { get; set; }
 }

@@ -73,7 +73,7 @@ Models <- Data <- Services <- Extractors.*
 
 ### C# repository tooling trust
 
-C# indexing is syntax-only by default. Restore and MSBuild solution analysis can execute repository-controlled build logic, so they run only for canonical repository identities explicitly listed in the comma-separated `CodeGraph:IndexingOptions:TrustedDotnetRepositories` setting. Use a canonical repository URL or `source-group/name`; local folder sources require the explicit `local:name` form. Every enabled or blocked solution-analysis decision emits a `SECURITY-AUDIT` log entry. Production Compose exposes the setting as `CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES` and defaults it to empty.
+C# indexing is syntax-only by default. Restore and MSBuild solution analysis can execute repository-controlled build logic, so they run only for provider-resolved identities explicitly listed in the comma-separated `CodeGraph:IndexingOptions:TrustedDotnetRepositories` setting. Identity forms are `github:https://host/owner/repo`, `gitlab:https://host/group/repo`, and `folder:relative/path`; local paths outside the configured folder root use `folder-path:/absolute/path`. User-supplied URL, group, and path combinations cannot grant trust unless they agree with the provider resolution. Every enabled or blocked solution-analysis decision emits a `SECURITY-AUDIT` log entry. Production Compose exposes the setting as `CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES` and defaults it to empty.
 
 ## Key Capabilities
 

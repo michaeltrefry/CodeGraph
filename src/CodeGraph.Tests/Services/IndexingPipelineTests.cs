@@ -149,12 +149,13 @@ public class IndexingPipelineTests
             var pipeline = new IndexingPipeline(
                 store,
                 [],
-                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "local:Demo" }),
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "folder:Demo" }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 solutionAnalyzer);
 
-            await pipeline.IndexProjectAsync("Demo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexProjectAsync(
+                "Demo", rootPath, repositoryToolingIdentity: "folder:Demo", ct: CancellationToken.None);
 
             solutionAnalyzer.CalledSolutionPath.ShouldBe(solutionPath);
             solutionAnalyzer.ObservedTrust.ShouldBe(RepositoryToolingTrust.Trusted);
