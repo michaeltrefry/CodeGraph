@@ -40,7 +40,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
     }
 
 
-    public async Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
+    public async Task<SolutionAnalysisResult> AnalyzeSolutionAsync(
         string solutionPath, ExtractorContext context, CancellationToken ct)
     {
         if (context.RepositoryToolingTrust != RepositoryToolingTrust.Trusted)
@@ -48,7 +48,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
             _logger.LogWarning(
                 "SECURITY-AUDIT: blocked repository-controlled restore and MSBuild solution analysis for untrusted repository {Project}",
                 context.ProjectName);
-            return [];
+            return new SolutionAnalysisResult();
         }
 
         _logger.LogWarning(
@@ -63,7 +63,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
             _logger.LogWarning("Workspace warning: {Message}", e.Diagnostic.Message));
 
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: ct);
-        var results = new ConcurrentBag<ExtractionResult>();
+        var documents = new ConcurrentBag<SolutionDocumentAnalysis>();
 
         _logger.LogInformation("Analyzing {Count} projects in solution", solution.Projects.Count());
 
@@ -142,13 +142,18 @@ public class SolutionAnalyzer : ISolutionAnalyzer
                     var walker = new CodeGraphSyntaxWalker(projectContext, model,
                         filePathOverride: document.FilePath);
                     walker.Visit(await syntaxTree.GetRootAsync(ct2));
-                    var relativePath = document.FilePath is { Length: > 0 }
-                        ? Path.GetRelativePath(context.RootPath, document.FilePath).Replace('\\', '/')
-                        : "";
-                    results.Add(walker.GetResult() with
+                    var documentPath = document.FilePath ?? syntaxTree.FilePath;
+                    if (string.IsNullOrWhiteSpace(documentPath))
                     {
-                        ProcessedFiles = string.IsNullOrEmpty(relativePath) ? [] : [relativePath]
-                    });
+                        _logger.LogWarning(
+                            "Skipping analyzed document without a source path in project {Project}",
+                            project.Name);
+                        continue;
+                    }
+
+                    documents.Add(new SolutionDocumentAnalysis(
+                        Path.GetFullPath(documentPath),
+                        walker.GetResult()));
                 }
                 catch (Exception ex)
                 {
@@ -173,7 +178,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         if (!diagnosticDetails.IsEmpty)
         {
             var detailList = diagnosticDetails.ToList();
-            _diagnosticDetailCache.Set(context.ProjectName, detailList);
+            _diagnosticDetailCache.Merge(context.ProjectName, detailList);
             _logger.LogInformation("Stashed {Count} detailed Roslyn diagnostics for {Project}",
                 detailList.Count, context.ProjectName);
         }
@@ -183,14 +188,15 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         var metadata = DetectMetadata(solutionDir);
 
         _logger.LogInformation("Extraction complete: {NodeCount} results from {Solution} (framework: {Framework})",
-            results.Count, Path.GetFileName(solutionPath), metadata.Framework ?? "unknown");
+            documents.Count, Path.GetFileName(solutionPath), metadata.Framework ?? "unknown");
 
-        // Attach metadata to the first result so the pipeline can pick it up
-        var resultList = results.ToList();
-        if (resultList.Count > 0)
-            resultList[0] = resultList[0] with { Metadata = metadata };
-
-        return resultList;
+        return new SolutionAnalysisResult
+        {
+            Documents = documents
+                .OrderBy(document => document.FilePath, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            Metadata = metadata
+        };
     }
 
     private async Task RestoreNuGetPackagesAsync(string solutionPath, CancellationToken ct)
