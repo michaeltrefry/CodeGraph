@@ -263,6 +263,7 @@ interface OperationResult {
 })
 export class AdminOperationsComponent {
   private http = inject(HttpClient);
+  private pendingSubmissionKeys = new Map<string, string>();
 
   running = signal(false);
   result = signal<OperationResult | null>(null);
@@ -285,10 +286,15 @@ export class AdminOperationsComponent {
   }
 
   async runOp(endpoint: string): Promise<void> {
+    const submissionIdentity = `operation:${endpoint}`;
     this.running.set(true);
     this.result.set(null);
     try {
-      const res = await firstValueFrom(this.http.post(`${API}/${endpoint}`, {}));
+      const res = await firstValueFrom(this.http.post(
+        `${API}/${endpoint}`,
+        {},
+        { headers: this.submissionHeaders(submissionIdentity) }));
+      this.pendingSubmissionKeys.delete(submissionIdentity);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -314,7 +320,12 @@ export class AdminOperationsComponent {
         skipIfUpToDate: this.processSkipIfUpToDate,
         includeAllSource: this.processIncludeAllSource
       };
-      const res = await firstValueFrom(this.http.post(`${API}/indexer/repositories/process`, body));
+      const submissionIdentity = `process:${JSON.stringify(body)}`;
+      const res = await firstValueFrom(this.http.post(
+        `${API}/indexer/repositories/process`,
+        body,
+        { headers: this.submissionHeaders(submissionIdentity) }));
+      this.pendingSubmissionKeys.delete(submissionIdentity);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -335,7 +346,12 @@ export class AdminOperationsComponent {
       };
       if (this.discoverFilter.trim()) body['namePattern'] = this.discoverFilter.trim();
       if (this.discoverLimit && this.discoverLimit > 0) body['limit'] = this.discoverLimit;
-      const res = await firstValueFrom(this.http.post(`${API}/indexer/repositories/discover`, body));
+      const submissionIdentity = `discover:${JSON.stringify(body)}`;
+      const res = await firstValueFrom(this.http.post(
+        `${API}/indexer/repositories/discover`,
+        body,
+        { headers: this.submissionHeaders(submissionIdentity) }));
+      this.pendingSubmissionKeys.delete(submissionIdentity);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -350,12 +366,27 @@ export class AdminOperationsComponent {
     try {
       let url = `${API}/indexer/batch-analysis/process`;
       if (this.batchRepo) url += `?repo=${encodeURIComponent(this.batchRepo)}`;
-      const res = await firstValueFrom(this.http.post(url, {}));
+      const submissionIdentity = `batch-analysis:${url}`;
+      const res = await firstValueFrom(this.http.post(
+        url,
+        {},
+        { headers: this.submissionHeaders(submissionIdentity) }));
+      this.pendingSubmissionKeys.delete(submissionIdentity);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
     } finally {
       this.running.set(false);
     }
+  }
+
+  private submissionHeaders(submissionIdentity: string): Record<string, string> {
+    let submissionKey = this.pendingSubmissionKeys.get(submissionIdentity);
+    if (!submissionKey) {
+      submissionKey = crypto.randomUUID();
+      this.pendingSubmissionKeys.set(submissionIdentity, submissionKey);
+    }
+
+    return { 'Idempotency-Key': submissionKey };
   }
 }

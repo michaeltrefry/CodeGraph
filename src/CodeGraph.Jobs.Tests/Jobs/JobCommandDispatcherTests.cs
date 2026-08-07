@@ -31,10 +31,25 @@ public class JobCommandDispatcherTests
             JsonSerializer.Serialize(new DiscoverRequest
             {
                 NamePattern = "orders"
-            }));
+            }),
+            "job:execution-1");
 
         result.Success.ShouldBeTrue();
         result.Message.ShouldContain("published");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReusesCallerExecutionKeyToDeduplicatePublication()
+    {
+        var indexerClient = new RecordingIndexerClient();
+        var dispatcher = CreateDispatcher(indexerClient: indexerClient);
+        var args = JsonSerializer.Serialize(new DiscoverRequest { NamePattern = "orders" });
+
+        await dispatcher.ExecuteAsync(JobTypes.Discover, args, "job:stable-execution");
+        await dispatcher.ExecuteAsync(JobTypes.Discover, args, "job:stable-execution");
+
+        indexerClient.SubmissionKeys.ShouldBe(["job:stable-execution", "job:stable-execution"]);
+        indexerClient.PublicationCount.ShouldBe(1);
     }
 
     [Fact]

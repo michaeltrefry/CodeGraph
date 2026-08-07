@@ -68,7 +68,7 @@ public static class Startup
         });
 
         RegisterPersistence(services, configuration);
-        RegisterIndexerServices(services);
+        RegisterIndexerServices(services, configuration);
         RegisterMassTransit(services);
     }
 
@@ -105,7 +105,7 @@ public static class Startup
         await exclusionService.SeedFromConfigAsync(repoSourceOptions.ExcludedGroups);
     }
 
-    private static void RegisterIndexerServices(IServiceCollection services)
+    private static void RegisterIndexerServices(IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton(sp => new TypeScriptServerManager(
             port: sp.GetRequiredService<IOptions<CodeGraphServiceSettings>>().Value.TsPort,
@@ -155,7 +155,10 @@ public static class Startup
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IDatabaseSchemaExtractor, DatabaseSchemaExtractor>();
         services.AddTransient<IndexerRunExecutor>();
-        services.AddSingleton<IIndexerRunBackgroundRunner, IndexerRunBackgroundRunner>();
+        services.Configure<IndexerRunWorkerOptions>(configuration.GetSection("IndexerRunWorker"));
+        services.AddSingleton<IndexerRunBackgroundRunner>();
+        services.AddSingleton<IIndexerRunBackgroundRunner>(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
+        services.AddHostedService(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
         services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
 
         services.AddTransient<FolderRepoProvider>();

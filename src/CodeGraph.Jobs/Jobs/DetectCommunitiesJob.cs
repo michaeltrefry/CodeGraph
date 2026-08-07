@@ -8,7 +8,7 @@ public class DetectCommunitiesJob(
     public async Task<JobExecutionResult> ExecuteAsync(EmptyJobRequest request, CancellationToken ct = default)
     {
         var startedAtUtc = DateTime.UtcNow;
-        var response = await indexerClient.StartDetectCommunitiesAsync(IndexerClientJobUser.Username, ct);
+        var response = await indexerClient.StartDetectCommunitiesAsync(IndexerClientJobUser.Username, ct: ct);
 
         return new JobExecutionResult(
             Success: true,

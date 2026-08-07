@@ -33,13 +33,20 @@ public class JobCommandDispatcher(
         };
     }
 
-    public Task<JobExecutionResult> ExecuteAsync(string jobType, string argsJson, CancellationToken ct = default)
+    public Task<JobExecutionResult> ExecuteAsync(
+        string jobType,
+        string argsJson,
+        string? executionKey = null,
+        CancellationToken ct = default)
     {
         return jobType switch
         {
-            JobTypes.Discover => discoverRepositoriesJob.ExecuteAsync(Deserialize<DiscoverRequest>(argsJson), ct),
-            JobTypes.ProcessBatchAnalysis => processBatchAnalysisJob.ExecuteAsync(Deserialize<ProcessBatchAnalysisJobRequest>(argsJson), ct),
-            JobTypes.ReIndexAll => reIndexAllRepositoriesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
+            JobTypes.Discover => discoverRepositoriesJob.ExecuteAsync(
+                Deserialize<DiscoverRequest>(argsJson), RequireExecutionKey(executionKey), ct),
+            JobTypes.ProcessBatchAnalysis => processBatchAnalysisJob.ExecuteAsync(
+                Deserialize<ProcessBatchAnalysisJobRequest>(argsJson), RequireExecutionKey(executionKey), ct),
+            JobTypes.ReIndexAll => reIndexAllRepositoriesJob.ExecuteAsync(
+                Deserialize<EmptyJobRequest>(argsJson), RequireExecutionKey(executionKey), ct),
             JobTypes.LinkAndDetect => linkAndDetectJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.DetectCommunities => detectCommunitiesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.RegenerateMcpDocs => regenerateMcpDocsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
@@ -47,6 +54,13 @@ public class JobCommandDispatcher(
             JobTypes.IngestConventionEmbeddings => ingestConventionEmbeddingsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
+    }
+
+    private static string RequireExecutionKey(string? executionKey)
+    {
+        if (string.IsNullOrWhiteSpace(executionKey))
+            throw new InvalidOperationException("A durable execution key is required for publication-producing jobs.");
+        return executionKey.Trim();
     }
 
     private static T Deserialize<T>(string argsJson) where T : new()

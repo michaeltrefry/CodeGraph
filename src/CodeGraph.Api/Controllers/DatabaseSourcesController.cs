@@ -101,14 +101,14 @@ public class DatabaseSourcesController(
         if (source is null)
             return NotFound();
 
-        var accepted = await indexerOperations.StartSyncSchemaAsync(GetUsername(), id, ct);
+        var accepted = await indexerOperations.StartSyncSchemaAsync(GetUsername(), id, ct: ct);
         return Accepted(accepted.RunStatusUrl, accepted);
     }
 
     [HttpPost("sync-all")]
     public async Task<ActionResult<IndexerAcceptedResponse>> SyncAll(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartSyncAllSchemasAsync(GetUsername(), ct);
+        var accepted = await indexerOperations.StartSyncAllSchemasAsync(GetUsername(), ct: ct);
         return Accepted(accepted.RunStatusUrl, accepted);
     }
 

@@ -198,6 +198,9 @@ public class DatabaseSourcesControllerTests
         public Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
             => Task.FromResult<IndexerRunResponse?>(null);
 
+        public Task<IndexerRunResponse?> CancelRunAsync(long runId, CancellationToken ct = default)
+            => Task.FromResult<IndexerRunResponse?>(null);
+
         public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(
             string? status = null,
             string? operation = null,

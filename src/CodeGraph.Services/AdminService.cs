@@ -19,7 +19,7 @@ public class AdminService(
     ICommunityDetectionService communityDetection) : IAdminService
 {
 
-    public async Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request)
+    public async Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request, CancellationToken ct = default)
     {
         var published = new List<string>();
 
@@ -54,14 +54,14 @@ public class AdminService(
                 message.Path = explicitPath;
             }
 
-            await messageBus.PublishAsync(message);
+            await messageBus.PublishAsync(message, ct);
             published.Add(name);
         }
 
         return new ProcessReposResponse(published, published.Count);
     }
 
-    public async Task<ProcessReposResponse> ReIndexAllAsync()
+    public async Task<ProcessReposResponse> ReIndexAllAsync(CancellationToken ct = default)
     {
         var published = new List<string>();
         var projects = await graphStore.ListRepositoriesAsync();
@@ -77,7 +77,7 @@ public class AdminService(
                 ShouldAnalyze    = false,
                 SkipIfUpToDate   = false
             };
-            await messageBus.PublishAsync(message);
+            await messageBus.PublishAsync(message, ct);
             published.Add(project.Name);
         }
         return new ProcessReposResponse(published, published.Count);
@@ -99,12 +99,13 @@ public class AdminService(
         await communityDetection.DetectCommunitiesAsync(ct);
     }
 
-    public async Task ProcessBatchAnalysisAsync(string? repo)
+    public async Task ProcessBatchAnalysisAsync(string? repo, CancellationToken ct = default)
     {
-        await batchService.ProcessCompletedBatchesAsync(repo);
+        ct.ThrowIfCancellationRequested();
+        await batchService.ProcessCompletedBatchesAsync(repo, ct);
     }
 
-    public async Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request)
+    public async Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default)
     {
         var allDiscovered = string.IsNullOrWhiteSpace(request?.NamePattern)
             ? await repoProvider.DiscoverProjectsAsync()
@@ -146,6 +147,7 @@ public class AdminService(
 
         foreach (var project in discovered)
         {
+            ct.ThrowIfCancellationRequested();
             var likelySynced = alreadySynced?.Contains(project.Name) == true;
 
             if (!likelySynced && limit.HasValue && newCount >= limit.Value)
@@ -174,7 +176,7 @@ public class AdminService(
                 ShouldAnalyze = effectiveShouldAnalyze,
                 SkipIfUpToDate = skipIfUpToDate,
                 IncludeAllSource = includeAllSource
-            });
+            }, ct);
             published.Add(project.Name);
 
             if (!likelySynced)
