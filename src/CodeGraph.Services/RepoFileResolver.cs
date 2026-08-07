@@ -11,12 +11,19 @@ namespace CodeGraph.Services;
 /// </summary>
 public static class RepoFileResolver
 {
+    // Stable Darwin ABI from <sys/proc_info.h>: vnode_fdinfowithpath is 1200 bytes,
+    // with vnode_info_path.vip_path at byte 176 and MAXPATHLEN equal to 1024.
+    private const int MacOsVnodePathInfoFlavor = 2;
+    private const int MacOsVnodePathInfoSize = 1200;
+    private const int MacOsVnodePathOffset = 176;
+    private const int MacOsMaxPath = 1024;
     private static readonly char[] PortableSeparators = ['/', '\\'];
     private static readonly HashSet<string> WindowsDeviceNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"
     };
 
     /// <summary>
@@ -48,8 +55,8 @@ public static class RepoFileResolver
     }
 
     /// <summary>
-    /// Opens a repository file for reading and validates the opened handle's physical path
-    /// on Windows and Linux. Other Unix platforms revalidate the physical path after open.
+    /// Opens a repository file for reading and validates the opened handle's physical path.
+    /// Platforms without an opened-handle path API fail closed.
     /// </summary>
     public static async Task<FileStream?> OpenReadAsync(
         string repoName,
@@ -74,22 +81,36 @@ public static class RepoFileResolver
         string relativeFilePath,
         string? cachePath,
         string? localPath)
-        => OpenReadCore(repoName, relativeFilePath, cachePath, localPath, beforeOpen: null);
+        => OpenReadCore(
+            repoName,
+            relativeFilePath,
+            cachePath,
+            localPath,
+            beforeOpen: null,
+            afterOpenBeforeValidation: null);
 
     internal static FileStream? OpenReadForTesting(
         string repoName,
         string relativeFilePath,
         string? cachePath,
         string? localPath,
-        Action beforeOpen)
-        => OpenReadCore(repoName, relativeFilePath, cachePath, localPath, beforeOpen);
+        Action beforeOpen,
+        Action afterOpenBeforeValidation)
+        => OpenReadCore(
+            repoName,
+            relativeFilePath,
+            cachePath,
+            localPath,
+            beforeOpen,
+            afterOpenBeforeValidation);
 
     private static FileStream? OpenReadCore(
         string repoName,
         string relativeFilePath,
         string? cachePath,
         string? localPath,
-        Action? beforeOpen)
+        Action? beforeOpen,
+        Action? afterOpenBeforeValidation)
     {
         var resolved = ResolveCandidate(repoName, relativeFilePath, cachePath, localPath);
         if (resolved is null)
@@ -107,7 +128,8 @@ public static class RepoFileResolver
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-            var openedPath = GetOpenedHandlePath(stream.SafeFileHandle, resolved.Path);
+            afterOpenBeforeValidation?.Invoke();
+            var openedPath = GetOpenedHandlePath(stream.SafeFileHandle);
             if (openedPath is null || !IsContainedBy(openedPath, resolved.Root))
             {
                 stream.Dispose();
@@ -337,7 +359,7 @@ public static class RepoFileResolver
         return canonicalCandidate.StartsWith(prefix, comparison);
     }
 
-    private static string? GetOpenedHandlePath(SafeFileHandle handle, string fallbackPath)
+    private static string? GetOpenedHandlePath(SafeFileHandle handle)
     {
         try
         {
@@ -346,12 +368,21 @@ public static class RepoFileResolver
             if (OperatingSystem.IsLinux())
                 return new FileInfo($"/proc/self/fd/{handle.DangerousGetHandle()}")
                     .ResolveLinkTarget(returnFinalTarget: true)?.FullName;
-            // Other Unix platforms still receive path and symlink containment, with a
-            // second physical-path check after the stream is open. Windows and Linux,
-            // including the production containers, validate the opened handle itself.
-            return TryGetPhysicalFile(fallbackPath);
+            if (OperatingSystem.IsMacOS())
+                return GetMacOsHandlePath(handle);
+
+            // No path-based fallback: re-resolving the candidate path would reintroduce a
+            // check/open/check race on platforms without an opened-handle proof.
+            return null;
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is
+            ArgumentException or
+            BadImageFormatException or
+            DllNotFoundException or
+            EntryPointNotFoundException or
+            IOException or
+            NotSupportedException or
+            UnauthorizedAccessException)
         {
             return null;
         }
@@ -377,12 +408,52 @@ public static class RepoFileResolver
         return path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase) ? path[4..] : path;
     }
 
+    private static string? GetMacOsHandlePath(SafeFileHandle handle)
+    {
+        var buffer = Marshal.AllocHGlobal(MacOsVnodePathInfoSize);
+        try
+        {
+            var bytes = new byte[MacOsVnodePathInfoSize];
+            Marshal.Copy(bytes, 0, buffer, bytes.Length);
+            var written = ProcPidFdInfo(
+                Environment.ProcessId,
+                handle.DangerousGetHandle().ToInt32(),
+                MacOsVnodePathInfoFlavor,
+                buffer,
+                MacOsVnodePathInfoSize);
+            if (written < MacOsVnodePathInfoSize)
+                return null;
+
+            Marshal.Copy(
+                IntPtr.Add(buffer, MacOsVnodePathOffset),
+                bytes,
+                0,
+                MacOsMaxPath);
+            var terminator = Array.IndexOf(bytes, (byte)0, 0, MacOsMaxPath);
+            if (terminator <= 0)
+                return null;
+            return Encoding.UTF8.GetString(bytes, 0, terminator);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint GetFinalPathNameByHandle(
         SafeFileHandle hFile,
         [Out] StringBuilder lpszFilePath,
         uint cchFilePath,
         uint dwFlags);
+
+    [DllImport("libproc.dylib", EntryPoint = "proc_pidfdinfo", SetLastError = true)]
+    private static extern int ProcPidFdInfo(
+        int pid,
+        int fd,
+        int flavor,
+        IntPtr buffer,
+        int bufferSize);
 
     private sealed record ResolvedFile(string Path, string Root);
 }

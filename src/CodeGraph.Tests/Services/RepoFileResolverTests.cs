@@ -36,6 +36,12 @@ public sealed class RepoFileResolverTests : IDisposable
     [InlineData("NUL")]
     [InlineData("con.txt")]
     [InlineData("COM1.log")]
+    [InlineData("COM¹")]
+    [InlineData("com².txt")]
+    [InlineData("COM³.log")]
+    [InlineData("LPT¹")]
+    [InlineData("lpt².txt")]
+    [InlineData("LPT³.log")]
     [InlineData("folder//file.txt")]
     [InlineData("folder/./file.txt")]
     [InlineData("folder./file.txt")]
@@ -130,34 +136,40 @@ public sealed class RepoFileResolverTests : IDisposable
     }
 
     [Fact]
-    public async Task OpenRead_SymlinkSwapCannotRedirectResolvedPhysicalTarget()
+    public async Task OpenRead_RejectsResolvedTargetSwapEvenWhenPathIsRestoredBeforeValidation()
     {
         var repo = Path.Combine(tempRoot, "repo");
         var outside = Path.Combine(tempRoot, "outside");
-        Directory.CreateDirectory(repo);
+        var raceDirectory = Path.Combine(repo, "race");
+        var heldDirectory = Path.Combine(repo, "held");
+        Directory.CreateDirectory(raceDirectory);
         Directory.CreateDirectory(outside);
-        var safe = Path.Combine(repo, "safe.txt");
-        var secret = Path.Combine(outside, "secret.txt");
-        var link = Path.Combine(repo, "race.txt");
+        var safe = Path.Combine(raceDirectory, "target.txt");
+        var secret = Path.Combine(outside, "target.txt");
         await File.WriteAllTextAsync(safe, "safe");
         await File.WriteAllTextAsync(secret, "secret");
-        if (!TryCreateFileSymlink(link, safe))
+        var probeLink = Path.Combine(repo, "symlink-probe");
+        if (!TryCreateDirectorySymlink(probeLink, outside))
             return;
+        Directory.Delete(probeLink);
 
         using var stream = RepoFileResolver.OpenReadForTesting(
             "Repo",
-            "race.txt",
+            "race/target.txt",
             cachePath: null,
             localPath: repo,
             beforeOpen: () =>
             {
-                File.Delete(link);
-                File.CreateSymbolicLink(link, secret);
+                Directory.Move(raceDirectory, heldDirectory);
+                Directory.CreateSymbolicLink(raceDirectory, outside);
+            },
+            afterOpenBeforeValidation: () =>
+            {
+                Directory.Delete(raceDirectory);
+                Directory.Move(heldDirectory, raceDirectory);
             });
 
-        stream.ShouldNotBeNull();
-        using var reader = new StreamReader(stream!);
-        (await reader.ReadToEndAsync()).ShouldBe("safe");
+        stream.ShouldBeNull();
     }
 
     [Fact]
