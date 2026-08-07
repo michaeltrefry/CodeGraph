@@ -43,6 +43,17 @@ public class SolutionAnalyzer : ISolutionAnalyzer
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
         string solutionPath, ExtractorContext context, CancellationToken ct)
     {
+        if (context.RepositoryToolingTrust != RepositoryToolingTrust.Trusted)
+        {
+            _logger.LogWarning(
+                "SECURITY-AUDIT: blocked repository-controlled restore and MSBuild solution analysis for untrusted repository {Project}",
+                context.ProjectName);
+            return [];
+        }
+
+        _logger.LogWarning(
+            "SECURITY-AUDIT: executing repository-controlled restore and MSBuild solution analysis for explicitly trusted repository {Project}",
+            context.ProjectName);
         _logger.LogInformation("Opening solution {Solution}", solutionPath);
 
         await RestoreNuGetPackagesAsync(solutionPath, ct);
@@ -112,7 +123,8 @@ public class SolutionAnalyzer : ISolutionAnalyzer
                 ProjectName = context.ProjectName,
                 RootPath = context.RootPath,
                 DotnetProject = project.Name,
-                FoundationalKnowledge = context.FoundationalKnowledge
+                FoundationalKnowledge = context.FoundationalKnowledge,
+                RepositoryToolingTrust = context.RepositoryToolingTrust
             };
 
             foreach (var document in project.Documents)

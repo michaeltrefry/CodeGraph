@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using System.Text.Json;
 using Shouldly;
 using CodeGraph.Data;
+using CodeGraph.Extractors.CSharp;
 using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
@@ -148,7 +149,7 @@ public class IndexingPipelineTests
             var pipeline = new IndexingPipeline(
                 store,
                 [],
-                Options.Create(new IndexingOptions()),
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "local:Demo" }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 solutionAnalyzer);
@@ -156,11 +157,44 @@ public class IndexingPipelineTests
             await pipeline.IndexProjectAsync("Demo", rootPath, ct: CancellationToken.None);
 
             solutionAnalyzer.CalledSolutionPath.ShouldBe(solutionPath);
+            solutionAnalyzer.ObservedTrust.ShouldBe(RepositoryToolingTrust.Trusted);
         }
         finally
         {
             if (Directory.Exists(rootPath))
                 Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_DefaultPolicy_SkipsSolutionToolingAndUsesSyntaxFallback()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-untrusted-sln-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Demo.slnx"), "<Solution />");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Demo.cs"), "public sealed class Demo {}");
+
+            var store = new InMemoryGraphStore();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer();
+            var pipeline = new IndexingPipeline(
+                store,
+                [new RoslynExtractor()],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync("Demo", rootPath, ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPath.ShouldBeNull();
+            store.Nodes.ShouldContain(node => node.Name == "Demo" && node.Label == NodeLabel.Class);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
         }
     }
 
@@ -765,6 +799,7 @@ public class IndexingPipelineTests
     private sealed class RecordingSolutionAnalyzer : ISolutionAnalyzer
     {
         public string? CalledSolutionPath { get; private set; }
+        public RepositoryToolingTrust? ObservedTrust { get; private set; }
 
         public Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
             string solutionPath,
@@ -772,6 +807,7 @@ public class IndexingPipelineTests
             CancellationToken ct)
         {
             CalledSolutionPath = solutionPath;
+            ObservedTrust = context.RepositoryToolingTrust;
             return Task.FromResult<IReadOnlyList<ExtractionResult>>([]);
         }
     }

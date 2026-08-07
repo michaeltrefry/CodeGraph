@@ -26,5 +26,32 @@ public class IndexingOptions
     ];
 
     public string[] FoundationalRepos { get; set; } = [];
+
+    /// <summary>
+    /// Comma-separated canonical repository identities that may execute repository-controlled
+    /// .NET tooling (restore and MSBuild solution analysis). Use a repository URL,
+    /// source-group/name, or local:name for local-folder repositories. Empty by default.
+    /// </summary>
+    public string TrustedDotnetRepositories { get; set; } = "";
+
+    public bool IsDotnetToolingTrusted(string projectName, string? repoUrl, string? sourceGroup)
+    {
+        var trustedIdentities = TrustedDotnetRepositories
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(identity => identity.TrimEnd('/'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(repoUrl) && trustedIdentities.Contains(repoUrl.Trim().TrimEnd('/')))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(sourceGroup)
+            && trustedIdentities.Contains($"{sourceGroup.Trim().Trim('/')}/{projectName}"))
+            return true;
+
+        return string.IsNullOrWhiteSpace(repoUrl)
+            && string.IsNullOrWhiteSpace(sourceGroup)
+            && trustedIdentities.Contains($"local:{projectName}");
+    }
+
     public string? ConventionsPath { get; set; }
 }

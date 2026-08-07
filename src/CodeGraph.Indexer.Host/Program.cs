@@ -4,8 +4,12 @@ namespace CodeGraph.Indexer.Host;
 
 public class Program
 {
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
+        var validationResult = await IndexerSecurityBoundaryValidator.TryRunAsync(args);
+        if (validationResult.HasValue)
+            return validationResult.Value;
+
         var builder = WebApplication.CreateBuilder(args);
         Startup.ConfigureServices(builder.Services, builder.Configuration);
 
@@ -20,5 +24,6 @@ public class Program
         Startup.Configure(app);
         await Startup.InitializeAsync(app.Services);
         await app.RunAsync();
+        return 0;
     }
 }

@@ -105,11 +105,15 @@ public partial class IndexingPipeline
 
         var buffer = new GraphBuffer();
         var detectedMetadataCandidates = new List<ProjectMetadata>();
+        var dotnetToolingTrusted = _options.IsDotnetToolingTrusted(projectName, repoUrl, sourceGroup);
         var context = new ExtractorContext
         {
             ProjectName = projectName,
             RootPath = rootPath,
-            FoundationalKnowledge = knowledge
+            FoundationalKnowledge = knowledge,
+            RepositoryToolingTrust = dotnetToolingTrusted
+                ? RepositoryToolingTrust.Trusted
+                : RepositoryToolingTrust.Untrusted
         };
 
         var existingHashes = replaceExistingGraph
@@ -155,7 +159,7 @@ public partial class IndexingPipeline
         var specializedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // C# — solution-level Roslyn analysis
-        if (_solutionAnalyzer is not null)
+        if (_solutionAnalyzer is not null && dotnetToolingTrusted)
         {
             var solutionFiles = _fileSystem.EnumerateFiles(rootPath, "*.slnx", SearchOption.TopDirectoryOnly)
                 .Concat(_fileSystem.EnumerateFiles(rootPath, "*.sln", SearchOption.TopDirectoryOnly))
@@ -164,6 +168,9 @@ public partial class IndexingPipeline
             if (solutionFiles.Length > 0)
             {
                 var solutionFile = solutionFiles[0];
+                _logger.LogWarning(
+                    "SECURITY-AUDIT: repository {Project} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
+                    projectName);
                 _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
                     Path.GetFileName(solutionFile));
                 stepSw.Restart();
@@ -185,6 +192,17 @@ public partial class IndexingPipeline
                         "Roslyn solution analysis failed for {Solution} — falling back to per-file extraction",
                         Path.GetFileName(solutionFile));
                 }
+            }
+        }
+        else if (_solutionAnalyzer is not null)
+        {
+            var hasSolution = _fileSystem.EnumerateFiles(rootPath, "*.slnx", SearchOption.TopDirectoryOnly).Any()
+                || _fileSystem.EnumerateFiles(rootPath, "*.sln", SearchOption.TopDirectoryOnly).Any();
+            if (hasSolution)
+            {
+                _logger.LogInformation(
+                    "SECURITY-AUDIT: repository {Project} is untrusted; restore and MSBuild solution analysis are disabled, using syntax-only C# extraction",
+                    projectName);
             }
         }
 
