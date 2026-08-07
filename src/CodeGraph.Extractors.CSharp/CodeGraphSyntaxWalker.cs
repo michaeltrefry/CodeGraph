@@ -440,11 +440,19 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
             var methodName = GetInvokedMethodName(node);
             if (methodName is not null)
             {
+                var receiverType = GetReceiverType(node);
                 _calls.Add(new UnresolvedCall(
                     _scopeStack.Peek(),
                     methodName,
-                    GetReceiverType(node),
-                    0.5));
+                    receiverType,
+                    0.5,
+                    node.Expression switch
+                    {
+                        IdentifierNameSyntax => CallReceiverKind.Unresolved,
+                        MemberAccessExpressionSyntax when receiverType is not null => CallReceiverKind.Resolved,
+                        MemberAccessExpressionSyntax => CallReceiverKind.Unresolved,
+                        _ => CallReceiverKind.Unknown
+                    }));
 
                 // Syntax-based fallback for cross-service patterns when Roslyn
                 // can't resolve symbols (e.g., types from external NuGet packages).

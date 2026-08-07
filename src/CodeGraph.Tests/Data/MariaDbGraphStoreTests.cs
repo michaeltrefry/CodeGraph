@@ -337,6 +337,39 @@ public class MariaDbGraphStoreTests
             ]);
             (await store.GetRepoClustersAsync()).Single().ClusterLabel.ShouldBe("Core");
             (await store.GetRepoClusterMembersAsync(7)).Single().ProjectName.ShouldBe("CodeGraph");
+
+            var replacementEdgeCount = await store.ReplaceProjectGraphAsync(
+                "ReplacementCalls",
+                [
+                    new GraphNode
+                    {
+                        Project = "ReplacementCalls",
+                        Label = NodeLabel.Function,
+                        Name = "caller",
+                        QualifiedName = "ReplacementCalls.caller",
+                        FilePath = "calls.py"
+                    },
+                    new GraphNode
+                    {
+                        Project = "ReplacementCalls",
+                        Label = NodeLabel.Function,
+                        Name = "callee",
+                        QualifiedName = "ReplacementCalls.callee",
+                        FilePath = "calls.py"
+                    }
+                ],
+                [
+                    new PendingEdge("ReplacementCalls.caller", "ReplacementCalls.callee", EdgeType.CALLS),
+                    new PendingEdge("ReplacementCalls.caller", "ReplacementCalls.callee", EdgeType.CALLS)
+                ],
+                new Dictionary<string, string> { ["calls.py"] = "hash" },
+                new RepositoryEntity { Name = "ReplacementCalls", Language = "Python" },
+                syncState: null);
+
+            replacementEdgeCount.ShouldBe(1);
+            (await store.FindAllEdgesByTypeAsync(EdgeType.CALLS))
+                .Count(edge => edge.Project == "ReplacementCalls")
+                .ShouldBe(1);
         }
         finally
         {

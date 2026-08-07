@@ -63,7 +63,23 @@ public record UnresolvedCall(
     string CallerQN,
     string CalleeName,
     string? ReceiverType,
-    double Confidence);
+    double Confidence,
+    CallReceiverKind ReceiverKind = CallReceiverKind.Unknown);
+
+public enum CallReceiverKind
+{
+    /// <summary>Legacy producer did not classify the invocation; fail closed.</summary>
+    Unknown,
+
+    /// <summary>No explicit receiver was present at the call site.</summary>
+    Bare,
+
+    /// <summary>The receiver is a type/owner identity proven by the producer.</summary>
+    Resolved,
+
+    /// <summary>An explicit receiver was present but its owner could not be proven.</summary>
+    Unresolved
+}
 
 /// <summary>
 /// Import/using that needs module resolution.

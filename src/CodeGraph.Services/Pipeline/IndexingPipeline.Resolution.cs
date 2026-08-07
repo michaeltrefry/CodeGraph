@@ -42,27 +42,144 @@ public partial class IndexingPipeline
     /// Resolve method calls to target method nodes.
     /// Phase 2 stub — full resolution happens when extractors populate UnresolvedCalls.
     /// </summary>
-    private void ResolveCalls(GraphBuffer buffer)
+    private async Task ResolveCallsAsync(
+        string projectName,
+        GraphBuffer buffer,
+        bool includePersistedNodes,
+        IReadOnlySet<string> excludedPersistedFiles,
+        CancellationToken ct)
     {
+        var emittedCallEdges = buffer.AllPendingEdges
+            .Where(edge => edge.Type == EdgeType.CALLS)
+            .Select(edge => $"{edge.SourceQN}\u001f{edge.TargetQN}")
+            .ToHashSet(StringComparer.Ordinal);
+        var nodesByName = new Dictionary<string, IReadOnlyList<GraphNode>>(StringComparer.Ordinal);
+
+        async Task<IReadOnlyList<GraphNode>> FindCandidatesAsync(string name)
+        {
+            if (nodesByName.TryGetValue(name, out var cached))
+                return cached;
+
+            var candidates = buffer.FindByName(name).AsEnumerable();
+            if (includePersistedNodes)
+            {
+                var persisted = await _store.FindNodesByNameAsync(projectName, name);
+                candidates = candidates.Concat(persisted.Where(IsPersistedNodeEligible));
+            }
+
+            cached = candidates
+                .DistinctBy(node => node.QualifiedName, StringComparer.Ordinal)
+                .ToList();
+            nodesByName[name] = cached;
+            return cached;
+        }
+
+        bool IsPersistedNodeEligible(GraphNode node) =>
+            string.IsNullOrWhiteSpace(node.FilePath)
+            || !excludedPersistedFiles.Contains(NormalizeRelativePath(node.FilePath));
+
         foreach (var call in buffer.AllUnresolvedCalls)
         {
-            // Try to find by qualified receiver type + method name
-            if (call.ReceiverType != null)
-            {
-                var candidates = buffer.FindByName(call.CalleeName)
-                    .Where(n => n.QualifiedName.StartsWith(call.ReceiverType))
-                    .ToList();
+            ct.ThrowIfCancellationRequested();
+            if (call.ReceiverKind is CallReceiverKind.Unknown or CallReceiverKind.Unresolved)
+                continue;
 
-                if (candidates.Count == 1)
-                {
-                    buffer.AddEdge(new PendingEdge(
-                        call.CallerQN,
-                        candidates[0].QualifiedName,
-                        EdgeType.CALLS,
-                        new Dictionary<string, object> { ["confidence"] = call.Confidence }));
-                }
+            var candidates = await FindCandidatesAsync(call.CalleeName);
+            if (call.ReceiverKind == CallReceiverKind.Resolved)
+            {
+                if (string.IsNullOrWhiteSpace(call.ReceiverType))
+                    continue;
+
+                var receiver = await ResolveReceiverOwnerAsync(
+                    projectName,
+                    buffer,
+                    call.ReceiverType,
+                    includePersistedNodes,
+                    IsPersistedNodeEligible,
+                    FindCandidatesAsync,
+                    ct);
+                if (receiver is null)
+                    continue;
+
+                var receiverOwners = (await FindCandidatesAsync(receiver.Name))
+                    .Where(node => IsReceiverOwnerLabel(node.Label))
+                    .ToList();
+                var allowSymbolicOwnership = receiverOwners.Count == 1
+                    && string.Equals(
+                        receiverOwners[0].QualifiedName,
+                        receiver.QualifiedName,
+                        StringComparison.Ordinal);
+                candidates = candidates
+                    .Where(candidate => IsOwnedBy(candidate, receiver, allowSymbolicOwnership))
+                    .ToList();
+            }
+
+            if (candidates.Count == 1)
+            {
+                var edgeKey = $"{call.CallerQN}\u001f{candidates[0].QualifiedName}";
+                if (!emittedCallEdges.Add(edgeKey))
+                    continue;
+
+                buffer.AddEdge(new PendingEdge(
+                    call.CallerQN,
+                    candidates[0].QualifiedName,
+                    EdgeType.CALLS,
+                    new Dictionary<string, object> { ["confidence"] = call.Confidence }));
             }
         }
+    }
+
+    private static bool IsReceiverOwnerLabel(NodeLabel label) =>
+        label is NodeLabel.Namespace or NodeLabel.Class or NodeLabel.Interface
+            or NodeLabel.Enum or NodeLabel.Struct or NodeLabel.Record or NodeLabel.Module;
+
+    private async Task<GraphNode?> ResolveReceiverOwnerAsync(
+        string projectName,
+        GraphBuffer buffer,
+        string receiverType,
+        bool includePersistedNodes,
+        Func<GraphNode, bool> isPersistedNodeEligible,
+        Func<string, Task<IReadOnlyList<GraphNode>>> findCandidatesAsync,
+        CancellationToken ct)
+    {
+        var exact = buffer.FindByQN(receiverType);
+        if (exact is not null && IsReceiverOwnerLabel(exact.Label))
+            return exact;
+
+        if (includePersistedNodes)
+        {
+            exact = await _store.FindNodeByQualifiedNameAsync(projectName, receiverType);
+            if (exact is not null && isPersistedNodeEligible(exact) && IsReceiverOwnerLabel(exact.Label))
+                return exact;
+        }
+
+        var normalized = receiverType
+            .Replace("::", ".", StringComparison.Ordinal)
+            .Trim('.');
+        if (normalized.Contains('.', StringComparison.Ordinal))
+            return null;
+
+        var simpleName = normalized[(normalized.LastIndexOf('.') + 1)..];
+        var matches = (await findCandidatesAsync(simpleName))
+            .Where(node => IsReceiverOwnerLabel(node.Label))
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static bool IsOwnedBy(
+        GraphNode candidate,
+        GraphNode owner,
+        bool allowSymbolicOwnership)
+    {
+        if (candidate.QualifiedName.StartsWith(owner.QualifiedName + ".", StringComparison.Ordinal)
+            || candidate.QualifiedName.StartsWith(owner.QualifiedName + "#method:", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return allowSymbolicOwnership
+            && candidate.Properties.TryGetValue("receiver_owner", out var receiverOwner)
+            && string.Equals(receiverOwner?.ToString(), owner.Name, StringComparison.Ordinal);
     }
 
     /// <summary>
