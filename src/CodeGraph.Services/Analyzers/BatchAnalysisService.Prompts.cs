@@ -139,6 +139,7 @@ public partial class BatchAnalysisService
 
         // Append source code
         var sourceSection = await BuildSourceSectionAsync(
+            repoName,
             describableNodes,
             outboundBySource,
             repoPath,
@@ -272,6 +273,7 @@ public partial class BatchAnalysisService
     // --- Source code inclusion for analysis prompts ---
 
     private async Task<string?> BuildSourceSectionAsync(
+        string repoName,
         IReadOnlyList<NodeEntity> promptNodes,
         Dictionary<long, List<EdgeEntity>> outboundBySource,
         string? repoPath,
@@ -326,7 +328,7 @@ public partial class BatchAnalysisService
             if (!string.IsNullOrEmpty(node.FilePath) && secretFiles.Contains(node.FilePath))
                 continue;
 
-            var source = await ReadCompressedSourceAsync(repoPath, node.FilePath, node.StartLine, node.EndLine);
+            var source = await ReadCompressedSourceAsync(repoName, repoPath, node.FilePath, node.StartLine, node.EndLine);
             if (source is null) continue;
 
             // Respect the budget — skip this class if it would exceed the limit
@@ -398,7 +400,12 @@ public partial class BatchAnalysisService
         return false;
     }
 
-    private async Task<string?> ReadCompressedSourceAsync(string repoPath, string filePath, int startLine, int endLine)
+    private async Task<string?> ReadCompressedSourceAsync(
+        string repoName,
+        string repoPath,
+        string filePath,
+        int startLine,
+        int endLine)
     {
         if (string.IsNullOrWhiteSpace(filePath))
         {
@@ -415,19 +422,19 @@ public partial class BatchAnalysisService
 
         try
         {
-            // If filePath is absolute, use it directly; otherwise combine with repoPath
-            var fullPath = Path.IsPathRooted(filePath)
-                ? filePath
-                : Path.Combine(repoPath, filePath);
-
-            if (!fileSystem.FileExists(fullPath))
+            var content = await RepoFileResolver.ReadAllTextAsync(
+                repoName,
+                filePath,
+                cachePath: null,
+                localPath: repoPath);
+            if (content is null)
             {
-                logger.LogDebug("File not found: {FullPath} (filePath={FilePath}, repoPath={RepoPath})",
-                    fullPath, filePath, repoPath);
+                logger.LogDebug("File not found or rejected: {FilePath} (repoPath={RepoPath})",
+                    filePath, repoPath);
                 return null;
             }
 
-            var allLines = await fileSystem.ReadAllLinesAsync(fullPath);
+            var allLines = content.Replace("\r\n", "\n").Split('\n');
             if (startLine > allLines.Length)
                 return null;
 
