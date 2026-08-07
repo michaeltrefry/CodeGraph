@@ -2,7 +2,7 @@ using MassTransit;
 using CodeGraph.Data;
 using CodeGraph.Models.Messages;
 
-namespace CodeGraph.Api.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 /// <summary>
 /// Cascading cleanup when a repository is removed from the configured source provider.

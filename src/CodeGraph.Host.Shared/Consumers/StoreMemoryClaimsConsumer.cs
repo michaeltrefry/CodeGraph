@@ -1,9 +1,9 @@
-using CodeGraph.Models.Messages;
-using CodeGraph.Data;
-using CodeGraph.Services.Memory;
 using MassTransit;
+using CodeGraph.Data;
+using CodeGraph.Models.Messages;
+using CodeGraph.Services.Memory;
 
-namespace CodeGraph.Memory.Host.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 public class StoreMemoryClaimsConsumer(
     MemoryService memoryService,
