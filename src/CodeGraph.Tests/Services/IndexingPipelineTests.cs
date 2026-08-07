@@ -173,6 +173,120 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_AnalyzesAllSolutionsDeterministically_AndDeduplicatesSharedDocuments()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-multi-solution-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var zetaSolution = Path.Combine(rootPath, "Zeta.slnx");
+            var alphaSolution = Path.Combine(rootPath, "Alpha.sln");
+            await File.WriteAllTextAsync(zetaSolution, "<Solution />");
+            await File.WriteAllTextAsync(alphaSolution, string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Shared.cs"), "public sealed class Shared {}");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "AlphaOnly.cs"), "public sealed class AlphaOnly {}");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "ZetaOnly.cs"), "public sealed class ZetaOnly {}");
+
+            var fallback = new TrackingCSharpExtractor();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer((solutionPath, context) =>
+                Path.GetFileName(solutionPath) == "Alpha.sln"
+                    ? new SolutionAnalysisResult
+                    {
+                        Documents =
+                        [
+                            CreateSolutionDocument(context, "Shared.cs", "Shared", includeSelfEdge: true),
+                            CreateSolutionDocument(context, "AlphaOnly.cs", "AlphaOnly")
+                        ]
+                    }
+                    : new SolutionAnalysisResult
+                    {
+                        Documents =
+                        [
+                            CreateSolutionDocument(context, "Shared.cs", "Shared", includeSelfEdge: true),
+                            CreateSolutionDocument(context, "ZetaOnly.cs", "ZetaOnly")
+                        ]
+                    });
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [fallback],
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "folder:Multi" }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync(
+                "Multi", rootPath, repositoryToolingIdentity: "folder:Multi", ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPaths.ShouldBe([alphaSolution, zetaSolution]);
+            store.Nodes.Where(node => node.Label == NodeLabel.Class)
+                .Select(node => node.Name)
+                .OrderBy(name => name)
+                .ShouldBe(["AlphaOnly", "Shared", "ZetaOnly"]);
+            store.Edges.Count(edge => edge.Type == EdgeType.CALLS).ShouldBe(1);
+            fallback.CalledFiles.ShouldBeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FailedSolutionFallsBackOnlyForUncoveredCSharpFiles()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-multi-solution-fallback-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var goodSolution = Path.Combine(rootPath, "AGood.sln");
+            var brokenSolution = Path.Combine(rootPath, "BBroken.slnx");
+            await File.WriteAllTextAsync(goodSolution, string.Empty);
+            await File.WriteAllTextAsync(brokenSolution, "<Solution />");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Good.cs"), "public sealed class Good {}");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Broken.cs"), "public sealed class Broken {}");
+
+            var fallback = new TrackingCSharpExtractor();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer((solutionPath, context) =>
+            {
+                if (Path.GetFileName(solutionPath) == "BBroken.slnx")
+                    throw new InvalidOperationException("synthetic solution load failure");
+
+                return new SolutionAnalysisResult
+                {
+                    Documents = [CreateSolutionDocument(context, "Good.cs", "Good")]
+                };
+            });
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [fallback],
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "folder:Fallback" }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync(
+                "Fallback", rootPath, repositoryToolingIdentity: "folder:Fallback", ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPaths.ShouldBe([goodSolution, brokenSolution]);
+            fallback.CalledFiles.ShouldBe([Path.Combine(rootPath, "Broken.cs")]);
+            store.Nodes.Where(node => node.Label == NodeLabel.Class)
+                .Select(node => node.Name)
+                .OrderBy(name => name)
+                .ShouldBe(["Broken", "Good"]);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_DefaultPolicy_SkipsSolutionToolingAndUsesSyntaxFallback()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-untrusted-sln-{Guid.NewGuid():N}");
@@ -1000,19 +1114,81 @@ public class IndexingPipelineTests
         }
     }
 
-    private sealed class RecordingSolutionAnalyzer : ISolutionAnalyzer
+    private static SolutionDocumentAnalysis CreateSolutionDocument(
+        ExtractorContext context,
+        string fileName,
+        string className,
+        bool includeSelfEdge = false)
+    {
+        var qualifiedName = $"{context.ProjectName}.{className}";
+        return new SolutionDocumentAnalysis(
+            Path.Combine(context.RootPath, fileName),
+            new ExtractionResult
+            {
+                Nodes =
+                [
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Class,
+                        Name = className,
+                        QualifiedName = qualifiedName,
+                        FilePath = fileName
+                    }
+                ],
+                Edges = includeSelfEdge
+                    ? [new PendingEdge(qualifiedName, qualifiedName, EdgeType.CALLS)]
+                    : []
+            });
+    }
+
+    private sealed class TrackingCSharpExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } =
+            new HashSet<string>([".cs"], StringComparer.OrdinalIgnoreCase);
+        public List<string> CalledFiles { get; } = [];
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            CalledFiles.Add(filePath);
+            var className = Path.GetFileNameWithoutExtension(filePath);
+            return Task.FromResult(new ExtractionResult
+            {
+                Nodes =
+                [
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Class,
+                        Name = className,
+                        QualifiedName = $"{context.ProjectName}.{className}",
+                        FilePath = Path.GetRelativePath(context.RootPath, filePath)
+                    }
+                ]
+            });
+        }
+    }
+
+    private sealed class RecordingSolutionAnalyzer(
+        Func<string, ExtractorContext, SolutionAnalysisResult>? analyze = null) : ISolutionAnalyzer
     {
         public string? CalledSolutionPath { get; private set; }
+        public List<string> CalledSolutionPaths { get; } = [];
         public RepositoryToolingTrust? ObservedTrust { get; private set; }
 
-        public Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
+        public Task<SolutionAnalysisResult> AnalyzeSolutionAsync(
             string solutionPath,
             ExtractorContext context,
             CancellationToken ct)
         {
             CalledSolutionPath = solutionPath;
+            CalledSolutionPaths.Add(solutionPath);
             ObservedTrust = context.RepositoryToolingTrust;
-            return Task.FromResult<IReadOnlyList<ExtractionResult>>([]);
+            return Task.FromResult(analyze?.Invoke(solutionPath, context) ?? new SolutionAnalysisResult());
         }
     }
 

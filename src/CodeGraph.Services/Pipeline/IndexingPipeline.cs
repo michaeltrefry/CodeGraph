@@ -164,6 +164,8 @@ public partial class IndexingPipeline
         // Pass 2: Extract code elements using specialized analyzers where available.
         // Track exact files completed by project analyzers. A partial project result must
         // fall back per-file instead of advancing hashes for files it did not process.
+        // The absolute-path set deduplicates shared projects/documents across solutions.
+        var specializedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // C# — solution-level Roslyn analysis
         if (_solutionAnalyzer is not null && dotnetToolingTrusted)
@@ -171,34 +173,57 @@ public partial class IndexingPipeline
             var solutionFiles = _fileSystem.EnumerateFiles(rootPath, "*.slnx", SearchOption.TopDirectoryOnly)
                 .Concat(_fileSystem.EnumerateFiles(rootPath, "*.sln", SearchOption.TopDirectoryOnly))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)),
+                    StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             if (solutionFiles.Length > 0)
             {
-                var solutionFile = solutionFiles[0];
                 _logger.LogWarning(
                     "SECURITY-AUDIT: repository {Project} with provider-resolved identity {RepositoryIdentity} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
                     projectName,
                     repositoryToolingIdentity);
-                _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
-                    Path.GetFileName(solutionFile));
-                stepSw.Restart();
-                try
+                foreach (var solutionFile in solutionFiles)
                 {
-                    var results = await _solutionAnalyzer.AnalyzeSolutionAsync(solutionFile, context, ct);
-                    _logger.LogInformation("[Timing] Roslyn solution analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    AddMetadataCandidates(detectedMetadataCandidates, results);
-                    MergeResults(results, buffer);
-                    AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
-                }
-                // Broad catch is intentional: Roslyn can throw many exception types
-                // (ReflectionTypeLoadException, BadImageFormatException, etc.) and we must
-                // always fall back gracefully to per-file extraction.
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex,
-                        "Roslyn solution analysis failed for {Solution} — falling back to per-file extraction",
+                    _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
                         Path.GetFileName(solutionFile));
+                    stepSw.Restart();
+                    try
+                    {
+                        var analysis = await _solutionAnalyzer.AnalyzeSolutionAsync(solutionFile, context, ct);
+                        _logger.LogInformation(
+                            "[Timing] Roslyn solution analysis for {Solution}: {ElapsedMs}ms",
+                            Path.GetFileName(solutionFile),
+                            stepSw.ElapsedMilliseconds);
+
+                        if (analysis.Metadata is not null)
+                            detectedMetadataCandidates.Add(analysis.Metadata);
+
+                        foreach (var document in analysis.Documents)
+                        {
+                            var documentPath = NormalizeAnalyzedDocumentPath(rootPath, document.FilePath);
+                            if (!document.Result.Succeeded)
+                                continue;
+                            if (!specializedFiles.Add(documentPath))
+                                continue;
+
+                            var relativePath = NormalizeRelativePath(
+                                Path.GetRelativePath(rootPath, documentPath));
+                            var result = document.Result with { ProcessedFiles = [relativePath] };
+                            MergeResults([result], buffer);
+                            AddSuccessfullyProcessedFiles(
+                                [result], changedRelativePaths, successfullyProcessedFiles);
+                        }
+                    }
+                    // Broad catch is intentional: Roslyn can throw many exception types
+                    // (ReflectionTypeLoadException, BadImageFormatException, etc.) and we must
+                    // always fall back gracefully to per-file extraction.
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "Roslyn solution analysis failed for {Solution} — falling back to per-file extraction for uncovered files",
+                            Path.GetFileName(solutionFile));
+                    }
                 }
             }
         }
@@ -319,7 +344,7 @@ public partial class IndexingPipeline
             }
         }
 
-        // Per-file extraction for everything not handled by a specialized analyzer
+        // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
             .Where(file => !successfullyProcessedFiles.Contains(
                 NormalizeRelativePath(Path.GetRelativePath(rootPath, file))))
@@ -656,6 +681,11 @@ public partial class IndexingPipeline
                     StringComparer.OrdinalIgnoreCase)
                 .ToList());
     }
+
+    private static string NormalizeAnalyzedDocumentPath(string rootPath, string documentPath) =>
+        Path.GetFullPath(Path.IsPathRooted(documentPath)
+            ? documentPath
+            : Path.Combine(rootPath, documentPath));
 
     private static ProjectMetadata? SelectDominantMetadata(
         IEnumerable<ProjectMetadata?> metadata,

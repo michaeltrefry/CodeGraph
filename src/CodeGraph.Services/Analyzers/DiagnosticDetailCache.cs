@@ -18,6 +18,23 @@ public class DiagnosticDetailCache
         _store[projectName] = diagnostics.ToList();
     }
 
+    /// <summary>
+    /// Add diagnostics from another analyzer pass without losing results already
+    /// collected for the same repository. Shared projects can appear in more
+    /// than one solution, so diagnostic keys are used to suppress duplicates.
+    /// </summary>
+    public void Merge(string projectName, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+    {
+        _store.AddOrUpdate(
+            projectName,
+            _ => diagnostics.ToList(),
+            (_, existing) => existing
+                .Concat(diagnostics)
+                .GroupBy(diagnostic => diagnostic.DiagnosticKey, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .ToList());
+    }
+
     public IReadOnlyList<ProjectDiagnosticEntity> Take(string projectName)
     {
         return _store.TryRemove(projectName, out var diagnostics)
