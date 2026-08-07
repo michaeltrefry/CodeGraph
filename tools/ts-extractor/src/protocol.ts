@@ -74,5 +74,6 @@ export interface ExtractProjectResponse {
   resolvedImports: ResolvedImportDto[];
   unresolvedImports: UnresolvedImportDto[];
   unresolvedCalls: UnresolvedCallDto[];
+  processedFiles: string[];
   diagnostics?: string[];
 }

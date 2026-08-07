@@ -21,30 +21,43 @@ public class SqlExtractor : ICodeExtractor
     public Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
     {
-        content = NormalizeMySqlSyntax(content);
-
-        var parser = new TSql160Parser(initialQuotedIdentifiers: true);
-
-        using var reader = new StringReader(content);
-        var fragment = parser.Parse(reader, out var errors);
-
-        if (errors.Count > 0)
+        try
         {
-            _logger.LogDebug("SQL parse errors in {FilePath}: {ErrorCount} errors (first: {Error})",
-                filePath, errors.Count, errors[0].Message);
-            // Continue with best-effort extraction — ScriptDom still produces a partial AST
-        }
+            ct.ThrowIfCancellationRequested();
+            content = NormalizeMySqlSyntax(content);
 
-        if (fragment == null)
+            var parser = new TSql160Parser(initialQuotedIdentifiers: true);
+
+            using var reader = new StringReader(content);
+            var fragment = parser.Parse(reader, out var errors);
+
+            if (errors.Count > 0)
+            {
+                _logger.LogDebug("SQL parse errors in {FilePath}: {ErrorCount} errors (first: {Error})",
+                    filePath, errors.Count, errors[0].Message);
+                // Continue with best-effort extraction — ScriptDom still produces a partial AST
+            }
+
+            if (fragment == null)
+            {
+                _logger.LogWarning("Failed to parse SQL in {FilePath}", filePath);
+                return Task.FromResult(ExtractionResult.Failure("SQL parser returned no syntax tree."));
+            }
+
+            var visitor = new SqlGraphVisitor(context, filePath);
+            fragment.Accept(visitor);
+
+            return Task.FromResult(visitor.GetResult());
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            _logger.LogWarning("Failed to parse SQL in {FilePath}", filePath);
-            return Task.FromResult(new ExtractionResult());
+            throw;
         }
-
-        var visitor = new SqlGraphVisitor(context, filePath);
-        fragment.Accept(visitor);
-
-        return Task.FromResult(visitor.GetResult());
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SQL extraction failed for {FilePath}", filePath);
+            return Task.FromResult(ExtractionResult.Failure(ex.Message));
+        }
     }
 
     /// <summary>

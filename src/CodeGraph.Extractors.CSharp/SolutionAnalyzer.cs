@@ -142,7 +142,13 @@ public class SolutionAnalyzer : ISolutionAnalyzer
                     var walker = new CodeGraphSyntaxWalker(projectContext, model,
                         filePathOverride: document.FilePath);
                     walker.Visit(await syntaxTree.GetRootAsync(ct2));
-                    results.Add(walker.GetResult());
+                    var relativePath = document.FilePath is { Length: > 0 }
+                        ? Path.GetRelativePath(context.RootPath, document.FilePath).Replace('\\', '/')
+                        : "";
+                    results.Add(walker.GetResult() with
+                    {
+                        ProcessedFiles = string.IsNullOrEmpty(relativePath) ? [] : [relativePath]
+                    });
                 }
                 catch (Exception ex)
                 {
