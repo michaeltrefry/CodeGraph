@@ -563,11 +563,9 @@ public class CodeGraphMcpServer(
         [Description("Start line (0 for beginning)")] int startLine = 0,
         [Description("End line (0 for entire file)")] int endLine = 0)
     {
-        var fullPath = await RepoFileResolver.ResolveAsync(project, filePath, sourceOptions, store);
-        if (fullPath is null)
+        var lines = await RepoFileResolver.ReadAllLinesAsync(project, filePath, sourceOptions, store);
+        if (lines is null)
             return $"File not found: {project}/{filePath}. Check that the project is indexed and the file exists in the cache or local path.";
-
-        var lines = await File.ReadAllLinesAsync(fullPath);
         var start = startLine > 0 ? startLine - 1 : 0;
         var end = endLine > 0 ? Math.Min(endLine, lines.Length) : lines.Length;
 
@@ -597,11 +595,9 @@ public class CodeGraphMcpServer(
         if (string.IsNullOrWhiteSpace(node.FilePath))
             return $"Node '{node.Name}' ({node.Label}) has no source file path.";
 
-        var fullPath = await RepoFileResolver.ResolveAsync(node.Project, node.FilePath, sourceOptions, store);
-        if (fullPath is null)
+        var lines = await RepoFileResolver.ReadAllLinesAsync(node.Project, node.FilePath, sourceOptions, store);
+        if (lines is null)
             return $"Source file not found: {node.Project}/{node.FilePath}";
-
-        var lines = await File.ReadAllLinesAsync(fullPath);
 
         // Return a window around the node: 5 lines before start through 5 lines after end,
         // or the full file if it's small
