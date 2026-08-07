@@ -17,6 +17,12 @@ public static class RepoFileResolver
     private const int MacOsVnodePathInfoSize = 1200;
     private const int MacOsVnodePathOffset = 176;
     private const int MacOsMaxPath = 1024;
+    private const int UnixFileTypeMask = 0xF000;
+    private const int UnixRegularFile = 0x8000;
+    private const int LinuxOpenNonBlocking = 0x800;
+    private const int MacOsOpenNonBlocking = 0x4;
+    private const uint WindowsFileTypeDisk = 0x0001;
+    private const uint WindowsDirectoryAttribute = 0x0010;
     private static readonly char[] PortableSeparators = ['/', '\\'];
     private static readonly HashSet<string> WindowsDeviceNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -120,15 +126,17 @@ public static class RepoFileResolver
         try
         {
             beforeOpen?.Invoke();
-            stream = new FileStream(
-                resolved.Path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            stream = OpenCandidate(resolved.Path);
+            if (stream is null)
+                return null;
 
             afterOpenBeforeValidation?.Invoke();
+            if (!IsRegularFileHandle(stream.SafeFileHandle))
+            {
+                stream.Dispose();
+                return null;
+            }
+
             var openedPath = GetOpenedHandlePath(stream.SafeFileHandle);
             if (openedPath is null || !IsContainedBy(openedPath, resolved.Root))
             {
@@ -138,15 +146,87 @@ public static class RepoFileResolver
 
             return stream;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is
+            ArgumentException or
+            BadImageFormatException or
+            DllNotFoundException or
+            EntryPointNotFoundException or
+            IOException or
+            NotSupportedException or
+            UnauthorizedAccessException)
         {
             stream?.Dispose();
             return null;
         }
-        catch (UnauthorizedAccessException)
+    }
+
+    private static FileStream? OpenCandidate(string path)
+    {
+        if (OperatingSystem.IsWindows())
         {
-            stream?.Dispose();
+            return new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 4096,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             return null;
+
+        var flags = OperatingSystem.IsLinux() ? LinuxOpenNonBlocking : MacOsOpenNonBlocking;
+        var fd = OpenUnix(path, flags);
+        if (fd < 0)
+            return null;
+
+        var handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
+        try
+        {
+            return new FileStream(handle, FileAccess.Read, bufferSize: 4096, isAsync: false);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    private static bool IsRegularFileHandle(SafeFileHandle handle)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return GetFileType(handle) == WindowsFileTypeDisk &&
+                   GetFileInformationByHandle(handle, out var info) &&
+                   (info.FileAttributes & WindowsDirectoryAttribute) == 0;
+        }
+
+        // st_mode offsets are fixed by the Darwin and glibc x64/arm64 stat ABIs.
+        // Architectures without a known layout fail closed.
+        var modeOffset = OperatingSystem.IsMacOS()
+            ? 4
+            : RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => 24,
+                Architecture.Arm64 => 16,
+                _ => -1
+            };
+        if (modeOffset < 0)
+            return false;
+
+        var buffer = Marshal.AllocHGlobal(512);
+        try
+        {
+            if (FStat(handle.DangerousGetHandle().ToInt32(), buffer) != 0)
+                return false;
+
+            var mode = Marshal.ReadInt32(buffer, modeOffset);
+            return (mode & UnixFileTypeMask) == UnixRegularFile;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
         }
     }
 
@@ -447,6 +527,21 @@ public static class RepoFileResolver
         uint cchFilePath,
         uint dwFlags);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetFileType(SafeFileHandle hFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle hFile,
+        out WindowsByHandleFileInformation fileInformation);
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static extern int OpenUnix(string path, int flags);
+
+    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    private static extern int FStat(int fd, IntPtr buffer);
+
     [DllImport("libproc.dylib", EntryPoint = "proc_pidfdinfo", SetLastError = true)]
     private static extern int ProcPidFdInfo(
         int pid,
@@ -454,6 +549,28 @@ public static class RepoFileResolver
         int flavor,
         IntPtr buffer,
         int bufferSize);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowsByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public WindowsFileTime CreationTime;
+        public WindowsFileTime LastAccessTime;
+        public WindowsFileTime LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowsFileTime
+    {
+        public uint LowDateTime;
+        public uint HighDateTime;
+    }
 
     private sealed record ResolvedFile(string Path, string Root);
 }

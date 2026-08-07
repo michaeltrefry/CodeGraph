@@ -7,6 +7,7 @@ using CodeGraph.Services.Query;
 using CodeGraph.Tests.Extractors;
 using Microsoft.Extensions.Options;
 using Shouldly;
+using System.Runtime.InteropServices;
 
 namespace CodeGraph.Tests.Services;
 
@@ -107,9 +108,11 @@ public sealed class RepoFileResolverTests : IDisposable
         var secret = Path.Combine(outside, "secret.txt");
         await File.WriteAllTextAsync(secret, "do not read");
 
-        if (!TryCreateFileSymlink(Path.Combine(repo, "file-link.txt"), secret) ||
-            !TryCreateDirectorySymlink(Path.Combine(repo, "dir-link"), outside))
+        var createdFileLink = TryCreateFileSymlink(Path.Combine(repo, "file-link.txt"), secret);
+        var createdDirectoryLink = TryCreateDirectorySymlink(Path.Combine(repo, "dir-link"), outside);
+        if (!createdFileLink || !createdDirectoryLink)
         {
+            RequireSymlinkSupportInCi(createdFileLink && createdDirectoryLink);
             return;
         }
 
@@ -127,7 +130,10 @@ public sealed class RepoFileResolverTests : IDisposable
         Directory.CreateDirectory(Path.Combine(repo, "actual"));
         await File.WriteAllTextAsync(Path.Combine(repo, "actual", "source.cs"), "safe");
         if (!TryCreateDirectorySymlink(Path.Combine(repo, "alias"), Path.Combine(repo, "actual")))
+        {
+            RequireSymlinkSupportInCi(supported: false);
             return;
+        }
 
         var store = await CreateStoreAsync("Repo", repo);
 
@@ -150,7 +156,10 @@ public sealed class RepoFileResolverTests : IDisposable
         await File.WriteAllTextAsync(secret, "secret");
         var probeLink = Path.Combine(repo, "symlink-probe");
         if (!TryCreateDirectorySymlink(probeLink, outside))
+        {
+            RequireSymlinkSupportInCi(supported: false);
             return;
+        }
         Directory.Delete(probeLink);
 
         using var stream = RepoFileResolver.OpenReadForTesting(
@@ -170,6 +179,28 @@ public sealed class RepoFileResolverTests : IDisposable
             });
 
         stream.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task OpenRead_RejectsFifoWithoutBlocking()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var repo = Path.Combine(tempRoot, "repo");
+        Directory.CreateDirectory(repo);
+        var fifo = Path.Combine(repo, "source.pipe");
+        MkFifo(fifo, Convert.ToUInt32("600", 8)).ShouldBe(0);
+
+        var openTask = Task.Run(() => RepoFileResolver.OpenRead(
+            "Repo",
+            "source.pipe",
+            cachePath: null,
+            localPath: repo));
+        var completed = await Task.WhenAny(openTask, Task.Delay(TimeSpan.FromSeconds(2)));
+
+        completed.ShouldBe(openTask, "opening a FIFO for validation must not wait for a writer");
+        (await openTask).ShouldBeNull();
     }
 
     [Fact]
@@ -249,4 +280,16 @@ public sealed class RepoFileResolverTests : IDisposable
             return false;
         }
     }
+
+    private static void RequireSymlinkSupportInCi(bool supported)
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("CI"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            supported.ShouldBeTrue(
+                "hosted security validation must exercise symlink/reparse-point behavior");
+        }
+    }
+
+    [DllImport("libc", EntryPoint = "mkfifo", SetLastError = true)]
+    private static extern int MkFifo(string path, uint mode);
 }
