@@ -4,6 +4,7 @@ namespace CodeGraph.Data;
 
 public interface IMemoryGraphStore
 {
+    string Username => MemoryTenantContext.SystemUsername;
     Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt);
     Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId);
     Task<MemoryWriteDiagnosticsResult> GetWriteDiagnosticsAsync(

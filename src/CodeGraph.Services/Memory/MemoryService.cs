@@ -55,6 +55,7 @@ public class MemoryService
         {
             await messageBus.PublishAsync(new StoreMemoryClaims
             {
+                Username = _store.Username,
                 ReceiptId = receipt.Id,
                 InputMode = inputMode,
                 Extraction = extraction,

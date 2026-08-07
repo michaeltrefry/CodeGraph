@@ -44,9 +44,27 @@ public class HttpMemoryClientTests
         request.Method.ShouldBe(HttpMethod.Post);
         request.RequestUri!.ToString().ShouldBe("http://memory.local/api/memory/claims/store?source=api");
         request.Headers.Contains(CodeGraphInternalServiceAuthenticationDefaults.HeaderName).ShouldBeTrue();
+        request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe("Michael");
         var body = await request.Content!.ReadAsStringAsync();
         body.ShouldContain("\"entities\"");
         body.ShouldContain("\"codegraph\"");
+    }
+
+    [Fact]
+    public async Task QueueClaimsAsync_PreservesTenantIdentityWhenInternalAuthenticationIsDisabled()
+    {
+        var handler = new RecordingHandler(new MemoryStoreAcceptedResult
+        {
+            Status = "queued",
+            ReceiptId = "memory_write_1",
+        });
+        var client = CreateClient(handler, internalAuthenticationEnabled: false);
+
+        await client.QueueClaimsAsync("user:alice", new MemoryClaimExtractionResult());
+
+        var request = handler.Requests.Single();
+        request.Headers.Contains(CodeGraphInternalServiceAuthenticationDefaults.HeaderName).ShouldBeFalse();
+        request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe("user:alice");
     }
 
     [Fact]
@@ -171,7 +189,9 @@ public class HttpMemoryClientTests
         ex.Message.ShouldBe("No memory for you.");
     }
 
-    private static HttpMemoryClient CreateClient(RecordingHandler handler)
+    private static HttpMemoryClient CreateClient(
+        RecordingHandler handler,
+        bool internalAuthenticationEnabled = true)
     {
         var httpClient = new HttpClient(handler)
         {
@@ -185,7 +205,7 @@ public class HttpMemoryClientTests
         });
         var tokenFactory = new InternalServiceTokenFactory(Options.Create(new InternalServiceAuthOptions
         {
-            Enabled = true,
+            Enabled = internalAuthenticationEnabled,
             HmacKey = "test-key-with-enough-entropy"
         }));
 

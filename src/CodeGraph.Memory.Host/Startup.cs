@@ -93,6 +93,7 @@ public static class Startup
         services.AddTransient<MemoryObservationMigrationService>();
         services.AddTransient<MemoryRetrievalService>();
         services.AddTransient<MemoryService>();
+        services.AddScoped<IMemoryTenantContext, MemoryTenantContext>();
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
     }
 
@@ -189,8 +190,13 @@ internal static class InternalServiceAuthenticationApplicationBuilderExtensions
             var authOptions = context.RequestServices.GetRequiredService<IOptions<InternalServiceAuthOptions>>().Value;
             if (!authOptions.Enabled)
             {
-                context.User = CreatePrincipal("local-memory", "LocalInternalService");
-                await next();
+                var unsignedUsername = context.Request.Headers[MemoryClientIdentityDefaults.UsernameHeaderName]
+                    .ToString();
+                var trustedIdentity = string.IsNullOrWhiteSpace(unsignedUsername)
+                    ? "local-memory"
+                    : unsignedUsername;
+                context.User = CreatePrincipal(trustedIdentity, "LocalInternalService");
+                await InvokeInTenantScopeAsync(context, next, trustedIdentity);
                 return;
             }
 
@@ -205,8 +211,24 @@ internal static class InternalServiceAuthenticationApplicationBuilderExtensions
             }
 
             context.User = validation.Principal ?? CreatePrincipal("unknown", "CodeGraphInternalService");
-            await next();
+            var username = context.User.FindFirstValue("preferred_username")
+                           ?? context.User.FindFirstValue(ClaimTypes.Name)
+                           ?? "unknown";
+            await InvokeInTenantScopeAsync(context, next, username);
         });
+    }
+
+    private static async Task InvokeInTenantScopeAsync(
+        HttpContext context,
+        Func<Task> next,
+        string trustedIdentity)
+    {
+        var username = MemoryTenantContext.ForTrustedIdentity(trustedIdentity);
+        var tenantContext = context.RequestServices.GetRequiredService<IMemoryTenantContext>();
+        using var tenantScope = tenantContext.Enter(
+            username,
+            allowLegacyDefault: username == MemoryTenantContext.LegacyDefaultUsername);
+        await next();
     }
 
     private static ClaimsPrincipal CreatePrincipal(string username, string authenticationType)

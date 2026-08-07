@@ -1,15 +1,18 @@
 using MassTransit;
+using CodeGraph.Data;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services.Memory;
 
 namespace CodeGraph.Api.Consumers;
 
 public class StoreMemoryClaimsConsumer(
-    MemoryService memoryService) : IConsumer<StoreMemoryClaims>
+    MemoryService memoryService,
+    IMemoryTenantContext tenantContext) : IConsumer<StoreMemoryClaims>
 {
     public async Task Consume(ConsumeContext<StoreMemoryClaims> context)
     {
         var message = context.Message;
+        using var tenantScope = tenantContext.Enter(message.Username);
         if (!string.IsNullOrWhiteSpace(message.ReceiptId))
             await memoryService.MarkWriteReceiptProcessingAsync(message.ReceiptId);
 
