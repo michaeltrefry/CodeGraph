@@ -333,6 +333,8 @@ public sealed class AttachmentServiceTests : IDisposable
         }
         finally
         {
+            if (File.Exists(outsideFile))
+                File.Delete(outsideFile);
             if (Directory.Exists(pageDirectory))
                 Directory.Delete(pageDirectory);
             if (Directory.Exists(outside))
