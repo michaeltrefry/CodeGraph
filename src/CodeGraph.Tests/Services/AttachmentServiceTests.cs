@@ -309,11 +309,23 @@ public sealed class AttachmentServiceTests : IDisposable
         var storageName = Path.GetFileName(storagePath);
         var outsideFile = Path.Combine(outside, storageName);
         await File.WriteAllTextAsync(outsideFile, "outside sentinel");
+        Exception? pageSwapError = null;
+        var pageMoved = false;
+        var junctionCreated = false;
 
         store.BeforeAttachmentDeletion = () =>
         {
-            Directory.Move(pageDirectory, displacedDirectory);
-            CreateDirectoryJunction(pageDirectory, outside);
+            try
+            {
+                Directory.Move(pageDirectory, displacedDirectory);
+                pageMoved = true;
+                CreateDirectoryJunction(pageDirectory, outside);
+                junctionCreated = true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                pageSwapError = ex;
+            }
             return Task.CompletedTask;
         };
 
@@ -325,11 +337,23 @@ public sealed class AttachmentServiceTests : IDisposable
                 (await service.DeleteAsync(uploaded.Id)).ShouldBeTrue();
 
             (await File.ReadAllTextAsync(outsideFile)).ShouldBe("outside sentinel");
-            var displacedFile = Path.Combine(displacedDirectory, storageName);
-            File.Exists(displacedFile).ShouldBe(failMetadataDeletion);
+            if (junctionCreated)
+            {
+                (File.GetAttributes(pageDirectory) & FileAttributes.ReparsePoint)
+                    .ShouldBe(FileAttributes.ReparsePoint);
+            }
+            else
+            {
+                pageSwapError.ShouldNotBeNull("Windows must reject a page swap that cannot complete safely");
+            }
+
+            var retainedFile = pageMoved
+                ? Path.Combine(displacedDirectory, storageName)
+                : storagePath;
+            File.Exists(retainedFile).ShouldBe(failMetadataDeletion);
             store.Attachments.Any(a => a.Id == uploaded.Id).ShouldBe(failMetadataDeletion);
             if (failMetadataDeletion)
-                (await File.ReadAllTextAsync(displacedFile)).ShouldBe("original");
+                (await File.ReadAllTextAsync(retainedFile)).ShouldBe("original");
         }
         finally
         {
