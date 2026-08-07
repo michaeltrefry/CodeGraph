@@ -198,6 +198,6 @@ public class SettingsControllerIndexerDelegationTests
 
     private sealed class ThrowingMcpDocService : IMcpDocService
     {
-        public Task RegenerateAsync() => throw new NotSupportedException();
+        public Task RegenerateAsync(CancellationToken ct = default) => throw new NotSupportedException();
     }
 }

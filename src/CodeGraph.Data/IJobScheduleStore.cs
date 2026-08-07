@@ -6,7 +6,7 @@ public interface IJobScheduleStore
     Task<JobScheduleEntity?> GetScheduleByIdAsync(long id);
     Task<JobScheduleEntity?> GetScheduleByNameAsync(string name);
     Task<JobScheduleEntity> CreateScheduleAsync(JobScheduleEntity entity);
-    Task UpdateScheduleAsync(JobScheduleEntity entity);
+    Task<bool> UpdateScheduleAsync(JobScheduleEntity entity);
     Task DeleteScheduleAsync(long id);
 
     Task<JobScheduleEntity?> TryAcquireDueScheduleAsync(
@@ -22,14 +22,28 @@ public interface IJobScheduleStore
         TimeSpan leaseDuration,
         CancellationToken ct = default);
 
-    Task MarkRunStartedAsync(long id, DateTime startedAtUtc, string leaseOwner, CancellationToken ct = default);
+    Task<bool> RenewLeaseAsync(
+        long id,
+        DateTime utcNow,
+        string leaseToken,
+        TimeSpan leaseDuration,
+        CancellationToken ct = default);
 
-    Task MarkRunCompletedAsync(
+    Task<bool> MarkRunStartedAsync(
+        long id,
+        DateTime startedAtUtc,
+        DateTime fenceCheckedAtUtc,
+        string leaseToken,
+        CancellationToken ct = default);
+
+    Task<bool> MarkRunCompletedAsync(
         long id,
         DateTime completedAtUtc,
         DateTime? nextRunUtc,
         string status,
         string? error,
-        string leaseOwner,
+        DateTime fenceCheckedAtUtc,
+        long acquiredScheduleRevision,
+        string leaseToken,
         CancellationToken ct = default);
 }

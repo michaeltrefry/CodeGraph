@@ -16,6 +16,7 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
         services.AddTransient<AssistantRetentionCleanupJob>();
         services.AddTransient<IngestConventionEmbeddingsJob>();
         services.AddTransient<IJobCommandDispatcher, JobCommandDispatcher>();
+        services.AddSingleton<IJobScheduleClock, SystemJobScheduleClock>();
         services.AddTransient<IJobScheduleService, JobScheduleService>();
         return services;
     }

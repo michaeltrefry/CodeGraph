@@ -35,8 +35,22 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+      neo4j:
+        image: neo4j:5.26-community
+        env:
+          NEO4J_AUTH: neo4j/codegraph_test
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd="cypher-shell -u neo4j -p codegraph_test 'RETURN 1'"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     env:
       CODEGRAPH_MARIADB_TEST_CONNECTION: Server=127.0.0.1;Port=3306;User ID=root;Password=codegraph_test!;
+      CODEGRAPH_NEO4J_TEST_URI: bolt://127.0.0.1:7687
+      CODEGRAPH_NEO4J_TEST_USERNAME: neo4j
+      CODEGRAPH_NEO4J_TEST_PASSWORD: codegraph_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4

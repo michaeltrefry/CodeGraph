@@ -7,23 +7,38 @@ using CodeGraph.Models.Responses;
 
 namespace CodeGraph.Jobs;
 
-public class JobScheduleService(
-    IJobScheduleStore store,
-    IJobCommandDispatcher dispatcher,
-    ILogger<JobScheduleService> logger) : IJobScheduleService
+public class JobScheduleService : IJobScheduleService
 {
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(15);
-    private readonly string _leaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+    private static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromMinutes(5);
+    private const int ScheduleUpdateAttempts = 5;
+    private readonly IJobScheduleStore _store;
+    private readonly IJobCommandDispatcher _dispatcher;
+    private readonly ILogger<JobScheduleService> _logger;
+    private readonly IJobScheduleClock _clock;
+    private readonly string _workerId = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+
+    public JobScheduleService(
+        IJobScheduleStore store,
+        IJobCommandDispatcher dispatcher,
+        ILogger<JobScheduleService> logger,
+        IJobScheduleClock? clock = null)
+    {
+        _store = store;
+        _dispatcher = dispatcher;
+        _logger = logger;
+        _clock = clock ?? new SystemJobScheduleClock();
+    }
 
     public async Task<IReadOnlyList<JobScheduleResponse>> ListAsync()
     {
-        var schedules = await store.ListSchedulesAsync();
+        var schedules = await _store.ListSchedulesAsync();
         return schedules.Select(MapResponse).ToList();
     }
 
     public async Task<JobScheduleResponse?> GetAsync(long id)
     {
-        var schedule = await store.GetScheduleByIdAsync(id);
+        var schedule = await _store.GetScheduleByIdAsync(id);
         return schedule is null ? null : MapResponse(schedule);
     }
 
@@ -32,8 +47,8 @@ public class JobScheduleService(
         await EnsureUniqueNameAsync(request.Name.Trim(), null);
 
         var timeZone = ResolveTimeZone(request.TimeZoneId);
-        var normalizedArgsJson = dispatcher.NormalizeArgsJson(request.JobType, request.Args);
-        var nowUtc = DateTime.UtcNow;
+        var normalizedArgsJson = _dispatcher.NormalizeArgsJson(request.JobType, request.Args);
+        var nowUtc = _clock.UtcNow;
         var entity = new JobScheduleEntity
         {
             Name = Require(request.Name, nameof(request.Name)),
@@ -47,122 +62,229 @@ public class JobScheduleService(
             UpdatedAtUtc = nowUtc
         };
 
-        entity = await store.CreateScheduleAsync(entity);
+        entity = await _store.CreateScheduleAsync(entity);
         return MapResponse(entity);
     }
 
     public async Task<JobScheduleResponse?> UpdateAsync(long id, UpdateJobScheduleRequest request)
     {
-        var existing = await store.GetScheduleByIdAsync(id);
-        if (existing is null)
+        if (await _store.GetScheduleByIdAsync(id) is null)
             return null;
 
         await EnsureUniqueNameAsync(request.Name.Trim(), id);
-
         var timeZone = ResolveTimeZone(request.TimeZoneId);
-        existing.Name = Require(request.Name, nameof(request.Name));
-        existing.JobType = Require(request.JobType, nameof(request.JobType));
-        existing.IsEnabled = request.IsEnabled;
-        existing.CronExpression = Require(request.CronExpression, nameof(request.CronExpression));
-        existing.TimeZoneId = timeZone.Id;
-        existing.ArgsJson = dispatcher.NormalizeArgsJson(request.JobType, request.Args);
-        existing.NextRunUtc = ComputeNextRunUtc(existing.CronExpression, timeZone, DateTime.UtcNow);
-        existing.UpdatedAtUtc = DateTime.UtcNow;
+        var name = Require(request.Name, nameof(request.Name));
+        var jobType = Require(request.JobType, nameof(request.JobType));
+        var cronExpression = Require(request.CronExpression, nameof(request.CronExpression));
+        var argsJson = _dispatcher.NormalizeArgsJson(request.JobType, request.Args);
 
-        await store.UpdateScheduleAsync(existing);
-        return MapResponse(existing);
+        for (var attempt = 0; attempt < ScheduleUpdateAttempts; attempt++)
+        {
+            var existing = await _store.GetScheduleByIdAsync(id);
+            if (existing is null)
+                return null;
+
+            var nowUtc = _clock.UtcNow;
+            existing.Name = name;
+            existing.JobType = jobType;
+            existing.IsEnabled = request.IsEnabled;
+            existing.CronExpression = cronExpression;
+            existing.TimeZoneId = timeZone.Id;
+            existing.ArgsJson = argsJson;
+            existing.NextRunUtc = ComputeNextRunUtc(cronExpression, timeZone, nowUtc);
+            existing.UpdatedAtUtc = nowUtc;
+
+            if (await _store.UpdateScheduleAsync(existing))
+            {
+                var updated = await _store.GetScheduleByIdAsync(id);
+                return MapResponse(updated ?? existing);
+            }
+        }
+
+        throw new InvalidOperationException("Schedule changed concurrently; retry the update.");
     }
 
     public async Task<bool> DeleteAsync(long id)
     {
-        if (await store.GetScheduleByIdAsync(id) is null)
+        if (await _store.GetScheduleByIdAsync(id) is null)
             return false;
 
-        await store.DeleteScheduleAsync(id);
+        await _store.DeleteScheduleAsync(id);
         return true;
     }
 
     public async Task<JobScheduleResponse?> SetEnabledAsync(long id, bool isEnabled)
     {
-        var schedule = await store.GetScheduleByIdAsync(id);
-        if (schedule is null)
-            return null;
-
-        schedule.IsEnabled = isEnabled;
-        schedule.UpdatedAtUtc = DateTime.UtcNow;
-        if (isEnabled)
+        for (var attempt = 0; attempt < ScheduleUpdateAttempts; attempt++)
         {
-            schedule.NextRunUtc = ComputeNextRunUtc(
-                schedule.CronExpression,
-                ResolveTimeZone(schedule.TimeZoneId),
-                DateTime.UtcNow);
+            var schedule = await _store.GetScheduleByIdAsync(id);
+            if (schedule is null)
+                return null;
+
+            var nowUtc = _clock.UtcNow;
+            schedule.IsEnabled = isEnabled;
+            schedule.UpdatedAtUtc = nowUtc;
+            if (isEnabled)
+            {
+                schedule.NextRunUtc = ComputeNextRunUtc(
+                    schedule.CronExpression,
+                    ResolveTimeZone(schedule.TimeZoneId),
+                    nowUtc);
+            }
+
+            if (await _store.UpdateScheduleAsync(schedule))
+            {
+                var updated = await _store.GetScheduleByIdAsync(id);
+                return MapResponse(updated ?? schedule);
+            }
         }
 
-        await store.UpdateScheduleAsync(schedule);
-        return MapResponse(schedule);
+        throw new InvalidOperationException("Schedule changed concurrently; retry the update.");
     }
 
     public async Task<JobExecutionResponse?> RunNowAsync(long id, CancellationToken ct = default)
     {
-        var schedule = await store.GetScheduleByIdAsync(id);
+        var schedule = await _store.GetScheduleByIdAsync(id);
         if (schedule is null)
             return null;
 
-        var utcNow = DateTime.UtcNow;
-        var acquired = await store.TryAcquireScheduleAsync(id, utcNow, _leaseOwner, LeaseDuration, ct);
+        var utcNow = _clock.UtcNow;
+        var leaseToken = CreateLeaseToken();
+        var acquired = await _store.TryAcquireScheduleAsync(id, utcNow, leaseToken, LeaseDuration, ct);
         if (acquired is null)
             throw new InvalidOperationException("Schedule is already running.");
 
-        return await ExecuteScheduleAsync(acquired, isManual: true, ct);
+        return await ExecuteScheduleAsync(acquired, leaseToken, isManual: true, ct);
     }
 
     public async Task<bool> TryRunNextDueScheduleAsync(CancellationToken ct = default)
     {
-        var acquired = await store.TryAcquireDueScheduleAsync(DateTime.UtcNow, _leaseOwner, LeaseDuration, ct);
+        var leaseToken = CreateLeaseToken();
+        var acquired = await _store.TryAcquireDueScheduleAsync(
+            _clock.UtcNow, leaseToken, LeaseDuration, ct);
         if (acquired is null)
             return false;
 
-        await ExecuteScheduleAsync(acquired, isManual: false, ct);
+        await ExecuteScheduleAsync(acquired, leaseToken, isManual: false, ct);
         return true;
     }
 
-    private async Task<JobExecutionResponse> ExecuteScheduleAsync(JobScheduleEntity schedule, bool isManual, CancellationToken ct)
+    private async Task<JobExecutionResponse> ExecuteScheduleAsync(
+        JobScheduleEntity schedule,
+        string leaseToken,
+        bool isManual,
+        CancellationToken ct)
     {
-        var startedAtUtc = DateTime.UtcNow;
-        await store.MarkRunStartedAsync(schedule.Id, startedAtUtc, _leaseOwner, ct);
+        var startedAtUtc = _clock.UtcNow;
+        if (!await _store.MarkRunStartedAsync(
+                schedule.Id, startedAtUtc, _clock.UtcNow, leaseToken, ct))
+            throw new JobScheduleLeaseLostException(schedule.Id);
+
+        using var executionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var leaseLost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renewalTask = RenewLeaseUntilStoppedAsync(
+            schedule.Id, leaseToken, executionCts, leaseLost);
 
         JobExecutionResult result;
         try
         {
-            result = await dispatcher.ExecuteAsync(schedule.JobType, schedule.ArgsJson, ct);
+            result = await _dispatcher.ExecuteAsync(
+                schedule.JobType, schedule.ArgsJson, executionCts.Token);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Scheduled job {ScheduleId}:{JobType} failed", schedule.Id, schedule.JobType);
-            var completedAtUtc = DateTime.UtcNow;
-            await store.MarkRunCompletedAsync(
+            executionCts.Cancel();
+            await AwaitRenewalShutdownAsync(renewalTask);
+            if (leaseLost.Task.IsCompleted)
+                throw new JobScheduleLeaseLostException(schedule.Id);
+
+            _logger.LogError(ex, "Scheduled job {ScheduleId}:{JobType} failed", schedule.Id, schedule.JobType);
+            var completedAtUtc = _clock.UtcNow;
+            var completed = await _store.MarkRunCompletedAsync(
                 schedule.Id,
                 completedAtUtc,
                 GetNextRunAfterCompletion(schedule, completedAtUtc, isManual),
                 "failed",
                 ex.Message,
-                _leaseOwner,
-                ct);
+                _clock.UtcNow,
+                schedule.ScheduleRevision,
+                leaseToken,
+                CancellationToken.None);
+            if (!completed)
+                throw new JobScheduleLeaseLostException(schedule.Id);
 
             return new JobExecutionResponse(false, ex.Message, startedAtUtc, completedAtUtc);
         }
 
-        await store.MarkRunCompletedAsync(
+        executionCts.Cancel();
+        await AwaitRenewalShutdownAsync(renewalTask);
+        if (leaseLost.Task.IsCompleted)
+            throw new JobScheduleLeaseLostException(schedule.Id);
+
+        var completionRecorded = await _store.MarkRunCompletedAsync(
             schedule.Id,
             result.CompletedAtUtc,
             GetNextRunAfterCompletion(schedule, result.CompletedAtUtc, isManual),
             result.Success ? "succeeded" : "failed",
             result.Success ? null : result.Message,
-            _leaseOwner,
-            ct);
+            _clock.UtcNow,
+            schedule.ScheduleRevision,
+            leaseToken,
+            CancellationToken.None);
+        if (!completionRecorded)
+            throw new JobScheduleLeaseLostException(schedule.Id);
 
         return new JobExecutionResponse(result.Success, result.Message, result.StartedAtUtc, result.CompletedAtUtc);
     }
+
+    private async Task RenewLeaseUntilStoppedAsync(
+        long scheduleId,
+        string leaseToken,
+        CancellationTokenSource executionCts,
+        TaskCompletionSource leaseLost)
+    {
+        try
+        {
+            while (!executionCts.IsCancellationRequested)
+            {
+                await _clock.DelayAsync(LeaseRenewalInterval, executionCts.Token);
+                var renewed = await _store.RenewLeaseAsync(
+                    scheduleId,
+                    _clock.UtcNow,
+                    leaseToken,
+                    LeaseDuration,
+                    executionCts.Token);
+                if (renewed)
+                    continue;
+
+                leaseLost.TrySetResult();
+                executionCts.Cancel();
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (executionCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lease renewal failed for schedule {ScheduleId}", scheduleId);
+            leaseLost.TrySetResult();
+            executionCts.Cancel();
+        }
+    }
+
+    private static async Task AwaitRenewalShutdownAsync(Task renewalTask)
+    {
+        try
+        {
+            await renewalTask;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private string CreateLeaseToken() => $"{_workerId}:{Guid.NewGuid():N}";
 
     private DateTime? GetNextRunAfterCompletion(JobScheduleEntity schedule, DateTime completedAtUtc, bool isManual)
     {
@@ -203,7 +325,7 @@ public class JobScheduleService(
         if (string.IsNullOrWhiteSpace(name))
             throw new InvalidOperationException("Name is required.");
 
-        var existing = await store.GetScheduleByNameAsync(name);
+        var existing = await _store.GetScheduleByNameAsync(name);
         if (existing is not null && existing.Id != currentId)
             throw new InvalidOperationException($"A schedule named '{name}' already exists.");
     }
@@ -215,7 +337,7 @@ public class JobScheduleService(
         return value.Trim();
     }
 
-    private static JobScheduleResponse MapResponse(JobScheduleEntity entity)
+    private JobScheduleResponse MapResponse(JobScheduleEntity entity)
     {
         using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(entity.ArgsJson) ? "{}" : entity.ArgsJson);
         return new JobScheduleResponse(
@@ -231,6 +353,6 @@ public class JobScheduleService(
             entity.LastRunCompletedUtc,
             entity.LastRunStatus,
             entity.LastError,
-            entity.LeaseExpiresUtc.HasValue && entity.LeaseExpiresUtc > DateTime.UtcNow);
+            entity.LeaseExpiresUtc.HasValue && entity.LeaseExpiresUtc > _clock.UtcNow);
     }
 }

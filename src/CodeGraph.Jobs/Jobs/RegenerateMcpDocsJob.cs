@@ -8,7 +8,7 @@ public class RegenerateMcpDocsJob(
     public async Task<JobExecutionResult> ExecuteAsync(EmptyJobRequest request, CancellationToken ct = default)
     {
         var startedAtUtc = DateTime.UtcNow;
-        await mcpDocService.RegenerateAsync();
+        await mcpDocService.RegenerateAsync(ct);
 
         return new JobExecutionResult(
             Success: true,

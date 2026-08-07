@@ -69,6 +69,7 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
                     timeZoneId: $timeZoneId,
                     argsJson: $argsJson,
                     nextRunUtc: $nextRunUtc,
+                    scheduleRevision: $scheduleRevision,
                     lastRunStartedUtc: $lastRunStartedUtc,
                     lastRunCompletedUtc: $lastRunCompletedUtc,
                     lastRunStatus: $lastRunStatus,
@@ -86,13 +87,14 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         return entity;
     }
 
-    public async Task UpdateScheduleAsync(JobScheduleEntity entity)
+    public async Task<bool> UpdateScheduleAsync(JobScheduleEntity entity)
     {
         await using var session = sessionFactory.GetSession();
-        await session.ExecuteWriteAsync(async tx =>
+        return await session.ExecuteWriteAsync(async tx =>
         {
-            await tx.RunAsync("""
+            var cursor = await tx.RunAsync("""
                 MATCH (s:JobSchedule {appId: $id})
+                WHERE coalesce(s.scheduleRevision, 0) = $scheduleRevision
                 SET s.name = $name,
                     s.jobType = $jobType,
                     s.isEnabled = $isEnabled,
@@ -100,16 +102,13 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
                     s.timeZoneId = $timeZoneId,
                     s.argsJson = $argsJson,
                     s.nextRunUtc = $nextRunUtc,
-                    s.lastRunStartedUtc = $lastRunStartedUtc,
-                    s.lastRunCompletedUtc = $lastRunCompletedUtc,
-                    s.lastRunStatus = $lastRunStatus,
-                    s.lastError = $lastError,
-                    s.leaseAcquiredUtc = $leaseAcquiredUtc,
-                    s.leaseOwner = $leaseOwner,
-                    s.leaseExpiresUtc = $leaseExpiresUtc,
+                    s.scheduleRevision = $scheduleRevision + 1,
                     s.updatedAtUtc = $updatedAtUtc
+                RETURN count(s) AS updated
                 """,
                 ScheduleParams(entity));
+            await cursor.FetchAsync();
+            return cursor.Current["updated"].As<long>() == 1;
         });
     }
 
@@ -195,49 +194,93 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         });
     }
 
-    public async Task MarkRunStartedAsync(long id, DateTime startedAtUtc, string leaseOwner, CancellationToken ct = default)
+    public async Task<bool> RenewLeaseAsync(
+        long id,
+        DateTime utcNow,
+        string leaseToken,
+        TimeSpan leaseDuration,
+        CancellationToken ct = default)
+    {
+        var leaseExpiresUtc = utcNow.Add(leaseDuration);
+        await using var session = sessionFactory.GetSession();
+        return await session.ExecuteWriteAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseToken})
+                WHERE s.leaseExpiresUtc IS NOT NULL AND s.leaseExpiresUtc > $utcNow
+                SET s.leaseExpiresUtc = $leaseExpiresUtc,
+                    s.updatedAtUtc = $utcNow
+                RETURN count(s) AS updated
+                """,
+                new { id, utcNow, leaseToken, leaseExpiresUtc });
+            await cursor.FetchAsync();
+            return cursor.Current["updated"].As<long>() == 1;
+        });
+    }
+
+    public async Task<bool> MarkRunStartedAsync(
+        long id,
+        DateTime startedAtUtc,
+        DateTime fenceCheckedAtUtc,
+        string leaseToken,
+        CancellationToken ct = default)
     {
         await using var session = sessionFactory.GetSession();
-        await session.ExecuteWriteAsync(async tx =>
+        return await session.ExecuteWriteAsync(async tx =>
         {
-            await tx.RunAsync("""
-                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseOwner})
+            var cursor = await tx.RunAsync("""
+                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseToken})
+                WHERE s.leaseExpiresUtc IS NOT NULL AND s.leaseExpiresUtc > $fenceCheckedAtUtc
                 SET s.lastRunStartedUtc = $startedAtUtc,
                     s.lastRunStatus = 'running',
                     s.lastError = null,
                     s.updatedAtUtc = $startedAtUtc
+                RETURN count(s) AS updated
                 """,
                 new
                 {
                     id,
                     startedAtUtc,
-                    leaseOwner
+                    fenceCheckedAtUtc,
+                    leaseToken
                 });
+            await cursor.FetchAsync();
+            return cursor.Current["updated"].As<long>() == 1;
         });
     }
 
-    public async Task MarkRunCompletedAsync(
+    public async Task<bool> MarkRunCompletedAsync(
         long id,
         DateTime completedAtUtc,
         DateTime? nextRunUtc,
         string status,
         string? error,
-        string leaseOwner,
+        DateTime fenceCheckedAtUtc,
+        long acquiredScheduleRevision,
+        string leaseToken,
         CancellationToken ct = default)
     {
         await using var session = sessionFactory.GetSession();
-        await session.ExecuteWriteAsync(async tx =>
+        return await session.ExecuteWriteAsync(async tx =>
         {
-            await tx.RunAsync("""
-                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseOwner})
+            var cursor = await tx.RunAsync("""
+                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseToken})
+                WHERE s.leaseExpiresUtc IS NOT NULL AND s.leaseExpiresUtc > $fenceCheckedAtUtc
                 SET s.lastRunCompletedUtc = $completedAtUtc,
                     s.lastRunStatus = $status,
                     s.lastError = $error,
-                    s.nextRunUtc = coalesce($nextRunUtc, s.nextRunUtc),
+                    s.nextRunUtc = CASE
+                        WHEN $nextRunUtc IS NOT NULL
+                          AND coalesce(s.scheduleRevision, 0) = $acquiredScheduleRevision
+                        THEN $nextRunUtc
+                        ELSE s.nextRunUtc
+                    END,
+                    s.scheduleRevision = coalesce(s.scheduleRevision, 0) + 1,
                     s.leaseAcquiredUtc = null,
                     s.leaseOwner = null,
                     s.leaseExpiresUtc = null,
                     s.updatedAtUtc = $completedAtUtc
+                RETURN count(s) AS updated
                 """,
                 new
                 {
@@ -246,8 +289,12 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
                     nextRunUtc,
                     status,
                     error,
-                    leaseOwner
+                    fenceCheckedAtUtc,
+                    acquiredScheduleRevision,
+                    leaseToken
                 });
+            await cursor.FetchAsync();
+            return cursor.Current["updated"].As<long>() == 1;
         });
     }
 
@@ -261,6 +308,7 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         timeZoneId = entity.TimeZoneId,
         argsJson = entity.ArgsJson,
         nextRunUtc = entity.NextRunUtc,
+        scheduleRevision = entity.ScheduleRevision,
         lastRunStartedUtc = entity.LastRunStartedUtc,
         lastRunCompletedUtc = entity.LastRunCompletedUtc,
         lastRunStatus = entity.LastRunStatus,
@@ -284,6 +332,7 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
             ? argsValue.As<string>()
             : "{}",
         NextRunUtc = GetDateTime(node, "nextRunUtc"),
+        ScheduleRevision = GetLong(node, "scheduleRevision"),
         LastRunStartedUtc = GetNullableDateTime(node, "lastRunStartedUtc"),
         LastRunCompletedUtc = GetNullableDateTime(node, "lastRunCompletedUtc"),
         LastRunStatus = GetStr(node, "lastRunStatus"),
@@ -299,6 +348,11 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         => node.Properties.TryGetValue(key, out var val) && val is not null
             ? val.As<string>()
             : null;
+
+    private static long GetLong(INode node, string key)
+        => node.Properties.TryGetValue(key, out var val) && val is not null
+            ? val.As<long>()
+            : 0;
 
     private static DateTime GetDateTime(INode node, string key)
         => GetNullableDateTime(node, key) ?? DateTime.MinValue;
