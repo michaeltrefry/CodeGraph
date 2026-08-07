@@ -16,7 +16,8 @@ public sealed class McpHubService(
     IHttpClientFactory httpClientFactory,
     SensitiveColumnPolicy sensitiveColumnPolicy,
     MySqlSourceExposurePolicy sourceExposurePolicy,
-    ILogger<McpHubService> logger)
+    ILogger<McpHubService> logger,
+    ShortcutUploadStagingArea? shortcutUploadStaging = null)
 {
     public const string ShortcutCredentialKey = "apiToken";
     public const string LegacyShortcutShimProviderKey = "shortcut-shim";
@@ -26,6 +27,12 @@ public sealed class McpHubService(
     {
         WriteIndented = true
     };
+
+    private readonly ShortcutUploadStagingArea shortcutUploadStaging =
+        shortcutUploadStaging ?? SharedUploadStaging.Value;
+
+    private static readonly Lazy<ShortcutUploadStagingArea> SharedUploadStaging =
+        new(() => new ShortcutUploadStagingArea());
 
     public async Task<McpHubCatalogResponse> GetCatalogAsync(CancellationToken ct = default)
     {
@@ -80,26 +87,53 @@ public sealed class McpHubService(
         return await ReadProviderResponseAsync(response, ct);
     }
 
+    public async Task<string> StageShortcutFileAsync(
+        string? username,
+        long? tokenId,
+        string displayName,
+        string base64Content,
+        CancellationToken ct = default)
+    {
+        await EnsureProviderEnabledAsync("shortcut", ct);
+        var staged = shortcutUploadStaging.Stage(UploadOwnerKey(username, tokenId), displayName, base64Content);
+        return JsonSerializer.Serialize(staged, JsonOptions);
+    }
+
     public async Task<string> UploadShortcutFileAsync(
         string? username,
+        long? tokenId,
         int storyPublicId,
-        string filePath,
+        string stagedFileHandle,
         CancellationToken ct = default)
     {
         await EnsureProviderEnabledAsync("shortcut", ct);
         var client = await CreateShortcutClientAsync(username, ct);
         if (storyPublicId <= 0)
             throw new McpHubProviderPolicyException("storyPublicId must be positive.");
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-            throw new McpHubProviderPolicyException("filePath must point to an existing local file.");
 
-        await using var stream = File.OpenRead(filePath);
+        await using var lease = shortcutUploadStaging.Open(
+            UploadOwnerKey(username, tokenId),
+            stagedFileHandle);
         using var content = new MultipartFormDataContent();
         content.Add(new StringContent(storyPublicId.ToString(System.Globalization.CultureInfo.InvariantCulture)), "story_id");
-        content.Add(new StreamContent(stream), "file0", Path.GetFileName(filePath));
+        var fileContent = new StreamContent(lease.Stream);
+        fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(lease.ContentType);
+        content.Add(fileContent, "file0", lease.DisplayName);
 
         using var response = await client.PostAsync("files", content, ct);
-        return await ReadProviderResponseAsync(response, ct);
+        var result = await ReadProviderResponseAsync(response, ct);
+        lease.Complete();
+        return result;
+    }
+
+    private static string UploadOwnerKey(string? username, long? tokenId)
+    {
+        if (tokenId is > 0)
+            return $"token:{tokenId.Value}";
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"user:{username.Trim().ToLowerInvariant()}";
+        throw new McpHubProviderPolicyException(
+            "Shortcut file staging requires an authenticated MCP token or user identity.");
     }
 
     public async Task<string> ListRabbitMqQueuesAsync(string? virtualHost, CancellationToken ct = default)

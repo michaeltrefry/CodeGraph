@@ -164,6 +164,17 @@ public class MariaDbAssistantMcpTelemetryStoreTests
             (await tokenStore.GetMcpPersonalAccessTokenByHashAsync("hash-token"))!.Username.ShouldBe("michael");
             (await tokenStore.UpdateMcpPersonalAccessTokenLastUsedAsync(token.Id, DateTime.UtcNow, "127.0.0.1"))
                 .ShouldBeTrue();
+
+            var hubStore = new MySqlMcpHubStore(context, new PassthroughEncryptor());
+            (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-stage-file")).ShouldBeFalse();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-upload-file")).ShouldBeFalse();
+            await hubStore.ReplaceTokenEntitlementsAsync(token.Id, ["stories-stage-file", "stories-upload-file"]);
+            (await tokenStore.SetMcpPersonalAccessTokenEntitlementModeAsync("michael", token.Id, "selected")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeFalse();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-stage-file")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-upload-file")).ShouldBeTrue();
+
             (await tokenStore.RevokeMcpPersonalAccessTokenAsync("michael", token.Id, DateTime.UtcNow)).ShouldBeTrue();
 
             var metricsStore = new MySqlMetricsEventStore(storageOptions);
@@ -226,5 +237,11 @@ public class MariaDbAssistantMcpTelemetryStoreTests
         await using var conn = new MySqlConnection(builder.ConnectionString);
         await conn.OpenAsync();
         await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
+    }
+
+    private sealed class PassthroughEncryptor : IAesEncryptor
+    {
+        public string Encrypt(string plainText) => plainText;
+        public string Decrypt(string encrypted) => encrypted;
     }
 }
