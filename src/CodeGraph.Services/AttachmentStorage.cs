@@ -257,40 +257,44 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
         var pageName = pageId.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var pageDirectory = Path.Combine(root, pageName);
         CreateAndValidatePortableDirectory(root, pageDirectory);
+        using var pageHandle = OpenPortableDirectory(root, pageDirectory);
 
         for (var attempt = 0; attempt < 10; attempt++)
         {
             var path = Path.Combine(pageDirectory, Guid.NewGuid().ToString("N"));
-            FileStream destination;
-            try
+            var fileHandle = WindowsNative.CreateFile(
+                path,
+                WindowsNative.GenericWrite | WindowsNative.FileReadAttributes | WindowsNative.DeleteAccess,
+                FileShare.None,
+                IntPtr.Zero,
+                FileMode.CreateNew,
+                WindowsNative.FileAttributeNormal,
+                IntPtr.Zero);
+            if (fileHandle.IsInvalid)
             {
-                destination = new FileStream(
-                    path,
-                    FileMode.CreateNew,
-                    FileAccess.ReadWrite,
-                    FileShare.Delete,
-                    81920,
-                    FileOptions.Asynchronous);
-            }
-            catch (IOException) when (File.Exists(path) || Directory.Exists(path))
-            {
-                continue;
+                var error = Marshal.GetLastPInvokeError();
+                fileHandle.Dispose();
+                if (error is WindowsNative.FileExists or WindowsNative.AlreadyExists)
+                    continue;
+                throw new Win32Exception(error);
             }
 
-            await using (destination)
+            await using var destination = new FileStream(
+                fileHandle,
+                FileAccess.Write,
+                bufferSize: 81920,
+                isAsync: false);
+            try
             {
-                try
-                {
-                    ValidatePortableHandle(root, destination.SafeFileHandle);
-                    await content.CopyToAsync(destination);
-                    await destination.FlushAsync();
-                    return (Path.Combine(lexicalRoot, pageName, Path.GetFileName(path)), destination.Length);
-                }
-                catch
-                {
-                    SetWindowsDeleteDisposition(destination.SafeFileHandle, delete: true);
-                    throw;
-                }
+                ValidatePortableHandle(root, destination.SafeFileHandle);
+                await content.CopyToAsync(destination);
+                await destination.FlushAsync();
+                return (Path.Combine(lexicalRoot, pageName, Path.GetFileName(path)), destination.Length);
+            }
+            catch
+            {
+                SetWindowsDeleteDisposition(destination.SafeFileHandle, delete: true);
+                throw;
             }
         }
 
@@ -368,6 +372,36 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
 
             pinnedPhysicalRoot = root;
             return root;
+        }
+    }
+
+    private static SafeFileHandle OpenPortableDirectory(string root, string path)
+    {
+        var handle = WindowsNative.CreateFile(
+            path,
+            WindowsNative.FileReadAttributes,
+            FileShare.ReadWrite,
+            IntPtr.Zero,
+            FileMode.Open,
+            WindowsNative.FileFlagBackupSemantics | WindowsNative.FileFlagOpenReparsePoint,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            throw new Win32Exception(error);
+        }
+
+        try
+        {
+            RejectWindowsReparsePoint(handle);
+            ValidatePortableHandle(root, handle);
+            return handle;
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
         }
     }
 
@@ -640,8 +674,12 @@ internal sealed class AttachmentStorage(string configuredRoot) : IDisposable
     {
         public const int FileNotFound = 2;
         public const int PathNotFound = 3;
+        public const int FileExists = 80;
+        public const int AlreadyExists = 183;
+        public const uint GenericWrite = 0x40000000;
         public const uint DeleteAccess = 0x00010000;
         public const uint FileReadAttributes = 0x80;
+        public const uint FileAttributeNormal = 0x00000080;
         public const uint FileFlagBackupSemantics = 0x02000000;
         public const uint FileFlagOpenReparsePoint = 0x00200000;
         public const uint FileAttributeReparsePoint = 0x00000400;

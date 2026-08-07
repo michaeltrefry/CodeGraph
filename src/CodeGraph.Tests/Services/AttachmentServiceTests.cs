@@ -341,6 +341,69 @@ public sealed class AttachmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UploadAsync_WindowsFileAndPageSwapCannotRedirectOpenHandleWrite()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var outside = Path.Combine(
+            Path.GetTempPath(), $"codegraph-upload-swap-outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outside);
+        var pageDirectory = Path.Combine(storageRoot, "1");
+        var displacedDirectory = Path.Combine(storageRoot, "displaced");
+        Exception? fileMoveError = null;
+        Exception? pageSwapError = null;
+        var content = new BeforeFirstReadStream("original"u8.ToArray(), () =>
+        {
+            try
+            {
+                var createdFile = Directory.EnumerateFiles(pageDirectory).Single();
+                File.Move(createdFile, Path.Combine(outside, Path.GetFileName(createdFile)));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                fileMoveError = ex;
+            }
+
+            try
+            {
+                Directory.Move(pageDirectory, displacedDirectory);
+                CreateDirectoryJunction(pageDirectory, outside);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                pageSwapError = ex;
+            }
+        });
+
+        try
+        {
+            var store = new InMemoryWikiStore();
+            var service = CreateService(store);
+            await service.UploadAsync(1, "report.txt", "text/plain", content, "codex");
+
+            fileMoveError.ShouldNotBeNull("the exclusive file handle must prevent target substitution");
+            pageSwapError.ShouldNotBeNull("the open page handle must prevent a junction swap");
+            Directory.EnumerateFileSystemEntries(outside).ShouldBeEmpty();
+            var storagePath = store.Attachments.Single().StoragePath;
+            File.Exists(storagePath).ShouldBeTrue();
+            (await File.ReadAllTextAsync(storagePath)).ShouldBe("original");
+        }
+        finally
+        {
+            if (Directory.Exists(pageDirectory) &&
+                (File.GetAttributes(pageDirectory) & FileAttributes.ReparsePoint) != 0)
+            {
+                Directory.Delete(pageDirectory);
+            }
+            if (Directory.Exists(displacedDirectory))
+                Directory.Delete(displacedDirectory, recursive: true);
+            if (Directory.Exists(outside))
+                Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task WikiController_UploadDownloadAndDelete_RoundTripsAttachment()
     {
         var store = new InMemoryWikiStore();
@@ -597,6 +660,46 @@ public sealed class AttachmentServiceTests : IDisposable
             hasReturnedContent = true;
             "partial"u8.CopyTo(buffer.Span);
             return ValueTask.FromResult("partial"u8.Length);
+        }
+
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class BeforeFirstReadStream(byte[] content, Action beforeFirstRead) : Stream
+    {
+        private int position;
+        private bool invoked;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => content.Length;
+        public override long Position
+        {
+            get => position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!invoked)
+            {
+                invoked = true;
+                beforeFirstRead();
+            }
+
+            var count = Math.Min(buffer.Length, content.Length - position);
+            content.AsSpan(position, count).CopyTo(buffer.Span);
+            position += count;
+            return ValueTask.FromResult(count);
         }
 
         public override void Flush() => throw new NotSupportedException();
