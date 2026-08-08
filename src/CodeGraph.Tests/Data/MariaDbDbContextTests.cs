@@ -94,5 +94,12 @@ public class MariaDbDbContextTests
         usage.FindProperty(nameof(LlmUsageEntity.TotalTokens))!
             .GetColumnName()
             .ShouldBe("total_tokens");
+
+        var applicationLog = context.Model.FindEntityType(typeof(ApplicationLogEntryEntity));
+        applicationLog.ShouldNotBeNull();
+        applicationLog.GetTableName().ShouldBe("application_logs");
+        applicationLog.FindProperty(nameof(ApplicationLogEntryEntity.OccurredAtUtc))!
+            .GetColumnName()
+            .ShouldBe("occurred_at_utc");
     }
 }

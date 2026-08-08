@@ -24,10 +24,13 @@ public partial class BatchAnalysisService(
     IFileSystem fileSystem,
     ILogger<BatchAnalysisService> logger,
     IAgentPromptService? agentPromptService = null,
-    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null)
+    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null,
+    IOptions<RepositorySourceOptions>? repositorySourceOptionsAccessor = null)
     : IBatchAnalysisService
 {
     private readonly AnalysisOptions options = optionsAccessor.Value;
+    private readonly RepositorySourceOptions repositorySourceOptions =
+        repositorySourceOptionsAccessor?.Value ?? new RepositorySourceOptions();
     private static readonly HashSet<string> StructuralEdgeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "DEFINES", "DEFINES_METHOD", "CONTAINS_FILE", "CONTAINS_FOLDER", "CONTAINS_NAMESPACE", "CONTAINS_PROJECT"
@@ -39,6 +42,13 @@ public partial class BatchAnalysisService(
     public async Task SubmitAnalysisBatchAsync(string repoName, string? repoPath = null,
         bool includeAllSource = false, CancellationToken ct = default)
     {
+        if (!string.IsNullOrWhiteSpace(repoPath))
+        {
+            logger.LogDebug(
+                "Ignoring caller-supplied RepoPath for {Repo}; source authorization uses current repository metadata",
+                repoName);
+        }
+
         var allNodes = await store.GetAllNodesByProjectAsync(repoName);
         if (allNodes.Count == 0)
             throw new InvalidOperationException(
@@ -83,7 +93,6 @@ public partial class BatchAnalysisService(
                 nodeById,
                 provider,
                 analysisSettings,
-                repoPath,
                 includeAllSource);
             // custom_id: alphanumeric/hyphens/underscores only, max 64 chars
             var customId = SanitizeCustomId($"proj_{repoName}_{projectName}");

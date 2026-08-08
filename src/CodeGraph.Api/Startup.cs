@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using CodeGraph.Api.Indexer;
+using CodeGraph.Api.Logging;
 using CodeGraph.Data;
 using CodeGraph.Data.Migration;
 using CodeGraph.Data.MariaDb;
@@ -24,6 +25,7 @@ using CodeGraph.Extractors.Sql;
 using CodeGraph.Extractors.Terraform;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Indexer.Client;
 using CodeGraph.Jobs;
 using CodeGraph.Mcp.Hub;
@@ -207,6 +209,7 @@ public static class Startup
         services.AddTransient<MemoryObservationMigrationService>();
         services.AddTransient<MemoryRetrievalService>();
         services.AddTransient<MemoryService>();
+        services.AddScoped<IMemoryTenantContext, MemoryTenantContext>();
         RegisterMemoryOperations(services, configuration);
 
         // Messaging — IMessageBus wraps MassTransit IPublishEndpoint
@@ -236,17 +239,10 @@ public static class Startup
         {
             x.AddDelayedMessageScheduler();
             if (!useRemoteIndexer)
-            {
-                x.AddConsumer<ProcessRepositoryConsumer>();
-                x.AddConsumer<RepositoryIndexingCompletedConsumer>();
-                x.AddConsumer<AnalysisBatchSubmittedConsumer>();
-                x.AddConsumer<ProjectAnalysisResultsProcessedConsumer>();
-                x.AddConsumer<AnalysisSynthesisCompletedConsumer>();
-                x.AddConsumer<RepositoryRemovedConsumer>();
-            }
+                SharedConsumerTopology.AddIndexerConsumers(x);
 
             if (!useRemoteMemory)
-                x.AddConsumer<StoreMemoryClaimsConsumer>();
+                SharedConsumerTopology.AddMemoryConsumer(x);
 
             x.AddConsumer<WikiPageChangedConsumer>();
 
@@ -263,48 +259,10 @@ public static class Startup
 
                 var consumerOptions = context.GetRequiredService<IOptions<ConsumerOptions>>().Value;
                 if (!useRemoteIndexer)
-                {
-                    cfg.ReceiveEndpoint("process-repository", e =>
-                    {
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<ProcessRepositoryConsumer>(context);
-                    });
-                    cfg.ReceiveEndpoint("repository-indexing-completed", e =>
-                    {
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<RepositoryIndexingCompletedConsumer>(context);
-                    });
-                    cfg.ReceiveEndpoint("analysis-batch-submitted", e =>
-                    {
-                        e.ConcurrentMessageLimit = 1;
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<AnalysisBatchSubmittedConsumer>(context);
-                    });
-                    cfg.ReceiveEndpoint("project-analysis-results-processed", e =>
-                    {
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<ProjectAnalysisResultsProcessedConsumer>(context);
-                    });
-                    cfg.ReceiveEndpoint("analysis-synthesis-completed", e =>
-                    {
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<AnalysisSynthesisCompletedConsumer>(context);
-                    });
-                    cfg.ReceiveEndpoint("repository-removed", e =>
-                    {
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<RepositoryRemovedConsumer>(context);
-                    });
-                }
+                    SharedConsumerTopology.ConfigureIndexerEndpoints(cfg, context, consumerOptions);
 
                 if (!useRemoteMemory)
-                {
-                    cfg.ReceiveEndpoint("store-memory-claims", e =>
-                    {
-                        ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                        e.ConfigureConsumer<StoreMemoryClaimsConsumer>(context);
-                    });
-                }
+                    SharedConsumerTopology.ConfigureMemoryEndpoint(cfg, context, consumerOptions);
 
                 cfg.ReceiveEndpoint("wiki-page-changed", e =>
                 {
@@ -325,10 +283,12 @@ public static class Startup
         {
             services.AddCodeGraphMemoryClient(configuration);
             services.AddTransient<IMemoryOperationsService, RemoteMemoryOperationsService>();
+            services.AddTransient<IMemoryAdministrationService, RemoteMemoryAdministrationService>();
             return;
         }
 
         services.AddTransient<IMemoryOperationsService, LocalMemoryOperationsService>();
+        services.AddTransient<IMemoryAdministrationService, LocalMemoryAdministrationService>();
     }
 
     private static void RegisterIndexerOperations(IServiceCollection services, IConfiguration configuration)
@@ -387,6 +347,9 @@ public static class Startup
         app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
+        // Endpoint-specific schemes such as MCP PAT authenticate inside authorization. Tenant
+        // binding must therefore run after authorization has installed the final principal.
+        app.UseMiddleware<MemoryTenantScopeMiddleware>();
         app.UseMiddleware<McpToolEntitlementMiddleware>();
         app.UseMiddleware<McpTelemetryMiddleware>();
         app.MapControllers();
@@ -536,6 +499,7 @@ public static class Startup
                 options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
+            services.AddApplicationDatabaseLogging(configuration);
             services.AddSingleton<Neo4jSessionFactory>();
             services.AddTransient<INeo4jToMariaDbGraphExporter, Neo4jGraphStore>();
             return;

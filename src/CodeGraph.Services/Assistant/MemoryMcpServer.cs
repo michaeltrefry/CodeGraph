@@ -32,15 +32,22 @@ public class MemoryMcpServer
         ILogger<MemoryMcpServer> logger,
         [Description("Source identifier (e.g. 'claude_conversation', 'document')")] string source = "mcp",
         [Description("Legacy JSON object with 'entities', 'claims', and optional 'evidence' arrays")] string? data = null,
-        [Description("Typed memory entities to store")] List<MemoryExtractedEntity>? entities = null,
-        [Description("Typed atomic memory claims to store")] List<MemoryExtractedClaim>? claims = null,
-        [Description("Typed evidence rows to store")] List<MemoryExtractedEvidence>? evidence = null)
+        [Description("Typed memory entities to store")] List<MemoryMcpEntityInput>? entities = null,
+        [Description("Typed atomic memory claims to store")] List<MemoryMcpClaimInput>? claims = null,
+        [Description("Typed evidence rows to store")] List<MemoryMcpEvidenceInput>? evidence = null)
     {
         var hasData = !string.IsNullOrWhiteSpace(data);
         var hasTypedInput = (entities?.Count ?? 0) > 0 || (claims?.Count ?? 0) > 0 || (evidence?.Count ?? 0) > 0;
 
         if (hasData && hasTypedInput)
             return SerializeError("invalid_input", "Provide either typed arguments or legacy JSON data, not both.");
+
+        if (!hasData)
+        {
+            var validationErrors = ValidateTypedInput(entities, claims, evidence);
+            if (validationErrors.Count > 0)
+                return SerializeError("invalid_input", string.Join(" ", validationErrors));
+        }
 
         var extraction = TryBuildExtraction(data, entities, claims, evidence, logger, out var parseError);
         if (parseError != null)
@@ -216,9 +223,9 @@ public class MemoryMcpServer
 
     private static MemoryClaimExtractionResult TryBuildExtraction(
         string? data,
-        List<MemoryExtractedEntity>? entities,
-        List<MemoryExtractedClaim>? claims,
-        List<MemoryExtractedEvidence>? evidence,
+        List<MemoryMcpEntityInput>? entities,
+        List<MemoryMcpClaimInput>? claims,
+        List<MemoryMcpEvidenceInput>? evidence,
         ILogger logger,
         out string? parseError)
     {
@@ -228,8 +235,12 @@ public class MemoryMcpServer
         {
             try
             {
-                return JsonSerializer.Deserialize<MemoryClaimExtractionResult>(data)
-                       ?? throw new JsonException("Deserialized to null");
+                var extraction = JsonSerializer.Deserialize<MemoryClaimExtractionResult>(data)
+                                 ?? throw new JsonException("Deserialized to null");
+                extraction.Entities ??= [];
+                extraction.Claims ??= [];
+                extraction.Evidence ??= [];
+                return extraction;
             }
             catch (JsonException ex)
             {
@@ -241,10 +252,107 @@ public class MemoryMcpServer
 
         return new MemoryClaimExtractionResult
         {
-            Entities = entities ?? [],
-            Claims = claims ?? [],
-            Evidence = evidence ?? [],
+            Entities = entities?.Select(entity => new MemoryExtractedEntity
+            {
+                Id = entity!.Id!,
+                Label = entity.Label!,
+                Type = entity.Type!,
+                ExternalId = entity.ExternalId,
+                CanonicalName = entity.CanonicalName,
+                Aliases = entity.Aliases?.Where(alias => alias != null).Select(alias => alias!).ToList() ?? [],
+                Summary = entity.Summary,
+                Source = entity.Source,
+            }).ToList() ?? [],
+            Claims = claims?.Select(claim => new MemoryExtractedClaim
+            {
+                Id = claim!.Id,
+                Subject = claim.Subject!,
+                Predicate = claim.Predicate!,
+                Object = claim.Object,
+                ValueText = claim.ValueText,
+                ValueJson = claim.ValueJson,
+                NormalizedText = claim.NormalizedText,
+                Confidence = claim.Confidence,
+                EffectiveAt = claim.EffectiveAt,
+                RecordedAt = claim.RecordedAt,
+                Supersedes = claim.Supersedes,
+                Source = claim.Source,
+            }).ToList() ?? [],
+            Evidence = evidence?.Select(evidenceItem => new MemoryExtractedEvidence
+            {
+                ClaimId = evidenceItem!.ClaimId,
+                ObservationId = evidenceItem.ObservationId,
+                EvidenceType = evidenceItem.EvidenceType!,
+                SourceRef = evidenceItem.SourceRef!,
+                Snippet = evidenceItem.Snippet,
+                MetadataJson = evidenceItem.MetadataJson,
+            }).ToList() ?? [],
         };
+    }
+
+    private static List<string> ValidateTypedInput(
+        List<MemoryMcpEntityInput>? entities,
+        List<MemoryMcpClaimInput>? claims,
+        List<MemoryMcpEvidenceInput>? evidence)
+    {
+        var errors = new List<string>();
+
+        if (entities != null)
+        {
+            for (var i = 0; i < entities.Count; i++)
+            {
+                var entity = entities[i];
+                if (entity == null)
+                {
+                    errors.Add($"entities[{i}] must be an object.");
+                    continue;
+                }
+
+                AddRequiredError(errors, $"entities[{i}].id", entity.Id);
+                AddRequiredError(errors, $"entities[{i}].label", entity.Label);
+                AddRequiredError(errors, $"entities[{i}].type", entity.Type);
+            }
+        }
+
+        if (claims != null)
+        {
+            for (var i = 0; i < claims.Count; i++)
+            {
+                var claim = claims[i];
+                if (claim == null)
+                {
+                    errors.Add($"claims[{i}] must be an object.");
+                    continue;
+                }
+
+                AddRequiredError(errors, $"claims[{i}].subject", claim.Subject);
+                AddRequiredError(errors, $"claims[{i}].predicate", claim.Predicate);
+            }
+        }
+
+        if (evidence != null)
+        {
+            for (var i = 0; i < evidence.Count; i++)
+            {
+                var evidenceItem = evidence[i];
+                if (evidenceItem == null)
+                {
+                    errors.Add($"evidence[{i}] must be an object.");
+                    continue;
+                }
+
+                AddRequiredError(errors, $"evidence[{i}].evidenceType", evidenceItem.EvidenceType);
+                AddRequiredError(errors, $"evidence[{i}].sourceRef", evidenceItem.SourceRef);
+            }
+        }
+
+        return errors;
+    }
+
+    private static void AddRequiredError(List<string> errors, string field, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            errors.Add($"{field} is required.");
     }
 
     private static string SerializeError(string code, string message)

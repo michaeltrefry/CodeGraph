@@ -6,6 +6,7 @@ using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Memory;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
 
@@ -25,7 +26,7 @@ public class MemoryMcpServerTests
             source: "thread-123",
             claims:
             [
-                new MemoryExtractedClaim
+                new MemoryMcpClaimInput
                 {
                     Subject = "michael",
                     Predicate = "prefers",
@@ -41,6 +42,7 @@ public class MemoryMcpServerTests
 
         bus.Published.ShouldHaveSingleItem();
         bus.Published[0].ReceiptId.ShouldNotBeNullOrWhiteSpace();
+        bus.Published[0].Username.ShouldBe("user:test");
         bus.Published[0].Source.ShouldBe("thread-123");
         bus.Published[0].Extraction.Claims.ShouldHaveSingleItem();
     }
@@ -54,7 +56,7 @@ public class MemoryMcpServerTests
             data: """{"claims":[{"subject":"michael","predicate":"prefers","valueText":"clean slate design"}]}""",
             claims:
             [
-                new MemoryExtractedClaim
+                new MemoryMcpClaimInput
                 {
                     Subject = "michael",
                     Predicate = "prefers",
@@ -65,6 +67,88 @@ public class MemoryMcpServerTests
         using var document = JsonDocument.Parse(response);
         document.RootElement.GetProperty("error").GetProperty("message").GetString()
             .ShouldBe("Provide either typed arguments or legacy JSON data, not both.");
+    }
+
+    [Fact]
+    public async Task StoreMemoryV2_ReturnsStructuredValidationErrorForMissingTypedFields()
+    {
+        var bus = new FakeMessageBus();
+        var entities = JsonSerializer.Deserialize<List<MemoryMcpEntityInput>>("""[{"id":"michael","type":"person"}]""");
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            entities: entities);
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("error").GetProperty("code").GetString().ShouldBe("invalid_input");
+        document.RootElement.GetProperty("error").GetProperty("message").GetString()
+            .ShouldBe("entities[0].label is required.");
+        bus.Published.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task StoreMemoryV2_AIFunctionBoundaryDoesNotThrowWhenEntityLabelIsMissing()
+    {
+        var bus = new FakeMessageBus();
+        var function = AIFunctionFactory.Create(
+            async (List<MemoryMcpEntityInput>? entities) => await MemoryMcpServer.StoreMemoryV2(
+                CreateMemoryOperations(bus),
+                NullLogger<MemoryMcpServer>.Instance,
+                entities: entities));
+        using var argumentsJson = JsonDocument.Parse("""[{"id":"michael","type":"person"}]""");
+
+        var result = await function.InvokeAsync(new AIFunctionArguments
+        {
+            ["entities"] = argumentsJson.RootElement.Clone(),
+        });
+
+        var response = result.ShouldBeOfType<JsonElement>().GetString();
+        using var document = JsonDocument.Parse(response.ShouldNotBeNull());
+        document.RootElement.GetProperty("error").GetProperty("code").GetString().ShouldBe("invalid_input");
+        document.RootElement.GetProperty("error").GetProperty("message").GetString()
+            .ShouldBe("entities[0].label is required.");
+        bus.Published.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task StoreMemoryV2_ReportsAllRequiredTypedFieldsWithoutDeserializationExceptions()
+    {
+        var bus = new FakeMessageBus();
+        var entities = JsonSerializer.Deserialize<List<MemoryMcpEntityInput>>("""[{}]""");
+        var claims = JsonSerializer.Deserialize<List<MemoryMcpClaimInput>>("""[{}]""");
+        var evidence = JsonSerializer.Deserialize<List<MemoryMcpEvidenceInput>>("""[{}]""");
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            entities: entities,
+            claims: claims,
+            evidence: evidence);
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("error").GetProperty("message").GetString().ShouldBe(
+            "entities[0].id is required. entities[0].label is required. entities[0].type is required. " +
+            "claims[0].subject is required. claims[0].predicate is required. " +
+            "evidence[0].evidenceType is required. evidence[0].sourceRef is required.");
+        bus.Published.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task StoreMemoryV2_ReturnsStructuredValidationErrorForLegacyJsonMissingLabel()
+    {
+        var bus = new FakeMessageBus();
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            data: """{"entities":[{"id":"michael","type":"person"}]}""");
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("error").GetProperty("code").GetString().ShouldBe("invalid_json");
+        (document.RootElement.GetProperty("error").GetProperty("message").GetString() ?? string.Empty)
+            .ShouldContain("missing required properties including: 'label'");
+        bus.Published.ShouldBeEmpty();
     }
 
     [Fact]
@@ -137,6 +221,7 @@ public class MemoryMcpServerTests
 
     private sealed class FakeMemoryGraphStore : IMemoryGraphStore
     {
+        public string Username => "user:test";
         public Dictionary<string, MemoryWriteReceipt> WriteReceipts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt)

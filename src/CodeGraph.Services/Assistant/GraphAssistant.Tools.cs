@@ -353,11 +353,9 @@ public partial class GraphAssistant
         if (string.IsNullOrWhiteSpace(node.FilePath))
             return $"Node '{node.Name}' ({node.Label}) has no source file path.";
 
-        var fullPath = await RepoFileResolver.ResolveAsync(node.Project, node.FilePath, sourceOptions, store);
-        if (fullPath is null)
+        var lines = await RepoFileResolver.ReadAllLinesAsync(node.Project, node.FilePath, sourceOptions, store);
+        if (lines is null)
             return $"Source file not found: {node.Project}/{node.FilePath}";
-
-        var lines = await File.ReadAllLinesAsync(fullPath);
         var start = node.StartLine > 0 ? Math.Max(0, node.StartLine - 1 - 5) : 0;
         var end = node.EndLine > 0 ? Math.Min(lines.Length, node.EndLine + 5) : lines.Length;
         if (lines.Length <= 200) { start = 0; end = lines.Length; }
@@ -386,11 +384,9 @@ public partial class GraphAssistant
         if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(filePath))
             return "project and filePath are required.";
 
-        var fullPath = await RepoFileResolver.ResolveAsync(project, filePath, sourceOptions, store);
-        if (fullPath is null)
+        var lines = await RepoFileResolver.ReadAllLinesAsync(project, filePath, sourceOptions, store);
+        if (lines is null)
             return $"File not found: {project}/{filePath}";
-
-        var lines = await File.ReadAllLinesAsync(fullPath);
         var start = startLine > 0 ? startLine - 1 : 0;
         var end = endLine > 0 ? Math.Min(endLine, lines.Length) : lines.Length;
         if (start >= lines.Length)

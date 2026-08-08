@@ -1,4 +1,4 @@
-using CodeGraph.Memory.Host.Consumers;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Memory;
 using Microsoft.Extensions.Configuration;

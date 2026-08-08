@@ -44,7 +44,7 @@ public class TreeSitterExtractor : ICodeExtractor
         {
             _logger.LogWarning(ex, "Tree-sitter extraction failed for {File} ({Lang})",
                 filePath, spec.LanguageName);
-            return Task.FromResult(EmptyResult);
+            return Task.FromResult(ExtractionResult.Failure(ex.Message));
         }
     }
 

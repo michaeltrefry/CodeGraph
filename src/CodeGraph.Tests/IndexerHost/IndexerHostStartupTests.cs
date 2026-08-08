@@ -1,4 +1,5 @@
 using CodeGraph.Extractors.TypeScript;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Services.Indexer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +25,13 @@ public class IndexerHostStartupTests
         services.ShouldContain(d => d.ServiceType == typeof(TypeScriptServerManager));
         services.ShouldContain(d => d.ServiceType == typeof(IHostedService) &&
                                     d.ImplementationType == typeof(CodeGraph.Indexer.Host.Services.TypeScriptSidecarWarmupService));
+        AssertSharedIndexerConsumers(services);
+    }
+
+    internal static void AssertSharedIndexerConsumers(IServiceCollection services)
+    {
+        foreach (var consumerType in SharedConsumerTopology.IndexerConsumerTypes)
+            services.ShouldContain(descriptor => descriptor.ServiceType == consumerType);
     }
 
     private static IConfiguration CreateConfiguration() =>
