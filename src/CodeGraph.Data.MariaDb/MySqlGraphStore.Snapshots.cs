@@ -424,6 +424,7 @@ public partial class MySqlGraphStore
         IReadOnlyDictionary<string, long> qnToId)
     {
         var resolved = new List<GraphEdge>(edges.Count);
+        var edgeKeys = new HashSet<(long SourceId, long TargetId, EdgeType Type)>();
         foreach (var edge in edges)
         {
             if (!qnToId.TryGetValue(GraphNodeKey.Create(project, edge.SourceQN), out var sourceId) ||
@@ -431,6 +432,9 @@ public partial class MySqlGraphStore
             {
                 continue;
             }
+
+            if (!edgeKeys.Add((sourceId, targetId, edge.Type)))
+                continue;
 
             resolved.Add(new GraphEdge
             {

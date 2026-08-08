@@ -79,7 +79,12 @@ public class TypeScriptExtractor : ICodeExtractor
                     .Select(i => new UnresolvedImport(i.FileQN, i.ImportedNamespace))
                     .ToList(),
                 UnresolvedCalls = response.UnresolvedCalls
-                    .Select(c => new UnresolvedCall(c.CallerQN, c.CalleeName, c.ReceiverType, c.Confidence))
+                    .Select(c => new UnresolvedCall(
+                        c.CallerQN,
+                        c.CalleeName,
+                        c.ReceiverType,
+                        c.Confidence,
+                        c.ReceiverType is null ? CallReceiverKind.Unknown : CallReceiverKind.Resolved))
                     .ToList(),
             };
         }

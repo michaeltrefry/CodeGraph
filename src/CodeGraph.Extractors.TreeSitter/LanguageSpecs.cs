@@ -92,7 +92,7 @@ public static class LanguageSpecs
             var funcDecl = node.GetChildForField("declarator");
             if (funcDecl is null) return null;
             var ident = funcDecl.GetChildForField("declarator");
-            return ident?.Text;
+            return ident?.GetChildForField("name")?.Text ?? ident?.Text;
         }
 
         if (node.Type == "type_definition")
@@ -154,6 +154,9 @@ public static class LanguageSpecs
         CallNodeTypes = ["call_expression"],
         ImportNodeTypes = ["import_declaration"],
         VariableNodeTypes = ["short_var_declaration", "var_declaration"],
+        ClassNameExtractor = node => node.NamedChildren
+            .Select(child => child.GetChildForField("name"))
+            .FirstOrDefault(child => child is not null)?.Text,
         NameField = "name",
         ReturnTypeField = "result",
         ParametersField = "parameters",
@@ -172,6 +175,8 @@ public static class LanguageSpecs
         FunctionNodeTypes = ["method_declaration", "constructor_declaration"],
         ClassNodeTypes = ["class_declaration", "interface_declaration", "enum_declaration"],
         CallNodeTypes = ["method_invocation"],
+        CallTargetFields = ["name"],
+        CallReceiverFields = ["object"],
         ImportNodeTypes = ["import_declaration"],
         VariableNodeTypes = ["local_variable_declaration", "field_declaration"],
         NameField = "name",
@@ -193,6 +198,8 @@ public static class LanguageSpecs
         FunctionNodeTypes = ["method", "singleton_method"],
         ClassNodeTypes = ["class", "module"],
         CallNodeTypes = ["call", "method_call"],
+        CallTargetFields = ["method", "name"],
+        CallReceiverFields = ["receiver", "object"],
         ImportNodeTypes = [],
         VariableNodeTypes = ["assignment"],
         NameField = "name",
@@ -215,6 +222,9 @@ public static class LanguageSpecs
         CallNodeTypes = ["call_expression"],
         ImportNodeTypes = ["use_declaration"],
         VariableNodeTypes = ["let_declaration", "const_item", "static_item"],
+        ClassNameExtractor = node => node.Type == "impl_item"
+            ? GetRustNominalTypeName(node.GetChildForField("type"))
+            : node.GetChildForField("name")?.Text,
         NameField = "name",
         ReturnTypeField = "return_type",
         ParametersField = "parameters",
@@ -222,6 +232,39 @@ public static class LanguageSpecs
         FunctionLabel = NodeLabel.Function,
         ClassLabel = NodeLabel.Class
     };
+
+    private static string? GetRustNominalTypeName(Node? node)
+    {
+        if (node is null)
+            return null;
+
+        if (node.Type == "generic_type")
+        {
+            var genericOwner = node.GetChildForField("type")
+                ?? node.Children.FirstOrDefault(child => child.Type != "type_arguments");
+            return GetRustNominalTypeName(genericOwner);
+        }
+
+        if (node.Type == "scoped_type_identifier")
+        {
+            var name = GetRustNominalTypeName(node.GetChildForField("name"));
+            return string.IsNullOrWhiteSpace(name)
+                ? GetRustNominalTypeName(node.GetChildForField("path"))
+                : name;
+        }
+
+        if (node.Type is "type_identifier" or "identifier")
+            return node.Text;
+
+        foreach (var child in node.Children)
+        {
+            var name = GetRustNominalTypeName(child);
+            if (!string.IsNullOrWhiteSpace(name))
+                return name;
+        }
+
+        return null;
+    }
 
     // ── PHP ─────────────────────────────────────────────────────────
 
@@ -232,7 +275,9 @@ public static class LanguageSpecs
         GetLanguage = () => new Language("Php"),
         FunctionNodeTypes = ["function_definition", "method_declaration"],
         ClassNodeTypes = ["class_declaration", "interface_declaration", "trait_declaration"],
-        CallNodeTypes = ["function_call_expression", "member_call_expression"],
+        CallNodeTypes = ["function_call_expression", "member_call_expression", "scoped_call_expression"],
+        CallTargetFields = ["function", "name"],
+        CallReceiverFields = ["object", "scope"],
         ImportNodeTypes = ["namespace_use_declaration"],
         VariableNodeTypes = ["property_declaration"],
         NameField = "name",
@@ -253,6 +298,7 @@ public static class LanguageSpecs
         FunctionNodeTypes = ["function_definition"],
         ClassNodeTypes = [],
         CallNodeTypes = ["command"],
+        CallTargetFields = ["name", "command"],
         ImportNodeTypes = [],
         VariableNodeTypes = ["variable_assignment"],
         NameField = "name",

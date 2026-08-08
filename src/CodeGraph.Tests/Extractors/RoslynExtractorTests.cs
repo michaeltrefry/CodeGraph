@@ -206,6 +206,31 @@ public class RoslynExtractorTests
     }
 
     [Fact]
+    public void SyntaxOnlyCalls_FailClosedWithoutAResolvedReceiver()
+    {
+        var code = """
+            class Worker
+            {
+                void Helper() { }
+                void Run(Other worker)
+                {
+                    Helper();
+                    worker.Helper();
+                }
+            }
+            class Other { }
+            """;
+
+        var result = ExtractFromSource(code);
+
+        result.UnresolvedCalls.Count(call =>
+                call.CalleeName == "Helper"
+                && call.ReceiverType is null
+                && call.ReceiverKind == CallReceiverKind.Unresolved)
+            .ShouldBe(2);
+    }
+
+    [Fact]
     public void Detects_ControllerRoute()
     {
         // Syntax-only detection (no semantics needed for attribute syntax check)
