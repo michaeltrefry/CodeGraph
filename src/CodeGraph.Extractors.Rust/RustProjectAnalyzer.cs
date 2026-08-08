@@ -148,9 +148,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_scipGenerationTimeout);
 
-        var processGroupFile = OperatingSystem.IsWindows()
-            ? null
-            : Path.Combine(Path.GetTempPath(), $"codegraph-process-group-{Guid.NewGuid():N}");
+        var useSetsid = !OperatingSystem.IsWindows() && File.Exists("/usr/bin/setsid");
 
         using var process = new Process
         {
@@ -159,49 +157,39 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 arguments,
                 workingDirectory,
                 captureStdout,
-                processGroupFile)
+                useSetsid)
         };
+
+        process.Start();
+        var processGroupId = useSetsid ? process.Id : (int?)null;
+        var stdoutTask = captureStdout
+            ? process.StandardOutput.ReadToEndAsync(timeout.Token)
+            : Task.FromResult("");
+        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
 
         try
         {
-            process.Start();
-            var stdoutTask = captureStdout
-                ? process.StandardOutput.ReadToEndAsync(timeout.Token)
-                : Task.FromResult("");
-            var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
-
-            try
-            {
-                await process.WaitForExitAsync(timeout.Token);
-                return new CommandResult(
-                    process.ExitCode,
-                    await stdoutTask,
-                    await stderrTask);
-            }
-            catch (OperationCanceledException)
-            {
-                await TerminateAndDrainAsync(
-                    process,
-                    processGroupFile,
-                    stdoutTask,
-                    stderrTask);
-
-                // Preserve caller cancellation as cancellation, rather than translating it
-                // into a semantic-tool failure. Timeout remains a structured fatal failure.
-                ct.ThrowIfCancellationRequested();
-                throw new RustSemanticIndexingException(
-                    "rust_semantic_command_timeout",
-                    $"Rust semantic command '{Path.GetFileName(fileName)}' exceeded " +
-                    $"the {_scipGenerationTimeout.TotalSeconds:0.###}-second timeout.");
-            }
+            await process.WaitForExitAsync(timeout.Token);
+            return new CommandResult(
+                process.ExitCode,
+                await stdoutTask,
+                await stderrTask);
         }
-        finally
+        catch (OperationCanceledException)
         {
-            if (processGroupFile is not null)
-            {
-                try { File.Delete(processGroupFile); }
-                catch { /* best effort cleanup */ }
-            }
+            await TerminateAndDrainAsync(
+                process,
+                processGroupId,
+                stdoutTask,
+                stderrTask);
+
+            // Preserve caller cancellation as cancellation, rather than translating it
+            // into a semantic-tool failure. Timeout remains a structured fatal failure.
+            ct.ThrowIfCancellationRequested();
+            throw new RustSemanticIndexingException(
+                "rust_semantic_command_timeout",
+                $"Rust semantic command '{Path.GetFileName(fileName)}' exceeded " +
+                $"the {_scipGenerationTimeout.TotalSeconds:0.###}-second timeout.");
         }
     }
 
@@ -210,11 +198,13 @@ public class RustProjectAnalyzer : IRustAnalyzer
         IReadOnlyList<string> arguments,
         string workingDirectory,
         bool captureStdout,
-        string? processGroupFile)
+        bool useSetsid)
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = processGroupFile is null ? fileName : "/bin/sh",
+            FileName = useSetsid
+                ? "/usr/bin/setsid"
+                : OperatingSystem.IsWindows() ? fileName : "/bin/sh",
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = captureStdout,
             RedirectStandardError = true,
@@ -222,17 +212,27 @@ public class RustProjectAnalyzer : IRustAnalyzer
             CreateNoWindow = true
         };
 
-        if (processGroupFile is null)
+        if (OperatingSystem.IsWindows())
         {
             foreach (var argument in arguments)
                 startInfo.ArgumentList.Add(argument);
             return startInfo;
         }
 
-        // A non-interactive shell with job control starts the command in its own process
-        // group. The supervisor remains alive long enough to kill that group even if the
-        // command exits after spawning a descendant that inherited our redirected pipes.
-        startInfo.Environment["CODEGRAPH_PROCESS_GROUP_FILE"] = processGroupFile;
+        if (useSetsid)
+        {
+            // A freshly spawned process cannot already lead its inherited process group,
+            // so setsid execs the tool in a new session whose process-group id is the
+            // Process.Id retained by the caller even after the tool itself exits.
+            startInfo.ArgumentList.Add(fileName);
+            foreach (var argument in arguments)
+                startInfo.ArgumentList.Add(argument);
+            return startInfo;
+        }
+
+        // macOS does not ship setsid. Its /bin/sh supports monitored background jobs,
+        // so retain a supervisor there for local development; production Linux images
+        // use the explicit setsid boundary above.
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(UnixProcessSupervisorScript);
         startInfo.ArgumentList.Add("codegraph-process-supervisor");
@@ -244,16 +244,12 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
     private static async Task TerminateAndDrainAsync(
         Process process,
-        string? processGroupFile,
+        int? processGroupId,
         Task<string> stdoutTask,
         Task<string> stderrTask)
     {
-        if (processGroupFile is not null)
-        {
-            var processGroupId = await ReadProcessGroupIdAsync(processGroupFile);
-            if (processGroupId is not null)
-                KillUnixProcessGroup(processGroupId.Value);
-        }
+        if (processGroupId is not null)
+            KillUnixProcessGroup(processGroupId.Value);
 
         if (!process.HasExited)
         {
@@ -268,20 +264,6 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
         try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(cleanup.Token); }
         catch (OperationCanceledException) { /* reads use the linked command deadline */ }
-    }
-
-    private static async Task<int?> ReadProcessGroupIdAsync(string path)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(1);
-        while (!File.Exists(path) && DateTime.UtcNow < deadline)
-            await Task.Delay(10);
-
-        if (!File.Exists(path))
-            return null;
-
-        return int.TryParse(await File.ReadAllTextAsync(path), out var processGroupId)
-            ? processGroupId
-            : null;
     }
 
     private static void KillUnixProcessGroup(int processGroupId)
@@ -323,7 +305,6 @@ public class RustProjectAnalyzer : IRustAnalyzer
         set -m
         "$@" &
         child=$!
-        printf '%s' "$child" > "$CODEGRAPH_PROCESS_GROUP_FILE"
         cleanup() {
           trap - EXIT HUP INT TERM
           kill -KILL -"$child" 2>/dev/null || true

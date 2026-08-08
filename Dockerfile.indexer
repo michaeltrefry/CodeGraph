@@ -81,7 +81,8 @@ RUN rustc --version && cargo --version && rust-analyzer --version && scip --vers
 
 # Install git, ssh, Node.js, and Mono for legacy .NET Framework NuGet restore
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git openssh-client curl unzip nodejs npm mono-complete && rm -rf /var/lib/apt/lists/* && \
+    git openssh-client curl unzip nodejs npm mono-complete util-linux && rm -rf /var/lib/apt/lists/* && \
+    command -v setsid && \
     curl -fsSL https://dist.nuget.org/win-x86-commandline/latest/nuget.exe -o /usr/local/bin/nuget.exe && \
     printf '#!/bin/sh\nmono /usr/local/bin/nuget.exe "$@"\n' > /usr/local/bin/nuget && \
     chmod +x /usr/local/bin/nuget
