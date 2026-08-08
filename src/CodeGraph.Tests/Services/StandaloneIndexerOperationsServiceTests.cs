@@ -14,6 +14,25 @@ namespace CodeGraph.Tests.Services;
 public class StandaloneIndexerOperationsServiceTests
 {
     [Fact]
+    public async Task ReAnalyzeRepositoryAsync_DelegatesToLocalProjectService()
+    {
+        var projects = new RecordingProjectService
+        {
+            Batch = CreateBatch("SceneWorks")
+        };
+        var service = new StandaloneIndexerOperationsService(
+            new FakeIndexerRunStore(),
+            new FakeDatabaseSourceStore(),
+            new RecordingBackgroundRunner(),
+            projects);
+
+        var batch = await service.ReAnalyzeRepositoryAsync("Michael", " SceneWorks ");
+
+        batch.ShouldBe(projects.Batch);
+        projects.LastReanalyzedRepo.ShouldBe("SceneWorks");
+    }
+
+    [Fact]
     public async Task StartSyncSchemaAsync_CreatesQueuedRunForDatabaseSource()
     {
         var sources = new FakeDatabaseSourceStore();
@@ -27,7 +46,7 @@ public class StandaloneIndexerOperationsServiceTests
         });
         var runs = new FakeIndexerRunStore();
         var runner = new RecordingBackgroundRunner();
-        var service = new StandaloneIndexerOperationsService(runs, sources, runner);
+        var service = new StandaloneIndexerOperationsService(runs, sources, runner, new RecordingProjectService());
 
         var accepted = await service.StartSyncSchemaAsync("Michael", 17);
 
@@ -49,7 +68,11 @@ public class StandaloneIndexerOperationsServiceTests
     public async Task GetRunAsync_MapsStoredRun()
     {
         var runs = new FakeIndexerRunStore();
-        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), new RecordingBackgroundRunner());
+        var service = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingBackgroundRunner(),
+            new RecordingProjectService());
         await service.StartSyncAllSchemasAsync("Michael");
 
         var run = await service.GetRunAsync(1);
@@ -63,7 +86,11 @@ public class StandaloneIndexerOperationsServiceTests
     public async Task ListRunsAsync_NormalizesFilters_AndReturnsRecentRuns()
     {
         var runs = new FakeIndexerRunStore();
-        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), new RecordingBackgroundRunner());
+        var service = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingBackgroundRunner(),
+            new RecordingProjectService());
         await runs.CreateIndexerRunAsync(new IndexerRunEntity
         {
             Operation = IndexerRunOperations.SyncSchema,
@@ -95,7 +122,11 @@ public class StandaloneIndexerOperationsServiceTests
     {
         var runs = new FakeIndexerRunStore();
         var runner = new RecordingBackgroundRunner();
-        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), runner);
+        var service = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            runner,
+            new RecordingProjectService());
 
         var accepted = await service.StartReIndexAllAsync("Michael", "reindex-1");
 
@@ -113,7 +144,11 @@ public class StandaloneIndexerOperationsServiceTests
     public async Task StartProcessRepositoriesAsync_StoresArgsJsonForExecutor()
     {
         var runs = new FakeIndexerRunStore();
-        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), new RecordingBackgroundRunner());
+        var service = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingBackgroundRunner(),
+            new RecordingProjectService());
 
         await service.StartProcessRepositoriesAsync("Michael", new ProcessRequest
         {
@@ -136,7 +171,11 @@ public class StandaloneIndexerOperationsServiceTests
     {
         var runs = new FakeIndexerRunStore();
         var runner = new RecordingBackgroundRunner();
-        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), runner);
+        var service = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            runner,
+            new RecordingProjectService());
         var request = new ProcessRequest { Repos = ["CodeGraph"], ShouldAnalyze = true };
 
         await Should.ThrowAsync<ArgumentException>(() => service.StartProcessRepositoriesAsync("Michael", request));
@@ -331,7 +370,8 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            new RecordingBackgroundRunner());
+            new RecordingBackgroundRunner(),
+            new RecordingProjectService());
         var accepted = await service.StartReIndexAllAsync("Michael", "cancel-1");
 
         var canceled = await service.CancelRunAsync(accepted.RunId!.Value);
@@ -501,6 +541,41 @@ public class StandaloneIndexerOperationsServiceTests
         public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default)
             => Task.FromResult(new DiscoverResponse(0, 0, 0, 0, 0, []));
     }
+
+    private sealed class RecordingProjectService : IProjectService
+    {
+        public AnalysisBatchResponse? Batch { get; set; }
+        public string? LastReanalyzedRepo { get; private set; }
+
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepository(
+            string repo,
+            CancellationToken cancellationToken = default)
+        {
+            LastReanalyzedRepo = repo;
+            return Task.FromResult(Batch);
+        }
+
+        public Task ProcessRepository(
+            CodeGraph.Models.Messages.ProcessRepository message,
+            CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<bool> DeleteRepositoryAsync(string repo)
+            => throw new NotSupportedException();
+    }
+
+    private static AnalysisBatchResponse CreateBatch(string repo) => new(
+        11,
+        repo,
+        "batch-11",
+        "anthropic",
+        "batch",
+        true,
+        "pending",
+        2,
+        0,
+        DateTime.UtcNow,
+        null);
 
     private sealed class FakeIndexerRunStore : IIndexerRunStore
     {

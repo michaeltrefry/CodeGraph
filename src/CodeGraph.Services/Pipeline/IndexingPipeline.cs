@@ -653,14 +653,14 @@ public partial class IndexingPipeline
             .ToList();
         var replacementQns = replacementNodes
             .Select(node => node.QualifiedName)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(StringComparer.Ordinal);
         var selectedEdges = buffer.AllPendingEdges
             .Where(edge => replacementQns.Contains(edge.SourceQN) || replacementQns.Contains(edge.TargetQN))
             .ToList();
         var supportQns = selectedEdges
             .SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN })
             .Where(qn => !replacementQns.Contains(qn))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(StringComparer.Ordinal);
 
         // A new file can introduce an entire folder chain. Pull in only the
         // structural ancestors needed to connect that new slice.
@@ -696,11 +696,11 @@ public partial class IndexingPipeline
 
         return (
             replacementNodes.Concat(supportingNodes)
-                .DistinctBy(node => node.QualifiedName, StringComparer.OrdinalIgnoreCase)
+                .DistinctBy(node => node.QualifiedName, StringComparer.Ordinal)
                 .ToList(),
             selectedEdges.DistinctBy(
                     edge => $"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}",
-                    StringComparer.OrdinalIgnoreCase)
+                    StringComparer.Ordinal)
                 .ToList());
     }
 

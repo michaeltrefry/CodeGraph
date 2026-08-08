@@ -17,6 +17,22 @@ public sealed class HttpIndexerClient(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private IndexerClientOptions Options => optionsAccessor.Value;
 
+    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("Repository name is required.", nameof(repo));
+
+        return SendOptionalJsonAsync<AnalysisBatchResponse>(
+            username,
+            HttpMethod.Post,
+            "api/indexer/repositories/reanalyze",
+            new ReAnalyzeRequest { Repo = repo.Trim() },
+            ct);
+    }
+
     public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
         => StartProcessRepositoriesAsync(username, request, submissionKey: null, ct);
     public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)

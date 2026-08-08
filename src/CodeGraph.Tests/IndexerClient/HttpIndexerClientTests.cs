@@ -4,6 +4,8 @@ using CodeGraph.Host.Shared.Auth;
 using CodeGraph.Indexer.Client;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Shouldly;
 
@@ -11,6 +13,44 @@ namespace CodeGraph.Tests.IndexerClient;
 
 public class HttpIndexerClientTests
 {
+    [Fact]
+    public void AddCodeGraphIndexerClient_DisablesHiddenTransportTimeout()
+    {
+        var services = new ServiceCollection();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CodeGraph:Indexer:BaseUrl"] = "http://indexer.local"
+            })
+            .Build();
+        services.AddCodeGraphIndexerClient(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        var client = provider.GetRequiredService<IHttpClientFactory>()
+            .CreateClient(IndexerClientOptions.DefaultHttpClientName);
+
+        client.BaseAddress.ShouldBe(new Uri("http://indexer.local/"));
+        client.Timeout.ShouldBe(Timeout.InfiniteTimeSpan);
+    }
+
+    [Fact]
+    public async Task ReAnalyzeRepositoryAsync_PostsRequestAndReturnsBatch()
+    {
+        var batch = CreateBatch("SceneWorks");
+        var handler = new RecordingHandler(batch);
+        var client = CreateClient(handler);
+
+        var response = await client.ReAnalyzeRepositoryAsync("Michael", " SceneWorks ");
+
+        response.ShouldBe(batch);
+        var request = handler.Requests.ShouldHaveSingleItem();
+        request.Method.ShouldBe(HttpMethod.Post);
+        request.RequestUri!.ToString().ShouldBe("http://indexer.local/api/indexer/repositories/reanalyze");
+        request.Headers.Contains(CodeGraphInternalServiceAuthenticationDefaults.HeaderName).ShouldBeTrue();
+        var body = await request.Content!.ReadAsStringAsync();
+        body.ShouldBe("{\"repo\":\"SceneWorks\"}");
+    }
+
     [Fact]
     public async Task StartProcessRepositoriesAsync_PostsRequestWithInternalIdentityHeader()
     {
@@ -116,6 +156,19 @@ public class HttpIndexerClientTests
 
         return new HttpIndexerClient(factory, Options.Create(options), tokenFactory);
     }
+
+    private static AnalysisBatchResponse CreateBatch(string repo) => new(
+        11,
+        repo,
+        "batch-11",
+        "anthropic",
+        "batch",
+        true,
+        "pending",
+        2,
+        0,
+        DateTime.UtcNow,
+        null);
 
     private sealed class StubHttpClientFactory(HttpClient client) : IHttpClientFactory
     {

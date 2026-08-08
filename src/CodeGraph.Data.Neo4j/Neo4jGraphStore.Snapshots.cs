@@ -72,7 +72,7 @@ public partial class Neo4jGraphStore
                 """, new { project, filePaths = pathVariants });
 
             var candidates = nodes
-                .GroupBy(node => TruncateQualifiedName(node.QualifiedName), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(node => TruncateQualifiedName(node.QualifiedName), StringComparer.Ordinal)
                 .Select(group => group.First())
                 .ToList();
             var endpointNames = candidates.Select(node => TruncateQualifiedName(node.QualifiedName))
@@ -82,9 +82,9 @@ public partial class Neo4jGraphStore
                     TruncateQualifiedName(edge.TargetQN)
                 }))
                 .Concat(preservedIncoming.SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN }))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Distinct(StringComparer.Ordinal)
                 .ToList();
-            var qnToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var qnToId = new Dictionary<string, long>(StringComparer.Ordinal);
             foreach (var batch in Chunk(endpointNames, 1000))
             {
                 var cursor = await tx.RunAsync("""
@@ -168,7 +168,7 @@ public partial class Neo4jGraphStore
             foreach (var node in preparedNodes)
                 qnToId[node.QualifiedName] = node.AppId;
 
-            var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.OrdinalIgnoreCase);
+            var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.Ordinal);
             foreach (var edge in preservedIncoming)
                 pendingByKey[EdgeKey(edge)] = edge;
             foreach (var edge in edges)
@@ -263,7 +263,7 @@ public partial class Neo4jGraphStore
                 "MATCH (f:FileHash {project: $project}) DELETE f",
                 new { project });
 
-            var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.OrdinalIgnoreCase);
+            var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.Ordinal);
             if (nodes.Count > 0)
             {
                 var sequenceCursor = await tx.RunAsync("""

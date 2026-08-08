@@ -51,7 +51,7 @@ public partial class MySqlGraphStore
                 cancellationToken: ct));
 
             var candidates = nodes
-                .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.Ordinal)
                 .Select(group => group.First())
                 .ToList();
             var endpointNames = candidates.Select(node => Truncate(node.QualifiedName, 1000))
@@ -61,9 +61,9 @@ public partial class MySqlGraphStore
                     Truncate(edge.TargetQN, 1000)
                 }))
                 .Concat(preservedIncoming.SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN }))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Distinct(StringComparer.Ordinal)
                 .ToList();
-            var qnToId = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var qnToId = new Dictionary<string, long>(StringComparer.Ordinal);
             foreach (var batch in endpointNames.Chunk(1000))
             {
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
@@ -109,7 +109,7 @@ public partial class MySqlGraphStore
 
             foreach (var batch in nodesToInsert
                          .Select(node => Truncate(node.QualifiedName, 1000))
-                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .Distinct(StringComparer.Ordinal)
                          .Chunk(1000))
             {
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
@@ -120,7 +120,7 @@ public partial class MySqlGraphStore
                     qnToId[row.QualifiedName] = row.Id;
             }
 
-            var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.OrdinalIgnoreCase);
+            var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.Ordinal);
             foreach (var incoming in preservedIncoming)
             {
                 if (!Enum.TryParse<EdgeType>(incoming.Type, out var type))
@@ -251,7 +251,7 @@ public partial class MySqlGraphStore
                 "DELETE FROM file_hashes WHERE project = @Project",
                 new { Project = project }, transaction, cancellationToken: ct));
 
-            var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.OrdinalIgnoreCase);
+            var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.Ordinal);
             foreach (var batch in nodes.Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
@@ -284,14 +284,14 @@ public partial class MySqlGraphStore
 
                 var storedNames = batch
                     .Select(node => Truncate(node.QualifiedName, 1000))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Distinct(StringComparer.Ordinal)
                     .ToList();
                 var rows = await conn.QueryAsync<(long id, string qualified_name)>(new CommandDefinition(
                     "SELECT id, qualified_name FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
                     new { Project = project, QualifiedNames = storedNames }, transaction, cancellationToken: ct));
                 var originalByStoredName = batch
-                    .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(group => group.Key, group => group.First().QualifiedName, StringComparer.OrdinalIgnoreCase);
+                    .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.First().QualifiedName, StringComparer.Ordinal);
 
                 foreach (var row in rows)
                 {

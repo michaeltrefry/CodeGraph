@@ -10,9 +10,21 @@ namespace CodeGraph.Services.Indexer;
 public sealed class StandaloneIndexerOperationsService(
     IIndexerRunStore runStore,
     IDatabaseSourceStore databaseSourceStore,
-    IIndexerRunBackgroundRunner backgroundRunner) : IIndexerOperationsService
+    IIndexerRunBackgroundRunner backgroundRunner,
+    IProjectService projectService) : IIndexerOperationsService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("Repository name is required.", nameof(repo));
+
+        return projectService.ReAnalyzeRepository(repo.Trim(), ct);
+    }
 
     public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
         => StartProcessRepositoriesAsync(username, request, submissionKey: null, ct);

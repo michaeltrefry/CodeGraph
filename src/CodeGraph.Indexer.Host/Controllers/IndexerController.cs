@@ -10,6 +10,18 @@ namespace CodeGraph.Indexer.Host.Controllers;
 [Route("api/indexer")]
 public class IndexerController(IIndexerOperationsService indexerOperations) : ControllerBase
 {
+    [HttpPost("repositories/reanalyze")]
+    public async Task<ActionResult<AnalysisBatchResponse>> ReAnalyze(
+        [FromBody] ReAnalyzeRequest request,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.Repo))
+            return BadRequest(new { error = "invalid_request", message = "Repo entry is required." });
+
+        var result = await indexerOperations.ReAnalyzeRepositoryAsync(GetUsername(), request.Repo, ct);
+        return result is null ? NotFound() : Ok(result);
+    }
+
     [HttpPost("repositories/process")]
     public async Task<ActionResult<IndexerAcceptedResponse>> ProcessRepositories(
         [FromBody] ProcessRequest request,

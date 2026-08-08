@@ -359,7 +359,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     {
         var existing = _nodes.FirstOrDefault(n =>
             n.Project.Equals(node.Project, StringComparison.OrdinalIgnoreCase) &&
-            n.QualifiedName.Equals(node.QualifiedName, StringComparison.OrdinalIgnoreCase));
+            n.QualifiedName.Equals(node.QualifiedName, StringComparison.Ordinal));
 
         if (existing != null)
         {
@@ -388,7 +388,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName) =>
         Task.FromResult(_nodes.FirstOrDefault(n =>
             n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
-            n.QualifiedName.Equals(qualifiedName, StringComparison.OrdinalIgnoreCase)));
+            n.QualifiedName.Equals(qualifiedName, StringComparison.Ordinal)));
 
     public Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
@@ -553,7 +553,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var qnToId = replacementNodes.ToDictionary(
             node => GraphNodeKey.Create(project, node.QualifiedName),
             node => node.Id,
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.Ordinal);
         var replacementEdges = edges
             .Where(edge =>
                 qnToId.ContainsKey(GraphNodeKey.Create(project, edge.SourceQN)) &&
@@ -644,8 +644,8 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var nextId = _nextId;
         var qnToId = stagedNodes
             .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
-            .ToDictionary(node => node.QualifiedName, node => node.Id, StringComparer.OrdinalIgnoreCase);
-        foreach (var node in nodes.DistinctBy(node => node.QualifiedName, StringComparer.OrdinalIgnoreCase))
+            .ToDictionary(node => node.QualifiedName, node => node.Id, StringComparer.Ordinal);
+        foreach (var node in nodes.DistinctBy(node => node.QualifiedName, StringComparer.Ordinal))
         {
             if (qnToId.ContainsKey(node.QualifiedName))
                 continue;
@@ -654,7 +654,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             qnToId[stored.QualifiedName] = stored.Id;
         }
 
-        var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.OrdinalIgnoreCase);
+        var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.Ordinal);
         foreach (var edge in preservedIncoming)
             pendingByKey[$"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}"] = edge;
         foreach (var edge in edges)

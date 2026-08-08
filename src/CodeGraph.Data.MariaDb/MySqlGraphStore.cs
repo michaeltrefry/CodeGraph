@@ -170,7 +170,7 @@ public partial class MySqlGraphStore(
             return new Dictionary<string, long>();
         }
 
-        var result = new Dictionary<string, long>(nodes.Count, StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, long>(nodes.Count, StringComparer.Ordinal);
         await using var conn = await GetOpenConnectionAsync();
 
         foreach (var batch in nodes.Chunk(options.BatchSize))
@@ -219,7 +219,7 @@ public partial class MySqlGraphStore(
             await WithDeadlockRetryAsync(() => conn.ExecuteAsync(sql.ToString(), parameters));
 
             var projects = batch.Select(n => n.Project).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var qualifiedNames = batch.Select(n => Truncate(n.QualifiedName, 1000)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var qualifiedNames = batch.Select(n => Truncate(n.QualifiedName, 1000)).Distinct(StringComparer.Ordinal).ToList();
             var rows = await conn.QueryAsync<(long id, string project, string qualified_name)>(
                 "SELECT id, project, qualified_name FROM nodes WHERE project IN @Projects AND qualified_name IN @QualifiedNames",
                 new { Projects = projects, QualifiedNames = qualifiedNames });

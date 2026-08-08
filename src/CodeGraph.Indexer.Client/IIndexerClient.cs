@@ -5,6 +5,11 @@ namespace CodeGraph.Indexer.Client;
 
 public interface IIndexerClient
 {
+    Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        CancellationToken ct = default);
+
     Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartDiscoverAsync(string username, DiscoverRequest? request = null, CancellationToken ct = default);
