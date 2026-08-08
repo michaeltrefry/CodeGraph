@@ -22,7 +22,7 @@ public class IndexingOptions
     /// Maximum wall-clock time allowed for one rust-analyzer SCIP generation command.
     /// Large workspaces may need to resolve and compile build scripts on a cold cache.
     /// </summary>
-    public int RustSemanticCommandTimeoutSeconds { get; set; } = 1800;
+    public int RustSemanticCommandTimeoutSeconds { get; set; } = 600;
 
     /// <summary>
     /// Maximum stderr tail retained for Rust semantic command diagnostics.

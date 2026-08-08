@@ -520,6 +520,57 @@ public class MariaDbIndexerRunStoreTests
         }
     }
 
+    [Fact]
+    public async Task ResourceHotfixMigration_TerminalizesOnlyStartedReAnalyzeRuns_WhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            Database = $"cg_idx_resource_hotfix_{Guid.NewGuid():N}"
+        };
+        var databaseName = builder.Database;
+        var runner = CreateMigrationRunner(builder.ConnectionString);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            await using var connection = new MySqlConnection(builder.ConnectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("""
+                INSERT INTO indexer_runs
+                    (operation, target, status, created_at, retry_safe, attempt_count, error_code)
+                VALUES
+                    ('reanalyze', 'queued-retry', 'queued', CURRENT_TIMESTAMP(6), TRUE, 1, 'rust_semantic_command_timeout'),
+                    ('reanalyze', 'running-retry', 'running', CURRENT_TIMESTAMP(6), TRUE, 2, NULL),
+                    ('reanalyze', 'fresh', 'queued', CURRENT_TIMESTAMP(6), TRUE, 0, NULL),
+                    ('sync_schema', 'schema', 'queued', CURRENT_TIMESTAMP(6), TRUE, 1, 'indexer_operation_failed')
+                """);
+
+            var migrationPath = Path.Combine(
+                AppContext.BaseDirectory,
+                "../../../../../sql/migrations/063_stop_resource_intensive_reanalysis_replays.sql");
+            var statements = MariaDbMigrationRunner.SplitStatements(await File.ReadAllTextAsync(migrationPath));
+            foreach (var statement in statements)
+                await connection.ExecuteAsync(statement);
+            foreach (var statement in statements)
+                await connection.ExecuteAsync(statement);
+
+            var rows = (await connection.QueryAsync<(string Target, string Status, string? ErrorCode)>("""
+                SELECT target AS Target, status AS Status, error_code AS ErrorCode
+                FROM indexer_runs
+                ORDER BY id
+                """)).ToList();
+            rows[0].ShouldBe(("queued-retry", "failed", "rust_semantic_command_timeout"));
+            rows[1].ShouldBe(("running-retry", "failed", "reanalyze_stopped_by_resource_hotfix"));
+            rows[2].ShouldBe(("fresh", "queued", null));
+            rows[3].ShouldBe(("schema", "queued", "indexer_operation_failed"));
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+    }
+
     private static MariaDbMigrationRunner CreateMigrationRunner(string connectionString)
         => new(
             Options.Create(new MariaDbStorageOptions

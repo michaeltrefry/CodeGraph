@@ -353,7 +353,7 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
-    public async Task DurableWorker_PersistsRustSemanticFailureCodeForReAnalyzeRun()
+    public async Task DurableWorker_FailsRustSemanticReAnalyzeWithoutResourceIntensiveRetry()
     {
         var runs = new FakeIndexerRunStore();
         var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
@@ -377,10 +377,12 @@ public class StandaloneIndexerOperationsServiceTests
 
         (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
 
-        var retrying = await runs.GetIndexerRunAsync(runId);
-        retrying!.Status.ShouldBe("queued");
-        retrying.ErrorCode.ShouldBe("rust_semantic_command_timeout");
-        retrying.Error.ShouldBe("rust-analyzer timed out");
+        var failed = await runs.GetIndexerRunAsync(runId);
+        failed!.Status.ShouldBe("failed");
+        failed.AttemptCount.ShouldBe(1);
+        failed.NextAttemptAt.ShouldBeNull();
+        failed.ErrorCode.ShouldBe("rust_semantic_command_timeout");
+        failed.Error.ShouldBe("rust-analyzer timed out");
     }
 
     [Fact]

@@ -379,6 +379,10 @@ export class ApiService {
     return this.http.get<IndexerRunResponse>(`${API}/indexer/runs/${id}`);
   }
 
+  cancelIndexerRun(id: number): Observable<IndexerRunResponse> {
+    return this.http.post<IndexerRunResponse>(`${API}/indexer/runs/${id}/cancel`, {});
+  }
+
   // User MCP personal access tokens
   listMcpTokens(): Observable<McpPersonalAccessTokenMetadata[]> {
     return this.http.get<McpPersonalAccessTokenMetadata[]>(`${API}/user/mcp-tokens`);

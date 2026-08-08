@@ -94,7 +94,9 @@ export class RepoDetailComponent implements OnInit {
   deleting = signal(false);
   showDeleteConfirm = signal(false);
   reAnalyzeError = signal<string | null>(null);
+  reAnalyzeCancelError = signal<string | null>(null);
   reAnalyzeRun = signal<IndexerRunResponse | null>(null);
+  cancelingReAnalyze = signal(false);
   tab = signal<'overview' | 'health' | 'reviews'>('overview');
   repositoryReviewState = signal<RepositoryReviewPanelState>(this.createInitialRepositoryReviewState());
   projectDiagnosticsStates = signal<Record<string, ProjectDiagnosticsPanelState>>({});
@@ -1103,6 +1105,7 @@ export class RepoDetailComponent implements OnInit {
     const repo = this.name();
     this.reAnalyzing.set(true);
     this.reAnalyzeError.set(null);
+    this.reAnalyzeCancelError.set(null);
     this.reAnalyzeRun.set(null);
     this.api.reAnalyze(repo).subscribe({
       next: accepted => {
@@ -1118,6 +1121,30 @@ export class RepoDetailComponent implements OnInit {
         if (this.name() !== repo) return;
         this.reAnalyzing.set(false);
         this.reAnalyzeError.set('Unable to start analysis for this repository right now.');
+      }
+    });
+  }
+
+  cancelReAnalyze() {
+    const run = this.reAnalyzeRun();
+    const status = run?.status.toLowerCase();
+    if (!run || (status !== 'queued' && status !== 'running') || run.cancelRequestedAt) return;
+
+    this.cancelingReAnalyze.set(true);
+    this.reAnalyzeCancelError.set(null);
+    this.api.cancelIndexerRun(run.id).subscribe({
+      next: canceled => {
+        this.cancelingReAnalyze.set(false);
+        this.reAnalyzeRun.set(canceled);
+        if (canceled.status.toLowerCase() !== 'canceled') return;
+
+        this.stopReAnalyzePolling();
+        this.reAnalyzing.set(false);
+        this.reAnalyzeError.set(this.reAnalyzeFailureMessage(canceled));
+      },
+      error: () => {
+        this.cancelingReAnalyze.set(false);
+        this.reAnalyzeCancelError.set('Unable to cancel this re-analysis right now.');
       }
     });
   }

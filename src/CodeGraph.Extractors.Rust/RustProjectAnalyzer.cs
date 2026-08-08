@@ -11,7 +11,7 @@ namespace CodeGraph.Extractors.Rust;
 
 public class RustProjectAnalyzer : IRustAnalyzer
 {
-    private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(10);
     private const int DefaultStderrTailCharacters = 4096;
     private static readonly TimeSpan ProcessCleanupTimeout = TimeSpan.FromSeconds(5);
     private readonly ILogger<RustProjectAnalyzer> _logger;
@@ -218,6 +218,11 @@ public class RustProjectAnalyzer : IRustAnalyzer
         }
         catch (OperationCanceledException)
         {
+            // Process metrics become unavailable after the process is reaped. Capture
+            // them before terminating the process tree so timeout diagnostics do not
+            // misleadingly report zero CPU and memory for a resource-heavy command.
+            var cpuTime = GetTotalProcessorTime(process);
+            var peakWorkingSetBytes = GetPeakWorkingSetBytes(process);
             await TerminateAndDrainAsync(
                 process,
                 processGroupId,
@@ -229,8 +234,6 @@ public class RustProjectAnalyzer : IRustAnalyzer
             // into a semantic-tool failure. Timeout remains a structured fatal failure.
             ct.ThrowIfCancellationRequested();
             var stderrTail = stderrTask.IsCompletedSuccessfully ? stderrTask.Result : "";
-            var cpuTime = GetTotalProcessorTime(process);
-            var peakWorkingSetBytes = GetPeakWorkingSetBytes(process);
             _logger.LogError(
                 "Rust semantic command {Command} timed out after {ElapsedMs}ms; CPU {CpuMs}ms; peak working set {PeakWorkingSetBytes} bytes; stderr tail: {StderrTail}",
                 commandName,

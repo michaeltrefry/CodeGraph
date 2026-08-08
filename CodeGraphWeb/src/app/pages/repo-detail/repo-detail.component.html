@@ -28,6 +28,13 @@
           </a>
           @if (reAnalyzing()) {
             <button class="rd-btn" disabled>Analyzing…</button>
+            @if (reAnalyzeRun(); as run) {
+              <button class="rd-btn danger"
+                      (click)="cancelReAnalyze()"
+                      [disabled]="cancelingReAnalyze() || !!run.cancelRequestedAt">
+                {{ run.cancelRequestedAt ? 'Cancel requested' : (cancelingReAnalyze() ? 'Canceling…' : 'Cancel analysis') }}
+              </button>
+            }
           } @else {
             <button class="rd-btn primary" (click)="reAnalyze()">Re-analyze</button>
           }
@@ -71,6 +78,10 @@
       } @else if (b.status === 'failed') {
         <div class="rd-banner err">Analysis failed</div>
       }
+    }
+
+    @if (reAnalyzeCancelError(); as cancelError) {
+      <div class="rd-banner err">{{ cancelError }}</div>
     }
 
     @if (isSchemaProject()) {
