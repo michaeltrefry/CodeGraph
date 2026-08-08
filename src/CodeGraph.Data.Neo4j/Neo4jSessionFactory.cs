@@ -14,13 +14,25 @@ public sealed class Neo4jSessionFactory : IAsyncDisposable
     private readonly string? _database;
 
     public Neo4jSessionFactory(IOptions<CodeGraphStorageOptions> optionsAccessor)
+        : this(optionsAccessor, null)
+    {
+    }
+
+    internal Neo4jSessionFactory(
+        IOptions<CodeGraphStorageOptions> optionsAccessor,
+        global::Neo4j.Driver.ILogger? driverLogger)
     {
         var options = optionsAccessor.Value;
         _driver = GraphDatabase.Driver(
             options.Neo4jUri ?? "bolt://localhost:7687",
             AuthTokens.Basic(
                 options.Neo4jUsername ?? "neo4j",
-                options.Neo4jPassword ?? ""));
+                options.Neo4jPassword ?? ""),
+            config =>
+            {
+                if (driverLogger is not null)
+                    config.WithLogger(driverLogger);
+            });
         _database = options.Neo4jDatabase;
     }
 

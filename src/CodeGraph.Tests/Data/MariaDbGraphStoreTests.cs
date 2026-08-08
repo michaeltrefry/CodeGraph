@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Models;
@@ -17,6 +18,66 @@ public class MariaDbGraphStoreTests
     public void MySqlGraphStore_ImplementsStandaloneGraphContract()
     {
         typeof(IGraphStore).IsAssignableFrom(typeof(MySqlGraphStore)).ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task SearchSchemaRepositoriesAsync_ExecutesFourStatementsAtBoth32And512Schemas()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var databaseName = $"codegraph_schema_scale_test_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+
+        var storageOptions = Options.Create(new MariaDbStorageOptions
+        {
+            ConnectionString = builder.ConnectionString,
+            MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+        });
+        var runner = new MariaDbMigrationRunner(
+            storageOptions,
+            NullLogger<MariaDbMigrationRunner>.Instance);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+
+            var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                .UseMySql(
+                    builder.ConnectionString,
+                    ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                .Options;
+
+            await using var context = new CodeGraphDbContext(dbOptions);
+            var store = new MySqlGraphStore(
+                context,
+                storageOptions,
+                NullLogger<MySqlGraphStore>.Instance,
+                new MySqlAnalysisStore(context),
+                new MySqlMetricsStore(context),
+                new MySqlReviewStore(context),
+                runner);
+            var server = $"scale-{Guid.NewGuid():N}";
+
+            await SeedSchemaRangeAsync(builder.ConnectionString, server, 0, 31);
+            var small = await CountSchemaStatementsAsync(store, databaseName, server);
+
+            await SeedSchemaRangeAsync(builder.ConnectionString, server, 32, 511);
+            var large = await CountSchemaStatementsAsync(store, databaseName, server);
+
+            small.Result.TotalCount.ShouldBe(32);
+            small.Result.TotalTables.ShouldBe(32);
+            large.Result.TotalCount.ShouldBe(512);
+            large.Result.TotalTables.ShouldBe(512);
+            AssertSchemaScalePage(small.Result, server);
+            AssertSchemaScalePage(large.Result, server);
+            small.StatementCount.ShouldBe(4);
+            large.StatementCount.ShouldBe(small.StatementCount);
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
     }
 
     [Fact]
@@ -189,6 +250,58 @@ public class MariaDbGraphStoreTests
             (await store.FindCrossRepoEdgesAsync("CodeGraph")).Single().TargetProject.ShouldBe("Dependency");
             (await store.GetAllCrossRepoEdgesAsync()).Single().SourceProject.ShouldBe("CodeGraph");
             (await store.FindProjectsWithNoCrossRepoEdgesAsync()).ShouldBeEmpty();
+
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "db:sql-prod/Orders",
+                SourceGroup = "sql-prod",
+                Properties = """{"serverName":"sql-prod","databaseName":"Orders"}"""
+            });
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "db:sql-prod/Billing",
+                SourceGroup = "sql-prod"
+            });
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "db:invalid/Whitespace",
+                SourceGroup = " \t ",
+                Properties = """{"serverName":" \t ","databaseName":" \n "}"""
+            });
+            await store.UpsertNodeBatchAsync(
+            [
+                new GraphNode
+                {
+                    Project = "db:sql-prod/Orders",
+                    Label = NodeLabel.Table,
+                    Name = "Customers",
+                    QualifiedName = "dbo.Customers"
+                },
+                new GraphNode
+                {
+                    Project = "db:sql-prod/Orders",
+                    Label = NodeLabel.View,
+                    Name = "ActiveCustomers",
+                    QualifiedName = "dbo.ActiveCustomers"
+                }
+            ]);
+
+            var schemaPage = await store.SearchSchemaRepositoriesAsync(page: 2, pageSize: 1);
+            schemaPage.TotalCount.ShouldBe(2);
+            schemaPage.TotalTables.ShouldBe(1);
+            schemaPage.TotalViews.ShouldBe(1);
+            schemaPage.Items.Single().DatabaseName.ShouldBe("Orders");
+            schemaPage.Items.Single().TableCount.ShouldBe(1);
+            schemaPage.Servers.ShouldBe(["sql-prod"]);
+            schemaPage.Databases.ShouldBe(["Billing", "Orders"]);
+
+            var filteredSchemas = await store.SearchSchemaRepositoriesAsync(
+                search: "order",
+                server: "SQL-PROD",
+                database: "ORDERS");
+            filteredSchemas.TotalCount.ShouldBe(1);
+            filteredSchemas.TotalTables.ShouldBe(1);
+            filteredSchemas.Items.Single().Project.Name.ShouldBe("db:sql-prod/Orders");
 
             await store.UpsertFileHashBatchAsync("CodeGraph", new Dictionary<string, string>
             {
@@ -400,5 +513,68 @@ public class MariaDbGraphStoreTests
         await using var conn = new MySqlConnection(builder.ConnectionString);
         await conn.OpenAsync();
         await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
+    }
+
+    private static async Task SeedSchemaRangeAsync(
+        string connectionString,
+        string server,
+        int first,
+        int last)
+    {
+        await using var connection = new MySqlConnection(connectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync($$"""
+            INSERT INTO repositories (name, gitlab_group)
+            SELECT CONCAT('db:', @Server, '/Database', LPAD(seq, 4, '0')), @Server
+            FROM seq_{{first}}_to_{{last}};
+
+            INSERT INTO nodes (project, label, name, qualified_name)
+            SELECT name, 'Table', CONCAT('Table', RIGHT(name, 4)), CONCAT('dbo.Table', RIGHT(name, 4))
+            FROM repositories
+            WHERE gitlab_group = @Server
+                AND name NOT IN (SELECT project FROM nodes WHERE label = 'Table');
+            """, new { Server = server });
+    }
+
+    private static async Task<(SchemaRepositorySearchResult Result, int StatementCount)> CountSchemaStatementsAsync(
+        MySqlGraphStore store,
+        string databaseName,
+        string server)
+    {
+        var statementCount = 0;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "MySqlConnector",
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity =>
+            {
+                var activityDatabase = activity.GetTagItem("db.namespace")?.ToString()
+                    ?? activity.GetTagItem("db.name")?.ToString();
+                var statement = activity.GetTagItem("db.query.text")?.ToString()
+                    ?? activity.GetTagItem("db.statement")?.ToString();
+                if (activity.OperationName == "Execute"
+                    && string.Equals(activityDatabase, databaseName, StringComparison.Ordinal)
+                    && statement?.Contains("WITH schema_repositories", StringComparison.Ordinal) == true)
+                {
+                    Interlocked.Increment(ref statementCount);
+                }
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var result = await store.SearchSchemaRepositoriesAsync(server: server, page: 3, pageSize: 10);
+        return (result, statementCount);
+    }
+
+    private static void AssertSchemaScalePage(SchemaRepositorySearchResult result, string server)
+    {
+        var expectedProjects = Enumerable.Range(20, 10)
+            .Select(index => $"db:{server}/Database{index:0000}")
+            .ToArray();
+
+        result.Items.Count.ShouldBe(10);
+        result.Items.Select(item => item.Project.Name).ShouldBe(expectedProjects);
+        result.Items.ShouldAllBe(item =>
+            item.TableCount == 1 && item.ViewCount == 0 && item.ProcedureCount == 0);
     }
 }
