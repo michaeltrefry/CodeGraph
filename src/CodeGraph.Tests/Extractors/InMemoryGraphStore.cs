@@ -290,6 +290,15 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         Task.FromResult<IReadOnlyList<GraphEdge>>(
             _edges.Where(e => e.SourceId == sourceId && (type == null || e.Type == type)).ToList());
 
+    public Task<IReadOnlyList<GraphEdge>> FindEdgesBySourceBatchAsync(IReadOnlyList<long> sourceIds, EdgeType[]? types = null)
+    {
+        var idSet = sourceIds.ToHashSet();
+        var query = _edges.Where(edge => idSet.Contains(edge.SourceId));
+        if (types is { Length: > 0 })
+            query = query.Where(edge => types.Contains(edge.Type));
+        return Task.FromResult<IReadOnlyList<GraphEdge>>(query.ToList());
+    }
+
     public Task<GraphNode?> FindNodeByIdAsync(long id) =>
         Task.FromResult(_nodes.FirstOrDefault(n => n.Id == id));
 

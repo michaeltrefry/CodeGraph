@@ -107,6 +107,25 @@
   background: var(--surface);
 }
 
+.sc-feedback {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--fs-sm);
+}
+
+.sc-feedback-error {
+  color: var(--sem-red);
+  background: var(--err-bg);
+  border-color: color-mix(in oklab, var(--sem-red) 30%, var(--border));
+}
+
+.sc-feedback-success {
+  color: var(--sem-green);
+  background: var(--ok-bg);
+  border-color: color-mix(in oklab, var(--sem-green) 30%, var(--border));
+}
+
 /* ================================================================
    Table
    ================================================================ */
@@ -131,8 +150,8 @@
 
 .sc-row-open {
   display: inline-flex;
-  width: 24px;
-  height: 24px;
+  width: 34px;
+  height: 34px;
   border-radius: var(--radius);
   color: var(--muted);
   align-items: center;
@@ -145,5 +164,30 @@
     background: var(--surface-3);
     color: var(--text);
     text-decoration: none;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.sc-actions-heading {
+  text-align: right;
+}
+
+.sc-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.sc-delete {
+  padding: 4px 9px;
+
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 }

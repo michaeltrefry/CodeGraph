@@ -2,6 +2,7 @@ import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { SchemaListItem } from '../../core/models';
 import { TypeaheadComponent, TypeaheadItem } from '../../shared/typeahead.component';
 
@@ -13,6 +14,7 @@ import { TypeaheadComponent, TypeaheadItem } from '../../shared/typeahead.compon
 })
 export class SchemasComponent implements OnInit {
   private api = inject(ApiService);
+  private auth = inject(AuthService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
 
@@ -29,6 +31,11 @@ export class SchemasComponent implements OnInit {
   servers = signal<string[]>([]);
   databases = signal<string[]>([]);
   loading = signal(false);
+  deletingSchema = signal<string | null>(null);
+  error = signal('');
+  notice = signal('');
+
+  isAdmin = computed(() => !this.auth.enabled() || this.auth.currentUser()?.isAdmin === true);
 
   databaseItems = computed<TypeaheadItem[]>(() =>
     this.databases().map(value => ({ value, label: value }))
@@ -66,7 +73,11 @@ export class SchemasComponent implements OnInit {
     this.load();
   }
 
-  load() {
+  load(clearFeedback = true) {
+    if (clearFeedback) {
+      this.error.set('');
+      this.notice.set('');
+    }
     this.loading.set(true);
     this.updateUrl();
     this.api.listSchemas(
@@ -86,7 +97,38 @@ export class SchemasComponent implements OnInit {
         this.databases.set(response.databases);
         this.loading.set(false);
       },
-      error: () => this.loading.set(false)
+      error: () => {
+        this.loading.set(false);
+        this.error.set('Unable to load schemas right now.');
+      }
+    });
+  }
+
+  deleteSchema(schema: SchemaListItem) {
+    if (!this.isAdmin()) return;
+
+    const confirmed = confirm(
+      `Delete indexed schema '${schema.name}' from CodeGraph?\n\n` +
+      'This removes only CodeGraph\'s indexed graph data. It does not delete the source database.'
+    );
+    if (!confirmed) return;
+
+    this.deletingSchema.set(schema.name);
+    this.error.set('');
+    this.notice.set('');
+    this.api.deleteProject(schema.name).subscribe({
+      next: () => {
+        this.deletingSchema.set(null);
+        this.notice.set(`Deleted indexed schema '${schema.name}'.`);
+        if (this.items().length === 1 && this.page() > 1) {
+          this.page.update(value => value - 1);
+        }
+        this.load(false);
+      },
+      error: () => {
+        this.deletingSchema.set(null);
+        this.error.set(`Unable to delete indexed schema '${schema.name}'.`);
+      }
     });
   }
 

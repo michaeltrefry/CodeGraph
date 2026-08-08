@@ -467,6 +467,32 @@ public partial class MySqlGraphStore(
         return edges.Select(MapEdge).ToList();
     }
 
+    public async Task<IReadOnlyList<GraphEdge>> FindEdgesBySourceBatchAsync(
+        IReadOnlyList<long> sourceIds,
+        EdgeType[]? types = null)
+    {
+        if (sourceIds.Count == 0)
+        {
+            return [];
+        }
+
+        var typeNames = types?.Select(type => type.ToString()).ToList();
+        var result = new List<GraphEdge>();
+        foreach (var batch in sourceIds.Chunk(1000))
+        {
+            var batchIds = batch.ToList();
+            var query = db.Edges.AsNoTracking().Where(edge => batchIds.Contains(edge.SourceId));
+            if (typeNames is { Count: > 0 })
+            {
+                query = query.Where(edge => typeNames.Contains(edge.Type));
+            }
+
+            result.AddRange((await query.OrderBy(edge => edge.Id).ToListAsync()).Select(MapEdge));
+        }
+
+        return result;
+    }
+
     public async Task<IReadOnlyList<GraphEdge>> FindEdgesByTargetAsync(long targetId, EdgeType? type = null)
     {
         var query = db.Edges.AsNoTracking().Where(e => e.TargetId == targetId);

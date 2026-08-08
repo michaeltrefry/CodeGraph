@@ -32,18 +32,20 @@
             <button class="rd-btn primary" (click)="reAnalyze()">Re-analyze</button>
           }
         }
-        @if (showDeleteConfirm()) {
-          <span class="rd-delete-confirm">
-            {{ isSchemaProject() ? 'Delete schema?' : 'Delete repo?' }}
-          </span>
-          <button class="rd-btn danger" (click)="deleteRepo()" [disabled]="deleting()">
-            {{ deleting() ? 'Deleting…' : 'Yes, delete' }}
-          </button>
-          <button class="rd-btn" (click)="cancelDelete()">Cancel</button>
-        } @else {
-          <button class="rd-btn ghost-danger" (click)="confirmDelete()">
-            {{ isSchemaProject() ? 'Delete schema' : 'Delete' }}
-          </button>
+        @if (isAdmin()) {
+          @if (showDeleteConfirm()) {
+            <span class="rd-delete-confirm">
+              {{ isSchemaProject() ? 'Delete schema?' : 'Delete repo?' }}
+            </span>
+            <button class="rd-btn danger" (click)="deleteRepo()" [disabled]="deleting()">
+              {{ deleting() ? 'Deleting…' : 'Yes, delete' }}
+            </button>
+            <button class="rd-btn" (click)="cancelDelete()">Cancel</button>
+          } @else {
+            <button class="rd-btn ghost-danger" (click)="confirmDelete()">
+              {{ isSchemaProject() ? 'Delete schema' : 'Delete' }}
+            </button>
+          }
         }
       </div>
     </header>

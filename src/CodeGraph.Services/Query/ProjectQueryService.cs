@@ -65,19 +65,40 @@ public class ProjectQueryService(
         var serverName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "";
         var databaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name);
 
-        var tables = await store.FindNodesByLabelAsync(name, NodeLabel.Table);
-        var views = await store.FindNodesByLabelAsync(name, NodeLabel.View);
-        var procedures = await store.FindNodesByLabelAsync(name, NodeLabel.StoredProcedure);
-        var allObjects = tables.Concat(views).Concat(procedures).ToList();
+        var tablesTask = store.FindNodesByLabelAsync(name, NodeLabel.Table);
+        var viewsTask = store.FindNodesByLabelAsync(name, NodeLabel.View);
+        var proceduresTask = store.FindNodesByLabelAsync(name, NodeLabel.StoredProcedure);
+        var columnsTask = store.FindNodesByLabelAsync(name, NodeLabel.Column);
+        await Task.WhenAll(tablesTask, viewsTask, proceduresTask, columnsTask);
+
+        var tables = await tablesTask;
+        var views = await viewsTask;
+        var procedures = await proceduresTask;
+        var columnNodes = await columnsTask;
+        var allObjects = tables.Concat(views).Concat(procedures).Concat(columnNodes).ToList();
         var nodesById = allObjects.ToDictionary(node => node.Id);
+        var sourceIds = tables.Concat(views).Concat(columnNodes).Select(node => node.Id).ToList();
+        var schemaEdges = await store.FindEdgesBySourceBatchAsync(sourceIds,
+            [EdgeType.HAS_COLUMN, EdgeType.FOREIGN_KEY, EdgeType.QUERIES, EdgeType.DEFINES]);
+        var edgesBySource = schemaEdges
+            .GroupBy(edge => edge.SourceId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<GraphEdge>)group.ToList());
+        var columnOwnerById = schemaEdges
+            .Where(edge => edge.Type == EdgeType.HAS_COLUMN &&
+                nodesById.TryGetValue(edge.SourceId, out var owner) &&
+                owner.Label is NodeLabel.Table or NodeLabel.View &&
+                nodesById.TryGetValue(edge.TargetId, out var column) &&
+                column.Label == NodeLabel.Column)
+            .GroupBy(edge => edge.TargetId)
+            .ToDictionary(group => group.Key, group => group.First().SourceId);
 
         var tableResponses = new List<SchemaObjectResponse>();
         foreach (var table in tables.OrderBy(node => node.Name))
-            tableResponses.Add(await MapSchemaObjectAsync(table, nodesById));
+            tableResponses.Add(MapSchemaObject(table, nodesById, edgesBySource, columnOwnerById));
 
         var viewResponses = new List<SchemaObjectResponse>();
         foreach (var view in views.OrderBy(node => node.Name))
-            viewResponses.Add(await MapSchemaObjectAsync(view, nodesById));
+            viewResponses.Add(MapSchemaObject(view, nodesById, edgesBySource, columnOwnerById));
 
         var procedureResponses = procedures
             .OrderBy(node => node.Name)
@@ -364,28 +385,55 @@ public class ProjectQueryService(
     internal static ProjectSecuritySummary MapSecuritySummary(ProjectSecuritySummaryEntity e) =>
         new(e.SecurityScore, e.CriticalCount, e.HighCount, e.MediumCount, e.LowCount, e.ComputedAt);
 
-    private async Task<SchemaObjectResponse> MapSchemaObjectAsync(
+    private static SchemaObjectResponse MapSchemaObject(
         GraphNode node,
-        IReadOnlyDictionary<long, GraphNode> nodesById)
+        IReadOnlyDictionary<long, GraphNode> nodesById,
+        IReadOnlyDictionary<long, IReadOnlyList<GraphEdge>> edgesBySource,
+        IReadOnlyDictionary<long, long> columnOwnerById)
     {
-        var columns = GetPropertyObjects(node.Properties, "columns")
+        var objectEdges = edgesBySource.GetValueOrDefault(node.Id) ?? [];
+        var graphColumns = objectEdges
+            .Where(edge => edge.Type == EdgeType.HAS_COLUMN)
+            .Select(edge => nodesById.GetValueOrDefault(edge.TargetId))
+            .Where(column => column?.Label == NodeLabel.Column)
+            .Select(column => MapSchemaColumn(column!))
+            .OrderBy(column => column.Ordinal)
+            .ThenBy(column => column.Name)
+            .ToList();
+        var embeddedColumns = GetPropertyObjects(node.Properties, "columns")
             .Select((properties, index) => MapSchemaColumn(node, properties, index + 1))
             .ToList();
+        var columns = graphColumns.Count > 0 ? graphColumns : embeddedColumns;
 
-        var edges = await store.FindEdgesBySourceAsync(node.Id);
-        var indexes = edges
+        var embeddedIndexes = GetPropertyObjects(node.Properties, "indexes")
+            .Select(MapSchemaIndex)
+            .ToList();
+        var legacyIndexes = objectEdges
             .Where(edge => edge.Type == EdgeType.DEFINES &&
                 GetStringProperty(edge.Properties, "relationship")?.Equals("index", StringComparison.OrdinalIgnoreCase) == true)
             .Select(MapSchemaIndex)
             .ToList();
+        var indexes = embeddedIndexes.Concat(legacyIndexes)
+            .GroupBy(index => index.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(index => index.Name)
+            .ToList();
 
-        var foreignKeys = edges
+        var legacyForeignKeys = objectEdges
             .Where(edge => edge.Type is EdgeType.FOREIGN_KEY or EdgeType.QUERIES &&
                 GetStringProperty(edge.Properties, "relationship")?.Equals("foreign_key", StringComparison.OrdinalIgnoreCase) == true)
             .Select(edge => MapSchemaForeignKey(node, edge, nodesById))
             .ToList();
+        var graphForeignKeys = MapColumnForeignKeys(columns, edgesBySource, nodesById, columnOwnerById);
+        var foreignKeys = graphForeignKeys.Concat(legacyForeignKeys)
+            .GroupBy(foreignKey => foreignKey.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(foreignKey => foreignKey.Name)
+            .ToList();
 
         var primaryKeyColumns = columns.Where(column => column.IsPrimaryKey).Select(column => column.Name).ToList();
+        if (primaryKeyColumns.Count == 0)
+            primaryKeyColumns = GetStringListProperty(node.Properties, "primaryKeyColumns").ToList();
         var constraints = GetPropertyObjects(node.Properties, "constraints")
             .Select(constraint => new SchemaConstraintResponse(
                 GetStringProperty(constraint, "name") ?? "constraint",
@@ -403,7 +451,8 @@ public class ProjectQueryService(
             .OrderBy(constraint => constraint.Name)
             .ToList();
 
-        if (constraints.Count == 0 && primaryKeyColumns.Count > 0)
+        if (primaryKeyColumns.Count > 0 && !constraints.Any(constraint =>
+                constraint.ConstraintType.Equals("PRIMARY KEY", StringComparison.OrdinalIgnoreCase)))
         {
             constraints.Add(new SchemaConstraintResponse(
                 "PRIMARY",
@@ -425,6 +474,23 @@ public class ProjectQueryService(
             constraints,
             foreignKeys,
             columns);
+    }
+
+    private static SchemaColumnResponse MapSchemaColumn(GraphNode column)
+    {
+        var ordinal = GetIntProperty(column.Properties, "ordinal") ?? 0;
+        return new SchemaColumnResponse(
+            column.Id,
+            column.Name,
+            column.QualifiedName,
+            ordinal,
+            GetStringProperty(column.Properties, "dataType") ?? GetStringProperty(column.Properties, "type") ?? "",
+            GetBoolProperty(column.Properties, "nullable") ?? true,
+            GetBoolProperty(column.Properties, "isPrimaryKey") ?? GetBoolProperty(column.Properties, "is_primary_key") ?? false,
+            GetStringProperty(column.Properties, "default"),
+            GetStringProperty(column.Properties, "key"),
+            GetStringProperty(column.Properties, "extra"),
+            GetStringProperty(column.Properties, "comment"));
     }
 
     private static SchemaColumnResponse MapSchemaColumn(GraphNode owner, Dictionary<string, object> properties, int ordinal)
@@ -452,6 +518,62 @@ public class ProjectQueryService(
             GetBoolProperty(edge.Properties, "isUnique") ?? GetBoolProperty(edge.Properties, "is_unique") ?? false,
             GetStringProperty(edge.Properties, "indexType") ?? GetStringProperty(edge.Properties, "index_type"),
             columns);
+    }
+
+    private static SchemaIndexResponse MapSchemaIndex(Dictionary<string, object> properties)
+    {
+        return new SchemaIndexResponse(
+            GetStringProperty(properties, "name") ??
+                GetStringProperty(properties, "indexName") ??
+                GetStringProperty(properties, "index_name") ??
+                "unnamed",
+            GetBoolProperty(properties, "isUnique") ?? GetBoolProperty(properties, "is_unique") ?? false,
+            GetStringProperty(properties, "indexType") ?? GetStringProperty(properties, "index_type"),
+            GetStringListProperty(properties, "columns"));
+    }
+
+    private static IReadOnlyList<SchemaForeignKeyResponse> MapColumnForeignKeys(
+        IReadOnlyList<SchemaColumnResponse> columns,
+        IReadOnlyDictionary<long, IReadOnlyList<GraphEdge>> edgesBySource,
+        IReadOnlyDictionary<long, GraphNode> nodesById,
+        IReadOnlyDictionary<long, long> columnOwnerById)
+    {
+        var columnIds = columns.Select(column => column.Id).ToHashSet();
+        var edges = columnIds
+            .SelectMany(columnId => edgesBySource.GetValueOrDefault(columnId) ?? [])
+            .Where(edge => edge.Type == EdgeType.FOREIGN_KEY)
+            .ToList();
+
+        return edges
+            .GroupBy(edge => GetStringProperty(edge.Properties, "constraintName") ??
+                GetStringProperty(edge.Properties, "name") ??
+                $"FK_{edge.SourceId}_{edge.TargetId}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var ordered = group
+                    .OrderBy(edge => GetIntProperty(edge.Properties, "ordinal") ??
+                        (nodesById.TryGetValue(edge.SourceId, out var source)
+                            ? GetIntProperty(source.Properties, "ordinal") ?? int.MaxValue
+                            : int.MaxValue))
+                    .ToList();
+                var first = ordered[0];
+                var referencedTable = "";
+                if (columnOwnerById.TryGetValue(first.TargetId, out var ownerId) &&
+                    nodesById.TryGetValue(ownerId, out var owner))
+                {
+                    referencedTable = owner.Name;
+                }
+
+                return new SchemaForeignKeyResponse(
+                    group.Key,
+                    ordered.Select(edge => nodesById.GetValueOrDefault(edge.SourceId)?.Name)
+                        .Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name!).ToList(),
+                    referencedTable,
+                    ordered.Select(edge => nodesById.GetValueOrDefault(edge.TargetId)?.Name)
+                        .Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name!).ToList());
+            })
+            .ToList();
     }
 
     private static SchemaForeignKeyResponse MapSchemaForeignKey(
@@ -484,7 +606,9 @@ public class ProjectQueryService(
         }
 
         return new SchemaForeignKeyResponse(
-            GetStringProperty(edge.Properties, "name") ?? $"FK_{node.Name}_{referencedTable}".TrimEnd('_'),
+            GetStringProperty(edge.Properties, "constraintName") ??
+                GetStringProperty(edge.Properties, "name") ??
+                $"FK_{node.Name}_{referencedTable}".TrimEnd('_'),
             columns,
             referencedTable,
             referencedColumns);
@@ -590,6 +714,23 @@ public class ProjectQueryService(
             JsonElement { ValueKind: JsonValueKind.False } => false,
             JsonElement { ValueKind: JsonValueKind.String } element when bool.TryParse(element.GetString(), out var b) => b,
             string s when bool.TryParse(s, out var b) => b,
+            _ => null
+        };
+    }
+
+    private static int? GetIntProperty(Dictionary<string, object>? properties, string key)
+    {
+        var value = GetPropertyValue(properties, key);
+        return value switch
+        {
+            null => null,
+            int number => number,
+            long number when number is >= int.MinValue and <= int.MaxValue => (int)number,
+            uint number when number <= int.MaxValue => (int)number,
+            ulong number when number <= int.MaxValue => (int)number,
+            JsonElement { ValueKind: JsonValueKind.Number } element when element.TryGetInt32(out var number) => number,
+            JsonElement { ValueKind: JsonValueKind.String } element when int.TryParse(element.GetString(), out var number) => number,
+            string text when int.TryParse(text, out var number) => number,
             _ => null
         };
     }
