@@ -404,7 +404,7 @@ public sealed class DatabaseSchemaExtractor(
         string CONSTRAINT_NAME,
         string TABLE_NAME,
         string COLUMN_NAME,
-        ulong ORDINAL_POSITION,
+        long ORDINAL_POSITION,
         string REFERENCED_TABLE_NAME,
         string REFERENCED_COLUMN_NAME);
     private sealed record IndexInfo(
