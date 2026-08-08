@@ -148,13 +148,17 @@ public sealed class IndexerRunBackgroundRunner(
             var errorCode = ex is RustSemanticIndexingException rustFailure
                 ? rustFailure.FailureCode
                 : "indexer_operation_failed";
+            // Semantic extractor failures are deterministic for the current checkout and
+            // toolchain. Replaying a CPU- and memory-intensive command immediately only
+            // repeats the same failure and can starve the rest of the deployment.
+            var maxAttempts = ex is RustSemanticIndexingException ? 1 : options.MaxAttempts;
             var disposition = await store.FailOrRetryIndexerRunAsync(
                 lease,
                 errorCode,
                 ex.Message,
                 DateTime.UtcNow,
                 DateTime.UtcNow + options.RetryDelay,
-                options.MaxAttempts,
+                maxAttempts,
                 CancellationToken.None);
             logger.LogWarning(
                 ex,

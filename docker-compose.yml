@@ -163,7 +163,7 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
       # Empty by default. Provider-qualified canonical repository identities opt in exactly.
       CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
-      CodeGraph__IndexingOptions__RustSemanticCommandTimeoutSeconds: ${CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS:-1800}
+      CodeGraph__IndexingOptions__RustSemanticCommandTimeoutSeconds: ${CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS:-600}
       CodeGraph__IndexingOptions__RustSemanticStderrTailCharacters: ${CODEGRAPH_RUST_SEMANTIC_STDERR_TAIL_CHARACTERS:-4096}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}

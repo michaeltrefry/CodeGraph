@@ -107,6 +107,7 @@ function createComponent() {
       runSubjects.set(id, subject);
       return subject.asObservable();
     }),
+    cancelIndexerRun: vi.fn(),
     getLatestRepositoryReview: vi.fn().mockReturnValue(throwError(() => ({ status: 404 }))),
     getRepositoryReview: vi.fn(),
     getProjectDiagnostics: vi.fn().mockReturnValue(of({
@@ -294,16 +295,57 @@ describe('RepoDetailComponent', () => {
         status: 'failed',
         target: 'SceneWorks',
         errorCode: 'rust_semantic_command_timeout',
-        error: "Rust semantic command 'rust-analyzer' exceeded the 1800-second timeout.",
+        error: "Rust semantic command 'rust-analyzer' exceeded the 600-second timeout.",
         createdAt: '2026-08-08T12:00:00Z',
         completedAt: '2026-08-08T13:30:00Z',
-        attemptCount: 3,
+        attemptCount: 1,
         retrySafe: true
       });
 
       expect(component.reAnalyzing()).toBe(false);
-      expect(component.reAnalyzeError()).toContain('timed out after 3 attempts');
-      expect(component.reAnalyzeError()).toContain('1800-second timeout');
+      expect(component.reAnalyzeError()).toContain('timed out after 1 attempt');
+      expect(component.reAnalyzeError()).toContain('600-second timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an active durable re-analysis run and keeps its terminal state visible', async () => {
+    vi.useFakeTimers();
+    try {
+      const { component, api, runSubjects } = createComponent();
+      api.reAnalyze.mockReturnValue(of({ status: 'queued', runId: 44 }));
+      api.cancelIndexerRun.mockReturnValue(of({
+        id: 44,
+        operation: 'reanalyze',
+        status: 'canceled',
+        target: 'SceneWorks',
+        message: 'Canceled before execution.',
+        createdAt: '2026-08-08T12:00:00Z',
+        completedAt: '2026-08-08T12:01:00Z',
+        attemptCount: 0,
+        retrySafe: true
+      }));
+      component.name.set('SceneWorks');
+
+      component.reAnalyze();
+      await vi.advanceTimersByTimeAsync(0);
+      runSubjects.get(44)?.next({
+        id: 44,
+        operation: 'reanalyze',
+        status: 'queued',
+        target: 'SceneWorks',
+        createdAt: '2026-08-08T12:00:00Z',
+        attemptCount: 0,
+        retrySafe: true
+      });
+
+      component.cancelReAnalyze();
+
+      expect(api.cancelIndexerRun).toHaveBeenCalledWith(44);
+      expect(component.reAnalyzing()).toBe(false);
+      expect(component.reAnalyzeRun()?.status).toBe('canceled');
+      expect(component.reAnalyzeError()).toContain('Re-analysis was canceled.');
     } finally {
       vi.useRealTimers();
     }

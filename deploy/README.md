@@ -55,6 +55,19 @@ CODEGRAPH_EMBEDDING_MODEL_ONNX_URL=https://huggingface.co/nomic-ai/nomic-embed-t
 CODEGRAPH_EMBEDDING_MODEL_VOCAB_URL=https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/vocab.txt?download=true
 ```
 
+The production indexer is resource-isolated from the API and database. Its defaults are
+two CPUs and 2 GiB of memory (with no additional swap), and can be tuned without editing
+the compose files:
+
+```text
+CODEGRAPH_INDEXER_CPUS=2.0
+CODEGRAPH_INDEXER_MEMORY_LIMIT=2g
+CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS=600
+```
+
+Rust semantic failures are not automatically replayed: they are deterministic for the
+current checkout and toolchain, and immediate retries can monopolize the host.
+
 The deploy workflow builds the remote `.env` file from individual GitHub production environment variables and secrets. Public/non-sensitive app settings should be stored as environment variables, using upper-case names:
 
 ```bash
