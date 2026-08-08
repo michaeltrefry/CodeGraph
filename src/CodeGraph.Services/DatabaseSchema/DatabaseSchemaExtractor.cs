@@ -196,7 +196,7 @@ public sealed class DatabaseSchemaExtractor(
             """, new { databaseName })).ToList();
 
         var foreignKeys = (await conn.QueryAsync<ForeignKeyInfo>("""
-            SELECT CONSTRAINT_NAME, TABLE_NAME, COLUMN_NAME,
+            SELECT CONSTRAINT_NAME, TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION,
                    REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
             WHERE TABLE_SCHEMA = @databaseName
@@ -324,7 +324,11 @@ public sealed class DatabaseSchemaExtractor(
                 $"{serverName}.{databaseName}.{foreignKey.TABLE_NAME}.{foreignKey.COLUMN_NAME}",
                 $"{serverName}.{databaseName}.{foreignKey.REFERENCED_TABLE_NAME}.{foreignKey.REFERENCED_COLUMN_NAME}",
                 EdgeType.FOREIGN_KEY,
-                new Dictionary<string, object> { ["constraintName"] = foreignKey.CONSTRAINT_NAME }));
+                new Dictionary<string, object>
+                {
+                    ["constraintName"] = foreignKey.CONSTRAINT_NAME,
+                    ["ordinal"] = (int)foreignKey.ORDINAL_POSITION
+                }));
         }
 
         return new SchemaSnapshot(nodes, pendingEdges);
@@ -400,6 +404,7 @@ public sealed class DatabaseSchemaExtractor(
         string CONSTRAINT_NAME,
         string TABLE_NAME,
         string COLUMN_NAME,
+        ulong ORDINAL_POSITION,
         string REFERENCED_TABLE_NAME,
         string REFERENCED_COLUMN_NAME);
     private sealed record IndexInfo(

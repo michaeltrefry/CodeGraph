@@ -1,5 +1,7 @@
 using System.Security.Claims;
+using CodeGraph.Api.Auth;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
@@ -91,6 +93,7 @@ public class ProjectsController(
     }
 
     // DELETE /api/projects/{name}
+    [Authorize(Policy = CodeGraphAuthenticationDefaults.AdminPolicy)]
     [HttpDelete("{name}")]
     public async Task<ActionResult> Delete(string name)
     {

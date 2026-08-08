@@ -1,9 +1,10 @@
-import { DestroyRef, Injector, runInInjectionContext } from '@angular/core';
+import { DestroyRef, Injector, runInInjectionContext, signal } from '@angular/core';
 import { DomSanitizer } from '@angular/platform-browser';
 import { ActivatedRoute, Router, convertToParamMap } from '@angular/router';
 import { of, Subject, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { ChatContextService } from '../../core/chat-context.service';
 import {
   AnalysisBatchStatus,
@@ -124,10 +125,15 @@ function createComponent() {
   const sanitizer = {
     bypassSecurityTrustHtml: vi.fn((html: string) => html)
   };
+  const auth = {
+    enabled: signal(true),
+    currentUser: signal({ username: 'admin', isAdmin: true })
+  };
 
   const injector = Injector.create({
     providers: [
       { provide: ApiService, useValue: api },
+      { provide: AuthService, useValue: auth },
       { provide: ChatContextService, useValue: { setRepo: vi.fn() } },
       { provide: Router, useValue: { navigate: vi.fn() } },
       { provide: ActivatedRoute, useValue: { paramMap: paramMap$.asObservable(), queryParamMap: queryParamMap$.asObservable() } },
@@ -148,11 +154,22 @@ function createComponent() {
     batchSubjects,
     runSubjects,
     api,
+    auth,
     destroyCallbacks
   };
 }
 
 describe('RepoDetailComponent', () => {
+  it('shows destructive controls only to admins', () => {
+    const { component, auth } = createComponent();
+
+    expect(component.isAdmin()).toBe(true);
+
+    auth.currentUser.set({ username: 'viewer', isAdmin: false });
+
+    expect(component.isAdmin()).toBe(false);
+  });
+
   it('ignores stale repository detail responses after a faster route change', () => {
     const {
       component,

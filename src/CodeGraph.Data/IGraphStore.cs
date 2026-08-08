@@ -53,6 +53,7 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMig
     Task InsertEdgeAsync(GraphEdge edge);
     Task InsertEdgeBatchAsync(IReadOnlyList<GraphEdge> edges, CancellationToken ct = default);
     Task<IReadOnlyList<GraphEdge>> FindEdgesBySourceAsync(long sourceId, EdgeType? type = null);
+    Task<IReadOnlyList<GraphEdge>> FindEdgesBySourceBatchAsync(IReadOnlyList<long> sourceIds, EdgeType[]? types = null);
     Task<IReadOnlyList<GraphEdge>> FindEdgesByTargetAsync(long targetId, EdgeType? type = null);
     Task<IReadOnlyList<GraphEdge>> FindEdgesByTargetBatchAsync(IReadOnlyList<long> targetIds, EdgeType[]? types = null);
     Task<IReadOnlyList<GraphEdge>> FindAllEdgesByTypeAsync(EdgeType type);

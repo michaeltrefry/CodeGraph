@@ -5,6 +5,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
 import { Subscription, switchMap, timer } from 'rxjs';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { ChatContextService } from '../../core/chat-context.service';
 import {
   AnalysisBatchStatus,
@@ -72,6 +73,7 @@ export class RepoDetailComponent implements OnInit {
   private static readonly repositoryReviewRunStoragePrefix = 'codegraph:repository-review-run:';
 
   private api = inject(ApiService);
+  private auth = inject(AuthService);
   private route = inject(ActivatedRoute);
   private sanitizer = inject(DomSanitizer);
   private destroyRef = inject(DestroyRef);
@@ -93,6 +95,7 @@ export class RepoDetailComponent implements OnInit {
   reAnalyzing = signal(false);
   deleting = signal(false);
   showDeleteConfirm = signal(false);
+  isAdmin = computed(() => !this.auth.enabled() || this.auth.currentUser()?.isAdmin === true);
   reAnalyzeError = signal<string | null>(null);
   reAnalyzeRun = signal<IndexerRunResponse | null>(null);
   tab = signal<'overview' | 'health' | 'reviews'>('overview');

@@ -68,6 +68,12 @@
     <span class="cg-small cg-mono cg-muted">{{ items().length }} shown</span>
   </div>
 
+  @if (error()) {
+    <div class="sc-feedback sc-feedback-error" role="alert">{{ error() }}</div>
+  } @else if (notice()) {
+    <div class="sc-feedback sc-feedback-success" role="status">{{ notice() }}</div>
+  }
+
   @if (loading()) {
     <div class="sc-state">Loading...</div>
   } @else if (!items().length) {
@@ -84,7 +90,7 @@
             <th>Objects</th>
             <th>Framework</th>
             <th>Last indexed</th>
-            <th></th>
+            <th class="sc-actions-heading">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -111,8 +117,20 @@
                 }
               </td>
               <td class="cg-muted cg-small">{{ relTime(schema.indexedAt) }}</td>
-              <td class="cg-cell-actions">
-                <a class="sc-row-open" [routerLink]="['/schemas', schema.name]" aria-label="Browse schema">›</a>
+              <td class="cg-cell-actions" [attr.aria-busy]="deletingSchema() === schema.name">
+                <div class="sc-row-actions">
+                  @if (isAdmin()) {
+                    <button
+                      class="cg-btn danger sc-delete"
+                      type="button"
+                      [disabled]="deletingSchema() !== null"
+                      [attr.aria-label]="'Delete indexed schema ' + schema.name"
+                      (click)="deleteSchema(schema)">
+                      {{ deletingSchema() === schema.name ? 'Deleting…' : 'Delete' }}
+                    </button>
+                  }
+                  <a class="sc-row-open" [routerLink]="['/schemas', schema.name]" [attr.aria-label]="'Browse schema ' + schema.name">›</a>
+                </div>
               </td>
             </tr>
           }

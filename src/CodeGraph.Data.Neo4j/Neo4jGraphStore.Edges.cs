@@ -74,6 +74,41 @@ public partial class Neo4jGraphStore
         });
     }
 
+    public async Task<IReadOnlyList<GraphEdge>> FindEdgesBySourceBatchAsync(
+        IReadOnlyList<long> sourceIds,
+        EdgeType[]? types = null)
+    {
+        if (sourceIds.Count == 0) return [];
+
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cypher = """
+                MATCH (source:CodeNode)-[e]->(target:CodeNode)
+                WHERE source.appId IN $sourceIds
+                  AND ($types IS NULL OR type(e) IN $types)
+                RETURN elementId(e) AS elementId,
+                       coalesce(e.project, source.project) AS project,
+                       source.appId AS sourceId,
+                       target.appId AS targetId,
+                       type(e) AS type,
+                       e.properties AS properties
+                """;
+
+            var cursor = await tx.RunAsync(cypher, new
+            {
+                sourceIds = sourceIds.ToList(),
+                types = types is { Length: > 0 } ? types.Select(type => type.ToString()).ToList() : null
+            });
+
+            var results = new List<GraphEdge>();
+            await foreach (var record in cursor)
+                results.Add(MapEdgeRecord(record));
+            return results;
+        });
+    }
+
     public async Task<IReadOnlyList<GraphEdge>> FindEdgesByTargetAsync(long targetId, EdgeType? type = null)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);

@@ -1,9 +1,12 @@
 using System.Security.Claims;
+using System.Reflection;
+using CodeGraph.Api.Auth;
 using CodeGraph.Api.Controllers;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Indexer;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Shouldly;
 
@@ -11,6 +14,20 @@ namespace CodeGraph.Tests.Controllers;
 
 public class ProjectsControllerIndexerDelegationTests
 {
+    [Fact]
+    public void Delete_RequiresAdminPolicy()
+    {
+        var method = typeof(ProjectsController).GetMethod(
+            nameof(ProjectsController.Delete),
+            BindingFlags.Instance | BindingFlags.Public,
+            [typeof(string)]);
+
+        method.ShouldNotBeNull();
+        var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+        authorize.ShouldNotBeNull();
+        authorize.Policy.ShouldBe(CodeGraphAuthenticationDefaults.AdminPolicy);
+    }
+
     [Fact]
     public async Task ReAnalyze_DelegatesToConfiguredIndexerOperations()
     {

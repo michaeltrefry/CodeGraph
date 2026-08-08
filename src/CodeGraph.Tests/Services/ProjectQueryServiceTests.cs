@@ -238,6 +238,144 @@ public class ProjectQueryServiceTests
     }
 
     [Fact]
+    public async Task GetSchemaCatalogAsync_MapsCurrentSchemaExtractorGraphShape()
+    {
+        const string project = "db:sql-prod:Orders";
+        var store = new InMemoryGraphStore();
+        await store.UpsertRepositoryAsync(new RepositoryEntity
+        {
+            Name = project,
+            SourceGroup = "sql-prod",
+            Properties = JsonSerializer.Serialize(new { serverName = "sql-prod", databaseName = "Orders" })
+        });
+
+        var customersId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Table,
+            Name = "customers",
+            QualifiedName = "sql-prod.Orders.customers"
+        });
+        var ordersId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Table,
+            Name = "orders",
+            QualifiedName = "sql-prod.Orders.orders",
+            Properties = new Dictionary<string, object>
+            {
+                ["primaryKeyColumns"] = new List<object> { "id" },
+                ["indexes"] = new List<object>
+                {
+                    new Dictionary<string, object>
+                    {
+                        ["name"] = "uq_orders_external_id",
+                        ["isUnique"] = true,
+                        ["indexType"] = "BTREE",
+                        ["columns"] = new List<string> { "external_id" }
+                    }
+                }
+            }
+        });
+        var customerId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Column,
+            Name = "id",
+            QualifiedName = "sql-prod.Orders.customers.id",
+            Properties = new Dictionary<string, object>
+            {
+                ["dataType"] = "bigint",
+                ["ordinal"] = 1,
+                ["nullable"] = false,
+                ["isPrimaryKey"] = true
+            }
+        });
+        var orderId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Column,
+            Name = "id",
+            QualifiedName = "sql-prod.Orders.orders.id",
+            Properties = new Dictionary<string, object>
+            {
+                ["dataType"] = "bigint",
+                ["ordinal"] = 1,
+                ["nullable"] = false,
+                ["isPrimaryKey"] = true
+            }
+        });
+        var orderCustomerId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Column,
+            Name = "customer_id",
+            QualifiedName = "sql-prod.Orders.orders.customer_id",
+            Properties = new Dictionary<string, object>
+            {
+                ["dataType"] = "bigint",
+                ["ordinal"] = 2,
+                ["nullable"] = false
+            }
+        });
+        var orderExternalId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Column,
+            Name = "external_id",
+            QualifiedName = "sql-prod.Orders.orders.external_id",
+            Properties = new Dictionary<string, object>
+            {
+                ["dataType"] = "varchar(64)",
+                ["ordinal"] = 3,
+                ["nullable"] = false
+            }
+        });
+
+        foreach (var edge in new[]
+        {
+            new GraphEdge { Project = project, SourceId = customersId, TargetId = customerId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Project = project, SourceId = ordersId, TargetId = orderId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Project = project, SourceId = ordersId, TargetId = orderCustomerId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Project = project, SourceId = ordersId, TargetId = orderExternalId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge
+            {
+                Project = project,
+                SourceId = orderCustomerId,
+                TargetId = customerId,
+                Type = EdgeType.FOREIGN_KEY,
+                Properties = new Dictionary<string, object>
+                {
+                    ["constraintName"] = "fk_orders_customer",
+                    ["ordinal"] = 1
+                }
+            }
+        })
+        {
+            await store.InsertEdgeAsync(edge);
+        }
+
+        var catalog = await CreateService(store).GetSchemaCatalogAsync(project);
+
+        catalog.ShouldNotBeNull();
+        var orders = catalog.Tables.Single(table => table.Name == "orders");
+        orders.Columns.Select(column => column.Name).ShouldBe(["id", "customer_id", "external_id"]);
+        orders.Columns[0].Id.ShouldBe(orderId);
+        orders.PrimaryKeyColumns.ShouldBe(["id"]);
+        var index = orders.Indexes.Single();
+        index.Name.ShouldBe("uq_orders_external_id");
+        index.IsUnique.ShouldBeTrue();
+        index.IndexType.ShouldBe("BTREE");
+        index.Columns.ShouldBe(["external_id"]);
+        orders.Constraints.Single(constraint => constraint.ConstraintType == "PRIMARY KEY").Columns.ShouldBe(["id"]);
+        var foreignKey = orders.ForeignKeys.Single();
+        foreignKey.Name.ShouldBe("fk_orders_customer");
+        foreignKey.Columns.ShouldBe(["customer_id"]);
+        foreignKey.ReferencedTable.ShouldBe("customers");
+        foreignKey.ReferencedColumns.ShouldBe(["id"]);
+    }
+
+    [Fact]
     public async Task GetHealthAsync_MapsRepositoryVitalityAndOrdersHotspotsByConcernScore()
     {
         var store = new InMemoryGraphStore();
