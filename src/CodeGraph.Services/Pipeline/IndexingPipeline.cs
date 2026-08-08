@@ -298,17 +298,39 @@ public partial class IndexingPipeline
                 {
                     var results = await _rustAnalyzer.AnalyzeProjectAsync(
                         cargoManifest, context, ct);
+                    var preparedResults = PrepareRustSemanticResults(results);
                     _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    AddMetadataCandidates(detectedMetadataCandidates, results);
-                    MergeResults(results, buffer);
-                    AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
+                    // Materialize and validate the complete semantic result before the
+                    // shared graph buffer is touched. A malformed/lazy result therefore
+                    // cannot leave a partial Rust graph behind before failing the run.
+                    MergeResults(preparedResults, buffer);
+                    AddMetadataCandidates(detectedMetadataCandidates, preparedResults);
+                    AddSuccessfullyProcessedFiles(
+                        preparedResults,
+                        changedRelativePaths,
+                        successfullyProcessedFiles);
                 }
                 catch (OperationCanceledException) { throw; }
+                catch (RustSemanticIndexingException ex)
+                {
+                    _logger.LogError(ex,
+                        "Rust semantic indexing capability failure {FailureCode} for {Manifest}",
+                        ex.FailureCode,
+                        Path.GetRelativePath(rootPath, cargoManifest));
+                    throw;
+                }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex,
-                        "Rust project analysis failed for {Manifest} — falling back to per-file extraction",
+                    var failure = new RustSemanticIndexingException(
+                        "rust_semantic_pipeline_failed",
+                        $"Rust semantic indexing failed for manifest " +
+                        $"'{Path.GetRelativePath(rootPath, cargoManifest)}' before its results could be committed.",
+                        ex);
+                    _logger.LogError(failure,
+                        "Rust semantic indexing failure {FailureCode} for {Manifest}",
+                        failure.FailureCode,
                         Path.GetRelativePath(rootPath, cargoManifest));
+                    throw failure;
                 }
             }
         }
@@ -686,6 +708,73 @@ public partial class IndexingPipeline
         Path.GetFullPath(Path.IsPathRooted(documentPath)
             ? documentPath
             : Path.Combine(rootPath, documentPath));
+
+    private static IReadOnlyList<ExtractionResult> PrepareRustSemanticResults(
+        IReadOnlyList<ExtractionResult>? results)
+    {
+        if (results is null)
+            throw new InvalidOperationException("The Rust analyzer returned a null result collection.");
+
+        var prepared = new List<ExtractionResult>(results.Count);
+        foreach (var result in results)
+        {
+            if (result is null)
+                throw new InvalidOperationException("The Rust analyzer returned a null result.");
+
+            var nodes = result.Nodes?.ToArray()
+                ?? throw new InvalidOperationException("A Rust result contained a null node collection.");
+            var edges = result.Edges?.ToArray()
+                ?? throw new InvalidOperationException("A Rust result contained a null edge collection.");
+            var calls = result.UnresolvedCalls?.ToArray()
+                ?? throw new InvalidOperationException("A Rust result contained a null unresolved-call collection.");
+            var imports = result.UnresolvedImports?.ToArray()
+                ?? throw new InvalidOperationException("A Rust result contained a null unresolved-import collection.");
+
+            if (nodes.Any(node => node is null ||
+                                  string.IsNullOrWhiteSpace(node.Name) ||
+                                  string.IsNullOrWhiteSpace(node.QualifiedName)))
+            {
+                throw new InvalidOperationException("A Rust result contained an invalid semantic node.");
+            }
+
+            if (edges.Any(edge => edge is null ||
+                                  string.IsNullOrWhiteSpace(edge.SourceQN) ||
+                                  string.IsNullOrWhiteSpace(edge.TargetQN)))
+            {
+                throw new InvalidOperationException("A Rust result contained an invalid semantic edge.");
+            }
+
+            if (calls.Any(call => call is null ||
+                                  string.IsNullOrWhiteSpace(call.CallerQN) ||
+                                  string.IsNullOrWhiteSpace(call.CalleeName)))
+            {
+                throw new InvalidOperationException("A Rust result contained an invalid unresolved call.");
+            }
+
+            if (imports.Any(import => import is null ||
+                                      string.IsNullOrWhiteSpace(import.FileQN) ||
+                                      string.IsNullOrWhiteSpace(import.ImportedNamespace)))
+            {
+                throw new InvalidOperationException("A Rust result contained an invalid unresolved import.");
+            }
+
+            if (result.Metadata is not null && string.IsNullOrWhiteSpace(result.Metadata.Language))
+                throw new InvalidOperationException("A Rust result contained invalid project metadata.");
+
+            prepared.Add(result with
+            {
+                Nodes = nodes,
+                Edges = edges,
+                UnresolvedCalls = calls,
+                UnresolvedImports = imports
+            });
+        }
+
+        if (prepared.Count == 0 || prepared.All(result => result.Nodes.Count == 0))
+            throw new InvalidOperationException("The Rust analyzer returned no semantic definitions.");
+
+        return prepared;
+    }
 
     private static ProjectMetadata? SelectDominantMetadata(
         IEnumerable<ProjectMetadata?> metadata,

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Models;
 using CodeGraph.Services;
@@ -7,12 +8,22 @@ namespace CodeGraph.Extractors.Rust;
 
 public class RustProjectAnalyzer : IRustAnalyzer
 {
-    private static readonly TimeSpan ScipGenerationTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ProcessCleanupTimeout = TimeSpan.FromSeconds(5);
     private readonly ILogger<RustProjectAnalyzer> _logger;
+    private readonly TimeSpan _scipGenerationTimeout;
 
     public RustProjectAnalyzer(ILogger<RustProjectAnalyzer> logger)
+        : this(logger, DefaultScipGenerationTimeout)
+    {
+    }
+
+    internal RustProjectAnalyzer(
+        ILogger<RustProjectAnalyzer> logger,
+        TimeSpan scipGenerationTimeout)
     {
         _logger = logger;
+        _scipGenerationTimeout = scipGenerationTimeout;
     }
 
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
@@ -22,20 +33,18 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
         try
         {
-            var json = await TryReadExistingScipJsonAsync(context.RootPath, cargoRoot, ct)
-                ?? await TryGenerateScipJsonAsync(context.RootPath, ct);
-
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                _logger.LogInformation(
-                    "No SCIP JSON available for Rust project {Project}; falling back to per-file Rust extraction",
-                    context.ProjectName);
-                return [];
-            }
+            // A checked-in or leftover index.scip.json has no trustworthy binding to the
+            // current checkout. Always generate from the selected Cargo project so stale
+            // or wrong-project semantic data can never make an indexer run look healthy.
+            var json = await GenerateScipJsonAsync(cargoRoot, ct);
 
             var result = ScipJsonImporter.Import(json, context);
             if (result.Nodes.Count == 0)
-                return [];
+            {
+                throw new RustSemanticIndexingException(
+                    "rust_semantic_empty",
+                    $"Rust semantic indexing produced no importable definitions for '{context.ProjectName}'.");
+            }
 
             _logger.LogInformation(
                 "Rust SCIP extraction complete: {Nodes} nodes, {Edges} edges",
@@ -48,48 +57,29 @@ public class RustProjectAnalyzer : IRustAnalyzer
         {
             throw;
         }
+        catch (RustSemanticIndexingException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
-                "Rust SCIP extraction failed for {Manifest}; falling back to per-file Rust extraction",
-                cargoManifestPath);
-            return [];
+            throw new RustSemanticIndexingException(
+                "rust_semantic_import_failed",
+                $"Rust semantic indexing failed for '{cargoManifestPath}'.",
+                ex);
         }
     }
 
-    private static async Task<string?> TryReadExistingScipJsonAsync(
-        string rootPath,
-        string cargoRoot,
-        CancellationToken ct)
-    {
-        var candidates = new[]
-        {
-            Path.Combine(rootPath, "index.scip.json"),
-            Path.Combine(rootPath, ".codegraph", "index.scip.json"),
-            Path.Combine(cargoRoot, "index.scip.json"),
-            Path.Combine(cargoRoot, "target", "codegraph", "index.scip.json")
-        };
-
-        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (File.Exists(candidate))
-                return await File.ReadAllTextAsync(candidate, ct);
-        }
-
-        return null;
-    }
-
-    private async Task<string?> TryGenerateScipJsonAsync(string rootPath, CancellationToken ct)
+    private async Task<string> GenerateScipJsonAsync(string rootPath, CancellationToken ct)
     {
         var rustAnalyzer = FindExecutable("rust-analyzer");
         var scip = FindExecutable("scip");
         if (rustAnalyzer is null || scip is null)
         {
-            _logger.LogWarning(
-                "Rust semantic indexing tools are unavailable (rust-analyzer: {RustAnalyzerAvailable}, scip: {ScipAvailable}); falling back to Tree-sitter",
-                rustAnalyzer is not null,
-                scip is not null);
-            return null;
+            throw new RustSemanticIndexingException(
+                "rust_semantic_tools_unavailable",
+                $"Rust semantic indexing tools are unavailable " +
+                $"(rust-analyzer: {rustAnalyzer is not null}, scip: {scip is not null}).");
         }
 
         var tempDir = Path.Combine(Path.GetTempPath(), $"codegraph-rust-scip-{Guid.NewGuid():N}");
@@ -106,11 +96,16 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
             if (generation.ExitCode != 0)
             {
-                _logger.LogInformation(
-                    "rust-analyzer scip exited with {ExitCode}; stderr: {Stderr}",
-                    generation.ExitCode,
-                    generation.Stderr);
-                return null;
+                throw new RustSemanticIndexingException(
+                    "rust_analyzer_scip_failed",
+                    $"rust-analyzer scip exited with {generation.ExitCode}: {generation.Stderr}");
+            }
+
+            if (!File.Exists(scipPath))
+            {
+                throw new RustSemanticIndexingException(
+                    "rust_analyzer_scip_missing_output",
+                    "rust-analyzer scip reported success without creating an index.");
             }
 
             var printed = await RunCommandAsync(
@@ -122,11 +117,16 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
             if (printed.ExitCode != 0)
             {
-                _logger.LogInformation(
-                    "scip print --json exited with {ExitCode}; stderr: {Stderr}",
-                    printed.ExitCode,
-                    printed.Stderr);
-                return null;
+                throw new RustSemanticIndexingException(
+                    "scip_print_failed",
+                    $"scip print --json exited with {printed.ExitCode}: {printed.Stderr}");
+            }
+
+            if (string.IsNullOrWhiteSpace(printed.Stdout))
+            {
+                throw new RustSemanticIndexingException(
+                    "scip_print_empty",
+                    "scip print --json produced no output.");
             }
 
             return printed.Stdout;
@@ -138,7 +138,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
         }
     }
 
-    private static async Task<CommandResult> RunCommandAsync(
+    private async Task<CommandResult> RunCommandAsync(
         string fileName,
         IReadOnlyList<string> arguments,
         string workingDirectory,
@@ -146,25 +146,22 @@ public class RustProjectAnalyzer : IRustAnalyzer
         CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(ScipGenerationTimeout);
+        timeout.CancelAfter(_scipGenerationTimeout);
+
+        var useSetsid = !OperatingSystem.IsWindows() && File.Exists("/usr/bin/setsid");
 
         using var process = new Process
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = fileName,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = captureStdout,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
+            StartInfo = CreateProcessStartInfo(
+                fileName,
+                arguments,
+                workingDirectory,
+                captureStdout,
+                useSetsid)
         };
 
-        foreach (var argument in arguments)
-            process.StartInfo.ArgumentList.Add(argument);
-
         process.Start();
+        var processGroupId = useSetsid ? process.Id : (int?)null;
         var stdoutTask = captureStdout
             ? process.StandardOutput.ReadToEndAsync(timeout.Token)
             : Task.FromResult("");
@@ -178,13 +175,105 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 await stdoutTask,
                 await stderrTask);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            try { process.Kill(entireProcessTree: true); }
-            catch { /* process may already have exited */ }
-            return new CommandResult(-1, "", "Command timed out.");
+            await TerminateAndDrainAsync(
+                process,
+                processGroupId,
+                stdoutTask,
+                stderrTask);
+
+            // Preserve caller cancellation as cancellation, rather than translating it
+            // into a semantic-tool failure. Timeout remains a structured fatal failure.
+            ct.ThrowIfCancellationRequested();
+            throw new RustSemanticIndexingException(
+                "rust_semantic_command_timeout",
+                $"Rust semantic command '{Path.GetFileName(fileName)}' exceeded " +
+                $"the {_scipGenerationTimeout.TotalSeconds:0.###}-second timeout.");
         }
     }
+
+    private static ProcessStartInfo CreateProcessStartInfo(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string workingDirectory,
+        bool captureStdout,
+        bool useSetsid)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = useSetsid
+                ? "/usr/bin/setsid"
+                : OperatingSystem.IsWindows() ? fileName : "/bin/sh",
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = captureStdout,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (var argument in arguments)
+                startInfo.ArgumentList.Add(argument);
+            return startInfo;
+        }
+
+        if (useSetsid)
+        {
+            // A freshly spawned process cannot already lead its inherited process group,
+            // so setsid execs the tool in a new session whose process-group id is the
+            // Process.Id retained by the caller even after the tool itself exits.
+            startInfo.ArgumentList.Add(fileName);
+            foreach (var argument in arguments)
+                startInfo.ArgumentList.Add(argument);
+            return startInfo;
+        }
+
+        // macOS does not ship setsid. Its /bin/sh supports monitored background jobs,
+        // so retain a supervisor there for local development; production Linux images
+        // use the explicit setsid boundary above.
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(UnixProcessSupervisorScript);
+        startInfo.ArgumentList.Add("codegraph-process-supervisor");
+        startInfo.ArgumentList.Add(fileName);
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
+        return startInfo;
+    }
+
+    private static async Task TerminateAndDrainAsync(
+        Process process,
+        int? processGroupId,
+        Task<string> stdoutTask,
+        Task<string> stderrTask)
+    {
+        if (processGroupId is not null)
+            KillUnixProcessGroup(processGroupId.Value);
+
+        if (!process.HasExited)
+        {
+            try { process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { /* process exited between checks */ }
+        }
+
+        using var cleanup = new CancellationTokenSource(ProcessCleanupTimeout);
+        try { await process.WaitForExitAsync(cleanup.Token); }
+        catch (InvalidOperationException) { /* process was already reaped */ }
+        catch (OperationCanceledException) { /* cleanup remains bounded */ }
+
+        try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(cleanup.Token); }
+        catch (OperationCanceledException) { /* reads use the linked command deadline */ }
+    }
+
+    private static void KillUnixProcessGroup(int processGroupId)
+    {
+        const int sigkill = 9;
+        _ = kill(-processGroupId, sigkill);
+    }
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int processId, int signal);
 
     private static string? FindExecutable(string name)
     {
@@ -211,4 +300,20 @@ public class RustProjectAnalyzer : IRustAnalyzer
     }
 
     private sealed record CommandResult(int ExitCode, string Stdout, string Stderr);
+
+    private const string UnixProcessSupervisorScript = """
+        set -m
+        "$@" &
+        child=$!
+        cleanup() {
+          trap - EXIT HUP INT TERM
+          kill -KILL -"$child" 2>/dev/null || true
+          wait "$child" 2>/dev/null || true
+        }
+        trap cleanup EXIT HUP INT TERM
+        wait "$child"
+        status=$?
+        cleanup
+        exit "$status"
+        """;
 }
