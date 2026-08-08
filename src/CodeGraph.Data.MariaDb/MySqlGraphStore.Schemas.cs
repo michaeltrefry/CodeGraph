@@ -34,10 +34,11 @@ public partial class MySqlGraphStore
         )
         """;
 
-    private const string ValidSchemaPredicate = "server_name <> '' AND database_name <> ''";
+    private const string ValidSchemaPredicate =
+        "server_name REGEXP '[^[:space:]]' AND database_name REGEXP '[^[:space:]]'";
     private const string FilteredSchemaPredicate = """
-        server_name <> ''
-        AND database_name <> ''
+        server_name REGEXP '[^[:space:]]'
+        AND database_name REGEXP '[^[:space:]]'
         AND (@Server IS NULL OR LOWER(server_name) = LOWER(@Server))
         AND (@Database IS NULL OR LOWER(database_name) = LOWER(@Database))
         AND (@Search IS NULL

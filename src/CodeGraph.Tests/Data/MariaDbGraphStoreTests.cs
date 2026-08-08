@@ -69,6 +69,8 @@ public class MariaDbGraphStoreTests
             small.Result.TotalTables.ShouldBe(32);
             large.Result.TotalCount.ShouldBe(512);
             large.Result.TotalTables.ShouldBe(512);
+            AssertSchemaScalePage(small.Result, server);
+            AssertSchemaScalePage(large.Result, server);
             small.StatementCount.ShouldBe(4);
             large.StatementCount.ShouldBe(small.StatementCount);
         }
@@ -259,6 +261,12 @@ public class MariaDbGraphStoreTests
             {
                 Name = "db:sql-prod/Billing",
                 SourceGroup = "sql-prod"
+            });
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "db:invalid/Whitespace",
+                SourceGroup = " \t ",
+                Properties = """{"serverName":" \t ","databaseName":" \n "}"""
             });
             await store.UpsertNodeBatchAsync(
             [
@@ -556,5 +564,17 @@ public class MariaDbGraphStoreTests
 
         var result = await store.SearchSchemaRepositoriesAsync(server: server, page: 3, pageSize: 10);
         return (result, statementCount);
+    }
+
+    private static void AssertSchemaScalePage(SchemaRepositorySearchResult result, string server)
+    {
+        var expectedProjects = Enumerable.Range(20, 10)
+            .Select(index => $"db:{server}/Database{index:0000}")
+            .ToArray();
+
+        result.Items.Count.ShouldBe(10);
+        result.Items.Select(item => item.Project.Name).ShouldBe(expectedProjects);
+        result.Items.ShouldAllBe(item =>
+            item.TableCount == 1 && item.ViewCount == 0 && item.ProcedureCount == 0);
     }
 }

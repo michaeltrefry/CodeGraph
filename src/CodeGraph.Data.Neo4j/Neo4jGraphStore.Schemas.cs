@@ -30,8 +30,8 @@ public partial class Neo4jGraphStore
 
     private const string FilteredSchemaPredicate = """
         isDatabaseSchema
-        AND serverName <> ''
-        AND databaseName <> ''
+        AND serverName =~ '(?s).*\\S.*'
+        AND databaseName =~ '(?s).*\\S.*'
         AND ($server IS NULL OR toLower(serverName) = toLower($server))
         AND ($database IS NULL OR toLower(databaseName) = toLower($database))
         AND ($search IS NULL
@@ -109,7 +109,9 @@ public partial class Neo4jGraphStore
 
             var serverCursor = await tx.RunAsync($"""
                 {SchemaMetadataProjection}
-                WHERE isDatabaseSchema AND serverName <> '' AND databaseName <> ''
+                WHERE isDatabaseSchema
+                    AND serverName =~ '(?s).*\\S.*'
+                    AND databaseName =~ '(?s).*\\S.*'
                 WITH toLower(serverName) AS optionKey, min(serverName) AS optionValue
                 RETURN optionValue
                 ORDER BY optionKey, optionValue
@@ -121,8 +123,8 @@ public partial class Neo4jGraphStore
             var databaseCursor = await tx.RunAsync($"""
                 {SchemaMetadataProjection}
                 WHERE isDatabaseSchema
-                    AND serverName <> ''
-                    AND databaseName <> ''
+                    AND serverName =~ '(?s).*\\S.*'
+                    AND databaseName =~ '(?s).*\\S.*'
                     AND ($server IS NULL OR toLower(serverName) = toLower($server))
                 WITH toLower(databaseName) AS optionKey, min(databaseName) AS optionValue
                 RETURN optionValue

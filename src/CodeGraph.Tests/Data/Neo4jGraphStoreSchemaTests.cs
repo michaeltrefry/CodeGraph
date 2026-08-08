@@ -11,19 +11,17 @@ namespace CodeGraph.Tests.Data;
 public class Neo4jGraphStoreSchemaTests
 {
     [Fact]
-    public async Task SearchSchemaRepositoriesAsync_ExecutesFourStatementsAtBoth32And512SchemasWhenConfigured()
+    public async Task SearchSchemaRepositoriesAsync_ExecutesFourStatementsAtBoth32And512Schemas()
     {
-        var uri = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_TEST_URI");
-        if (string.IsNullOrWhiteSpace(uri))
-            return;
+        var uri = Require("CODEGRAPH_NEO4J_TEST_URI");
 
         var suffix = Guid.NewGuid().ToString("N");
         var server = $"scale-{suffix}";
         var options = Options.Create(new CodeGraphStorageOptions
         {
             Neo4jUri = uri,
-            Neo4jUsername = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_TEST_USERNAME") ?? "neo4j",
-            Neo4jPassword = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_TEST_PASSWORD") ?? "testpassword"
+            Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
+            Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
         });
         var counter = new BoltSchemaStatementCounter();
 
@@ -46,6 +44,8 @@ public class Neo4jGraphStoreSchemaTests
             small.TotalTables.ShouldBe(32);
             large.TotalCount.ShouldBe(512);
             large.TotalTables.ShouldBe(512);
+            AssertSchemaScalePage(small, server);
+            AssertSchemaScalePage(large, server);
             smallStatementCount.ShouldBe(4, counter.DescribeDebugEvents());
             largeStatementCount.ShouldBe(smallStatementCount, counter.DescribeDebugEvents());
         }
@@ -60,21 +60,21 @@ public class Neo4jGraphStoreSchemaTests
     }
 
     [Fact]
-    public async Task SearchSchemaRepositoriesAsync_ReturnsDeterministicPageAndFleetAggregatesWhenConfigured()
+    public async Task SearchSchemaRepositoriesAsync_ReturnsDeterministicPageAndFleetAggregates()
     {
-        var uri = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_TEST_URI");
-        if (string.IsNullOrWhiteSpace(uri))
-            return;
+        var uri = Require("CODEGRAPH_NEO4J_TEST_URI");
 
         var suffix = Guid.NewGuid().ToString("N");
         var server = $"server-{suffix}";
         var billingProject = $"db:{server}/Billing";
         var ordersProject = $"schema-{suffix}-orders";
+        var whitespaceServerProject = $"db:invalid-{suffix}/WhitespaceServer";
+        var whitespaceDatabaseProject = $"invalid-{suffix}-whitespace-database";
         var options = Options.Create(new CodeGraphStorageOptions
         {
             Neo4jUri = uri,
-            Neo4jUsername = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_TEST_USERNAME") ?? "neo4j",
-            Neo4jPassword = Environment.GetEnvironmentVariable("CODEGRAPH_NEO4J_TEST_PASSWORD") ?? "testpassword"
+            Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
+            Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
         });
 
         await using var factory = new Neo4jSessionFactory(options);
@@ -92,6 +92,11 @@ public class Neo4jGraphStoreSchemaTests
                 Name = ordersProject,
                 Properties = $$"""{"serverName":"{{server}}","databaseName":"Orders"}"""
             });
+            await SeedWhitespaceSchemasAsync(
+                factory,
+                server,
+                whitespaceServerProject,
+                whitespaceDatabaseProject);
             await store.UpsertNodeBatchAsync(
             [
                 new GraphNode
@@ -110,8 +115,12 @@ public class Neo4jGraphStoreSchemaTests
                 }
             ]);
 
+            var allTestSchemas = await store.SearchSchemaRepositoriesAsync(search: suffix);
             var result = await store.SearchSchemaRepositoriesAsync(server: server, page: 2, pageSize: 1);
 
+            allTestSchemas.TotalCount.ShouldBe(2);
+            allTestSchemas.Items.Select(item => item.Project.Name)
+                .ShouldBe([billingProject, ordersProject]);
             result.TotalCount.ShouldBe(2);
             result.TotalTables.ShouldBe(1);
             result.TotalProcedures.ShouldBe(1);
@@ -133,6 +142,8 @@ public class Neo4jGraphStoreSchemaTests
             await store.DeleteNodesByProjectAsync(ordersProject);
             await store.DeleteRepositoryAsync(billingProject);
             await store.DeleteRepositoryAsync(ordersProject);
+            await store.DeleteRepositoryAsync(whitespaceServerProject);
+            await store.DeleteRepositoryAsync(whitespaceDatabaseProject);
         }
     }
 
@@ -168,6 +179,52 @@ public class Neo4jGraphStoreSchemaTests
                 """, new { indexes, server, suffix });
         });
     }
+
+    private static async Task SeedWhitespaceSchemasAsync(
+        Neo4jSessionFactory factory,
+        string server,
+        string whitespaceServerProject,
+        string whitespaceDatabaseProject)
+    {
+        await using var session = factory.GetSession();
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync("""
+                CREATE (:RepositoryRecord {
+                    name: $whitespaceServerProject,
+                    sourceGroup: $whitespaceServer
+                })
+                CREATE (:RepositoryRecord {
+                    name: $whitespaceDatabaseProject,
+                    sourceGroup: $server,
+                    properties: '{"databaseName":"   "}'
+                })
+                """, new
+                {
+                    whitespaceServerProject,
+                    whitespaceDatabaseProject,
+                    whitespaceServer = " \t ",
+                    server
+                });
+        });
+    }
+
+    private static void AssertSchemaScalePage(SchemaRepositorySearchResult result, string server)
+    {
+        var expectedProjects = Enumerable.Range(20, 10)
+            .Select(index => $"db:{server}/Database{index:0000}")
+            .ToArray();
+
+        result.Items.Count.ShouldBe(10);
+        result.Items.Select(item => item.Project.Name).ShouldBe(expectedProjects);
+        result.Items.ShouldAllBe(item =>
+            item.TableCount == 1 && item.ViewCount == 0 && item.ProcedureCount == 0);
+    }
+
+    private static string Require(string name) =>
+        Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
+            ? value
+            : throw new InvalidOperationException($"{name} is required for the Neo4j schema integration tests.");
 
     private sealed class BoltSchemaStatementCounter : Neo4j.Driver.ILogger
     {
