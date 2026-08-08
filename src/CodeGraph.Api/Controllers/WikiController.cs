@@ -89,10 +89,14 @@ public class WikiController(
             var page = await wikiService.GetPageAsync(section, pagePath);
             if (page is null) return NotFound();
 
-            if (!Request.HasFormContentType || Request.Form.Files.Count == 0)
+            if (!Request.HasFormContentType)
                 return BadRequest("No file uploaded.");
 
-            var file = Request.Form.Files[0];
+            var form = await Request.ReadFormAsync();
+            if (form.Files.Count == 0)
+                return BadRequest("No file uploaded.");
+
+            var file = form.Files[0];
             var maxBytes = wikiOptions.MaxAttachmentSizeMb * 1024L * 1024L;
             if (file.Length > maxBytes)
                 return BadRequest($"File exceeds {wikiOptions.MaxAttachmentSizeMb}MB limit.");

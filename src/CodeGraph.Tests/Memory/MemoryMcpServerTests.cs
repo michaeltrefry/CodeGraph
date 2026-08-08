@@ -41,6 +41,7 @@ public class MemoryMcpServerTests
 
         bus.Published.ShouldHaveSingleItem();
         bus.Published[0].ReceiptId.ShouldNotBeNullOrWhiteSpace();
+        bus.Published[0].Username.ShouldBe("user:test");
         bus.Published[0].Source.ShouldBe("thread-123");
         bus.Published[0].Extraction.Claims.ShouldHaveSingleItem();
     }
@@ -137,6 +138,7 @@ public class MemoryMcpServerTests
 
     private sealed class FakeMemoryGraphStore : IMemoryGraphStore
     {
+        public string Username => "user:test";
         public Dictionary<string, MemoryWriteReceipt> WriteReceipts { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt)

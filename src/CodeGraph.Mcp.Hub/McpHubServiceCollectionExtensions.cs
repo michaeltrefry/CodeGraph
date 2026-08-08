@@ -12,6 +12,7 @@ public static class McpHubServiceCollectionExtensions
         services.AddTransient<McpHubService>();
         services.AddTransient<McpShimDiscoveryService>();
         services.AddTransient<McpShimService>();
+        services.AddSingleton<ShortcutUploadStagingArea>();
         services.TryAddSingleton<IMcpShimClient, McpClientShimClient>();
         services.AddSingleton<SensitiveColumnPolicy>();
         services.AddSingleton<MySqlSourceExposurePolicy>();

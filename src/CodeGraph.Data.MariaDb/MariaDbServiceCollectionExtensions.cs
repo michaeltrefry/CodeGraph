@@ -13,6 +13,7 @@ public static class MariaDbServiceCollectionExtensions
         Action<MariaDbStorageOptions> configureOptions)
     {
         services.Configure(configureOptions);
+        services.AddScoped<IMemoryTenantContext, MemoryTenantContext>();
 
         services.AddDbContext<CodeGraphDbContext>((sp, options) =>
         {
@@ -44,6 +45,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IIndexerRunStore, MySqlIndexerRunStore>();
         services.AddTransient<IVectorStore, MySqlVectorStore>();
         services.AddTransient<IMemoryGraphStore, MySqlMemoryGraphStore>();
+        services.AddTransient<IMemoryAdminAuditStore, MySqlMemoryAdminAuditStore>();
         services.AddTransient<IAssistantRunStore, MySqlAssistantRunStore>();
         services.AddTransient<IMcpPersonalAccessTokenStore, MySqlMcpPersonalAccessTokenStore>();
         services.AddTransient<IMcpHubStore, MySqlMcpHubStore>();
@@ -51,6 +53,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IMcpProviderCredentialStore, MySqlMcpProviderCredentialStore>();
         services.AddTransient<IMetricsEventStore, MySqlMetricsEventStore>();
         services.AddTransient<IAdminReportsStore, MySqlAdminReportsStore>();
+        services.AddTransient<IApplicationLogStore, MySqlApplicationLogStore>();
 
         return services;
     }

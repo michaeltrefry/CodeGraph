@@ -5,9 +5,10 @@ using CodeGraph.Data;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
+using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Pipeline;
 
-namespace CodeGraph.Api.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 /// <summary>
 /// Handles post-indexing work: cross-repo linking, vitals computation, and analysis submission.

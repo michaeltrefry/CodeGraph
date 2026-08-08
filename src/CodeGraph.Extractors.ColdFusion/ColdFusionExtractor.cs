@@ -18,8 +18,20 @@ public class ColdFusionExtractor : ICodeExtractor
     public Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
     {
-        var parser = new ColdFusionParser(context, filePath);
-        var result = parser.Parse(content);
-        return Task.FromResult(result);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var parser = new ColdFusionParser(context, filePath);
+            return Task.FromResult(parser.Parse(content));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ColdFusion extraction failed for {FilePath}", filePath);
+            return Task.FromResult(ExtractionResult.Failure(ex.Message));
+        }
     }
 }

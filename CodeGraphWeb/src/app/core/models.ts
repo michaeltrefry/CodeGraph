@@ -350,6 +350,35 @@ export interface AdminReportFiltersResponse {
   tools: string[];
 }
 
+export interface ApplicationLogEntryResponse {
+  id: number;
+  occurredAtUtc: string;
+  level: string;
+  source: string;
+  category: string;
+  eventId: number;
+  message: string;
+  exception?: string;
+  traceId?: string;
+  spanId?: string;
+  propertiesJson?: string;
+}
+
+export interface ApplicationLogPageResponse {
+  entries: ApplicationLogEntryResponse[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+}
+
+export interface ClientErrorReportRequest {
+  message: string;
+  stack?: string;
+  url?: string;
+  userAgent?: string;
+}
+
 export interface LlmProviderResponse {
   provider: string;
   hasToken: boolean;

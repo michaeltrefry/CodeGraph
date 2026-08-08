@@ -148,6 +148,11 @@ public partial class IndexingPipeline
         _logger.LogInformation("Found {Total} files, {Changed} changed",
             files.Count, filesToProcess.Count);
 
+        var changedRelativePaths = filesToProcess
+            .Select(file => NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var successfullyProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         // Discover .csproj files once and reuse for structural nodes + NuGet extraction
         var csprojFiles = _fileSystem.EnumerateFiles(rootPath, "*.csproj", SearchOption.AllDirectories).ToArray();
 
@@ -157,8 +162,10 @@ public partial class IndexingPipeline
         _logger.LogInformation("[Timing] Structural nodes: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
         // Pass 2: Extract code elements using specialized analyzers where available.
-        // Track which extensions have been handled so per-file extraction skips them.
-        var specializedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Track exact files completed by project analyzers. A partial project result must
+        // fall back per-file instead of advancing hashes for files it did not process.
+        // The absolute-path set deduplicates shared projects/documents across solutions.
+        var specializedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // C# — solution-level Roslyn analysis
         if (_solutionAnalyzer is not null && dotnetToolingTrusted)
@@ -166,34 +173,57 @@ public partial class IndexingPipeline
             var solutionFiles = _fileSystem.EnumerateFiles(rootPath, "*.slnx", SearchOption.TopDirectoryOnly)
                 .Concat(_fileSystem.EnumerateFiles(rootPath, "*.sln", SearchOption.TopDirectoryOnly))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)),
+                    StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             if (solutionFiles.Length > 0)
             {
-                var solutionFile = solutionFiles[0];
                 _logger.LogWarning(
                     "SECURITY-AUDIT: repository {Project} with provider-resolved identity {RepositoryIdentity} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
                     projectName,
                     repositoryToolingIdentity);
-                _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
-                    Path.GetFileName(solutionFile));
-                stepSw.Restart();
-                try
+                foreach (var solutionFile in solutionFiles)
                 {
-                    var results = await _solutionAnalyzer.AnalyzeSolutionAsync(solutionFile, context, ct);
-                    _logger.LogInformation("[Timing] Roslyn solution analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    AddMetadataCandidates(detectedMetadataCandidates, results);
-                    MergeResults(results, buffer);
-                    specializedExtensions.Add(".cs");
-                }
-                // Broad catch is intentional: Roslyn can throw many exception types
-                // (ReflectionTypeLoadException, BadImageFormatException, etc.) and we must
-                // always fall back gracefully to per-file extraction.
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex,
-                        "Roslyn solution analysis failed for {Solution} — falling back to per-file extraction",
+                    _logger.LogInformation("Using solution-level Roslyn analysis for {Solution}",
                         Path.GetFileName(solutionFile));
+                    stepSw.Restart();
+                    try
+                    {
+                        var analysis = await _solutionAnalyzer.AnalyzeSolutionAsync(solutionFile, context, ct);
+                        _logger.LogInformation(
+                            "[Timing] Roslyn solution analysis for {Solution}: {ElapsedMs}ms",
+                            Path.GetFileName(solutionFile),
+                            stepSw.ElapsedMilliseconds);
+
+                        if (analysis.Metadata is not null)
+                            detectedMetadataCandidates.Add(analysis.Metadata);
+
+                        foreach (var document in analysis.Documents)
+                        {
+                            var documentPath = NormalizeAnalyzedDocumentPath(rootPath, document.FilePath);
+                            if (!document.Result.Succeeded)
+                                continue;
+                            if (!specializedFiles.Add(documentPath))
+                                continue;
+
+                            var relativePath = NormalizeRelativePath(
+                                Path.GetRelativePath(rootPath, documentPath));
+                            var result = document.Result with { ProcessedFiles = [relativePath] };
+                            MergeResults([result], buffer);
+                            AddSuccessfullyProcessedFiles(
+                                [result], changedRelativePaths, successfullyProcessedFiles);
+                        }
+                    }
+                    // Broad catch is intentional: Roslyn can throw many exception types
+                    // (ReflectionTypeLoadException, BadImageFormatException, etc.) and we must
+                    // always fall back gracefully to per-file extraction.
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "Roslyn solution analysis failed for {Solution} — falling back to per-file extraction for uncovered files",
+                            Path.GetFileName(solutionFile));
+                    }
                 }
             }
         }
@@ -235,7 +265,7 @@ public partial class IndexingPipeline
                     _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
-                    specializedExtensions.Add(".ts");
+                    AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -275,8 +305,10 @@ public partial class IndexingPipeline
                     // cannot leave a partial Rust graph behind before failing the run.
                     MergeResults(preparedResults, buffer);
                     AddMetadataCandidates(detectedMetadataCandidates, preparedResults);
-
-                    specializedExtensions.Add(".rs");
+                    AddSuccessfullyProcessedFiles(
+                        preparedResults,
+                        changedRelativePaths,
+                        successfullyProcessedFiles);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (RustSemanticIndexingException ex)
@@ -334,19 +366,20 @@ public partial class IndexingPipeline
             }
         }
 
-        // Per-file extraction for everything not handled by a specialized analyzer
-        var remainingFiles = specializedExtensions.Count > 0
-            ? filesToProcess.Where(f => !specializedExtensions.Contains(
-                Path.GetExtension(f))).ToList()
-            : filesToProcess;
+        // Per-file extraction for everything not successfully handled by a specialized analyzer
+        var remainingFiles = filesToProcess
+            .Where(file => !successfullyProcessedFiles.Contains(
+                NormalizeRelativePath(Path.GetRelativePath(rootPath, file))))
+            .ToList();
 
         if (remainingFiles.Count > 0)
         {
             stepSw.Restart();
-            var perFileMetadata = await ExtractFilesAsync(
+            var perFileResult = await ExtractFilesAsync(
                 remainingFiles, rootPath, context, buffer, replaceExistingGraph, ct);
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
-            detectedMetadataCandidates.AddRange(perFileMetadata);
+            detectedMetadataCandidates.AddRange(perFileResult.Metadata);
+            successfullyProcessedFiles.UnionWith(perFileResult.ProcessedFiles);
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
@@ -384,20 +417,28 @@ public partial class IndexingPipeline
         }
         else
         {
-            var qnToId = await _store.UpsertNodeBatchAsync(buffer.AllNodes.ToList(), ct);
-            _logger.LogInformation("[Timing] Node upsert ({NodeCount} nodes): {ElapsedMs}ms", buffer.AllNodes.Count, stepSw.ElapsedMilliseconds);
+            var replacementPaths = successfullyProcessedFiles
+                .Concat(deletedFiles)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
+                buffer,
+                replacementPaths,
+                includeProjectStructure: existingHashes.Count == 0);
+            var replacementHashes = buffer.AllFileHashes
+                .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
+                .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
 
-            stepSw.Restart();
-            var resolvedEdges = buffer.ResolveEdges(projectName, qnToId, _logger);
-            await _store.InsertEdgeBatchAsync(resolvedEdges, ct);
-            edgeCount = resolvedEdges.Count;
-            _logger.LogInformation("[Timing] Edge resolution + insert ({EdgeCount} edges): {ElapsedMs}ms", edgeCount, stepSw.ElapsedMilliseconds);
-
-            stepSw.Restart();
-            await _store.UpsertFileHashBatchAsync(projectName,
-                buffer.AllFileHashes.ToDictionary(kv => kv.Key, kv => kv.Value), ct);
-            await _store.DeleteFilesFromProjectGraphAsync(projectName, deletedFiles, ct);
-            _logger.LogInformation("[Timing] File hash reconciliation: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+            edgeCount = await _store.ReplaceProjectFilesAsync(
+                projectName,
+                replacementPaths,
+                replacementNodes,
+                replacementEdges,
+                replacementHashes,
+                ct);
+            _logger.LogInformation(
+                "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
+                replacementPaths.Count, replacementNodes.Count, edgeCount, stepSw.ElapsedMilliseconds);
         }
 
         // Publish detected metadata only after the graph write succeeds.
@@ -477,10 +518,11 @@ public partial class IndexingPipeline
 
     // ── Per-File Extraction ──────────────────────────────────────────────
 
-    private async Task<IReadOnlyList<ProjectMetadata>> ExtractFilesAsync(List<string> files, string rootPath,
+    private async Task<PerFileExtractionResult> ExtractFilesAsync(List<string> files, string rootPath,
         ExtractorContext context, GraphBuffer buffer, bool failOnExtractionError, CancellationToken ct)
     {
         var metadataSeen = new ConcurrentBag<ProjectMetadata>();
+        var processedFiles = new ConcurrentBag<string>();
         var failures = new ConcurrentQueue<Exception>();
 
         await Parallel.ForEachAsync(files,
@@ -506,6 +548,17 @@ public partial class IndexingPipeline
                     var result = await extractor.ExtractAsync(filePath, content,
                         context, ct2);
 
+                    if (!result.Succeeded)
+                    {
+                        var failure = new InvalidOperationException(
+                            $"Extractor reported failure for {filePath}: " +
+                            (result.FailureReason ?? "no reason provided"));
+                        _logger.LogWarning(failure, "Failed to extract {File}", filePath);
+                        if (failOnExtractionError)
+                            failures.Enqueue(failure);
+                        return;
+                    }
+
                     foreach (var node in result.Nodes)
                         buffer.AddNode(node);
                     foreach (var edge in result.Edges)
@@ -517,6 +570,7 @@ public partial class IndexingPipeline
 
                     if (result.Metadata is not null)
                         metadataSeen.Add(result.Metadata);
+                    processedFiles.Add(NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath)));
                 }
                 catch (OperationCanceledException) when (ct2.IsCancellationRequested)
                 {
@@ -533,7 +587,7 @@ public partial class IndexingPipeline
         if (!failures.IsEmpty)
             throw new AggregateException("One or more files failed during replacement indexing.", failures);
 
-        return metadataSeen.ToList();
+        return new PerFileExtractionResult(metadataSeen.ToList(), processedFiles.ToList());
     }
 
     private RepositoryEntity BuildRepositorySnapshot(
@@ -553,7 +607,7 @@ public partial class IndexingPipeline
 
     private static void MergeResults(IReadOnlyList<ExtractionResult> results, GraphBuffer buffer)
     {
-        foreach (var result in results)
+        foreach (var result in results.Where(result => result.Succeeded))
         {
             foreach (var node in result.Nodes) buffer.AddNode(node);
             foreach (var edge in result.Edges) buffer.AddEdge(edge);
@@ -563,7 +617,97 @@ public partial class IndexingPipeline
     }
 
     private static void AddMetadataCandidates(List<ProjectMetadata> candidates, IReadOnlyList<ExtractionResult> results) =>
-        candidates.AddRange(results.Select(r => r.Metadata).Where(m => m is not null).Cast<ProjectMetadata>());
+        candidates.AddRange(results
+            .Where(result => result.Succeeded)
+            .Select(result => result.Metadata)
+            .Where(metadata => metadata is not null)
+            .Cast<ProjectMetadata>());
+
+    private static void AddSuccessfullyProcessedFiles(
+        IEnumerable<ExtractionResult> results,
+        IReadOnlySet<string> changedFiles,
+        ISet<string> successfullyProcessedFiles)
+    {
+        foreach (var file in results
+                     .Where(result => result.Succeeded)
+                     .SelectMany(result => result.ProcessedFiles))
+        {
+            var normalized = NormalizeRelativePath(file);
+            if (changedFiles.Contains(normalized))
+                successfullyProcessedFiles.Add(normalized);
+        }
+    }
+
+    private static (List<GraphNode> Nodes, List<PendingEdge> Edges) BuildIncrementalSlice(
+        GraphBuffer buffer,
+        IReadOnlyList<string> replacementPaths,
+        bool includeProjectStructure)
+    {
+        var paths = replacementPaths
+            .Select(NormalizeRelativePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var replacementNodes = buffer.AllNodes
+            .Where(node => includeProjectStructure ||
+                           (!string.IsNullOrWhiteSpace(node.FilePath) &&
+                            paths.Contains(NormalizeRelativePath(node.FilePath))))
+            .ToList();
+        var replacementQns = replacementNodes
+            .Select(node => node.QualifiedName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selectedEdges = buffer.AllPendingEdges
+            .Where(edge => replacementQns.Contains(edge.SourceQN) || replacementQns.Contains(edge.TargetQN))
+            .ToList();
+        var supportQns = selectedEdges
+            .SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN })
+            .Where(qn => !replacementQns.Contains(qn))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // A new file can introduce an entire folder chain. Pull in only the
+        // structural ancestors needed to connect that new slice.
+        var addedAncestor = true;
+        while (addedAncestor)
+        {
+            addedAncestor = false;
+            foreach (var edge in buffer.AllPendingEdges.Where(edge => edge.Type == EdgeType.CONTAINS_FOLDER))
+            {
+                if (!supportQns.Contains(edge.TargetQN))
+                    continue;
+                if (selectedEdges.Any(selected => selected == edge))
+                    continue;
+
+                selectedEdges.Add(edge);
+                if (!replacementQns.Contains(edge.SourceQN))
+                    addedAncestor |= supportQns.Add(edge.SourceQN);
+            }
+        }
+
+        if (includeProjectStructure)
+        {
+            foreach (var node in buffer.AllNodes.Where(node =>
+                         node.Label is NodeLabel.Repository or NodeLabel.DotnetProject))
+                supportQns.Add(node.QualifiedName);
+            selectedEdges.AddRange(buffer.AllPendingEdges.Where(edge => edge.Type == EdgeType.CONTAINS_PROJECT));
+        }
+
+        var supportingNodes = supportQns
+            .Select(buffer.FindByQN)
+            .Where(node => node is not null && string.IsNullOrWhiteSpace(node.FilePath))
+            .Cast<GraphNode>();
+
+        return (
+            replacementNodes.Concat(supportingNodes)
+                .DistinctBy(node => node.QualifiedName, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            selectedEdges.DistinctBy(
+                    edge => $"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}",
+                    StringComparer.OrdinalIgnoreCase)
+                .ToList());
+    }
+
+    private static string NormalizeAnalyzedDocumentPath(string rootPath, string documentPath) =>
+        Path.GetFullPath(Path.IsPathRooted(documentPath)
+            ? documentPath
+            : Path.Combine(rootPath, documentPath));
 
     private static IReadOnlyList<ExtractionResult> PrepareRustSemanticResults(
         IReadOnlyList<ExtractionResult>? results)
@@ -837,6 +981,10 @@ public partial class IndexingPipeline
         int LocNonBlank,
         int NodeCount,
         double LocShare);
+
+    private sealed record PerFileExtractionResult(
+        IReadOnlyList<ProjectMetadata> Metadata,
+        IReadOnlyList<string> ProcessedFiles);
 
     private static int GetLanguagePriority(string language) =>
         language.ToLowerInvariant() switch

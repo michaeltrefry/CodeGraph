@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text;
 using CodeGraph.Api.Middleware;
 using CodeGraph.Data;
+using CodeGraph.Mcp.Hub;
 using CodeGraph.Services.Configuration;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -58,6 +59,46 @@ public class McpToolEntitlementMiddlewareTests
         body.ShouldNotContain("shortcut_search_epics");
         body.ShouldNotContain("disabled_tool");
         body.ShouldNotContain("not_cataloged");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_ToolsList_ExcludesUploadToolsForLegacyAll_AndIncludesExplicitSelection()
+    {
+        var store = new InMemoryMcpHubStore();
+        await store.UpsertProviderAsync(new McpHubProviderEntity { ProviderKey = "codegraph", Enabled = true });
+        await store.UpsertProviderAsync(new McpHubProviderEntity { ProviderKey = "shortcut", Enabled = true });
+        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "search_graph", ProviderKey = "codegraph", Enabled = true, IsAvailable = true });
+        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "stories-stage-file", ProviderKey = "shortcut", Enabled = true, IsAvailable = true });
+        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "stories-upload-file", ProviderKey = "shortcut", Enabled = true, IsAvailable = true });
+
+        using var serviceProvider = new ServiceCollection()
+            .AddSingleton<IMcpHubStore>(store)
+            .BuildServiceProvider(validateScopes: true);
+        var response = """
+            {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"stories-stage-file"},{"name":"stories-upload-file"}]}}
+            """;
+        var middleware = CreateMiddleware(
+            context => context.Response.WriteAsync(response),
+            serviceProvider.GetRequiredService<IServiceScopeFactory>());
+
+        var legacyContext = CreateMcpContext("""{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}""");
+        legacyContext.User = PrincipalWithToken(42);
+        await middleware.InvokeAsync(legacyContext);
+        legacyContext.Response.Body.Position = 0;
+        var legacyBody = await new StreamReader(legacyContext.Response.Body).ReadToEndAsync();
+        legacyBody.ShouldContain("search_graph");
+        legacyBody.ShouldNotContain("stories-stage-file");
+        legacyBody.ShouldNotContain("stories-upload-file");
+
+        await store.ReplaceTokenEntitlementsAsync(42, ["stories-stage-file", "stories-upload-file"]);
+        var selectedContext = CreateMcpContext("""{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""");
+        selectedContext.User = PrincipalWithToken(42);
+        await middleware.InvokeAsync(selectedContext);
+        selectedContext.Response.Body.Position = 0;
+        var selectedBody = await new StreamReader(selectedContext.Response.Body).ReadToEndAsync();
+        selectedBody.ShouldNotContain("search_graph");
+        selectedBody.ShouldContain("stories-stage-file");
+        selectedBody.ShouldContain("stories-upload-file");
     }
 
     [Fact]

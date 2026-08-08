@@ -173,6 +173,120 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_AnalyzesAllSolutionsDeterministically_AndDeduplicatesSharedDocuments()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-multi-solution-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var zetaSolution = Path.Combine(rootPath, "Zeta.slnx");
+            var alphaSolution = Path.Combine(rootPath, "Alpha.sln");
+            await File.WriteAllTextAsync(zetaSolution, "<Solution />");
+            await File.WriteAllTextAsync(alphaSolution, string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Shared.cs"), "public sealed class Shared {}");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "AlphaOnly.cs"), "public sealed class AlphaOnly {}");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "ZetaOnly.cs"), "public sealed class ZetaOnly {}");
+
+            var fallback = new TrackingCSharpExtractor();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer((solutionPath, context) =>
+                Path.GetFileName(solutionPath) == "Alpha.sln"
+                    ? new SolutionAnalysisResult
+                    {
+                        Documents =
+                        [
+                            CreateSolutionDocument(context, "Shared.cs", "Shared", includeSelfEdge: true),
+                            CreateSolutionDocument(context, "AlphaOnly.cs", "AlphaOnly")
+                        ]
+                    }
+                    : new SolutionAnalysisResult
+                    {
+                        Documents =
+                        [
+                            CreateSolutionDocument(context, "Shared.cs", "Shared", includeSelfEdge: true),
+                            CreateSolutionDocument(context, "ZetaOnly.cs", "ZetaOnly")
+                        ]
+                    });
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [fallback],
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "folder:Multi" }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync(
+                "Multi", rootPath, repositoryToolingIdentity: "folder:Multi", ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPaths.ShouldBe([alphaSolution, zetaSolution]);
+            store.Nodes.Where(node => node.Label == NodeLabel.Class)
+                .Select(node => node.Name)
+                .OrderBy(name => name)
+                .ShouldBe(["AlphaOnly", "Shared", "ZetaOnly"]);
+            store.Edges.Count(edge => edge.Type == EdgeType.CALLS).ShouldBe(1);
+            fallback.CalledFiles.ShouldBeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FailedSolutionFallsBackOnlyForUncoveredCSharpFiles()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-multi-solution-fallback-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var goodSolution = Path.Combine(rootPath, "AGood.sln");
+            var brokenSolution = Path.Combine(rootPath, "BBroken.slnx");
+            await File.WriteAllTextAsync(goodSolution, string.Empty);
+            await File.WriteAllTextAsync(brokenSolution, "<Solution />");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Good.cs"), "public sealed class Good {}");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Broken.cs"), "public sealed class Broken {}");
+
+            var fallback = new TrackingCSharpExtractor();
+            var solutionAnalyzer = new RecordingSolutionAnalyzer((solutionPath, context) =>
+            {
+                if (Path.GetFileName(solutionPath) == "BBroken.slnx")
+                    throw new InvalidOperationException("synthetic solution load failure");
+
+                return new SolutionAnalysisResult
+                {
+                    Documents = [CreateSolutionDocument(context, "Good.cs", "Good")]
+                };
+            });
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(
+                store,
+                [fallback],
+                Options.Create(new IndexingOptions { TrustedDotnetRepositories = "folder:Fallback" }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                solutionAnalyzer);
+
+            await pipeline.IndexProjectAsync(
+                "Fallback", rootPath, repositoryToolingIdentity: "folder:Fallback", ct: CancellationToken.None);
+
+            solutionAnalyzer.CalledSolutionPaths.ShouldBe([goodSolution, brokenSolution]);
+            fallback.CalledFiles.ShouldBe([Path.Combine(rootPath, "Broken.cs")]);
+            store.Nodes.Where(node => node.Label == NodeLabel.Class)
+                .Select(node => node.Name)
+                .OrderBy(name => name)
+                .ShouldBe(["Broken", "Good"]);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_DefaultPolicy_SkipsSolutionToolingAndUsesSyntaxFallback()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-untrusted-sln-{Guid.NewGuid():N}");
@@ -601,6 +715,96 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_ChangedFileAtomicallyReplacesSymbolsRoutesAndDependentEdges()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-slice-replace-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "api.cg"), "old");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "caller.cg"), "caller");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "target.cg"), "target");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new ReplacementGraphExtractor());
+
+            await pipeline.IndexProjectAsync("SliceRepo", rootPath, ct: CancellationToken.None);
+
+            var unchangedCaller = (await store.FindNodeByQualifiedNameAsync("SliceRepo", "SliceRepo.Caller.Run"))!;
+            var unchangedTarget = (await store.FindNodeByQualifiedNameAsync("SliceRepo", "SliceRepo.Target.Run"))!;
+            var oldClass = (await store.FindNodeByQualifiedNameAsync("SliceRepo", "SliceRepo.OldController"))!;
+            var oldMethod = (await store.FindNodeByQualifiedNameAsync("SliceRepo", "SliceRepo.OldController.OldAction"))!;
+            var oldRoute = (await store.FindNodeByQualifiedNameAsync("SliceRepo", "route:GET:/old"))!;
+            (await store.FindEdgesBySourceAsync(oldMethod.Id, EdgeType.CALLS))
+                .ShouldContain(edge => edge.TargetId == unchangedTarget.Id);
+            (await store.FindEdgesBySourceAsync(unchangedCaller.Id, EdgeType.CALLS))
+                .ShouldContain(edge => edge.TargetId == oldMethod.Id);
+            var oldHash = (await store.GetFileHashesAsync("SliceRepo"))["api.cg"];
+
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "api.cg"), "new");
+            await pipeline.IndexProjectAsync("SliceRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodeByQualifiedNameAsync("SliceRepo", oldClass.QualifiedName)).ShouldBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceRepo", oldMethod.QualifiedName)).ShouldBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceRepo", oldRoute.QualifiedName)).ShouldBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceRepo", "SliceRepo.NewController")).ShouldNotBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceRepo", "SliceRepo.NewController.NewAction")).ShouldNotBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceRepo", "route:GET:/new")).ShouldNotBeNull();
+            (await store.FindNodeByIdAsync(unchangedCaller.Id)).ShouldNotBeNull();
+            (await store.FindNodeByIdAsync(unchangedTarget.Id)).ShouldNotBeNull();
+            store.Edges.ShouldNotContain(edge => edge.SourceId == oldMethod.Id || edge.TargetId == oldMethod.Id);
+            (await store.GetFileHashesAsync("SliceRepo"))["api.cg"].ShouldNotBe(oldHash);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_ExtractionOrStoreFailurePreservesPriorSliceAndHash()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-slice-failure-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            var filePath = Path.Combine(rootPath, "api.cg");
+            await File.WriteAllTextAsync(filePath, "old");
+            var store = new InMemoryGraphStore();
+            await CreatePipeline(store, new ReplacementGraphExtractor())
+                .IndexProjectAsync("FailureSliceRepo", rootPath, ct: CancellationToken.None);
+            var oldNode = (await store.FindNodeByQualifiedNameAsync(
+                "FailureSliceRepo", "FailureSliceRepo.OldController.OldAction"))!;
+            var oldHash = (await store.GetFileHashesAsync("FailureSliceRepo"))["api.cg"];
+
+            await File.WriteAllTextAsync(filePath, "new");
+            await CreatePipeline(store, new AlwaysFailingReplacementExtractor())
+                .IndexProjectAsync("FailureSliceRepo", rootPath, ct: CancellationToken.None);
+            (await store.FindNodeByIdAsync(oldNode.Id)).ShouldNotBeNull();
+            (await store.GetFileHashesAsync("FailureSliceRepo"))["api.cg"].ShouldBe(oldHash);
+
+            await CreatePipeline(store, new ReportedFailureReplacementExtractor())
+                .IndexProjectAsync("FailureSliceRepo", rootPath, ct: CancellationToken.None);
+            (await store.FindNodeByIdAsync(oldNode.Id)).ShouldNotBeNull();
+            (await store.GetFileHashesAsync("FailureSliceRepo"))["api.cg"].ShouldBe(oldHash);
+
+            store.IncrementalReplacementFailure = new InvalidOperationException("synthetic atomic write failure");
+            await Should.ThrowAsync<InvalidOperationException>(() =>
+                CreatePipeline(store, new ReplacementGraphExtractor())
+                    .IndexProjectAsync("FailureSliceRepo", rootPath, ct: CancellationToken.None));
+            (await store.FindNodeByIdAsync(oldNode.Id)).ShouldNotBeNull();
+            (await store.GetFileHashesAsync("FailureSliceRepo"))["api.cg"].ShouldBe(oldHash);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_IncrementalDeletionRemovesNodesHashesAndAnalysis()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-incremental-delete-{Guid.NewGuid():N}");
@@ -938,6 +1142,109 @@ public class IndexingPipelineTests
         }
     }
 
+    private sealed class AlwaysFailingReplacementExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } = new HashSet<string>([".cg"]);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default) =>
+            throw new InvalidOperationException("synthetic extraction failure");
+    }
+
+    private sealed class ReportedFailureReplacementExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } = new HashSet<string>([".cg"]);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default) =>
+            Task.FromResult(ExtractionResult.Failure("production extractor reported a parse failure"));
+    }
+
+    private sealed class ReplacementGraphExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } = new HashSet<string>([".cg"]);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            var relPath = Path.GetRelativePath(context.RootPath, filePath).Replace('\\', '/');
+            var fileQn = $"{context.ProjectName}:{relPath}";
+            if (content == "caller")
+            {
+                return Task.FromResult(new ExtractionResult
+                {
+                    Nodes = [Node(NodeLabel.Method, "Caller.Run", "Caller.Run")],
+                    Edges =
+                    [
+                        new PendingEdge(fileQn, $"{context.ProjectName}.Caller.Run", EdgeType.DEFINES_METHOD),
+                        new PendingEdge($"{context.ProjectName}.Caller.Run", $"{context.ProjectName}.OldController.OldAction", EdgeType.CALLS)
+                    ]
+                });
+            }
+
+            if (content == "target")
+            {
+                return Task.FromResult(new ExtractionResult
+                {
+                    Nodes = [Node(NodeLabel.Method, "Target.Run", "Target.Run")],
+                    Edges = [new PendingEdge(fileQn, $"{context.ProjectName}.Target.Run", EdgeType.DEFINES_METHOD)]
+                });
+            }
+
+            var isOld = content == "old";
+            var className = isOld ? "OldController" : "NewController";
+            var methodName = isOld ? "OldAction" : "NewAction";
+            var route = isOld ? "/old" : "/new";
+            var classQn = $"{context.ProjectName}.{className}";
+            var methodQn = $"{classQn}.{methodName}";
+            var routeQn = $"route:GET:{route}";
+            var edges = new List<PendingEdge>
+            {
+                new(fileQn, classQn, EdgeType.DEFINES),
+                new(classQn, methodQn, EdgeType.DEFINES_METHOD),
+                new(methodQn, routeQn, EdgeType.HANDLES)
+            };
+            if (isOld)
+                edges.Add(new PendingEdge(methodQn, $"{context.ProjectName}.Target.Run", EdgeType.CALLS));
+
+            return Task.FromResult(new ExtractionResult
+            {
+                Nodes =
+                [
+                    Node(NodeLabel.Class, className, className),
+                    Node(NodeLabel.Method, methodName, $"{className}.{methodName}"),
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Route,
+                        Name = route,
+                        QualifiedName = routeQn,
+                        FilePath = relPath
+                    }
+                ],
+                Edges = edges
+            });
+
+            GraphNode Node(NodeLabel label, string name, string suffix) => new()
+            {
+                Project = context.ProjectName,
+                Label = label,
+                Name = name,
+                QualifiedName = $"{context.ProjectName}.{suffix}",
+                FilePath = relPath
+            };
+        }
+    }
+
     private sealed class ConcurrencyTrackingExtractor : NodeProducingExtractor
     {
         private readonly object sync = new();
@@ -967,19 +1274,81 @@ public class IndexingPipelineTests
         }
     }
 
-    private sealed class RecordingSolutionAnalyzer : ISolutionAnalyzer
+    private static SolutionDocumentAnalysis CreateSolutionDocument(
+        ExtractorContext context,
+        string fileName,
+        string className,
+        bool includeSelfEdge = false)
+    {
+        var qualifiedName = $"{context.ProjectName}.{className}";
+        return new SolutionDocumentAnalysis(
+            Path.Combine(context.RootPath, fileName),
+            new ExtractionResult
+            {
+                Nodes =
+                [
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Class,
+                        Name = className,
+                        QualifiedName = qualifiedName,
+                        FilePath = fileName
+                    }
+                ],
+                Edges = includeSelfEdge
+                    ? [new PendingEdge(qualifiedName, qualifiedName, EdgeType.CALLS)]
+                    : []
+            });
+    }
+
+    private sealed class TrackingCSharpExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } =
+            new HashSet<string>([".cs"], StringComparer.OrdinalIgnoreCase);
+        public List<string> CalledFiles { get; } = [];
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            CalledFiles.Add(filePath);
+            var className = Path.GetFileNameWithoutExtension(filePath);
+            return Task.FromResult(new ExtractionResult
+            {
+                Nodes =
+                [
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Class,
+                        Name = className,
+                        QualifiedName = $"{context.ProjectName}.{className}",
+                        FilePath = Path.GetRelativePath(context.RootPath, filePath)
+                    }
+                ]
+            });
+        }
+    }
+
+    private sealed class RecordingSolutionAnalyzer(
+        Func<string, ExtractorContext, SolutionAnalysisResult>? analyze = null) : ISolutionAnalyzer
     {
         public string? CalledSolutionPath { get; private set; }
+        public List<string> CalledSolutionPaths { get; } = [];
         public RepositoryToolingTrust? ObservedTrust { get; private set; }
 
-        public Task<IReadOnlyList<ExtractionResult>> AnalyzeSolutionAsync(
+        public Task<SolutionAnalysisResult> AnalyzeSolutionAsync(
             string solutionPath,
             ExtractorContext context,
             CancellationToken ct)
         {
             CalledSolutionPath = solutionPath;
+            CalledSolutionPaths.Add(solutionPath);
             ObservedTrust = context.RepositoryToolingTrust;
-            return Task.FromResult<IReadOnlyList<ExtractionResult>>([]);
+            return Task.FromResult(analyze?.Invoke(solutionPath, context) ?? new SolutionAnalysisResult());
         }
     }
 
