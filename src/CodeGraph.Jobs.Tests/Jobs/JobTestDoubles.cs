@@ -88,9 +88,10 @@ internal sealed class RecordingIndexerClient : IIndexerClient
     public IndexerAcceptedResponse NextAcceptedResponse { get; set; } =
         new("queued", "Queued indexer run.", 99, "/api/indexer/runs/99");
 
-    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+    public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,
         string repo,
+        string? submissionKey = null,
         CancellationToken ct = default)
         => throw new NotSupportedException();
 

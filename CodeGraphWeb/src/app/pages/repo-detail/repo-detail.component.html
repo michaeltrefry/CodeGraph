@@ -50,6 +50,17 @@
 
     @if (reAnalyzeError(); as errorMessage) {
       <div class="rd-banner err">{{ errorMessage }}</div>
+    } @else if (reAnalyzeRun(); as run) {
+      @if (run.status === 'queued') {
+        <div class="rd-banner warn">
+          Re-analysis queued · attempt {{ run.attemptCount + 1 }}
+          @if (run.nextAttemptAt) { · retrying {{ formatDate(run.nextAttemptAt) }} }
+        </div>
+      } @else if (run.status === 'running') {
+        <div class="rd-banner warn">Re-analysis running · attempt {{ run.attemptCount }}</div>
+      } @else if (run.status === 'completed') {
+        <div class="rd-banner ok">Re-analysis completed {{ formatDate(run.completedAt) }}</div>
+      }
     } @else if (isBatchInProgress()) {
       <div class="rd-banner warn">
         Analysis in progress · submitted {{ formatDate(batchStatus()!.submittedAt) }}

@@ -7,11 +7,18 @@ namespace CodeGraph.Api.Indexer;
 
 public sealed class RemoteIndexerOperationsService(IIndexerClient indexerClient) : IIndexerOperationsService
 {
-    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+    public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,
         string repo,
         CancellationToken ct = default)
-        => indexerClient.ReAnalyzeRepositoryAsync(username, repo, ct);
+        => indexerClient.StartReAnalyzeRepositoryAsync(username, repo, submissionKey: null, ct);
+
+    public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        string? submissionKey,
+        CancellationToken ct = default)
+        => indexerClient.StartReAnalyzeRepositoryAsync(username, repo, submissionKey, ct);
 
     public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
         => StartProcessRepositoriesAsync(username, request, submissionKey: null, ct);

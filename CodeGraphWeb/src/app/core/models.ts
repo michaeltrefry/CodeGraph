@@ -184,6 +184,8 @@ export interface IndexerAcceptedResponse {
   message?: string;
   runId?: number;
   runStatusUrl?: string;
+  submissionKey?: string;
+  duplicate?: boolean;
 }
 
 export interface IndexerRunResponse {
@@ -193,10 +195,18 @@ export interface IndexerRunResponse {
   requestedByUsername?: string;
   target?: string;
   message?: string;
+  errorCode?: string;
   error?: string;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  attemptCount: number;
+  heartbeatAt?: string;
+  leaseExpiresAt?: string;
+  cancelRequestedAt?: string;
+  nextAttemptAt?: string;
+  retrySafe: boolean;
+  submissionKey?: string;
 }
 
 export interface AuthConfigResponse {

@@ -3,12 +3,14 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { marked } from 'marked';
+import { Subscription, switchMap, timer } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import { ChatContextService } from '../../core/chat-context.service';
 import {
   AnalysisBatchStatus,
   CONFIDENCE_COLORS,
   DotnetSupportInfo,
+  IndexerRunResponse,
   LABEL_ICONS,
   MonthlyCommitPoint,
   ProjectDetailResponse,
@@ -92,6 +94,7 @@ export class RepoDetailComponent implements OnInit {
   deleting = signal(false);
   showDeleteConfirm = signal(false);
   reAnalyzeError = signal<string | null>(null);
+  reAnalyzeRun = signal<IndexerRunResponse | null>(null);
   tab = signal<'overview' | 'health' | 'reviews'>('overview');
   repositoryReviewState = signal<RepositoryReviewPanelState>(this.createInitialRepositoryReviewState());
   projectDiagnosticsStates = signal<Record<string, ProjectDiagnosticsPanelState>>({});
@@ -101,6 +104,7 @@ export class RepoDetailComponent implements OnInit {
   private readonly diagnosticPreviewLimit = 20;
   // Keep repository review streams alive across normal SPA navigation; the run itself is server-side background work.
   private reviewStreamController: AbortController | null = null;
+  private reAnalyzePoll: Subscription | null = null;
   private loadRequestId = 0;
 
   headerSubtitle = computed<string>(() => {
@@ -188,6 +192,9 @@ export class RepoDetailComponent implements OnInit {
     this.batchStatus.set(null);
     this.loading.set(true);
     this.reAnalyzeError.set(null);
+    this.stopReAnalyzePolling();
+    this.reAnalyzeRun.set(null);
+    this.reAnalyzing.set(false);
     this.expandedAnalysis.set(null);
     this.expandedHealthAnalysis.set(null);
     this.abortRepositoryReviewStream();
@@ -1093,18 +1100,87 @@ export class RepoDetailComponent implements OnInit {
   }
 
   reAnalyze() {
+    const repo = this.name();
     this.reAnalyzing.set(true);
     this.reAnalyzeError.set(null);
-    this.api.reAnalyze(this.name()).subscribe({
-      next: b => {
-        this.batchStatus.set(b);
-        this.reAnalyzing.set(false);
+    this.reAnalyzeRun.set(null);
+    this.api.reAnalyze(repo).subscribe({
+      next: accepted => {
+        if (this.name() !== repo) return;
+        if (accepted.runId == null) {
+          this.reAnalyzing.set(false);
+          this.reAnalyzeError.set('The indexer accepted the request without returning a run identifier.');
+          return;
+        }
+        this.pollReAnalyzeRun(repo, accepted.runId);
       },
       error: () => {
+        if (this.name() !== repo) return;
         this.reAnalyzing.set(false);
         this.reAnalyzeError.set('Unable to start analysis for this repository right now.');
       }
     });
+  }
+
+  private pollReAnalyzeRun(repo: string, runId: number) {
+    this.stopReAnalyzePolling();
+    this.reAnalyzePoll = timer(0, 2_000)
+      .pipe(
+        switchMap(() => this.api.getIndexerRun(runId)),
+        takeUntilDestroyed(this.destroyRef)
+      )
+      .subscribe({
+        next: run => {
+          if (this.name() !== repo) {
+            this.stopReAnalyzePolling();
+            return;
+          }
+
+          this.reAnalyzeRun.set(run);
+          const status = run.status.toLowerCase();
+          if (status !== 'completed' && status !== 'failed' && status !== 'canceled') return;
+
+          this.stopReAnalyzePolling();
+          this.reAnalyzing.set(false);
+          if (status === 'completed') {
+            this.api.getBatchStatus(repo).subscribe({
+              next: batch => {
+                if (this.name() === repo) this.batchStatus.set(batch);
+              },
+              error: () => {
+                if (this.name() === repo) {
+                  this.reAnalyzeError.set('Re-analysis completed, but the latest analysis status could not be loaded.');
+                }
+              }
+            });
+            return;
+          }
+
+          this.reAnalyzeError.set(this.reAnalyzeFailureMessage(run));
+        },
+        error: () => {
+          if (this.name() !== repo) return;
+          this.stopReAnalyzePolling();
+          this.reAnalyzing.set(false);
+          this.reAnalyzeError.set('Re-analysis was queued, but its current status could not be loaded.');
+        }
+      });
+  }
+
+  private stopReAnalyzePolling() {
+    this.reAnalyzePoll?.unsubscribe();
+    this.reAnalyzePoll = null;
+  }
+
+  private reAnalyzeFailureMessage(run: IndexerRunResponse): string {
+    const detail = run.error ?? run.message;
+    if (run.errorCode === 'rust_semantic_command_timeout') {
+      return `Rust semantic indexing timed out after ${Math.max(1, run.attemptCount)} attempt${run.attemptCount === 1 ? '' : 's'}.${detail ? ` ${detail}` : ''}`;
+    }
+    if (run.status.toLowerCase() === 'canceled') {
+      return detail ? `Re-analysis was canceled. ${detail}` : 'Re-analysis was canceled.';
+    }
+    return detail ? `Re-analysis failed. ${detail}` : 'Re-analysis failed. Check the indexer logs for details.';
   }
 
   confirmDelete() {

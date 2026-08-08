@@ -82,7 +82,7 @@ public class SettingsControllerIndexerDelegationTests
         public ProcessRequest? LastProcessRequest { get; private set; }
         public string? LastSubmissionKey { get; private set; }
 
-        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
             string username,
             string repo,
             CancellationToken ct = default)

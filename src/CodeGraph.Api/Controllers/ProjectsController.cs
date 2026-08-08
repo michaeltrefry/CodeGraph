@@ -135,16 +135,20 @@ public class ProjectsController(
     }
 
     [HttpPost(nameof(ReAnalyze))]
-    public async Task<ActionResult<AnalysisBatchResponse>> ReAnalyze(
+    public async Task<ActionResult<IndexerAcceptedResponse>> ReAnalyze(
         [FromBody] ReAnalyzeRequest request,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.Repo))
-            return BadRequest("Repo entry is required.");
+            return BadRequest(new { error = "invalid_request", message = "Repo entry is required." });
 
-        var result = await indexerOperations.ReAnalyzeRepositoryAsync(GetUsername(), request.Repo, ct);
-        return result is null ? NotFound() : Ok(result);
+        var result = await indexerOperations.StartReAnalyzeRepositoryAsync(
+            GetUsername(), request.Repo, GetSubmissionKey(), ct);
+        return Accepted($"/api/indexer/runs/{result.RunId}", result);
     }
+
+    private string? GetSubmissionKey()
+        => Request.Headers.TryGetValue("Idempotency-Key", out var values) ? values.ToString() : null;
 
     private string GetUsername() =>
         User.FindFirstValue("preferred_username")

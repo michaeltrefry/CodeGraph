@@ -55,6 +55,7 @@ public interface IIndexerRunStore
 
     Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(
         IndexerRunLease lease,
+        string errorCode,
         string error,
         DateTime now,
         DateTime nextAttemptAt,

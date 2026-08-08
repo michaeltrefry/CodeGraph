@@ -15,6 +15,7 @@ public sealed record IndexerRunResponse(
     string? RequestedByUsername,
     string? Target,
     string? Message,
+    string? ErrorCode,
     string? Error,
     DateTime CreatedAt,
     DateTime? StartedAt,

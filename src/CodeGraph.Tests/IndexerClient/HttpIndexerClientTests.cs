@@ -34,19 +34,20 @@ public class HttpIndexerClientTests
     }
 
     [Fact]
-    public async Task ReAnalyzeRepositoryAsync_PostsRequestAndReturnsBatch()
+    public async Task StartReAnalyzeRepositoryAsync_PostsRequestAndReturnsAcceptedRun()
     {
-        var batch = CreateBatch("SceneWorks");
-        var handler = new RecordingHandler(batch);
+        var accepted = new IndexerAcceptedResponse("queued", "Queued.", 42, "/api/indexer/runs/42");
+        var handler = new RecordingHandler(accepted);
         var client = CreateClient(handler);
 
-        var response = await client.ReAnalyzeRepositoryAsync("Michael", " SceneWorks ");
+        var response = await client.StartReAnalyzeRepositoryAsync("Michael", " SceneWorks ", "reanalyze-42");
 
-        response.ShouldBe(batch);
+        response.ShouldBe(accepted);
         var request = handler.Requests.ShouldHaveSingleItem();
         request.Method.ShouldBe(HttpMethod.Post);
         request.RequestUri!.ToString().ShouldBe("http://indexer.local/api/indexer/repositories/reanalyze");
         request.Headers.Contains(CodeGraphInternalServiceAuthenticationDefaults.HeaderName).ShouldBeTrue();
+        request.Headers.GetValues("Idempotency-Key").Single().ShouldBe("reanalyze-42");
         var body = await request.Content!.ReadAsStringAsync();
         body.ShouldBe("{\"repo\":\"SceneWorks\"}");
     }
@@ -77,7 +78,7 @@ public class HttpIndexerClientTests
     [Fact]
     public async Task ListRunsAsync_SendsFiltersInQueryString()
     {
-        var run = new IndexerRunResponse(7, "link", "completed", "michael", "all", null, null, DateTime.UtcNow, null, DateTime.UtcNow);
+        var run = new IndexerRunResponse(7, "link", "completed", "michael", "all", null, null, null, DateTime.UtcNow, null, DateTime.UtcNow);
         var handler = new RecordingHandler(new[] { run });
         var client = CreateClient(handler);
 
@@ -107,6 +108,7 @@ public class HttpIndexerClientTests
             "running",
             "michael",
             "all",
+            null,
             null,
             null,
             DateTime.UtcNow,
@@ -139,6 +141,22 @@ public class HttpIndexerClientTests
         ex.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         ex.ErrorCode.ShouldBe("invalid_request");
         ex.Message.ShouldBe("Nope.");
+    }
+
+    [Fact]
+    public async Task Client_DoesNotForwardUnstructuredServerErrorBody()
+    {
+        var handler = new RecordingHandler(
+            HttpStatusCode.InternalServerError,
+            "<html>developer exception stack</html>",
+            "text/html");
+        var client = CreateClient(handler);
+
+        var ex = await Should.ThrowAsync<IndexerClientException>(() => client.StartLinkAsync("michael"));
+
+        ex.ErrorCode.ShouldBeNull();
+        ex.Message.ShouldBe("Indexer request failed with status code 500.");
+        ex.Message.ShouldNotContain("developer exception");
     }
 
     private static HttpIndexerClient CreateClient(RecordingHandler handler)
@@ -180,6 +198,7 @@ public class HttpIndexerClientTests
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
         private readonly HttpStatusCode _statusCode;
         private readonly object? _response;
+        private readonly string? _rawContentType;
 
         public RecordingHandler(object response)
             : this(HttpStatusCode.OK, response)
@@ -192,6 +211,12 @@ public class HttpIndexerClientTests
             _response = response;
         }
 
+        public RecordingHandler(HttpStatusCode statusCode, string response, string contentType)
+            : this(statusCode, response)
+        {
+            _rawContentType = contentType;
+        }
+
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -201,9 +226,9 @@ public class HttpIndexerClientTests
             if (_response is not null)
             {
                 message.Content = new StringContent(
-                    JsonSerializer.Serialize(_response, JsonOptions),
+                    _rawContentType is null ? JsonSerializer.Serialize(_response, JsonOptions) : (string)_response,
                     System.Text.Encoding.UTF8,
-                    "application/json");
+                    _rawContentType ?? "application/json");
             }
 
             return Task.FromResult(message);

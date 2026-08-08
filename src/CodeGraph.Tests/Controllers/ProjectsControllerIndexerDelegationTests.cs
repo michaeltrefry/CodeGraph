@@ -14,10 +14,7 @@ public class ProjectsControllerIndexerDelegationTests
     [Fact]
     public async Task ReAnalyze_DelegatesToConfiguredIndexerOperations()
     {
-        var operations = new RecordingIndexerOperations
-        {
-            Batch = CreateBatch("SceneWorks")
-        };
+        var operations = new RecordingIndexerOperations();
         var controller = new ProjectsController(null!, null!, null!, operations)
         {
             ControllerContext = new ControllerContext
@@ -31,31 +28,44 @@ public class ProjectsControllerIndexerDelegationTests
                 }
             }
         };
+        controller.Request.Headers["Idempotency-Key"] = "reanalyze-77";
 
         var result = await controller.ReAnalyze(
             new ReAnalyzeRequest { Repo = "SceneWorks" },
             CancellationToken.None);
 
-        var ok = result.Result.ShouldBeOfType<OkObjectResult>();
-        ok.Value.ShouldBe(operations.Batch);
+        var accepted = result.Result.ShouldBeOfType<AcceptedResult>();
+        accepted.Value.ShouldBe(operations.Accepted);
         operations.LastUsername.ShouldBe("Michael");
         operations.LastRepo.ShouldBe("SceneWorks");
+        operations.LastSubmissionKey.ShouldBe("reanalyze-77");
     }
 
     private sealed class RecordingIndexerOperations : IIndexerOperationsService
     {
-        public AnalysisBatchResponse? Batch { get; set; }
+        public IndexerAcceptedResponse Accepted { get; } = new("queued", "Queued.", 77, "/api/indexer/runs/77");
         public string? LastUsername { get; private set; }
         public string? LastRepo { get; private set; }
+        public string? LastSubmissionKey { get; private set; }
 
-        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
             string username,
             string repo,
             CancellationToken ct = default)
         {
             LastUsername = username;
             LastRepo = repo;
-            return Task.FromResult(Batch);
+            return Task.FromResult(Accepted);
+        }
+
+        public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            string? submissionKey,
+            CancellationToken ct = default)
+        {
+            LastSubmissionKey = submissionKey;
+            return StartReAnalyzeRepositoryAsync(username, repo, ct);
         }
 
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default) => throw new NotSupportedException();
@@ -72,16 +82,4 @@ public class ProjectsControllerIndexerDelegationTests
         public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(string? status = null, string? operation = null, int take = 50, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
-    private static AnalysisBatchResponse CreateBatch(string repo) => new(
-        11,
-        repo,
-        "batch-11",
-        "anthropic",
-        "batch",
-        true,
-        "pending",
-        2,
-        0,
-        DateTime.UtcNow,
-        null);
 }

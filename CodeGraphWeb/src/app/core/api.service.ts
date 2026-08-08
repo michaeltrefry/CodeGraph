@@ -1,5 +1,5 @@
 import { inject, Injectable } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import { AuthService } from './auth.service';
@@ -121,8 +121,14 @@ export class ApiService {
       `${API}/projects/${encodeURIComponent(name)}/batch-status`);
   }
 
-  reAnalyze(repo: string): Observable<AnalysisBatchStatus> {
-    return this.http.post<AnalysisBatchStatus>(`${API}/projects/ReAnalyze`, { repo });
+  reAnalyze(repo: string): Observable<IndexerAcceptedResponse> {
+    const submissionKey = typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : `reanalyze-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return this.http.post<IndexerAcceptedResponse>(
+      `${API}/projects/ReAnalyze`,
+      { repo },
+      { headers: new HttpHeaders({ 'Idempotency-Key': submissionKey }) });
   }
 
   getProjectReadme(name: string): Observable<{ content: string }> {

@@ -1,4 +1,5 @@
 using CodeGraph.Data;
+using CodeGraph.Services.Extractors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -144,8 +145,12 @@ public sealed class IndexerRunBackgroundRunner(
             executionCancellation.Cancel();
             monitorCancellation.Cancel();
             await IgnoreMonitorCancellationAsync(monitor);
+            var errorCode = ex is RustSemanticIndexingException rustFailure
+                ? rustFailure.FailureCode
+                : "indexer_operation_failed";
             var disposition = await store.FailOrRetryIndexerRunAsync(
                 lease,
+                errorCode,
                 ex.Message,
                 DateTime.UtcNow,
                 DateTime.UtcNow + options.RetryDelay,

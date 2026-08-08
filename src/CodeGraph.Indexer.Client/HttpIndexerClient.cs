@@ -17,19 +17,21 @@ public sealed class HttpIndexerClient(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private IndexerClientOptions Options => optionsAccessor.Value;
 
-    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+    public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,
         string repo,
+        string? submissionKey = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(repo))
             throw new ArgumentException("Repository name is required.", nameof(repo));
 
-        return SendOptionalJsonAsync<AnalysisBatchResponse>(
+        return SendJsonAsync<IndexerAcceptedResponse>(
             username,
             HttpMethod.Post,
             "api/indexer/repositories/reanalyze",
             new ReAnalyzeRequest { Repo = repo.Trim() },
+            submissionKey,
             ct);
     }
 
@@ -284,7 +286,9 @@ public sealed class HttpIndexerClient(
         }
         catch (JsonException)
         {
-            return (null, body);
+            // Never forward an HTML error page or developer exception stack through
+            // the public API. Structured indexer envelopes remain fully preserved.
+            return (null, null);
         }
     }
 
