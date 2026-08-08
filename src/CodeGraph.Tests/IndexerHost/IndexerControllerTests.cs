@@ -12,6 +12,38 @@ namespace CodeGraph.Tests.IndexerHost;
 public class IndexerControllerTests
 {
     [Fact]
+    public async Task ReAnalyze_DelegatesToIndexerOperationsWithUsername()
+    {
+        var operations = new RecordingIndexerOperations
+        {
+            ReAnalysisBatch = CreateBatch("SceneWorks")
+        };
+        var controller = CreateController(operations);
+
+        var result = await controller.ReAnalyze(
+            new ReAnalyzeRequest { Repo = "SceneWorks" },
+            CancellationToken.None);
+
+        var ok = result.Result.ShouldBeOfType<OkObjectResult>();
+        ok.Value.ShouldBe(operations.ReAnalysisBatch);
+        operations.LastOperation.ShouldBe("reanalyze");
+        operations.LastUsername.ShouldBe("Michael");
+        operations.LastRepo.ShouldBe("SceneWorks");
+    }
+
+    [Fact]
+    public async Task ReAnalyze_RejectsEmptyRepository()
+    {
+        var operations = new RecordingIndexerOperations();
+        var controller = CreateController(operations);
+
+        var result = await controller.ReAnalyze(new ReAnalyzeRequest(), CancellationToken.None);
+
+        result.Result.ShouldBeOfType<BadRequestObjectResult>();
+        operations.LastOperation.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task ProcessRepositories_RejectsEmptyRepoList()
     {
         var controller = CreateController(new RecordingIndexerOperations());
@@ -137,10 +169,23 @@ public class IndexerControllerTests
         public string? LastUsername { get; private set; }
         public ProcessRequest? LastProcessRequest { get; private set; }
         public string? LastSubmissionKey { get; private set; }
+        public string? LastRepo { get; private set; }
         public string? LastStatusFilter { get; private set; }
         public string? LastOperationFilter { get; private set; }
         public int? LastTake { get; private set; }
         public IReadOnlyList<IndexerRunResponse> Runs { get; set; } = [];
+        public AnalysisBatchResponse? ReAnalysisBatch { get; set; }
+
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            CancellationToken ct = default)
+        {
+            LastOperation = "reanalyze";
+            LastUsername = username;
+            LastRepo = repo;
+            return Task.FromResult(ReAnalysisBatch);
+        }
 
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
             string username,
@@ -245,4 +290,17 @@ public class IndexerControllerTests
             return Task.FromResult(Runs);
         }
     }
+
+    private static AnalysisBatchResponse CreateBatch(string repo) => new(
+        11,
+        repo,
+        "batch-11",
+        "anthropic",
+        "batch",
+        true,
+        "pending",
+        2,
+        0,
+        DateTime.UtcNow,
+        null);
 }

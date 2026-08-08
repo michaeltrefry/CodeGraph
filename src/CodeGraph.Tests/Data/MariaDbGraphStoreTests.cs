@@ -503,6 +503,85 @@ public class MariaDbGraphStoreTests
         };
     }
 
+    [Fact]
+    public async Task MySqlGraphStore_AtomicReplacementPreservesCaseDistinctQualifiedNames()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var databaseName = $"cg_case_nodes_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+        var storageOptions = Options.Create(new MariaDbStorageOptions
+        {
+            ConnectionString = builder.ConnectionString,
+            MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+        });
+        var runner = new MariaDbMigrationRunner(storageOptions, NullLogger<MariaDbMigrationRunner>.Instance);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                .UseMySql(builder.ConnectionString,
+                    ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                .Options;
+            await using var context = new CodeGraphDbContext(dbOptions);
+            var store = new MySqlGraphStore(
+                context,
+                storageOptions,
+                NullLogger<MySqlGraphStore>.Instance,
+                new MySqlAnalysisStore(context),
+                new MySqlMetricsStore(context),
+                new MySqlReviewStore(context),
+                runner);
+
+            var nodes = new[]
+            {
+                Node(NodeLabel.Struct, "Strategy", "SceneWorks.Strategy", "memory_calibration.rs"),
+                Node(NodeLabel.Function, "strategy", "SceneWorks.strategy", "candle_memory_strategy.rs")
+            };
+
+            await store.ReplaceProjectGraphAsync(
+                "SceneWorks",
+                nodes,
+                [],
+                new Dictionary<string, string>(),
+                new RepositoryEntity { Name = "SceneWorks" },
+                syncState: null);
+
+            var upper = await store.FindNodeByQualifiedNameAsync("SceneWorks", "SceneWorks.Strategy");
+            var lower = await store.FindNodeByQualifiedNameAsync("SceneWorks", "SceneWorks.strategy");
+            upper.ShouldNotBeNull();
+            lower.ShouldNotBeNull();
+            upper.Id.ShouldNotBe(lower.Id);
+
+            await Should.ThrowAsync<MySqlException>(() => store.ReplaceProjectGraphAsync(
+                "SceneWorks",
+                [Node(NodeLabel.Class, "Broken", "SceneWorks.Broken", new string('x', 501))],
+                [],
+                new Dictionary<string, string>(),
+                new RepositoryEntity { Name = "SceneWorks" },
+                syncState: null));
+
+            (await store.FindNodeByQualifiedNameAsync("SceneWorks", "SceneWorks.Strategy"))!.Id
+                .ShouldBe(upper.Id);
+            (await store.FindNodeByQualifiedNameAsync("SceneWorks", "SceneWorks.strategy"))!.Id
+                .ShouldBe(lower.Id);
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+
+        static GraphNode Node(NodeLabel label, string name, string qn, string filePath) => new()
+        {
+            Project = "SceneWorks",
+            Label = label,
+            Name = name,
+            QualifiedName = qn,
+            FilePath = filePath
+        };
+    }
+
     private static async Task DropDatabaseAsync(string connectionString, string databaseName)
     {
         var builder = new MySqlConnectionStringBuilder(connectionString)

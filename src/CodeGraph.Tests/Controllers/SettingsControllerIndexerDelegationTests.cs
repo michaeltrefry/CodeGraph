@@ -82,6 +82,12 @@ public class SettingsControllerIndexerDelegationTests
         public ProcessRequest? LastProcessRequest { get; private set; }
         public string? LastSubmissionKey { get; private set; }
 
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
             string username,
             ProcessRequest request,

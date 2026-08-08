@@ -161,6 +161,12 @@ public class DatabaseSourcesControllerTests
         public string? LastUsername { get; private set; }
         public long? LastSourceId { get; private set; }
 
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
             => throw new NotSupportedException();
 
