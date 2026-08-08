@@ -26,89 +26,34 @@ public class ProjectQueryService(
 
     public async Task<SchemaListResponse> ListSchemasAsync(string? search, string? server, string? database, int page, int pageSize)
     {
-        var repositories = await store.ListRepositoriesAsync();
-        var schemas = repositories
-            .Where(IsDatabaseSchemaProject)
-            .Select(project => new SchemaProject(
-                project,
-                GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "",
-                GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name)))
-            .Where(x => !string.IsNullOrWhiteSpace(x.ServerName) && !string.IsNullOrWhiteSpace(x.DatabaseName))
-            .ToList();
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
 
-        var filtered = schemas.AsEnumerable();
-
-        if (!string.IsNullOrWhiteSpace(server))
-            filtered = filtered.Where(x => x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase));
-
-        if (!string.IsNullOrWhiteSpace(database))
-            filtered = filtered.Where(x => x.DatabaseName.Equals(database, StringComparison.OrdinalIgnoreCase));
-
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            filtered = filtered.Where(x =>
-                x.Project.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                x.ServerName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-                x.DatabaseName.Contains(search, StringComparison.OrdinalIgnoreCase));
-        }
-
-        var filteredList = filtered
-            .OrderBy(x => x.ServerName)
-            .ThenBy(x => x.DatabaseName)
-            .ToList();
-
-        var countsByProject = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var schema in filteredList)
-            countsByProject[schema.Project.Name] = await store.GetNodeCountsByLabelForProjectAsync(schema.Project.Name);
-
-        var totalTables = countsByProject.Values.Sum(counts => GetLabelCount(counts, NodeLabel.Table));
-        var totalViews = countsByProject.Values.Sum(counts => GetLabelCount(counts, NodeLabel.View));
-        var totalProcedures = countsByProject.Values.Sum(counts => GetLabelCount(counts, NodeLabel.StoredProcedure));
-
-        var items = filteredList
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(x =>
-            {
-                countsByProject.TryGetValue(x.Project.Name, out var counts);
-
-                return new SchemaListItem(
-                    x.Project.Name,
-                    x.ServerName,
-                    x.DatabaseName,
-                    GetLabelCount(counts, NodeLabel.Table),
-                    GetLabelCount(counts, NodeLabel.View),
-                    GetLabelCount(counts, NodeLabel.StoredProcedure),
-                    x.Project.IndexedAt,
-                    x.Project.Language,
-                    x.Project.Framework,
-                    x.Project.Properties);
-            })
-            .ToList();
-
-        var serverOptions = schemas
-            .Select(x => x.ServerName)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var databaseOptions = schemas
-            .Where(x => string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase))
-            .Select(x => x.DatabaseName)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.OrdinalIgnoreCase)
+        var result = await store.SearchSchemaRepositoriesAsync(search, server, database, page, pageSize);
+        var items = result.Items
+            .Select(x => new SchemaListItem(
+                x.Project.Name,
+                x.ServerName,
+                x.DatabaseName,
+                x.TableCount,
+                x.ViewCount,
+                x.ProcedureCount,
+                x.Project.IndexedAt,
+                x.Project.Language,
+                x.Project.Framework,
+                x.Project.Properties))
             .ToList();
 
         return new SchemaListResponse(
             items,
-            filteredList.Count,
-            totalTables,
-            totalViews,
-            totalProcedures,
+            result.TotalCount,
+            result.TotalTables,
+            result.TotalViews,
+            result.TotalProcedures,
             page,
             pageSize,
-            serverOptions,
-            databaseOptions);
+            result.Servers,
+            result.Databases);
     }
 
     public async Task<SchemaCatalogResponse?> GetSchemaCatalogAsync(string name)
@@ -579,9 +524,6 @@ public class ProjectQueryService(
         return slash >= 0 ? name[(slash + 1)..] : name;
     }
 
-    private static int GetLabelCount(Dictionary<string, int>? counts, NodeLabel label) =>
-        counts is not null && counts.TryGetValue(label.ToString(), out var value) ? value : 0;
-
     private static IReadOnlyList<Dictionary<string, object>> GetPropertyObjects(
         Dictionary<string, object>? properties,
         string key)
@@ -724,5 +666,4 @@ public class ProjectQueryService(
             ? []
             : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private sealed record SchemaProject(ProjectInfo Project, string ServerName, string DatabaseName);
 }

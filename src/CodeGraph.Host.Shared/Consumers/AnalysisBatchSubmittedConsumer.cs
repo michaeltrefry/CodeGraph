@@ -3,7 +3,7 @@ using CodeGraph.Data;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services.Analyzers;
 
-namespace CodeGraph.Api.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 /// <summary>
 /// Checks a queued analysis batch for completion. If the batch isn't done yet,

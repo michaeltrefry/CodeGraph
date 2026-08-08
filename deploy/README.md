@@ -45,6 +45,8 @@ CODEGRAPH_DEPLOY_SSH_KEY_PASSPHRASE=<private ssh key passphrase>
 
 Embedding model files are downloaded on the remote host during deployment if they are missing. By default the deploy helper writes to `${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}/embeddings/nomic-embed-text-v1.5/`, which is the same directory mounted into containers at `/models`.
 
+Before authenticating to GHCR, the deploy workflow prunes all Docker images that are not referenced by a container. Images used by the running deployment are retained, while unused images from older deployments are removed to reclaim disk space before pulling the next release.
+
 Optional GitHub production environment variables for the embedding download:
 
 ```text

@@ -17,9 +17,45 @@ public sealed class HttpIndexerClient(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private IndexerClientOptions Options => optionsAccessor.Value;
 
+    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("Repository name is required.", nameof(repo));
+
+        return SendOptionalJsonAsync<AnalysisBatchResponse>(
+            username,
+            HttpMethod.Post,
+            "api/indexer/repositories/reanalyze",
+            new ReAnalyzeRequest { Repo = repo.Trim() },
+            ct);
+    }
+
+    public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
+        => StartProcessRepositoriesAsync(username, request, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
+        => StartReIndexAllAsync(username, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartDiscoverAsync(string username, DiscoverRequest? request = null, CancellationToken ct = default)
+        => StartDiscoverAsync(username, request, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartSyncSchemaAsync(string username, long sourceId, CancellationToken ct = default)
+        => StartSyncSchemaAsync(username, sourceId, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartSyncAllSchemasAsync(string username, CancellationToken ct = default)
+        => StartSyncAllSchemasAsync(username, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartLinkAsync(string username, CancellationToken ct = default)
+        => StartLinkAsync(username, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartDetectCommunitiesAsync(string username, CancellationToken ct = default)
+        => StartDetectCommunitiesAsync(username, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartLinkAndDetectAsync(string username, CancellationToken ct = default)
+        => StartLinkAndDetectAsync(username, submissionKey: null, ct);
+    public Task<IndexerAcceptedResponse> StartProcessBatchAnalysisAsync(string username, string? repo = null, CancellationToken ct = default)
+        => StartProcessBatchAnalysisAsync(username, repo, submissionKey: null, ct);
+
     public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
         string username,
         ProcessRequest request,
+        string? submissionKey,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -28,30 +64,35 @@ public sealed class HttpIndexerClient(
             HttpMethod.Post,
             "api/indexer/repositories/process",
             request,
+            submissionKey,
             ct);
     }
 
-    public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
+    public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, string? submissionKey, CancellationToken ct = default)
         => SendJsonAsync<IndexerAcceptedResponse>(
             username,
             HttpMethod.Post,
             "api/indexer/repositories/reindex-all",
+            submissionKey: submissionKey,
             ct: ct);
 
     public Task<IndexerAcceptedResponse> StartDiscoverAsync(
         string username,
-        DiscoverRequest? request = null,
+        DiscoverRequest? request,
+        string? submissionKey,
         CancellationToken ct = default)
         => SendJsonAsync<IndexerAcceptedResponse>(
             username,
             HttpMethod.Post,
             "api/indexer/repositories/discover",
             request ?? new DiscoverRequest(),
+            submissionKey,
             ct);
 
     public Task<IndexerAcceptedResponse> StartSyncSchemaAsync(
         string username,
         long sourceId,
+        string? submissionKey,
         CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sourceId);
@@ -59,43 +100,48 @@ public sealed class HttpIndexerClient(
             username,
             HttpMethod.Post,
             $"api/indexer/schemas/{sourceId}/sync",
+            submissionKey: submissionKey,
             ct: ct);
     }
 
-    public Task<IndexerAcceptedResponse> StartSyncAllSchemasAsync(string username, CancellationToken ct = default)
+    public Task<IndexerAcceptedResponse> StartSyncAllSchemasAsync(string username, string? submissionKey, CancellationToken ct = default)
         => SendJsonAsync<IndexerAcceptedResponse>(
             username,
             HttpMethod.Post,
             "api/indexer/schemas/sync-all",
+            submissionKey: submissionKey,
             ct: ct);
 
-    public Task<IndexerAcceptedResponse> StartLinkAsync(string username, CancellationToken ct = default)
-        => SendJsonAsync<IndexerAcceptedResponse>(username, HttpMethod.Post, "api/indexer/link", ct: ct);
+    public Task<IndexerAcceptedResponse> StartLinkAsync(string username, string? submissionKey, CancellationToken ct = default)
+        => SendJsonAsync<IndexerAcceptedResponse>(username, HttpMethod.Post, "api/indexer/link", submissionKey: submissionKey, ct: ct);
 
-    public Task<IndexerAcceptedResponse> StartDetectCommunitiesAsync(string username, CancellationToken ct = default)
+    public Task<IndexerAcceptedResponse> StartDetectCommunitiesAsync(string username, string? submissionKey, CancellationToken ct = default)
         => SendJsonAsync<IndexerAcceptedResponse>(
             username,
             HttpMethod.Post,
             "api/indexer/communities/detect",
+            submissionKey: submissionKey,
             ct: ct);
 
-    public Task<IndexerAcceptedResponse> StartLinkAndDetectAsync(string username, CancellationToken ct = default)
+    public Task<IndexerAcceptedResponse> StartLinkAndDetectAsync(string username, string? submissionKey, CancellationToken ct = default)
         => SendJsonAsync<IndexerAcceptedResponse>(
             username,
             HttpMethod.Post,
             "api/indexer/link-and-detect",
+            submissionKey: submissionKey,
             ct: ct);
 
     public Task<IndexerAcceptedResponse> StartProcessBatchAnalysisAsync(
         string username,
-        string? repo = null,
+        string? repo,
+        string? submissionKey,
         CancellationToken ct = default)
     {
         var path = "api/indexer/batch-analysis/process";
         if (!string.IsNullOrWhiteSpace(repo))
             path += $"?repo={Uri.EscapeDataString(repo.Trim())}";
 
-        return SendJsonAsync<IndexerAcceptedResponse>(username, HttpMethod.Post, path, ct: ct);
+        return SendJsonAsync<IndexerAcceptedResponse>(username, HttpMethod.Post, path, submissionKey: submissionKey, ct: ct);
     }
 
     public Task<IndexerRunResponse?> GetRunAsync(string username, long runId, CancellationToken ct = default)
@@ -103,6 +149,13 @@ public sealed class HttpIndexerClient(
             username,
             HttpMethod.Get,
             $"api/indexer/runs/{runId}",
+            ct: ct);
+
+    public Task<IndexerRunResponse?> CancelRunAsync(string username, long runId, CancellationToken ct = default)
+        => SendOptionalJsonAsync<IndexerRunResponse>(
+            username,
+            HttpMethod.Post,
+            $"api/indexer/runs/{runId}/cancel",
             ct: ct);
 
     public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(
@@ -131,9 +184,10 @@ public sealed class HttpIndexerClient(
         HttpMethod method,
         string path,
         object? body = null,
+        string? submissionKey = null,
         CancellationToken ct = default)
     {
-        using var response = await SendAsync(username, method, path, body, ct);
+        using var response = await SendAsync(username, method, path, body, submissionKey, ct);
         await EnsureSuccessAsync(response, ct);
         var payload = await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct);
         return payload ?? throw new InvalidOperationException($"Indexer response body for '{path}' was empty.");
@@ -146,7 +200,7 @@ public sealed class HttpIndexerClient(
         object? body = null,
         CancellationToken ct = default)
     {
-        using var response = await SendAsync(username, method, path, body, ct);
+        using var response = await SendAsync(username, method, path, body, submissionKey: null, ct: ct);
         if (response.StatusCode == HttpStatusCode.NotFound)
             return default;
 
@@ -159,12 +213,15 @@ public sealed class HttpIndexerClient(
         HttpMethod method,
         string path,
         object? body,
+        string? submissionKey,
         CancellationToken ct)
     {
         var options = Options;
         var client = httpClientFactory.CreateClient(NormalizeHttpClientName(options.HttpClientName));
         using var request = new HttpRequestMessage(method, path);
         AttachIdentityHeader(request, username);
+        if (!string.IsNullOrWhiteSpace(submissionKey))
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", submissionKey.Trim());
 
         if (body is not null)
         {

@@ -161,6 +161,12 @@ public class DatabaseSourcesControllerTests
         public string? LastUsername { get; private set; }
         public long? LastSourceId { get; private set; }
 
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
             => throw new NotSupportedException();
 
@@ -196,6 +202,9 @@ public class DatabaseSourcesControllerTests
             => throw new NotSupportedException();
 
         public Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
+            => Task.FromResult<IndexerRunResponse?>(null);
+
+        public Task<IndexerRunResponse?> CancelRunAsync(long runId, CancellationToken ct = default)
             => Task.FromResult<IndexerRunResponse?>(null);
 
         public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(

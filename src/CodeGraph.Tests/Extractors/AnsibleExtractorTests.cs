@@ -39,8 +39,21 @@ public class AnsibleExtractorTests
 
         var result = await ExtractAsync(yaml, "/test/package.yml");
 
+        result.Succeeded.ShouldBeTrue();
         result.Nodes.ShouldBeEmpty();
         result.Edges.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task ReportsFailure_ForMalformedAnsibleYaml()
+    {
+        var result = await ExtractAsync(
+            "- name: broken\n  hosts: all\n  tasks:\n    - name: [unterminated",
+            "/test/deploy.yml");
+
+        result.Succeeded.ShouldBeFalse();
+        result.FailureReason.ShouldNotBeNullOrWhiteSpace();
+        result.Nodes.ShouldBeEmpty();
     }
 
     // -- Playbook extraction ------------------------------------------

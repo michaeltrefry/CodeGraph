@@ -29,6 +29,8 @@ public class McpHubServiceTests
         store.Tools.Single(tool => tool.ToolName == "shortcut_search_epics").Enabled.ShouldBeFalse();
         store.Tools.Single(tool => tool.ToolName == "stories-create-comment").ReadOnly.ShouldBeFalse();
         store.Tools.Single(tool => tool.ToolName == "stories-create-comment").RequiresCredential.ShouldBeTrue();
+        store.Tools.Single(tool => tool.ToolName == "stories-stage-file").DefaultSelected.ShouldBeFalse();
+        store.Tools.Single(tool => tool.ToolName == "stories-upload-file").DefaultSelected.ShouldBeFalse();
         store.Tools.Single(tool => tool.ToolName == "documents-get-by-id").ReadOnly.ShouldBeTrue();
     }
 

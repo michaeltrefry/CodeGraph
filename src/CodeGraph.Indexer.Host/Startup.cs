@@ -13,8 +13,8 @@ using CodeGraph.Extractors.Terraform;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
 using CodeGraph.Host.Shared.Auth;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Host.Shared.Hosting;
-using CodeGraph.Indexer.Host.Consumers;
 using CodeGraph.Indexer.Host.Services;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
@@ -68,7 +68,7 @@ public static class Startup
         });
 
         RegisterPersistence(services, configuration);
-        RegisterIndexerServices(services);
+        RegisterIndexerServices(services, configuration);
         RegisterMassTransit(services);
     }
 
@@ -105,7 +105,7 @@ public static class Startup
         await exclusionService.SeedFromConfigAsync(repoSourceOptions.ExcludedGroups);
     }
 
-    private static void RegisterIndexerServices(IServiceCollection services)
+    private static void RegisterIndexerServices(IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton(sp => new TypeScriptServerManager(
             port: sp.GetRequiredService<IOptions<CodeGraphServiceSettings>>().Value.TsPort,
@@ -155,7 +155,10 @@ public static class Startup
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IDatabaseSchemaExtractor, DatabaseSchemaExtractor>();
         services.AddTransient<IndexerRunExecutor>();
-        services.AddSingleton<IIndexerRunBackgroundRunner, IndexerRunBackgroundRunner>();
+        services.Configure<IndexerRunWorkerOptions>(configuration.GetSection("IndexerRunWorker"));
+        services.AddSingleton<IndexerRunBackgroundRunner>();
+        services.AddSingleton<IIndexerRunBackgroundRunner>(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
+        services.AddHostedService(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
         services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
 
         services.AddTransient<FolderRepoProvider>();
@@ -170,12 +173,7 @@ public static class Startup
         services.AddMassTransit(x =>
         {
             x.AddDelayedMessageScheduler();
-            x.AddConsumer<ProcessRepositoryConsumer>();
-            x.AddConsumer<RepositoryIndexingCompletedConsumer>();
-            x.AddConsumer<AnalysisBatchSubmittedConsumer>();
-            x.AddConsumer<ProjectAnalysisResultsProcessedConsumer>();
-            x.AddConsumer<AnalysisSynthesisCompletedConsumer>();
-            x.AddConsumer<RepositoryRemovedConsumer>();
+            SharedConsumerTopology.AddIndexerConsumers(x);
 
             x.UsingRabbitMq((context, cfg) =>
             {
@@ -189,37 +187,7 @@ public static class Startup
                 });
 
                 var consumerOptions = context.GetRequiredService<IOptions<ConsumerOptions>>().Value;
-                cfg.ReceiveEndpoint("process-repository", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<ProcessRepositoryConsumer>(context);
-                });
-                cfg.ReceiveEndpoint("repository-indexing-completed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<RepositoryIndexingCompletedConsumer>(context);
-                });
-                cfg.ReceiveEndpoint("analysis-batch-submitted", e =>
-                {
-                    e.ConcurrentMessageLimit = 1;
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<AnalysisBatchSubmittedConsumer>(context);
-                });
-                cfg.ReceiveEndpoint("project-analysis-results-processed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<ProjectAnalysisResultsProcessedConsumer>(context);
-                });
-                cfg.ReceiveEndpoint("analysis-synthesis-completed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<AnalysisSynthesisCompletedConsumer>(context);
-                });
-                cfg.ReceiveEndpoint("repository-removed", e =>
-                {
-                    ConsumerConfiguration.ConfigureStandardRetries(e, consumerOptions);
-                    e.ConfigureConsumer<RepositoryRemovedConsumer>(context);
-                });
+                SharedConsumerTopology.ConfigureIndexerEndpoints(cfg, context, consumerOptions);
             });
         });
     }

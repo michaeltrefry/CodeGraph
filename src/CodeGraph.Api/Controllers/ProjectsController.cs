@@ -1,8 +1,10 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
+using CodeGraph.Services.Indexer;
 
 namespace CodeGraph.Api.Controllers;
 
@@ -11,7 +13,8 @@ namespace CodeGraph.Api.Controllers;
 public class ProjectsController(
     IProjectQueryService queryService,
     IProjectService projectService,
-    IImpactAnalysisService impactService) : Controller
+    IImpactAnalysisService impactService,
+    IIndexerOperationsService indexerOperations) : Controller
 {
     // GET /api/projects?search=&page=1&pageSize=25
     [HttpGet]
@@ -132,12 +135,20 @@ public class ProjectsController(
     }
 
     [HttpPost(nameof(ReAnalyze))]
-    public async Task<ActionResult<AnalysisBatchResponse>> ReAnalyze([FromBody] ReAnalyzeRequest request)
+    public async Task<ActionResult<AnalysisBatchResponse>> ReAnalyze(
+        [FromBody] ReAnalyzeRequest request,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.Repo))
             return BadRequest("Repo entry is required.");
 
-        var result = await projectService.ReAnalyzeRepository(request.Repo);
+        var result = await indexerOperations.ReAnalyzeRepositoryAsync(GetUsername(), request.Repo, ct);
         return result is null ? NotFound() : Ok(result);
     }
+
+    private string GetUsername() =>
+        User.FindFirstValue("preferred_username")
+        ?? User.FindFirstValue("username")
+        ?? User.Identity?.Name
+        ?? "unknown";
 }

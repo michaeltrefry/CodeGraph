@@ -284,9 +284,9 @@ public sealed class ConsolidatedMcpServer
         [Description("Operation: store (default).")] string operation = "store",
         [Description("Source identifier (e.g. 'claude_conversation', 'document').")] string source = "mcp",
         [Description("Legacy JSON object with 'entities', 'claims', and optional 'evidence' arrays.")] string? data = null,
-        [Description("Typed memory entities to store.")] List<MemoryExtractedEntity>? entities = null,
-        [Description("Typed atomic memory claims to store.")] List<MemoryExtractedClaim>? claims = null,
-        [Description("Typed evidence rows to store.")] List<MemoryExtractedEvidence>? evidence = null)
+        [Description("Typed memory entities to store.")] List<MemoryMcpEntityInput>? entities = null,
+        [Description("Typed atomic memory claims to store.")] List<MemoryMcpClaimInput>? claims = null,
+        [Description("Typed evidence rows to store.")] List<MemoryMcpEvidenceInput>? evidence = null)
     {
         const string tool = "memory_store";
         switch (Normalize(operation))

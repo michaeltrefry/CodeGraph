@@ -94,6 +94,9 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         {
             var cursor = await tx.RunAsync("""
                 MATCH (s:JobSchedule {appId: $id})
+                SET s._jobScheduleLeaseLock = true
+                REMOVE s._jobScheduleLeaseLock
+                WITH s
                 WHERE coalesce(s.scheduleRevision, 0) = $scheduleRevision
                 SET s.name = $name,
                     s.jobType = $jobType,
@@ -144,6 +147,12 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
                 WITH s
                 ORDER BY s.nextRunUtc, s.appId
                 LIMIT 1
+                SET s._jobScheduleLeaseLock = true
+                REMOVE s._jobScheduleLeaseLock
+                WITH s
+                WHERE s.isEnabled = true
+                  AND s.nextRunUtc <= $utcNow
+                  AND (s.leaseExpiresUtc IS NULL OR s.leaseExpiresUtc <= $utcNow)
                 SET s.leaseOwner = $leaseOwner,
                     s.leaseAcquiredUtc = $utcNow,
                     s.leaseExpiresUtc = $leaseExpiresUtc,
@@ -175,6 +184,9 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         {
             var cursor = await tx.RunAsync("""
                 MATCH (s:JobSchedule {appId: $id})
+                SET s._jobScheduleLeaseLock = true
+                REMOVE s._jobScheduleLeaseLock
+                WITH s
                 WHERE s.leaseExpiresUtc IS NULL OR s.leaseExpiresUtc <= $utcNow
                 SET s.leaseOwner = $leaseOwner,
                     s.leaseAcquiredUtc = $utcNow,
@@ -206,8 +218,13 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         return await session.ExecuteWriteAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseToken})
-                WHERE s.leaseExpiresUtc IS NOT NULL AND s.leaseExpiresUtc > $utcNow
+                MATCH (s:JobSchedule {appId: $id})
+                SET s._jobScheduleLeaseLock = true
+                REMOVE s._jobScheduleLeaseLock
+                WITH s
+                WHERE s.leaseOwner = $leaseToken
+                  AND s.leaseExpiresUtc IS NOT NULL
+                  AND s.leaseExpiresUtc > $utcNow
                 SET s.leaseExpiresUtc = $leaseExpiresUtc,
                     s.updatedAtUtc = $utcNow
                 RETURN count(s) AS updated
@@ -229,8 +246,13 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         return await session.ExecuteWriteAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseToken})
-                WHERE s.leaseExpiresUtc IS NOT NULL AND s.leaseExpiresUtc > $fenceCheckedAtUtc
+                MATCH (s:JobSchedule {appId: $id})
+                SET s._jobScheduleLeaseLock = true
+                REMOVE s._jobScheduleLeaseLock
+                WITH s
+                WHERE s.leaseOwner = $leaseToken
+                  AND s.leaseExpiresUtc IS NOT NULL
+                  AND s.leaseExpiresUtc > $fenceCheckedAtUtc
                 SET s.lastRunStartedUtc = $startedAtUtc,
                     s.lastRunStatus = 'running',
                     s.lastError = null,
@@ -264,8 +286,13 @@ public class Neo4jJobScheduleStore(Neo4jSessionFactory sessionFactory) : IJobSch
         return await session.ExecuteWriteAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (s:JobSchedule {appId: $id, leaseOwner: $leaseToken})
-                WHERE s.leaseExpiresUtc IS NOT NULL AND s.leaseExpiresUtc > $fenceCheckedAtUtc
+                MATCH (s:JobSchedule {appId: $id})
+                SET s._jobScheduleLeaseLock = true
+                REMOVE s._jobScheduleLeaseLock
+                WITH s
+                WHERE s.leaseOwner = $leaseToken
+                  AND s.leaseExpiresUtc IS NOT NULL
+                  AND s.leaseExpiresUtc > $fenceCheckedAtUtc
                 SET s.lastRunCompletedUtc = $completedAtUtc,
                     s.lastRunStatus = $status,
                     s.lastError = $error,
