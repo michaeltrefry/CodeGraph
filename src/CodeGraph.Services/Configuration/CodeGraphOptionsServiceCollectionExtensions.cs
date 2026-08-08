@@ -42,6 +42,9 @@ public static class CodeGraphOptionsServiceCollectionExtensions
                 options => options.RustSemanticCommandTimeoutSeconds is >= 1 and <= 86_400,
                 "Rust semantic command timeout must be between 1 and 86400 seconds.")
             .Validate(
+                options => options.RustSemanticMaxThreads is >= 1 and <= 64,
+                "Rust semantic max threads must be between 1 and 64.")
+            .Validate(
                 options => options.RustSemanticStderrTailCharacters is >= 256 and <= 65_536,
                 "Rust semantic stderr tail must be between 256 and 65536 characters.")
             .ValidateOnStart();

@@ -10,6 +10,7 @@ public sealed class IndexingOptionsValidationTests
 {
     [Theory]
     [InlineData("RustSemanticCommandTimeoutSeconds", "0", "timeout")]
+    [InlineData("RustSemanticMaxThreads", "0", "max threads")]
     [InlineData("RustSemanticStderrTailCharacters", "128", "stderr tail")]
     public void AddCodeGraphOptions_RejectsInvalidRustSemanticLimits(
         string optionName,

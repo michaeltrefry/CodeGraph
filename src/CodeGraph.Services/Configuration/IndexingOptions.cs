@@ -25,6 +25,13 @@ public class IndexingOptions
     public int RustSemanticCommandTimeoutSeconds { get; set; } = 600;
 
     /// <summary>
+    /// Worker threads used while rust-analyzer primes semantic caches. Keep this aligned
+    /// with the indexer container CPU allocation so a large workspace cannot create a
+    /// host-sized worker pool inside a CPU-constrained container.
+    /// </summary>
+    public int RustSemanticMaxThreads { get; set; } = 2;
+
+    /// <summary>
     /// Maximum stderr tail retained for Rust semantic command diagnostics.
     /// </summary>
     public int RustSemanticStderrTailCharacters { get; set; } = 4096;
