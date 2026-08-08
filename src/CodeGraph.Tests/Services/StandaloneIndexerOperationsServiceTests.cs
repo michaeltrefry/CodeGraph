@@ -4,7 +4,9 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.DatabaseSchema;
 using CodeGraph.Services.Indexer;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Shouldly;
 
 namespace CodeGraph.Tests.Services;
@@ -95,7 +97,7 @@ public class StandaloneIndexerOperationsServiceTests
         var runner = new RecordingBackgroundRunner();
         var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), runner);
 
-        var accepted = await service.StartReIndexAllAsync("Michael");
+        var accepted = await service.StartReIndexAllAsync("Michael", "reindex-1");
 
         accepted.Status.ShouldBe("queued");
         accepted.RunId.ShouldBe(1);
@@ -118,7 +120,7 @@ public class StandaloneIndexerOperationsServiceTests
             Repos = ["CodeGraph"],
             ShouldAnalyze = false,
             IncludeAllSource = true
-        });
+        }, "process-1");
 
         var run = await runs.GetIndexerRunAsync(1);
         run.ShouldNotBeNull();
@@ -127,6 +129,29 @@ public class StandaloneIndexerOperationsServiceTests
         run.ArgsJson.ShouldNotBeNull();
         run.ArgsJson.ShouldContain("CodeGraph");
         run.ArgsJson.ShouldContain("includeAllSource");
+    }
+
+    [Fact]
+    public async Task UnsafeSubmission_RequiresAndDeduplicatesDurableIdentity()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runner = new RecordingBackgroundRunner();
+        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), runner);
+        var request = new ProcessRequest { Repos = ["CodeGraph"], ShouldAnalyze = true };
+
+        await Should.ThrowAsync<ArgumentException>(() => service.StartProcessRepositoriesAsync("Michael", request));
+
+        var first = await service.StartProcessRepositoriesAsync("Michael", request, "request-123");
+        var duplicate = await service.StartProcessRepositoriesAsync("Michael", request, "request-123");
+
+        duplicate.RunId.ShouldBe(first.RunId);
+        duplicate.Duplicate.ShouldBeTrue();
+        duplicate.SubmissionKey.ShouldBe("request-123");
+        runner.EnqueuedRunIds.ShouldBe([first.RunId!.Value]);
+
+        var changed = new ProcessRequest { Repos = ["AnotherRepo"], ShouldAnalyze = true };
+        await Should.ThrowAsync<IndexerSubmissionConflictException>(() =>
+            service.StartProcessRepositoriesAsync("Michael", changed, "request-123"));
     }
 
     [Fact]
@@ -149,21 +174,12 @@ public class StandaloneIndexerOperationsServiceTests
             CreatedAt = DateTime.UtcNow
         });
         var schemaExtractor = new RecordingDatabaseSchemaExtractor();
-        var executor = new IndexerRunExecutor(
-            runs,
-            sources,
-            schemaExtractor,
-            new RecordingAdminService(),
-            NullLogger<IndexerRunExecutor>.Instance);
+        var executor = new IndexerRunExecutor(sources, schemaExtractor, new RecordingAdminService());
+        var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
-        await executor.ExecuteAsync(runId);
+        var message = await executor.ExecuteAsync(lease);
 
-        var run = await runs.GetIndexerRunAsync(runId);
-        run.ShouldNotBeNull();
-        run.Status.ShouldBe("completed");
-        run.CompletedAt.ShouldNotBeNull();
-        run.Message.ShouldNotBeNull();
-        run.Message.ShouldContain("analytics/warehouse");
+        message.ShouldContain("analytics/warehouse");
         schemaExtractor.SyncedSources.Select(source => source.Id).ShouldBe([17L]);
     }
 
@@ -178,21 +194,14 @@ public class StandaloneIndexerOperationsServiceTests
             CreatedAt = DateTime.UtcNow
         });
         var executor = new IndexerRunExecutor(
-            runs,
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
-            new RecordingAdminService(),
-            NullLogger<IndexerRunExecutor>.Instance);
+            new RecordingAdminService());
+        var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
-        var ex = await Should.ThrowAsync<InvalidOperationException>(() => executor.ExecuteAsync(runId));
+        var ex = await Should.ThrowAsync<InvalidOperationException>(() => executor.ExecuteAsync(lease));
 
         ex.Message.ShouldContain("Unsupported indexer run operation");
-        var run = await runs.GetIndexerRunAsync(runId);
-        run.ShouldNotBeNull();
-        run.Status.ShouldBe("failed");
-        run.Error.ShouldNotBeNull();
-        run.Error.ShouldContain("Unsupported indexer run operation");
-        run.CompletedAt.ShouldNotBeNull();
     }
 
     [Fact]
@@ -210,21 +219,198 @@ public class StandaloneIndexerOperationsServiceTests
             ReIndexAllResponse = new ProcessReposResponse(["CodeGraph", "Api"], 2)
         };
         var executor = new IndexerRunExecutor(
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            admin);
+        var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
+
+        var message = await executor.ExecuteAsync(lease);
+
+        admin.ReIndexAllCalls.ShouldBe(1);
+        message.ShouldContain("Published 2 repositories");
+    }
+
+    [Fact]
+    public async Task DurableWorker_ClaimsPreexistingQueuedRunAndCompletesIt()
+    {
+        var runs = new FakeIndexerRunStore();
+        var sources = new FakeDatabaseSourceStore();
+        sources.Seed(new DatabaseSourceEntity { Id = 17, ServerName = "analytics", DatabaseName = "warehouse" });
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.SyncSchema,
+            Target = "17",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(runs, sources, new RecordingDatabaseSchemaExtractor(), new RecordingAdminService());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var completed = await runs.GetIndexerRunAsync(runId);
+        completed!.Status.ShouldBe("completed");
+        completed.AttemptCount.ShouldBe(1);
+        completed.Message.ShouldNotBeNull();
+        completed.Message.ShouldContain("analytics/warehouse");
+    }
+
+    [Fact]
+    public async Task DurableWorker_RetriesSchemaSyncWhenExtractorReportsPartialFailure()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.SyncAllSchemas,
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new FailingDatabaseSchemaExtractor(),
+            new RecordingAdminService());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var retrying = await runs.GetIndexerRunAsync(runId);
+        retrying.ShouldNotBeNull();
+        retrying.Status.ShouldBe("queued");
+        retrying.AttemptCount.ShouldBe(1);
+        retrying.NextAttemptAt.ShouldNotBeNull();
+        retrying.Error.ShouldBe("partial schema sync failure");
+    }
+
+    [Fact]
+    public async Task DurableWorker_RetriesOnlySafeOperationsAndExposesAttemptState()
+    {
+        var runs = new FakeIndexerRunStore();
+        var safeId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.SyncSchema,
+            Target = "404",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        var unsafeId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = "unsupported-publication",
+            Status = "queued",
+            RetrySafe = false,
+            CreatedAt = DateTime.UtcNow.AddSeconds(1)
+        });
+        using var services = CreateWorkerServices(
             runs,
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
-            admin,
-            NullLogger<IndexerRunExecutor>.Instance);
+            new RecordingAdminService());
+        var worker = CreateWorker(services);
 
-        await executor.ExecuteAsync(runId);
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+        var retrying = await runs.GetIndexerRunAsync(safeId);
+        retrying!.Status.ShouldBe("queued");
+        retrying.AttemptCount.ShouldBe(1);
+        retrying.NextAttemptAt.ShouldNotBeNull();
 
-        admin.ReIndexAllCalls.ShouldBe(1);
-        var run = await runs.GetIndexerRunAsync(runId);
-        run.ShouldNotBeNull();
-        run.Status.ShouldBe("completed");
-        run.Message.ShouldNotBeNull();
-        run.Message.ShouldContain("Published 2 repositories");
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+        var failed = await runs.GetIndexerRunAsync(unsafeId);
+        failed!.Status.ShouldBe("failed");
+        failed.AttemptCount.ShouldBe(1);
+        failed.Error.ShouldNotBeNull();
+        failed.Error.ShouldContain("Unsupported indexer run operation");
     }
+
+    [Fact]
+    public async Task CancelRunAsync_CancelsQueuedRunBeforeAnyOwnerCanClaimIt()
+    {
+        var runs = new FakeIndexerRunStore();
+        var service = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingBackgroundRunner());
+        var accepted = await service.StartReIndexAllAsync("Michael", "cancel-1");
+
+        var canceled = await service.CancelRunAsync(accepted.RunId!.Value);
+
+        canceled!.Status.ShouldBe("canceled");
+        canceled.CancelRequestedAt.ShouldNotBeNull();
+        canceled.CompletedAt.ShouldNotBeNull();
+        (await runs.TryClaimNextIndexerRunAsync("worker", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(1))).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task DurableWorker_CoalescesConcurrentWakeSignalsWithoutThrowing()
+    {
+        var runs = new FakeIndexerRunStore();
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new RecordingAdminService());
+        var worker = CreateWorker(services);
+
+        await Task.WhenAll(Enumerable.Range(1, 100).Select(id => worker.EnqueueAsync(id)));
+    }
+
+    [Fact]
+    public async Task DurableWorker_CancelsCooperativeExecutionWhenHeartbeatLosesOwnership()
+    {
+        var runs = new FakeIndexerRunStore { LoseLeaseOnRenewal = true };
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.ProcessRepositories,
+            ArgsJson = """{"repos":["CodeGraph"]}""",
+            Status = "queued",
+            RetrySafe = false,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new BlockingAdminService());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var abandoned = await runs.GetIndexerRunAsync(runId);
+        abandoned!.Status.ShouldBe("running");
+        abandoned.AttemptCount.ShouldBe(1);
+        abandoned.ExecutionOwner.ShouldNotBeNull();
+        abandoned.LeaseExpiresAt.ShouldNotBeNull();
+    }
+
+    private static ServiceProvider CreateWorkerServices(
+        IIndexerRunStore runs,
+        IDatabaseSourceStore sources,
+        IDatabaseSchemaExtractor schemas,
+        IAdminService admin)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton(runs);
+        services.AddSingleton(sources);
+        services.AddSingleton(schemas);
+        services.AddSingleton(admin);
+        services.AddTransient<IndexerRunExecutor>();
+        return services.BuildServiceProvider();
+    }
+
+    private static IndexerRunBackgroundRunner CreateWorker(ServiceProvider services)
+        => new(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            Options.Create(new IndexerRunWorkerOptions
+            {
+                PollInterval = TimeSpan.FromMilliseconds(10),
+                HeartbeatInterval = TimeSpan.FromMilliseconds(10),
+                LeaseDuration = TimeSpan.FromMilliseconds(100),
+                RetryDelay = TimeSpan.FromMinutes(1),
+                MaxAttempts = 3
+            }),
+            NullLogger<IndexerRunBackgroundRunner>.Instance);
 
     private sealed class FakeDatabaseSourceStore : IDatabaseSourceStore
     {
@@ -269,15 +455,40 @@ public class StandaloneIndexerOperationsServiceTests
         }
     }
 
+    private sealed class FailingDatabaseSchemaExtractor : IDatabaseSchemaExtractor
+    {
+        public Task SyncAsync(DatabaseSourceEntity source, CancellationToken ct = default)
+            => Task.FromException(new InvalidOperationException("partial schema sync failure"));
+
+        public Task SyncAllAsync(CancellationToken ct = default)
+            => Task.FromException(new InvalidOperationException("partial schema sync failure"));
+    }
+
+    private sealed class BlockingAdminService : IAdminService
+    {
+        public async Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request, CancellationToken ct = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            throw new InvalidOperationException("The blocking operation unexpectedly resumed.");
+        }
+
+        public Task<ProcessReposResponse> ReIndexAllAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task LinkAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task DetectCommunitiesAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task LinkAndDetectAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task ProcessBatchAnalysisAsync(string? repo, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
     private sealed class RecordingAdminService : IAdminService
     {
         public int ReIndexAllCalls { get; private set; }
         public ProcessReposResponse ReIndexAllResponse { get; set; } = new([], 0);
 
-        public Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request)
+        public Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request, CancellationToken ct = default)
             => Task.FromResult(new ProcessReposResponse(request.Repos, request.Repos.Count));
 
-        public Task<ProcessReposResponse> ReIndexAllAsync()
+        public Task<ProcessReposResponse> ReIndexAllAsync(CancellationToken ct = default)
         {
             ReIndexAllCalls++;
             return Task.FromResult(ReIndexAllResponse);
@@ -286,8 +497,8 @@ public class StandaloneIndexerOperationsServiceTests
         public Task LinkAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DetectCommunitiesAsync(CancellationToken ct) => Task.CompletedTask;
         public Task LinkAndDetectAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task ProcessBatchAnalysisAsync(string? repo) => Task.CompletedTask;
-        public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request)
+        public Task ProcessBatchAnalysisAsync(string? repo, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default)
             => Task.FromResult(new DiscoverResponse(0, 0, 0, 0, 0, []));
     }
 
@@ -295,12 +506,27 @@ public class StandaloneIndexerOperationsServiceTests
     {
         private readonly Dictionary<long, IndexerRunEntity> _runs = new();
         private long _nextId = 1;
+        public bool LoseLeaseOnRenewal { get; init; }
 
         public Task<long> CreateIndexerRunAsync(IndexerRunEntity run, CancellationToken ct = default)
         {
             run.Id = _nextId++;
             _runs[run.Id] = Clone(run);
             return Task.FromResult(run.Id);
+        }
+
+        public async Task<IndexerRunSubmissionResult> CreateOrGetIndexerRunAsync(
+            IndexerRunEntity run,
+            CancellationToken ct = default)
+        {
+            var existing = _runs.Values.FirstOrDefault(candidate =>
+                candidate.RequestedByUsername == run.RequestedByUsername &&
+                candidate.SubmissionKey == run.SubmissionKey &&
+                run.SubmissionKey is not null);
+            if (existing is not null)
+                return new IndexerRunSubmissionResult(existing.Id, Created: false);
+
+            return new IndexerRunSubmissionResult(await CreateIndexerRunAsync(run, ct), Created: true);
         }
 
         public Task UpdateIndexerRunStatusAsync(
@@ -349,6 +575,106 @@ public class StandaloneIndexerOperationsServiceTests
                 .ToList());
         }
 
+        public Task<IndexerRunLease?> TryClaimNextIndexerRunAsync(string owner, DateTime now, DateTime leaseExpiresAt, CancellationToken ct = default)
+        {
+            var run = _runs.Values
+                .Where(candidate => candidate.Status == "queued" && (candidate.NextAttemptAt is null || candidate.NextAttemptAt <= now))
+                .OrderBy(candidate => candidate.CreatedAt)
+                .ThenBy(candidate => candidate.Id)
+                .FirstOrDefault();
+            if (run is null)
+                return Task.FromResult<IndexerRunLease?>(null);
+            run.Status = "running";
+            run.ExecutionOwner = owner;
+            run.LeaseExpiresAt = leaseExpiresAt;
+            run.HeartbeatAt = now;
+            run.AttemptCount++;
+            run.FencingToken++;
+            return Task.FromResult<IndexerRunLease?>(new IndexerRunLease(Clone(run), owner, run.FencingToken));
+        }
+
+        public Task<IndexerRunLease?> TryClaimNextIndexerRunAsync(
+            string owner,
+            DateTime now,
+            DateTime leaseExpiresAt,
+            int maxAttempts,
+            CancellationToken ct = default)
+            => TryClaimNextIndexerRunAsync(owner, now, leaseExpiresAt, ct);
+
+        public Task<IndexerRunLeaseRenewal> RenewIndexerRunLeaseAsync(long runId, string owner, long fencingToken, DateTime now, DateTime leaseExpiresAt, CancellationToken ct = default)
+        {
+            if (LoseLeaseOnRenewal)
+                return Task.FromResult(new IndexerRunLeaseRenewal(false, false));
+
+            var owned = _runs.TryGetValue(runId, out var run)
+                && run.ExecutionOwner == owner
+                && run.FencingToken == fencingToken
+                && run.Status == "running";
+            if (owned)
+            {
+                run!.HeartbeatAt = now;
+                run.LeaseExpiresAt = leaseExpiresAt;
+            }
+            return Task.FromResult(new IndexerRunLeaseRenewal(owned, owned && run!.CancelRequestedAt is not null));
+        }
+
+        public Task<bool> CompleteIndexerRunAsync(IndexerRunLease lease, string message, DateTime completedAt, CancellationToken ct = default)
+            => FinishAsync(lease, "completed", message, completedAt);
+
+        public Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(IndexerRunLease lease, string error, DateTime now, DateTime nextAttemptAt, int maxAttempts, CancellationToken ct = default)
+        {
+            if (!Owns(lease))
+                return Task.FromResult(IndexerRunFailureDisposition.LeaseLost);
+            var run = _runs[lease.Run.Id];
+            run.Error = error;
+            run.ExecutionOwner = null;
+            run.LeaseExpiresAt = null;
+            if (run.RetrySafe && run.AttemptCount < maxAttempts)
+            {
+                run.Status = "queued";
+                run.NextAttemptAt = nextAttemptAt;
+                return Task.FromResult(IndexerRunFailureDisposition.Retrying);
+            }
+            run.Status = "failed";
+            run.CompletedAt = now;
+            return Task.FromResult(IndexerRunFailureDisposition.Failed);
+        }
+
+        public Task<bool> CancelOwnedIndexerRunAsync(IndexerRunLease lease, string message, DateTime completedAt, CancellationToken ct = default)
+            => FinishAsync(lease, "canceled", message, completedAt);
+
+        public Task<IndexerRunEntity?> RequestIndexerRunCancellationAsync(long runId, DateTime requestedAt, CancellationToken ct = default)
+        {
+            if (!_runs.TryGetValue(runId, out var run))
+                return Task.FromResult<IndexerRunEntity?>(null);
+            run.CancelRequestedAt = requestedAt;
+            if (run.Status == "queued")
+            {
+                run.Status = "canceled";
+                run.CompletedAt = requestedAt;
+            }
+            return Task.FromResult<IndexerRunEntity?>(Clone(run));
+        }
+
+        private Task<bool> FinishAsync(IndexerRunLease lease, string status, string message, DateTime completedAt)
+        {
+            if (!Owns(lease))
+                return Task.FromResult(false);
+            var run = _runs[lease.Run.Id];
+            run.Status = status;
+            run.Message = message;
+            run.CompletedAt = completedAt;
+            run.ExecutionOwner = null;
+            run.LeaseExpiresAt = null;
+            return Task.FromResult(true);
+        }
+
+        private bool Owns(IndexerRunLease lease)
+            => _runs.TryGetValue(lease.Run.Id, out var run)
+                && run.Status == "running"
+                && run.ExecutionOwner == lease.Owner
+                && run.FencingToken == lease.FencingToken;
+
         private static IndexerRunEntity Clone(IndexerRunEntity run) => new()
         {
             Id = run.Id,
@@ -361,7 +687,17 @@ public class StandaloneIndexerOperationsServiceTests
             Error = run.Error,
             CreatedAt = run.CreatedAt,
             StartedAt = run.StartedAt,
-            CompletedAt = run.CompletedAt
+            CompletedAt = run.CompletedAt,
+            ExecutionOwner = run.ExecutionOwner,
+            LeaseExpiresAt = run.LeaseExpiresAt,
+            HeartbeatAt = run.HeartbeatAt,
+            CancelRequestedAt = run.CancelRequestedAt,
+            NextAttemptAt = run.NextAttemptAt,
+            AttemptCount = run.AttemptCount,
+            FencingToken = run.FencingToken,
+            RetrySafe = run.RetrySafe,
+            SubmissionKey = run.SubmissionKey,
+            SubmissionHash = run.SubmissionHash
         };
     }
 }

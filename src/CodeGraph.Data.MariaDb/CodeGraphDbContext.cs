@@ -998,9 +998,20 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(r => r.CreatedAt).HasColumnName("created_at");
             e.Property(r => r.StartedAt).HasColumnName("started_at");
             e.Property(r => r.CompletedAt).HasColumnName("completed_at");
+            e.Property(r => r.ExecutionOwner).HasColumnName("execution_owner");
+            e.Property(r => r.LeaseExpiresAt).HasColumnName("lease_expires_at");
+            e.Property(r => r.HeartbeatAt).HasColumnName("heartbeat_at");
+            e.Property(r => r.CancelRequestedAt).HasColumnName("cancel_requested_at");
+            e.Property(r => r.NextAttemptAt).HasColumnName("next_attempt_at");
+            e.Property(r => r.AttemptCount).HasColumnName("attempt_count");
+            e.Property(r => r.FencingToken).HasColumnName("fencing_token");
+            e.Property(r => r.RetrySafe).HasColumnName("retry_safe");
+            e.Property(r => r.SubmissionKey).HasColumnName("submission_key");
+            e.Property(r => r.SubmissionHash).HasColumnName("submission_hash");
             e.HasIndex(r => new { r.Status, r.CreatedAt });
             e.HasIndex(r => new { r.RequestedByUsername, r.CreatedAt });
             e.HasIndex(r => new { r.Operation, r.CreatedAt });
+            e.HasIndex(r => new { r.RequestedByUsername, r.SubmissionKey }).IsUnique();
         });
     }
 

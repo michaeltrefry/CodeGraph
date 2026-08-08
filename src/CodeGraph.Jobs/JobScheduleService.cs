@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Cronos;
 using CodeGraph.Data;
@@ -128,13 +130,20 @@ public class JobScheduleService(
 
     private async Task<JobExecutionResponse> ExecuteScheduleAsync(JobScheduleEntity schedule, bool isManual, CancellationToken ct)
     {
-        var startedAtUtc = DateTime.UtcNow;
+        // A failed response or expired job lease can cause the same logical schedule
+        // execution to be retried. Reuse its durable identity until one attempt is
+        // acknowledged as successful, then rotate it for the next occurrence.
+        var startedAtUtc = NormalizeToDatabasePrecision(
+            schedule.LastRunStartedUtc.HasValue && schedule.LastRunStatus is "running" or "failed"
+            ? schedule.LastRunStartedUtc.Value
+            : DateTime.UtcNow);
+        var executionKey = CreateExecutionKey(schedule, startedAtUtc);
         await store.MarkRunStartedAsync(schedule.Id, startedAtUtc, _leaseOwner, ct);
 
         JobExecutionResult result;
         try
         {
-            result = await dispatcher.ExecuteAsync(schedule.JobType, schedule.ArgsJson, ct);
+            result = await dispatcher.ExecuteAsync(schedule.JobType, schedule.ArgsJson, executionKey, ct);
         }
         catch (Exception ex)
         {
@@ -162,6 +171,19 @@ public class JobScheduleService(
             ct);
 
         return new JobExecutionResponse(result.Success, result.Message, result.StartedAtUtc, result.CompletedAtUtc);
+    }
+
+    private static string CreateExecutionKey(JobScheduleEntity schedule, DateTime startedAtUtc)
+    {
+        var identity = $"{schedule.Id}\n{startedAtUtc.Ticks}\n{schedule.JobType}\n{schedule.ArgsJson}";
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
+        return $"job:{schedule.Id}:{hash}";
+    }
+
+    private static DateTime NormalizeToDatabasePrecision(DateTime value)
+    {
+        const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
+        return new DateTime(value.Ticks - (value.Ticks % ticksPerMicrosecond), value.Kind);
     }
 
     private DateTime? GetNextRunAfterCompletion(JobScheduleEntity schedule, DateTime completedAtUtc, bool isManual)

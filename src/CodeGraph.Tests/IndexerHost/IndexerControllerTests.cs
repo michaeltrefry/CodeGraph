@@ -50,6 +50,19 @@ public class IndexerControllerTests
         operations.LastOperation.ShouldBe("process");
         operations.LastUsername.ShouldBe("Michael");
         operations.LastProcessRequest.ShouldBe(request);
+        operations.LastSubmissionKey.ShouldBe("test-submission");
+    }
+
+    [Fact]
+    public async Task ProcessRepositories_RejectsMissingIdempotencyKey()
+    {
+        var controller = CreateController(new RecordingIndexerOperations(), includeSubmissionKey: false);
+
+        var result = await controller.ProcessRepositories(
+            new ProcessRequest { Repos = ["CodeGraph"] },
+            CancellationToken.None);
+
+        result.Result.ShouldBeOfType<BadRequestObjectResult>();
     }
 
     [Fact]
@@ -93,19 +106,25 @@ public class IndexerControllerTests
         result.Result.ShouldBeOfType<NotFoundResult>();
     }
 
-    private static IndexerController CreateController(RecordingIndexerOperations operations)
+    private static IndexerController CreateController(
+        RecordingIndexerOperations operations,
+        bool includeSubmissionKey = true)
     {
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("preferred_username", "Michael")
+            ], "test"))
+        };
+        if (includeSubmissionKey)
+            context.Request.Headers["Idempotency-Key"] = "test-submission";
+
         return new IndexerController(operations)
         {
             ControllerContext = new ControllerContext
             {
-                HttpContext = new DefaultHttpContext
-                {
-                    User = new ClaimsPrincipal(new ClaimsIdentity(
-                    [
-                        new Claim("preferred_username", "Michael")
-                    ], "test"))
-                }
+                HttpContext = context
             }
         };
     }
@@ -117,6 +136,7 @@ public class IndexerControllerTests
         public string? LastOperation { get; private set; }
         public string? LastUsername { get; private set; }
         public ProcessRequest? LastProcessRequest { get; private set; }
+        public string? LastSubmissionKey { get; private set; }
         public string? LastStatusFilter { get; private set; }
         public string? LastOperationFilter { get; private set; }
         public int? LastTake { get; private set; }
@@ -131,6 +151,18 @@ public class IndexerControllerTests
             LastUsername = username;
             LastProcessRequest = request;
             return Task.FromResult(Accepted);
+        }
+
+        public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
+            string username,
+            ProcessRequest request,
+            string? submissionKey,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(submissionKey))
+                throw new ArgumentException("An Idempotency-Key is required.", nameof(submissionKey));
+            LastSubmissionKey = submissionKey;
+            return StartProcessRepositoriesAsync(username, request, ct);
         }
 
         public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
@@ -196,6 +228,9 @@ public class IndexerControllerTests
         }
 
         public Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
+            => Task.FromResult<IndexerRunResponse?>(Runs.FirstOrDefault(run => run.Id == runId));
+
+        public Task<IndexerRunResponse?> CancelRunAsync(long runId, CancellationToken ct = default)
             => Task.FromResult<IndexerRunResponse?>(Runs.FirstOrDefault(run => run.Id == runId));
 
         public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(

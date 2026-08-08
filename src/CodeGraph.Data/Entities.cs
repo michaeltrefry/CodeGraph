@@ -733,6 +733,16 @@ public class IndexerRunEntity
     public DateTime CreatedAt { get; set; }
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
+    public string? ExecutionOwner { get; set; }
+    public DateTime? LeaseExpiresAt { get; set; }
+    public DateTime? HeartbeatAt { get; set; }
+    public DateTime? CancelRequestedAt { get; set; }
+    public DateTime? NextAttemptAt { get; set; }
+    public int AttemptCount { get; set; }
+    public long FencingToken { get; set; }
+    public bool RetrySafe { get; set; }
+    public string? SubmissionKey { get; set; }
+    public string? SubmissionHash { get; set; }
 }
 
 public class AssistantRunEntity

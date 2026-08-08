@@ -49,6 +49,32 @@ public class JobScheduleServiceTests
         await Should.ThrowAsync<InvalidOperationException>(() => service.RunNowAsync(created.Id));
     }
 
+    [Fact]
+    public async Task RunNowAsync_ReusesLogicalExecutionKeyAfterResponseLoss_ThenRotatesAfterSuccess()
+    {
+        var store = new InMemoryJobScheduleStore();
+        var dispatcher = new ResponseLossDispatcher();
+        var service = new JobScheduleService(store, dispatcher, NullLogger<JobScheduleService>.Instance);
+        var created = await service.CreateAsync(new CreateJobScheduleRequest
+        {
+            Name = "Durable reindex",
+            JobType = JobTypes.ReIndexAll,
+            CronExpression = "0 0 * * *",
+            TimeZoneId = "UTC"
+        });
+
+        var lostResponse = await service.RunNowAsync(created.Id);
+        var acknowledgedRetry = await service.RunNowAsync(created.Id);
+        var nextLogicalExecution = await service.RunNowAsync(created.Id);
+
+        lostResponse!.Success.ShouldBeFalse();
+        acknowledgedRetry!.Success.ShouldBeTrue();
+        nextLogicalExecution!.Success.ShouldBeTrue();
+        dispatcher.ExecutionKeys.Count.ShouldBe(3);
+        dispatcher.ExecutionKeys[1].ShouldBe(dispatcher.ExecutionKeys[0]);
+        dispatcher.ExecutionKeys[2].ShouldNotBe(dispatcher.ExecutionKeys[0]);
+    }
+
     private static JobCommandDispatcher CreateDispatcher()
     {
         var indexerClient = new RecordingIndexerClient();
@@ -69,5 +95,30 @@ public class JobScheduleServiceTests
         public Task<int> ReindexPageAsync(long pageId, bool deleted, CancellationToken ct = default) => Task.FromResult(0);
         public Task<IReadOnlyList<ConventionSearchResult>> SearchAsync(string query, int topK = 10, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<ConventionSearchResult>>([]);
+    }
+
+    private sealed class ResponseLossDispatcher : IJobCommandDispatcher
+    {
+        private int _calls;
+        public List<string> ExecutionKeys { get; } = [];
+
+        public IReadOnlyList<string> GetSupportedJobTypes() => [JobTypes.ReIndexAll];
+
+        public string NormalizeArgsJson(string jobType, JsonElement? args) => "{}";
+
+        public Task<JobExecutionResult> ExecuteAsync(
+            string jobType,
+            string argsJson,
+            string? executionKey = null,
+            CancellationToken ct = default)
+        {
+            executionKey.ShouldNotBeNullOrWhiteSpace();
+            ExecutionKeys.Add(executionKey);
+            if (_calls++ == 0)
+                throw new HttpRequestException("The indexer accepted the request but the response was lost.");
+
+            var now = DateTime.UtcNow;
+            return Task.FromResult(new JobExecutionResult(true, "accepted", now, now));
+        }
     }
 }

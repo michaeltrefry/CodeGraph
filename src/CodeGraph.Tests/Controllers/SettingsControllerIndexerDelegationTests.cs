@@ -29,6 +29,7 @@ public class SettingsControllerIndexerDelegationTests
         indexer.LastOperation.ShouldBe("process");
         indexer.LastUsername.ShouldBe("Michael");
         indexer.LastProcessRequest.ShouldBe(request);
+        indexer.LastSubmissionKey.ShouldBe("settings-request-1");
     }
 
     [Fact]
@@ -48,7 +49,7 @@ public class SettingsControllerIndexerDelegationTests
 
     private static SettingsController CreateController(RecordingIndexerOperationsService indexer)
     {
-        return new SettingsController(
+        var controller = new SettingsController(
             indexer,
             new ThrowingJobScheduleService(),
             new ThrowingDbHealthStore(),
@@ -67,6 +68,9 @@ public class SettingsControllerIndexerDelegationTests
                 }
             }
         };
+
+        controller.Request.Headers["Idempotency-Key"] = "settings-request-1";
+        return controller;
     }
 
     private sealed class RecordingIndexerOperationsService : IIndexerOperationsService
@@ -76,6 +80,7 @@ public class SettingsControllerIndexerDelegationTests
         public string? LastOperation { get; private set; }
         public string? LastUsername { get; private set; }
         public ProcessRequest? LastProcessRequest { get; private set; }
+        public string? LastSubmissionKey { get; private set; }
 
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
             string username,
@@ -88,6 +93,16 @@ public class SettingsControllerIndexerDelegationTests
             return Task.FromResult(Accepted);
         }
 
+        public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
+            string username,
+            ProcessRequest request,
+            string? submissionKey,
+            CancellationToken ct = default)
+        {
+            LastSubmissionKey = submissionKey;
+            return StartProcessRepositoriesAsync(username, request, ct);
+        }
+
         public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
         {
             LastOperation = "reindex-all";
@@ -95,12 +110,25 @@ public class SettingsControllerIndexerDelegationTests
             return Task.FromResult(Accepted);
         }
 
+        public Task<IndexerAcceptedResponse> StartReIndexAllAsync(
+            string username,
+            string? submissionKey,
+            CancellationToken ct = default)
+            => StartReIndexAllAsync(username, ct);
+
         public Task<IndexerAcceptedResponse> StartDiscoverAsync(string username, DiscoverRequest? request, CancellationToken ct = default)
         {
             LastOperation = "discover";
             LastUsername = username;
             return Task.FromResult(Accepted);
         }
+
+        public Task<IndexerAcceptedResponse> StartDiscoverAsync(
+            string username,
+            DiscoverRequest? request,
+            string? submissionKey,
+            CancellationToken ct = default)
+            => StartDiscoverAsync(username, request, ct);
 
         public Task<IndexerAcceptedResponse> StartSyncSchemaAsync(string username, long sourceId, CancellationToken ct = default)
             => throw new NotSupportedException();
@@ -139,7 +167,17 @@ public class SettingsControllerIndexerDelegationTests
             return Task.FromResult(Accepted);
         }
 
+        public Task<IndexerAcceptedResponse> StartProcessBatchAnalysisAsync(
+            string username,
+            string? repo,
+            string? submissionKey,
+            CancellationToken ct = default)
+            => StartProcessBatchAnalysisAsync(username, repo, ct);
+
         public Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<IndexerRunResponse?> CancelRunAsync(long runId, CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(

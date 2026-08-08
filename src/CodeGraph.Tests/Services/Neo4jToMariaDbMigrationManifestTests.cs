@@ -123,6 +123,7 @@ public class Neo4jToMariaDbMigrationManifestTests
 
         var result = await service.RunRepositoriesAndGraphMigrationAsync("codex");
 
+        result.RunId.ShouldBeNull();
         result.Status.ShouldBe("completed");
         result.Exported.Repositories.ShouldBe(1);
         result.Imported.Nodes.ShouldBe(2);
