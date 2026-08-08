@@ -21,7 +21,7 @@ public static class McpHubServiceCollectionExtensions
         {
             client.BaseAddress = new Uri("https://api.app.shortcut.com/api/v3/");
             client.Timeout = TimeSpan.FromSeconds(30);
-        });
+        }).ConfigurePrimaryHttpMessageHandler(CreateShortcutPrimaryHandler);
         services.AddHttpClient("mcp-hub-rabbitmq", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(30);
@@ -29,6 +29,11 @@ public static class McpHubServiceCollectionExtensions
 
         return services;
     }
+
+    internal static HttpClientHandler CreateShortcutPrimaryHandler() => new()
+    {
+        AllowAutoRedirect = false,
+    };
 
     /// <summary>
     /// Registers the in-memory, non-durable fallback hub stores — but only for store interfaces

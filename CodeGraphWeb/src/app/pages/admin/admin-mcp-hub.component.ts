@@ -170,7 +170,12 @@ import { extractAdminError, runAdminMutation } from './admin-resource.helpers';
                     <small>{{ row.operation }} / {{ row.credentialMode }}</small>
                   </td>
                   <td>{{ row.resourceKey || '' }}</td>
-                  <td>{{ row.username || 'unknown' }}</td>
+                  <td>
+                    {{ row.username || 'unknown' }}
+                    @if (row.providerIdentity) {
+                      <small>{{ row.providerIdentity }}</small>
+                    }
+                  </td>
                   <td>{{ row.statusClass || (row.success ? 'ok' : 'failed') }}</td>
                   <td>{{ row.durationMs }} ms</td>
                   <td>{{ row.message || '' }}</td>

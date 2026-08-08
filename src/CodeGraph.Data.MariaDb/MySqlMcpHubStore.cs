@@ -204,6 +204,13 @@ public sealed class MySqlMcpHubStore(CodeGraphDbContext db, IAesEncryptor encryp
         if (token is null)
             return false;
 
+        if (McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(toolName))
+        {
+            return string.Equals(token.EntitlementMode, "selected", StringComparison.OrdinalIgnoreCase)
+                && await db.McpPersonalAccessTokenToolEntitlements.AsNoTracking()
+                    .AnyAsync(item => item.TokenId == tokenId && item.ToolName == toolName, ct);
+        }
+
         if (!string.Equals(token.EntitlementMode, "selected", StringComparison.OrdinalIgnoreCase))
             return !McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(toolName);
 

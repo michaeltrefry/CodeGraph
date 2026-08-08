@@ -8,6 +8,7 @@ public static class McpHubExplicitEntitlementPolicy
 {
     private static readonly HashSet<string> ToolNames = new(StringComparer.OrdinalIgnoreCase)
     {
+        "shortcut-shared-api",
         "stories-stage-file",
         "stories-upload-file",
     };

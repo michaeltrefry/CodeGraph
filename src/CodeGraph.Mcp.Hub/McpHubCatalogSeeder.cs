@@ -22,7 +22,7 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
     private static readonly McpHubProviderDefinition[] Providers =
     [
         new("codegraph", "CodeGraph", "Native CodeGraph graph, memory, convention, repository, and schema tools.", EnabledByDefault: true, SourceVisible: true),
-        new("shortcut", "Shortcut", "Shortcut project tracking tools using the shared MCP Hub API token."),
+        new("shortcut", "Shortcut", "Shortcut project tracking tools using each caller's validated delegated credential."),
         new("rabbitmq", "RabbitMQ", "Read-only RabbitMQ management API inspection tools."),
         new("mysql", "MySQL", "Schema catalog and guarded read-only SQL tools."),
         // Shim provider: tools are not seeded here — an admin sets discoveryUrl/discoveryToken
@@ -92,6 +92,17 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
         ShortcutRead("documents-list", "List Shortcut documents", "List Shortcut documents."),
         ShortcutRead("documents-search", "Search Shortcut documents", "Search Shortcut documents."),
         ShortcutRead("documents-get-by-id", "Get Shortcut document", "Get a Shortcut document by ID."),
+        new(
+            "shortcut-shared-api",
+            "shortcut",
+            "Invoke Shortcut as shared service account",
+            "Administrative generic Shortcut API access using the explicitly configured shared credential.",
+            ReadOnly: false,
+            Destructive: true,
+            EnabledByDefault: false,
+            DefaultSelected: false,
+            AccessClass: "write",
+            RequiresCredential: true),
         new("rabbitmq_list_queues", "rabbitmq", "List RabbitMQ queues", "List queues through the RabbitMQ management API.", RequiresCredential: true),
         new("rabbitmq_get_queue", "rabbitmq", "Get RabbitMQ queue", "Get read-only details for one RabbitMQ queue.", RequiresCredential: true),
         new("rabbitmq_peek_queue", "rabbitmq", "Peek RabbitMQ queue", "Non-destructively peek capped messages from a RabbitMQ queue.", RequiresCredential: true),

@@ -87,6 +87,7 @@ public sealed record McpHubAuditResponse(
     string Operation,
     string? ResourceKey,
     string CredentialMode,
+    string? ProviderIdentity,
     string AuthorizationDecision,
     string StatusClass,
     int DurationMs,

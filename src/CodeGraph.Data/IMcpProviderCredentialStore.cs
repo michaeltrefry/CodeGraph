@@ -9,6 +9,17 @@ public interface IMcpProviderCredentialStore
 {
     Task<IReadOnlyList<McpProviderCredentialEntity>> ListForUserAsync(string username, CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns credential metadata and its decrypted secret from one store snapshot. Callers that
+    /// use both identity metadata and the secret for one provider invocation must use this method
+    /// so a concurrent replacement cannot pair values from different credential versions.
+    /// </summary>
+    Task<McpProviderCredentialSnapshot?> GetSnapshotAsync(
+        string providerKey,
+        string username,
+        string credentialKey,
+        CancellationToken ct = default);
+
     Task<McpProviderCredentialEntity?> GetAsync(
         string providerKey,
         string username,
@@ -30,3 +41,9 @@ public interface IMcpProviderCredentialStore
         string credentialKey,
         CancellationToken ct = default);
 }
+
+public sealed record McpProviderCredentialSnapshot(
+    string ValidationState,
+    string? ProviderIdentity,
+    DateTime? ExpiresAtUtc,
+    string? Value);

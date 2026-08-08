@@ -290,6 +290,7 @@ export interface McpHubAuditResponse {
   operation: string;
   resourceKey?: string;
   credentialMode: string;
+  providerIdentity?: string;
   authorizationDecision: string;
   statusClass: string;
   durationMs: number;

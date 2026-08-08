@@ -450,8 +450,11 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         store.Audit[0].Username.ShouldBe("alice");
         store.Audit[0].TokenId.ShouldBe(17);
         store.Audit[0].ToolName.ShouldBe("stories-stage-file");
+        store.Audit[0].CredentialMode.ShouldBe("none");
         store.Audit[0].ResourceKey.ShouldBe($"staged:{handle}");
         store.Audit[1].ToolName.ShouldBe("stories-upload-file");
+        store.Audit[1].CredentialMode.ShouldBe("delegated");
+        store.Audit[1].ProviderIdentity.ShouldBe("Alice Shortcut");
         store.Audit[1].ResourceKey.ShouldBe($"story:123/staged:{handle}");
         store.Audit.ShouldAllBe(item => item.Success && item.AuthorizationDecision == "allowed");
     }
@@ -476,9 +479,10 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         var server = new McpHubServer(service, new HttpContextAccessor { HttpContext = context });
         var attackerControlledHandle = new string('z', 4096);
 
-        var result = await server.UploadShortcutStoryFile(123, attackerControlledHandle);
+        var error = await Should.ThrowAsync<McpHubProviderPolicyException>(() =>
+            server.UploadShortcutStoryFile(123, attackerControlledHandle));
 
-        result.ShouldContain("invalid or expired");
+        error.Message.ShouldContain("invalid or expired");
         var audit = store.Audit.ShouldHaveSingleItem();
         audit.ResourceKey.ShouldBe("story:123/staged:invalid-handle");
         audit.ResourceKey!.ShouldNotContain(attackerControlledHandle);
@@ -505,9 +509,10 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         var handle = JsonDocument.Parse(stageJson).RootElement.GetProperty("handle").GetString()!;
         store.Audit.Clear();
 
-        var result = await server.UploadShortcutStoryFile(123, handle);
+        var error = await Should.ThrowAsync<ShortcutProviderException>(() =>
+            server.UploadShortcutStoryFile(123, handle));
 
-        result.ShouldContain("HTTP 400");
+        error.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         var audit = store.Audit.ShouldHaveSingleItem();
         audit.Success.ShouldBeFalse();
         audit.StatusClass.ShouldBe("provider_error");
@@ -538,13 +543,13 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         var handle = JsonDocument.Parse(stageJson).RootElement.GetProperty("handle").GetString()!;
         store.Audit.Clear();
 
-        var result = await server.UploadShortcutStoryFile(123, handle, requestCancellation.Token);
+        await Should.ThrowAsync<OperationCanceledException>(() =>
+            server.UploadShortcutStoryFile(123, handle, requestCancellation.Token));
 
-        result.ShouldContain("Provider call failed");
         var audit = store.Audit.ShouldHaveSingleItem(
             "the request token was canceled, so this exists only if auditing used an independent token");
         audit.Success.ShouldBeFalse();
-        audit.StatusClass.ShouldBe("provider_error");
+        audit.StatusClass.ShouldBe("cancelled");
         audit.ResourceKey.ShouldBe($"story:123/staged:{handle}");
     }
 
@@ -803,6 +808,16 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
             .AddSingleton<IMcpSensitiveColumnStore>(new InMemoryMcpSensitiveColumnStore())
             .AddSingleton<IDatabaseSourceStore>(new EmptyDatabaseSourceStore())
             .BuildServiceProvider();
+        var credentials = new InMemoryMcpProviderCredentialStore();
+        credentials.UpsertAsync(new McpProviderCredentialEntity
+        {
+            ProviderKey = "shortcut",
+            Username = "alice",
+            CredentialKey = McpHubService.ShortcutCredentialKey,
+            ValidationState = "valid",
+            ProviderIdentity = "Alice Shortcut",
+            LastValidatedAtUtc = DateTime.UtcNow,
+        }, "token").GetAwaiter().GetResult();
         return new McpHubService(
             store,
             new EmptyProjectQueryService(),
@@ -810,7 +825,8 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
             new SensitiveColumnPolicy(provider.GetRequiredService<IServiceScopeFactory>()),
             new MySqlSourceExposurePolicy(provider.GetRequiredService<IServiceScopeFactory>()),
             NullLogger<McpHubService>.Instance,
-            staging);
+            staging,
+            credentials);
     }
 
     public void Dispose()
