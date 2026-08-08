@@ -228,6 +228,7 @@ public static class ScipJsonImporter
         {
             Nodes = nodes,
             Edges = edges,
+            ProcessedFiles = rustDocuments.Select(document => document.RelativePath).ToList(),
             Metadata = new ProjectMetadata("Rust", "Cargo")
         };
     }

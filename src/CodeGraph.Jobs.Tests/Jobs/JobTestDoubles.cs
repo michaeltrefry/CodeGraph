@@ -43,15 +43,15 @@ internal sealed class RecordingAdminService : IAdminService
     public int DetectCommunitiesCalls { get; private set; }
     public int LinkAndDetectCalls { get; private set; }
 
-    public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request)
+    public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default)
     {
         LastDiscoverRequest = request;
         return Task.FromResult(NextDiscoverResponse);
     }
 
-    public Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request) => throw new NotSupportedException();
+    public Task<ProcessReposResponse> ProcessRepositoriesAsync(ProcessRequest request, CancellationToken ct = default) => throw new NotSupportedException();
 
-    public Task<ProcessReposResponse> ReIndexAllAsync()
+    public Task<ProcessReposResponse> ReIndexAllAsync(CancellationToken ct = default)
     {
         ReIndexAllCalls++;
         return Task.FromResult(new ProcessReposResponse([], 0));
@@ -71,7 +71,7 @@ internal sealed class RecordingAdminService : IAdminService
         return Task.CompletedTask;
     }
 
-    public Task ProcessBatchAnalysisAsync(string? repo) => throw new NotSupportedException();
+    public Task ProcessBatchAnalysisAsync(string? repo, CancellationToken ct = default) => throw new NotSupportedException();
 }
 
 internal sealed class RecordingIndexerClient : IIndexerClient
@@ -82,8 +82,17 @@ internal sealed class RecordingIndexerClient : IIndexerClient
     public int DetectCommunitiesCalls { get; private set; }
     public int LinkAndDetectCalls { get; private set; }
     public int ProcessBatchAnalysisCalls { get; private set; }
+    public int PublicationCount { get; private set; }
+    public List<string> SubmissionKeys { get; } = [];
+    private readonly HashSet<string> _publishedSubmissionKeys = new(StringComparer.Ordinal);
     public IndexerAcceptedResponse NextAcceptedResponse { get; set; } =
         new("queued", "Queued indexer run.", 99, "/api/indexer/runs/99");
+
+    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        CancellationToken ct = default)
+        => throw new NotSupportedException();
 
     public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
         string username,
@@ -91,8 +100,25 @@ internal sealed class RecordingIndexerClient : IIndexerClient
         CancellationToken ct = default)
         => Task.FromResult(NextAcceptedResponse);
 
+    public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
+        string username,
+        ProcessRequest request,
+        string? submissionKey,
+        CancellationToken ct = default)
+        => StartProcessRepositoriesAsync(username, request, ct);
+
     public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
     {
+        ReIndexAllCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerAcceptedResponse> StartReIndexAllAsync(
+        string username,
+        string? submissionKey,
+        CancellationToken ct = default)
+    {
+        RecordSubmission(submissionKey);
         ReIndexAllCalls++;
         return Task.FromResult(NextAcceptedResponse);
     }
@@ -102,6 +128,17 @@ internal sealed class RecordingIndexerClient : IIndexerClient
         DiscoverRequest? request = null,
         CancellationToken ct = default)
     {
+        LastDiscoverRequest = request;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    public Task<IndexerAcceptedResponse> StartDiscoverAsync(
+        string username,
+        DiscoverRequest? request,
+        string? submissionKey,
+        CancellationToken ct = default)
+    {
+        RecordSubmission(submissionKey);
         LastDiscoverRequest = request;
         return Task.FromResult(NextAcceptedResponse);
     }
@@ -137,7 +174,31 @@ internal sealed class RecordingIndexerClient : IIndexerClient
         return Task.FromResult(NextAcceptedResponse);
     }
 
+    public Task<IndexerAcceptedResponse> StartProcessBatchAnalysisAsync(
+        string username,
+        string? repo,
+        string? submissionKey,
+        CancellationToken ct = default)
+    {
+        RecordSubmission(submissionKey);
+        LastBatchRepo = repo;
+        ProcessBatchAnalysisCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
+
+    private void RecordSubmission(string? submissionKey)
+    {
+        if (string.IsNullOrWhiteSpace(submissionKey))
+            throw new InvalidOperationException("A submission key was not propagated to the indexer client.");
+        SubmissionKeys.Add(submissionKey);
+        if (_publishedSubmissionKeys.Add(submissionKey))
+            PublicationCount++;
+    }
+
     public Task<IndexerRunResponse?> GetRunAsync(string username, long runId, CancellationToken ct = default)
+        => Task.FromResult<IndexerRunResponse?>(null);
+
+    public Task<IndexerRunResponse?> CancelRunAsync(string username, long runId, CancellationToken ct = default)
         => Task.FromResult<IndexerRunResponse?>(null);
 
     public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(
@@ -227,7 +288,10 @@ internal sealed class InMemoryJobScheduleStore : IJobScheduleStore
     public Task MarkRunStartedAsync(long id, DateTime startedAtUtc, string leaseOwner, CancellationToken ct = default)
     {
         var schedule = _items.First(x => x.Id == id);
-        schedule.LastRunStartedUtc = startedAtUtc;
+        const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
+        schedule.LastRunStartedUtc = new DateTime(
+            startedAtUtc.Ticks - (startedAtUtc.Ticks % ticksPerMicrosecond),
+            startedAtUtc.Kind);
         schedule.LastRunStatus = "running";
         schedule.LastError = null;
         schedule.UpdatedAtUtc = startedAtUtc;

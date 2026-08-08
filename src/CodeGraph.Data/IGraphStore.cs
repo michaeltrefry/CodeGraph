@@ -18,6 +18,12 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMig
     Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync();
     Task<RepositorySearchResult> SearchRepositoriesAsync(string? search = null, string? group = null,
         int page = 1, int pageSize = 25);
+    Task<SchemaRepositorySearchResult> SearchSchemaRepositoriesAsync(
+        string? search = null,
+        string? server = null,
+        string? database = null,
+        int page = 1,
+        int pageSize = 25);
     Task<IReadOnlyList<string>> GetDistinctGroupsAsync();
     Task<ProjectInfo?> GetRepositoryByName(string name);
     Task UpdateRepositoryCommitShaAsync(string name, string? commitSha);
@@ -76,6 +82,13 @@ public interface IGraphStore : IAnalysisStore, IMetricsStore, IReviewStore, IMig
         IReadOnlyDictionary<string, string> fileHashes,
         RepositoryEntity repository,
         SyncStateEntity? syncState,
+        CancellationToken ct = default);
+    Task<int> ReplaceProjectFilesAsync(
+        string project,
+        IReadOnlyList<string> filePaths,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges,
+        IReadOnlyDictionary<string, string> fileHashes,
         CancellationToken ct = default);
     Task DeleteFilesFromProjectGraphAsync(
         string project,

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -17,6 +18,7 @@ public sealed class McpHubService(
     SensitiveColumnPolicy sensitiveColumnPolicy,
     MySqlSourceExposurePolicy sourceExposurePolicy,
     ILogger<McpHubService> logger,
+    ShortcutUploadStagingArea? shortcutUploadStaging = null,
     IMcpProviderCredentialStore? credentialStore = null)
 {
     public const string ShortcutCredentialKey = "apiToken";
@@ -31,6 +33,12 @@ public sealed class McpHubService(
     {
         WriteIndented = true
     };
+
+    private readonly ShortcutUploadStagingArea shortcutUploadStaging =
+        shortcutUploadStaging ?? SharedUploadStaging.Value;
+
+    private static readonly Lazy<ShortcutUploadStagingArea> SharedUploadStaging =
+        new(() => new ShortcutUploadStagingArea());
 
     public async Task<McpHubCatalogResponse> GetCatalogAsync(CancellationToken ct = default)
     {
@@ -94,9 +102,10 @@ public sealed class McpHubService(
         IReadOnlyDictionary<string, string?>? query = null,
         CancellationToken ct = default)
     {
-        var client = BuildShortcutClient(credential.Token);
+        var client = CreateShortcutClient();
         var requestUri = BuildProviderUri(path, query);
         using var request = new HttpRequestMessage(method, requestUri);
+        AddShortcutCredential(request, credential.Token);
         if (bodyJson is not null)
         {
             ValidateJsonObject(bodyJson);
@@ -104,7 +113,7 @@ public sealed class McpHubService(
         }
 
         using var response = await client.SendAsync(request, ct);
-        return await ReadProviderResponseAsync(response, ct);
+        return await ReadShortcutProviderResponseAsync(response, ct);
     }
 
     public async Task<string> InvokeSharedShortcutApiAsync(
@@ -128,8 +137,9 @@ public sealed class McpHubService(
     {
         var httpMethod = ParseSharedShortcutMethod(method);
         var requestUri = BuildProviderUri(path, ParseSharedShortcutQuery(queryJson));
-        var client = BuildShortcutClient(credential.Token);
+        var client = CreateShortcutClient();
         using var request = new HttpRequestMessage(httpMethod, requestUri);
+        AddShortcutCredential(request, credential.Token);
         if (bodyJson is not null)
         {
             ValidateJsonObject(bodyJson);
@@ -137,39 +147,74 @@ public sealed class McpHubService(
         }
 
         using var response = await client.SendAsync(request, ct);
-        return await ReadProviderResponseAsync(response, ct);
+        return await ReadShortcutProviderResponseAsync(response, ct);
+    }
+
+    public async Task<string> StageShortcutFileAsync(
+        string? username,
+        long? tokenId,
+        string displayName,
+        string base64Content,
+        CancellationToken ct = default)
+    {
+        await EnsureProviderEnabledAsync("shortcut", ct);
+        var staged = await shortcutUploadStaging.StageAsync(
+            UploadOwnerKey(username, tokenId),
+            displayName,
+            base64Content,
+            ct);
+        return JsonSerializer.Serialize(staged, JsonOptions);
     }
 
     public async Task<string> UploadShortcutFileAsync(
         string? username,
+        long? tokenId,
         int storyPublicId,
-        string filePath,
-        CancellationToken ct = default,
-        long? tokenId = null)
+        string stagedFileHandle,
+        CancellationToken ct = default)
     {
         var credential = await ResolveShortcutCredentialForInvocationAsync(username, tokenId, ct);
-        return await UploadShortcutFileAsync(credential, storyPublicId, filePath, ct);
+        return await UploadShortcutFileAsync(
+            credential, username, tokenId, storyPublicId, stagedFileHandle, ct);
     }
 
     internal async Task<string> UploadShortcutFileAsync(
         ResolvedShortcutCredential credential,
+        string? username,
+        long? tokenId,
         int storyPublicId,
-        string filePath,
+        string stagedFileHandle,
         CancellationToken ct = default)
     {
-        var client = BuildShortcutClient(credential.Token);
+        var client = CreateShortcutClient();
         if (storyPublicId <= 0)
             throw new McpHubProviderPolicyException("storyPublicId must be positive.");
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-            throw new McpHubProviderPolicyException("filePath must point to an existing local file.");
 
-        await using var stream = File.OpenRead(filePath);
+        await using var lease = shortcutUploadStaging.Open(
+            UploadOwnerKey(username, tokenId),
+            stagedFileHandle);
         using var content = new MultipartFormDataContent();
         content.Add(new StringContent(storyPublicId.ToString(System.Globalization.CultureInfo.InvariantCulture)), "story_id");
-        content.Add(new StreamContent(stream), "file0", Path.GetFileName(filePath));
+        var fileContent = new StreamContent(lease.Stream);
+        fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(lease.ContentType);
+        content.Add(fileContent, "file0", lease.DisplayName);
 
-        using var response = await client.PostAsync("files", content, ct);
-        return await ReadProviderResponseAsync(response, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "files") { Content = content };
+        AddShortcutCredential(request, credential.Token);
+        using var response = await client.SendAsync(request, ct);
+        var result = await ReadShortcutProviderResponseAsync(response, ct);
+        lease.Complete();
+        return result;
+    }
+
+    private static string UploadOwnerKey(string? username, long? tokenId)
+    {
+        if (tokenId is > 0)
+            return $"token:{tokenId.Value}";
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"user:{username.Trim().ToLowerInvariant()}";
+        throw new McpHubProviderPolicyException(
+            "Shortcut file staging requires an authenticated MCP token or user identity.");
     }
 
     public async Task<string> ListRabbitMqQueuesAsync(string? virtualHost, CancellationToken ct = default)
@@ -436,25 +481,26 @@ public sealed class McpHubService(
             throw new McpHubProviderPolicyException(
                 "An authenticated CodeGraph user is required for delegated Shortcut calls.");
 
-        var metadata = await delegatedCredentialStore.GetAsync(
+        var credential = await delegatedCredentialStore.GetSnapshotAsync(
             "shortcut", normalizedUsername, ShortcutCredentialKey, ct);
-        if (metadata is null)
+        if (credential is null)
             throw new McpHubProviderPolicyException(
                 $"No delegated Shortcut credential is connected for '{normalizedUsername}'.");
-        if (!string.Equals(metadata.ValidationState, "valid", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(credential.ValidationState, "valid", StringComparison.OrdinalIgnoreCase))
             throw new McpHubProviderPolicyException(
                 $"The delegated Shortcut credential for '{normalizedUsername}' is not valid.");
-        if (metadata.ExpiresAtUtc is DateTime expiresAtUtc && expiresAtUtc <= DateTime.UtcNow)
+        if (credential.ExpiresAtUtc is DateTime expiresAtUtc && expiresAtUtc <= DateTime.UtcNow)
             throw new McpHubProviderPolicyException(
                 $"The delegated Shortcut credential for '{normalizedUsername}' has expired.");
 
-        var token = await delegatedCredentialStore.GetValueAsync(
-            "shortcut", normalizedUsername, ShortcutCredentialKey, ct);
-        if (string.IsNullOrWhiteSpace(token))
+        if (string.IsNullOrWhiteSpace(credential.Value))
             throw new McpHubProviderPolicyException(
                 $"The delegated Shortcut credential for '{normalizedUsername}' has no usable secret.");
 
-        return new ResolvedShortcutCredential(token.Trim(), "delegated", metadata.ProviderIdentity);
+        return new ResolvedShortcutCredential(
+            credential.Value.Trim(),
+            "delegated",
+            credential.ProviderIdentity);
     }
 
     private async Task<string> GetSharedShortcutTokenAsync(CancellationToken ct)
@@ -501,13 +547,11 @@ public sealed class McpHubService(
         }
     }
 
-    private HttpClient BuildShortcutClient(string token)
-    {
-        var client = httpClientFactory.CreateClient("mcp-hub-shortcut");
-        client.DefaultRequestHeaders.Remove("Shortcut-Token");
-        client.DefaultRequestHeaders.Add("Shortcut-Token", token.Trim());
-        return client;
-    }
+    private HttpClient CreateShortcutClient() =>
+        httpClientFactory.CreateClient("mcp-hub-shortcut");
+
+    private static void AddShortcutCredential(HttpRequestMessage request, string token) =>
+        request.Headers.Add("Shortcut-Token", token.Trim());
 
     /// <summary>
     /// Validates a Shortcut API token by calling the Shortcut <c>member</c> endpoint.
@@ -523,8 +567,10 @@ public sealed class McpHubService(
 
         try
         {
-            var client = BuildShortcutClient(token);
-            using var response = await client.GetAsync("member", ct);
+            var client = CreateShortcutClient();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "member");
+            AddShortcutCredential(request, token);
+            using var response = await client.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
                 return new DelegatedCredentialValidationResult(
                     false,
@@ -591,12 +637,35 @@ public sealed class McpHubService(
         return client;
     }
 
-    private static async Task<string> ReadProviderResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<string> ReadShortcutProviderResponseAsync(
+        HttpResponseMessage response,
+        CancellationToken ct)
     {
         const int maxBytes = 64 * 1024;
         var body = await ReadCappedBodyAsync(response, maxBytes, ct);
         if (response.IsSuccessStatusCode)
             return string.IsNullOrWhiteSpace(body) ? "{}" : body;
+
+        throw new ShortcutProviderException(response.StatusCode, response.ReasonPhrase);
+    }
+
+    private static async Task<string> ReadProviderResponseAsync(
+        HttpResponseMessage response,
+        CancellationToken ct,
+        bool throwOnFailure = false)
+    {
+        const int maxBytes = 64 * 1024;
+        var body = await ReadCappedBodyAsync(response, maxBytes, ct);
+        if (response.IsSuccessStatusCode)
+            return string.IsNullOrWhiteSpace(body) ? "{}" : body;
+
+        if (throwOnFailure)
+        {
+            throw new HttpRequestException(
+                $"Shortcut upload failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase ?? "unknown error"}).",
+                inner: null,
+                response.StatusCode);
+        }
 
         return JsonSerializer.Serialize(new
         {
@@ -789,6 +858,14 @@ public sealed class McpHubService(
 }
 
 public sealed class McpHubProviderPolicyException(string message) : InvalidOperationException(message);
+
+public sealed class ShortcutProviderException(HttpStatusCode statusCode, string? reasonPhrase)
+    : HttpRequestException(
+        $"Shortcut returned HTTP {(int)statusCode} ({reasonPhrase ?? "unknown error"}).",
+        inner: null,
+        statusCode)
+{
+}
 
 public sealed record DelegatedCredentialValidationResult(
     bool IsValid,

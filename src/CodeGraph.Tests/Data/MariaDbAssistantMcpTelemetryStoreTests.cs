@@ -169,10 +169,17 @@ public class MariaDbAssistantMcpTelemetryStoreTests
             var hubStore = new MySqlMcpHubStore(context, encryptor);
             (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeTrue();
             (await hubStore.IsTokenEntitledAsync(token.Id, "shortcut-shared-api")).ShouldBeFalse();
-            await hubStore.ReplaceTokenEntitlementsAsync(token.Id, ["shortcut-shared-api"]);
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-stage-file")).ShouldBeFalse();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-upload-file")).ShouldBeFalse();
+            await hubStore.ReplaceTokenEntitlementsAsync(
+                token.Id,
+                ["shortcut-shared-api", "stories-stage-file", "stories-upload-file"]);
             await tokenStore.SetMcpPersonalAccessTokenEntitlementModeAsync(
                 "michael", token.Id, "selected");
+            (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeFalse();
             (await hubStore.IsTokenEntitledAsync(token.Id, "shortcut-shared-api")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-stage-file")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-upload-file")).ShouldBeTrue();
 
             var delegatedStore = new MySqlMcpProviderCredentialStore(context, encryptor);
             await delegatedStore.UpsertAsync(new McpProviderCredentialEntity
@@ -197,6 +204,11 @@ public class MariaDbAssistantMcpTelemetryStoreTests
                 .ShouldBe("alice-token");
             (await delegatedStore.GetValueAsync("shortcut", "bob", "apiToken"))
                 .ShouldBe("bob-token");
+            var bobSnapshot = await delegatedStore.GetSnapshotAsync("shortcut", "bob", "apiToken");
+            bobSnapshot.ShouldNotBeNull();
+            bobSnapshot.ValidationState.ShouldBe("valid");
+            bobSnapshot.ProviderIdentity.ShouldBe("Bob Shortcut (@bob)");
+            bobSnapshot.Value.ShouldBe("bob-token");
             (await delegatedStore.DeleteAsync("shortcut", "alice", "apiToken")).ShouldBeTrue();
             (await delegatedStore.GetValueAsync("shortcut", "alice", "apiToken")).ShouldBeNull();
 

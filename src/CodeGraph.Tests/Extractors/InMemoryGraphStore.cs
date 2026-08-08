@@ -32,6 +32,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private long _nextRepositoryReviewFindingId = 1;
     private long _nextRepositoryReviewProjectSectionId = 1;
     public Exception? ReplacementFailure { get; set; }
+    public Exception? IncrementalReplacementFailure { get; set; }
 
     public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
         string project,
@@ -55,6 +56,8 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public IReadOnlyList<GraphEdge> Edges => _edges;
     public IReadOnlyList<CrossRepoEdge> CrossEdges => _crossEdges;
     public IReadOnlyDictionary<string, ProjectSummary> Summaries => _summaries;
+    public int SchemaSearchQueryCount { get; private set; }
+    public int SchemaPageEnrichmentCount { get; private set; }
 
     public long AddNode(GraphNode node)
     {
@@ -120,6 +123,115 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var list = filtered.ToList();
         var items = list.OrderBy(p => p.Name).Skip((page - 1) * pageSize).Take(pageSize).ToList();
         return Task.FromResult(new RepositorySearchResult(items, list.Count));
+    }
+
+    public Task<SchemaRepositorySearchResult> SearchSchemaRepositoriesAsync(
+        string? search = null,
+        string? server = null,
+        string? database = null,
+        int page = 1,
+        int pageSize = 25)
+    {
+        SchemaSearchQueryCount++;
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var schemas = _projects
+            .Where(IsDatabaseSchemaProject)
+            .Select(project => new
+            {
+                Project = project,
+                ServerName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "",
+                DatabaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name)
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.ServerName) && !string.IsNullOrWhiteSpace(x.DatabaseName))
+            .ToList();
+
+        var filtered = schemas.Where(x =>
+            (string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(database) || x.DatabaseName.Equals(database, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(search) ||
+                x.Project.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.ServerName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.DatabaseName.Contains(search, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(x => x.ServerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.ServerName, StringComparer.Ordinal)
+            .ThenBy(x => x.DatabaseName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.DatabaseName, StringComparer.Ordinal)
+            .ThenBy(x => x.Project.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Project.Name, StringComparer.Ordinal)
+            .ToList();
+
+        var filteredProjects = filtered.Select(x => x.Project.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var filteredNodes = _nodes.Where(node => filteredProjects.Contains(node.Project)).ToList();
+        var pageItems = filtered
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x =>
+            {
+                SchemaPageEnrichmentCount++;
+                var projectNodes = filteredNodes.Where(node => node.Project.Equals(x.Project.Name, StringComparison.OrdinalIgnoreCase));
+                return new SchemaRepositoryItem(
+                    x.Project,
+                    x.ServerName,
+                    x.DatabaseName,
+                    projectNodes.Count(node => node.Label == NodeLabel.Table),
+                    projectNodes.Count(node => node.Label == NodeLabel.View),
+                    projectNodes.Count(node => node.Label == NodeLabel.StoredProcedure));
+            })
+            .ToList();
+
+        var serverOptions = schemas
+            .GroupBy(x => x.ServerName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Select(x => x.ServerName).Order(StringComparer.Ordinal).First())
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ThenBy(value => value, StringComparer.Ordinal)
+            .ToList();
+        var databaseOptions = schemas
+            .Where(x => string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(x => x.DatabaseName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Select(x => x.DatabaseName).Order(StringComparer.Ordinal).First())
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ThenBy(value => value, StringComparer.Ordinal)
+            .ToList();
+
+        return Task.FromResult(new SchemaRepositorySearchResult(
+            pageItems,
+            filtered.Count,
+            filteredNodes.Count(node => node.Label == NodeLabel.Table),
+            filteredNodes.Count(node => node.Label == NodeLabel.View),
+            filteredNodes.Count(node => node.Label == NodeLabel.StoredProcedure),
+            serverOptions,
+            databaseOptions));
+    }
+
+    private static bool IsDatabaseSchemaProject(ProjectInfo project) =>
+        project.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
+        GetStringProperty(project.Properties, "serverName") is not null ||
+        GetStringProperty(project.Properties, "databaseName") is not null;
+
+    private static string GetDatabaseNameFromProject(string projectName)
+    {
+        var name = projectName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
+            ? projectName[3..]
+            : projectName;
+        var slash = name.LastIndexOf('/');
+        return slash >= 0 ? name[(slash + 1)..] : name;
+    }
+
+    private static string? GetStringProperty(Dictionary<string, object>? properties, string key)
+    {
+        if (properties is null || !properties.TryGetValue(key, out var value))
+            return null;
+
+        return value switch
+        {
+            null => null,
+            string text => text,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            JsonElement element => element.ToString(),
+            _ => value.ToString()
+        };
     }
 
     private static bool IsRepositorySearchMatch(string name, string search)
@@ -247,7 +359,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     {
         var existing = _nodes.FirstOrDefault(n =>
             n.Project.Equals(node.Project, StringComparison.OrdinalIgnoreCase) &&
-            n.QualifiedName.Equals(node.QualifiedName, StringComparison.OrdinalIgnoreCase));
+            n.QualifiedName.Equals(node.QualifiedName, StringComparison.Ordinal));
 
         if (existing != null)
         {
@@ -276,7 +388,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName) =>
         Task.FromResult(_nodes.FirstOrDefault(n =>
             n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
-            n.QualifiedName.Equals(qualifiedName, StringComparison.OrdinalIgnoreCase)));
+            n.QualifiedName.Equals(qualifiedName, StringComparison.Ordinal)));
 
     public Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
@@ -441,7 +553,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var qnToId = replacementNodes.ToDictionary(
             node => GraphNodeKey.Create(project, node.QualifiedName),
             node => node.Id,
-            StringComparer.OrdinalIgnoreCase);
+            StringComparer.Ordinal);
         var replacementEdges = edges
             .Where(edge =>
                 qnToId.ContainsKey(GraphNodeKey.Create(project, edge.SourceQN)) &&
@@ -480,6 +592,108 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         _nextId = nextId;
 
         return Task.FromResult(replacementEdges.Count);
+    }
+
+    public Task<int> ReplaceProjectFilesAsync(
+        string project,
+        IReadOnlyList<string> filePaths,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges,
+        IReadOnlyDictionary<string, string> fileHashes,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (filePaths.Count == 0) return Task.FromResult(0);
+        if (IncrementalReplacementFailure is not null)
+            throw IncrementalReplacementFailure;
+
+        var paths = filePaths
+            .SelectMany(path => new[] { path.Replace('\\', '/'), path.Replace('/', '\\') })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var oldNodes = _nodes.Where(node =>
+                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                paths.Contains(node.FilePath))
+            .ToList();
+        var oldIds = oldNodes.Select(node => node.Id).ToHashSet();
+        var nodeById = _nodes.ToDictionary(node => node.Id);
+        var preservedIncoming = _edges
+            .Where(edge => oldIds.Contains(edge.TargetId) && !oldIds.Contains(edge.SourceId))
+            .Select(edge => new PendingEdge(
+                nodeById[edge.SourceId].QualifiedName,
+                nodeById[edge.TargetId].QualifiedName,
+                edge.Type,
+                edge.Properties))
+            .ToList();
+
+        var stagedNodes = _nodes.Where(node => !oldIds.Contains(node.Id)).ToList();
+        var stagedEdges = _edges
+            .Where(edge => !oldIds.Contains(edge.SourceId) && !oldIds.Contains(edge.TargetId))
+            .ToList();
+        var stagedCrossEdges = _crossEdges
+            .Where(edge => !oldIds.Contains(edge.SourceNodeId) && !oldIds.Contains(edge.TargetNodeId))
+            .ToList();
+        var stagedAnalyses = _nodeAnalyses
+            .Where(entry => !oldIds.Contains(entry.Key))
+            .ToDictionary(entry => entry.Key, entry => entry.Value);
+        var stagedHashes = _fileHashes.TryGetValue(project, out var existingHashes)
+            ? new Dictionary<string, string>(existingHashes, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
+            stagedHashes.Remove(path);
+
+        var nextId = _nextId;
+        var qnToId = stagedNodes
+            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(node => node.QualifiedName, node => node.Id, StringComparer.Ordinal);
+        foreach (var node in nodes.DistinctBy(node => node.QualifiedName, StringComparer.Ordinal))
+        {
+            if (qnToId.ContainsKey(node.QualifiedName))
+                continue;
+            var stored = node with { Id = nextId++, Project = project };
+            stagedNodes.Add(stored);
+            qnToId[stored.QualifiedName] = stored.Id;
+        }
+
+        var pendingByKey = new Dictionary<string, PendingEdge>(StringComparer.Ordinal);
+        foreach (var edge in preservedIncoming)
+            pendingByKey[$"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}"] = edge;
+        foreach (var edge in edges)
+            pendingByKey[$"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}"] = edge;
+
+        var resolved = pendingByKey.Values
+            .Where(edge => qnToId.ContainsKey(edge.SourceQN) && qnToId.ContainsKey(edge.TargetQN))
+            .Select(edge => new GraphEdge
+            {
+                Project = project,
+                SourceId = qnToId[edge.SourceQN],
+                TargetId = qnToId[edge.TargetQN],
+                Type = edge.Type,
+                Properties = edge.Properties ?? []
+            })
+            .ToList();
+        foreach (var edge in resolved)
+        {
+            stagedEdges.RemoveAll(existing => existing.SourceId == edge.SourceId &&
+                                               existing.TargetId == edge.TargetId &&
+                                               existing.Type == edge.Type);
+            stagedEdges.Add(edge);
+        }
+        foreach (var hash in fileHashes)
+            stagedHashes[hash.Key] = hash.Value;
+
+        _nodes.Clear();
+        _nodes.AddRange(stagedNodes);
+        _edges.Clear();
+        _edges.AddRange(stagedEdges);
+        _crossEdges.Clear();
+        _crossEdges.AddRange(stagedCrossEdges);
+        _nodeAnalyses.Clear();
+        foreach (var analysis in stagedAnalyses)
+            _nodeAnalyses[analysis.Key] = analysis.Value;
+        _fileHashes[project] = stagedHashes;
+        _nextId = nextId;
+
+        return Task.FromResult(resolved.Count);
     }
 
     public Task DeleteFilesFromProjectGraphAsync(

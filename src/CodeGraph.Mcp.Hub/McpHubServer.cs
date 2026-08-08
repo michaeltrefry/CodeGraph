@@ -90,11 +90,30 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     public Task<string> UpdateShortcutStory(int storyPublicId, string bodyJson, CancellationToken cancellationToken = default) =>
         ShortcutSend("stories-update", HttpMethod.Put, $"stories/{storyPublicId}", bodyJson, "update", $"story:{storyPublicId}", cancellationToken);
 
+    [McpServerTool(Name = "stories-stage-file", Title = "Stage Shortcut Story File", ReadOnly = false, Destructive = false)]
+    [Description("Stage caller-provided base64 content for Shortcut upload. Returns a short-lived, caller-bound opaque handle; host filesystem paths are not accepted.")]
+    public Task<string> StageShortcutStoryFile(
+        string displayName,
+        string base64Content,
+        CancellationToken cancellationToken = default) =>
+        InvokeAuditedAsync("shortcut", "stories-stage-file", "stage", "isolated-upload-staging", "none",
+            () => hub.StageShortcutFileAsync(Username, TokenId, displayName, base64Content, cancellationToken),
+            cancellationToken,
+            result => $"staged:{JsonDocument.Parse(result).RootElement.GetProperty("handle").GetString()}");
+
     [McpServerTool(Name = "stories-upload-file", Title = "Upload Shortcut Story File", ReadOnly = false, Destructive = false)]
-    [Description("Upload a local file and attach it to a Shortcut story.")]
-    public Task<string> UploadShortcutStoryFile(int storyPublicId, string filePath, CancellationToken cancellationToken = default) =>
-        InvokeShortcutAuditedAsync("stories-upload-file", "upload", $"story:{storyPublicId}",
-            credential => hub.UploadShortcutFileAsync(credential, storyPublicId, filePath, cancellationToken), cancellationToken);
+    [Description("Attach a file previously created by stories-stage-file. Only its short-lived opaque handle is accepted.")]
+    public Task<string> UploadShortcutStoryFile(
+        int storyPublicId,
+        string stagedFileHandle,
+        CancellationToken cancellationToken = default) =>
+        InvokeShortcutAuditedAsync(
+            "stories-upload-file",
+            "upload",
+            ShortcutUploadAuditResourceKey(storyPublicId, stagedFileHandle),
+            credential => hub.UploadShortcutFileAsync(
+                credential, Username, TokenId, storyPublicId, stagedFileHandle, cancellationToken),
+            cancellationToken);
 
     [McpServerTool(Name = "stories-assign-current-user", Title = "Assign Current User To Shortcut Story", ReadOnly = false, Destructive = false)]
     [Description("Assign the current Shortcut API user as a story owner.")]
@@ -629,45 +648,90 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 ? await hub.ResolveSharedShortcutCredentialForInvocationAsync(ct)
                 : await hub.ResolveShortcutCredentialForInvocationAsync(Username, TokenId, ct);
             var result = await action(credential);
-            await hub.AuditAsync(
-                Username,
-                TokenId,
-                "shortcut",
+            await WriteShortcutAuditAsync(
                 toolName,
-                "invoke",
                 operation,
                 resourceKey,
-                credential.CredentialMode,
+                credential,
                 "allowed",
                 "ok",
-                (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
-                true,
-                null,
-                ct,
-                providerIdentity: credential.ProviderIdentity);
+                sw,
+                success: true,
+                message: null,
+                sharedOnly: sharedOnly);
             return result;
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            await WriteShortcutAuditAsync(
+                toolName,
+                operation,
+                resourceKey,
+                credential,
+                "allowed",
+                "cancelled",
+                sw,
+                success: false,
+                message: ex.Message,
+                sharedOnly: sharedOnly);
+            throw;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             var statusClass = ex is McpHubProviderPolicyException ? "policy_denied" : "provider_error";
-            await hub.AuditAsync(
-                Username,
-                TokenId,
-                "shortcut",
+            await WriteShortcutAuditAsync(
                 toolName,
-                "invoke",
                 operation,
                 resourceKey,
-                credential?.CredentialMode ?? (sharedOnly ? "shared" : "delegated"),
+                credential,
                 statusClass == "policy_denied" ? "denied" : "allowed",
                 statusClass,
-                (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
-                false,
-                ex.Message,
-                ct,
-                providerIdentity: credential?.ProviderIdentity);
-            return $"Provider call failed: {ex.Message}";
+                sw,
+                success: false,
+                message: ex.Message,
+                sharedOnly: sharedOnly);
+            throw;
         }
+    }
+
+    private async Task WriteShortcutAuditAsync(
+        string toolName,
+        string operation,
+        string? resourceKey,
+        ResolvedShortcutCredential? credential,
+        string authorizationDecision,
+        string statusClass,
+        Stopwatch stopwatch,
+        bool success,
+        string? message,
+        bool sharedOnly)
+    {
+        using var auditTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await hub.AuditAsync(
+            Username,
+            TokenId,
+            "shortcut",
+            toolName,
+            "invoke",
+            operation,
+            resourceKey,
+            credential?.CredentialMode ?? (sharedOnly ? "shared" : "delegated"),
+            authorizationDecision,
+            statusClass,
+            (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+            success,
+            message,
+            auditTimeout.Token,
+            providerIdentity: credential?.ProviderIdentity);
+    }
+
+    private static string ShortcutUploadAuditResourceKey(int storyPublicId, string? handle)
+    {
+        var auditedHandle = handle is { Length: 64 } &&
+            handle.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')
+                ? handle
+                : "invalid-handle";
+        return $"story:{storyPublicId}/staged:{auditedHandle}";
     }
 
     private async Task<string> InvokeAuditedAsync(
@@ -677,10 +741,10 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         string? resourceKey,
         string credentialMode,
         Func<Task<string>> action,
-        CancellationToken ct)
+        CancellationToken ct,
+        Func<string, string?>? successResourceKey = null)
     {
         var sw = Stopwatch.StartNew();
-        string? providerIdentity = null;
         try
         {
             var result = await action();
@@ -691,15 +755,14 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 toolName,
                 "invoke",
                 operation,
-                resourceKey,
+                successResourceKey?.Invoke(result) ?? resourceKey,
                 credentialMode,
                 "allowed",
                 "ok",
                 (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
                 true,
                 null,
-                ct,
-                providerIdentity: providerIdentity);
+                CancellationToken.None);
             return result;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -719,8 +782,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
                 (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds),
                 false,
                 ex.Message,
-                ct,
-                providerIdentity: providerIdentity);
+                CancellationToken.None);
             return $"Provider call failed: {ex.Message}";
         }
     }

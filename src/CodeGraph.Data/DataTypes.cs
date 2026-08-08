@@ -15,6 +15,23 @@ public record RepositorySearchResult(
     IReadOnlyList<ProjectInfo> Items,
     int TotalCount);
 
+public record SchemaRepositorySearchResult(
+    IReadOnlyList<SchemaRepositoryItem> Items,
+    int TotalCount,
+    int TotalTables,
+    int TotalViews,
+    int TotalProcedures,
+    IReadOnlyList<string> Servers,
+    IReadOnlyList<string> Databases);
+
+public record SchemaRepositoryItem(
+    ProjectInfo Project,
+    string ServerName,
+    string DatabaseName,
+    int TableCount,
+    int ViewCount,
+    int ProcedureCount);
+
 public record ProjectInfo(
     string Name,
     string? RepoUrl,

@@ -59,6 +59,7 @@ public partial class Neo4jGraphStore(
     {
         await using var session = sessionFactory.GetSession();
         var now = DateTime.UtcNow;
+        var schemaMetadata = ResolveSchemaMetadata(repository);
 
         await session.ExecuteWriteAsync(async tx =>
         {
@@ -75,6 +76,9 @@ public partial class Neo4jGraphStore(
                     r.framework = COALESCE($framework, r.framework),
                     r.isFoundational = $isFoundational,
                     r.properties = $properties,
+                    r.isDatabaseSchema = $isDatabaseSchema,
+                    r.schemaServerName = $schemaServerName,
+                    r.schemaDatabaseName = $schemaDatabaseName,
                     r.updatedAt = $now
                 """,
                 new
@@ -89,7 +93,10 @@ public partial class Neo4jGraphStore(
                     language = repository.Language,
                     framework = repository.Framework,
                     isFoundational = repository.IsFoundational,
-                    properties = repository.Properties
+                    properties = repository.Properties,
+                    isDatabaseSchema = schemaMetadata.IsDatabaseSchema,
+                    schemaServerName = schemaMetadata.ServerName,
+                    schemaDatabaseName = schemaMetadata.DatabaseName
                 });
         });
     }

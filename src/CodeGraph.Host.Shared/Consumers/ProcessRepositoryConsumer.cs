@@ -2,7 +2,7 @@ using MassTransit;
 using CodeGraph.Models.Messages;
 using CodeGraph.Services;
 
-namespace CodeGraph.Api.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 public class ProcessRepositoryConsumer(
     IProjectService projectService,

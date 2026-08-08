@@ -12,6 +12,38 @@ namespace CodeGraph.Tests.IndexerHost;
 public class IndexerControllerTests
 {
     [Fact]
+    public async Task ReAnalyze_DelegatesToIndexerOperationsWithUsername()
+    {
+        var operations = new RecordingIndexerOperations
+        {
+            ReAnalysisBatch = CreateBatch("SceneWorks")
+        };
+        var controller = CreateController(operations);
+
+        var result = await controller.ReAnalyze(
+            new ReAnalyzeRequest { Repo = "SceneWorks" },
+            CancellationToken.None);
+
+        var ok = result.Result.ShouldBeOfType<OkObjectResult>();
+        ok.Value.ShouldBe(operations.ReAnalysisBatch);
+        operations.LastOperation.ShouldBe("reanalyze");
+        operations.LastUsername.ShouldBe("Michael");
+        operations.LastRepo.ShouldBe("SceneWorks");
+    }
+
+    [Fact]
+    public async Task ReAnalyze_RejectsEmptyRepository()
+    {
+        var operations = new RecordingIndexerOperations();
+        var controller = CreateController(operations);
+
+        var result = await controller.ReAnalyze(new ReAnalyzeRequest(), CancellationToken.None);
+
+        result.Result.ShouldBeOfType<BadRequestObjectResult>();
+        operations.LastOperation.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task ProcessRepositories_RejectsEmptyRepoList()
     {
         var controller = CreateController(new RecordingIndexerOperations());
@@ -50,6 +82,19 @@ public class IndexerControllerTests
         operations.LastOperation.ShouldBe("process");
         operations.LastUsername.ShouldBe("Michael");
         operations.LastProcessRequest.ShouldBe(request);
+        operations.LastSubmissionKey.ShouldBe("test-submission");
+    }
+
+    [Fact]
+    public async Task ProcessRepositories_RejectsMissingIdempotencyKey()
+    {
+        var controller = CreateController(new RecordingIndexerOperations(), includeSubmissionKey: false);
+
+        var result = await controller.ProcessRepositories(
+            new ProcessRequest { Repos = ["CodeGraph"] },
+            CancellationToken.None);
+
+        result.Result.ShouldBeOfType<BadRequestObjectResult>();
     }
 
     [Fact]
@@ -93,19 +138,25 @@ public class IndexerControllerTests
         result.Result.ShouldBeOfType<NotFoundResult>();
     }
 
-    private static IndexerController CreateController(RecordingIndexerOperations operations)
+    private static IndexerController CreateController(
+        RecordingIndexerOperations operations,
+        bool includeSubmissionKey = true)
     {
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("preferred_username", "Michael")
+            ], "test"))
+        };
+        if (includeSubmissionKey)
+            context.Request.Headers["Idempotency-Key"] = "test-submission";
+
         return new IndexerController(operations)
         {
             ControllerContext = new ControllerContext
             {
-                HttpContext = new DefaultHttpContext
-                {
-                    User = new ClaimsPrincipal(new ClaimsIdentity(
-                    [
-                        new Claim("preferred_username", "Michael")
-                    ], "test"))
-                }
+                HttpContext = context
             }
         };
     }
@@ -117,10 +168,24 @@ public class IndexerControllerTests
         public string? LastOperation { get; private set; }
         public string? LastUsername { get; private set; }
         public ProcessRequest? LastProcessRequest { get; private set; }
+        public string? LastSubmissionKey { get; private set; }
+        public string? LastRepo { get; private set; }
         public string? LastStatusFilter { get; private set; }
         public string? LastOperationFilter { get; private set; }
         public int? LastTake { get; private set; }
         public IReadOnlyList<IndexerRunResponse> Runs { get; set; } = [];
+        public AnalysisBatchResponse? ReAnalysisBatch { get; set; }
+
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            CancellationToken ct = default)
+        {
+            LastOperation = "reanalyze";
+            LastUsername = username;
+            LastRepo = repo;
+            return Task.FromResult(ReAnalysisBatch);
+        }
 
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
             string username,
@@ -131,6 +196,18 @@ public class IndexerControllerTests
             LastUsername = username;
             LastProcessRequest = request;
             return Task.FromResult(Accepted);
+        }
+
+        public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(
+            string username,
+            ProcessRequest request,
+            string? submissionKey,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(submissionKey))
+                throw new ArgumentException("An Idempotency-Key is required.", nameof(submissionKey));
+            LastSubmissionKey = submissionKey;
+            return StartProcessRepositoriesAsync(username, request, ct);
         }
 
         public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default)
@@ -198,6 +275,9 @@ public class IndexerControllerTests
         public Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
             => Task.FromResult<IndexerRunResponse?>(Runs.FirstOrDefault(run => run.Id == runId));
 
+        public Task<IndexerRunResponse?> CancelRunAsync(long runId, CancellationToken ct = default)
+            => Task.FromResult<IndexerRunResponse?>(Runs.FirstOrDefault(run => run.Id == runId));
+
         public Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(
             string? status = null,
             string? operation = null,
@@ -210,4 +290,17 @@ public class IndexerControllerTests
             return Task.FromResult(Runs);
         }
     }
+
+    private static AnalysisBatchResponse CreateBatch(string repo) => new(
+        11,
+        repo,
+        "batch-11",
+        "anthropic",
+        "batch",
+        true,
+        "pending",
+        2,
+        0,
+        DateTime.UtcNow,
+        null);
 }

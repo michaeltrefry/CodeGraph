@@ -14,10 +14,11 @@ public class ProcessBatchAnalysisJobTests
         await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest
         {
             Repo = "Orders.Api"
-        });
+        }, "job:batch-1");
 
         indexerClient.ProcessBatchAnalysisCalls.ShouldBe(1);
         indexerClient.LastBatchRepo.ShouldBe("Orders.Api");
+        indexerClient.SubmissionKeys.ShouldBe(["job:batch-1"]);
     }
 
     [Fact]
@@ -26,7 +27,7 @@ public class ProcessBatchAnalysisJobTests
         var indexerClient = new RecordingIndexerClient();
         var job = new ProcessBatchAnalysisJob(indexerClient);
 
-        await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest());
+        await job.ExecuteAsync(new ProcessBatchAnalysisJobRequest(), "job:batch-all");
 
         indexerClient.ProcessBatchAnalysisCalls.ShouldBe(1);
         indexerClient.LastBatchRepo.ShouldBeNull();

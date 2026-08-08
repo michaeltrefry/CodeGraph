@@ -6,6 +6,9 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (RustSemanticIndexingValidator.IsRequested(args))
+            return await RustSemanticIndexingValidator.RunAsync(args);
+
         var builder = WebApplication.CreateBuilder(args);
         Startup.ConfigureServices(builder.Services, builder.Configuration);
 

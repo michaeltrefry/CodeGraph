@@ -10,6 +10,18 @@ namespace CodeGraph.Indexer.Host.Controllers;
 [Route("api/indexer")]
 public class IndexerController(IIndexerOperationsService indexerOperations) : ControllerBase
 {
+    [HttpPost("repositories/reanalyze")]
+    public async Task<ActionResult<AnalysisBatchResponse>> ReAnalyze(
+        [FromBody] ReAnalyzeRequest request,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.Repo))
+            return BadRequest(new { error = "invalid_request", message = "Repo entry is required." });
+
+        var result = await indexerOperations.ReAnalyzeRepositoryAsync(GetUsername(), request.Repo, ct);
+        return result is null ? NotFound() : Ok(result);
+    }
+
     [HttpPost("repositories/process")]
     public async Task<ActionResult<IndexerAcceptedResponse>> ProcessRepositories(
         [FromBody] ProcessRequest request,
@@ -21,15 +33,15 @@ public class IndexerController(IIndexerOperationsService indexerOperations) : Co
         if (request.Repos.Count > 500)
             return BadRequest(new { error = "invalid_request", message = "Maximum 500 repos per request." });
 
-        var accepted = await indexerOperations.StartProcessRepositoriesAsync(GetUsername(), request, ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartProcessRepositoriesAsync(
+            GetUsername(), request, GetSubmissionKey(), ct));
     }
 
     [HttpPost("repositories/reindex-all")]
     public async Task<ActionResult<IndexerAcceptedResponse>> ReIndexAll(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartReIndexAllAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartReIndexAllAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     [HttpPost("repositories/discover")]
@@ -37,8 +49,8 @@ public class IndexerController(IIndexerOperationsService indexerOperations) : Co
         [FromBody] DiscoverRequest? request,
         CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartDiscoverAsync(GetUsername(), request, ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartDiscoverAsync(
+            GetUsername(), request, GetSubmissionKey(), ct));
     }
 
     [HttpPost("schemas/{sourceId:long}/sync")]
@@ -47,43 +59,43 @@ public class IndexerController(IIndexerOperationsService indexerOperations) : Co
         if (sourceId <= 0)
             return BadRequest(new { error = "invalid_request", message = "Database source id must be positive." });
 
-        var accepted = await indexerOperations.StartSyncSchemaAsync(GetUsername(), sourceId, ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartSyncSchemaAsync(
+            GetUsername(), sourceId, GetSubmissionKey(), ct));
     }
 
     [HttpPost("schemas/sync-all")]
     public async Task<ActionResult<IndexerAcceptedResponse>> SyncAllSchemas(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartSyncAllSchemasAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartSyncAllSchemasAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     [HttpPost("link")]
     public async Task<ActionResult<IndexerAcceptedResponse>> Link(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartLinkAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartLinkAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     [HttpPost("communities/detect")]
     public async Task<ActionResult<IndexerAcceptedResponse>> DetectCommunities(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartDetectCommunitiesAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartDetectCommunitiesAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     [HttpPost("link-and-detect")]
     public async Task<ActionResult<IndexerAcceptedResponse>> LinkAndDetect(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartLinkAndDetectAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartLinkAndDetectAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     [HttpPost("batch-analysis/process")]
     public async Task<ActionResult<IndexerAcceptedResponse>> ProcessBatchAnalysis([FromQuery] string? repo, CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartProcessBatchAnalysisAsync(GetUsername(), repo, ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartProcessBatchAnalysisAsync(
+            GetUsername(), repo, GetSubmissionKey(), ct));
     }
 
     [HttpGet("runs")]
@@ -104,9 +116,37 @@ public class IndexerController(IIndexerOperationsService indexerOperations) : Co
         return run is null ? NotFound() : Ok(run);
     }
 
+    [HttpPost("runs/{runId:long}/cancel")]
+    public async Task<ActionResult<IndexerRunResponse>> CancelRun(long runId, CancellationToken ct)
+    {
+        var run = await indexerOperations.CancelRunAsync(runId, ct);
+        return run is null ? NotFound() : Ok(run);
+    }
+
     private string GetUsername() =>
         User.FindFirstValue("preferred_username")
         ?? User.FindFirstValue("username")
         ?? User.Identity?.Name
         ?? "unknown";
+
+    private string? GetSubmissionKey()
+        => Request.Headers.TryGetValue("Idempotency-Key", out var values) ? values.ToString() : null;
+
+    private async Task<ActionResult<IndexerAcceptedResponse>> AcceptSubmissionAsync(
+        Func<Task<IndexerAcceptedResponse>> submit)
+    {
+        try
+        {
+            var accepted = await submit();
+            return Accepted(accepted.RunStatusUrl, accepted);
+        }
+        catch (IndexerSubmissionConflictException ex)
+        {
+            return Conflict(new { error = "idempotency_conflict", message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = "invalid_request", message = ex.Message });
+        }
+    }
 }

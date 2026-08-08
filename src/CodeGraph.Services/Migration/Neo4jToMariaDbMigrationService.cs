@@ -8,27 +8,23 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
 {
     private const string RepositoriesArea = "repositories";
     private const string GraphArea = "graph";
-    private const string Operation = "neo4j-to-mariadb/repositories-graph";
     private readonly Neo4jToMariaDbMigrationPlanner _planner;
     private readonly INeo4jToMariaDbGraphExporter? _graphExporter;
     private readonly IGraphStore? _targetStore;
-    private readonly IIndexerRunStore? _runStore;
 
     public Neo4jToMariaDbMigrationService(Neo4jToMariaDbMigrationPlanner planner)
-        : this(planner, null, null, null)
+        : this(planner, null, null)
     {
     }
 
     public Neo4jToMariaDbMigrationService(
         Neo4jToMariaDbMigrationPlanner planner,
         INeo4jToMariaDbGraphExporter? graphExporter,
-        IGraphStore? targetStore,
-        IIndexerRunStore? runStore = null)
+        IGraphStore? targetStore)
     {
         _planner = planner;
         _graphExporter = graphExporter;
         _targetStore = targetStore;
-        _runStore = runStore;
     }
 
     public async Task<Neo4jToMariaDbMigrationPlanReport> CreateDryRunReportAsync(
@@ -73,19 +69,6 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
         }
 
         var checkpoints = new List<Neo4jToMariaDbMigrationCheckpoint>();
-        long? runId = null;
-
-        if (_runStore is not null)
-        {
-            runId = await _runStore.CreateIndexerRunAsync(new IndexerRunEntity
-            {
-                Operation = Operation,
-                RequestedByUsername = requestedByUsername,
-                Target = "repositories,graph",
-                Status = "running",
-                Message = "Starting Neo4j to MariaDB repositories/graph migration."
-            }, ct);
-        }
 
         try
         {
@@ -126,10 +109,8 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
                 Edges: remappedEdges.Count,
                 CrossRepoEdges: remappedCrossRepoEdges.Count);
 
-            await UpdateRunStatusAsync(runId, "completed", "Completed Neo4j to MariaDB repositories/graph migration.", null, ct);
-
             return new Neo4jToMariaDbGraphImportResult(
-                RunId: runId,
+                RunId: null,
                 Status: "completed",
                 Exported: export.Counts,
                 Imported: imported,
@@ -140,14 +121,12 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
         }
         catch (OperationCanceledException)
         {
-            await UpdateRunStatusAsync(runId, "failed", "Neo4j to MariaDB migration was cancelled.", "Cancelled.", CancellationToken.None);
             throw;
         }
         catch (Exception ex)
         {
-            await UpdateRunStatusAsync(runId, "failed", "Neo4j to MariaDB migration failed.", ex.Message, CancellationToken.None);
             return new Neo4jToMariaDbGraphImportResult(
-                RunId: runId,
+                RunId: null,
                 Status: "failed",
                 Exported: new Neo4jToMariaDbGraphCounts(0, 0, 0, 0),
                 Imported: new Neo4jToMariaDbGraphCounts(0, 0, 0, 0),
@@ -157,7 +136,7 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
                 Error: ex.Message);
         }
 
-        async Task AddCheckpointAsync(
+        Task AddCheckpointAsync(
             string area,
             string stage,
             string status,
@@ -172,7 +151,7 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
                 DateTime.UtcNow,
                 message);
             checkpoints.Add(checkpoint);
-            await UpdateRunStatusAsync(runId, "running", message, null, ct);
+            return Task.CompletedTask;
         }
     }
 
@@ -267,27 +246,6 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
         }
 
         return remapped;
-    }
-
-    private async Task UpdateRunStatusAsync(
-        long? runId,
-        string status,
-        string? message,
-        string? error,
-        CancellationToken ct)
-    {
-        if (_runStore is null || runId is null)
-        {
-            return;
-        }
-
-        await _runStore.UpdateIndexerRunStatusAsync(
-            runId.Value,
-            status,
-            message,
-            status is "completed" or "failed" ? DateTime.UtcNow : null,
-            error,
-            ct);
     }
 
     private static string Truncate(string value, int maxLength)

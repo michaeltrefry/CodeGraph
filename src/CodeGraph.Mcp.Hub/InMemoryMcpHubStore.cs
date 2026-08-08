@@ -162,10 +162,9 @@ internal sealed class InMemoryMcpHubStore : IMcpHubStore
     {
         lock (gate)
         {
-            var hasSelectedTools = entitlements.TryGetValue(tokenId, out var names);
-            if (McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(toolName))
-                return Task.FromResult(hasSelectedTools && names!.Contains(toolName, StringComparer.OrdinalIgnoreCase));
-            return Task.FromResult(!hasSelectedTools || names!.Contains(toolName, StringComparer.OrdinalIgnoreCase));
+            if (!entitlements.TryGetValue(tokenId, out var names))
+                return Task.FromResult(!McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(toolName));
+            return Task.FromResult(names.Contains(toolName, StringComparer.OrdinalIgnoreCase));
         }
     }
 

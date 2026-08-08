@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using Shouldly;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Query;
 using CodeGraph.Tests.Extractors;
@@ -48,6 +49,70 @@ public class ProjectQueryServiceTests
         result.TotalViews.ShouldBe(1);
         result.Items.Single().DatabaseName.ShouldBe("Orders");
         result.Servers.ShouldBe(["sql-prod"]);
+    }
+
+    [Fact]
+    public async Task ListSchemasAsync_QueryCountAndPageEnrichmentRemainBoundedAsFleetGrows()
+    {
+        var smallFleet = await QueryFleetAsync(32);
+        var largeFleet = await QueryFleetAsync(512);
+
+        smallFleet.QueryCount.ShouldBe(1);
+        largeFleet.QueryCount.ShouldBe(smallFleet.QueryCount);
+        smallFleet.PageEnrichmentCount.ShouldBe(10);
+        largeFleet.PageEnrichmentCount.ShouldBe(smallFleet.PageEnrichmentCount);
+        smallFleet.Response.TotalTables.ShouldBe(32);
+        largeFleet.Response.TotalTables.ShouldBe(512);
+        largeFleet.Response.Total.ShouldBe(512);
+        largeFleet.Response.Items.Select(item => item.DatabaseName)
+            .ShouldBe(Enumerable.Range(20, 10).Select(index => $"Database{index:D4}"));
+
+        static async Task<(SchemaListResponse Response, int QueryCount, int PageEnrichmentCount)> QueryFleetAsync(int size)
+        {
+            var store = new InMemoryGraphStore();
+            for (var index = size - 1; index >= 0; index--)
+            {
+                var project = $"db:sql-prod/Database{index:D4}";
+                await store.UpsertRepositoryAsync(new RepositoryEntity
+                {
+                    Name = project,
+                    SourceGroup = "sql-prod",
+                    Language = "SQL"
+                });
+                store.AddNode(new GraphNode
+                {
+                    Project = project,
+                    Label = NodeLabel.Table,
+                    Name = $"Table{index:D4}",
+                    QualifiedName = $"dbo.Table{index:D4}"
+                });
+            }
+
+            var response = await CreateService(store).ListSchemasAsync(null, null, null, 3, 10);
+            return (response, store.SchemaSearchQueryCount, store.SchemaPageEnrichmentCount);
+        }
+    }
+
+    [Fact]
+    public async Task ListSchemasAsync_UsesStableProjectTieBreakerAcrossPages()
+    {
+        var store = new InMemoryGraphStore();
+        foreach (var name in new[] { "db:server/Shared-C", "db:server/Shared-A", "db:server/Shared-B" })
+        {
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = name,
+                SourceGroup = "server",
+                Properties = JsonSerializer.Serialize(new { serverName = "server", databaseName = "Shared" })
+            });
+        }
+
+        var service = CreateService(store);
+        var firstPage = await service.ListSchemasAsync(null, null, null, 1, 2);
+        var secondPage = await service.ListSchemasAsync(null, null, null, 2, 2);
+
+        firstPage.Items.Select(item => item.Name).ShouldBe(["db:server/Shared-A", "db:server/Shared-B"]);
+        secondPage.Items.Select(item => item.Name).ShouldBe(["db:server/Shared-C"]);
     }
 
     [Fact]

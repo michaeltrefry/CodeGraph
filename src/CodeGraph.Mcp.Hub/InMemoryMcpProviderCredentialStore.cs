@@ -37,6 +37,25 @@ internal sealed class InMemoryMcpProviderCredentialStore : IMcpProviderCredentia
             return Task.FromResult(rows.TryGetValue(key, out var row) ? Clone(row.Entity) : null);
     }
 
+    public Task<McpProviderCredentialSnapshot?> GetSnapshotAsync(
+        string providerKey,
+        string username,
+        string credentialKey,
+        CancellationToken ct = default)
+    {
+        var key = NormalizeKey(providerKey, username, credentialKey);
+        lock (gate)
+        {
+            return Task.FromResult(rows.TryGetValue(key, out var row)
+                ? new McpProviderCredentialSnapshot(
+                    row.Entity.ValidationState,
+                    row.Entity.ProviderIdentity,
+                    row.Entity.ExpiresAtUtc,
+                    row.Value)
+                : null);
+        }
+    }
+
     public Task<string?> GetValueAsync(
         string providerKey,
         string username,

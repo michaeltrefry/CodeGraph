@@ -40,8 +40,8 @@ public class SettingsController(
 
         try
         {
-            var accepted = await indexerOperations.StartProcessRepositoriesAsync(GetUsername(), request, ct);
-            return Accepted(accepted.RunStatusUrl, accepted);
+            return await AcceptSubmissionAsync(() => indexerOperations.StartProcessRepositoriesAsync(
+                GetUsername(), request, GetSubmissionKey(), ct));
         }
         catch (ArgumentException ex)
         {
@@ -55,8 +55,8 @@ public class SettingsController(
     [HttpPost("reIndexAll")]
     public async Task<ActionResult<IndexerAcceptedResponse>> ReIndexAllRepos(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartReIndexAllAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartReIndexAllAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     /// <summary>
@@ -65,8 +65,8 @@ public class SettingsController(
     [HttpPost("link")]
     public async Task<ActionResult<IndexerAcceptedResponse>> Link(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartLinkAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartLinkAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     /// <summary>
@@ -75,8 +75,8 @@ public class SettingsController(
     [HttpPost("detectCommunities")]
     public async Task<ActionResult<IndexerAcceptedResponse>> DetectCommunities(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartDetectCommunitiesAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartDetectCommunitiesAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     /// <summary>
@@ -85,8 +85,8 @@ public class SettingsController(
     [HttpPost("linkAndDetect")]
     public async Task<ActionResult<IndexerAcceptedResponse>> LinkAndDetect(CancellationToken ct)
     {
-        var accepted = await indexerOperations.StartLinkAndDetectAsync(GetUsername(), ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartLinkAndDetectAsync(
+            GetUsername(), GetSubmissionKey(), ct));
     }
 
     [HttpPost("processBatchAnalysis")]
@@ -94,8 +94,8 @@ public class SettingsController(
         string? repo = null,
         CancellationToken ct = default)
     {
-        var accepted = await indexerOperations.StartProcessBatchAnalysisAsync(GetUsername(), repo, ct);
-        return Accepted(accepted.RunStatusUrl, accepted);
+        return await AcceptSubmissionAsync(() => indexerOperations.StartProcessBatchAnalysisAsync(
+            GetUsername(), repo, GetSubmissionKey(), ct));
     }
 
     /// <summary>
@@ -108,8 +108,8 @@ public class SettingsController(
     {
         try
         {
-            var accepted = await indexerOperations.StartDiscoverAsync(GetUsername(), request, ct);
-            return Accepted(accepted.RunStatusUrl, accepted);
+            return await AcceptSubmissionAsync(() => indexerOperations.StartDiscoverAsync(
+                GetUsername(), request, GetSubmissionKey(), ct));
         }
         catch (RegexParseException ex)
         {
@@ -346,4 +346,25 @@ public class SettingsController(
         ?? User.FindFirst("name")?.Value
         ?? User.Identity?.Name
         ?? "unknown";
+
+    private string? GetSubmissionKey()
+        => Request.Headers.TryGetValue("Idempotency-Key", out var values) ? values.ToString() : null;
+
+    private async Task<ActionResult<IndexerAcceptedResponse>> AcceptSubmissionAsync(
+        Func<Task<IndexerAcceptedResponse>> submit)
+    {
+        try
+        {
+            var accepted = await submit();
+            return Accepted(accepted.RunStatusUrl, accepted);
+        }
+        catch (IndexerSubmissionConflictException ex)
+        {
+            return Conflict(new { error = "idempotency_conflict", message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = "invalid_request", message = ex.Message });
+        }
+    }
 }

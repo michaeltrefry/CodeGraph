@@ -10,8 +10,10 @@ namespace CodeGraph.Services.Pipeline;
 /// </summary>
 public class GraphBuffer
 {
-    private readonly ConcurrentDictionary<string, GraphNode> _nodes = new(); // keyed by QN
-    private readonly ConcurrentDictionary<string, ConcurrentBag<GraphNode>> _nodesByName = new();
+    private readonly ConcurrentDictionary<string, GraphNode> _nodes =
+        new(StringComparer.Ordinal); // language identifiers are case-sensitive
+    private readonly ConcurrentDictionary<string, ConcurrentBag<GraphNode>> _nodesByName =
+        new(StringComparer.Ordinal);
     private readonly ConcurrentBag<PendingEdge> _pendingEdges = new();
     private readonly ConcurrentBag<UnresolvedCall> _unresolvedCalls = new();
     private readonly ConcurrentBag<UnresolvedImport> _unresolvedImports = new();

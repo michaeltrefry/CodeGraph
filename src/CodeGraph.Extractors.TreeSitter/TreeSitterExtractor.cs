@@ -44,7 +44,7 @@ public class TreeSitterExtractor : ICodeExtractor
         {
             _logger.LogWarning(ex, "Tree-sitter extraction failed for {File} ({Lang})",
                 filePath, spec.LanguageName);
-            return Task.FromResult(EmptyResult);
+            return Task.FromResult(ExtractionResult.Failure(ex.Message));
         }
     }
 
@@ -123,7 +123,7 @@ public class TreeSitterExtractor : ICodeExtractor
         List<GraphNode> nodes, List<PendingEdge> edges,
         Func<string, string, NodeLabel, Dictionary<string, object>?, GraphNode> makeNode)
     {
-        var fileQN = $"{context.ProjectName}.file.{Path.GetFileNameWithoutExtension(filePath)}";
+        var fileQN = GetFileQualifiedName(context, filePath);
         WalkForDefinitions(root, spec, context, content,
             nodes, edges, makeNode, fileQN, enclosingClassQN: null);
     }
@@ -142,7 +142,8 @@ public class TreeSitterExtractor : ICodeExtractor
             var name = GetName(node, spec);
             if (name != null)
             {
-                var qn = $"{context.ProjectName}.{name}";
+                var container = enclosingClassQN ?? parentQN;
+                var qn = $"{container}#type:{name}";
                 var props = new Dictionary<string, object> { ["confidence"] = "high" };
 
                 if (spec.SuperclassField != null)
@@ -184,8 +185,12 @@ public class TreeSitterExtractor : ICodeExtractor
             var name = GetName(node, spec);
             if (name != null)
             {
-                var container = enclosingClassQN ?? context.ProjectName;
-                var qn = $"{container}.{name}";
+                var container = enclosingClassQN ?? parentQN;
+                var parameters = spec.ParametersField is null
+                    ? null
+                    : GetFieldText(node, spec.ParametersField);
+                var kind = enclosingClassQN is null ? "function" : "method";
+                var qn = $"{container}#{kind}:{name}{NormalizeSignature(parameters)}";
                 var label = enclosingClassQN != null ? NodeLabel.Method : spec.FunctionLabel;
 
                 var props = new Dictionary<string, object> { ["confidence"] = "high" };
@@ -199,7 +204,6 @@ public class TreeSitterExtractor : ICodeExtractor
 
                 if (spec.ParametersField != null)
                 {
-                    var parameters = GetFieldText(node, spec.ParametersField);
                     if (parameters != null)
                         props["parameters"] = parameters;
                 }
@@ -232,8 +236,24 @@ public class TreeSitterExtractor : ICodeExtractor
         ExtractorContext context, string filePath, string content,
         List<UnresolvedImport> unresolvedImports)
     {
-        var fileQN = $"{context.ProjectName}.file.{Path.GetFileNameWithoutExtension(filePath)}";
+        var fileQN = GetFileQualifiedName(context, filePath);
         WalkForImports(root, spec, content, fileQN, unresolvedImports);
+    }
+
+    private static string GetFileQualifiedName(ExtractorContext context, string filePath)
+    {
+        var relativePath = Path.GetRelativePath(context.RootPath, filePath)
+            .Replace('\\', '/')
+            .TrimStart('/');
+        return $"{context.ProjectName}:{relativePath}";
+    }
+
+    private static string NormalizeSignature(string? parameters)
+    {
+        if (string.IsNullOrWhiteSpace(parameters))
+            return "()";
+
+        return string.Concat(parameters.Where(character => !char.IsWhiteSpace(character)));
     }
 
     private static void WalkForImports(Node node, LanguageSpec spec, string content,

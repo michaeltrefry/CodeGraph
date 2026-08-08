@@ -46,6 +46,7 @@ public class SqlExtractorTests
         var table = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Table);
         table.Name.ShouldBe("dbo.Orders");
         table.QualifiedName.ShouldBe("TestProject.dbo.Orders");
+        table.FilePath.ShouldBe("schema.sql");
         table.Properties["column_count"].ShouldBe(4);
 
         var columns = (List<Dictionary<string, object>>)table.Properties["columns"];

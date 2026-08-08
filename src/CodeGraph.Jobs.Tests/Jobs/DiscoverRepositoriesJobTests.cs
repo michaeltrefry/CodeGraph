@@ -26,7 +26,7 @@ public class DiscoverRepositoriesJobTests
             Limit = 25
         };
 
-        var result = await job.ExecuteAsync(request);
+        var result = await job.ExecuteAsync(request, "job:discover-1");
 
         indexerClient.LastDiscoverRequest.ShouldNotBeNull();
         indexerClient.LastDiscoverRequest.ShouldIndex.ShouldBeFalse();
@@ -37,5 +37,6 @@ public class DiscoverRepositoriesJobTests
         indexerClient.LastDiscoverRequest.Limit.ShouldBe(25);
         result.Success.ShouldBeTrue();
         result.Message.ShouldContain("Queued repository discovery");
+        indexerClient.SubmissionKeys.ShouldBe(["job:discover-1"]);
     }
 }

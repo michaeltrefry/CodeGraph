@@ -35,8 +35,22 @@ jobs:
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/codegraph_test!
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd="cypher-shell -u neo4j -p codegraph_test! 'RETURN 1'"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     env:
       CODEGRAPH_MARIADB_TEST_CONNECTION: Server=127.0.0.1;Port=3306;User ID=root;Password=codegraph_test!;
+      CODEGRAPH_NEO4J_TEST_URI: bolt://127.0.0.1:7687
+      CODEGRAPH_NEO4J_TEST_USERNAME: neo4j
+      CODEGRAPH_NEO4J_TEST_PASSWORD: codegraph_test!
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,6 +68,32 @@ jobs:
 
       - name: Test
         run: dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
+
+  windows-attachment-security:
+    name: Windows Attachment Security
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run cross-platform staging security tests
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj
+          --configuration Release
+          --filter "FullyQualifiedName~ShortcutUploadStagingAreaTests"
+          --verbosity normal
+
+      - name: Test Windows attachment filesystem behavior
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj
+          --configuration Release
+          --verbosity normal
+          --filter FullyQualifiedName~AttachmentServiceTests
 
   windows-resolver:
     name: Windows Resolver Security
@@ -148,9 +188,13 @@ jobs:
           context: .
           file: Dockerfile.indexer
           push: false
+          load: true
           tags: codegraph-indexer:ci
           cache-from: type=gha,scope=indexer
           cache-to: type=gha,scope=indexer,mode=max
+
+      - name: Validate Rust semantic indexing in final image
+        run: docker run --rm codegraph-indexer:ci --validate-rust-semantic-indexing
 
       - name: Build memory image
         uses: docker/build-push-action@v6
@@ -181,3 +225,36 @@ jobs:
           tags: codegraph-web:ci
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
+
+  rust-semantic-arm64:
+    name: Rust Semantic (ARM64)
+    runs-on: ubuntu-latest
+    needs:
+      - backend
+      - frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ARM64 final indexer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.indexer
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: codegraph-indexer:ci-arm64
+          cache-from: type=gha,scope=indexer-arm64
+          cache-to: type=gha,scope=indexer-arm64,mode=max
+
+      - name: Validate Rust semantic indexing in ARM64 final image
+        run: docker run --rm --platform linux/arm64 codegraph-indexer:ci-arm64 --validate-rust-semantic-indexing

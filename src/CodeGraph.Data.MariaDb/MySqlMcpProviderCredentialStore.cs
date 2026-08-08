@@ -33,6 +33,38 @@ public sealed class MySqlMcpProviderCredentialStore(CodeGraphDbContext db, IAesE
                 ct);
     }
 
+    public async Task<McpProviderCredentialSnapshot?> GetSnapshotAsync(
+        string providerKey,
+        string username,
+        string credentialKey,
+        CancellationToken ct = default)
+    {
+        var (provider, user, key) = Normalize(providerKey, username, credentialKey);
+        var row = await db.McpProviderCredentials.AsNoTracking()
+            .Where(credential => credential.ProviderKey == provider
+                && credential.Username == user
+                && credential.CredentialKey == key)
+            .Select(credential => new
+            {
+                credential.ValidationState,
+                credential.ProviderIdentity,
+                credential.ExpiresAtUtc,
+                credential.EncryptedValue,
+            })
+            .SingleOrDefaultAsync(ct);
+
+        if (row is null)
+            return null;
+
+        return new McpProviderCredentialSnapshot(
+            row.ValidationState,
+            row.ProviderIdentity,
+            row.ExpiresAtUtc,
+            string.IsNullOrWhiteSpace(row.EncryptedValue)
+                ? null
+                : encryptor.Decrypt(row.EncryptedValue));
+    }
+
     public async Task<string?> GetValueAsync(
         string providerKey,
         string username,

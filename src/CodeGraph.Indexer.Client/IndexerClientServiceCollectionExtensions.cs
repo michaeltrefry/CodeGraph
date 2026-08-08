@@ -21,6 +21,11 @@ public static class IndexerClientServiceCollectionExtensions
             var options = sp.GetRequiredService<IOptions<IndexerClientOptions>>().Value;
             if (!string.IsNullOrWhiteSpace(options.BaseUrl))
                 client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/");
+
+            // Repository re-analysis includes complete indexing and batch submission.
+            // Let the caller's cancellation token govern that work instead of the
+            // HttpClient default 100-second timeout.
+            client.Timeout = Timeout.InfiniteTimeSpan;
         });
 
         services.AddTransient<IIndexerClient, HttpIndexerClient>();
