@@ -231,6 +231,165 @@ public class MariaDbGraphStoreTests
         }
     }
 
+    [Fact]
+    public async Task MySqlGraphStore_AtomicallyReplacesChangedFileSliceWhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var databaseName = $"codegraph_file_slice_test_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+        var storageOptions = Options.Create(new MariaDbStorageOptions
+        {
+            ConnectionString = builder.ConnectionString,
+            MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+        });
+        var runner = new MariaDbMigrationRunner(storageOptions, NullLogger<MariaDbMigrationRunner>.Instance);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                .UseMySql(builder.ConnectionString,
+                    ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                .Options;
+            await using var context = new CodeGraphDbContext(dbOptions);
+            var store = new MySqlGraphStore(
+                context,
+                storageOptions,
+                NullLogger<MySqlGraphStore>.Instance,
+                new MySqlAnalysisStore(context),
+                new MySqlMetricsStore(context),
+                new MySqlReviewStore(context),
+                runner);
+
+            await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "SliceProvider" });
+            var ids = await store.UpsertNodeBatchAsync(
+            [
+                Node(NodeLabel.Class, "OldController", "SliceProvider.OldController", "api.cs"),
+                Node(NodeLabel.Method, "OldAction", "SliceProvider.OldController.OldAction", "api.cs"),
+                Node(NodeLabel.Route, "/old", "route:GET:/old", "api.cs"),
+                Node(NodeLabel.Method, "Caller", "SliceProvider.Caller", "caller.cs"),
+                Node(NodeLabel.Method, "Target", "SliceProvider.Target", "target.cs")
+            ]);
+            var oldMethodId = ids[GraphNodeKey.Create("SliceProvider", "SliceProvider.OldController.OldAction")];
+            var callerId = ids[GraphNodeKey.Create("SliceProvider", "SliceProvider.Caller")];
+            var targetId = ids[GraphNodeKey.Create("SliceProvider", "SliceProvider.Target")];
+            await store.InsertEdgeBatchAsync(
+            [
+                Edge(oldMethodId, targetId, EdgeType.CALLS),
+                Edge(callerId, oldMethodId, EdgeType.CALLS)
+            ]);
+            await store.UpsertFileHashBatchAsync("SliceProvider", new Dictionary<string, string>
+            {
+                ["api.cs"] = "old-hash"
+            });
+
+            await store.ReplaceProjectFilesAsync(
+                "SliceProvider",
+                ["api.cs"],
+                [
+                    Node(NodeLabel.Class, "NewController", "SliceProvider.NewController", "api.cs"),
+                    Node(NodeLabel.Method, "NewAction", "SliceProvider.NewController.NewAction", "api.cs"),
+                    Node(NodeLabel.Route, "/new", "route:GET:/new", "api.cs")
+                ],
+                [
+                    new PendingEdge("SliceProvider.NewController", "SliceProvider.NewController.NewAction", EdgeType.DEFINES_METHOD),
+                    new PendingEdge("SliceProvider.NewController.NewAction", "route:GET:/new", EdgeType.HANDLES)
+                ],
+                new Dictionary<string, string> { ["api.cs"] = "new-hash" });
+
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "SliceProvider.OldController")).ShouldBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "SliceProvider.OldController.OldAction")).ShouldBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "route:GET:/old")).ShouldBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "SliceProvider.NewController")).ShouldNotBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "SliceProvider.NewController.NewAction")).ShouldNotBeNull();
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "route:GET:/new")).ShouldNotBeNull();
+            (await store.FindNodeByIdAsync(callerId)).ShouldNotBeNull();
+            (await store.FindNodeByIdAsync(targetId)).ShouldNotBeNull();
+            (await store.FindEdgesBySourceAsync(callerId, EdgeType.CALLS)).ShouldBeEmpty();
+            (await store.FindEdgesByTargetAsync(targetId, EdgeType.CALLS)).ShouldBeEmpty();
+            (await store.GetFileHashesAsync("SliceProvider"))["api.cs"].ShouldBe("new-hash");
+
+            var productionRoot = Path.Combine(Path.GetTempPath(), $"codegraph-production-slice-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(productionRoot);
+            try
+            {
+                var (oldSlice, newSlice) = await ProductionFileSliceFixture.CreateAsync(
+                    "SliceProvider", productionRoot);
+                oldSlice.Nodes.Select(node => node.FilePath).Distinct().Order()
+                    .ShouldBe(ProductionFileSliceFixture.FilePaths.Order());
+                newSlice.Nodes.Select(node => node.FilePath).Distinct().Order()
+                    .ShouldBe(ProductionFileSliceFixture.FilePaths.Order());
+
+                await store.ReplaceProjectFilesAsync(
+                    "SliceProvider",
+                    ProductionFileSliceFixture.FilePaths,
+                    oldSlice.Nodes,
+                    oldSlice.Edges,
+                    ProductionFileSliceFixture.FilePaths.ToDictionary(path => path, _ => "production-old"));
+                var oldIds = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var oldNode in oldSlice.Nodes)
+                    oldIds[oldNode.QualifiedName] =
+                        (await store.FindNodeByQualifiedNameAsync("SliceProvider", oldNode.QualifiedName))!.Id;
+
+                await store.ReplaceProjectFilesAsync(
+                    "SliceProvider",
+                    ProductionFileSliceFixture.FilePaths,
+                    newSlice.Nodes,
+                    newSlice.Edges,
+                    ProductionFileSliceFixture.FilePaths.ToDictionary(path => path, _ => "production-new"));
+
+                foreach (var oldNode in oldSlice.Nodes)
+                    (await store.FindNodeByQualifiedNameAsync("SliceProvider", oldNode.QualifiedName)).ShouldBeNull();
+                foreach (var oldId in oldIds.Values)
+                {
+                    (await store.FindNodeByIdAsync(oldId)).ShouldBeNull();
+                    (await store.FindEdgesBySourceAsync(oldId)).ShouldBeEmpty();
+                    (await store.FindEdgesByTargetAsync(oldId)).ShouldBeEmpty();
+                }
+                foreach (var newNode in newSlice.Nodes)
+                    (await store.FindNodeByQualifiedNameAsync("SliceProvider", newNode.QualifiedName)).ShouldNotBeNull();
+                (await store.GetFileHashesAsync("SliceProvider"))
+                    .Where(hash => ProductionFileSliceFixture.FilePaths.Contains(hash.Key))
+                    .ShouldAllBe(hash => hash.Value == "production-new");
+            }
+            finally
+            {
+                Directory.Delete(productionRoot, recursive: true);
+            }
+
+            var oversizedPath = new string('x', 501);
+            await Should.ThrowAsync<MySqlException>(() => store.ReplaceProjectFilesAsync(
+                "SliceProvider",
+                ["api.cs"],
+                [Node(NodeLabel.Class, "Broken", "SliceProvider.Broken", oversizedPath)],
+                [],
+                new Dictionary<string, string> { ["api.cs"] = "broken-hash" }));
+            (await store.FindNodeByQualifiedNameAsync("SliceProvider", "SliceProvider.NewController")).ShouldNotBeNull();
+            (await store.GetFileHashesAsync("SliceProvider"))["api.cs"].ShouldBe("new-hash");
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+
+        static GraphNode Node(NodeLabel label, string name, string qn, string filePath) => new()
+        {
+            Project = "SliceProvider",
+            Label = label,
+            Name = name,
+            QualifiedName = qn,
+            FilePath = filePath
+        };
+        static GraphEdge Edge(long sourceId, long targetId, EdgeType type) => new()
+        {
+            Project = "SliceProvider",
+            SourceId = sourceId,
+            TargetId = targetId,
+            Type = type
+        };
+    }
+
     private static async Task DropDatabaseAsync(string connectionString, string databaseName)
     {
         var builder = new MySqlConnectionStringBuilder(connectionString)

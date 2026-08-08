@@ -6,10 +6,11 @@ using MySqlConnector;
 
 namespace CodeGraph.Data.MariaDb;
 
-public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccessor)
+public class MySqlMemoryGraphStore(
+    IOptions<MariaDbStorageOptions> optionsAccessor,
+    IMemoryTenantContext tenantContext)
     : IMemoryGraphStore
 {
-    private const string DefaultUsername = "default";
     private static readonly HashSet<string> TestDataSources = new(StringComparer.OrdinalIgnoreCase)
     {
         "test",
@@ -29,6 +30,8 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
     };
 
     private readonly MariaDbStorageOptions options = optionsAccessor.Value;
+    public string Username => tenantContext.Username;
+    private string DefaultUsername => Username;
 
     public async Task CreateWriteReceiptAsync(MemoryWriteReceipt receipt)
     {
@@ -92,12 +95,14 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
                    processing_started_at AS StartedAt,
                    completed_at AS CompletedAt
             FROM memory_write_receipts
-            WHERE receipt_id = @receiptId
+            WHERE username = @username AND receipt_id = @receiptId
             LIMIT 1;
             """;
 
         await using var connection = CreateConnection();
-        var row = await connection.QuerySingleOrDefaultAsync<MemoryWriteReceiptRow>(sql, new { receiptId });
+        var row = await connection.QuerySingleOrDefaultAsync<MemoryWriteReceiptRow>(
+            sql,
+            new { username = DefaultUsername, receiptId });
         return row?.ToModel();
     }
 
@@ -327,14 +332,14 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             useTestSourceHeuristics);
 
         if (plan.IsEmpty || dryRun)
-            return plan.ToResult(dryRun);
+            return plan.ToResult(DefaultUsername, dryRun);
 
         await using var transaction = await connection.BeginTransactionAsync(ct);
         try
         {
             await ExecuteCleanupPlanAsync(connection, transaction, plan);
             await transaction.CommitAsync(ct);
-            return plan.ToResult(dryRun: false);
+            return plan.ToResult(DefaultUsername, dryRun: false);
         }
         catch
         {
@@ -894,13 +899,14 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
                 claims_inserted = COALESCE(@ClaimsWritten, claims_inserted),
                 evidence_written = COALESCE(@EvidenceWritten, evidence_written),
                 observations_written = COALESCE(@ObservationsWritten, observations_written)
-            WHERE receipt_id = @ReceiptId;
+            WHERE username = @Username AND receipt_id = @ReceiptId;
             """;
 
         await using var connection = CreateConnection();
         await connection.ExecuteAsync(sql, new
         {
             ReceiptId = receiptId,
+            Username = DefaultUsername,
             Status = ToStatus(status),
             Now = DateTime.UtcNow,
             ErrorMessage = errorMessage,
@@ -1897,7 +1903,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
     private static async Task<int> CountAsync(MySqlConnection connection, string sql, object parameters)
         => await connection.ExecuteScalarAsync<int>(sql, parameters);
 
-    private static async Task<List<CleanupEntityRow>> QueryEntitiesByRowIdAsync(
+    private async Task<List<CleanupEntityRow>> QueryEntitiesByRowIdAsync(
         MySqlConnection connection,
         IReadOnlyCollection<long> entityRowIds)
     {
@@ -1955,7 +1961,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
 
     private static string NormalizeAlias(string value) => NormalizeLookupKey(value);
 
-    private static async Task DeleteByIdsAsync(
+    private async Task DeleteByIdsAsync(
         MySqlConnection connection,
         MySqlTransaction transaction,
         string tableName,
@@ -1971,7 +1977,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             transaction);
     }
 
-    private static async Task DeleteClaimEdgesAsync(
+    private async Task DeleteClaimEdgesAsync(
         MySqlConnection connection,
         MySqlTransaction transaction,
         IReadOnlyCollection<long> claimRowIds)
@@ -1989,7 +1995,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             transaction);
     }
 
-    private static async Task DeleteActiveClaimsAsync(
+    private async Task DeleteActiveClaimsAsync(
         MySqlConnection connection,
         MySqlTransaction transaction,
         IReadOnlyCollection<string> factGroups)
@@ -2006,7 +2012,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             transaction);
     }
 
-    private static async Task DeleteEntityProjectionRowsAsync(
+    private async Task DeleteEntityProjectionRowsAsync(
         MySqlConnection connection,
         MySqlTransaction transaction,
         string tableName,
@@ -2109,7 +2115,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             new { username = DefaultUsername, externalId });
     }
 
-    private static async Task<List<MemoryWriteReceipt>> GetWriteReceiptSamplesAsync(
+    private async Task<List<MemoryWriteReceipt>> GetWriteReceiptSamplesAsync(
         MySqlConnection connection,
         string whereSql,
         string orderBySql,
@@ -2250,7 +2256,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
         }).ToList();
     }
 
-    private static object ToReceiptParameters(MemoryWriteReceipt receipt) => new
+    private object ToReceiptParameters(MemoryWriteReceipt receipt) => new
     {
         receipt.Id,
         Username = DefaultUsername,
@@ -2491,7 +2497,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
             Deletes.AdjacencyToDelete == 0 &&
             Deletes.AliasesToDelete == 0;
 
-        public MemoryCleanupResult ToResult(bool dryRun)
+        public MemoryCleanupResult ToResult(string username, bool dryRun)
         {
             var entityIds = EntitiesToDelete
                 .Select(entity => entity.Id)
@@ -2508,7 +2514,7 @@ public class MySqlMemoryGraphStore(IOptions<MariaDbStorageOptions> optionsAccess
 
             return new MemoryCleanupResult
             {
-                Username = DefaultUsername,
+                Username = username,
                 Scope = Scope,
                 DryRun = dryRun,
                 NoOp = IsEmpty,

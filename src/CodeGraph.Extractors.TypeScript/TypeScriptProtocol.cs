@@ -17,6 +17,7 @@ public record ExtractProjectResponse
     [JsonPropertyName("resolvedImports")]  public List<ResolvedImportDto> ResolvedImports { get; init; } = [];
     [JsonPropertyName("unresolvedImports")] public List<UnresolvedImportDto> UnresolvedImports { get; init; } = [];
     [JsonPropertyName("unresolvedCalls")]   public List<UnresolvedCallDto> UnresolvedCalls { get; init; } = [];
+    [JsonPropertyName("processedFiles")]    public List<string> ProcessedFiles { get; init; } = [];
     [JsonPropertyName("diagnostics")]      public List<string>? Diagnostics { get; init; }
 }
 

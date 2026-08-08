@@ -10,4 +10,16 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.*" />
+    <PackageReference Include="MySqlConnector" Version="2.5.0" />
+    <PackageReference Include="Neo4j.Driver" Version="5.27.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
+    <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
+    <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
+  </ItemGroup>
+
 </Project>

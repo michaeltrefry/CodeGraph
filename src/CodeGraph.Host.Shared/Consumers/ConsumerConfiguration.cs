@@ -2,7 +2,7 @@ using MassTransit;
 using CodeGraph.Models.Exceptions;
 using CodeGraph.Services.Configuration;
 
-namespace CodeGraph.Api.Consumers;
+namespace CodeGraph.Host.Shared.Consumers;
 
 public static class ConsumerConfiguration
 {
@@ -22,6 +22,7 @@ public static class ConsumerConfiguration
             redeliver
                 .Intervals(TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5))
                 .Handle<Exception>(ex => ex is Neo4j.Driver.ServiceUnavailableException
+                                         || ex is MySqlConnector.MySqlException
                                          || ex is System.Net.Sockets.SocketException
                                          || ex is RetryableAnalysisException);
         });

@@ -22,7 +22,7 @@ public partial class ColdFusionParser
     public ColdFusionParser(ExtractorContext context, string filePath)
     {
         _context = context;
-        _filePath = filePath;
+        _filePath = Path.GetRelativePath(context.RootPath, filePath).Replace('\\', '/');
         _isCfc = filePath.EndsWith(".cfc", StringComparison.OrdinalIgnoreCase);
     }
 
