@@ -148,7 +148,7 @@ public class ConsolidatedMcpServerTests
             memory,
             NullLogger<MemoryMcpServer>.Instance,
             operation: "store",
-            claims: [new MemoryExtractedClaim { Subject = "michael", Predicate = "prefers", ValueText = "x" }]);
+            claims: [new MemoryMcpClaimInput { Subject = "michael", Predicate = "prefers", ValueText = "x" }]);
 
         memory.Calls.ShouldHaveSingleItem();
         memory.Calls[0].ShouldBe("QueueClaimsAsync");
