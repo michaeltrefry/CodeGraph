@@ -1,5 +1,5 @@
-using CodeGraph.Api.Logging;
 using CodeGraph.Data;
+using CodeGraph.Host.Shared.Logging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -19,6 +19,7 @@ public class ApplicationDatabaseLoggerTests
         var channel = new ApplicationLogChannel(Options.Create(options));
         var logger = new ApplicationDatabaseLogger(
             "CodeGraph.Tests.Sample",
+            ApplicationLogServices.Indexer,
             "CodeGraph.Api@test-host",
             channel,
             options,
@@ -28,6 +29,7 @@ public class ApplicationDatabaseLoggerTests
 
         channel.Entries.Reader.TryRead(out var entry).ShouldBeTrue();
         entry.ShouldNotBeNull();
+        entry.Service.ShouldBe(ApplicationLogServices.Indexer);
         entry.Level.ShouldBe("Warning");
         entry.Category.ShouldBe("CodeGraph.Tests.Sample");
         entry.EventId.ShouldBe(42);
@@ -45,6 +47,7 @@ public class ApplicationDatabaseLoggerTests
         var channel = new ApplicationLogChannel(Options.Create(options));
         var logger = new ApplicationDatabaseLogger(
             "CodeGraph.Tests.Sample",
+            ApplicationLogServices.Api,
             "CodeGraph.Api@test-host",
             channel,
             options,
@@ -62,13 +65,15 @@ public class ApplicationDatabaseLoggerTests
         var channel = new ApplicationLogChannel(Options.Create(options));
         var scopeProvider = new LoggerExternalScopeProvider();
         var sinkLogger = new ApplicationDatabaseLogger(
-            "CodeGraph.Api.Logging.Writer",
+            "CodeGraph.Host.Shared.Logging.Writer",
+            ApplicationLogServices.Api,
             "source",
             channel,
             options,
             () => scopeProvider);
         var efLogger = new ApplicationDatabaseLogger(
             "Microsoft.EntityFrameworkCore.Database.Command",
+            ApplicationLogServices.Api,
             "source",
             channel,
             options,

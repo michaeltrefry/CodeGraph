@@ -14,7 +14,7 @@ import { extractAdminError } from './admin-resource.helpers';
     <header class="adm-page-header">
       <div>
         <h1>Application logs</h1>
-        <p>Inspect API and browser errors without relying on the external observability stack.</p>
+        <p>Inspect API, Indexer, Jobs, Memory, Metrics, and browser errors without relying on the external observability stack.</p>
       </div>
       <button class="adm-btn" type="button" (click)="load()" [disabled]="loading()">
         {{ loading() ? 'Refreshing…' : 'Refresh' }}
@@ -22,6 +22,16 @@ import { extractAdminError } from './admin-resource.helpers';
     </header>
 
     <form class="adm-card filter-panel" (ngSubmit)="applyFilters()">
+      <label class="adm-field container-field">
+        <span class="adm-field-label">Container</span>
+        <select class="adm-select" name="container" [(ngModel)]="container" [disabled]="loading()">
+          <option value="">All containers</option>
+          @for (option of containers; track option.value) {
+            <option [value]="option.value">{{ option.label }}</option>
+          }
+        </select>
+      </label>
+
       <label class="adm-field level-field">
         <span class="adm-field-label">Level</span>
         <select class="adm-select" name="level" [(ngModel)]="level" [disabled]="loading()">
@@ -106,7 +116,8 @@ import { extractAdminError } from './admin-resource.helpers';
                     <span class="level-badge" [class]="levelClass(entry.level)">{{ entry.level }}</span>
                   </td>
                   <td class="source-cell">
-                    <strong>{{ entry.source }}</strong>
+                    <strong>{{ containerLabel(entry.container) }}</strong>
+                    <span>{{ entry.source }}</span>
                     <span>{{ entry.category }}</span>
                   </td>
                   <td class="message-cell">
@@ -155,7 +166,7 @@ import { extractAdminError } from './admin-resource.helpers';
 
     .filter-panel {
       display: grid;
-      grid-template-columns: minmax(130px, .55fr) minmax(190px, .8fr) minmax(190px, .8fr) minmax(260px, 1.5fr) auto;
+      grid-template-columns: minmax(150px, .65fr) minmax(130px, .55fr) minmax(190px, .8fr) minmax(190px, .8fr) minmax(260px, 1.5fr) auto;
       align-items: end;
       gap: 12px;
     }
@@ -295,10 +306,18 @@ export class AdminLogsComponent implements OnInit {
   private loadSequence = 0;
 
   readonly levels = ['Trace', 'Debug', 'Information', 'Warning', 'Error', 'Critical'];
+  readonly containers = [
+    { value: 'api', label: 'API' },
+    { value: 'indexer', label: 'Indexer' },
+    { value: 'jobs', label: 'Jobs' },
+    { value: 'memory', label: 'Memory' },
+    { value: 'metrics', label: 'Metrics' }
+  ];
   readonly result = signal<ApplicationLogPageResponse | null>(null);
   readonly loading = signal(false);
   readonly error = signal('');
 
+  container = '';
   level = '';
   start = '';
   end = '';
@@ -332,6 +351,7 @@ export class AdminLogsComponent implements OnInit {
   }
 
   async clearFilters(): Promise<void> {
+    this.container = '';
     this.level = '';
     this.start = '';
     this.end = '';
@@ -364,7 +384,7 @@ export class AdminLogsComponent implements OnInit {
   }
 
   hasFilters(): boolean {
-    return Boolean(this.level || this.start || this.end || this.search.trim());
+    return Boolean(this.container || this.level || this.start || this.end || this.search.trim());
   }
 
   hasDetails(entry: ApplicationLogEntryResponse): boolean {
@@ -375,6 +395,10 @@ export class AdminLogsComponent implements OnInit {
     return `level-badge level-${level.toLowerCase()}`;
   }
 
+  containerLabel(value: string): string {
+    return this.containers.find(container => container.value === value)?.label ?? value;
+  }
+
   formatProperties(value: string): string {
     try {
       return JSON.stringify(JSON.parse(value), null, 2);
@@ -383,9 +407,10 @@ export class AdminLogsComponent implements OnInit {
     }
   }
 
-  private currentFilters(): { page: number; level?: string; start?: string; end?: string; search?: string } {
+  private currentFilters(): { page: number; container?: string; level?: string; start?: string; end?: string; search?: string } {
     return {
       page: this.page,
+      container: this.container || undefined,
       level: this.level || undefined,
       start: this.toUtc(this.start),
       end: this.toUtc(this.end),

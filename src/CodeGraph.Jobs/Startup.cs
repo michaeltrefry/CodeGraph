@@ -2,6 +2,7 @@ using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Data.Neo4j;
 using CodeGraph.Indexer.Client;
+using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Jobs.Jobs;
 using CodeGraph.Services;
 using CodeGraph.Services.Assistant;
@@ -60,6 +61,7 @@ public static class Startup
                 options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
+            services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Jobs);
             return;
         }
 

@@ -13,6 +13,7 @@ describe('AdminLogsComponent', () => {
     entries: [{
       id: 1,
       occurredAtUtc: '2026-08-07T14:00:00Z',
+      container: 'api',
       level: 'Error',
       source: 'CodeGraph.Api@host',
       category: 'CodeGraph.Api.Controllers.ClientErrorsController',
@@ -38,6 +39,7 @@ describe('AdminLogsComponent', () => {
 
     expect(api.getApplicationLogs).toHaveBeenCalledWith({
       page: 1,
+      container: undefined,
       level: undefined,
       start: undefined,
       end: undefined,
@@ -49,6 +51,7 @@ describe('AdminLogsComponent', () => {
 
   it('applies level and text filters from page one', async () => {
     component.page = 2;
+    component.container = 'indexer';
     component.level = 'Error';
     component.search = ' timeout ';
 
@@ -57,6 +60,7 @@ describe('AdminLogsComponent', () => {
     expect(component.page).toBe(1);
     expect(api.getApplicationLogs).toHaveBeenLastCalledWith({
       page: 1,
+      container: 'indexer',
       level: 'Error',
       start: undefined,
       end: undefined,
@@ -77,6 +81,7 @@ describe('AdminLogsComponent', () => {
   it('formats structured properties and exposes detail availability', () => {
     expect(component.formatProperties('{"trace":"abc"}')).toContain('\n  "trace": "abc"\n');
     expect(component.hasDetails({ ...firstPage.entries[0], traceId: 'abc' })).toBe(true);
+    expect(component.containerLabel('metrics')).toBe('Metrics');
     expect(component.levelClass('Critical')).toBe('level-badge level-critical');
   });
 });

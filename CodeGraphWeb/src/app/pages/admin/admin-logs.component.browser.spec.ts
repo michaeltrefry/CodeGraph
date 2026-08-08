@@ -15,6 +15,7 @@ describe('admin logs browser layout', () => {
             entries: [{
               id: 17,
               occurredAtUtc: '2026-08-07T14:00:00Z',
+              container: 'memory',
               level: 'Error',
               source: 'CodeGraph.Api@production-host',
               category: 'CodeGraph.Api.Controllers.ClientErrorsController',
@@ -42,8 +43,9 @@ describe('admin logs browser layout', () => {
 
     const element = fixture.nativeElement as HTMLElement;
     expect(element.querySelector('h1')?.textContent).toContain('Application logs');
-    expect(element.querySelectorAll('.filter-panel label')).toHaveLength(4);
+    expect(element.querySelectorAll('.filter-panel label')).toHaveLength(5);
     expect(element.querySelector('.log-table tbody tr')).not.toBeNull();
+    expect(element.querySelector('.source-cell strong')?.textContent).toContain('Memory');
     expect(element.querySelector('.level-error')?.textContent).toContain('Error');
 
     const details = element.querySelector('details') as HTMLDetailsElement;

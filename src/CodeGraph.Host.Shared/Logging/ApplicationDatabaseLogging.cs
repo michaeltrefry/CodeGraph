@@ -3,12 +3,16 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Channels;
 using CodeGraph.Data;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
-namespace CodeGraph.Api.Logging;
+namespace CodeGraph.Host.Shared.Logging;
 
 public sealed class ApplicationDatabaseLoggingOptions
 {
+    public string ServiceName { get; set; } = ApplicationLogServices.Api;
     public bool Enabled { get; set; } = true;
     public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
     public int Capacity { get; set; } = 5_000;
@@ -39,6 +43,7 @@ internal sealed class ApplicationDatabaseLoggerProvider(
 {
     private readonly ConcurrentDictionary<string, ApplicationDatabaseLogger> _loggers = new();
     private readonly ApplicationDatabaseLoggingOptions _options = configuredOptions.Value;
+    private readonly string _service = Truncate(configuredOptions.Value.ServiceName, 32);
     private readonly string _source = Truncate(
         $"{AppDomain.CurrentDomain.FriendlyName}@{Environment.MachineName}",
         128);
@@ -46,7 +51,7 @@ internal sealed class ApplicationDatabaseLoggerProvider(
 
     public ILogger CreateLogger(string categoryName) =>
         _loggers.GetOrAdd(categoryName, category =>
-            new ApplicationDatabaseLogger(category, _source, channel, _options, () => _scopeProvider));
+            new ApplicationDatabaseLogger(category, _service, _source, channel, _options, () => _scopeProvider));
 
     public void SetScopeProvider(IExternalScopeProvider scopeProvider) => _scopeProvider = scopeProvider;
 
@@ -58,6 +63,7 @@ internal sealed class ApplicationDatabaseLoggerProvider(
 
 internal sealed class ApplicationDatabaseLogger(
     string category,
+    string service,
     string source,
     ApplicationLogChannel channel,
     ApplicationDatabaseLoggingOptions options,
@@ -76,7 +82,7 @@ internal sealed class ApplicationDatabaseLogger(
         && logLevel != LogLevel.None
         && logLevel >= options.MinimumLevel
         && !category.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal)
-        && !category.StartsWith("CodeGraph.Api.Logging", StringComparison.Ordinal);
+        && !category.StartsWith("CodeGraph.Host.Shared.Logging", StringComparison.Ordinal);
 
     public void Log<TState>(
         LogLevel logLevel,
@@ -99,6 +105,7 @@ internal sealed class ApplicationDatabaseLogger(
             {
                 OccurredAtUtc = DateTime.UtcNow,
                 Level = logLevel.ToString(),
+                Service = service,
                 Source = source,
                 Category = Truncate(category, 512),
                 EventId = eventId.Id,
@@ -246,14 +253,21 @@ internal sealed class ApplicationDatabaseLogWriter(
     }
 }
 
-internal static class ApplicationDatabaseLoggingServiceCollectionExtensions
+public static class ApplicationDatabaseLoggingServiceCollectionExtensions
 {
     public static IServiceCollection AddApplicationDatabaseLogging(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        string serviceName)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serviceName);
+        if (!ApplicationLogServices.IsSupported(serviceName))
+            throw new ArgumentOutOfRangeException(nameof(serviceName), serviceName, "Unsupported application log service.");
+
         services.Configure<ApplicationDatabaseLoggingOptions>(
             configuration.GetSection("Logging:Database"));
+        services.PostConfigure<ApplicationDatabaseLoggingOptions>(options =>
+            options.ServiceName = ApplicationLogServices.Normalize(serviceName)!);
         services.AddSingleton<ApplicationLogChannel>();
         services.AddSingleton<ILoggerProvider, ApplicationDatabaseLoggerProvider>();
         services.AddHostedService<ApplicationDatabaseLogWriter>();

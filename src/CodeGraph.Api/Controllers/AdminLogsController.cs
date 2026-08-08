@@ -35,6 +35,11 @@ public sealed class AdminLogsController(IApplicationLogStore store) : Controller
         if (request.Page > MaxPage)
             return BadRequest($"Page cannot exceed {MaxPage}.");
 
+        var requestedContainer = NormalizeOptional(request.Container);
+        var service = ApplicationLogServices.Normalize(requestedContainer);
+        if (requestedContainer is not null && service is null)
+            return BadRequest("Container must be api, indexer, jobs, memory, or metrics.");
+
         var level = NormalizeOptional(request.Level);
         if (level is not null && !SupportedLevels.Contains(level))
             return BadRequest("Level must be Trace, Debug, Information, Warning, Error, or Critical.");
@@ -49,7 +54,7 @@ public sealed class AdminLogsController(IApplicationLogStore store) : Controller
             return BadRequest("Start must be before or equal to end.");
 
         var result = await store.QueryAsync(
-            new ApplicationLogQuery(request.Page, PageSize, level, startUtc, endUtc, search),
+            new ApplicationLogQuery(request.Page, PageSize, service, level, startUtc, endUtc, search),
             cancellationToken);
         var totalPages = result.TotalCount == 0
             ? 0
@@ -69,6 +74,7 @@ public sealed class AdminLogsController(IApplicationLogStore store) : Controller
     private static ApplicationLogEntryResponse Map(ApplicationLogEntryEntity row) => new(
         row.Id,
         DateTime.SpecifyKind(row.OccurredAtUtc, DateTimeKind.Utc),
+        row.Service,
         row.Level,
         row.Source,
         row.Category,

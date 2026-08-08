@@ -88,6 +88,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(row => row.Id).HasColumnName("id");
             e.Property(row => row.OccurredAtUtc).HasColumnName("occurred_at_utc");
             e.Property(row => row.Level).HasColumnName("level").HasMaxLength(16);
+            e.Property(row => row.Service).HasColumnName("service").HasMaxLength(32);
             e.Property(row => row.Source).HasColumnName("source").HasMaxLength(128);
             e.Property(row => row.Category).HasColumnName("category").HasMaxLength(512);
             e.Property(row => row.EventId).HasColumnName("event_id");
@@ -98,6 +99,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(row => row.PropertiesJson).HasColumnName("properties_json").HasColumnType("json");
             e.HasIndex(row => row.OccurredAtUtc);
             e.HasIndex(row => new { row.Level, row.OccurredAtUtc });
+            e.HasIndex(row => new { row.Service, row.OccurredAtUtc });
             e.HasIndex(row => new { row.Source, row.OccurredAtUtc });
         });
     }

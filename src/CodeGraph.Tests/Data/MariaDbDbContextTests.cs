@@ -101,5 +101,8 @@ public class MariaDbDbContextTests
         applicationLog.FindProperty(nameof(ApplicationLogEntryEntity.OccurredAtUtc))!
             .GetColumnName()
             .ShouldBe("occurred_at_utc");
+        applicationLog.FindProperty(nameof(ApplicationLogEntryEntity.Service))!
+            .GetColumnName()
+            .ShouldBe("service");
     }
 }
