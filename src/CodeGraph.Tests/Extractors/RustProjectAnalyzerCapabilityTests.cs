@@ -3,7 +3,9 @@ using System.Text.Json;
 using CodeGraph.Extractors.Rust;
 using CodeGraph.Services;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Shouldly;
 
 namespace CodeGraph.Tests.Extractors;
@@ -151,12 +153,18 @@ public sealed class RustProjectAnalyzerCapabilityTests
         using var pidVariable = new EnvironmentVariableScope("CODEGRAPH_TEST_CHILD_PID", childPidPath);
         var analyzer = new RustProjectAnalyzer(
             NullLogger<RustProjectAnalyzer>.Instance,
-            TimeSpan.FromMilliseconds(750));
+            Options.Create(new IndexingOptions
+            {
+                RustSemanticCommandTimeoutSeconds = 1,
+                RustSemanticStderrTailCharacters = 1024
+            }));
 
         var error = await Should.ThrowAsync<RustSemanticIndexingException>(() =>
             analyzer.AnalyzeProjectAsync(fixture.ManifestPath, fixture.Context));
 
         error.FailureCode.ShouldBe("rust_semantic_command_timeout");
+        error.Message.ShouldContain("1-second timeout");
+        error.Message.ShouldContain("generator-still-running");
         var childPid = await ReadPidAsync(childPidPath);
         await AssertProcessExitedAsync(childPid);
     }
@@ -275,6 +283,7 @@ public sealed class RustProjectAnalyzerCapabilityTests
 
     private const string LongRunningGeneratorScript =
         "#!/bin/sh\n" +
+        "echo generator-still-running >&2\n" +
         "/bin/sleep 30 &\n" +
         "child=$!\n" +
         "printf '%s' \"$child\" > \"$CODEGRAPH_TEST_CHILD_PID\"\n" +

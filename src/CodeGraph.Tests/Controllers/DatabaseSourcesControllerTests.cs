@@ -161,7 +161,7 @@ public class DatabaseSourcesControllerTests
         public string? LastUsername { get; private set; }
         public long? LastSourceId { get; private set; }
 
-        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
             string username,
             string repo,
             CancellationToken ct = default)

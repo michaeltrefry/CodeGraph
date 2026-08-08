@@ -226,6 +226,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         run.StartedAt ??= now;
         run.CompletedAt = null;
         run.Error = null;
+        run.ErrorCode = null;
         if (recovered)
             run.Message = $"Recovered after lease expiry; retry attempt {run.AttemptCount} is running.";
 
@@ -272,6 +273,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
 
     public async Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(
         IndexerRunLease lease,
+        string errorCode,
         string error,
         DateTime now,
         DateTime nextAttemptAt,
@@ -290,6 +292,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
             UPDATE indexer_runs
             SET status = {status},
                 message = {message},
+                error_code = {errorCode},
                 error = {error},
                 completed_at = {(retry ? null : now)},
                 next_attempt_at = {(retry ? nextAttemptAt : null)},
@@ -347,6 +350,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
             UPDATE indexer_runs
             SET status = {status},
                 message = {message},
+                error_code = NULL,
                 error = {error},
                 completed_at = {completedAt},
                 next_attempt_at = NULL,

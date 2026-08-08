@@ -193,12 +193,14 @@ public class MariaDbIndexerRunStoreTests
                     now)).ShouldBeFalse();
                 (await fenceStore.FailOrRetryIndexerRunAsync(
                     recovered,
+                    "transient_failure",
                     "transient",
                     now,
                     now.AddSeconds(30),
                     maxAttempts: 3)).ShouldBe(IndexerRunFailureDisposition.Retrying);
                 var retry = await fenceStore.GetIndexerRunAsync(retryId);
                 retry!.Status.ShouldBe("queued");
+                retry.ErrorCode.ShouldBe("transient_failure");
                 retry.NextAttemptAt.ShouldNotBeNull();
                 retry.AttemptCount.ShouldBe(2);
             }

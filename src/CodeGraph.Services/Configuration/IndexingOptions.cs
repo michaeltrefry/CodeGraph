@@ -17,6 +17,17 @@ public class IndexingOptions
     public bool DetectCommunitiesAfterIndexing { get; set; } = false;
 
     public int MaxFileSizeKb { get; set; } = 512;
+
+    /// <summary>
+    /// Maximum wall-clock time allowed for one rust-analyzer SCIP generation command.
+    /// Large workspaces may need to resolve and compile build scripts on a cold cache.
+    /// </summary>
+    public int RustSemanticCommandTimeoutSeconds { get; set; } = 1800;
+
+    /// <summary>
+    /// Maximum stderr tail retained for Rust semantic command diagnostics.
+    /// </summary>
+    public int RustSemanticStderrTailCharacters { get; set; } = 4096;
     public string[] SkipPatterns { get; set; } =
     [
         "**/bin/**", "**/obj/**", "**/node_modules/**",

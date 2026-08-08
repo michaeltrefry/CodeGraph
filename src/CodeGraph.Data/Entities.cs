@@ -731,6 +731,7 @@ public class IndexerRunEntity
     public string? ArgsJson { get; set; }
     public string Status { get; set; } = "queued";
     public string? Message { get; set; }
+    public string? ErrorCode { get; set; }
     public string? Error { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? StartedAt { get; set; }

@@ -3,6 +3,7 @@ using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.DatabaseSchema;
+using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Indexer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,22 +15,25 @@ namespace CodeGraph.Tests.Services;
 public class StandaloneIndexerOperationsServiceTests
 {
     [Fact]
-    public async Task ReAnalyzeRepositoryAsync_DelegatesToLocalProjectService()
+    public async Task StartReAnalyzeRepositoryAsync_CreatesRetrySafeQueuedRun()
     {
-        var projects = new RecordingProjectService
-        {
-            Batch = CreateBatch("SceneWorks")
-        };
+        var runs = new FakeIndexerRunStore();
+        var runner = new RecordingBackgroundRunner();
         var service = new StandaloneIndexerOperationsService(
-            new FakeIndexerRunStore(),
+            runs,
             new FakeDatabaseSourceStore(),
-            new RecordingBackgroundRunner(),
-            projects);
+            runner);
 
-        var batch = await service.ReAnalyzeRepositoryAsync("Michael", " SceneWorks ");
+        var accepted = await service.StartReAnalyzeRepositoryAsync("Michael", " SceneWorks ");
 
-        batch.ShouldBe(projects.Batch);
-        projects.LastReanalyzedRepo.ShouldBe("SceneWorks");
+        accepted.Status.ShouldBe("queued");
+        var run = await runs.GetIndexerRunAsync(accepted.RunId!.Value);
+        run.ShouldNotBeNull();
+        run.Operation.ShouldBe(IndexerRunOperations.ReAnalyze);
+        run.Target.ShouldBe("SceneWorks");
+        run.RetrySafe.ShouldBeTrue();
+        run.ArgsJson.ShouldContain("SceneWorks");
+        runner.EnqueuedRunIds.ShouldBe([accepted.RunId.Value]);
     }
 
     [Fact]
@@ -46,7 +50,7 @@ public class StandaloneIndexerOperationsServiceTests
         });
         var runs = new FakeIndexerRunStore();
         var runner = new RecordingBackgroundRunner();
-        var service = new StandaloneIndexerOperationsService(runs, sources, runner, new RecordingProjectService());
+        var service = new StandaloneIndexerOperationsService(runs, sources, runner);
 
         var accepted = await service.StartSyncSchemaAsync("Michael", 17);
 
@@ -71,8 +75,7 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            new RecordingBackgroundRunner(),
-            new RecordingProjectService());
+            new RecordingBackgroundRunner());
         await service.StartSyncAllSchemasAsync("Michael");
 
         var run = await service.GetRunAsync(1);
@@ -89,8 +92,7 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            new RecordingBackgroundRunner(),
-            new RecordingProjectService());
+            new RecordingBackgroundRunner());
         await runs.CreateIndexerRunAsync(new IndexerRunEntity
         {
             Operation = IndexerRunOperations.SyncSchema,
@@ -125,8 +127,7 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            runner,
-            new RecordingProjectService());
+            runner);
 
         var accepted = await service.StartReIndexAllAsync("Michael", "reindex-1");
 
@@ -147,8 +148,7 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            new RecordingBackgroundRunner(),
-            new RecordingProjectService());
+            new RecordingBackgroundRunner());
 
         await service.StartProcessRepositoriesAsync("Michael", new ProcessRequest
         {
@@ -174,8 +174,7 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            runner,
-            new RecordingProjectService());
+            runner);
         var request = new ProcessRequest { Repos = ["CodeGraph"], ShouldAnalyze = true };
 
         await Should.ThrowAsync<ArgumentException>(() => service.StartProcessRepositoriesAsync("Michael", request));
@@ -213,7 +212,7 @@ public class StandaloneIndexerOperationsServiceTests
             CreatedAt = DateTime.UtcNow
         });
         var schemaExtractor = new RecordingDatabaseSchemaExtractor();
-        var executor = new IndexerRunExecutor(sources, schemaExtractor, new RecordingAdminService());
+        var executor = new IndexerRunExecutor(sources, schemaExtractor, new RecordingAdminService(), new RecordingProjectService());
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var message = await executor.ExecuteAsync(lease);
@@ -235,7 +234,8 @@ public class StandaloneIndexerOperationsServiceTests
         var executor = new IndexerRunExecutor(
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
-            new RecordingAdminService());
+            new RecordingAdminService(),
+            new RecordingProjectService());
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var ex = await Should.ThrowAsync<InvalidOperationException>(() => executor.ExecuteAsync(lease));
@@ -260,13 +260,41 @@ public class StandaloneIndexerOperationsServiceTests
         var executor = new IndexerRunExecutor(
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
-            admin);
+            admin,
+            new RecordingProjectService());
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var message = await executor.ExecuteAsync(lease);
 
         admin.ReIndexAllCalls.ShouldBe(1);
         message.ShouldContain("Published 2 repositories");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReAnalyzesRepositoryAndReportsAnalysisBatch()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.ReAnalyze,
+            Target = "SceneWorks",
+            ArgsJson = """{"repo":"SceneWorks"}""",
+            Status = "running",
+            CreatedAt = DateTime.UtcNow
+        });
+        var projects = new RecordingProjectService { Batch = CreateBatch("SceneWorks") };
+        var executor = new IndexerRunExecutor(
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new RecordingAdminService(),
+            projects);
+        var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
+
+        var message = await executor.ExecuteAsync(lease);
+
+        projects.LastReanalyzedRepo.ShouldBe("SceneWorks");
+        message.ShouldContain("batch 11");
+        message.ShouldContain("pending");
     }
 
     [Fact]
@@ -320,7 +348,39 @@ public class StandaloneIndexerOperationsServiceTests
         retrying.Status.ShouldBe("queued");
         retrying.AttemptCount.ShouldBe(1);
         retrying.NextAttemptAt.ShouldNotBeNull();
+        retrying.ErrorCode.ShouldBe("indexer_operation_failed");
         retrying.Error.ShouldBe("partial schema sync failure");
+    }
+
+    [Fact]
+    public async Task DurableWorker_PersistsRustSemanticFailureCodeForReAnalyzeRun()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.ReAnalyze,
+            Target = "SceneWorks",
+            ArgsJson = """{"repo":"SceneWorks"}""",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new RecordingAdminService(),
+            new FailingProjectService(new RustSemanticIndexingException(
+                "rust_semantic_command_timeout",
+                "rust-analyzer timed out")));
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var retrying = await runs.GetIndexerRunAsync(runId);
+        retrying!.Status.ShouldBe("queued");
+        retrying.ErrorCode.ShouldBe("rust_semantic_command_timeout");
+        retrying.Error.ShouldBe("rust-analyzer timed out");
     }
 
     [Fact]
@@ -370,8 +430,7 @@ public class StandaloneIndexerOperationsServiceTests
         var service = new StandaloneIndexerOperationsService(
             runs,
             new FakeDatabaseSourceStore(),
-            new RecordingBackgroundRunner(),
-            new RecordingProjectService());
+            new RecordingBackgroundRunner());
         var accepted = await service.StartReIndexAllAsync("Michael", "cancel-1");
 
         var canceled = await service.CancelRunAsync(accepted.RunId!.Value);
@@ -428,13 +487,15 @@ public class StandaloneIndexerOperationsServiceTests
         IIndexerRunStore runs,
         IDatabaseSourceStore sources,
         IDatabaseSchemaExtractor schemas,
-        IAdminService admin)
+        IAdminService admin,
+        IProjectService? projects = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(runs);
         services.AddSingleton(sources);
         services.AddSingleton(schemas);
         services.AddSingleton(admin);
+        services.AddSingleton(projects ?? new RecordingProjectService());
         services.AddTransient<IndexerRunExecutor>();
         return services.BuildServiceProvider();
     }
@@ -558,6 +619,18 @@ public class StandaloneIndexerOperationsServiceTests
         public Task ProcessRepository(
             CodeGraph.Models.Messages.ProcessRepository message,
             CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<bool> DeleteRepositoryAsync(string repo)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class FailingProjectService(Exception failure) : IProjectService
+    {
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
+            => Task.FromException<AnalysisBatchResponse?>(failure);
+
+        public Task ProcessRepository(CodeGraph.Models.Messages.ProcessRepository message, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
 
         public Task<bool> DeleteRepositoryAsync(string repo)
@@ -696,11 +769,12 @@ public class StandaloneIndexerOperationsServiceTests
         public Task<bool> CompleteIndexerRunAsync(IndexerRunLease lease, string message, DateTime completedAt, CancellationToken ct = default)
             => FinishAsync(lease, "completed", message, completedAt);
 
-        public Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(IndexerRunLease lease, string error, DateTime now, DateTime nextAttemptAt, int maxAttempts, CancellationToken ct = default)
+        public Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(IndexerRunLease lease, string errorCode, string error, DateTime now, DateTime nextAttemptAt, int maxAttempts, CancellationToken ct = default)
         {
             if (!Owns(lease))
                 return Task.FromResult(IndexerRunFailureDisposition.LeaseLost);
             var run = _runs[lease.Run.Id];
+            run.ErrorCode = errorCode;
             run.Error = error;
             run.ExecutionOwner = null;
             run.LeaseExpiresAt = null;
@@ -759,6 +833,7 @@ public class StandaloneIndexerOperationsServiceTests
             Target = run.Target,
             ArgsJson = run.ArgsJson,
             Message = run.Message,
+            ErrorCode = run.ErrorCode,
             Error = run.Error,
             CreatedAt = run.CreatedAt,
             StartedAt = run.StartedAt,

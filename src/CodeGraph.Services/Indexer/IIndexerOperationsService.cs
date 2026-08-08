@@ -5,7 +5,7 @@ namespace CodeGraph.Services.Indexer;
 
 public interface IIndexerOperationsService
 {
-    Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(string username, string repo, CancellationToken ct = default);
+    Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(string username, string repo, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartDiscoverAsync(string username, DiscoverRequest? request, CancellationToken ct = default);
@@ -18,6 +18,8 @@ public interface IIndexerOperationsService
 
     Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, string? submissionKey, CancellationToken ct = default)
         => throw new NotSupportedException("This indexer implementation does not support durable submission identities.");
+    Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(string username, string repo, string? submissionKey, CancellationToken ct = default)
+        => StartReAnalyzeRepositoryAsync(username, repo, ct);
     Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, string? submissionKey, CancellationToken ct = default)
         => throw new NotSupportedException("This indexer implementation does not support durable submission identities.");
     Task<IndexerAcceptedResponse> StartDiscoverAsync(string username, DiscoverRequest? request, string? submissionKey, CancellationToken ct = default)

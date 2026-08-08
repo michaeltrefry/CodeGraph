@@ -14,21 +14,19 @@ public class IndexerControllerTests
     [Fact]
     public async Task ReAnalyze_DelegatesToIndexerOperationsWithUsername()
     {
-        var operations = new RecordingIndexerOperations
-        {
-            ReAnalysisBatch = CreateBatch("SceneWorks")
-        };
+        var operations = new RecordingIndexerOperations();
         var controller = CreateController(operations);
 
         var result = await controller.ReAnalyze(
             new ReAnalyzeRequest { Repo = "SceneWorks" },
             CancellationToken.None);
 
-        var ok = result.Result.ShouldBeOfType<OkObjectResult>();
-        ok.Value.ShouldBe(operations.ReAnalysisBatch);
+        var accepted = result.Result.ShouldBeOfType<AcceptedResult>();
+        accepted.Value.ShouldBeOfType<IndexerAcceptedResponse>().RunId.ShouldBe(77);
         operations.LastOperation.ShouldBe("reanalyze");
         operations.LastUsername.ShouldBe("Michael");
         operations.LastRepo.ShouldBe("SceneWorks");
+        operations.LastSubmissionKey.ShouldBe("test-submission");
     }
 
     [Fact]
@@ -114,7 +112,7 @@ public class IndexerControllerTests
         {
             Runs =
             [
-                new IndexerRunResponse(1, IndexerRunOperations.Link, "queued", "michael", "all", null, null, DateTime.UtcNow, null, null)
+                new IndexerRunResponse(1, IndexerRunOperations.Link, "queued", "michael", "all", null, null, null, DateTime.UtcNow, null, null)
             ]
         };
         var controller = CreateController(operations);
@@ -174,9 +172,7 @@ public class IndexerControllerTests
         public string? LastOperationFilter { get; private set; }
         public int? LastTake { get; private set; }
         public IReadOnlyList<IndexerRunResponse> Runs { get; set; } = [];
-        public AnalysisBatchResponse? ReAnalysisBatch { get; set; }
-
-        public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+        public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
             string username,
             string repo,
             CancellationToken ct = default)
@@ -184,7 +180,17 @@ public class IndexerControllerTests
             LastOperation = "reanalyze";
             LastUsername = username;
             LastRepo = repo;
-            return Task.FromResult(ReAnalysisBatch);
+            return Task.FromResult(Accepted);
+        }
+
+        public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
+            string username,
+            string repo,
+            string? submissionKey,
+            CancellationToken ct = default)
+        {
+            LastSubmissionKey = submissionKey;
+            return StartReAnalyzeRepositoryAsync(username, repo, ct);
         }
 
         public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(

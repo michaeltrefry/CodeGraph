@@ -163,6 +163,8 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
       # Empty by default. Provider-qualified canonical repository identities opt in exactly.
       CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
+      CodeGraph__IndexingOptions__RustSemanticCommandTimeoutSeconds: ${CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS:-1800}
+      CodeGraph__IndexingOptions__RustSemanticStderrTailCharacters: ${CODEGRAPH_RUST_SEMANTIC_STDERR_TAIL_CHARACTERS:-4096}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -185,6 +187,8 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
+      - codegraph-cargo-registry:/usr/local/cargo/registry
+      - codegraph-cargo-git:/usr/local/cargo/git
     restart: unless-stopped
     networks:
       - default
@@ -306,3 +310,7 @@ services:
       codegraph-api:
         condition: service_started
     restart: unless-stopped
+
+volumes:
+  codegraph-cargo-registry:
+  codegraph-cargo-git:

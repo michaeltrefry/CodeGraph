@@ -346,6 +346,7 @@ public static class Startup
             app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "CodeGraph API v1"));
         }
 
+        app.UseMiddleware<IndexerClientExceptionMiddleware>();
         app.UseCors();
         app.UseRouting();
         app.UseAuthentication();

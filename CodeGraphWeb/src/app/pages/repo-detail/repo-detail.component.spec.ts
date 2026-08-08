@@ -7,6 +7,7 @@ import { ApiService } from '../../core/api.service';
 import { ChatContextService } from '../../core/chat-context.service';
 import {
   AnalysisBatchStatus,
+  IndexerRunResponse,
   ProjectDetailResponse,
   ProjectHealthResponse,
   ProjectSecurityResponse
@@ -85,6 +86,7 @@ function createComponent() {
   const securitySubjects = new Map<string, Subject<ProjectSecurityResponse>>();
   const readmeSubjects = new Map<string, Subject<{ content: string }>>();
   const batchSubjects = new Map<string, Subject<AnalysisBatchStatus>>();
+  const runSubjects = new Map<number, Subject<IndexerRunResponse>>();
   const destroyCallbacks: Array<() => void> = [];
 
   const getSubject = <T>(subjects: Map<string, Subject<T>>, name: string) => {
@@ -99,6 +101,11 @@ function createComponent() {
     getProjectSecurity: vi.fn((name: string) => getSubject(securitySubjects, name).asObservable()),
     getProjectReadme: vi.fn((name: string) => getSubject(readmeSubjects, name).asObservable()),
     getBatchStatus: vi.fn((name: string) => getSubject(batchSubjects, name).asObservable()),
+    getIndexerRun: vi.fn((id: number) => {
+      const subject = runSubjects.get(id) ?? new Subject<IndexerRunResponse>();
+      runSubjects.set(id, subject);
+      return subject.asObservable();
+    }),
     getLatestRepositoryReview: vi.fn().mockReturnValue(throwError(() => ({ status: 404 }))),
     getRepositoryReview: vi.fn(),
     getProjectDiagnostics: vi.fn().mockReturnValue(of({
@@ -139,6 +146,7 @@ function createComponent() {
     securitySubjects,
     readmeSubjects,
     batchSubjects,
+    runSubjects,
     api,
     destroyCallbacks
   };
@@ -210,5 +218,77 @@ describe('RepoDetailComponent', () => {
 
     releaseStream?.();
     await Promise.resolve();
+  });
+
+  it('polls an accepted durable re-analysis run and refreshes the completed batch', async () => {
+    vi.useFakeTimers();
+    try {
+      const { component, api, batchSubjects, runSubjects } = createComponent();
+      api.reAnalyze.mockReturnValue(of({ status: 'queued', runId: 42 }));
+      component.name.set('SceneWorks');
+
+      component.reAnalyze();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(api.getIndexerRun).toHaveBeenCalledWith(42);
+      runSubjects.get(42)?.next({
+        id: 42,
+        operation: 'reanalyze',
+        status: 'running',
+        target: 'SceneWorks',
+        createdAt: '2026-08-08T12:00:00Z',
+        attemptCount: 1,
+        retrySafe: true
+      });
+      expect(component.reAnalyzing()).toBe(true);
+
+      runSubjects.get(42)?.next({
+        id: 42,
+        operation: 'reanalyze',
+        status: 'completed',
+        target: 'SceneWorks',
+        createdAt: '2026-08-08T12:00:00Z',
+        completedAt: '2026-08-08T12:10:00Z',
+        attemptCount: 1,
+        retrySafe: true
+      });
+      expect(component.reAnalyzing()).toBe(false);
+      expect(api.getBatchStatus).toHaveBeenCalledWith('SceneWorks');
+
+      batchSubjects.get('SceneWorks')?.next(createBatchStatus('SceneWorks'));
+      expect(component.batchStatus()?.repo).toBe('SceneWorks');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces the structured Rust timeout from a failed durable run', async () => {
+    vi.useFakeTimers();
+    try {
+      const { component, api, runSubjects } = createComponent();
+      api.reAnalyze.mockReturnValue(of({ status: 'queued', runId: 43 }));
+      component.name.set('SceneWorks');
+
+      component.reAnalyze();
+      await vi.advanceTimersByTimeAsync(0);
+      runSubjects.get(43)?.next({
+        id: 43,
+        operation: 'reanalyze',
+        status: 'failed',
+        target: 'SceneWorks',
+        errorCode: 'rust_semantic_command_timeout',
+        error: "Rust semantic command 'rust-analyzer' exceeded the 1800-second timeout.",
+        createdAt: '2026-08-08T12:00:00Z',
+        completedAt: '2026-08-08T13:30:00Z',
+        attemptCount: 3,
+        retrySafe: true
+      });
+
+      expect(component.reAnalyzing()).toBe(false);
+      expect(component.reAnalyzeError()).toContain('timed out after 3 attempts');
+      expect(component.reAnalyzeError()).toContain('1800-second timeout');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

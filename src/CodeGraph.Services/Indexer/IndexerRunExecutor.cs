@@ -8,7 +8,8 @@ namespace CodeGraph.Services.Indexer;
 public sealed class IndexerRunExecutor(
     IDatabaseSourceStore databaseSourceStore,
     IDatabaseSchemaExtractor databaseSchemaExtractor,
-    IAdminService adminService)
+    IAdminService adminService,
+    IProjectService projectService)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -19,6 +20,17 @@ public sealed class IndexerRunExecutor(
 
         switch (run.Operation)
         {
+            case IndexerRunOperations.ReAnalyze:
+            {
+                var args = DeserializeArgs<ReAnalyzeIndexerRunArgs>(run.ArgsJson);
+                if (string.IsNullOrWhiteSpace(args.Repo))
+                    throw new InvalidOperationException($"Indexer run '{run.Id}' has no repository to re-analyze.");
+
+                var batch = await projectService.ReAnalyzeRepository(args.Repo.Trim(), ct)
+                    ?? throw new KeyNotFoundException($"Repository '{args.Repo.Trim()}' was not found.");
+                return $"Completed re-analysis for {args.Repo.Trim()}; analysis batch {batch.Id} is {batch.Status}.";
+            }
+
             case IndexerRunOperations.ProcessRepositories:
             {
                 var request = DeserializeArgs<ProcessRequest>(run.ArgsJson);

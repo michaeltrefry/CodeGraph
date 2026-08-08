@@ -10,20 +10,34 @@ namespace CodeGraph.Services.Indexer;
 public sealed class StandaloneIndexerOperationsService(
     IIndexerRunStore runStore,
     IDatabaseSourceStore databaseSourceStore,
-    IIndexerRunBackgroundRunner backgroundRunner,
-    IProjectService projectService) : IIndexerOperationsService
+    IIndexerRunBackgroundRunner backgroundRunner) : IIndexerOperationsService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public Task<AnalysisBatchResponse?> ReAnalyzeRepositoryAsync(
+    public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,
         string repo,
+        CancellationToken ct = default)
+        => StartReAnalyzeRepositoryAsync(username, repo, submissionKey: null, ct);
+
+    public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
+        string username,
+        string repo,
+        string? submissionKey,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(repo))
             throw new ArgumentException("Repository name is required.", nameof(repo));
 
-        return projectService.ReAnalyzeRepository(repo.Trim(), ct);
+        repo = repo.Trim();
+        return QueueRunAsync(
+            IndexerRunOperations.ReAnalyze,
+            username,
+            repo,
+            $"Queued full re-analysis for {repo}.",
+            new ReAnalyzeIndexerRunArgs(repo),
+            submissionKey,
+            ct);
     }
 
     public Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default)
@@ -268,6 +282,7 @@ public sealed class StandaloneIndexerOperationsService(
         run.RequestedByUsername,
         run.Target,
         run.Message,
+        run.ErrorCode,
         run.Error,
         run.CreatedAt,
         run.StartedAt,
@@ -328,6 +343,7 @@ public sealed class IndexerSubmissionConflictException(string message) : Invalid
 
 public static class IndexerRunOperations
 {
+    public const string ReAnalyze = "reanalyze";
     public const string ProcessRepositories = "process_repositories";
     public const string ReIndexAll = "reindex_all";
     public const string Discover = "discover";
@@ -339,11 +355,26 @@ public static class IndexerRunOperations
     public const string ProcessBatchAnalysis = "process_batch_analysis";
 
     public static bool IsRetrySafe(string operation)
-        => operation is SyncSchema
+        => operation is ReAnalyze
+            or SyncSchema
             or SyncAllSchemas
             or Link
             or DetectCommunities
             or LinkAndDetect;
+}
+
+public sealed class ReAnalyzeIndexerRunArgs
+{
+    public ReAnalyzeIndexerRunArgs()
+    {
+    }
+
+    public ReAnalyzeIndexerRunArgs(string repo)
+    {
+        Repo = repo;
+    }
+
+    public string Repo { get; set; } = "";
 }
 
 public sealed class BatchAnalysisIndexerRunArgs

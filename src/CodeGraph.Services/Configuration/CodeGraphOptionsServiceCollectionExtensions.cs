@@ -37,7 +37,14 @@ public static class CodeGraphOptionsServiceCollectionExtensions
             .PostConfigure(CodeGraphSettingsNormalizer.Normalize);
 
         services.AddOptions<IndexingOptions>()
-            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.IndexingOptions)));
+            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.IndexingOptions)))
+            .Validate(
+                options => options.RustSemanticCommandTimeoutSeconds is >= 1 and <= 86_400,
+                "Rust semantic command timeout must be between 1 and 86400 seconds.")
+            .Validate(
+                options => options.RustSemanticStderrTailCharacters is >= 256 and <= 65_536,
+                "Rust semantic stderr tail must be between 256 and 65536 characters.")
+            .ValidateOnStart();
 
         services.AddOptions<ConsumerOptions>()
             .Bind(root.GetSection(nameof(CodeGraphServiceSettings.ConsumerOptions)));

@@ -1,29 +1,51 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using CodeGraph.Models;
 using CodeGraph.Services;
+using CodeGraph.Services.Configuration;
 
 namespace CodeGraph.Extractors.Rust;
 
 public class RustProjectAnalyzer : IRustAnalyzer
 {
-    private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(30);
+    private const int DefaultStderrTailCharacters = 4096;
     private static readonly TimeSpan ProcessCleanupTimeout = TimeSpan.FromSeconds(5);
     private readonly ILogger<RustProjectAnalyzer> _logger;
     private readonly TimeSpan _scipGenerationTimeout;
+    private readonly int _stderrTailCharacters;
 
     public RustProjectAnalyzer(ILogger<RustProjectAnalyzer> logger)
-        : this(logger, DefaultScipGenerationTimeout)
+        : this(logger, DefaultScipGenerationTimeout, DefaultStderrTailCharacters)
+    {
+    }
+
+    public RustProjectAnalyzer(
+        ILogger<RustProjectAnalyzer> logger,
+        IOptions<IndexingOptions> optionsAccessor)
+        : this(
+            logger,
+            TimeSpan.FromSeconds(optionsAccessor.Value.RustSemanticCommandTimeoutSeconds),
+            optionsAccessor.Value.RustSemanticStderrTailCharacters)
     {
     }
 
     internal RustProjectAnalyzer(
         ILogger<RustProjectAnalyzer> logger,
-        TimeSpan scipGenerationTimeout)
+        TimeSpan scipGenerationTimeout,
+        int stderrTailCharacters = DefaultStderrTailCharacters)
     {
+        if (scipGenerationTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(scipGenerationTimeout));
+        if (stderrTailCharacters is < 256 or > 65536)
+            throw new ArgumentOutOfRangeException(nameof(stderrTailCharacters));
+
         _logger = logger;
         _scipGenerationTimeout = scipGenerationTimeout;
+        _stderrTailCharacters = stderrTailCharacters;
     }
 
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
@@ -145,6 +167,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
         bool captureStdout,
         CancellationToken ct)
     {
+        var commandName = Path.GetFileName(fileName);
+        var stopwatch = Stopwatch.StartNew();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_scipGenerationTimeout);
 
@@ -160,20 +184,37 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 useSetsid)
         };
 
+        _logger.LogInformation(
+            "Starting Rust semantic command {Command} in {WorkingDirectory} with timeout {TimeoutSeconds}s",
+            commandName,
+            workingDirectory,
+            _scipGenerationTimeout.TotalSeconds);
         process.Start();
         var processGroupId = useSetsid ? process.Id : (int?)null;
         var stdoutTask = captureStdout
-            ? process.StandardOutput.ReadToEndAsync(timeout.Token)
+            ? process.StandardOutput.ReadToEndAsync()
             : Task.FromResult("");
-        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
+        var stderrTask = ReadBoundedTailAsync(process.StandardError, _stderrTailCharacters);
 
         try
         {
             await process.WaitForExitAsync(timeout.Token);
-            return new CommandResult(
+            var result = new CommandResult(
                 process.ExitCode,
-                await stdoutTask,
-                await stderrTask);
+                await stdoutTask.WaitAsync(timeout.Token),
+                await stderrTask.WaitAsync(timeout.Token),
+                stopwatch.Elapsed,
+                GetTotalProcessorTime(process),
+                GetPeakWorkingSetBytes(process));
+            _logger.LogInformation(
+                "Rust semantic command {Command} exited with {ExitCode} after {ElapsedMs}ms; CPU {CpuMs}ms; peak working set {PeakWorkingSetBytes} bytes; stderr tail: {StderrTail}",
+                commandName,
+                result.ExitCode,
+                result.Elapsed.TotalMilliseconds,
+                result.TotalProcessorTime.TotalMilliseconds,
+                result.PeakWorkingSetBytes,
+                result.Stderr);
+            return result;
         }
         catch (OperationCanceledException)
         {
@@ -182,15 +223,60 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 processGroupId,
                 stdoutTask,
                 stderrTask);
+            stopwatch.Stop();
 
             // Preserve caller cancellation as cancellation, rather than translating it
             // into a semantic-tool failure. Timeout remains a structured fatal failure.
             ct.ThrowIfCancellationRequested();
+            var stderrTail = stderrTask.IsCompletedSuccessfully ? stderrTask.Result : "";
+            var cpuTime = GetTotalProcessorTime(process);
+            var peakWorkingSetBytes = GetPeakWorkingSetBytes(process);
+            _logger.LogError(
+                "Rust semantic command {Command} timed out after {ElapsedMs}ms; CPU {CpuMs}ms; peak working set {PeakWorkingSetBytes} bytes; stderr tail: {StderrTail}",
+                commandName,
+                stopwatch.Elapsed.TotalMilliseconds,
+                cpuTime.TotalMilliseconds,
+                peakWorkingSetBytes,
+                stderrTail);
             throw new RustSemanticIndexingException(
                 "rust_semantic_command_timeout",
-                $"Rust semantic command '{Path.GetFileName(fileName)}' exceeded " +
-                $"the {_scipGenerationTimeout.TotalSeconds:0.###}-second timeout.");
+                $"Rust semantic command '{commandName}' exceeded " +
+                $"the {_scipGenerationTimeout.TotalSeconds:0.###}-second timeout." +
+                FormatDiagnosticSuffix(stderrTail));
         }
+    }
+
+    private static async Task<string> ReadBoundedTailAsync(StreamReader reader, int maxCharacters)
+    {
+        var tail = new StringBuilder(maxCharacters);
+        var buffer = new char[Math.Min(4096, maxCharacters)];
+        while (true)
+        {
+            var count = await reader.ReadAsync(buffer);
+            if (count == 0)
+                break;
+
+            tail.Append(buffer, 0, count);
+            if (tail.Length > maxCharacters)
+                tail.Remove(0, tail.Length - maxCharacters);
+        }
+
+        return tail.ToString().Trim();
+    }
+
+    private static string FormatDiagnosticSuffix(string stderrTail)
+        => string.IsNullOrWhiteSpace(stderrTail) ? "" : $" Diagnostic tail: {stderrTail}";
+
+    private static TimeSpan GetTotalProcessorTime(Process process)
+    {
+        try { return process.TotalProcessorTime; }
+        catch (Exception) { return TimeSpan.Zero; }
+    }
+
+    private static long GetPeakWorkingSetBytes(Process process)
+    {
+        try { return process.PeakWorkingSet64; }
+        catch (Exception) { return 0; }
     }
 
     private static ProcessStartInfo CreateProcessStartInfo(
@@ -299,7 +385,13 @@ public class RustProjectAnalyzer : IRustAnalyzer
         return null;
     }
 
-    private sealed record CommandResult(int ExitCode, string Stdout, string Stderr);
+    private sealed record CommandResult(
+        int ExitCode,
+        string Stdout,
+        string Stderr,
+        TimeSpan Elapsed,
+        TimeSpan TotalProcessorTime,
+        long PeakWorkingSetBytes);
 
     private const string UnixProcessSupervisorScript = """
         set -m

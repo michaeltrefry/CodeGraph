@@ -998,6 +998,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(r => r.ArgsJson).HasColumnName("args_json");
             e.Property(r => r.Status).HasColumnName("status");
             e.Property(r => r.Message).HasColumnName("message");
+            e.Property(r => r.ErrorCode).HasColumnName("error_code");
             e.Property(r => r.Error).HasColumnName("error");
             e.Property(r => r.CreatedAt).HasColumnName("created_at");
             e.Property(r => r.StartedAt).HasColumnName("started_at");
