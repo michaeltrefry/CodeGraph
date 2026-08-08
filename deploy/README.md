@@ -56,13 +56,15 @@ CODEGRAPH_EMBEDDING_MODEL_VOCAB_URL=https://huggingface.co/nomic-ai/nomic-embed-
 ```
 
 The production indexer is resource-isolated from the API and database. Its defaults are
-two CPUs and 2 GiB of memory (with no additional swap), and can be tuned without editing
-the compose files:
+two CPUs and 6 GiB of memory (with no additional swap), and can be tuned without editing
+the compose files. Rust semantic indexing uses the same two-worker ceiling and excludes
+dependency source documents while preserving external SCIP references:
 
 ```text
 CODEGRAPH_INDEXER_CPUS=2.0
-CODEGRAPH_INDEXER_MEMORY_LIMIT=2g
+CODEGRAPH_INDEXER_MEMORY_LIMIT=6g
 CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS=600
+CODEGRAPH_RUST_SEMANTIC_MAX_THREADS=2
 ```
 
 Rust semantic failures are not automatically replayed: they are deterministic for the

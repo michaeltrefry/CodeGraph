@@ -49,6 +49,37 @@ public sealed class RustProjectAnalyzerCapabilityTests
     }
 
     [Fact]
+    public async Task AnalyzeProjectAsync_ExcludesDependencyDocumentsAndBoundsWorkerThreads()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var fixture = new CargoFixture();
+        var argumentsPath = Path.Combine(fixture.RootPath, "rust-analyzer.args");
+        var jsonPath = Path.Combine(fixture.RootPath, "scip.json");
+        await File.WriteAllTextAsync(jsonPath, ValidScipJson);
+        fixture.AddTool(
+            "rust-analyzer",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CODEGRAPH_TEST_ARGS\"\nout=\"\"\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; else shift; fi\ndone\n: > \"$out\"\n");
+        fixture.AddTool("scip", "#!/bin/sh\n/bin/cat \"$CODEGRAPH_TEST_SCIP_JSON\"\n");
+        using var path = new PathScope(fixture.ToolDirectory);
+        using var argumentsVariable = new EnvironmentVariableScope("CODEGRAPH_TEST_ARGS", argumentsPath);
+        using var jsonVariable = new EnvironmentVariableScope("CODEGRAPH_TEST_SCIP_JSON", jsonPath);
+        var analyzer = new RustProjectAnalyzer(
+            NullLogger<RustProjectAnalyzer>.Instance,
+            Options.Create(new IndexingOptions { RustSemanticMaxThreads = 3 }));
+
+        var results = await analyzer.AnalyzeProjectAsync(fixture.ManifestPath, fixture.Context);
+
+        results.SelectMany(result => result.Nodes).ShouldNotBeEmpty();
+        var arguments = await File.ReadAllLinesAsync(argumentsPath);
+        arguments.ShouldContain("--exclude-vendored-libraries");
+        var threadFlag = Array.IndexOf(arguments, "--num-threads");
+        threadFlag.ShouldBeGreaterThanOrEqualTo(0);
+        arguments[threadFlag + 1].ShouldBe("3");
+    }
+
+    [Fact]
     public async Task AnalyzeProjectAsync_BrokenConverter_ThrowsObservableCapabilityFailure()
     {
         if (OperatingSystem.IsWindows())

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
     private readonly ILogger<RustProjectAnalyzer> _logger;
     private readonly TimeSpan _scipGenerationTimeout;
     private readonly int _stderrTailCharacters;
+    private readonly int _maxThreads;
 
     public RustProjectAnalyzer(ILogger<RustProjectAnalyzer> logger)
         : this(logger, DefaultScipGenerationTimeout, DefaultStderrTailCharacters)
@@ -29,23 +31,28 @@ public class RustProjectAnalyzer : IRustAnalyzer
         : this(
             logger,
             TimeSpan.FromSeconds(optionsAccessor.Value.RustSemanticCommandTimeoutSeconds),
-            optionsAccessor.Value.RustSemanticStderrTailCharacters)
+            optionsAccessor.Value.RustSemanticStderrTailCharacters,
+            optionsAccessor.Value.RustSemanticMaxThreads)
     {
     }
 
     internal RustProjectAnalyzer(
         ILogger<RustProjectAnalyzer> logger,
         TimeSpan scipGenerationTimeout,
-        int stderrTailCharacters = DefaultStderrTailCharacters)
+        int stderrTailCharacters = DefaultStderrTailCharacters,
+        int maxThreads = 2)
     {
         if (scipGenerationTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(scipGenerationTimeout));
         if (stderrTailCharacters is < 256 or > 65536)
             throw new ArgumentOutOfRangeException(nameof(stderrTailCharacters));
+        if (maxThreads is < 1 or > 64)
+            throw new ArgumentOutOfRangeException(nameof(maxThreads));
 
         _logger = logger;
         _scipGenerationTimeout = scipGenerationTimeout;
         _stderrTailCharacters = stderrTailCharacters;
+        _maxThreads = maxThreads;
     }
 
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
@@ -111,7 +118,19 @@ public class RustProjectAnalyzer : IRustAnalyzer
             var scipPath = Path.Combine(tempDir, "index.scip");
             var generation = await RunCommandAsync(
                 rustAnalyzer,
-                ["scip", rootPath, "--output", scipPath],
+                [
+                    "scip",
+                    rootPath,
+                    "--output",
+                    scipPath,
+                    // CodeGraph owns the selected repository's source graph. Keeping
+                    // dependency documents makes rust-analyzer traverse tens of thousands
+                    // of vendored definitions while local references still retain their
+                    // external SCIP symbols without those documents.
+                    "--exclude-vendored-libraries",
+                    "--num-threads",
+                    _maxThreads.ToString(CultureInfo.InvariantCulture)
+                ],
                 rootPath,
                 captureStdout: false,
                 ct);
