@@ -1,3 +1,4 @@
+import { DOCUMENT } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
@@ -262,8 +263,10 @@ interface OperationResult {
   `]
 })
 export class AdminOperationsComponent {
+  private static readonly submissionStoragePrefix = 'codegraph:admin-operation-submission:';
+
   private http = inject(HttpClient);
-  private pendingSubmissionKeys = new Map<string, string>();
+  private document = inject(DOCUMENT);
 
   running = signal(false);
   result = signal<OperationResult | null>(null);
@@ -290,11 +293,12 @@ export class AdminOperationsComponent {
     this.running.set(true);
     this.result.set(null);
     try {
+      const submission = this.beginSubmission(submissionIdentity);
       const res = await firstValueFrom(this.http.post(
         `${API}/${endpoint}`,
         {},
-        { headers: this.submissionHeaders(submissionIdentity) }));
-      this.pendingSubmissionKeys.delete(submissionIdentity);
+        { headers: submission.headers }));
+      this.acknowledgeSubmission(submission);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -321,11 +325,12 @@ export class AdminOperationsComponent {
         includeAllSource: this.processIncludeAllSource
       };
       const submissionIdentity = `process:${JSON.stringify(body)}`;
+      const submission = this.beginSubmission(submissionIdentity);
       const res = await firstValueFrom(this.http.post(
         `${API}/indexer/repositories/process`,
         body,
-        { headers: this.submissionHeaders(submissionIdentity) }));
-      this.pendingSubmissionKeys.delete(submissionIdentity);
+        { headers: submission.headers }));
+      this.acknowledgeSubmission(submission);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -347,11 +352,12 @@ export class AdminOperationsComponent {
       if (this.discoverFilter.trim()) body['namePattern'] = this.discoverFilter.trim();
       if (this.discoverLimit && this.discoverLimit > 0) body['limit'] = this.discoverLimit;
       const submissionIdentity = `discover:${JSON.stringify(body)}`;
+      const submission = this.beginSubmission(submissionIdentity);
       const res = await firstValueFrom(this.http.post(
         `${API}/indexer/repositories/discover`,
         body,
-        { headers: this.submissionHeaders(submissionIdentity) }));
-      this.pendingSubmissionKeys.delete(submissionIdentity);
+        { headers: submission.headers }));
+      this.acknowledgeSubmission(submission);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -367,11 +373,12 @@ export class AdminOperationsComponent {
       let url = `${API}/indexer/batch-analysis/process`;
       if (this.batchRepo) url += `?repo=${encodeURIComponent(this.batchRepo)}`;
       const submissionIdentity = `batch-analysis:${url}`;
+      const submission = this.beginSubmission(submissionIdentity);
       const res = await firstValueFrom(this.http.post(
         url,
         {},
-        { headers: this.submissionHeaders(submissionIdentity) }));
-      this.pendingSubmissionKeys.delete(submissionIdentity);
+        { headers: submission.headers }));
+      this.acknowledgeSubmission(submission);
       this.result.set({ success: true, message: JSON.stringify(res, null, 2) || 'OK' });
     } catch (err: any) {
       this.result.set({ success: false, message: err.error?.message || err.error || err.message || 'Failed' });
@@ -380,13 +387,49 @@ export class AdminOperationsComponent {
     }
   }
 
-  private submissionHeaders(submissionIdentity: string): Record<string, string> {
-    let submissionKey = this.pendingSubmissionKeys.get(submissionIdentity);
+  private beginSubmission(submissionIdentity: string): PendingSubmission {
+    const storage = this.submissionStorage();
+    const storageKey = `${AdminOperationsComponent.submissionStoragePrefix}${submissionIdentity}`;
+    let submissionKey = storage.getItem(storageKey);
+
     if (!submissionKey) {
-      submissionKey = crypto.randomUUID();
-      this.pendingSubmissionKeys.set(submissionIdentity, submissionKey);
+      const crypto = this.document.defaultView?.crypto;
+      if (!crypto?.randomUUID)
+        throw new Error('Secure operation identity generation is unavailable; request was not sent.');
+
+      storage.setItem(storageKey, crypto.randomUUID());
+      submissionKey = storage.getItem(storageKey);
+      if (!submissionKey)
+        throw new Error('Durable operation identity could not be verified; request was not sent.');
     }
 
-    return { 'Idempotency-Key': submissionKey };
+    return {
+      storageKey,
+      submissionKey,
+      headers: { 'Idempotency-Key': submissionKey }
+    };
   }
+
+  private acknowledgeSubmission(submission: PendingSubmission): void {
+    const storage = this.submissionStorage();
+    if (storage.getItem(submission.storageKey) === submission.submissionKey)
+      storage.removeItem(submission.storageKey);
+  }
+
+  private submissionStorage(): Storage {
+    try {
+      const storage = this.document.defaultView?.localStorage;
+      if (!storage)
+        throw new Error('Local storage is unavailable.');
+      return storage;
+    } catch {
+      throw new Error('Durable operation identity storage is unavailable; request was not sent.');
+    }
+  }
+}
+
+interface PendingSubmission {
+  storageKey: string;
+  submissionKey: string;
+  headers: Record<string, string>;
 }

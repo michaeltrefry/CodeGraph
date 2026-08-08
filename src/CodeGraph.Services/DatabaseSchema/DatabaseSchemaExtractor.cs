@@ -25,6 +25,7 @@ public sealed class DatabaseSchemaExtractor(
     {
         var sources = await sourceStore.ListAsync();
         var enabled = sources.Where(source => source.Enabled).ToList();
+        var failures = new List<Exception>();
         logger.LogInformation("Syncing {Count} database sources", enabled.Count);
 
         foreach (var source in enabled)
@@ -35,14 +36,28 @@ public sealed class DatabaseSchemaExtractor(
             {
                 await SyncAsync(source, ct);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
+                failures.Add(new InvalidOperationException(
+                    $"Failed to sync database source {source.ServerName}/{source.DatabaseName}",
+                    ex));
                 logger.LogError(
                     ex,
                     "Failed to sync database source {Server}/{Database}",
                     source.ServerName,
                     source.DatabaseName);
             }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new AggregateException(
+                $"Database schema sync failed for {failures.Count} of {enabled.Count} enabled source(s).",
+                failures);
         }
     }
 
@@ -65,15 +80,7 @@ public sealed class DatabaseSchemaExtractor(
             foreach (var databaseName in userDatabases)
             {
                 ct.ThrowIfCancellationRequested();
-
-                try
-                {
-                    await SyncDatabaseAsync(source.ServerName, databaseName, source.ConnectionString, ct);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to sync {Server}/{Database}", source.ServerName, databaseName);
-                }
+                await SyncDatabaseAsync(source.ServerName, databaseName, source.ConnectionString, ct);
             }
 
             await sourceStore.UpdateLastSyncedAsync(source.Id);
@@ -96,7 +103,11 @@ public sealed class DatabaseSchemaExtractor(
 
         logger.LogInformation("Syncing schema for {Project}", projectName);
 
-        await store.UpsertRepositoryAsync(new RepositoryEntity
+        await using var conn = new MySqlConnection(connectionString);
+        await conn.OpenAsync(ct);
+
+        var snapshot = await ExtractSnapshotAsync(conn, serverName, databaseName, projectName, ct);
+        var repository = new RepositoryEntity
         {
             Name = projectName,
             LocalPath = "",
@@ -110,24 +121,22 @@ public sealed class DatabaseSchemaExtractor(
                 ["serverName"] = serverName,
                 ["databaseName"] = databaseName
             })
-        });
+        };
 
-        await store.DeleteAllEdgesForProjectAsync(projectName);
-        await store.DeleteNodesByProjectAsync(projectName);
-
-        await using var conn = new MySqlConnection(connectionString);
-        await conn.OpenAsync(ct);
-
-        var snapshot = await ExtractSnapshotAsync(conn, serverName, databaseName, projectName, ct);
-        var qualifiedNameToId = await store.UpsertNodeBatchAsync(snapshot.Nodes, ct);
-        var edges = ResolveEdges(projectName, snapshot.PendingEdges, qualifiedNameToId);
-        await store.InsertEdgeBatchAsync(edges, ct);
+        var edgeCount = await store.ReplaceProjectGraphAsync(
+            projectName,
+            snapshot.Nodes,
+            snapshot.PendingEdges,
+            new Dictionary<string, string>(),
+            repository,
+            syncState: null,
+            ct: ct);
 
         logger.LogInformation(
             "Synced {Project}: {Nodes} node(s), {Edges} edge(s)",
             projectName,
             snapshot.Nodes.Count,
-            edges.Count);
+            edgeCount);
     }
 
     private static async Task<SchemaSnapshot> ExtractSnapshotAsync(
@@ -180,7 +189,7 @@ public sealed class DatabaseSchemaExtractor(
         var routineParameters = (await conn.QueryAsync<RoutineParameterInfo>("""
             SELECT SPECIFIC_NAME, COALESCE(PARAMETER_NAME, 'return') AS PARAMETER_NAME,
                    ORDINAL_POSITION, COALESCE(PARAMETER_MODE, 'RETURN') AS PARAMETER_MODE,
-                   COALESCE(DTD_IDENTIFIER, DATA_TYPE) AS DATA_TYPE, IS_NULLABLE
+                   COALESCE(DTD_IDENTIFIER, DATA_TYPE) AS DATA_TYPE
             FROM INFORMATION_SCHEMA.PARAMETERS
             WHERE SPECIFIC_SCHEMA = @databaseName
             ORDER BY SPECIFIC_NAME, ORDINAL_POSITION
@@ -321,33 +330,6 @@ public sealed class DatabaseSchemaExtractor(
         return new SchemaSnapshot(nodes, pendingEdges);
     }
 
-    private static List<GraphEdge> ResolveEdges(
-        string projectName,
-        IReadOnlyList<PendingEdge> pendingEdges,
-        IReadOnlyDictionary<string, long> qualifiedNameToId)
-    {
-        var edges = new List<GraphEdge>();
-        foreach (var pendingEdge in pendingEdges)
-        {
-            if (!qualifiedNameToId.TryGetValue(GraphNodeKey.Create(projectName, pendingEdge.SourceQualifiedName), out var sourceId) ||
-                !qualifiedNameToId.TryGetValue(GraphNodeKey.Create(projectName, pendingEdge.TargetQualifiedName), out var targetId))
-            {
-                continue;
-            }
-
-            edges.Add(new GraphEdge
-            {
-                Project = projectName,
-                SourceId = sourceId,
-                TargetId = targetId,
-                Type = pendingEdge.Type,
-                Properties = pendingEdge.Properties ?? new Dictionary<string, object>()
-            });
-        }
-
-        return edges;
-    }
-
     private static string BuildProjectName(string serverName, string databaseName)
         => $"db:{serverName}:{databaseName}";
 
@@ -388,20 +370,13 @@ public sealed class DatabaseSchemaExtractor(
                 ["name"] = parameter.PARAMETER_NAME,
                 ["ordinal"] = parameter.ORDINAL_POSITION,
                 ["mode"] = parameter.PARAMETER_MODE,
-                ["dataType"] = parameter.DATA_TYPE,
-                ["nullable"] = string.Equals(parameter.IS_NULLABLE, "YES", StringComparison.OrdinalIgnoreCase)
+                ["dataType"] = parameter.DATA_TYPE
             })
             .ToList();
 
     private sealed record SchemaSnapshot(
         IReadOnlyList<GraphNode> Nodes,
         IReadOnlyList<PendingEdge> PendingEdges);
-
-    private sealed record PendingEdge(
-        string SourceQualifiedName,
-        string TargetQualifiedName,
-        EdgeType Type,
-        Dictionary<string, object>? Properties = null);
 
     private sealed record TableInfo(string TABLE_NAME, string TABLE_TYPE, string? TABLE_COMMENT);
     private sealed record ColumnInfo(
@@ -420,8 +395,7 @@ public sealed class DatabaseSchemaExtractor(
         string PARAMETER_NAME,
         int ORDINAL_POSITION,
         string PARAMETER_MODE,
-        string DATA_TYPE,
-        string? IS_NULLABLE);
+        string DATA_TYPE);
     private sealed record ForeignKeyInfo(
         string CONSTRAINT_NAME,
         string TABLE_NAME,

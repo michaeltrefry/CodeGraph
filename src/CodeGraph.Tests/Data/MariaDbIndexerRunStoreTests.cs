@@ -234,6 +234,68 @@ public class MariaDbIndexerRunStoreTests
     }
 
     [Fact]
+    public async Task ExpiredLease_CannotBeRenewedOrResurrectItsOwnership_WhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            Database = $"cg_idx_late_renewal_{Guid.NewGuid():N}"
+        };
+        var databaseName = builder.Database;
+        var runner = CreateMigrationRunner(builder.ConnectionString);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            var claimedAt = DateTime.UtcNow;
+            IndexerRunLease originalLease;
+            await using (var claimContext = new CodeGraphDbContext(CreateOptions(builder.ConnectionString)))
+            {
+                var store = new MySqlIndexerRunStore(claimContext);
+                await store.CreateIndexerRunAsync(new IndexerRunEntity
+                {
+                    Operation = "sync_schema",
+                    Status = "queued",
+                    RetrySafe = true
+                });
+                originalLease = (await store.TryClaimNextIndexerRunAsync(
+                    "paused-worker",
+                    claimedAt,
+                    claimedAt.AddSeconds(10)))!;
+            }
+
+            var afterExpiry = claimedAt.AddSeconds(11);
+            await using (var lateRenewalContext = new CodeGraphDbContext(CreateOptions(builder.ConnectionString)))
+            {
+                var lateRenewal = await new MySqlIndexerRunStore(lateRenewalContext).RenewIndexerRunLeaseAsync(
+                    originalLease.Run.Id,
+                    originalLease.Owner,
+                    originalLease.FencingToken,
+                    afterExpiry,
+                    afterExpiry.AddMinutes(1));
+                lateRenewal.ShouldBe(new IndexerRunLeaseRenewal(false, false));
+            }
+
+            await using (var recoveryContext = new CodeGraphDbContext(CreateOptions(builder.ConnectionString)))
+            {
+                var recovered = await new MySqlIndexerRunStore(recoveryContext).TryClaimNextIndexerRunAsync(
+                    "recovery-worker",
+                    afterExpiry,
+                    afterExpiry.AddMinutes(1));
+                recovered.ShouldNotBeNull();
+                recovered.Run.Id.ShouldBe(originalLease.Run.Id);
+                recovered.Owner.ShouldBe("recovery-worker");
+                recovered.FencingToken.ShouldBe(originalLease.FencingToken + 1);
+                recovered.Run.AttemptCount.ShouldBe(2);
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+    }
+
+    [Fact]
     public async Task ExpiredCancellationAndRetryBudget_AreTerminalAndNeverReplayed_WhenConnectionIsConfigured()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();

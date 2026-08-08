@@ -249,6 +249,8 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
               AND status = 'running'
               AND execution_owner = {owner}
               AND fencing_token = {fencingToken}
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at > {now}
             """, ct);
         if (affected != 1)
             return new IndexerRunLeaseRenewal(false, false);

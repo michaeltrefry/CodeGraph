@@ -257,6 +257,34 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
+    public async Task DurableWorker_RetriesSchemaSyncWhenExtractorReportsPartialFailure()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.SyncAllSchemas,
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new FailingDatabaseSchemaExtractor(),
+            new RecordingAdminService());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var retrying = await runs.GetIndexerRunAsync(runId);
+        retrying.ShouldNotBeNull();
+        retrying.Status.ShouldBe("queued");
+        retrying.AttemptCount.ShouldBe(1);
+        retrying.NextAttemptAt.ShouldNotBeNull();
+        retrying.Error.ShouldBe("partial schema sync failure");
+    }
+
+    [Fact]
     public async Task DurableWorker_RetriesOnlySafeOperationsAndExposesAttemptState()
     {
         var runs = new FakeIndexerRunStore();
@@ -425,6 +453,15 @@ public class StandaloneIndexerOperationsServiceTests
             SyncAllCalls++;
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class FailingDatabaseSchemaExtractor : IDatabaseSchemaExtractor
+    {
+        public Task SyncAsync(DatabaseSourceEntity source, CancellationToken ct = default)
+            => Task.FromException(new InvalidOperationException("partial schema sync failure"));
+
+        public Task SyncAllAsync(CancellationToken ct = default)
+            => Task.FromException(new InvalidOperationException("partial schema sync failure"));
     }
 
     private sealed class BlockingAdminService : IAdminService
