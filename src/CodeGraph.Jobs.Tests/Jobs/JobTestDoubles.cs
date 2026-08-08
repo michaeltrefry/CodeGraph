@@ -214,7 +214,7 @@ internal sealed class RecordingMcpDocService : IMcpDocService
 {
     public int Calls { get; private set; }
 
-    public Task RegenerateAsync()
+    public Task RegenerateAsync(CancellationToken ct = default)
     {
         Calls++;
         return Task.CompletedTask;
@@ -236,7 +236,9 @@ internal sealed class RecordingAssistantRetentionCleanupService : IAssistantRete
 internal sealed class InMemoryJobScheduleStore : IJobScheduleStore
 {
     private readonly List<JobScheduleEntity> _items = [];
+    private readonly object _sync = new();
     private long _nextId = 1;
+    public int RenewalCount { get; private set; }
 
     public Task<IReadOnlyList<JobScheduleEntity>> ListSchedulesAsync() =>
         Task.FromResult<IReadOnlyList<JobScheduleEntity>>(_items.OrderBy(x => x.Name).ToList());
@@ -255,12 +257,26 @@ internal sealed class InMemoryJobScheduleStore : IJobScheduleStore
         return Task.FromResult(clone.Clone());
     }
 
-    public Task UpdateScheduleAsync(JobScheduleEntity entity)
+    public Task<bool> UpdateScheduleAsync(JobScheduleEntity entity)
     {
-        var index = _items.FindIndex(x => x.Id == entity.Id);
-        if (index >= 0)
-            _items[index] = entity.Clone();
-        return Task.CompletedTask;
+        lock (_sync)
+        {
+            var existing = _items.FirstOrDefault(x =>
+                x.Id == entity.Id && x.ScheduleRevision == entity.ScheduleRevision);
+            if (existing is null)
+                return Task.FromResult(false);
+
+            existing.Name = entity.Name;
+            existing.JobType = entity.JobType;
+            existing.IsEnabled = entity.IsEnabled;
+            existing.CronExpression = entity.CronExpression;
+            existing.TimeZoneId = entity.TimeZoneId;
+            existing.ArgsJson = entity.ArgsJson;
+            existing.NextRunUtc = entity.NextRunUtc;
+            existing.ScheduleRevision++;
+            existing.UpdatedAtUtc = entity.UpdatedAtUtc;
+            return Task.FromResult(true);
+        }
     }
 
     public Task DeleteScheduleAsync(long id)
@@ -285,32 +301,95 @@ internal sealed class InMemoryJobScheduleStore : IJobScheduleStore
         return Task.FromResult(Acquire(schedule, utcNow, leaseOwner, leaseDuration));
     }
 
-    public Task MarkRunStartedAsync(long id, DateTime startedAtUtc, string leaseOwner, CancellationToken ct = default)
+    public Task<bool> RenewLeaseAsync(
+        long id,
+        DateTime utcNow,
+        string leaseToken,
+        TimeSpan leaseDuration,
+        CancellationToken ct = default)
     {
-        var schedule = _items.First(x => x.Id == id);
-        const long ticksPerMicrosecond = TimeSpan.TicksPerMillisecond / 1000;
-        schedule.LastRunStartedUtc = new DateTime(
-            startedAtUtc.Ticks - (startedAtUtc.Ticks % ticksPerMicrosecond),
-            startedAtUtc.Kind);
-        schedule.LastRunStatus = "running";
-        schedule.LastError = null;
-        schedule.UpdatedAtUtc = startedAtUtc;
-        return Task.CompletedTask;
+        lock (_sync)
+        {
+            var schedule = _items.FirstOrDefault(x =>
+                x.Id == id
+                && x.LeaseOwner == leaseToken
+                && x.LeaseExpiresUtc > utcNow);
+            if (schedule is null)
+                return Task.FromResult(false);
+
+            schedule.LeaseExpiresUtc = utcNow.Add(leaseDuration);
+            schedule.UpdatedAtUtc = utcNow;
+            RenewalCount++;
+            return Task.FromResult(true);
+        }
     }
 
-    public Task MarkRunCompletedAsync(long id, DateTime completedAtUtc, DateTime? nextRunUtc, string status, string? error, string leaseOwner, CancellationToken ct = default)
+    public Task<bool> MarkRunStartedAsync(
+        long id,
+        DateTime startedAtUtc,
+        DateTime fenceCheckedAtUtc,
+        string leaseToken,
+        CancellationToken ct = default)
     {
-        var schedule = _items.First(x => x.Id == id);
-        schedule.LastRunCompletedUtc = completedAtUtc;
-        schedule.LastRunStatus = status;
-        schedule.LastError = error;
-        if (nextRunUtc.HasValue)
-            schedule.NextRunUtc = nextRunUtc.Value;
-        schedule.LeaseAcquiredUtc = null;
-        schedule.LeaseOwner = null;
-        schedule.LeaseExpiresUtc = null;
-        schedule.UpdatedAtUtc = completedAtUtc;
-        return Task.CompletedTask;
+        lock (_sync)
+        {
+            var schedule = _items.FirstOrDefault(x =>
+                x.Id == id
+                && x.LeaseOwner == leaseToken
+                && x.LeaseExpiresUtc > fenceCheckedAtUtc);
+            if (schedule is null)
+                return Task.FromResult(false);
+
+            schedule.LastRunStartedUtc = startedAtUtc;
+            schedule.LastRunStatus = "running";
+            schedule.LastError = null;
+            schedule.UpdatedAtUtc = startedAtUtc;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> MarkRunCompletedAsync(
+        long id,
+        DateTime completedAtUtc,
+        DateTime? nextRunUtc,
+        string status,
+        string? error,
+        DateTime fenceCheckedAtUtc,
+        long acquiredScheduleRevision,
+        string leaseToken,
+        CancellationToken ct = default)
+    {
+        lock (_sync)
+        {
+            var schedule = _items.FirstOrDefault(x =>
+                x.Id == id
+                && x.LeaseOwner == leaseToken
+                && x.LeaseExpiresUtc > fenceCheckedAtUtc);
+            if (schedule is null)
+                return Task.FromResult(false);
+
+            schedule.LastRunCompletedUtc = completedAtUtc;
+            schedule.LastRunStatus = status;
+            schedule.LastError = error;
+            if (nextRunUtc.HasValue && schedule.ScheduleRevision == acquiredScheduleRevision)
+                schedule.NextRunUtc = nextRunUtc.Value;
+            schedule.ScheduleRevision++;
+            schedule.LeaseAcquiredUtc = null;
+            schedule.LeaseOwner = null;
+            schedule.LeaseExpiresUtc = null;
+            schedule.UpdatedAtUtc = completedAtUtc;
+            return Task.FromResult(true);
+        }
+    }
+
+    public void ReplaceLease(long id, string leaseToken, DateTime expiresUtc)
+    {
+        lock (_sync)
+        {
+            var schedule = _items.First(x => x.Id == id);
+            schedule.LeaseOwner = leaseToken;
+            schedule.LeaseExpiresUtc = expiresUtc;
+        }
     }
 
     private static JobScheduleEntity? Acquire(JobScheduleEntity? schedule, DateTime utcNow, string leaseOwner, TimeSpan leaseDuration)
@@ -340,6 +419,7 @@ internal static class JobScheduleEntityCloneExtensions
         TimeZoneId = entity.TimeZoneId,
         ArgsJson = entity.ArgsJson,
         NextRunUtc = entity.NextRunUtc,
+        ScheduleRevision = entity.ScheduleRevision,
         LastRunStartedUtc = entity.LastRunStartedUtc,
         LastRunCompletedUtc = entity.LastRunCompletedUtc,
         LastRunStatus = entity.LastRunStatus,

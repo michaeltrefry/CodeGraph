@@ -28,34 +28,27 @@ public class MySqlJobScheduleStore(CodeGraphDbContext db) : IJobScheduleStore
         entity.UpdatedAtUtc = entity.UpdatedAtUtc == default ? now : entity.UpdatedAtUtc;
         db.JobSchedules.Add(entity);
         await db.SaveChangesAsync();
+        db.Entry(entity).State = EntityState.Detached;
         return entity;
     }
 
-    public async Task UpdateScheduleAsync(JobScheduleEntity entity)
+    public async Task<bool> UpdateScheduleAsync(JobScheduleEntity entity)
     {
-        var existing = await db.JobSchedules.FirstOrDefaultAsync(s => s.Id == entity.Id);
-        if (existing is null)
-        {
-            return;
-        }
-
-        existing.Name = entity.Name;
-        existing.JobType = entity.JobType;
-        existing.IsEnabled = entity.IsEnabled;
-        existing.CronExpression = entity.CronExpression;
-        existing.TimeZoneId = entity.TimeZoneId;
-        existing.ArgsJson = entity.ArgsJson;
-        existing.NextRunUtc = entity.NextRunUtc;
-        existing.LastRunStartedUtc = entity.LastRunStartedUtc;
-        existing.LastRunCompletedUtc = entity.LastRunCompletedUtc;
-        existing.LastRunStatus = entity.LastRunStatus;
-        existing.LastError = entity.LastError;
-        existing.LeaseAcquiredUtc = entity.LeaseAcquiredUtc;
-        existing.LeaseOwner = entity.LeaseOwner;
-        existing.LeaseExpiresUtc = entity.LeaseExpiresUtc;
-        existing.UpdatedAtUtc = DateTime.UtcNow;
-
-        await db.SaveChangesAsync();
+        var updated = await db.JobSchedules
+            .Where(schedule =>
+                schedule.Id == entity.Id
+                && schedule.ScheduleRevision == entity.ScheduleRevision)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(schedule => schedule.Name, entity.Name)
+                .SetProperty(schedule => schedule.JobType, entity.JobType)
+                .SetProperty(schedule => schedule.IsEnabled, entity.IsEnabled)
+                .SetProperty(schedule => schedule.CronExpression, entity.CronExpression)
+                .SetProperty(schedule => schedule.TimeZoneId, entity.TimeZoneId)
+                .SetProperty(schedule => schedule.ArgsJson, entity.ArgsJson)
+                .SetProperty(schedule => schedule.NextRunUtc, entity.NextRunUtc)
+                .SetProperty(schedule => schedule.ScheduleRevision, schedule => schedule.ScheduleRevision + 1)
+                .SetProperty(schedule => schedule.UpdatedAtUtc, entity.UpdatedAtUtc));
+        return updated == 1;
     }
 
     public async Task DeleteScheduleAsync(long id)
@@ -139,55 +132,94 @@ public class MySqlJobScheduleStore(CodeGraphDbContext db) : IJobScheduleStore
         return schedule;
     }
 
-    public async Task MarkRunStartedAsync(long id, DateTime startedAtUtc, string leaseOwner, CancellationToken ct = default)
+    public async Task<bool> RenewLeaseAsync(
+        long id,
+        DateTime utcNow,
+        string leaseToken,
+        TimeSpan leaseDuration,
+        CancellationToken ct = default)
     {
-        var schedule = await db.JobSchedules.FirstOrDefaultAsync(
-            s => s.Id == id && s.LeaseOwner == leaseOwner,
-            ct);
-
-        if (schedule is null)
-        {
-            return;
-        }
-
-        schedule.LastRunStartedUtc = startedAtUtc;
-        schedule.LastRunStatus = "running";
-        schedule.LastError = null;
-        schedule.UpdatedAtUtc = startedAtUtc;
-        await db.SaveChangesAsync(ct);
+        var leaseExpiresUtc = utcNow.Add(leaseDuration);
+        var updated = await db.JobSchedules
+            .Where(schedule =>
+                schedule.Id == id
+                && schedule.LeaseOwner == leaseToken
+                && schedule.LeaseExpiresUtc != null
+                && schedule.LeaseExpiresUtc > utcNow)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(schedule => schedule.LeaseExpiresUtc, leaseExpiresUtc)
+                .SetProperty(schedule => schedule.UpdatedAtUtc, utcNow), ct);
+        return updated == 1;
     }
 
-    public async Task MarkRunCompletedAsync(
+    public async Task<bool> MarkRunStartedAsync(
+        long id,
+        DateTime startedAtUtc,
+        DateTime fenceCheckedAtUtc,
+        string leaseToken,
+        CancellationToken ct = default)
+    {
+        var updated = await db.JobSchedules
+            .Where(schedule =>
+                schedule.Id == id
+                && schedule.LeaseOwner == leaseToken
+                && schedule.LeaseExpiresUtc != null
+                && schedule.LeaseExpiresUtc > fenceCheckedAtUtc)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(schedule => schedule.LastRunStartedUtc, startedAtUtc)
+                .SetProperty(schedule => schedule.LastRunStatus, "running")
+                .SetProperty(schedule => schedule.LastError, (string?)null)
+                .SetProperty(schedule => schedule.UpdatedAtUtc, startedAtUtc), ct);
+        return updated == 1;
+    }
+
+    public async Task<bool> MarkRunCompletedAsync(
         long id,
         DateTime completedAtUtc,
         DateTime? nextRunUtc,
         string status,
         string? error,
-        string leaseOwner,
+        DateTime fenceCheckedAtUtc,
+        long acquiredScheduleRevision,
+        string leaseToken,
         CancellationToken ct = default)
     {
-        var schedule = await db.JobSchedules.FirstOrDefaultAsync(
-            s => s.Id == id && s.LeaseOwner == leaseOwner,
-            ct);
-
-        if (schedule is null)
-        {
-            return;
-        }
-
-        schedule.LastRunCompletedUtc = completedAtUtc;
-        schedule.LastRunStatus = status;
-        schedule.LastError = error;
-        if (nextRunUtc is not null)
-        {
-            schedule.NextRunUtc = nextRunUtc.Value;
-        }
-
-        schedule.LeaseAcquiredUtc = null;
-        schedule.LeaseOwner = null;
-        schedule.LeaseExpiresUtc = null;
-        schedule.UpdatedAtUtc = completedAtUtc;
-        await db.SaveChangesAsync(ct);
+        var updated = nextRunUtc is DateTime nextRun
+            ? await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE job_schedules
+                SET last_run_completed_utc = {completedAtUtc},
+                    last_run_status = {status},
+                    last_error = {error},
+                    next_run_utc = CASE
+                        WHEN schedule_revision = {acquiredScheduleRevision} THEN {nextRun}
+                        ELSE next_run_utc
+                    END,
+                    schedule_revision = schedule_revision + 1,
+                    lease_acquired_utc = NULL,
+                    lease_owner = NULL,
+                    lease_expires_utc = NULL,
+                    updated_at_utc = {completedAtUtc}
+                WHERE id = {id}
+                  AND lease_owner = {leaseToken}
+                  AND lease_expires_utc IS NOT NULL
+                  AND lease_expires_utc > {fenceCheckedAtUtc}
+                """, ct)
+            : await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE job_schedules
+                SET last_run_completed_utc = {completedAtUtc},
+                    last_run_status = {status},
+                    last_error = {error},
+                    schedule_revision = schedule_revision + 1,
+                    lease_acquired_utc = NULL,
+                    lease_owner = NULL,
+                    lease_expires_utc = NULL,
+                    updated_at_utc = {completedAtUtc}
+                WHERE id = {id}
+                  AND lease_owner = {leaseToken}
+                  AND lease_expires_utc IS NOT NULL
+                  AND lease_expires_utc > {fenceCheckedAtUtc}
+                """, ct);
+        return updated == 1;
     }
 
     private static void ApplyLease(

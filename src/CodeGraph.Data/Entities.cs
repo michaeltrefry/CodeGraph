@@ -709,6 +709,7 @@ public class JobScheduleEntity
     public string TimeZoneId { get; set; } = "UTC";
     public string ArgsJson { get; set; } = "{}";
     public DateTime NextRunUtc { get; set; }
+    public long ScheduleRevision { get; set; }
     public DateTime? LastRunStartedUtc { get; set; }
     public DateTime? LastRunCompletedUtc { get; set; }
     public string? LastRunStatus { get; set; }

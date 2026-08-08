@@ -34,6 +34,7 @@
     <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
     <ProjectReference Include="..\CodeGraph.Data\CodeGraph.Data.csproj" />
     <ProjectReference Include="..\CodeGraph.Data.MariaDb\CodeGraph.Data.MariaDb.csproj" />
+    <ProjectReference Include="..\CodeGraph.Data.Neo4j\CodeGraph.Data.Neo4j.csproj" />
     <ProjectReference Include="..\CodeGraph.Host.Shared\CodeGraph.Host.Shared.csproj" />
     <ProjectReference Include="..\CodeGraph.Indexer.Client\CodeGraph.Indexer.Client.csproj" />
     <ProjectReference Include="..\CodeGraph.Indexer.Host\CodeGraph.Indexer.Host.csproj" />

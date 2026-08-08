@@ -692,6 +692,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(s => s.TimeZoneId).HasColumnName("time_zone_id");
             e.Property(s => s.ArgsJson).HasColumnName("args_json").HasColumnType("json");
             e.Property(s => s.NextRunUtc).HasColumnName("next_run_utc");
+            e.Property(s => s.ScheduleRevision).HasColumnName("schedule_revision");
             e.Property(s => s.LastRunStartedUtc).HasColumnName("last_run_started_utc");
             e.Property(s => s.LastRunCompletedUtc).HasColumnName("last_run_completed_utc");
             e.Property(s => s.LastRunStatus).HasColumnName("last_run_status");
