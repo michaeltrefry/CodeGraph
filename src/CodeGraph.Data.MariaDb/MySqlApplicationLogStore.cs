@@ -21,6 +21,8 @@ public sealed class MySqlApplicationLogStore(CodeGraphDbContext db) : IApplicati
     {
         var rows = db.ApplicationLogs.AsNoTracking().AsQueryable();
 
+        if (!string.IsNullOrWhiteSpace(query.Service))
+            rows = rows.Where(row => row.Service == query.Service);
         if (!string.IsNullOrWhiteSpace(query.Level))
             rows = rows.Where(row => row.Level == query.Level);
         if (query.StartUtc.HasValue)

@@ -3,6 +3,7 @@ namespace CodeGraph.Models.Responses;
 public sealed record ApplicationLogEntryResponse(
     long Id,
     DateTime OccurredAtUtc,
+    string Container,
     string Level,
     string Source,
     string Category,

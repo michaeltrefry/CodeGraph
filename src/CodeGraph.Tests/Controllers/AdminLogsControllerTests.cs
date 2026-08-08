@@ -23,6 +23,7 @@ public class AdminLogsControllerTests
                 {
                     Id = 7,
                     OccurredAtUtc = new DateTime(2026, 8, 7, 12, 0, 0),
+                    Service = ApplicationLogServices.Indexer,
                     Level = "Error",
                     Source = "CodeGraph.Api@host",
                     Category = "CodeGraph.Api.Controllers.SampleController",
@@ -37,6 +38,7 @@ public class AdminLogsControllerTests
         var result = await controller.List(new AdminApplicationLogQueryRequest
         {
             Page = 2,
+            Container = " INDEXER ",
             Level = " Error ",
             Search = " failed ",
             Start = new DateTimeOffset(2026, 8, 7, 8, 0, 0, TimeSpan.FromHours(-4)),
@@ -48,9 +50,11 @@ public class AdminLogsControllerTests
         response.Page.ShouldBe(2);
         response.PageSize.ShouldBe(100);
         response.TotalPages.ShouldBe(3);
+        response.Entries.Single().Container.ShouldBe(ApplicationLogServices.Indexer);
         response.Entries.Single().OccurredAtUtc.Kind.ShouldBe(DateTimeKind.Utc);
         store.Query.ShouldNotBeNull();
         store.Query.PageSize.ShouldBe(100);
+        store.Query.Service.ShouldBe(ApplicationLogServices.Indexer);
         store.Query.Level.ShouldBe("Error");
         store.Query.Search.ShouldBe("failed");
         store.Query.StartUtc.ShouldBe(new DateTime(2026, 8, 7, 12, 0, 0, DateTimeKind.Utc));
@@ -68,6 +72,19 @@ public class AdminLogsControllerTests
             Page = page,
             Level = level,
             Search = search
+        }, CancellationToken.None);
+
+        result.Result.ShouldBeOfType<BadRequestObjectResult>();
+    }
+
+    [Fact]
+    public async Task List_RejectsInvalidContainer()
+    {
+        var controller = new AdminLogsController(new RecordingApplicationLogStore());
+
+        var result = await controller.List(new AdminApplicationLogQueryRequest
+        {
+            Container = "database"
         }, CancellationToken.None);
 
         result.Result.ShouldBeOfType<BadRequestObjectResult>();

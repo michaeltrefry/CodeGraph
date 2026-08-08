@@ -6,6 +6,7 @@ using CodeGraph.Data.Neo4j;
 using CodeGraph.Host.Shared.Auth;
 using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Host.Shared.Hosting;
+using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Memory;
@@ -133,6 +134,7 @@ public static class Startup
                 options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
+            services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Memory);
             return;
         }
 

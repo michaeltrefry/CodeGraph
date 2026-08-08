@@ -458,12 +458,14 @@ export class ApiService {
 
   getApplicationLogs(filters: {
     page: number;
+    container?: string;
     level?: string;
     start?: string;
     end?: string;
     search?: string;
   }): Observable<ApplicationLogPageResponse> {
     let params = new HttpParams().set('page', filters.page);
+    if (filters.container) params = params.set('container', filters.container);
     if (filters.level) params = params.set('level', filters.level);
     if (filters.start) params = params.set('start', filters.start);
     if (filters.end) params = params.set('end', filters.end);

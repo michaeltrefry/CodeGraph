@@ -3,6 +3,7 @@ namespace CodeGraph.Models.Requests;
 public sealed class AdminApplicationLogQueryRequest
 {
     public int Page { get; init; } = 1;
+    public string? Container { get; init; }
     public string? Level { get; init; }
     public DateTimeOffset? Start { get; init; }
     public DateTimeOffset? End { get; init; }

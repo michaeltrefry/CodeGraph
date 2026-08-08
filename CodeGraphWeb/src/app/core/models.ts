@@ -354,6 +354,7 @@ export interface AdminReportFiltersResponse {
 export interface ApplicationLogEntryResponse {
   id: number;
   occurredAtUtc: string;
+  container: string;
   level: string;
   source: string;
   category: string;

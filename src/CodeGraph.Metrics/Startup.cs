@@ -4,6 +4,7 @@ using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Host.Shared.Auth;
 using CodeGraph.Host.Shared.Hosting;
+using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Metrics.Consumers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Metrics;
@@ -133,6 +134,7 @@ public static class Startup
             options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
             options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
         });
+        services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Metrics);
     }
 
     private static bool IsMariaDbProvider(CodeGraphStorageOptions storageOptions) =>

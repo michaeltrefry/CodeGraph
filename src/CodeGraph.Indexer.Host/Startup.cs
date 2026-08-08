@@ -15,6 +15,7 @@ using CodeGraph.Extractors.TypeScript;
 using CodeGraph.Host.Shared.Auth;
 using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Host.Shared.Hosting;
+using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Indexer.Host.Services;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
@@ -221,6 +222,7 @@ public static class Startup
                 options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
+            services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Indexer);
             return;
         }
 

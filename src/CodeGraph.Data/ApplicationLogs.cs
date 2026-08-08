@@ -1,10 +1,33 @@
 namespace CodeGraph.Data;
 
+public static class ApplicationLogServices
+{
+    public const string Api = "api";
+    public const string Indexer = "indexer";
+    public const string Jobs = "jobs";
+    public const string Memory = "memory";
+    public const string Metrics = "metrics";
+
+    public static IReadOnlyList<string> All { get; } = [Api, Indexer, Jobs, Memory, Metrics];
+
+    public static bool IsSupported(string? value) => Normalize(value) is not null;
+
+    public static string? Normalize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return All.FirstOrDefault(service =>
+            service.Equals(value.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+}
+
 public sealed class ApplicationLogEntryEntity
 {
     public long Id { get; set; }
     public DateTime OccurredAtUtc { get; set; }
     public string Level { get; set; } = string.Empty;
+    public string Service { get; set; } = ApplicationLogServices.Api;
     public string Source { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public int EventId { get; set; }
@@ -18,6 +41,7 @@ public sealed class ApplicationLogEntryEntity
 public sealed record ApplicationLogQuery(
     int Page,
     int PageSize,
+    string? Service,
     string? Level,
     DateTime? StartUtc,
     DateTime? EndUtc,
