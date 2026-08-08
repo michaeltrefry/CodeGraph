@@ -201,8 +201,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
             await process.WaitForExitAsync(timeout.Token);
             var result = new CommandResult(
                 process.ExitCode,
-                await stdoutTask,
-                await stderrTask,
+                await stdoutTask.WaitAsync(timeout.Token),
+                await stderrTask.WaitAsync(timeout.Token),
                 stopwatch.Elapsed,
                 GetTotalProcessorTime(process),
                 GetPeakWorkingSetBytes(process));
