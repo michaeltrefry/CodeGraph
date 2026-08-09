@@ -49,6 +49,40 @@ public sealed class RustProjectAnalyzerCapabilityTests
     }
 
     [Fact]
+    public async Task AnalyzeProjectAsync_GeneratorKilledBySigkill_ReportsResourceExhaustionWithCgroupEvidence()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var fixture = new CargoFixture();
+        var cgroupRoot = Path.Combine(fixture.RootPath, "cgroup");
+        Directory.CreateDirectory(cgroupRoot);
+        await File.WriteAllTextAsync(Path.Combine(cgroupRoot, "memory.current"), "6291456000\n");
+        await File.WriteAllTextAsync(Path.Combine(cgroupRoot, "memory.peak"), "6442450944\n");
+        await File.WriteAllTextAsync(Path.Combine(cgroupRoot, "memory.max"), "6442450944\n");
+        await File.WriteAllTextAsync(
+            Path.Combine(cgroupRoot, "memory.events"),
+            "low 0\nhigh 0\nmax 42\noom 1\noom_kill 1\n");
+        fixture.AddTool("rust-analyzer", "#!/bin/sh\necho memory-pressure >&2\nexit 137\n");
+        fixture.AddTool("scip", "#!/bin/sh\nexit 0\n");
+        using var path = new PathScope(fixture.ToolDirectory);
+        var analyzer = new RustProjectAnalyzer(
+            NullLogger<RustProjectAnalyzer>.Instance,
+            TimeSpan.FromSeconds(30),
+            cgroupRootPath: cgroupRoot);
+
+        var error = await Should.ThrowAsync<RustSemanticIndexingException>(() =>
+            analyzer.AnalyzeProjectAsync(fixture.ManifestPath, fixture.Context));
+
+        error.FailureCode.ShouldBe("rust_semantic_resource_exhausted");
+        error.Message.ShouldContain("exit 137");
+        error.Message.ShouldContain("memory.peak=6442450944");
+        error.Message.ShouldContain("memory.max=6442450944");
+        error.Message.ShouldContain("oom_kill=1");
+        error.Message.ShouldContain("memory-pressure");
+    }
+
+    [Fact]
     public async Task AnalyzeProjectAsync_ExcludesDependencyDocumentsAndBoundsWorkerThreads()
     {
         if (OperatingSystem.IsWindows())

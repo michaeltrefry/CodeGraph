@@ -14,11 +14,14 @@ public class RustProjectAnalyzer : IRustAnalyzer
 {
     private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(10);
     private const int DefaultStderrTailCharacters = 4096;
+    private const int SigkillExitCode = 137;
+    private const string DefaultCgroupRootPath = "/sys/fs/cgroup";
     private static readonly TimeSpan ProcessCleanupTimeout = TimeSpan.FromSeconds(5);
     private readonly ILogger<RustProjectAnalyzer> _logger;
     private readonly TimeSpan _scipGenerationTimeout;
     private readonly int _stderrTailCharacters;
     private readonly int _maxThreads;
+    private readonly string _cgroupRootPath;
 
     public RustProjectAnalyzer(ILogger<RustProjectAnalyzer> logger)
         : this(logger, DefaultScipGenerationTimeout, DefaultStderrTailCharacters)
@@ -40,7 +43,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
         ILogger<RustProjectAnalyzer> logger,
         TimeSpan scipGenerationTimeout,
         int stderrTailCharacters = DefaultStderrTailCharacters,
-        int maxThreads = 2)
+        int maxThreads = 2,
+        string cgroupRootPath = DefaultCgroupRootPath)
     {
         if (scipGenerationTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(scipGenerationTimeout));
@@ -48,11 +52,14 @@ public class RustProjectAnalyzer : IRustAnalyzer
             throw new ArgumentOutOfRangeException(nameof(stderrTailCharacters));
         if (maxThreads is < 1 or > 64)
             throw new ArgumentOutOfRangeException(nameof(maxThreads));
+        if (string.IsNullOrWhiteSpace(cgroupRootPath))
+            throw new ArgumentException("Cgroup root path is required.", nameof(cgroupRootPath));
 
         _logger = logger;
         _scipGenerationTimeout = scipGenerationTimeout;
         _stderrTailCharacters = stderrTailCharacters;
         _maxThreads = maxThreads;
+        _cgroupRootPath = cgroupRootPath;
     }
 
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
@@ -137,6 +144,17 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
             if (generation.ExitCode != 0)
             {
+                if (generation.ExitCode == SigkillExitCode)
+                {
+                    throw new RustSemanticIndexingException(
+                        "rust_semantic_resource_exhausted",
+                        "rust-analyzer scip was killed with exit 137 (SIGKILL), consistent with " +
+                        "container memory exhaustion. " +
+                        $"Process peak working set={generation.PeakWorkingSetBytes} bytes. " +
+                        ReadCgroupMemoryDiagnostics(_cgroupRootPath) +
+                        FormatDiagnosticSuffix(generation.Stderr));
+                }
+
                 throw new RustSemanticIndexingException(
                     "rust_analyzer_scip_failed",
                     $"rust-analyzer scip exited with {generation.ExitCode}: {generation.Stderr}");
@@ -288,6 +306,69 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
     private static string FormatDiagnosticSuffix(string stderrTail)
         => string.IsNullOrWhiteSpace(stderrTail) ? "" : $" Diagnostic tail: {stderrTail}";
+
+    internal static string ReadCgroupMemoryDiagnostics(string cgroupRootPath)
+    {
+        var diagnostics = new List<string>();
+        AddCgroupValue(diagnostics, cgroupRootPath, "memory.current");
+        AddCgroupValue(diagnostics, cgroupRootPath, "memory.peak");
+        AddCgroupValue(diagnostics, cgroupRootPath, "memory.max");
+
+        var eventsPath = Path.Combine(cgroupRootPath, "memory.events");
+        try
+        {
+            if (File.Exists(eventsPath))
+            {
+                var interestingEvents = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    "high", "max", "oom", "oom_kill", "oom_group_kill"
+                };
+                foreach (var line in File.ReadLines(eventsPath))
+                {
+                    var parts = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 2 && interestingEvents.Contains(parts[0]))
+                        diagnostics.Add($"{parts[0]}={parts[1].Trim()}");
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // A cgroup can disappear while its container is shutting down.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Some runtimes expose the cgroup hierarchy without readable metrics.
+        }
+
+        return diagnostics.Count == 0
+            ? "Cgroup memory metrics unavailable."
+            : $"Cgroup memory: {string.Join(", ", diagnostics)}.";
+    }
+
+    private static void AddCgroupValue(
+        ICollection<string> diagnostics,
+        string cgroupRootPath,
+        string fileName)
+    {
+        try
+        {
+            var path = Path.Combine(cgroupRootPath, fileName);
+            if (!File.Exists(path))
+                return;
+
+            var value = File.ReadAllText(path).Trim();
+            if (value.Length > 0)
+                diagnostics.Add($"{fileName}={value}");
+        }
+        catch (IOException)
+        {
+            // Best-effort diagnostics must not hide the original analyzer failure.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Best-effort diagnostics must not hide the original analyzer failure.
+        }
+    }
 
     private static TimeSpan GetTotalProcessorTime(Process process)
     {

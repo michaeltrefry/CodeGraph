@@ -56,19 +56,23 @@ CODEGRAPH_EMBEDDING_MODEL_VOCAB_URL=https://huggingface.co/nomic-ai/nomic-embed-
 ```
 
 The production indexer is resource-isolated from the API and database. Its defaults are
-two CPUs and 6 GiB of memory (with no additional swap), and can be tuned without editing
+two CPUs and 10 GiB of memory (with no additional swap), and can be tuned without editing
 the compose files. Rust semantic indexing uses the same two-worker ceiling and excludes
 dependency source documents while preserving external SCIP references:
 
 ```text
 CODEGRAPH_INDEXER_CPUS=2.0
-CODEGRAPH_INDEXER_MEMORY_LIMIT=6g
+CODEGRAPH_INDEXER_MEMORY_LIMIT=10g
 CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS=600
 CODEGRAPH_RUST_SEMANTIC_MAX_THREADS=2
+CODEGRAPH_RUST_SEMANTIC_STDERR_TAIL_CHARACTERS=4096
 ```
 
 Rust semantic failures are not automatically replayed: they are deterministic for the
 current checkout and toolchain, and immediate retries can monopolize the host.
+An analyzer terminated with exit 137 is reported as
+`rust_semantic_resource_exhausted` together with bounded cgroup memory metrics when the
+container runtime exposes them.
 
 The deploy workflow builds the remote `.env` file from individual GitHub production environment variables and secrets. Public/non-sensitive app settings should be stored as environment variables, using upper-case names:
 
