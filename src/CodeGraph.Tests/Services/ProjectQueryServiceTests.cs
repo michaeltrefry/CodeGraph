@@ -116,6 +116,51 @@ public class ProjectQueryServiceTests
     }
 
     [Fact]
+    public async Task GetNodesAsync_DoesNotOverlapStoreOperations()
+    {
+        var store = new ConcurrencyDetectingGraphStore();
+        store.AddNode(new GraphNode
+        {
+            Project = "db:sql-prod/Orders",
+            Label = NodeLabel.Table,
+            Name = "Orders",
+            QualifiedName = "dbo.Orders"
+        });
+
+        var result = await CreateService(store).GetNodesAsync(
+            "db:sql-prod/Orders", null, null, 1, 50);
+
+        result.Total.ShouldBe(1);
+        result.Items.Single().Name.ShouldBe("Orders");
+        store.OverlapDetected.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task GetSchemaCatalogAsync_DoesNotOverlapStoreOperations()
+    {
+        var store = new ConcurrencyDetectingGraphStore();
+        await store.UpsertRepositoryAsync(new RepositoryEntity
+        {
+            Name = "db:sql-prod/Orders",
+            SourceGroup = "sql-prod",
+            Properties = JsonSerializer.Serialize(new { serverName = "sql-prod", databaseName = "Orders" })
+        });
+        store.AddNode(new GraphNode
+        {
+            Project = "db:sql-prod/Orders",
+            Label = NodeLabel.Table,
+            Name = "Orders",
+            QualifiedName = "dbo.Orders"
+        });
+
+        var result = await CreateService(store).GetSchemaCatalogAsync("db:sql-prod/Orders");
+
+        result.ShouldNotBeNull();
+        result.Tables.Single().Name.ShouldBe("Orders");
+        store.OverlapDetected.ShouldBeFalse();
+    }
+
+    [Fact]
     public async Task GetSchemaCatalogAsync_MapsColumnsIndexesConstraintsForeignKeysAndProcedures()
     {
         var store = new InMemoryGraphStore();
@@ -459,4 +504,61 @@ public class ProjectQueryServiceTests
 
     private static ProjectQueryService CreateService(InMemoryGraphStore store) =>
         new(store, Options.Create(new RepositorySourceOptions()));
+
+    private sealed class ConcurrencyDetectingGraphStore : InMemoryGraphStore
+    {
+        private int _activeOperations;
+
+        public bool OverlapDetected { get; private set; }
+
+        public override Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(
+            string project,
+            NodeLabel label,
+            int limit = 10000) =>
+            TrackAsync(() => base.FindNodesByLabelAsync(project, label, limit));
+
+        public override Task<IReadOnlyList<GraphNode>> SearchNodesAsync(
+            string? project,
+            string namePattern,
+            NodeLabel? label = null,
+            string? filePattern = null,
+            int limit = 50,
+            int offset = 0,
+            string? dotnetProject = null) =>
+            TrackAsync(() => base.SearchNodesAsync(
+                project, NormalizeWildcard(namePattern), label, filePattern, limit, offset, dotnetProject));
+
+        public override Task<int> SearchNodesCountAsync(
+            string? project,
+            string namePattern,
+            NodeLabel? label = null,
+            string? filePattern = null,
+            string? dotnetProject = null) =>
+            TrackAsync(() => base.SearchNodesCountAsync(
+                project, NormalizeWildcard(namePattern), label, filePattern, dotnetProject));
+
+        private static string NormalizeWildcard(string pattern) => pattern == "%" ? "" : pattern;
+
+        private async Task<T> TrackAsync<T>(Func<Task<T>> operation)
+        {
+            var activeOperations = Interlocked.Increment(ref _activeOperations);
+
+            try
+            {
+                if (activeOperations > 1)
+                {
+                    OverlapDetected = true;
+                    throw new InvalidOperationException(
+                        "A second operation was started before a previous operation completed.");
+                }
+
+                await Task.Yield();
+                return await operation();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeOperations);
+            }
+        }
+    }
 }

@@ -65,16 +65,10 @@ public class ProjectQueryService(
         var serverName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "";
         var databaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name);
 
-        var tablesTask = store.FindNodesByLabelAsync(name, NodeLabel.Table);
-        var viewsTask = store.FindNodesByLabelAsync(name, NodeLabel.View);
-        var proceduresTask = store.FindNodesByLabelAsync(name, NodeLabel.StoredProcedure);
-        var columnsTask = store.FindNodesByLabelAsync(name, NodeLabel.Column);
-        await Task.WhenAll(tablesTask, viewsTask, proceduresTask, columnsTask);
-
-        var tables = await tablesTask;
-        var views = await viewsTask;
-        var procedures = await proceduresTask;
-        var columnNodes = await columnsTask;
+        var tables = await store.FindNodesByLabelAsync(name, NodeLabel.Table);
+        var views = await store.FindNodesByLabelAsync(name, NodeLabel.View);
+        var procedures = await store.FindNodesByLabelAsync(name, NodeLabel.StoredProcedure);
+        var columnNodes = await store.FindNodesByLabelAsync(name, NodeLabel.Column);
         var allObjects = tables.Concat(views).Concat(procedures).Concat(columnNodes).ToList();
         var nodesById = allObjects.ToDictionary(node => node.Id);
         var sourceIds = tables.Concat(views).Concat(columnNodes).Select(node => node.Id).ToList();
@@ -217,19 +211,16 @@ public class ProjectQueryService(
     {
         var parsedLabel = label.TryParseEnum<NodeLabel>();
 
-        var nodesTask = store.SearchNodesAsync(name, "%",
+        var nodes = await store.SearchNodesAsync(name, "%",
             label: parsedLabel,
             limit: pageSize,
             offset: (page - 1) * pageSize,
             dotnetProject: dotnetProject);
 
-        var countTask = store.SearchNodesCountAsync(name, "%",
+        var total = await store.SearchNodesCountAsync(name, "%",
             label: parsedLabel, dotnetProject: dotnetProject);
 
-        await Task.WhenAll(nodesTask, countTask);
-
-        var items = (await nodesTask).OrderBy(n => n.Name).ToList();
-        var total = await countTask;
+        var items = nodes.OrderBy(n => n.Name).ToList();
 
         return new NodeListResponse(items, total, page, pageSize);
     }

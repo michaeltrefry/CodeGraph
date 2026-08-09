@@ -405,7 +405,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
                 n.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Take(limit).ToList());
 
-    public Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string project, NodeLabel label, int limit = 10000) =>
+    public virtual Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string project, NodeLabel label, int limit = 10000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
                 n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
@@ -418,7 +418,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 n.FilePath != null &&
                 n.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase)).Take(limit).ToList());
 
-    public Task<IReadOnlyList<GraphNode>> SearchNodesAsync(string? project, string namePattern,
+    public virtual Task<IReadOnlyList<GraphNode>> SearchNodesAsync(string? project, string namePattern,
         NodeLabel? label = null, string? filePattern = null, int limit = 50, int offset = 0,
         string? dotnetProject = null)
     {
@@ -444,7 +444,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             query.Skip(offset).Take(limit).ToList());
     }
 
-    public Task<int> SearchNodesCountAsync(string? project, string namePattern,
+    public virtual Task<int> SearchNodesCountAsync(string? project, string namePattern,
         NodeLabel? label = null, string? filePattern = null, string? dotnetProject = null)
     {
         var query = _nodes.AsEnumerable();
