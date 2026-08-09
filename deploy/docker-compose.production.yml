@@ -23,8 +23,8 @@ services:
     image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-indexer:${IMAGE_TAG:-latest}
     build: null
     cpus: ${CODEGRAPH_INDEXER_CPUS:-2.0}
-    mem_limit: ${CODEGRAPH_INDEXER_MEMORY_LIMIT:-6g}
-    memswap_limit: ${CODEGRAPH_INDEXER_MEMORY_LIMIT:-6g}
+    mem_limit: ${CODEGRAPH_INDEXER_MEMORY_LIMIT:-10g}
+    memswap_limit: ${CODEGRAPH_INDEXER_MEMORY_LIMIT:-10g}
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}

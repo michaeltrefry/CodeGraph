@@ -15,34 +15,52 @@ internal static class RustSemanticIndexingValidator
 
     public static async Task<int> RunAsync(string[] args)
     {
-        if (args.Length != 1)
+        if (args.Length is < 1 or > 2)
         {
-            Console.Error.WriteLine($"Usage: {Command}");
+            Console.Error.WriteLine($"Usage: {Command} [cargo-manifest-path]");
             return 64;
         }
 
-        var fixtureRoot = Path.Combine(Path.GetTempPath(), $"codegraph-rust-validation-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(Path.Combine(fixtureRoot, "src"));
+        var suppliedManifest = args.Length == 2 ? Path.GetFullPath(args[1]) : null;
+        var fixtureRoot = suppliedManifest is null
+            ? Path.Combine(Path.GetTempPath(), $"codegraph-rust-validation-{Guid.NewGuid():N}")
+            : Path.GetDirectoryName(suppliedManifest)!;
+        var ownsFixture = suppliedManifest is null;
         try
         {
-            await File.WriteAllTextAsync(
-                Path.Combine(fixtureRoot, "Cargo.toml"),
-                "[package]\nname = \"codegraph_rust_validation\"\nversion = \"0.1.0\"\nedition = \"2024\"\n");
-            await File.WriteAllTextAsync(
-                Path.Combine(fixtureRoot, "src", "lib.rs"),
-                "pub fn target(value: i32) -> i32 { value + 1 }\npub fn caller() -> i32 { target(41) }\n");
+            var manifestPath = suppliedManifest ?? Path.Combine(fixtureRoot, "Cargo.toml");
+            if (ownsFixture)
+            {
+                Directory.CreateDirectory(Path.Combine(fixtureRoot, "src"));
+                await File.WriteAllTextAsync(
+                    manifestPath,
+                    "[package]\nname = \"codegraph_rust_validation\"\nversion = \"0.1.0\"\nedition = \"2024\"\n");
+                await File.WriteAllTextAsync(
+                    Path.Combine(fixtureRoot, "src", "lib.rs"),
+                    "pub fn target(value: i32) -> i32 { value + 1 }\npub fn caller() -> i32 { target(41) }\n");
+            }
+            else if (!File.Exists(manifestPath))
+            {
+                Console.Error.WriteLine($"FAIL: Cargo manifest '{manifestPath}' does not exist.");
+                return 66;
+            }
 
             var analyzer = new RustProjectAnalyzer(NullLogger<RustProjectAnalyzer>.Instance);
             var results = await analyzer.AnalyzeProjectAsync(
-                Path.Combine(fixtureRoot, "Cargo.toml"),
+                manifestPath,
                 new ExtractorContext
                 {
-                    ProjectName = "RustSemanticValidation",
+                    ProjectName = ownsFixture
+                        ? "RustSemanticValidation"
+                        : Path.GetFileName(fixtureRoot),
                     RootPath = fixtureRoot
                 });
 
             var nodes = results.SelectMany(result => result.Nodes).ToArray();
             var edges = results.SelectMany(result => result.Edges).ToArray();
+            if (!ownsFixture)
+                return ValidateRepositoryResult(fixtureRoot, nodes, edges);
+
             var caller = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "caller"));
             var target = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "target"));
             var fileQualifiedName = "RustSemanticValidation:src/lib.rs";
@@ -86,8 +104,70 @@ internal static class RustSemanticIndexingValidator
         }
         finally
         {
-            try { Directory.Delete(fixtureRoot, recursive: true); }
-            catch { /* best-effort validation cleanup */ }
+            if (ownsFixture)
+            {
+                try { Directory.Delete(fixtureRoot, recursive: true); }
+                catch { /* best-effort validation cleanup */ }
+            }
+        }
+    }
+
+    internal static int ValidateRepositoryResult(
+        string repositoryRoot,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges)
+    {
+        var localDefinitions = nodes.Where(node =>
+            node.Properties.GetValueOrDefault("source")?.ToString() == "scip" &&
+            !node.Properties.ContainsKey("scip_external")).ToArray();
+        var invalidSourceFiles = localDefinitions
+            .Select(node => node.FilePath)
+            .Distinct(StringComparer.Ordinal)
+            .Where(path => !IsContainedSourceFile(repositoryRoot, path))
+            .Select(path => string.IsNullOrWhiteSpace(path) ? "<empty>" : path)
+            .Take(5)
+            .ToArray();
+        var definitionEdges = edges.Count(edge =>
+            edge.Type is EdgeType.DEFINES or EdgeType.DEFINES_METHOD);
+        var callEdges = edges.Count(edge => edge.Type == EdgeType.CALLS);
+
+        if (localDefinitions.Length == 0 || definitionEdges == 0 ||
+            callEdges == 0 || invalidSourceFiles.Length > 0)
+        {
+            Console.Error.WriteLine(
+                $"FAIL: repository semantic import was incomplete " +
+                $"(localDefinitions={localDefinitions.Length}, definitionEdges={definitionEdges}, " +
+                $"callEdges={callEdges}, invalidSourceFiles={string.Join(',', invalidSourceFiles)}).");
+            return 1;
+        }
+
+        Console.WriteLine(
+            $"PASS: repository generated and imported Rust semantic data " +
+            $"({nodes.Count} nodes, {edges.Count} edges, {localDefinitions.Length} local definitions, " +
+            $"{definitionEdges} DEFINES, {callEdges} CALLS).");
+        return 0;
+    }
+
+    private static bool IsContainedSourceFile(string repositoryRoot, string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath))
+            return false;
+
+        try
+        {
+            var canonicalRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(repositoryRoot));
+            var canonicalPath = Path.GetFullPath(Path.Combine(canonicalRoot, relativePath));
+            var comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            return canonicalPath.StartsWith(
+                       canonicalRoot + Path.DirectorySeparatorChar,
+                       comparison) &&
+                   File.Exists(canonicalPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
         }
     }
 

@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CodeGraph.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Anthropic" Version="10.*" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.*" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.0" />
