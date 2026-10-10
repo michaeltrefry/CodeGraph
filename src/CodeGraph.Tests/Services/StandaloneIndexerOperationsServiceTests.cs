@@ -5,8 +5,11 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.DatabaseSchema;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Indexer;
+using CodeGraph.Services.Overlays;
 using CodeGraph.Services.Pipeline;
+using CodeGraph.Tests.Extractors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -300,6 +303,108 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
+    public async Task StartBranchOverlayAsync_QueuesRetrySafeRunAndReportsQueuedOverlay()
+    {
+        var graph = new InMemoryGraphStore();
+        graph.AddProject("OverlayRepo");
+        var overlayStore = new InMemoryBranchOverlayStore();
+        var overlays = new BranchOverlayService(
+            overlayStore,
+            graph,
+            new FixedPathRepoProvider(Path.GetTempPath()),
+            new IndexingPipeline(graph, [], Options.Create(new IndexingOptions()), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance),
+            new BranchOverlayGit(),
+            Options.Create(new BranchOverlayOptions { TtlHours = 48 }),
+            NullLogger<BranchOverlayService>.Instance);
+        var runs = new FakeIndexerRunStore();
+        var runner = new RecordingBackgroundRunner();
+        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), runner, overlays);
+
+        var overlay = await service.StartBranchOverlayAsync(
+            "Michael",
+            new BranchOverlayRequest { Repo = "OverlayRepo", Ref = "factory/feature-x" });
+
+        overlay.OverlayId.ShouldBeGreaterThan(0);
+        overlay.Status.ShouldBe(BranchOverlayStatuses.Queued);
+        overlay.Ref.ShouldBe("factory/feature-x");
+        overlay.StatusUrl.ShouldBe($"/api/indexer/overlays/{overlay.OverlayId}");
+        overlay.ExpiresAt.ShouldBe(overlay.CreatedAt.AddHours(48));
+        overlay.RunId.ShouldNotBeNull();
+        var run = await runs.GetIndexerRunAsync(overlay.RunId!.Value);
+        run!.Operation.ShouldBe(IndexerRunOperations.BranchOverlay);
+        run.Target.ShouldBe(overlay.OverlayId.ToString());
+        run.RetrySafe.ShouldBeTrue();
+        runner.EnqueuedRunIds.ShouldBe([overlay.RunId.Value]);
+
+        var status = await service.GetBranchOverlayAsync(overlay.OverlayId);
+        status!.Status.ShouldBe(BranchOverlayStatuses.Queued);
+        status.RunId.ShouldBe(overlay.RunId);
+        (await service.GetBranchOverlayAsync(overlay.OverlayId + 100)).ShouldBeNull();
+        await Should.ThrowAsync<KeyNotFoundException>(() => service.StartBranchOverlayAsync(
+            "Michael", new BranchOverlayRequest { Repo = "Missing", Ref = "main" }));
+    }
+
+    [Fact]
+    public async Task DurableWorker_RunsBranchOverlayAndDoesNotReplayOverlayFailures()
+    {
+        var runs = new FakeIndexerRunStore();
+        var overlays = new ScriptedBranchOverlayService();
+        var succeededRun = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.BranchOverlay,
+            Target = "7",
+            ArgsJson = "{\"overlayId\":7}",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs, new FakeDatabaseSourceStore(), new RecordingDatabaseSchemaExtractor(), new RecordingAdminService(),
+            overlays: overlays);
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+        (await runs.GetIndexerRunAsync(succeededRun))!.Status.ShouldBe("completed");
+        overlays.IndexedOverlayIds.ShouldBe([7L]);
+
+        overlays.Failure = new BranchOverlayIndexingException("bad ref");
+        var failedRun = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.BranchOverlay,
+            Target = "8",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var failed = await runs.GetIndexerRunAsync(failedRun);
+        failed!.Status.ShouldBe("failed");
+        failed.ErrorCode.ShouldBe(BranchOverlayIndexingException.FailureCode);
+        failed.AttemptCount.ShouldBe(1);
+        overlays.IndexedOverlayIds.ShouldBe([7L, 8L]);
+    }
+
+    private sealed class ScriptedBranchOverlayService : IBranchOverlayService
+    {
+        public List<long> IndexedOverlayIds { get; } = [];
+        public Exception? Failure { get; set; }
+
+        public Task<string> IndexOverlayAsync(long overlayId, CancellationToken ct = default)
+        {
+            IndexedOverlayIds.Add(overlayId);
+            return Failure is null ? Task.FromResult($"overlay {overlayId} ready") : Task.FromException<string>(Failure);
+        }
+
+        public Task<BranchOverlayEntity> CreateOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<BranchOverlayResponse?> GetOverlayAsync(long overlayId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<long>> ExpireOverlaysAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public BranchOverlayResponse Map(BranchOverlayEntity overlay) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task DurableWorker_ClaimsPreexistingQueuedRunAndCompletesIt()
     {
         var runs = new FakeIndexerRunStore();
@@ -551,10 +656,13 @@ public class StandaloneIndexerOperationsServiceTests
         IDatabaseSchemaExtractor schemas,
         IAdminService admin,
         IProjectService? projects = null,
-        Action<IServiceCollection>? configure = null)
+        Action<IServiceCollection>? configure = null,
+        IBranchOverlayService? overlays = null)
     {
         var configureProjects = configure is not null;
         var services = new ServiceCollection();
+        if (overlays is not null)
+            services.AddSingleton(overlays);
         services.AddSingleton(runs);
         services.AddSingleton(sources);
         services.AddSingleton(schemas);

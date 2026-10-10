@@ -146,6 +146,27 @@ public sealed class HttpIndexerClient(
         return SendJsonAsync<IndexerAcceptedResponse>(username, HttpMethod.Post, path, submissionKey: submissionKey, ct: ct);
     }
 
+    public Task<BranchOverlayResponse> StartBranchOverlayAsync(
+        string username,
+        BranchOverlayRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return SendJsonAsync<BranchOverlayResponse>(
+            username,
+            HttpMethod.Post,
+            "api/indexer/overlays",
+            request,
+            ct: ct);
+    }
+
+    public Task<BranchOverlayResponse?> GetBranchOverlayAsync(string username, long overlayId, CancellationToken ct = default)
+        => SendOptionalJsonAsync<BranchOverlayResponse>(
+            username,
+            HttpMethod.Get,
+            $"api/indexer/overlays/{overlayId}",
+            ct: ct);
+
     public Task<IndexerRunResponse?> GetRunAsync(string username, long runId, CancellationToken ct = default)
         => SendOptionalJsonAsync<IndexerRunResponse>(
             username,

@@ -36,6 +36,10 @@ public interface IIndexerOperationsService
         => StartLinkAndDetectAsync(username, ct);
     Task<IndexerAcceptedResponse> StartProcessBatchAnalysisAsync(string username, string? repo, string? submissionKey, CancellationToken ct = default)
         => throw new NotSupportedException("This indexer implementation does not support durable submission identities.");
+    Task<BranchOverlayResponse> StartBranchOverlayAsync(string username, BranchOverlayRequest request, CancellationToken ct = default)
+        => throw new NotSupportedException("This indexer implementation does not support branch overlays.");
+    Task<BranchOverlayResponse?> GetBranchOverlayAsync(long overlayId, CancellationToken ct = default)
+        => throw new NotSupportedException("This indexer implementation does not support branch overlays.");
     Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default);
     Task<IndexerRunResponse?> CancelRunAsync(long runId, CancellationToken ct = default);
     Task<IReadOnlyList<IndexerRunResponse>> ListRunsAsync(

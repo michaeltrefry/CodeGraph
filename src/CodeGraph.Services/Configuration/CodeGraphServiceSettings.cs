@@ -15,6 +15,20 @@ public class CodeGraphServiceSettings
     public McpOptions McpOptions { get; set; } = new();
     public AuthOptions AuthOptions { get; set; } = new();
     public AssistantRetentionOptions AssistantRetentionOptions { get; set; } = new();
+    public BranchOverlayOptions BranchOverlayOptions { get; set; } = new();
+}
+
+/// <summary>
+/// Branch overlay index settings. Overlays older than <see cref="TtlHours"/> are deleted
+/// by a background sweep every <see cref="SweepIntervalMinutes"/>.
+/// </summary>
+public class BranchOverlayOptions
+{
+    public double TtlHours { get; set; } = 72;
+    public double SweepIntervalMinutes { get; set; } = 15;
+
+    public TimeSpan Ttl => TimeSpan.FromHours(TtlHours);
+    public TimeSpan SweepInterval => TimeSpan.FromMinutes(SweepIntervalMinutes);
 }
 
 public class ConsumerOptions
