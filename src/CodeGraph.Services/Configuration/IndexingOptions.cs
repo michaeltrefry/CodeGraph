@@ -52,6 +52,17 @@ public class IndexingOptions
     public int RustSemanticGroupTimeoutSeconds { get; set; } = 600;
 
     /// <summary>
+    /// Wall-clock budget for all crate groups of one Cargo workspace, which run one after another.
+    /// Once it is spent the running group is stopped and every group not yet finished falls back
+    /// to tree-sitter with failure code <c>rust_semantic_workspace_timeout</c>; the indexing run
+    /// itself continues. Worst case per workspace is therefore this budget plus the up-front
+    /// <c>cargo metadata</c> and sysroot lookups (each bounded by
+    /// <see cref="RustSemanticCommandTimeoutSeconds"/>), instead of
+    /// group count x <see cref="RustSemanticGroupTimeoutSeconds"/>.
+    /// </summary>
+    public int RustSemanticWorkspaceTimeoutSeconds { get; set; } = 3600;
+
+    /// <summary>
     /// Resident-memory cap in MiB for the process tree of each crate-group command. On Linux the
     /// analyzer samples the summed RSS of the command's process group from /proc and kills the
     /// group once it exceeds the cap; other platforms do not enforce it. 0 disables the cap.

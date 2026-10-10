@@ -181,7 +181,7 @@ internal sealed class RustCargoWorkspace
                 foreach (var dependency in node.Dependencies)
                 {
                     if (!libraryIndex.TryGetValue(dependency.PackageId, out var dependencyIndex) ||
-                        !IncludesDependency(dependency, isBuildScript, isMember && !IsLibrary(target)))
+                        !IncludesDependency(dependency, isBuildScript, includeDevDependencies: isMember))
                     {
                         continue;
                     }
@@ -210,6 +210,12 @@ internal sealed class RustCargoWorkspace
         return builder.ToString();
     }
 
+    /// <summary>
+    /// Mirrors rust-analyzer's Cargo mode: build scripts see only build-dependencies; every other
+    /// target of a workspace member also sees dev-dependencies (lib included: rust-analyzer enables
+    /// <c>cfg(test)</c> for workspace members itself, so its <c>#[cfg(test)]</c> modules use them).
+    /// Library crates outside the group get normal dependencies only.
+    /// </summary>
     private static bool IncludesDependency(CargoDependency dependency, bool isBuildScript, bool includeDevDependencies) =>
         isBuildScript
             ? dependency.Kinds.Contains("build")

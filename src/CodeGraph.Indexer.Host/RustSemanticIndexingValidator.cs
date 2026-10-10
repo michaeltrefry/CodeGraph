@@ -99,12 +99,15 @@ internal static class RustSemanticIndexingValidator
         }
 
         await WriteAsync("Cargo.toml",
-            "[workspace]\nresolver = \"2\"\nmembers = [\"crates/alpha\", \"crates/beta\", \"crates/macros\"]\n");
+            "[workspace]\nresolver = \"2\"\nmembers = [\"crates/alpha\", \"crates/beta\", \"crates/gamma\", \"crates/macros\"]\n");
         await WriteAsync("crates/alpha/Cargo.toml",
             "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n" +
-            "[dependencies]\nbeta = { path = \"../beta\" }\nmacros = { path = \"../macros\" }\n");
+            "[dependencies]\nbeta = { path = \"../beta\" }\nmacros = { path = \"../macros\" }\n\n" +
+            "[dev-dependencies]\ngamma = { path = \"../gamma\" }\n");
+        // tests::uses_dev_dependency proves the lib sees cfg(test) and its dev-dependencies.
         await WriteAsync("crates/alpha/src/lib.rs",
-            "macros::make_generated!();\n\npub fn caller() -> i32 { beta::target(41) }\n");
+            "macros::make_generated!();\n\npub fn caller() -> i32 { beta::target(41) }\n\n" +
+            "#[cfg(test)]\nmod tests {\n    pub fn uses_dev_dependency() -> i32 { gamma::helper() }\n}\n");
         await WriteAsync("crates/beta/Cargo.toml",
             "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nedition = \"2024\"\nbuild = \"build.rs\"\n");
         // Proves build scripts stay off: running it would leave a marker in the fixture.
@@ -112,6 +115,9 @@ internal static class RustSemanticIndexingValidator
             "fn main() { std::fs::write(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/" + BuildScriptMarker +
             "\"), \"ran\").unwrap(); }\n");
         await WriteAsync("crates/beta/src/lib.rs", "pub fn target(value: i32) -> i32 { value + 1 }\n");
+        await WriteAsync("crates/gamma/Cargo.toml",
+            "[package]\nname = \"gamma\"\nversion = \"0.1.0\"\nedition = \"2024\"\n");
+        await WriteAsync("crates/gamma/src/lib.rs", "pub fn helper() -> i32 { 1 }\n");
         await WriteAsync("crates/macros/Cargo.toml",
             "[package]\nname = \"macros\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nproc-macro = true\n");
         // Proves proc-macro expansion stays off: expanding it would define generated_by_macro.
@@ -139,22 +145,31 @@ internal static class RustSemanticIndexingValidator
             edge.Type == EdgeType.CALLS &&
             edge.SourceQN == caller.QualifiedName &&
             edge.TargetQN == target.QualifiedName);
+        var testCaller = nodes.SingleOrDefault(node =>
+            IsExactLocalDefinition(node, "uses_dev_dependency", "crates/alpha/src/lib.rs"));
+        var helper = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "helper", "crates/gamma/src/lib.rs"));
+        var hasDevDependencyCall = testCaller is not null && helper is not null && edges.Any(edge =>
+            edge.Type == EdgeType.CALLS &&
+            edge.SourceQN == testCaller.QualifiedName &&
+            edge.TargetQN == helper.QualifiedName);
         var buildScriptRan = File.Exists(Path.Combine(fixtureRoot, "crates", "beta", BuildScriptMarker));
         var procMacroExpanded = nodes.Any(node => node.Name == "generated_by_macro");
 
-        if (analysis.Groups.Count != 3 || caller is null || target is null || !hasCallerDefinitionEdge ||
-            !hasCrossGroupCall || buildScriptRan || procMacroExpanded)
+        if (analysis.Groups.Count != 4 || caller is null || target is null || !hasCallerDefinitionEdge ||
+            !hasCrossGroupCall || !hasDevDependencyCall || buildScriptRan || procMacroExpanded)
         {
             Console.Error.WriteLine(
                 $"FAIL: grouped semantic import was incomplete (groups={groups}, caller={caller is not null}, " +
                 $"target={target is not null}, callerDefinition={hasCallerDefinitionEdge}, " +
-                $"crossGroupCall={hasCrossGroupCall}, buildScriptRan={buildScriptRan}, " +
+                $"crossGroupCall={hasCrossGroupCall}, devDependencyCall={hasDevDependencyCall}, " +
+                $"buildScriptRan={buildScriptRan}, " +
                 $"procMacroExpanded={procMacroExpanded}).");
             return 1;
         }
 
         Console.WriteLine(
-            $"PASS: final image generated and imported Rust semantic definitions, references, and cross-group CALLS " +
+            $"PASS: final image generated and imported Rust semantic definitions, references, cross-group CALLS " +
+            $"and a cfg(test) CALLS into a dev-dependency " +
             $"for crate groups [{groups}] with build scripts and proc-macros off ({nodes.Count} nodes, {edges.Count} edges).");
         return 0;
     }

@@ -54,6 +54,9 @@ public static class CodeGraphOptionsServiceCollectionExtensions
                 options => options.RustSemanticGroupTimeoutSeconds is >= 1 and <= 86_400,
                 "Rust semantic group timeout must be between 1 and 86400 seconds.")
             .Validate(
+                options => options.RustSemanticWorkspaceTimeoutSeconds is >= 1 and <= 604_800,
+                "Rust semantic workspace timeout must be between 1 and 604800 seconds.")
+            .Validate(
                 options => options.RustSemanticGroupMemoryLimitMb is 0 or (>= 64 and <= 1_048_576),
                 "Rust semantic group memory limit must be 0 (disabled) or between 64 and 1048576 MiB.")
             .Validate(

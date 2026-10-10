@@ -48,7 +48,13 @@ public sealed class RustCargoWorkspaceTests
         lib.GetProperty("cfg").EnumerateArray().Select(cfg => cfg.GetString()).ShouldBe(["feature=\"default\""]);
         lib.GetProperty("env").GetProperty("CARGO_MANIFEST_DIR").GetString().ShouldBe("/scratch/root/crates/app");
         lib.GetProperty("env").GetProperty("CARGO_PKG_VERSION_MINOR").GetString().ShouldBe("2");
-        DependencyNames(crates, lib).ShouldBe(["core"]);
+        // Like rust-analyzer's Cargo mode, a member lib sees its dev-dependencies: its
+        // #[cfg(test)] modules (cfg(test) is on for workspace members) reference them.
+        DependencyNames(crates, lib).ShouldBe(["core", "test_helpers"], ignoreOrder: true);
+
+        // A library crate outside the group does not get its dev-dependencies.
+        var core = crates.Single(crate => crate.GetProperty("display_name").GetString() == "core");
+        DependencyNames(crates, core).ShouldBe(["util"]);
 
         var bin = crates[1];
         DependencyNames(crates, bin).ShouldBe(["app", "core", "test_helpers"], ignoreOrder: true);
@@ -109,7 +115,9 @@ public sealed class RustCargoWorkspaceTests
                     Dep("core", "core", null),
                     Dep("serde", "serde", "build"),
                     Dep("test_helpers", "test-helpers", "dev")),
-                Node("core"),
+                Node("core", null,
+                    Dep("util", "util", null),
+                    Dep("test_helpers", "test-helpers", "dev")),
                 Node("serde"),
                 Node("test-helpers")
             }

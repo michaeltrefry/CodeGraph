@@ -108,7 +108,8 @@ public sealed class RustProjectAnalyzerCrateGroupTests
         var analyzer = CreateAnalyzer(new IndexingOptions
         {
             RustSemanticCrateGroupSize = 2,
-            RustSemanticGroupTimeoutSeconds = 1
+            // Generous enough for the fast group's fake tools under load; the slow group sleeps 30s.
+            RustSemanticGroupTimeoutSeconds = 10
         });
 
         var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
@@ -118,6 +119,43 @@ public sealed class RustProjectAnalyzerCrateGroupTests
         var failure = analysis.Groups[1].Failure.ShouldBeOfType<RustSemanticIndexingException>();
         failure.FailureCode.ShouldBe("rust_semantic_group_timeout");
         RustSemanticFailureCategory.Classify(failure).ShouldBe(RustSemanticFailureCategory.Timeout);
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_WorkspaceTimeout_StopsRunningGroupAndSkipsTheRest()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "alpha");
+        var analyzer = new RustProjectAnalyzer(
+            NullLogger<RustProjectAnalyzer>.Instance,
+            TimeSpan.FromSeconds(60),
+            groupSettings: new RustCrateGroupSettings(
+                GroupSize: 1,
+                GroupTimeout: TimeSpan.FromSeconds(60),
+                MemoryLimitBytes: 0,
+                BuildScripts: false,
+                ProcMacros: false,
+                WorkspaceTimeout: TimeSpan.FromSeconds(2)));
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        analysis.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha", "beta", "macros"]);
+        foreach (var group in analysis.Groups)
+        {
+            group.Results.ShouldBeNull();
+            var failure = group.Failure.ShouldBeOfType<RustSemanticIndexingException>();
+            failure.FailureCode.ShouldBe("rust_semantic_workspace_timeout");
+            RustSemanticFailureCategory.Classify(failure).ShouldBe(RustSemanticFailureCategory.Timeout);
+        }
+
+        // The running group is stopped mid-command; groups after the deadline never start.
+        analysis.Groups[0].Failure!.Message.ShouldContain("during 'rust-analyzer'");
+        analysis.Groups[1].Failure!.Message.ShouldContain("before crates beta were analyzed");
+        analysis.Groups[2].Failure!.Message.ShouldContain("before crates macros were analyzed");
+        toolchain.ProjectJsonFiles().Select(FakeRustToolchain.MemberCrates).ShouldBe([["alpha"]]);
     }
 
     [Fact]
@@ -203,7 +241,8 @@ public sealed class RustProjectAnalyzerCrateGroupTests
                 GroupTimeout: TimeSpan.FromSeconds(30),
                 MemoryLimitBytes: 4096,
                 BuildScripts: false,
-                ProcMacros: false));
+                ProcMacros: false,
+                WorkspaceTimeout: TimeSpan.FromSeconds(60)));
 
         var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
 

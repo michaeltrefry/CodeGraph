@@ -66,7 +66,7 @@ public partial class IndexingPipeline
         CreateStructuralNodes(projectName, rootPath, files, csprojFiles, buffer);
         if (files.Count > 0)
             await ExtractFilesAsync(
-                files, rootPath, context, buffer, failOnExtractionError: false, rustSemanticFallbacks: [], ct);
+                files, rootPath, context, buffer, failOnExtractionError: false, rustSourceOwners: [], ct);
 
         ResolveImports(buffer);
         await ResolveCallsAsync(

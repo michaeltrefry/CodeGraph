@@ -40,6 +40,7 @@ public sealed class RustSemanticFailureCategoryTests
 
     [Theory]
     [InlineData("rust_semantic_group_timeout", RustSemanticFailureCategory.Timeout)]
+    [InlineData("rust_semantic_workspace_timeout", RustSemanticFailureCategory.Timeout)]
     [InlineData("rust_semantic_memory_limit_exceeded", RustSemanticFailureCategory.ResourceExhausted)]
     [InlineData("rust_sysroot_unavailable", RustSemanticFailureCategory.Toolchain)]
     public void Classify_CrateGroupFailureCodes(string failureCode, string expected)

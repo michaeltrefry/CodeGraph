@@ -14,6 +14,7 @@ public sealed class IndexingOptionsValidationTests
     [InlineData("RustSemanticStderrTailCharacters", "128", "stderr tail")]
     [InlineData("RustSemanticCrateGroupSize", "0", "crate group size")]
     [InlineData("RustSemanticGroupTimeoutSeconds", "0", "group timeout")]
+    [InlineData("RustSemanticWorkspaceTimeoutSeconds", "0", "workspace timeout")]
     [InlineData("RustSemanticGroupMemoryLimitMb", "16", "group memory limit")]
     [InlineData("RustSemanticProcMacros", "true", "proc-macro expansion requires")]
     public void AddCodeGraphOptions_RejectsInvalidRustSemanticLimits(
@@ -51,6 +52,7 @@ public sealed class IndexingOptionsValidationTests
 
         options.RustSemanticCrateGroupSize.ShouldBe(8);
         options.RustSemanticGroupTimeoutSeconds.ShouldBe(600);
+        options.RustSemanticWorkspaceTimeoutSeconds.ShouldBe(3600);
         options.RustSemanticGroupMemoryLimitMb.ShouldBe(8192);
         options.RustSemanticBuildScripts.ShouldBeFalse();
         options.RustSemanticProcMacros.ShouldBeFalse();

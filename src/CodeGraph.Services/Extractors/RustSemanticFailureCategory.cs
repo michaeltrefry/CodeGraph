@@ -53,6 +53,7 @@ public static class RustSemanticFailureCategory
             {
                 case "rust_semantic_command_timeout":
                 case "rust_semantic_group_timeout":
+                case "rust_semantic_workspace_timeout":
                     return Timeout;
                 case "rust_semantic_resource_exhausted":
                 case "rust_semantic_memory_limit_exceeded":

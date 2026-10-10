@@ -82,6 +82,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
             throw new ArgumentOutOfRangeException(nameof(groupSettings), "Crate group size must be positive.");
         if (groupSettings.GroupTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(groupSettings), "Group timeout must be positive.");
+        if (groupSettings.WorkspaceTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(groupSettings), "Workspace timeout must be positive.");
         if (groupSettings.MemoryLimitBytes < 0)
             throw new ArgumentOutOfRangeException(nameof(groupSettings), "Group memory limit must not be negative.");
         if (groupSettings.ProcMacros && !groupSettings.BuildScripts)
@@ -137,11 +139,28 @@ public class RustProjectAnalyzer : IRustAnalyzer
             _groupSettings.BuildScripts ? "on" : "off",
             _groupSettings.ProcMacros ? "on" : "off");
 
+        // Groups run one after another; this deadline bounds all of them together.
+        using var workspaceDeadline = new CancellationTokenSource(_groupSettings.WorkspaceTimeout);
         var outcomes = new List<RustCrateGroupAnalysis>(groups.Count);
         foreach (var group in groups)
         {
+            if (workspaceDeadline.IsCancellationRequested)
+            {
+                var skipped = WorkspaceTimeoutExceeded(group);
+                _logger.LogWarning(
+                    skipped,
+                    "Rust semantic group {Group} for {Project} skipped ({FailureCode}): crates {Crates}",
+                    group.Index,
+                    context.ProjectName,
+                    skipped.FailureCode,
+                    group.Crates);
+                outcomes.Add(new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, null, skipped));
+                continue;
+            }
+
             outcomes.Add(await AnalyzeGroupAsync(
-                tools, workspace, group, repositoryRoot, cargoManifestPath, cargoRoot, sysroot, context, ct));
+                tools, workspace, group, repositoryRoot, cargoManifestPath, cargoRoot, sysroot, context,
+                workspaceDeadline.Token, ct));
         }
 
         return new RustWorkspaceAnalysis(outcomes);
@@ -156,10 +175,17 @@ public class RustProjectAnalyzer : IRustAnalyzer
         string cargoRoot,
         string sysroot,
         ExtractorContext context,
+        CancellationToken workspaceDeadline,
         CancellationToken ct)
     {
-        using var groupDeadline = new CancellationTokenSource(_groupSettings.GroupTimeout);
-        var budget = new CommandBudget(groupDeadline.Token, _groupSettings.GroupTimeout, _groupSettings.MemoryLimitBytes);
+        using var groupDeadline = CancellationTokenSource.CreateLinkedTokenSource(workspaceDeadline);
+        groupDeadline.CancelAfter(_groupSettings.GroupTimeout);
+        var budget = new CommandBudget(
+            groupDeadline.Token,
+            _groupSettings.GroupTimeout,
+            _groupSettings.MemoryLimitBytes,
+            workspaceDeadline,
+            _groupSettings.WorkspaceTimeout);
         var stopwatch = Stopwatch.StartNew();
         var tempDir = Path.Combine(Path.GetTempPath(), $"codegraph-rust-scip-{Guid.NewGuid():N}");
         try
@@ -551,6 +577,15 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 stderrTail);
             if (memory.Exceeded)
                 throw MemoryLimitExceeded(commandName, budget.MemoryLimitBytes, memory.PeakBytes, stderrTail);
+            if (budget.WorkspaceDeadline.IsCancellationRequested)
+            {
+                throw new RustSemanticIndexingException(
+                    "rust_semantic_workspace_timeout",
+                    $"Rust semantic analysis exceeded the " +
+                    $"{budget.WorkspaceTimeout.TotalSeconds:0.###}-second workspace timeout during '{commandName}'." +
+                    FormatDiagnosticSuffix(stderrTail));
+            }
+
             if (budget.GroupDeadline.IsCancellationRequested)
             {
                 throw new RustSemanticIndexingException(
@@ -567,6 +602,12 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 FormatDiagnosticSuffix(stderrTail));
         }
     }
+
+    private RustSemanticIndexingException WorkspaceTimeoutExceeded(RustCrateGroup group) =>
+        new(
+            "rust_semantic_workspace_timeout",
+            $"Rust semantic analysis exceeded the {_groupSettings.WorkspaceTimeout.TotalSeconds:0.###}-second " +
+            $"workspace timeout before crates {string.Join(", ", group.Crates)} were analyzed.");
 
     private RustSemanticIndexingException MemoryLimitExceeded(
         string commandName,
@@ -886,9 +927,15 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
     private sealed record MemorySample(long PeakBytes, bool Exceeded);
 
-    private sealed record CommandBudget(CancellationToken GroupDeadline, TimeSpan GroupTimeout, long MemoryLimitBytes)
+    private sealed record CommandBudget(
+        CancellationToken GroupDeadline,
+        TimeSpan GroupTimeout,
+        long MemoryLimitBytes,
+        CancellationToken WorkspaceDeadline,
+        TimeSpan WorkspaceTimeout)
     {
-        public static CommandBudget None { get; } = new(CancellationToken.None, Timeout.InfiniteTimeSpan, 0);
+        public static CommandBudget None { get; } = new(
+            CancellationToken.None, Timeout.InfiniteTimeSpan, 0, CancellationToken.None, Timeout.InfiniteTimeSpan);
     }
 
     private sealed record CommandResult(
@@ -922,12 +969,14 @@ internal sealed record RustCrateGroupSettings(
     TimeSpan GroupTimeout,
     long MemoryLimitBytes,
     bool BuildScripts,
-    bool ProcMacros)
+    bool ProcMacros,
+    TimeSpan WorkspaceTimeout)
 {
     public static RustCrateGroupSettings From(IndexingOptions options) => new(
         options.RustSemanticCrateGroupSize,
         TimeSpan.FromSeconds(options.RustSemanticGroupTimeoutSeconds),
         options.RustSemanticGroupMemoryLimitMb * 1024L * 1024L,
         options.RustSemanticBuildScripts,
-        options.RustSemanticProcMacros);
+        options.RustSemanticProcMacros,
+        TimeSpan.FromSeconds(options.RustSemanticWorkspaceTimeoutSeconds));
 }

@@ -87,6 +87,33 @@ public sealed class RustCrateGroupPipelineTests
         CodeNodes(store, "crates/beta/src/lib.rs").ShouldNotContain(node => GraphNodeConfidence.IsLowConfidence(node));
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_WorkspaceTimeout_EveryUnfinishedGroupFallsBackAndTheRunCompletes()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "alpha");
+        var store = new InMemoryGraphStore();
+        var diagnostics = new IndexingRunDiagnostics();
+        var pipeline = CreatePipeline(store, diagnostics, workspaceTimeoutSeconds: 1);
+
+        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+
+        diagnostics.RustSemanticFallbacks.Select(fallback => string.Join(",", fallback.Crates))
+            .ShouldBe(["alpha", "beta", "gamma"]);
+        diagnostics.RustSemanticFallbacks.ShouldAllBe(fallback =>
+            fallback.FailureCode == RustSemanticFailureCategory.Timeout &&
+            fallback.DetailCode == "rust_semantic_workspace_timeout");
+        foreach (var crate in new[] { "alpha", "beta", "gamma" })
+        {
+            var nodes = CodeNodes(store, $"crates/{crate}/src/lib.rs");
+            nodes.ShouldNotBeEmpty();
+            nodes.ShouldAllBe(node => GraphNodeConfidence.IsLowConfidence(node));
+        }
+    }
+
     private static List<GraphNode> CodeNodes(InMemoryGraphStore store, string filePath) =>
         store.Nodes
             .Where(node => node.Project == "RustGroups" && node.FilePath == filePath &&
@@ -114,12 +141,16 @@ public sealed class RustCrateGroupPipelineTests
         return toolchain;
     }
 
-    private static IndexingPipeline CreatePipeline(InMemoryGraphStore store, IndexingRunDiagnostics diagnostics)
+    private static IndexingPipeline CreatePipeline(
+        InMemoryGraphStore store,
+        IndexingRunDiagnostics diagnostics,
+        int workspaceTimeoutSeconds = 3600)
     {
         var options = Options.Create(new IndexingOptions
         {
             MaxParallelFiles = 1,
-            RustSemanticCrateGroupSize = 1
+            RustSemanticCrateGroupSize = 1,
+            RustSemanticWorkspaceTimeoutSeconds = workspaceTimeoutSeconds
         });
         return new IndexingPipeline(
             store,
