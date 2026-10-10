@@ -3,6 +3,7 @@ using System.Text;
 using CodeGraph.Api.Middleware;
 using CodeGraph.Data;
 using CodeGraph.Mcp.Hub;
+using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -101,15 +102,17 @@ public class McpToolEntitlementMiddlewareTests
         selectedBody.ShouldContain("stories-upload-file");
     }
 
-    [Fact]
-    public async Task OverlayTools_AreOnByDefault_AndRefusedForAnExplicitlyUnentitledToken()
+    [Theory]
+    [InlineData(OverlayMcpServer.RequestOverlayTool, OverlayMcpServer.GetOverlayStatusTool)]
+    [InlineData(CodeGraphMcpServer.AnalyzeImpactFileTool, CodeGraphMcpServer.FileHotspotTool)]
+    public async Task NativeTools_AreOnByDefault_AndRefusedForAnExplicitlyUnentitledToken(string first, string second)
     {
         // The real catalog seeding: both tools are native CodeGraph tools, enabled, and
         // pre-selected like every other native tool, with no explicit-selection requirement.
         var store = new InMemoryMcpHubStore();
         await new McpHubCatalogSeeder(store, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
         var tools = await store.ListToolsAsync();
-        foreach (var name in new[] { OverlayMcpServer.RequestOverlayTool, OverlayMcpServer.GetOverlayStatusTool })
+        foreach (var name in new[] { first, second })
         {
             var tool = tools.Single(item => item.ToolName == name);
             tool.ProviderKey.ShouldBe("codegraph");
@@ -129,39 +132,39 @@ public class McpToolEntitlementMiddlewareTests
             {
                 context.Request.Body.Position = 0;
                 dispatched.Add(await new StreamReader(context.Request.Body).ReadToEndAsync());
-                await context.Response.WriteAsync("""
-                    {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"request_overlay"},{"name":"get_overlay_status"}]}}
-                    """);
+                await context.Response.WriteAsync(
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"search_graph\"},{\"name\":\"" + first +
+                    "\"},{\"name\":\"" + second + "\"}]}}");
             },
             serviceProvider.GetRequiredService<IServiceScopeFactory>());
 
+        static string Call(int id, string name) =>
+            "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"tools/call\",\"params\":{\"name\":\"" + name + "\",\"arguments\":{}}}";
+
         // Token 42: an existing "all" token (no allow-list) gets the new tools automatically.
         var allList = await InvokeAsync(middleware, 42, """{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}""");
-        allList.Body.ShouldContain("request_overlay");
-        allList.Body.ShouldContain("get_overlay_status");
-        var allCall = await InvokeAsync(middleware, 42,
-            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_overlay","arguments":{"repo":"r","ref":"main"}}}""");
+        allList.Body.ShouldContain(first);
+        allList.Body.ShouldContain(second);
+        var allCall = await InvokeAsync(middleware, 42, Call(2, first));
         allCall.StatusCode.ShouldNotBe(StatusCodes.Status403Forbidden);
-        dispatched.ShouldContain(body => body.Contains("request_overlay"));
+        dispatched.ShouldContain(body => body.Contains(first));
 
-        // Token 43: restricted to an allow-list that excludes the overlay tools.
+        // Token 43: restricted to an allow-list that excludes the new tools.
         await store.ReplaceTokenEntitlementsAsync(43, ["search_graph"]);
         var restrictedList = await InvokeAsync(middleware, 43, """{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}""");
         restrictedList.Body.ShouldContain("search_graph");
-        restrictedList.Body.ShouldNotContain("request_overlay");
-        restrictedList.Body.ShouldNotContain("get_overlay_status");
-        foreach (var name in new[] { "request_overlay", "get_overlay_status" })
+        restrictedList.Body.ShouldNotContain(first);
+        restrictedList.Body.ShouldNotContain(second);
+        foreach (var name in new[] { first, second })
         {
-            var refused = await InvokeAsync(middleware, 43,
-                "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"" + name + "\",\"arguments\":{}}}");
+            var refused = await InvokeAsync(middleware, 43, Call(4, name));
             refused.StatusCode.ShouldBe(StatusCodes.Status403Forbidden);
             refused.Body.ShouldContain("tool_not_entitled");
         }
 
         // Token 44: an allow-list that includes them.
-        await store.ReplaceTokenEntitlementsAsync(44, ["request_overlay", "get_overlay_status"]);
-        var selected = await InvokeAsync(middleware, 44,
-            """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_overlay_status","arguments":{"overlayId":1}}}""");
+        await store.ReplaceTokenEntitlementsAsync(44, [first, second]);
+        var selected = await InvokeAsync(middleware, 44, Call(5, second));
         selected.StatusCode.ShouldNotBe(StatusCodes.Status403Forbidden);
     }
 

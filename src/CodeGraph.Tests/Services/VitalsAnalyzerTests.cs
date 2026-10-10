@@ -88,6 +88,8 @@ public class VitalsAnalyzerTests
             metrics.Count.ShouldBe(1);
             metrics[0].LintErrors.ShouldBe(1);
             metrics[0].LintWarnings.ShouldBe(2);
+            // Not a git checkout: no commit is recorded.
+            metrics[0].CommitSha.ShouldBeNull();
 
             var diagnostics = await store.GetProjectDiagnosticsAsync("TestProject", "TestProject.Api");
             diagnostics.Count.ShouldBe(1);
@@ -217,6 +219,9 @@ public class VitalsAnalyzerTests
             foo.BugFixRatio365d.ShouldBe(0.5, 0.001);
             foo.BugFixWeightedTouches365d.ShouldBe(1.0, 0.001);
             foo.ConcernScore.ShouldBeGreaterThan(0);
+            // The checkout HEAD the metrics were computed at.
+            var head = (await RunGitAsync(repoPath, "rev-parse HEAD")).Trim();
+            metrics.ShouldAllBe(m => m.CommitSha == head);
 
             var repoSummary = (await store.GetProjectHealthSummariesAsync("TestProject"))
                 .Single(s => string.IsNullOrEmpty(s.DotnetProject));
@@ -355,7 +360,7 @@ public class VitalsAnalyzerTests
         await RunGitAsync(repoPath, $"commit -m \"{message}\"", ("GIT_AUTHOR_DATE", isoDate), ("GIT_COMMITTER_DATE", isoDate));
     }
 
-    private static async Task RunGitAsync(string repoPath, string arguments, params (string Name, string Value)[] environment)
+    private static async Task<string> RunGitAsync(string repoPath, string arguments, params (string Name, string Value)[] environment)
     {
         var psi = new ProcessStartInfo("git", arguments)
         {
@@ -376,6 +381,7 @@ public class VitalsAnalyzerTests
         await process.WaitForExitAsync();
 
         process.ExitCode.ShouldBe(0, $"git {arguments} failed.\nstdout: {stdout}\nstderr: {stderr}");
+        return stdout;
     }
 
     private sealed class StubLintRunner : ILintRunner

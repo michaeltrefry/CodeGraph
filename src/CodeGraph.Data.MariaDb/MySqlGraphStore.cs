@@ -1068,6 +1068,9 @@ public partial class MySqlGraphStore(
     public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10)
         => metricsStore.GetHotspotsAsync(project, top);
 
+    public Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath)
+        => metricsStore.GetFileMetricAsync(project, filePath);
+
     public Task DeleteFileMetricsAsync(string project)
         => metricsStore.DeleteFileMetricsAsync(project);
 

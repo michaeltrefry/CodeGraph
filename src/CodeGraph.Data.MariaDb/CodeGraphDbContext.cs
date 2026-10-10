@@ -356,7 +356,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(f => f.BugFixRatio365d).HasColumnName("bug_fix_ratio_365d");
             e.Property(f => f.RecurringChurnScore).HasColumnName("recurring_churn_score");
             e.Property(f => f.ComputedAt).HasColumnName("computed_at");
-            e.Ignore(f => f.ConcernScore);
+            e.Property(f => f.ConcernScore).HasColumnName("concern_score");
+            e.Property(f => f.CommitSha).HasColumnName("commit_sha");
             e.Ignore(f => f.BugFixWeightedTouches365d);
             e.HasIndex(f => new { f.Project, f.FilePath }).IsUnique();
         });

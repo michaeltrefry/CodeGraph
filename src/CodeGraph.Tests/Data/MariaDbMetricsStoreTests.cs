@@ -61,9 +61,11 @@ public class MariaDbMetricsStoreTests
                     AuthorCount = 2,
                     ComplexityScore = 12,
                     RiskScore = 8.5,
+                    ConcernScore = 6.5,
                     HealthScore = 4.2,
                     Role = "core",
-                    ComputedAt = now
+                    ComputedAt = now,
+                    CommitSha = new string('a', 40)
                 },
                 new FileMetricsEntity
                 {
@@ -79,6 +81,28 @@ public class MariaDbMetricsStoreTests
             (await store.GetFileMetricsAsync("CodeGraph")).Count.ShouldBe(2);
             (await store.GetFileMetricsAsync("CodeGraph", "CodeGraph.Api")).Count.ShouldBe(2);
             (await store.GetHotspotsAsync("CodeGraph", 1)).Single().FilePath.ShouldBe("src/App.cs");
+
+            // One file: concern score and computing commit persist; the path match is case-sensitive.
+            var app = (await store.GetFileMetricAsync("CodeGraph", "src/App.cs")).ShouldNotBeNull();
+            app.ConcernScore.ShouldBe(6.5);
+            app.CommitSha.ShouldBe(new string('a', 40));
+            (await store.GetFileMetricAsync("CodeGraph", "src/app.cs")).ShouldBeNull();
+            (await store.GetFileMetricAsync("CodeGraph", "src/Missing.cs")).ShouldBeNull();
+            (await store.GetFileMetricAsync("CodeGraph", "src/Quiet.cs"))!.CommitSha.ShouldBeNull();
+
+            // A recompute at a newer commit replaces both on the existing row.
+            await store.UpsertFileMetricsBatchAsync("CodeGraph",
+            [
+                new FileMetricsEntity
+                {
+                    FilePath = "src/App.cs", DotnetProject = "CodeGraph.Api", RiskScore = 8.5, ConcernScore = 2.25,
+                    HealthScore = 4.2, Role = "core", ComputedAt = now, CommitSha = new string('b', 40)
+                }
+            ]);
+            context.ChangeTracker.Clear();
+            var recomputed = (await store.GetFileMetricAsync("CodeGraph", "src/App.cs")).ShouldNotBeNull();
+            recomputed.ConcernScore.ShouldBe(2.25);
+            recomputed.CommitSha.ShouldBe(new string('b', 40));
 
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {

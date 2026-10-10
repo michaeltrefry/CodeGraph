@@ -61,6 +61,16 @@ public static class CommitAnswer
         return Result(text, structured, isError: notIndexed.Code != CommitScopeResolver.NotIndexedCode);
     }
 
+    /// <summary>A typed tool error: <c>structuredContent.error = {code, message}</c>, flagged as an error.</summary>
+    public static CallToolResult Error(string code, string message)
+    {
+        var structured = new JsonObject
+        {
+            ["error"] = new JsonObject { ["code"] = code, ["message"] = message }
+        };
+        return Result($"Error ({code}): {message}", structured, isError: true);
+    }
+
     /// <summary>The first text block of a tool result.</summary>
     public static string TextOf(CallToolResult result)
         => result.Content.OfType<TextContentBlock>().FirstOrDefault()?.Text ?? string.Empty;

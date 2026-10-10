@@ -599,6 +599,201 @@ public sealed class OverlayQueryTests : IDisposable
         }
     }
 
+    // ── Per-file risk tools: analyze_impact_file and file_hotspot ─────────
+
+    [Fact]
+    public async Task AnalyzeImpactFile_DefaultBranch_AnswersStructuredBlastRadiusAtTheIndexCommit()
+    {
+        // Affected nodes at low, critical and medium risk; the changed node (always "critical") does not count.
+        AffectedNode Affected(string name, RiskLevel risk, bool lowConfidence = false) =>
+            new(1, name, name, "Function", Repo, null, "src/b.py", 1, "CALLS", risk, [], lowConfidence);
+        var stub = new StubImpactAnalysis(new ImpactReport(
+            [new AffectedNode(_alphaId, "alpha", "alpha", "Function", Repo, null, "src/a.py", 0, "CHANGED", RiskLevel.Critical, [])],
+            [Affected("x", RiskLevel.Low), Affected("y", RiskLevel.Critical, lowConfidence: true), Affected("z", RiskLevel.Medium)],
+            [],
+            new ImpactSummary(TotalAffected: 3, CrossRepoCount: 1, CriticalCount: 1, HighCount: 0, MediumCount: 1, LowCount: 1,
+                AffectedProjects: [Repo], LowConfidenceCount: 1)));
+
+        var answer = await Mcp(stub).AnalyzeImpactFile(Repo, "./src/a.py");
+
+        stub.Calls.ShouldBe([(Repo, "src/a.py", 3)]);
+        answer.IsError.ShouldNotBe(true);
+        FirstLine(answer).ShouldBe($"Commit: {_baseSha}");
+        var s = answer.StructuredContent!.Value;
+        s.GetProperty("commitSha").GetString().ShouldBe(_baseSha);
+        s.GetProperty("source").GetString().ShouldBe("default-branch");
+        s.GetProperty("path").GetString().ShouldBe("src/a.py");
+        s.GetProperty("found").GetBoolean().ShouldBeTrue();
+        s.GetProperty("blastRadius").GetString().ShouldBe("critical");
+        s.GetProperty("totalAffected").GetInt32().ShouldBe(3);
+        s.GetProperty("criticalCount").GetInt32().ShouldBe(1);
+        s.GetProperty("highCount").GetInt32().ShouldBe(0);
+        s.GetProperty("mediumCount").GetInt32().ShouldBe(1);
+        s.GetProperty("lowCount").GetInt32().ShouldBe(1);
+        s.GetProperty("crossRepoCount").GetInt32().ShouldBe(1);
+        s.GetProperty("lowConfidenceCount").GetInt32().ShouldBe(1);
+        s.GetProperty("unmappedInboundEdges").ValueKind.ShouldBe(JsonValueKind.Null);
+
+        // depth is clamped to 1..5 like analyze_impact.
+        await Mcp(stub).AnalyzeImpactFile(Repo, "src/a.py", depth: 99);
+        stub.Calls[^1].Depth.ShouldBe(5);
+    }
+
+    [Theory]
+    [InlineData(new[] { RiskLevel.Low }, "low")]
+    [InlineData(new[] { RiskLevel.Low, RiskLevel.Medium }, "medium")]
+    [InlineData(new[] { RiskLevel.Medium, RiskLevel.High, RiskLevel.Low }, "high")]
+    [InlineData(new RiskLevel[0], "none")]
+    public void BlastRadius_IsTheWorstRiskAmongAffectedNodes(RiskLevel[] risks, string expected)
+    {
+        var report = new ImpactReport(
+            [new AffectedNode(1, "c", "c", "Function", Repo, null, "a", 0, "CHANGED", RiskLevel.Critical, [])],
+            risks.Select((risk, i) => new AffectedNode(i + 2, "n", "n", "Function", Repo, null, "b", 1, "CALLS", risk, [])).ToList(),
+            [],
+            new ImpactSummary(risks.Length, 0, 0, 0, 0, 0, []));
+
+        CodeGraphMcpServer.BlastRadius(report).ShouldBe(expected);
+        CodeGraphMcpServer.BlastRadius(null).ShouldBe("none");
+    }
+
+    [Fact]
+    public async Task AnalyzeImpactFile_FileWithNodesButNoDependents_IsFoundWithNoBlastRadius()
+    {
+        var s = (await Mcp().AnalyzeImpactFile(Repo, "src/b.py")).StructuredContent!.Value;
+
+        s.GetProperty("found").GetBoolean().ShouldBeTrue();
+        s.GetProperty("blastRadius").GetString().ShouldBe("none");
+        s.GetProperty("totalAffected").GetInt32().ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task AnalyzeImpactFile_FileWithNoNodes_AnswersFoundFalseAndNone()
+    {
+        var answer = await Mcp().AnalyzeImpactFile(Repo, "src/missing.py");
+
+        answer.IsError.ShouldNotBe(true);
+        answer.StructuredString("commitSha").ShouldBe(_baseSha);
+        var s = answer.StructuredContent!.Value;
+        s.GetProperty("found").GetBoolean().ShouldBeFalse();
+        s.GetProperty("blastRadius").GetString().ShouldBe("none");
+        s.GetProperty("totalAffected").GetInt32().ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task AnalyzeImpactFile_WithOverlaySha_AnswersFromTheOverlay_AndCountsUnmappedEdges()
+    {
+        var overlayId = await CreateReadyOverlayAsync(_headSha, _baseSha);
+        var mcp = Mcp();
+
+        var head = await mcp.AnalyzeImpactFile(Repo, "src/a.py", sha: _headSha);
+        FirstLine(head).ShouldBe($"Commit: {_headSha}");
+        var s = head.StructuredContent!.Value;
+        s.GetProperty("commitSha").GetString().ShouldBe(_headSha);
+        s.GetProperty("source").GetString().ShouldBe("overlay");
+        s.GetProperty("overlayId").GetInt64().ShouldBe(overlayId);
+        s.GetProperty("found").GetBoolean().ShouldBeTrue();
+        // Head alpha is called by beta (retargeted) and newbie (added on the branch).
+        s.GetProperty("totalAffected").GetInt32().ShouldBe(2);
+        s.GetProperty("blastRadius").GetString().ShouldBe("high");
+        // Same rule as analyze_impact: beta -> gone (into this file; gone was removed at the head) and
+        // beta -> delta (from an answer node; delta.py was deleted) are left out of the answer.
+        s.GetProperty("unmappedInboundEdges").GetInt32().ShouldBe(2);
+
+        // A file deleted at the head has no nodes there, but the edge into it is still reported.
+        var deleted = (await mcp.AnalyzeImpactFile(Repo, "src/d.py", sha: _headSha)).StructuredContent!.Value;
+        deleted.GetProperty("found").GetBoolean().ShouldBeFalse();
+        deleted.GetProperty("blastRadius").GetString().ShouldBe("none");
+        deleted.GetProperty("commitSha").GetString().ShouldBe(_headSha);
+        deleted.GetProperty("unmappedInboundEdges").GetInt32().ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task AnalyzeImpactFile_WithShaWithoutReadyOverlay_ReturnsTypedNotIndexed()
+    {
+        var unknown = new string('c', 40);
+
+        var answer = await Mcp().AnalyzeImpactFile(Repo, "src/a.py", sha: unknown);
+
+        AssertNotIndexed(answer, unknown, "unknown");
+        answer.StructuredContent!.Value.TryGetProperty("blastRadius", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task PerFileTools_UnknownRepoAndUnsafePath_AnswerTypedErrors()
+    {
+        var mcp = Mcp();
+
+        foreach (var answer in new[]
+                 {
+                     await mcp.AnalyzeImpactFile("NoSuchRepo", "src/a.py"),
+                     await mcp.FileHotspot("NoSuchRepo", "src/a.py")
+                 })
+        {
+            answer.IsError.ShouldBe(true);
+            answer.StructuredContent!.Value.GetProperty("error").GetProperty("code").GetString()
+                .ShouldBe(CodeGraphMcpServer.RepoNotFoundCode);
+        }
+
+        foreach (var path in new[] { "../secrets.txt", "/etc/passwd", "src/../../x.py", "" })
+        {
+            foreach (var answer in new[] { await mcp.AnalyzeImpactFile(Repo, path), await mcp.FileHotspot(Repo, path) })
+            {
+                answer.IsError.ShouldBe(true);
+                answer.StructuredContent!.Value.GetProperty("error").GetProperty("code").GetString()
+                    .ShouldBe(CodeGraphMcpServer.InvalidPathCode);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task FileHotspot_ReturnsDefaultBranchMetrics_NamingTheCommitTheyWereComputedAt()
+    {
+        var computedAt = new DateTime(2026, 10, 9, 8, 30, 0, DateTimeKind.Utc);
+        await _store.UpsertFileMetricsBatchAsync(Repo,
+        [
+            new FileMetricsEntity
+            {
+                Project = Repo, FilePath = "src/a.py", RiskScore = 42.5, ConcernScore = 7.25, HealthScore = 3.5,
+                Churn365d = 12.75, ComplexityScore = 61, ComputedAt = computedAt, CommitSha = _baseSha
+            },
+            // Computed before the commit was recorded.
+            new FileMetricsEntity
+            {
+                Project = Repo, FilePath = "src/b.py", RiskScore = 1, HealthScore = 9, ComputedAt = computedAt
+            }
+        ]);
+        var mcp = Mcp();
+
+        var found = await mcp.FileHotspot(Repo, "src/a.py");
+        found.IsError.ShouldNotBe(true);
+        FirstLine(found).ShouldBe($"Commit: {_baseSha}");
+        var s = found.StructuredContent!.Value;
+        s.GetProperty("source").GetString().ShouldBe("default-branch");
+        s.GetProperty("path").GetString().ShouldBe("src/a.py");
+        s.GetProperty("found").GetBoolean().ShouldBeTrue();
+        s.GetProperty("riskScore").GetDouble().ShouldBe(42.5);
+        s.GetProperty("concernScore").GetDouble().ShouldBe(7.25);
+        s.GetProperty("healthScore").GetDouble().ShouldBe(3.5);
+        s.GetProperty("churn365d").GetDouble().ShouldBe(12.75);
+        s.GetProperty("complexityScore").GetInt32().ShouldBe(61);
+        s.GetProperty("computedAt").GetDateTime().ShouldBe(computedAt);
+        s.GetProperty("commitSha").GetString().ShouldBe(_baseSha);
+        s.GetProperty("indexCommitSha").GetString().ShouldBe(_baseSha);
+
+        var legacy = await mcp.FileHotspot(Repo, "src/b.py");
+        FirstLine(legacy).ShouldBe("Commit: unknown");
+        var l = legacy.StructuredContent!.Value;
+        l.GetProperty("found").GetBoolean().ShouldBeTrue();
+        l.GetProperty("commitSha").ValueKind.ShouldBe(JsonValueKind.Null);
+        l.GetProperty("concernScore").ValueKind.ShouldBe(JsonValueKind.Null);
+        l.GetProperty("indexCommitSha").GetString().ShouldBe(_baseSha);
+
+        var missing = (await mcp.FileHotspot(Repo, "src/none.py")).StructuredContent!.Value;
+        missing.GetProperty("found").GetBoolean().ShouldBeFalse();
+        missing.GetProperty("riskScore").ValueKind.ShouldBe(JsonValueKind.Null);
+        missing.GetProperty("commitSha").ValueKind.ShouldBe(JsonValueKind.Null);
+    }
+
     public void Dispose()
     {
         try
@@ -655,15 +850,29 @@ public sealed class OverlayQueryTests : IDisposable
         Options.Create(new BranchOverlayOptions()),
         _time);
 
-    private CodeGraphMcpServer Mcp() => new(
+    private CodeGraphMcpServer Mcp(IImpactAnalysisService? impact = null) => new(
         new GraphQueryEngine(_store, NullLogger<GraphQueryEngine>.Instance),
         null!,
         _store,
         null!,
         Options.Create(new RepositorySourceOptions()),
         null!,
-        new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance),
+        impact ?? new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance),
         commitScopes: Resolver());
+
+    private sealed class StubImpactAnalysis(ImpactReport report) : IImpactAnalysisService
+    {
+        public List<(string Project, string Path, int Depth)> Calls { get; } = [];
+
+        public Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null)
+            => throw new NotSupportedException();
+
+        public Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null)
+        {
+            Calls.Add((project, filePath, maxDepth));
+            return Task.FromResult<ImpactReport?>(report);
+        }
+    }
 
     private ProjectsController ProjectsController() => new(
         null!,

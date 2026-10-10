@@ -121,6 +121,7 @@ public class VitalsAnalyzer(
 
         // 4. Build FileMetricsEntity list
         var now = DateTime.UtcNow;
+        var commitSha = await ReadHeadCommitShaAsync(repoPath, ct);
         var metrics = new List<FileMetricsEntity>();
 
         foreach (var relPath in filePaths)
@@ -196,7 +197,8 @@ public class VitalsAnalyzer(
                     fileHistory?.WeightedTouches365d ?? 0),
                 BugFixWeightedTouches365d = fileHistory?.WeightedTouches365d ?? 0,
                 RecurringChurnScore = recurringChurnScore,
-                ComputedAt = now
+                ComputedAt = now,
+                CommitSha = commitSha
             });
         }
 
@@ -1476,6 +1478,21 @@ public class VitalsAnalyzer(
             logger.LogDebug(ex, "Failed to enumerate source files in {RepoPath}", repoPath);
         }
         return result;
+    }
+
+    /// <summary>
+    /// The commit the checkout is at while its history, complexity and lint are read: the
+    /// default-branch commit these metrics describe. Null when <paramref name="repoPath"/> is not
+    /// itself a git checkout (a folder source; a parent directory's repository is not used).
+    /// </summary>
+    private async Task<string?> ReadHeadCommitShaAsync(string repoPath, CancellationToken ct)
+    {
+        var dotGit = Path.Combine(repoPath, ".git");
+        if (!Directory.Exists(dotGit) && !File.Exists(dotGit))
+            return null;
+
+        var sha = (await RunGitAsync(repoPath, "rev-parse --verify HEAD", ct)).Trim().ToLowerInvariant();
+        return sha.Length is 40 or 64 && sha.All(char.IsAsciiHexDigit) ? sha : null;
     }
 
     private async Task<string> RunGitAsync(string repoPath, string arguments,

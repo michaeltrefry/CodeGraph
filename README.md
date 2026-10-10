@@ -374,6 +374,8 @@ The authoritative REST contract is the Swagger UI at [http://localhost:5037/swag
 
 MCP callers (for example a personal access token holder, who cannot call the admin-only `POST /api/indexer/overlays`) request and poll overlays with two model-free tools. `request_overlay(repo, ref)` takes a branch name, tag, or full commit SHA, resolves it to its current commit (`git ls-remote` against the repository checkout, no fetch), and returns the live overlay for that repository and commit if one exists (queued, indexing, or ready against the current default-branch index commit, within the TTL; `reused: true`), otherwise queues a new overlay pinned to that commit. `get_overlay_status(overlayId)` reports `queued`, `indexing`, `ready`, `failed`, or `expired`, plus `stale` for a ready overlay whose base is no longer the default-branch index commit. Both answer `overlayId`, `status`, `headSha` and `baseSha` in `structuredContent` (with a `Commit: <headSha>` first line) and return typed errors (`repo_not_found`, `invalid_ref`, `overlay_not_found`, ...). Failed, expired, and stale overlays are never reused: requesting again queues a new one. Like every native tool they are available to tokens in `all` mode and to `selected` tokens that list them.
 
+Two model-free tools give per-file risk readings in `structuredContent`. `analyze_impact_file(repo, path, sha?, depth=3)` is the MCP form of `/impact/file`: it answers `found`, `blastRadius` (the worst risk level among the affected nodes, `critical`|`high`|`medium`|`low`, or `none` when nothing depends on the file or it has no nodes), `criticalCount`, `highCount`, `mediumCount`, `lowCount`, `totalAffected`, `crossRepoCount`, `lowConfidenceCount` and `unmappedInboundEdges` (null without a SHA), with `commitSha` and `source` (`overlay` or `default-branch`); a SHA without a ready overlay returns the typed not-indexed result. `file_hotspot(repo, path)` reads the default-branch vitals for one file: `found`, `riskScore`, `concernScore`, `healthScore`, `churn365d`, `complexityScore`, `computedAt` and `commitSha`, the checkout commit the vitals run computed them at (`file_metrics.commit_sha`), plus `indexCommitSha`. Metrics computed before that column existed have a null `commitSha` and a null `concernScore` (it was not stored) until the next vitals run. Both take a repository-relative path (`..`, absolute and empty segments are rejected with `invalid_path`) and answer `repo_not_found` for an unknown repository.
+
 ### Reviews and diagnostics
 
 | Route | Purpose |
@@ -491,6 +493,8 @@ Example client config:
 - `get_service_clusters`
 - `get_cluster_detail`
 - `analyze_impact`
+- `analyze_impact_file`
+- `file_hotspot`
 - `read_node_source`
 - `get_code_snippet`
 - `list_conventions`
