@@ -50,18 +50,28 @@ public class ImpactAnalysisService(
         NodeLabel.File // we check file path for "test" patterns
     };
 
-    public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3)
+    public async Task<ImpactReport?> AnalyzeImpactAsync(
+        string qualifiedName,
+        string? project = null,
+        int maxDepth = 3,
+        IGraphReader? graph = null)
     {
-        var startNodes = await ResolveNodesAsync(qualifiedName, project);
+        graph ??= store;
+        var startNodes = await ResolveNodesAsync(graph, qualifiedName, project);
         if (startNodes.Count == 0)
             return null;
 
-        return await BuildImpactReportAsync(startNodes, maxDepth);
+        return await BuildImpactReportAsync(graph, startNodes, maxDepth);
     }
 
-    public async Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3)
+    public async Task<ImpactReport?> AnalyzeFileImpactAsync(
+        string project,
+        string filePath,
+        int maxDepth = 3,
+        IGraphReader? graph = null)
     {
-        var fileNodes = await store.FindNodesByFileAsync(project, filePath);
+        graph ??= store;
+        var fileNodes = await graph.FindNodesByFileAsync(project, filePath);
         if (fileNodes.Count == 0)
             return null;
 
@@ -72,23 +82,23 @@ public class ImpactAnalysisService(
         if (meaningfulNodes.Count == 0)
             meaningfulNodes = fileNodes.ToList();
 
-        return await BuildImpactReportAsync(meaningfulNodes, maxDepth);
+        return await BuildImpactReportAsync(graph, meaningfulNodes, maxDepth);
     }
 
-    private async Task<IReadOnlyList<GraphNode>> ResolveNodesAsync(string qualifiedName, string? project)
+    private static async Task<IReadOnlyList<GraphNode>> ResolveNodesAsync(IGraphReader graph, string qualifiedName, string? project)
     {
         // Try exact qualified name first
         if (project is not null)
         {
-            var exact = await store.FindNodeByQualifiedNameAsync(project, qualifiedName);
+            var exact = await graph.FindNodeByQualifiedNameAsync(project, qualifiedName);
             if (exact is not null)
                 return [exact];
         }
 
         // Fall back to name search
         var candidates = project is not null
-            ? await store.FindNodesByNameAsync(project, qualifiedName)
-            : await store.SearchNodesAsync(null, qualifiedName, limit: 10);
+            ? await graph.FindNodesByNameAsync(project, qualifiedName)
+            : await graph.SearchNodesAsync(null, qualifiedName, limit: 10);
 
         if (candidates.Count == 0)
             return [];
@@ -102,7 +112,7 @@ public class ImpactAnalysisService(
         return preferred.Count > 0 ? preferred : [candidates[0]];
     }
 
-    private async Task<ImpactReport> BuildImpactReportAsync(IReadOnlyList<GraphNode> startNodes, int maxDepth)
+    private async Task<ImpactReport> BuildImpactReportAsync(IGraphReader graph, IReadOnlyList<GraphNode> startNodes, int maxDepth)
     {
         // BFS results: nodeId → (depth, edgeType, sourceProject)
         var visited = new Dictionary<long, (int Depth, EdgeType EdgeType, string SourceProject)>();
@@ -112,7 +122,7 @@ public class ImpactAnalysisService(
         // Phase 1: Intra-project BFS from each start node
         foreach (var startNode in startNodes)
         {
-            var entries = await store.TraverseAsync(
+            var entries = await graph.TraverseAsync(
                 startNode.Id, TraceDirection.Inbound, maxDepth, DependencyEdges);
 
             foreach (var entry in entries)
@@ -154,7 +164,7 @@ public class ImpactAnalysisService(
             var waveEdges = new List<CrossRepoEdge>();
             foreach (var project in projectsToCheck)
             {
-                var edges = await store.FindCrossRepoEdgesAsync(project);
+                var edges = await graph.FindCrossRepoEdgesAsync(project);
                 crossRepoEdges.AddRange(edges);
                 waveEdges.AddRange(edges);
             }
@@ -198,7 +208,7 @@ public class ImpactAnalysisService(
                 var remainingDepth = maxDepth - baseDepth;
                 if (remainingDepth > 0)
                 {
-                    var entries = await store.TraverseAsync(
+                    var entries = await graph.TraverseAsync(
                         nodeId, TraceDirection.Inbound, remainingDepth, DependencyEdges);
 
                     foreach (var entry in entries)
@@ -229,7 +239,7 @@ public class ImpactAnalysisService(
 
         // We need to fetch node details for entries beyond start nodes
         var allNodeIds = visited.Keys.Except(startNodeIds).ToList();
-        var nodeMap = await store.FindNodesByIdBatchAsync(allNodeIds);
+        var nodeMap = await graph.FindNodesByIdBatchAsync(allNodeIds);
 
         // Add start nodes as "changed" nodes
         foreach (var node in startNodes)

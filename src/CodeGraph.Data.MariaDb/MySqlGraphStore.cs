@@ -248,6 +248,30 @@ public partial class MySqlGraphStore(
         return node is null ? null : MapNode(node);
     }
 
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
+        string project,
+        IReadOnlyCollection<string> qualifiedNames)
+    {
+        if (qualifiedNames.Count == 0)
+            return [];
+
+        var result = new List<GraphNode>();
+        foreach (var batch in qualifiedNames
+                     .Select(name => Truncate(name, 1000))
+                     .Distinct(StringComparer.Ordinal)
+                     .Chunk(500))
+        {
+            var names = batch.ToList();
+            var nodes = await db.Nodes.AsNoTracking()
+                .Where(n => n.Project == project && names.Contains(n.QualifiedName))
+                .OrderBy(n => n.Id)
+                .ToListAsync();
+            result.AddRange(nodes.Select(MapNode));
+        }
+
+        return result;
+    }
+
     public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000)
     {
         var nodes = await db.Nodes.AsNoTracking()

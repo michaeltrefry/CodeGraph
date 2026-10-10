@@ -196,6 +196,7 @@ public static class Startup
         services.AddTransient<McpPersonalAccessTokenService>();
         services.AddTransient<IMetricsEventPublisher, MetricsEventPublisher>();
         services.AddTransient<IGraphOverviewService, GraphOverviewService>();
+        services.AddTransient<ICommitScopeResolver, CommitScopeResolver>();
         services.AddTransient<INodeQueryService, NodeQueryService>();
         services.AddTransient<ISearchService, SearchService>();
         services.AddTransient<IExclusionService, ExclusionService>();

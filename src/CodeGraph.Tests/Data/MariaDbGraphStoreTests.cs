@@ -587,6 +587,14 @@ public class MariaDbGraphStoreTests
             lower.ShouldNotBeNull();
             upper.Id.ShouldNotBe(lower.Id);
 
+            // Batch lookup by qualified name is project-scoped and case-sensitive.
+            (await store.FindNodesByQualifiedNamesAsync("SceneWorks", ["SceneWorks.strategy", "SceneWorks.Missing"]))
+                .ShouldHaveSingleItem().Id.ShouldBe(lower.Id);
+            (await store.FindNodesByQualifiedNamesAsync("SceneWorks", ["SceneWorks.Strategy", "SceneWorks.strategy"]))
+                .Select(node => node.Id).ShouldBe([upper.Id, lower.Id], ignoreOrder: true);
+            (await store.FindNodesByQualifiedNamesAsync("OtherProject", ["SceneWorks.Strategy"])).ShouldBeEmpty();
+            (await store.FindNodesByQualifiedNamesAsync("SceneWorks", [])).ShouldBeEmpty();
+
             await Should.ThrowAsync<MySqlException>(() => store.ReplaceProjectGraphAsync(
                 "SceneWorks",
                 [Node(NodeLabel.Class, "Broken", "SceneWorks.Broken", new string('x', 501))],

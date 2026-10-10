@@ -44,6 +44,23 @@ public static class RepoFileResolver
         => ResolveCandidate(repoName, relativeFilePath, cachePath, localPath)?.Path;
 
     /// <summary>
+    /// Resolves the physical root directory of a repository checkout, using the same order as
+    /// file resolution: the cache directory named by the indexed repository first, then the
+    /// indexed local path.
+    /// </summary>
+    public static string? ResolveRepositoryRoot(string repoName, string? cachePath, string? localPath)
+    {
+        if (!string.IsNullOrWhiteSpace(cachePath) && IsSafeRelativePath(repoName))
+        {
+            var cacheRoot = TryGetContainedRepositoryRoot(cachePath, repoName);
+            if (cacheRoot is not null)
+                return cacheRoot;
+        }
+
+        return string.IsNullOrWhiteSpace(localPath) ? null : TryGetPhysicalDirectory(localPath);
+    }
+
+    /// <summary>
     /// Resolves a file using repository metadata from the graph store. A repository must
     /// already be indexed; a cache directory named only by caller input is never trusted.
     /// </summary>

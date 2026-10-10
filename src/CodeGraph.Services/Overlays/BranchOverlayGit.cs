@@ -12,6 +12,19 @@ public enum OverlayGitChangeKind
     Renamed
 }
 
+public enum CommitFileReadStatus
+{
+    Found,
+
+    /// <summary>The commit exists but has no file at the path.</summary>
+    PathMissing,
+
+    /// <summary>The commit is not present in the repository checkout.</summary>
+    CommitUnavailable
+}
+
+public sealed record CommitFileReadResult(CommitFileReadStatus Status, byte[]? Content);
+
 /// <summary>One path-level change between the base and head commits.</summary>
 public sealed record OverlayGitChange(OverlayGitChangeKind Kind, string Path, string? PreviousPath = null);
 
@@ -193,6 +206,30 @@ public class BranchOverlayGit
             using var tar = new MemoryStream(result.StdOut);
             await TarFile.ExtractToDirectoryAsync(tar, targetRoot, overwriteFiles: true, ct);
         }
+    }
+
+    /// <summary>
+    /// Reads the content of <paramref name="relativePath"/> as committed at <paramref name="sha"/>
+    /// (<c>cat-file blob sha:path</c>). The working tree and index are never read. Nothing is
+    /// fetched: a commit that is not in the checkout reports <see cref="CommitFileReadStatus.CommitUnavailable"/>.
+    /// </summary>
+    public virtual async Task<CommitFileReadResult> ReadFileAtCommitAsync(
+        string repoPath,
+        string sha,
+        string relativePath,
+        CancellationToken ct)
+    {
+        if (!IsFullSha(sha))
+            throw new ArgumentException("A full commit SHA is required.", nameof(sha));
+
+        var path = relativePath.Replace('\\', '/');
+        if (await TryRevParseCommitAsync(repoPath, sha, ct) is null)
+            return new CommitFileReadResult(CommitFileReadStatus.CommitUnavailable, null);
+
+        var result = await RunAsync(repoPath, ["cat-file", "blob", $"{sha}:{path}"], ct);
+        return result.ExitCode == 0
+            ? new CommitFileReadResult(CommitFileReadStatus.Found, result.StdOut)
+            : new CommitFileReadResult(CommitFileReadStatus.PathMissing, null);
     }
 
     internal static IReadOnlyList<OverlayGitChange> ParseNameStatus(byte[] output)

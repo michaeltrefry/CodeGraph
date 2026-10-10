@@ -7,7 +7,11 @@ public record ImpactReport(
     IReadOnlyList<AffectedNode> ChangedNodes,
     IReadOnlyList<AffectedNode> AffectedNodes,
     IReadOnlyList<CrossRepoImpact> CrossRepoImpacts,
-    ImpactSummary Summary);
+    ImpactSummary Summary)
+{
+    /// <summary>The commit this answer describes (the default-branch index commit, or the requested SHA).</summary>
+    public string? CommitSha { get; init; }
+}
 
 public record AffectedNode(
     long NodeId,

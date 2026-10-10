@@ -402,6 +402,17 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
             n.QualifiedName.Equals(qualifiedName, StringComparison.Ordinal)));
 
+    public Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
+        string project,
+        IReadOnlyCollection<string> qualifiedNames)
+    {
+        var names = qualifiedNames.ToHashSet(StringComparer.Ordinal);
+        return Task.FromResult<IReadOnlyList<GraphNode>>(
+            _nodes.Where(n =>
+                n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                names.Contains(n.QualifiedName)).ToList());
+    }
+
     public Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
@@ -431,7 +442,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             query = query.Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase));
 
         if (!string.IsNullOrEmpty(namePattern))
-            query = query.Where(n => n.Name.Contains(namePattern, StringComparison.OrdinalIgnoreCase));
+            query = query.Where(n => MatchesLike(n.Name, namePattern));
 
         if (label.HasValue)
             query = query.Where(n => n.Label == label.Value);
@@ -447,6 +458,21 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             query.Skip(offset).Take(limit).ToList());
     }
 
+    // SQL LIKE '%pattern%' with the store's '%' wildcard (other characters match literally).
+    private static bool MatchesLike(string value, string pattern)
+    {
+        var position = 0;
+        foreach (var segment in pattern.Split('%', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var index = value.IndexOf(segment, position, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+                return false;
+            position = index + segment.Length;
+        }
+
+        return true;
+    }
+
     public virtual Task<int> SearchNodesCountAsync(string? project, string namePattern,
         NodeLabel? label = null, string? filePattern = null, string? dotnetProject = null)
     {
@@ -454,7 +480,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (!string.IsNullOrEmpty(project))
             query = query.Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrEmpty(namePattern))
-            query = query.Where(n => n.Name.Contains(namePattern, StringComparison.OrdinalIgnoreCase));
+            query = query.Where(n => MatchesLike(n.Name, namePattern));
         if (label.HasValue)
             query = query.Where(n => n.Label == label.Value);
         if (!string.IsNullOrEmpty(filePattern))

@@ -68,6 +68,21 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
             new { Id = overlayId }, cancellationToken: ct));
     }
 
+    public async Task<IReadOnlyList<BranchOverlayEntity>> FindOverlaysByShaAsync(
+        string sha,
+        string? project,
+        CancellationToken ct = default)
+    {
+        var conn = await GetOpenConnectionAsync(ct);
+        return (await conn.QueryAsync<BranchOverlayEntity>(new CommandDefinition($"""
+            SELECT {OverlayColumns}
+            FROM branch_overlays
+            WHERE (head_sha = @Sha OR (head_sha IS NULL AND requested_ref = @Sha))
+              AND (@Project IS NULL OR project = @Project)
+            ORDER BY created_at DESC, id DESC
+            """, new { Sha = sha, Project = project }, cancellationToken: ct))).ToList();
+    }
+
     public async Task SetOverlayRunAsync(long overlayId, long indexerRunId, CancellationToken ct = default)
     {
         var conn = await GetOpenConnectionAsync(ct);

@@ -370,6 +370,8 @@ The authoritative REST contract is the Swagger UI at [http://localhost:5037/swag
 | `GET /api/nodes/search` | Node search |
 | `GET /api/clusters`, `/api/clusters/graph`, `/api/clusters/{id}` | Service cluster views |
 
+`/impact`, `/impact/file`, `/nodes/by-file`, `/nodes/{id}/source` and `/nodes/search` (and the MCP tools `analyze_impact`, `get_code_snippet`, `read_node_source`, `search_graph`, `trace_call_path`, `trace_data_lineage`, `find_consumers`, `find_publishers`, `codegraph_search`, `graph_source` and `graph_trace`) take an optional `sha` (full 40-hex commit). With it they answer from the ready branch overlay for that commit layered over the default-branch index, with the overlay's deleted files left out; a SHA without a ready overlay returns a typed `commit_not_indexed` result (HTTP 409) carrying the overlay status (`queued`, `indexing`, `failed`, `expired`, `stale`, or `unknown`). Every answer names the commit it describes: REST responses carry `commitSha`; MCP answers start with `Commit: <sha>` and carry `structuredContent.commitSha`.
+
 ### Reviews and diagnostics
 
 | Route | Purpose |

@@ -215,9 +215,9 @@ public sealed class RepoFileResolverTests : IDisposable
         var mcp = new CodeGraphMcpServer(null!, null!, store, null!, options, null!, null!);
         var projects = new ProjectQueryService(store, options);
 
-        (await mcp.GetCodeSnippet("Repo", "README.md")).ShouldContain("Safe readme");
-        (await mcp.GetCodeSnippet("Repo", "../secret.txt")).ShouldContain("File not found");
-        (await mcp.GetCodeSnippet("MissingRepo", "README.md")).ShouldContain("File not found");
+        (await mcp.GetCodeSnippet("Repo", "README.md")).Text().ShouldContain("Safe readme");
+        (await mcp.GetCodeSnippet("Repo", "../secret.txt")).Text().ShouldContain("File not found");
+        (await mcp.GetCodeSnippet("MissingRepo", "README.md")).Text().ShouldContain("File not found");
         (await projects.GetReadmeAsync("Repo")).ShouldBe("# Safe readme");
         (await projects.GetReadmeAsync("MissingRepo")).ShouldBeNull();
     }

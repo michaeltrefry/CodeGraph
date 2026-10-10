@@ -22,7 +22,11 @@ public record NodeSourceResponse(
     int StartLine,
     int EndLine,
     string Content,
-    string Language);
+    string Language)
+{
+    /// <summary>The commit this answer describes (the default-branch index commit, or the requested SHA).</summary>
+    public string? CommitSha { get; init; }
+}
 
 public record CrossRepoEdgeSummary(
     long EdgeId,
