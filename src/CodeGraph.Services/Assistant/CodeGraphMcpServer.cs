@@ -744,6 +744,10 @@ public class CodeGraphMcpServer(
         sb.AppendLine($"**Risk breakdown:** {s.CriticalCount} critical, {s.HighCount} high, {s.MediumCount} medium, {s.LowCount} low");
         if (s.CrossRepoCount > 0)
             sb.AppendLine($"**Cross-repo impact:** {s.CrossRepoCount} other project(s)");
+        if (s.LowConfidenceCount > 0)
+            sb.AppendLine($"**Low confidence:** this answer includes {s.LowConfidenceCount} low-confidence node(s) " +
+                          "indexed by the tree-sitter fallback after semantic analysis failed; " +
+                          "their relationships may be incomplete, so the blast radius may be understated.");
         sb.AppendLine();
 
         // Changed nodes
@@ -751,7 +755,7 @@ public class CodeGraphMcpServer(
         {
             sb.AppendLine("## Changed Nodes\n");
             foreach (var n in result.ChangedNodes)
-                sb.AppendLine($"- **{n.Name}** ({n.Label}) — {n.Project}");
+                sb.AppendLine($"- **{n.Name}** ({n.Label}) — {n.Project}{(n.LowConfidence ? " [low confidence]" : "")}");
             sb.AppendLine();
         }
 
@@ -765,7 +769,8 @@ public class CodeGraphMcpServer(
             sb.AppendLine($"## {risk} ({nodes.Count})\n");
             foreach (var n in nodes.OrderBy(n => n.Depth))
             {
-                sb.AppendLine($"- **{n.Name}** ({n.Label}) — {n.Project} [hop {n.Depth}, {n.EdgeType}]");
+                sb.AppendLine($"- **{n.Name}** ({n.Label}) — {n.Project} [hop {n.Depth}, {n.EdgeType}]" +
+                              (n.LowConfidence ? " [low confidence]" : ""));
                 if (n.RiskFactors.Count > 0)
                     sb.AppendLine($"  Factors: {string.Join("; ", n.RiskFactors)}");
             }

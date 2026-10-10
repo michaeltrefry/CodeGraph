@@ -1,5 +1,7 @@
+using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -127,7 +129,12 @@ public sealed class IndexerRunBackgroundRunner(
             var message = await execution;
             monitorCancellation.Cancel();
             await IgnoreMonitorCancellationAsync(monitor);
-            if (!await store.CompleteIndexerRunAsync(lease, message, DateTime.UtcNow, CancellationToken.None))
+            var (degradationCode, degradation, degradationSummary) = DescribeDegradations(
+                scope.ServiceProvider.GetService<IndexingRunDiagnostics>());
+            if (degradationSummary is not null)
+                message = $"{message} {degradationSummary}";
+            if (!await store.CompleteIndexerRunAsync(
+                    lease, message, degradationCode, degradation, DateTime.UtcNow, CancellationToken.None))
             {
                 logger.LogWarning(
                     "Indexer run {RunId} completed work after losing lease; terminal update was fenced out",
@@ -169,6 +176,65 @@ public sealed class IndexerRunBackgroundRunner(
 
         return true;
     }
+
+    /// <summary>
+    /// Summarizes non-fatal degradations recorded while the run executed. A Rust semantic
+    /// fallback completes the run but records its failure code and affected crates.
+    /// </summary>
+    private static (string? Code, string? Detail, string? Summary) DescribeDegradations(
+        IndexingRunDiagnostics? diagnostics)
+    {
+        var fallbacks = diagnostics?.RustSemanticFallbacks ?? [];
+        if (fallbacks.Count == 0)
+            return (null, null, null);
+
+        var failureCodes = fallbacks.Select(fallback => fallback.FailureCode).Distinct().ToList();
+        var code = "rust_semantic_fallback_" + (failureCodes.Count == 1 ? failureCodes[0] : "mixed");
+        var detail = SerializeDegradationDetail(fallbacks);
+        var summary = "Rust semantic indexing fell back to low-confidence tree-sitter extraction for " +
+                      string.Join("; ", fallbacks.Select(fallback =>
+                          $"{fallback.Manifest} [{fallback.FailureCode}] crates: " +
+                          (fallback.Crates.Count == 0 ? "(unknown)" : string.Join(", ", fallback.Crates)))) +
+                      ".";
+        return (code, detail, summary);
+    }
+
+    private static readonly JsonSerializerOptions DegradationJsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>Per-fallback cap on the analyzer message (stderr tails can reach 64 KB).</summary>
+    internal const int MaxFallbackMessageChars = 4096;
+
+    /// <summary>indexer_runs.error is a TEXT column: at most 65535 bytes.</summary>
+    internal const int MaxDegradationDetailBytes = 65535;
+
+    /// <summary>
+    /// Serializes fallbacks as a JSON array that fits indexer_runs.error. Messages are
+    /// truncated first; if the record still does not fit, messages and then crate lists are
+    /// dropped so the detail stays valid JSON and keeps each failure code and manifest.
+    /// </summary>
+    internal static string SerializeDegradationDetail(IReadOnlyList<RustSemanticFallback> fallbacks)
+    {
+        var detail = JsonSerializer.Serialize(
+            fallbacks.Select(fallback => fallback with { Message = Truncate(fallback.Message) }),
+            DegradationJsonOptions);
+        if (System.Text.Encoding.UTF8.GetByteCount(detail) <= MaxDegradationDetailBytes)
+            return detail;
+
+        detail = JsonSerializer.Serialize(
+            fallbacks.Select(fallback => fallback with { Message = "" }),
+            DegradationJsonOptions);
+        if (System.Text.Encoding.UTF8.GetByteCount(detail) <= MaxDegradationDetailBytes)
+            return detail;
+
+        return JsonSerializer.Serialize(
+            fallbacks.Select(fallback => fallback with { Crates = [], Message = "" }),
+            DegradationJsonOptions);
+    }
+
+    private static string Truncate(string message) =>
+        message.Length <= MaxFallbackMessageChars
+            ? message
+            : message[..MaxFallbackMessageChars] + "...[truncated]";
 
     private async Task<LeaseMonitorResult> MonitorLeaseAsync(
         IndexerRunLease lease,

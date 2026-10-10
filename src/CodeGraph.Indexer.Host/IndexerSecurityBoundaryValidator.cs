@@ -1,5 +1,6 @@
 using CodeGraph.Models.Messages;
 using CodeGraph.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CodeGraph.Indexer.Host;
 
@@ -33,7 +34,8 @@ internal static class IndexerSecurityBoundaryValidator
         }
 
         var repositoryPath = Path.GetDirectoryName(solutionPath)!;
-        var projectService = services.GetRequiredService<IProjectService>();
+        using var scope = services.CreateScope();
+        var projectService = scope.ServiceProvider.GetRequiredService<IProjectService>();
         await projectService.ProcessRepository(new ProcessRepository
         {
             Name = Path.GetFileName(repositoryPath),

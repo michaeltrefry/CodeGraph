@@ -1,9 +1,10 @@
 namespace CodeGraph.Services.Extractors;
 
 /// <summary>
-/// Signals that a repository containing Rust source could not be semantically indexed.
-/// This is intentionally fatal so an indexer run cannot report success with a silently
-/// degraded Tree-sitter-only graph.
+/// Signals that a Cargo workspace could not be semantically indexed. The indexing pipeline
+/// does not fail the run on it: the workspace's files fall back to low-confidence
+/// tree-sitter extraction and the failure is recorded with a
+/// <see cref="RustSemanticFailureCategory"/> code.
 /// </summary>
 public sealed class RustSemanticIndexingException : Exception
 {
