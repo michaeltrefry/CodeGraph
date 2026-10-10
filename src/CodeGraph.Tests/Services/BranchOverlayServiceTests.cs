@@ -197,6 +197,190 @@ public sealed class BranchOverlayServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task IndexOverlayAsync_ProviderResyncsAndDirtiesCheckout_OverlayReadsOnlyFetchedHead()
+    {
+        var (remote, cache, baseSha) = CreateRemoteAndSingleBranchCache();
+        GitFixture.Run(remote, "checkout", "-q", "-b", "factory/feature");
+        GitFixture.Write(remote, "src/a.py", "def alpha\ndef alpha_branch\n");
+        GitFixture.Run(remote, "commit", "-q", "-am", "feature");
+        var headSha = GitFixture.Run(remote, "rev-parse", "HEAD");
+        // The default branch moves on after the last default index; the provider's resync resets
+        // the shared checkout to it.
+        GitFixture.Run(remote, "checkout", "-q", "main");
+        GitFixture.Write(remote, "src/b.py", "def beta\ndef beta_main\n");
+        GitFixture.Run(remote, "commit", "-q", "-am", "main moves");
+        var mainSha = GitFixture.Run(remote, "rev-parse", "HEAD");
+        SeedDefaultBranchIndex(baseSha);
+        var service = CreateService(new ResyncingRepoProvider(
+            Path.GetDirectoryName(cache)!, "src/a.py", "def alpha\ndef alpha_working_tree\n"));
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        await service.IndexOverlayAsync(overlay.Id);
+
+        // The provider really did reset and dirty the shared checkout.
+        GitFixture.Run(cache, "rev-parse", "HEAD").ShouldBe(mainSha);
+        File.ReadAllText(Path.Combine(cache, "src/a.py")).ShouldContain("alpha_working_tree");
+
+        var status = await service.GetOverlayAsync(overlay.Id);
+        status!.Status.ShouldBe(BranchOverlayStatuses.Ready);
+        status.HeadSha.ShouldBe(headSha);
+        (await _overlays.GetOverlayFilesAsync(overlay.Id)).Select(file => file.FilePath).ShouldBe(["src/a.py"]);
+        (await _overlays.GetOverlayNodesAsync(overlay.Id))
+            .Where(node => node.Label == NodeLabel.Function).Select(node => node.Name).OrderBy(name => name)
+            .ShouldBe(["alpha", "alpha_branch"]);
+    }
+
+    [Fact]
+    public async Task IndexOverlayAsync_CaseOnlyRename_RecordsTombstoneAndRenamedRow()
+    {
+        var (remote, cache, baseSha) = CreateRemoteAndSingleBranchCache();
+        GitFixture.Run(remote, "checkout", "-q", "-b", "factory/case");
+        GitFixture.Run(remote, "mv", "src/d.py", "src/D.py");
+        GitFixture.Run(remote, "commit", "-q", "-m", "case-only rename");
+        GitFixture.Run(remote, "checkout", "-q", "-f", "main");
+        SeedDefaultBranchIndex(baseSha);
+        var service = CreateService(cache);
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/case");
+        await service.IndexOverlayAsync(overlay.Id);
+
+        (await service.GetOverlayAsync(overlay.Id))!.Status.ShouldBe(BranchOverlayStatuses.Ready);
+        (await _overlays.GetOverlayFilesAsync(overlay.Id))
+            .Select(file => (file.FilePath, file.ChangeKind, file.PreviousPath))
+            .OrderBy(file => file.FilePath, StringComparer.Ordinal)
+            .ShouldBe(
+            [
+                ("src/D.py", BranchOverlayChangeKinds.Renamed, "src/d.py"),
+                ("src/d.py", BranchOverlayChangeKinds.Deleted, null)
+            ]);
+    }
+
+    [Fact]
+    public async Task IndexOverlayAsync_FetchFailure_IsTransientAndDoesNotUseStaleLocalRef()
+    {
+        var (_, cache, baseSha) = CreateRemoteAndSingleBranchCache();
+        // A stale local branch with the requested name exists, but origin is unreachable.
+        GitFixture.Run(cache, "branch", "factory/stale", baseSha);
+        GitFixture.Run(cache, "remote", "set-url", "origin", Path.Combine(_root, "unreachable-remote"));
+        SeedDefaultBranchIndex(baseSha);
+        var service = CreateService(cache);
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/stale");
+        await Should.ThrowAsync<BranchOverlayTransientException>(() => service.IndexOverlayAsync(overlay.Id));
+
+        var status = await service.GetOverlayAsync(overlay.Id);
+        status!.Status.ShouldBe(BranchOverlayStatuses.Failed);
+        status.HeadSha.ShouldBeNull();
+        status.Error!.ShouldContain("Transient failure");
+    }
+
+    [Fact]
+    public async Task IndexOverlayAsync_FullShaPresentLocally_ResolvesWithoutReachingOrigin()
+    {
+        var (_, cache, baseSha) = CreateRemoteAndSingleBranchCache();
+        GitFixture.Write(cache, "src/b.py", "def beta\ndef beta_local\n");
+        GitFixture.Run(cache, "config", "commit.gpgsign", "false");
+        GitFixture.Run(cache, "commit", "-q", "-am", "local commit");
+        var headSha = GitFixture.Run(cache, "rev-parse", "HEAD");
+        GitFixture.Run(cache, "remote", "set-url", "origin", Path.Combine(_root, "unreachable-remote"));
+        SeedDefaultBranchIndex(baseSha);
+        var git = new RecordingBranchOverlayGit();
+        var service = CreateService(cache, git: git);
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, headSha);
+        await service.IndexOverlayAsync(overlay.Id);
+
+        var status = await service.GetOverlayAsync(overlay.Id);
+        status!.Status.ShouldBe(BranchOverlayStatuses.Ready);
+        status.HeadSha.ShouldBe(headSha);
+        git.Commands.ShouldNotContain(command => command.StartsWith("fetch", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("http")]
+    [InlineData("db")]
+    public async Task IndexOverlayAsync_TransientInfrastructureFailure_PropagatesUnwrappedForRetry(string kind)
+    {
+        SeedDefaultBranchIndex(new string('b', 40));
+        Exception failure = kind switch
+        {
+            "timeout" => new TimeoutException("Timed out waiting for the indexing lock."),
+            "http" => new HttpRequestException("connection reset"),
+            _ => new TestDbException("server has gone away")
+        };
+        _graph.IndexingLockFailure = failure;
+        var service = CreateService(_root);
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        var thrown = await Should.ThrowAsync<Exception>(() => service.IndexOverlayAsync(overlay.Id));
+        thrown.ShouldBeSameAs(failure);
+
+        (await service.GetOverlayAsync(overlay.Id))!.Status.ShouldBe(BranchOverlayStatuses.Failed);
+    }
+
+    private sealed class TestDbException(string message) : System.Data.Common.DbException(message);
+
+    [Fact]
+    public async Task IndexOverlayAsync_ProviderSyncFailure_IsTransient()
+    {
+        SeedDefaultBranchIndex(new string('b', 40));
+        var service = CreateService(new ThrowingRepoProvider(
+            new InvalidOperationException("git fetch origin failed with exit code 128: Could not resolve host")));
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        var ex = await Should.ThrowAsync<BranchOverlayTransientException>(() => service.IndexOverlayAsync(overlay.Id));
+        ex.Message.ShouldContain("Could not resolve host");
+    }
+
+    [Fact]
+    public async Task IndexOverlayAsync_MissingBaseCommit_IsDeterministic()
+    {
+        var (_, cache, _) = CreateRemoteAndSingleBranchCache();
+        SeedDefaultBranchIndex(new string('c', 40));
+        var service = CreateService(cache);
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "main");
+        await Should.ThrowAsync<BranchOverlayIndexingException>(() => service.IndexOverlayAsync(overlay.Id));
+        (await service.GetOverlayAsync(overlay.Id))!.Error!.ShouldContain("Base commit");
+    }
+
+    [Theory]
+    [InlineData("main~1")]
+    [InlineData("main^")]
+    [InlineData("main^{tree}")]
+    [InlineData("HEAD:src/a.py")]
+    [InlineData("main@{1}")]
+    [InlineData("@")]
+    [InlineData("factory/*")]
+    [InlineData("factory/fea?ture")]
+    [InlineData("factory/[x]")]
+    [InlineData("factory\\x")]
+    [InlineData("factory/x y")]
+    [InlineData("factory/x\ty")]
+    [InlineData("factory/x\u0001")]
+    [InlineData("factory//x")]
+    [InlineData("/factory")]
+    [InlineData("factory/")]
+    [InlineData("factory/.hidden")]
+    [InlineData("factory/x.lock")]
+    [InlineData("factory/x.")]
+    [InlineData("main..other")]
+    [InlineData("--upload-pack=evil")]
+    public void ValidateRef_RejectsRevisionSyntaxAndInvalidRefNames(string gitRef)
+        => Should.Throw<ArgumentException>(() => BranchOverlayGit.ValidateRef(gitRef));
+
+    [Theory]
+    [InlineData("main")]
+    [InlineData("factory/feature-x")]
+    [InlineData("refs/heads/release/1.2")]
+    [InlineData("v1.2.3")]
+    [InlineData("0123456789abcdef0123456789abcdef01234567")]
+    [InlineData("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")]
+    public void ValidateRef_AcceptsRefNamesAndFullShas(string gitRef)
+        => Should.NotThrow(() => BranchOverlayGit.ValidateRef(gitRef));
+
+    [Fact]
     public void ParseNameStatus_ParsesRenamesCopiesAndNulSeparatedPaths()
     {
         var output = Encoding.UTF8.GetBytes(
@@ -250,7 +434,10 @@ public sealed class BranchOverlayServiceTests : IDisposable
         }
     }
 
-    private BranchOverlayService CreateService(string checkoutPath, double ttlHours = 72)
+    private BranchOverlayService CreateService(string checkoutPath, double ttlHours = 72, BranchOverlayGit? git = null)
+        => CreateService(new FixedPathRepoProvider(checkoutPath), ttlHours, git);
+
+    private BranchOverlayService CreateService(IRepoProvider repoProvider, double ttlHours = 72, BranchOverlayGit? git = null)
     {
         var pipeline = new IndexingPipeline(
             _graph,
@@ -262,9 +449,9 @@ public sealed class BranchOverlayServiceTests : IDisposable
         return new BranchOverlayService(
             _overlays,
             _graph,
-            new FixedPathRepoProvider(checkoutPath),
+            repoProvider,
             pipeline,
-            new BranchOverlayGit(),
+            git ?? new BranchOverlayGit(),
             Options.Create(new BranchOverlayOptions { TtlHours = ttlHours }),
             NullLogger<BranchOverlayService>.Instance,
             _time);

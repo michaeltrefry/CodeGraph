@@ -3,6 +3,9 @@
 -- commit of the current default-branch index. Overlay rows never touch nodes/edges, so the
 -- default-branch graph is unchanged. Expired overlays keep only their status row; all
 -- child rows are deleted by the TTL sweep.
+-- Paths and qualified names use utf8mb4_bin: git paths are case-sensitive, so a case-only
+-- rename (Foo.cs -> foo.cs) yields a deletion tombstone and a renamed row that must not
+-- collide on the (overlay_id, file_path) key.
 
 CREATE TABLE IF NOT EXISTS branch_overlays (
     id BIGINT NOT NULL AUTO_INCREMENT,
@@ -29,9 +32,9 @@ CREATE TABLE IF NOT EXISTS branch_overlays (
 
 CREATE TABLE IF NOT EXISTS branch_overlay_files (
     overlay_id BIGINT NOT NULL,
-    file_path VARCHAR(500) NOT NULL,
+    file_path VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     change_kind VARCHAR(20) NOT NULL,
-    previous_path VARCHAR(500) NULL,
+    previous_path VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     PRIMARY KEY (overlay_id, file_path),
     CONSTRAINT fk_branch_overlay_files_overlay FOREIGN KEY (overlay_id) REFERENCES branch_overlays(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -44,7 +47,7 @@ CREATE TABLE IF NOT EXISTS branch_overlay_nodes (
     name VARCHAR(255) NOT NULL,
     qualified_name VARCHAR(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     qualified_name_hash BINARY(32) GENERATED ALWAYS AS (UNHEX(SHA2(qualified_name, 256))) STORED,
-    file_path VARCHAR(500) NOT NULL DEFAULT '',
+    file_path VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
     start_line INT NOT NULL DEFAULT 0,
     end_line INT NOT NULL DEFAULT 0,
     properties JSON NULL,

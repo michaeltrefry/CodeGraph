@@ -65,7 +65,10 @@ public class MariaDbBranchOverlayStoreTests
                     [
                         new BranchOverlayFileEntity { OverlayId = oldId, FilePath = "src/a.py", ChangeKind = BranchOverlayChangeKinds.Modified },
                         new BranchOverlayFileEntity { OverlayId = oldId, FilePath = "src/d.py", ChangeKind = BranchOverlayChangeKinds.Deleted },
-                        new BranchOverlayFileEntity { OverlayId = oldId, FilePath = "src/f.py", ChangeKind = BranchOverlayChangeKinds.Renamed, PreviousPath = "src/d.py" }
+                        new BranchOverlayFileEntity { OverlayId = oldId, FilePath = "src/f.py", ChangeKind = BranchOverlayChangeKinds.Renamed, PreviousPath = "src/d.py" },
+                        // Case-only rename: tombstone and renamed row differ only by case.
+                        new BranchOverlayFileEntity { OverlayId = oldId, FilePath = "src/Foo.py", ChangeKind = BranchOverlayChangeKinds.Deleted },
+                        new BranchOverlayFileEntity { OverlayId = oldId, FilePath = "src/foo.py", ChangeKind = BranchOverlayChangeKinds.Renamed, PreviousPath = "src/Foo.py" }
                     ],
                     [
                         new GraphNode
@@ -96,13 +99,15 @@ public class MariaDbBranchOverlayStoreTests
                 ready!.Status.ShouldBe(BranchOverlayStatuses.Ready);
                 ready.HeadSha.ShouldBe(new string('a', 40));
                 ready.BaseSha.ShouldBe(new string('b', 40));
-                ready.ChangedFileCount.ShouldBe(3);
+                ready.ChangedFileCount.ShouldBe(5);
                 ready.NodeCount.ShouldBe(2);
                 ready.EdgeCount.ShouldBe(1);
 
                 var files = await store.GetOverlayFilesAsync(oldId);
                 files.Single(file => file.FilePath == "src/f.py").PreviousPath.ShouldBe("src/d.py");
                 files.Single(file => file.FilePath == "src/d.py").ChangeKind.ShouldBe(BranchOverlayChangeKinds.Deleted);
+                files.Single(file => file.FilePath == "src/Foo.py").ChangeKind.ShouldBe(BranchOverlayChangeKinds.Deleted);
+                files.Single(file => file.FilePath == "src/foo.py").PreviousPath.ShouldBe("src/Foo.py");
                 var nodes = await store.GetOverlayNodesAsync(oldId);
                 nodes.Select(node => node.QualifiedName).ShouldBe(
                     ["OverlayRepo:src/a.py:alpha", "OverlayRepo:src/a.py:Alpha"], ignoreOrder: true);

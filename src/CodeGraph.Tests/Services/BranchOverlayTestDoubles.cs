@@ -195,6 +195,59 @@ internal sealed class FixedPathRepoProvider(string localPath) : IRepoProvider
 }
 
 /// <summary>
+/// Repo provider that behaves like the GitHub/GitLab providers on an existing cache: it runs the
+/// real <see cref="RepoProviderBase"/> fetch + reset to the remote default branch, then leaves an
+/// uncommitted edit in the working tree. Overlays must not read either.
+/// </summary>
+internal sealed class ResyncingRepoProvider(string reposCachePath, string dirtyPath, string dirtyContent)
+    : RepoProviderBase(reposCachePath, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance), IRepoProvider
+{
+    public async Task<ResolvedRepository> ResolveRepositoryAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
+    {
+        var path = await EnsureCachedAsync(repoName, repoUrl, url => url, ct);
+        GitFixture.Write(path, dirtyPath, dirtyContent);
+        return new ResolvedRepository(path, $"cache:{repoName}", repoUrl, null);
+    }
+
+    public Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
+        => throw new NotSupportedException();
+
+    public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredProject>());
+
+    public Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredProject>());
+}
+
+/// <summary>Real git plumbing that records the git subcommands it runs.</summary>
+internal sealed class RecordingBranchOverlayGit : CodeGraph.Services.Overlays.BranchOverlayGit
+{
+    public List<string> Commands { get; } = [];
+
+    protected override Task<GitResult> RunAsync(string repoPath, IReadOnlyList<string> args, CancellationToken ct)
+    {
+        lock (Commands)
+            Commands.Add(string.Join(' ', args));
+        return base.RunAsync(repoPath, args, ct);
+    }
+}
+
+internal sealed class ThrowingRepoProvider(Exception failure) : IRepoProvider
+{
+    public Task<ResolvedRepository> ResolveRepositoryAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
+        => Task.FromException<ResolvedRepository>(failure);
+
+    public Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
+        => Task.FromException<string>(failure);
+
+    public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredProject>());
+
+    public Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredProject>());
+}
+
+/// <summary>
 /// Deterministic extractor for .py files: one Function node per <c>def name</c> line and a bare
 /// call for every <c>call name</c> line.
 /// </summary>

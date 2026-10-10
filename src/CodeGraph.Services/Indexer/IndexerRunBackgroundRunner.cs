@@ -162,8 +162,9 @@ public sealed class IndexerRunBackgroundRunner(
             // Semantic extractor failures are deterministic for the current checkout and
             // toolchain. Replaying a CPU- and memory-intensive command immediately only
             // repeats the same failure and can starve the rest of the deployment.
-            // Branch overlay failures are recorded on the overlay and are deterministic for
-            // the requested ref and base commit, so they are not replayed either.
+            // BranchOverlayIndexingException is raised only for overlay failures that are
+            // deterministic for the requested ref and base commit, so it is not replayed either;
+            // transient overlay failures arrive unwrapped and follow the normal retry policy.
             var maxAttempts = ex is RustSemanticIndexingException or BranchOverlayIndexingException
                 ? 1
                 : options.MaxAttempts;

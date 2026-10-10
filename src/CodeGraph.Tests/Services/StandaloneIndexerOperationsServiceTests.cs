@@ -384,6 +384,23 @@ public class StandaloneIndexerOperationsServiceTests
         failed.ErrorCode.ShouldBe(BranchOverlayIndexingException.FailureCode);
         failed.AttemptCount.ShouldBe(1);
         overlays.IndexedOverlayIds.ShouldBe([7L, 8L]);
+
+        // Transient failures (lock timeout, network) reach the worker unwrapped and are retried.
+        overlays.Failure = new TimeoutException("Timed out waiting for the indexing lock.");
+        var transientRun = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.BranchOverlay,
+            Target = "9",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var retrying = await runs.GetIndexerRunAsync(transientRun);
+        retrying!.Status.ShouldBe("queued");
+        retrying.ErrorCode.ShouldBe("indexer_operation_failed");
+        retrying.AttemptCount.ShouldBe(1);
     }
 
     private sealed class ScriptedBranchOverlayService : IBranchOverlayService

@@ -1,3 +1,4 @@
+using System.Data.Common;
 using CodeGraph.Data;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
@@ -27,8 +28,9 @@ public interface IBranchOverlayService
 }
 
 /// <summary>
-/// Raised when an overlay cannot be indexed. Failures are deterministic for the requested
-/// ref/base pair, so the durable worker does not replay them.
+/// Raised when an overlay cannot be indexed for a deterministic reason (unresolvable ref, missing
+/// base commit, diff/archive/extraction errors), so the durable worker does not replay it.
+/// Transient failures (lock timeouts, network and database errors) are not wrapped in this type.
 /// </summary>
 public sealed class BranchOverlayIndexingException(string message, Exception? inner = null)
     : Exception(message, inner)
@@ -135,7 +137,21 @@ public sealed class BranchOverlayService(
             // released before extraction, which runs against a private materialized copy.
             await using (await graphStore.AcquireProjectIndexingLockAsync(overlay.Project, ct))
             {
-                var resolved = await repoProvider.ResolveRepositoryAsync(overlay.Project, null, repository.RepoUrl, ct);
+                // For GitHub/GitLab providers this syncs the shared checkout (fetch origin and reset
+                // to the remote default branch), the same resync default-branch indexing performs,
+                // which is why it runs under the project lock. The overlay never reads the working
+                // tree: the head comes from the fetched overlay ref or a commit SHA.
+                ResolvedRepository resolved;
+                try
+                {
+                    resolved = await repoProvider.ResolveRepositoryAsync(overlay.Project, null, repository.RepoUrl, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException && !IsTransient(ex))
+                {
+                    throw new BranchOverlayTransientException(
+                        $"Syncing the '{overlay.Project}' checkout failed: {ex.Message}", ex);
+                }
+
                 headSha = await git.ResolveCommitAsync(resolved.LocalPath, overlay.RequestedRef, ct);
                 await git.EnsureCommitAsync(resolved.LocalPath, baseSha, ct);
 
@@ -188,7 +204,20 @@ public sealed class BranchOverlayService(
         {
             logger.LogWarning(ex, "Branch overlay {OverlayId} for {Repo}@{Ref} failed",
                 overlayId, overlay.Project, overlay.RequestedRef);
-            await overlayStore.MarkOverlayFailedAsync(overlayId, ex.Message, headSha, baseSha, UtcNow, CancellationToken.None);
+            var transient = IsTransient(ex);
+            await overlayStore.MarkOverlayFailedAsync(
+                overlayId,
+                transient ? $"Transient failure; the indexer run may retry: {ex.Message}" : ex.Message,
+                headSha,
+                baseSha,
+                UtcNow,
+                CancellationToken.None);
+
+            // Transient failures propagate unwrapped so the durable worker's retry policy applies
+            // (a retry moves the overlay back to indexing). Everything else is deterministic for
+            // the requested ref and base commit and is not replayed.
+            if (transient)
+                throw;
             throw ex as BranchOverlayIndexingException
                   ?? new BranchOverlayIndexingException($"Branch overlay {overlayId} failed: {ex.Message}", ex);
         }
@@ -228,6 +257,17 @@ public sealed class BranchOverlayService(
 
     private bool IsPastTtl(BranchOverlayEntity overlay)
         => overlay.CreatedAt <= UtcNow - Options.Ttl;
+
+    /// <summary>
+    /// Failures that can succeed on a later attempt: lock waits (GET_LOCK timeout while a long
+    /// default-branch reindex holds the project lock), network/remote errors, and database errors.
+    /// </summary>
+    internal static bool IsTransient(Exception ex) => ex
+        is BranchOverlayTransientException
+        or TimeoutException
+        or HttpRequestException
+        or DbException
+        or OperationCanceledException;
 
     /// <summary>
     /// Restricts a change to the default index's file universe. A rename whose new path is not
