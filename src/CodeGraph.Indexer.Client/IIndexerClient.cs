@@ -79,6 +79,18 @@ public interface IIndexerClient
         CancellationToken ct = default)
         => throw new NotSupportedException("This indexer client does not support durable submission identities.");
 
+    Task<BranchOverlayResponse> StartBranchOverlayAsync(
+        string username,
+        BranchOverlayRequest request,
+        CancellationToken ct = default)
+        => throw new NotSupportedException("This indexer client does not support branch overlays.");
+
+    Task<BranchOverlayResponse?> GetBranchOverlayAsync(
+        string username,
+        long overlayId,
+        CancellationToken ct = default)
+        => throw new NotSupportedException("This indexer client does not support branch overlays.");
+
     Task<IndexerRunResponse?> GetRunAsync(
         string username,
         long runId,

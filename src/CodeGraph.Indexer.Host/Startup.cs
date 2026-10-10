@@ -25,6 +25,7 @@ using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Indexer;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Metrics;
+using CodeGraph.Services.Overlays;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Prompts;
 using Microsoft.Extensions.Options;
@@ -70,6 +71,7 @@ public static class Startup
 
         RegisterPersistence(services, configuration);
         RegisterIndexerServices(services, configuration);
+        RegisterBranchOverlays(services, configuration);
         RegisterMassTransit(services);
     }
 
@@ -168,6 +170,17 @@ public static class Startup
         services.AddHttpClient<GitLabRepoProvider>();
         services.AddHttpClient<GitHubRepoProvider>();
         services.AddTransient<IMessageBus, MassTransitMessageBus>();
+    }
+
+    private static void RegisterBranchOverlays(IServiceCollection services, IConfiguration configuration)
+    {
+        var storageOptions = configuration
+            .GetSection($"{CodeGraphOptionsServiceCollectionExtensions.SectionName}:{nameof(CodeGraphServiceSettings.StorageOptions)}")
+            .Get<CodeGraphStorageOptions>() ?? new CodeGraphStorageOptions();
+
+        // Overlay persistence is MariaDB-only, like the durable indexer run store.
+        if (IsMariaDbProvider(storageOptions))
+            services.AddBranchOverlays();
     }
 
     private static void RegisterMassTransit(IServiceCollection services)

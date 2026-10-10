@@ -97,13 +97,11 @@ public class BatchAnalysisServiceLmStudioBatchTests
         storedRequest.RequestPayloadJson.ShouldNotBeNullOrWhiteSpace();
         storedRequest.Status.ShouldBe("pending");
 
+        // First poll starts the provider's background runner; wait for it deterministically, then poll again
+        // to collect the completed results.
         await service.ProcessCompletedBatchesAsync("demo-repo");
-
-        for (var attempt = 0; attempt < 10 && (await store.GetPendingBatchesAsync("demo-repo")).Count > 0; attempt++)
-        {
-            await Task.Delay(25);
-            await service.ProcessCompletedBatchesAsync("demo-repo");
-        }
+        await provider.WaitForBatchRunnerAsync(batch.ProviderBatchId);
+        await service.ProcessCompletedBatchesAsync("demo-repo");
 
         (await store.GetPendingBatchesAsync("demo-repo")).ShouldBeEmpty();
         (await store.GetProjectAnalysesAsync("demo-repo")).Count.ShouldBe(1);

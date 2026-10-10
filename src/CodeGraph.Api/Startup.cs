@@ -42,6 +42,7 @@ using CodeGraph.Services.Indexer;
 using CodeGraph.Services.Memory;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Metrics;
+using CodeGraph.Services.Overlays;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
@@ -312,6 +313,13 @@ public static class Startup
         services.AddSingleton<IIndexerRunBackgroundRunner>(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
         services.AddHostedService(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
         services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
+
+        var storageOptions = configuration
+            .GetSection($"{CodeGraphOptionsServiceCollectionExtensions.SectionName}:{nameof(CodeGraphServiceSettings.StorageOptions)}")
+            .Get<CodeGraphStorageOptions>() ?? new CodeGraphStorageOptions();
+        // Overlay persistence is MariaDB-only, like the durable indexer run store.
+        if (IsMariaDbProvider(storageOptions))
+            services.AddBranchOverlays();
     }
 
     private static void RegisterMcp(IServiceCollection services)

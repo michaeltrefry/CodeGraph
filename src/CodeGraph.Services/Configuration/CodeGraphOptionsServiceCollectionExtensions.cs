@@ -79,6 +79,11 @@ public static class CodeGraphOptionsServiceCollectionExtensions
         services.AddOptions<AssistantRetentionOptions>()
             .Bind(root.GetSection(nameof(CodeGraphServiceSettings.AssistantRetentionOptions)));
 
+        services.AddOptions<BranchOverlayOptions>()
+            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.BranchOverlayOptions)))
+            .Validate(options => options.TtlHours > 0, "Branch overlay TTL must be positive.")
+            .Validate(options => options.SweepIntervalMinutes > 0, "Branch overlay sweep interval must be positive.");
+
         return services;
     }
 }

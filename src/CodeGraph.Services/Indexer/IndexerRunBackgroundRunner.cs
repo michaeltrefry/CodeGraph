@@ -1,6 +1,7 @@
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Overlays;
 using CodeGraph.Services.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -152,13 +153,21 @@ public sealed class IndexerRunBackgroundRunner(
             executionCancellation.Cancel();
             monitorCancellation.Cancel();
             await IgnoreMonitorCancellationAsync(monitor);
-            var errorCode = ex is RustSemanticIndexingException rustFailure
-                ? rustFailure.FailureCode
-                : "indexer_operation_failed";
+            var errorCode = ex switch
+            {
+                RustSemanticIndexingException rustFailure => rustFailure.FailureCode,
+                BranchOverlayIndexingException => BranchOverlayIndexingException.FailureCode,
+                _ => "indexer_operation_failed"
+            };
             // Semantic extractor failures are deterministic for the current checkout and
             // toolchain. Replaying a CPU- and memory-intensive command immediately only
             // repeats the same failure and can starve the rest of the deployment.
-            var maxAttempts = ex is RustSemanticIndexingException ? 1 : options.MaxAttempts;
+            // BranchOverlayIndexingException is raised only for overlay failures that are
+            // deterministic for the requested ref and base commit, so it is not replayed either;
+            // transient overlay failures arrive unwrapped and follow the normal retry policy.
+            var maxAttempts = ex is RustSemanticIndexingException or BranchOverlayIndexingException
+                ? 1
+                : options.MaxAttempts;
             var disposition = await store.FailOrRetryIndexerRunAsync(
                 lease,
                 errorCode,

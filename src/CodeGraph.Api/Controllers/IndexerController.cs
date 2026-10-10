@@ -71,6 +71,50 @@ public class IndexerController(IIndexerOperationsService indexerOperations) : Co
             GetUsername(), repo, GetSubmissionKey(), ct));
     }
 
+    [HttpPost("overlays")]
+    public async Task<ActionResult<BranchOverlayResponse>> CreateBranchOverlay(
+        [FromBody] BranchOverlayRequest? request,
+        CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.Repo) || string.IsNullOrWhiteSpace(request.Ref))
+            return BadRequest(new { error = "invalid_request", message = "Repo and ref are required." });
+
+        try
+        {
+            var overlay = await indexerOperations.StartBranchOverlayAsync(GetUsername(), request, ct);
+            return Accepted(overlay.StatusUrl, overlay);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = "not_found", message = ex.Message });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = "invalid_request", message = ex.Message });
+        }
+        catch (NotSupportedException ex)
+        {
+            return StatusCode(StatusCodes.Status501NotImplemented, new { error = "not_supported", message = ex.Message });
+        }
+    }
+
+    [HttpGet("overlays/{overlayId:long}")]
+    public async Task<ActionResult<BranchOverlayResponse>> GetBranchOverlay(long overlayId, CancellationToken ct)
+    {
+        if (overlayId <= 0)
+            return BadRequest(new { error = "invalid_request", message = "Overlay id must be positive." });
+
+        try
+        {
+            var overlay = await indexerOperations.GetBranchOverlayAsync(overlayId, ct);
+            return overlay is null ? NotFound() : Ok(overlay);
+        }
+        catch (NotSupportedException ex)
+        {
+            return StatusCode(StatusCodes.Status501NotImplemented, new { error = "not_supported", message = ex.Message });
+        }
+    }
+
     [HttpGet("runs")]
     public async Task<ActionResult<IReadOnlyList<IndexerRunResponse>>> ListRuns(
         [FromQuery] string? status,
