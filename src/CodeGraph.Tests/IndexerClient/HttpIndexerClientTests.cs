@@ -159,6 +159,31 @@ public class HttpIndexerClientTests
         ex.Message.ShouldNotContain("developer exception");
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, typeof(KeyNotFoundException))]
+    [InlineData(HttpStatusCode.BadRequest, typeof(ArgumentException))]
+    [InlineData(HttpStatusCode.NotImplemented, typeof(NotSupportedException))]
+    [InlineData(HttpStatusCode.ServiceUnavailable, typeof(CodeGraph.Services.Overlays.BranchOverlayTransientException))]
+    public async Task RemoteOperations_ReuseOverlayRequest_ForwardsReuseAndMapsErrorsToServiceExceptions(
+        HttpStatusCode status,
+        Type expected)
+    {
+        var handler = new RecordingHandler(status, new { error = "x", message = "Repository 'Nope' was not found." });
+        var operations = new CodeGraph.Api.Indexer.RemoteIndexerOperationsService(CreateClient(handler));
+
+        var ex = await Should.ThrowAsync<Exception>(() => operations.StartBranchOverlayAsync(
+            "michael", new BranchOverlayRequest { Repo = "Nope", Ref = "main", ReuseLive = true }));
+
+        ex.GetType().ShouldBe(expected);
+        ex.Message.ShouldContain("Repository 'Nope' was not found.");
+        handler.Requests[0].RequestUri!.PathAndQuery.ShouldBe("/api/indexer/overlays");
+        (await handler.Requests[0].Content!.ReadAsStringAsync()).ShouldContain("\"reuseLive\":true");
+
+        // Plain REST requests keep the pass-through IndexerClientException.
+        await Should.ThrowAsync<IndexerClientException>(() => operations.StartBranchOverlayAsync(
+            "michael", new BranchOverlayRequest { Repo = "Nope", Ref = "main" }));
+    }
+
     private static HttpIndexerClient CreateClient(RecordingHandler handler)
     {
         var httpClient = new HttpClient(handler)

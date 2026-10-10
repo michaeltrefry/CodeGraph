@@ -64,6 +64,12 @@ public interface IBranchOverlayStore
         DateTime createdAtOrBefore,
         DateTime expiredAt,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Serializes overlay requests for <paramref name="project"/> across hosts, so two concurrent
+    /// identical requests cannot both miss the live overlay and create two. Disposing releases it.
+    /// </summary>
+    Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string project, CancellationToken ct = default);
 }
 
 public static class BranchOverlayStatuses

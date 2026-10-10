@@ -213,7 +213,19 @@ public sealed class StandaloneIndexerOperationsService(
     {
         ArgumentNullException.ThrowIfNull(request);
         var overlays = RequireBranchOverlays();
-        var overlay = await overlays.CreateOverlayAsync(username, request.Repo, request.Ref, ct);
+        BranchOverlayEntity overlay;
+        if (request.ReuseLive)
+        {
+            var outcome = await overlays.RequestOverlayAsync(username, request.Repo, request.Ref, ct);
+            if (outcome.Reused)
+                return overlays.Map(outcome.Overlay) with { Reused = true };
+            overlay = outcome.Overlay;
+        }
+        else
+        {
+            overlay = await overlays.CreateOverlayAsync(username, request.Repo, request.Ref, ct);
+        }
+
         var accepted = await CreateQueuedRunAsync(
             IndexerRunOperations.BranchOverlay,
             NormalizeUsername(username),

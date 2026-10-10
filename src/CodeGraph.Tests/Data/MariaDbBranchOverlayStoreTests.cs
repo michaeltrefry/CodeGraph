@@ -163,6 +163,67 @@ public class MariaDbBranchOverlayStoreTests
         }
     }
 
+    [Fact]
+    public async Task OverlayRequestLock_SerializesRequestsAcrossSessions_AndPinnedOverlayIsFoundBySha_WhenConnectionIsConfigured()
+    {
+        var builder = new MySqlConnectionStringBuilder(MariaDbTestEnvironment.RequireConnectionString());
+        var databaseName = $"codegraph_overlay_test_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+        var runner = new MariaDbMigrationRunner(
+            Options.Create(new MariaDbStorageOptions
+            {
+                ConnectionString = builder.ConnectionString,
+                MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+            }),
+            NullLogger<MariaDbMigrationRunner>.Instance);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            await using (var seed = new MySqlConnection(builder.ConnectionString))
+                await seed.ExecuteAsync("INSERT INTO repositories (name) VALUES ('OverlayRepo')");
+
+            await using var firstContext = new CodeGraphDbContext(CreateOptions(builder.ConnectionString));
+            await using var secondContext = new CodeGraphDbContext(CreateOptions(builder.ConnectionString));
+            var first = new MySqlBranchOverlayStore(firstContext);
+            var second = new MySqlBranchOverlayStore(secondContext);
+
+            var held = await first.AcquireOverlayRequestLockAsync("OverlayRepo");
+            var waiting = second.AcquireOverlayRequestLockAsync("OverlayRepo");
+            await Task.Delay(500);
+            waiting.IsCompleted.ShouldBeFalse();
+
+            // A request pinned to its resolved head is found by that SHA while still queued.
+            var head = new string('a', 40);
+            var id = await first.CreateOverlayAsync(new BranchOverlayEntity
+            {
+                Project = "OverlayRepo",
+                RequestedRef = "factory/feature",
+                HeadSha = head,
+                BaseSha = new string('b', 40),
+                CreatedAt = DateTime.UtcNow
+            });
+            await held.DisposeAsync();
+            await using (await waiting)
+            {
+                var found = await second.FindOverlaysByShaAsync(head, "OverlayRepo");
+                found.Select(overlay => overlay.Id).ShouldBe([id]);
+                found[0].Status.ShouldBe(BranchOverlayStatuses.Queued);
+                found[0].BaseSha.ShouldBe(new string('b', 40));
+            }
+
+            // Different repositories do not contend.
+            await using (await first.AcquireOverlayRequestLockAsync("OverlayRepo"))
+            await using (await second.AcquireOverlayRequestLockAsync("OtherRepo"))
+            {
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+    }
+
     private static DbContextOptions<CodeGraphDbContext> CreateOptions(string connectionString)
         => new DbContextOptionsBuilder<CodeGraphDbContext>()
             .UseMySql(

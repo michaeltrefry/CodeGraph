@@ -134,6 +134,97 @@ public class BranchOverlayGit
                ?? throw new InvalidOperationException($"Ref '{gitRef}' could not be resolved to a commit.");
     }
 
+    /// <summary>
+    /// The commit <paramref name="gitRef"/> points at right now, without fetching objects or
+    /// writing any ref: a full SHA is returned as is (lowercase); otherwise <c>git ls-remote origin</c>
+    /// is asked for the ref and the first match in git's DWIM order (<c>ref</c>, <c>refs/ref</c>,
+    /// <c>refs/tags/ref</c>, <c>refs/heads/ref</c>, <c>refs/remotes/ref</c>, <c>refs/remotes/ref/HEAD</c>)
+    /// is used, which is the ref <see cref="ResolveCommitAsync"/> would fetch. An annotated tag
+    /// resolves to its peeled commit. Without an <c>origin</c> remote the local ref is used.
+    /// Returns null when the ref does not exist.
+    /// </summary>
+    /// <exception cref="BranchOverlayTransientException">ls-remote failed, for example on the network.</exception>
+    public virtual async Task<string?> ResolveRemoteRefAsync(string repoPath, string gitRef, CancellationToken ct)
+    {
+        ValidateRef(gitRef);
+        if (IsFullSha(gitRef))
+            return gitRef.ToLowerInvariant();
+
+        if (!await HasOriginAsync(repoPath, ct))
+            return await TryRevParseCommitAsync(repoPath, gitRef, ct);
+
+        // The second pattern brings in the peeled entry of an annotated tag.
+        var result = await RunAsync(repoPath, ["ls-remote", "origin", gitRef, gitRef + "^{}"], ct);
+        if (result.ExitCode != 0)
+        {
+            throw new BranchOverlayTransientException(
+                $"Listing ref '{gitRef}' on origin failed: {result.StdErrText.Trim()}");
+        }
+
+        var advertised = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var line in Encoding.UTF8.GetString(result.StdOut).Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = line.TrimEnd('\r').Split('\t', 2);
+            if (parts.Length == 2 && IsFullSha(parts[0]))
+                advertised[parts[1]] = parts[0].ToLowerInvariant();
+        }
+
+        string[] candidates =
+        [
+            gitRef,
+            $"refs/{gitRef}",
+            $"refs/tags/{gitRef}",
+            $"refs/heads/{gitRef}",
+            $"refs/remotes/{gitRef}",
+            $"refs/remotes/{gitRef}/HEAD"
+        ];
+        foreach (var candidate in candidates)
+        {
+            if (advertised.TryGetValue(candidate + "^{}", out var peeled))
+                return peeled;
+            if (advertised.TryGetValue(candidate, out var sha))
+                return sha;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="pinnedSha"/> (the head <paramref name="gitRef"/> had when the overlay
+    /// was requested) available locally and returns it. The requested ref is fetched first, which
+    /// brings the commit in even when the branch has moved on since; when the ref is gone the
+    /// commit itself is fetched.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The commit is not available (deterministic).</exception>
+    /// <exception cref="BranchOverlayTransientException">A fetch failed for another reason, such as the network.</exception>
+    public virtual async Task<string> ResolvePinnedCommitAsync(string repoPath, string gitRef, string pinnedSha, CancellationToken ct)
+    {
+        if (await TryRevParseCommitAsync(repoPath, pinnedSha, ct) is { } local)
+            return local;
+
+        try
+        {
+            await ResolveCommitAsync(repoPath, gitRef, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            // The ref no longer exists on origin; try the commit itself below.
+        }
+
+        if (await TryRevParseCommitAsync(repoPath, pinnedSha, ct) is { } fetched)
+            return fetched;
+
+        try
+        {
+            return await ResolveCommitAsync(repoPath, pinnedSha, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new InvalidOperationException(
+                $"Commit {pinnedSha}, the head of '{gitRef}' when the overlay was requested, is no longer available: {ex.Message}", ex);
+        }
+    }
+
     /// <summary>Ensures <paramref name="sha"/> exists locally, fetching it from origin when missing.</summary>
     /// <exception cref="InvalidOperationException">The commit is not available (deterministic).</exception>
     /// <exception cref="BranchOverlayTransientException">The fetch failed for another reason, such as the network.</exception>

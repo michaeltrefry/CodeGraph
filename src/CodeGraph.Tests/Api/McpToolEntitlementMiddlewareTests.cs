@@ -102,6 +102,79 @@ public class McpToolEntitlementMiddlewareTests
     }
 
     [Fact]
+    public async Task OverlayTools_AreOnByDefault_AndRefusedForAnExplicitlyUnentitledToken()
+    {
+        // The real catalog seeding: both tools are native CodeGraph tools, enabled, and
+        // pre-selected like every other native tool, with no explicit-selection requirement.
+        var store = new InMemoryMcpHubStore();
+        await new McpHubCatalogSeeder(store, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
+        var tools = await store.ListToolsAsync();
+        foreach (var name in new[] { OverlayMcpServer.RequestOverlayTool, OverlayMcpServer.GetOverlayStatusTool })
+        {
+            var tool = tools.Single(item => item.ToolName == name);
+            tool.ProviderKey.ShouldBe("codegraph");
+            tool.ProviderType.ShouldBe("native");
+            tool.Enabled.ShouldBeTrue();
+            tool.IsAvailable.ShouldBeTrue();
+            tool.DefaultSelected.ShouldBeTrue();
+            McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(name).ShouldBeFalse();
+        }
+
+        using var serviceProvider = new ServiceCollection()
+            .AddSingleton<IMcpHubStore>(store)
+            .BuildServiceProvider(validateScopes: true);
+        var dispatched = new List<string>();
+        var middleware = CreateMiddleware(
+            async context =>
+            {
+                context.Request.Body.Position = 0;
+                dispatched.Add(await new StreamReader(context.Request.Body).ReadToEndAsync());
+                await context.Response.WriteAsync("""
+                    {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"request_overlay"},{"name":"get_overlay_status"}]}}
+                    """);
+            },
+            serviceProvider.GetRequiredService<IServiceScopeFactory>());
+
+        // Token 42: an existing "all" token (no allow-list) gets the new tools automatically.
+        var allList = await InvokeAsync(middleware, 42, """{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}""");
+        allList.Body.ShouldContain("request_overlay");
+        allList.Body.ShouldContain("get_overlay_status");
+        var allCall = await InvokeAsync(middleware, 42,
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_overlay","arguments":{"repo":"r","ref":"main"}}}""");
+        allCall.StatusCode.ShouldNotBe(StatusCodes.Status403Forbidden);
+        dispatched.ShouldContain(body => body.Contains("request_overlay"));
+
+        // Token 43: restricted to an allow-list that excludes the overlay tools.
+        await store.ReplaceTokenEntitlementsAsync(43, ["search_graph"]);
+        var restrictedList = await InvokeAsync(middleware, 43, """{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}""");
+        restrictedList.Body.ShouldContain("search_graph");
+        restrictedList.Body.ShouldNotContain("request_overlay");
+        restrictedList.Body.ShouldNotContain("get_overlay_status");
+        foreach (var name in new[] { "request_overlay", "get_overlay_status" })
+        {
+            var refused = await InvokeAsync(middleware, 43,
+                "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"" + name + "\",\"arguments\":{}}}");
+            refused.StatusCode.ShouldBe(StatusCodes.Status403Forbidden);
+            refused.Body.ShouldContain("tool_not_entitled");
+        }
+
+        // Token 44: an allow-list that includes them.
+        await store.ReplaceTokenEntitlementsAsync(44, ["request_overlay", "get_overlay_status"]);
+        var selected = await InvokeAsync(middleware, 44,
+            """{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_overlay_status","arguments":{"overlayId":1}}}""");
+        selected.StatusCode.ShouldNotBe(StatusCodes.Status403Forbidden);
+    }
+
+    private static async Task<(int StatusCode, string Body)> InvokeAsync(McpToolEntitlementMiddleware middleware, long tokenId, string request)
+    {
+        var context = CreateMcpContext(request);
+        context.User = PrincipalWithToken(tokenId);
+        await middleware.InvokeAsync(context);
+        context.Response.Body.Position = 0;
+        return (context.Response.StatusCode, await new StreamReader(context.Response.Body).ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task InvokeAsync_RejectsToolCall_WhenProviderIsDisabled()
     {
         var store = new RecordingMcpHubStore

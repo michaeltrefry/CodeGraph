@@ -169,6 +169,40 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
         }
     }
 
+    private readonly SemaphoreSlim _requestLock = new(1, 1);
+
+    public async Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string project, CancellationToken ct = default)
+    {
+        await _requestLock.WaitAsync(ct);
+        return new Releaser(_requestLock);
+    }
+
+    /// <summary>Test hook: overlays as stored (for asserting how many were created).</summary>
+    public IReadOnlyList<BranchOverlayEntity> All
+    {
+        get
+        {
+            lock (_sync)
+                return _overlays.Values.Select(Clone).ToList();
+        }
+    }
+
+    /// <summary>Test hook: overwrite stored fields of an overlay.</summary>
+    public void Mutate(long overlayId, Action<BranchOverlayEntity> mutate)
+    {
+        lock (_sync)
+            mutate(_overlays[overlayId]);
+    }
+
+    private sealed class Releaser(SemaphoreSlim semaphore) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            semaphore.Release();
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static BranchOverlayEntity Clone(BranchOverlayEntity overlay) => new()
     {
         Id = overlay.Id,

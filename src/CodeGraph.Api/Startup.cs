@@ -345,6 +345,7 @@ public static class Startup
         .WithTools<MemoryMcpServer>()
         .WithTools<ConsolidatedMcpServer>()
         .WithTools<McpHubServer>()
+        .WithTools<OverlayMcpServer>()
         .WithResources<CodeGraphMcpResources>();
     }
 

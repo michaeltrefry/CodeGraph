@@ -415,6 +415,7 @@ public class StandaloneIndexerOperationsServiceTests
         }
 
         public Task<BranchOverlayEntity> CreateOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<BranchOverlayRequestOutcome> RequestOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default) => throw new NotSupportedException();
         public Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<BranchOverlayResponse?> GetOverlayAsync(long overlayId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<long>> ExpireOverlaysAsync(CancellationToken ct = default) => throw new NotSupportedException();
@@ -740,7 +741,7 @@ public class StandaloneIndexerOperationsServiceTests
             }),
             NullLogger<IndexerRunBackgroundRunner>.Instance);
 
-    private sealed class FakeDatabaseSourceStore : IDatabaseSourceStore
+    internal sealed class FakeDatabaseSourceStore : IDatabaseSourceStore
     {
         private readonly Dictionary<long, DatabaseSourceEntity> _sources = new();
 
@@ -754,7 +755,7 @@ public class StandaloneIndexerOperationsServiceTests
         public Task UpdateLastSyncedAsync(long id) => Task.CompletedTask;
     }
 
-    private sealed class RecordingBackgroundRunner : IIndexerRunBackgroundRunner
+    internal sealed class RecordingBackgroundRunner : IIndexerRunBackgroundRunner
     {
         public List<long> EnqueuedRunIds { get; } = [];
 
@@ -916,7 +917,7 @@ public class StandaloneIndexerOperationsServiceTests
         DateTime.UtcNow,
         null);
 
-    private sealed class FakeIndexerRunStore : IIndexerRunStore
+    internal sealed class FakeIndexerRunStore : IIndexerRunStore
     {
         private readonly Dictionary<long, IndexerRunEntity> _runs = new();
         private long _nextId = 1;

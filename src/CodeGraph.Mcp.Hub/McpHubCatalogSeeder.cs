@@ -199,7 +199,8 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
     private static IEnumerable<McpHubToolDefinition> GetNativeToolDefinitions() =>
         GetNativeToolDefinitions(typeof(CodeGraphMcpServer))
             .Concat(GetNativeToolDefinitions(typeof(MemoryMcpServer)))
-            .Concat(GetNativeToolDefinitions(typeof(ConsolidatedMcpServer)));
+            .Concat(GetNativeToolDefinitions(typeof(ConsolidatedMcpServer)))
+            .Concat(GetNativeToolDefinitions(typeof(OverlayMcpServer)));
 
     private static IEnumerable<McpHubToolDefinition> GetNativeToolDefinitions(Type type)
     {

@@ -13,6 +13,17 @@ public interface IBranchOverlayService
     /// <summary>Validates the request and records a <c>queued</c> overlay.</summary>
     Task<BranchOverlayEntity> CreateOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default);
 
+    /// <summary>
+    /// Idempotent request: resolves <paramref name="gitRef"/> to its current commit and returns the
+    /// live overlay for that repository + commit, or records a new <c>queued</c> overlay pinned to
+    /// the commit. Live means queued/indexing, or ready against the current default-branch index
+    /// commit, and within the TTL. Failed, expired, and stale overlays are never returned.
+    /// </summary>
+    /// <exception cref="KeyNotFoundException">The repository is not indexed.</exception>
+    /// <exception cref="ArgumentException">The ref is invalid or does not exist.</exception>
+    /// <exception cref="BranchOverlayTransientException">The ref could not be looked up on origin.</exception>
+    Task<BranchOverlayRequestOutcome> RequestOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default);
+
     Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default);
 
     /// <summary>Current overlay status; an overlay past its TTL is expired (and its data deleted) first.</summary>
@@ -26,6 +37,9 @@ public interface IBranchOverlayService
 
     BranchOverlayResponse Map(BranchOverlayEntity overlay);
 }
+
+/// <param name="Reused">True when <paramref name="Overlay"/> already existed.</param>
+public sealed record BranchOverlayRequestOutcome(BranchOverlayEntity Overlay, bool Reused);
 
 /// <summary>
 /// Raised when an overlay cannot be indexed for a deterministic reason (unresolvable ref, missing
@@ -51,7 +65,8 @@ public sealed class BranchOverlayService(
     BranchOverlayGit git,
     IOptions<BranchOverlayOptions> optionsAccessor,
     ILogger<BranchOverlayService> logger,
-    TimeProvider? timeProvider = null) : IBranchOverlayService
+    TimeProvider? timeProvider = null,
+    IOptions<RepositorySourceOptions>? sourceOptions = null) : IBranchOverlayService
 {
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private BranchOverlayOptions Options => optionsAccessor.Value;
@@ -82,6 +97,94 @@ public sealed class BranchOverlayService(
         };
         overlay.Id = await overlayStore.CreateOverlayAsync(overlay, ct);
         return overlay;
+    }
+
+    public async Task<BranchOverlayRequestOutcome> RequestOverlayAsync(
+        string username,
+        string repo,
+        string gitRef,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(repo))
+            throw new ArgumentException("Repo is required.", nameof(repo));
+        gitRef = gitRef?.Trim() ?? "";
+        BranchOverlayGit.ValidateRef(gitRef);
+
+        repo = repo.Trim();
+        var repository = await graphStore.GetRepositoryByName(repo)
+            ?? throw new KeyNotFoundException($"Repository '{repo}' was not found.");
+
+        var headSha = await ResolveRequestedHeadAsync(repository, gitRef, ct);
+        var syncState = await graphStore.GetSyncStateAsync(repository.Name);
+        var baseSha = FirstNonEmpty(syncState?.LastCommitSha, repository.LastCommitSha)?.ToLowerInvariant();
+
+        // Find-or-create under a per-repository lock so concurrent identical requests share one overlay.
+        await using (await overlayStore.AcquireOverlayRequestLockAsync(repository.Name, ct))
+        {
+            var now = UtcNow;
+            var live = (await overlayStore.FindOverlaysByShaAsync(headSha, repository.Name, ct))
+                .FirstOrDefault(overlay => IsLive(overlay, baseSha, now));
+            if (live is not null)
+                return new BranchOverlayRequestOutcome(live, Reused: true);
+
+            var overlay = new BranchOverlayEntity
+            {
+                Project = repository.Name,
+                RequestedRef = gitRef,
+                // Pinned: the worker indexes this commit even if the branch moves before it runs,
+                // so the head this request answers with is the head the overlay describes.
+                HeadSha = headSha,
+                // Expected base; the worker records the base it actually diffs against.
+                BaseSha = baseSha,
+                Status = BranchOverlayStatuses.Queued,
+                RequestedByUsername = string.IsNullOrWhiteSpace(username) ? "unknown" : username.Trim().ToLowerInvariant(),
+                CreatedAt = now
+            };
+            overlay.Id = await overlayStore.CreateOverlayAsync(overlay, ct);
+            return new BranchOverlayRequestOutcome(overlay, Reused: false);
+        }
+    }
+
+    /// <summary>
+    /// The commit the requested ref points at now. Branch and tag names are looked up on origin
+    /// from the repository checkout (read-only: no fetch, no ref writes, so no project lock).
+    /// </summary>
+    private async Task<string> ResolveRequestedHeadAsync(ProjectInfo repository, string gitRef, CancellationToken ct)
+    {
+        if (BranchOverlayGit.IsFullSha(gitRef))
+            return gitRef.ToLowerInvariant();
+
+        var root = RepoFileResolver.ResolveRepositoryRoot(
+            repository.Name, sourceOptions?.Value.ReposCachePath, repository.LocalPath);
+        if (root is null)
+        {
+            throw new BranchOverlayTransientException(
+                $"The '{repository.Name}' checkout is not available on this host, so ref '{gitRef}' cannot be resolved; " +
+                "request the overlay by full commit SHA or retry after the repository is indexed here.");
+        }
+
+        return await git.ResolveRemoteRefAsync(root, gitRef, ct)
+            ?? throw new ArgumentException($"Ref '{gitRef}' does not exist in repository '{repository.Name}'.", nameof(gitRef));
+    }
+
+    /// <summary>
+    /// Whether a request for the overlay's commit may be answered with it. Mirrors the query side
+    /// (<see cref="CommitScopeResolver"/>): a ready overlay built against an older default-branch
+    /// commit is stale and is never returned; a failed or expired one is replaced by a new request.
+    /// </summary>
+    private bool IsLive(BranchOverlayEntity overlay, string? currentBaseSha, DateTime now)
+    {
+        if (overlay.Status == BranchOverlayStatuses.Expired || overlay.CreatedAt <= now - Options.Ttl)
+            return false;
+
+        var baseMatches = overlay.BaseSha is null
+            || string.Equals(overlay.BaseSha, currentBaseSha, StringComparison.OrdinalIgnoreCase);
+        return overlay.Status switch
+        {
+            BranchOverlayStatuses.Queued or BranchOverlayStatuses.Indexing => baseMatches,
+            BranchOverlayStatuses.Ready => overlay.BaseSha is not null && baseMatches,
+            _ => false
+        };
     }
 
     public Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default)
@@ -152,7 +255,10 @@ public sealed class BranchOverlayService(
                         $"Syncing the '{overlay.Project}' checkout failed: {ex.Message}", ex);
                 }
 
-                headSha = await git.ResolveCommitAsync(resolved.LocalPath, overlay.RequestedRef, ct);
+                // An overlay requested with reuse is pinned to the head its ref had at request time.
+                headSha = overlay.HeadSha is { } pinned && !BranchOverlayGit.IsFullSha(overlay.RequestedRef)
+                    ? await git.ResolvePinnedCommitAsync(resolved.LocalPath, overlay.RequestedRef, pinned, ct)
+                    : await git.ResolveCommitAsync(resolved.LocalPath, overlay.RequestedRef, ct);
                 await git.EnsureCommitAsync(resolved.LocalPath, baseSha, ct);
 
                 changes = (await git.DiffAsync(resolved.LocalPath, baseSha, headSha, ct))

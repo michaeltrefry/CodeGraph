@@ -171,7 +171,7 @@ public sealed class CommitScopeResolver(
                 }
 
                 return Unavailable(NotIndexedCode, null, requested, UnknownStatus,
-                    $"No overlay index exists for commit {requested}. Request one with POST /api/indexer/overlays.");
+                    $"No overlay index exists for commit {requested}. Request one with POST /api/indexer/overlays or the request_overlay MCP tool.");
             }
 
             canonicalProject = projects[0];
@@ -234,7 +234,7 @@ public sealed class CommitScopeResolver(
         }
 
         return Unavailable(NotIndexedCode, canonicalProject, requested, UnknownStatus,
-            $"No overlay index exists for {canonicalProject}@{requested}. Request one with POST /api/indexer/overlays.");
+            $"No overlay index exists for {canonicalProject}@{requested}. Request one with POST /api/indexer/overlays or the request_overlay MCP tool.");
     }
 
     public async Task<CommitDescription> DescribeAsync(

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Indexer;
+using CodeGraph.Services.Overlays;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CodeGraph.Indexer.Host.Controllers;
@@ -122,6 +123,11 @@ public class IndexerController(IIndexerOperationsService indexerOperations) : Co
         catch (NotSupportedException ex)
         {
             return StatusCode(StatusCodes.Status501NotImplemented, new { error = "not_supported", message = ex.Message });
+        }
+        catch (Exception ex) when (ex is BranchOverlayTransientException or TimeoutException)
+        {
+            // Reuse requests resolve the ref on origin and take a request lock; both can fail transiently.
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "unavailable", message = ex.Message });
         }
     }
 
