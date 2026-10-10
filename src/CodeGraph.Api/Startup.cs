@@ -113,6 +113,7 @@ public static class Startup
         services.AddTransient<IMarkdownWikiChunker, MarkdownWikiChunker>();
         services.AddTransient<IConventionEmbeddingService, ConventionEmbeddingService>();
         services.AddTransient<GraphQueryEngine>();
+        services.AddScoped<IndexingRunDiagnostics>();
         services.AddTransient<IndexingPipeline>();
         services.AddTransient<CrossRepoLinker>();
         services.AddTransient<GraphAssistant>();

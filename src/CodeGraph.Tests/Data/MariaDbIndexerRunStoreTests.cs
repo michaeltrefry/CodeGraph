@@ -77,6 +77,56 @@ public class MariaDbIndexerRunStoreTests
     }
 
     [Fact]
+    public async Task CompletedRun_RecordsDegradationCodeAndDetail_WhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var databaseName = $"codegraph_indexer_degraded_test_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+        var runner = new MariaDbMigrationRunner(
+            Options.Create(new MariaDbStorageOptions
+            {
+                ConnectionString = builder.ConnectionString,
+                MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+            }),
+            NullLogger<MariaDbMigrationRunner>.Instance);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            await using var context = new CodeGraphDbContext(CreateOptions(builder.ConnectionString));
+            var store = new MySqlIndexerRunStore(context);
+            await store.CreateIndexerRunAsync(new IndexerRunEntity
+            {
+                Operation = "reanalyze",
+                Status = "queued",
+                RetrySafe = true
+            });
+            var now = DateTime.UtcNow;
+            var lease = (await store.TryClaimNextIndexerRunAsync("worker", now, now.AddMinutes(1)))!;
+
+            (await store.CompleteIndexerRunAsync(
+                lease,
+                "Completed re-analysis with fallback.",
+                "rust_semantic_fallback_timeout",
+                """[{"failureCode":"timeout","crates":["alpha"]}]""",
+                now.AddSeconds(1))).ShouldBeTrue();
+
+            context.ChangeTracker.Clear();
+            var completed = await store.GetIndexerRunAsync(lease.Run.Id);
+            completed!.Status.ShouldBe("completed");
+            completed.ErrorCode.ShouldBe("rust_semantic_fallback_timeout");
+            completed.Error.ShouldNotBeNull();
+            completed.Error.ShouldContain("\"alpha\"");
+            completed.Message.ShouldBe("Completed re-analysis with fallback.");
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+    }
+
+    [Fact]
     public async Task DurableClaims_AreExclusiveFencedRecoverableAndCancellationAware_WhenConnectionIsConfigured()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();

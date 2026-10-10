@@ -41,6 +41,9 @@ public class ImpactAnalysisService(
         EdgeType.PUBLISHES
     };
 
+    private const string LowConfidenceFactor =
+        "Low-confidence node (tree-sitter fallback; relationships may be incomplete)";
+
     // Node labels that indicate test code — demote severity
     private static readonly HashSet<NodeLabel> TestLabels = new()
     {
@@ -235,7 +238,10 @@ public class ImpactAnalysisService(
                 node.Id, node.Name, node.QualifiedName, node.Label.ToString(),
                 node.Project, node.DotnetProject, node.FilePath,
                 Depth: 0, EdgeType: "CHANGED", Risk: RiskLevel.Critical,
-                RiskFactors: ["Changed node"]));
+                RiskFactors: GraphNodeConfidence.IsLowConfidence(node)
+                    ? ["Changed node", LowConfidenceFactor]
+                    : ["Changed node"],
+                LowConfidence: GraphNodeConfidence.IsLowConfidence(node)));
             affectedProjectSet.Add(node.Project);
         }
 
@@ -250,11 +256,14 @@ public class ImpactAnalysisService(
 
             var (risk, factors) = ClassifyRisk(node, depth, edgeType, sourceProject);
             affectedProjectSet.Add(node.Project);
+            var lowConfidence = GraphNodeConfidence.IsLowConfidence(node);
+            if (lowConfidence)
+                factors = [.. factors, LowConfidenceFactor];
 
             affectedNodes.Add(new AffectedNode(
                 node.Id, node.Name, node.QualifiedName, node.Label.ToString(),
                 node.Project, node.DotnetProject, node.FilePath,
-                depth, edgeType.ToString(), risk, factors));
+                depth, edgeType.ToString(), risk, factors, lowConfidence));
         }
 
         // Build cross-repo impact summary
@@ -291,7 +300,9 @@ public class ImpactAnalysisService(
             HighCount: affectedNodes.Count(n => n.Risk == RiskLevel.High),
             MediumCount: affectedNodes.Count(n => n.Risk == RiskLevel.Medium),
             LowCount: affectedNodes.Count(n => n.Risk == RiskLevel.Low),
-            AffectedProjects: affectedProjectSet.Order().ToList());
+            AffectedProjects: affectedProjectSet.Order().ToList(),
+            LowConfidenceCount: changedNodes.Count(n => n.LowConfidence) +
+                                affectedNodes.Count(n => n.LowConfidence));
 
         logger.LogInformation(
             "Impact analysis for {NodeCount} nodes: {Affected} affected, {CrossRepo} cross-repo",

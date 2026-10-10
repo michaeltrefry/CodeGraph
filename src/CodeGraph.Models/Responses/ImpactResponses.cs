@@ -20,7 +20,8 @@ public record AffectedNode(
     int Depth,
     string EdgeType,
     RiskLevel Risk,
-    IReadOnlyList<string> RiskFactors);
+    IReadOnlyList<string> RiskFactors,
+    bool LowConfidence = false);
 
 public record CrossRepoImpact(
     string SourceProject,
@@ -35,7 +36,8 @@ public record ImpactSummary(
     int HighCount,
     int MediumCount,
     int LowCount,
-    IReadOnlyList<string> AffectedProjects);
+    IReadOnlyList<string> AffectedProjects,
+    int LowConfidenceCount = 0);
 
 public enum RiskLevel
 {

@@ -23,6 +23,7 @@ public partial class IndexingPipeline
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly ICargoManifestExtractor? _cargoManifestExtractor;
+    private readonly IndexingRunDiagnostics? _diagnostics;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectLocks =
@@ -38,7 +39,8 @@ public partial class IndexingPipeline
         INuGetReferenceExtractor? nugetExtractor = null,
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
         IRustAnalyzer? rustAnalyzer = null,
-        ICargoManifestExtractor? cargoManifestExtractor = null)
+        ICargoManifestExtractor? cargoManifestExtractor = null,
+        IndexingRunDiagnostics? diagnostics = null)
     {
         _store = store;
         _extractors = extractors;
@@ -50,6 +52,7 @@ public partial class IndexingPipeline
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
         _cargoManifestExtractor = cargoManifestExtractor;
+        _diagnostics = diagnostics;
         _foundationalRepos = _options.FoundationalRepos ?? [];
     }
 
@@ -278,6 +281,7 @@ public partial class IndexingPipeline
         }
 
         // Rust — Cargo/SCIP project analysis when rust-analyzer + SCIP data are available.
+        var rustSemanticFallbacks = new List<RustSemanticFallback>();
         if (_rustAnalyzer is not null)
         {
             var rootCargoManifest = Path.Combine(rootPath, "Cargo.toml");
@@ -302,7 +306,7 @@ public partial class IndexingPipeline
                     _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     // Materialize and validate the complete semantic result before the
                     // shared graph buffer is touched. A malformed/lazy result therefore
-                    // cannot leave a partial Rust graph behind before failing the run.
+                    // cannot leave a partial Rust graph behind before the tree-sitter fallback.
                     MergeResults(preparedResults, buffer);
                     AddMetadataCandidates(detectedMetadataCandidates, preparedResults);
                     AddSuccessfullyProcessedFiles(
@@ -310,27 +314,22 @@ public partial class IndexingPipeline
                         changedRelativePaths,
                         successfullyProcessedFiles);
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (RustSemanticIndexingException ex)
-                {
-                    _logger.LogError(ex,
-                        "Rust semantic indexing capability failure {FailureCode} for {Manifest}",
-                        ex.FailureCode,
-                        Path.GetRelativePath(rootPath, cargoManifest));
-                    throw;
-                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    var failure = new RustSemanticIndexingException(
-                        "rust_semantic_pipeline_failed",
-                        $"Rust semantic indexing failed for manifest " +
-                        $"'{Path.GetRelativePath(rootPath, cargoManifest)}' before its results could be committed.",
-                        ex);
-                    _logger.LogError(failure,
-                        "Rust semantic indexing failure {FailureCode} for {Manifest}",
-                        failure.FailureCode,
-                        Path.GetRelativePath(rootPath, cargoManifest));
-                    throw failure;
+                    // A failed semantic pass stays local to its Cargo workspace: nothing
+                    // from it has touched the graph buffer, so its .rs files fall through
+                    // to the registered tree-sitter Rust extractor and are marked
+                    // low-confidence instead of failing the repository's index run.
+                    var fallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex);
+                    rustSemanticFallbacks.Add(fallback);
+                    _logger.LogWarning(ex,
+                        "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Manifest}; " +
+                        "falling back to low-confidence tree-sitter extraction for crates {Crates}",
+                        fallback.FailureCode,
+                        fallback.DetailCode,
+                        fallback.Manifest,
+                        string.Join(", ", fallback.Crates));
                 }
             }
         }
@@ -376,7 +375,7 @@ public partial class IndexingPipeline
         {
             stepSw.Restart();
             var perFileResult = await ExtractFilesAsync(
-                remainingFiles, rootPath, context, buffer, replaceExistingGraph, ct);
+                remainingFiles, rootPath, context, buffer, replaceExistingGraph, rustSemanticFallbacks, ct);
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
             detectedMetadataCandidates.AddRange(perFileResult.Metadata);
             successfullyProcessedFiles.UnionWith(perFileResult.ProcessedFiles);
@@ -414,7 +413,7 @@ public partial class IndexingPipeline
                 buffer.AllNodes.ToList(),
                 buffer.AllPendingEdges.ToList(),
                 buffer.AllFileHashes,
-                BuildRepositorySnapshot(repository, detectedMetadata, languageStats),
+                BuildRepositorySnapshot(repository, detectedMetadata, languageStats, rustSemanticFallbacks),
                 replacementSyncState,
                 ct);
             _logger.LogInformation(
@@ -451,8 +450,12 @@ public partial class IndexingPipeline
         if (!replaceExistingGraph && detectedMetadata is not null)
         {
             await _store.UpsertRepositoryAsync(
-                BuildRepositorySnapshot(repository, detectedMetadata, languageStats));
+                BuildRepositorySnapshot(repository, detectedMetadata, languageStats, rustSemanticFallbacks));
         }
+
+        // Report degradations only once the graph that reflects them has been committed.
+        foreach (var fallback in rustSemanticFallbacks)
+            _diagnostics?.RecordRustSemanticFallback(fallback);
 
         pipelineSw.Stop();
         _logger.LogInformation("Indexed {Project}: {Nodes} nodes, {Edges} edges in {TotalMs}ms",
@@ -525,7 +528,8 @@ public partial class IndexingPipeline
     // ── Per-File Extraction ──────────────────────────────────────────────
 
     private async Task<PerFileExtractionResult> ExtractFilesAsync(List<string> files, string rootPath,
-        ExtractorContext context, GraphBuffer buffer, bool failOnExtractionError, CancellationToken ct)
+        ExtractorContext context, GraphBuffer buffer, bool failOnExtractionError,
+        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks, CancellationToken ct)
     {
         var metadataSeen = new ConcurrentBag<ProjectMetadata>();
         var processedFiles = new ConcurrentBag<string>();
@@ -565,8 +569,10 @@ public partial class IndexingPipeline
                         return;
                     }
 
+                    var relativePath = NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath));
+                    var fallback = FindRustSemanticFallback(rustSemanticFallbacks, relativePath);
                     foreach (var node in result.Nodes)
-                        buffer.AddNode(node);
+                        buffer.AddNode(fallback is null ? node : MarkLowConfidence(node, fallback));
                     foreach (var edge in result.Edges)
                         buffer.AddEdge(edge);
                     foreach (var call in result.UnresolvedCalls)
@@ -576,7 +582,7 @@ public partial class IndexingPipeline
 
                     if (result.Metadata is not null)
                         metadataSeen.Add(result.Metadata);
-                    processedFiles.Add(NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath)));
+                    processedFiles.Add(relativePath);
                 }
                 catch (OperationCanceledException) when (ct2.IsCancellationRequested)
                 {
@@ -599,13 +605,14 @@ public partial class IndexingPipeline
     private RepositoryEntity BuildRepositorySnapshot(
         RepositoryEntity repository,
         ProjectMetadata? metadata,
-        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats)
+        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats,
+        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks)
     {
         repository.Language = metadata?.Language;
         repository.Framework = metadata?.Framework;
         repository.Properties = metadata is null
             ? null
-            : SerializeRepositoryProperties(metadata, languageStats);
+            : SerializeRepositoryProperties(metadata, languageStats, rustSemanticFallbacks);
         return repository;
     }
 
@@ -714,6 +721,81 @@ public partial class IndexingPipeline
         Path.GetFullPath(Path.IsPathRooted(documentPath)
             ? documentPath
             : Path.Combine(rootPath, documentPath));
+
+    private RustSemanticFallback CreateRustSemanticFallback(
+        string rootPath,
+        string cargoManifest,
+        Exception failure)
+    {
+        var manifest = NormalizeRelativePath(Path.GetRelativePath(rootPath, cargoManifest));
+        var workspaceDirectory = NormalizeRelativePath(Path.GetDirectoryName(manifest) ?? "");
+        return new RustSemanticFallback(
+            manifest,
+            ReadCargoCrateNames(rootPath, cargoManifest),
+            RustSemanticFailureCategory.Classify(failure),
+            (failure as RustSemanticIndexingException)?.FailureCode,
+            failure.Message)
+        {
+            WorkspaceDirectory = workspaceDirectory
+        };
+    }
+
+    private IReadOnlyList<string> ReadCargoCrateNames(string rootPath, string cargoManifest)
+    {
+        var workspaceRoot = Path.GetDirectoryName(cargoManifest) ?? rootPath;
+        var crates = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var manifestPath in _fileSystem
+                     .EnumerateFiles(workspaceRoot, "Cargo.toml", SearchOption.AllDirectories)
+                     .Where(path => !path.Contains(
+                         $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
+                         StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var model = Tomlyn.TomlSerializer.Deserialize<Tomlyn.Model.TomlTable>(
+                    _fileSystem.ReadAllText(manifestPath));
+                if (model is not null &&
+                    model.TryGetValue("package", out var package) &&
+                    package is Tomlyn.Model.TomlTable packageTable &&
+                    packageTable.TryGetValue("name", out var name) &&
+                    name is string crateName &&
+                    !string.IsNullOrWhiteSpace(crateName))
+                {
+                    crates.Add(crateName.Trim());
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not read crate name from {Manifest}", manifestPath);
+            }
+        }
+
+        return crates.ToList();
+    }
+
+    private static RustSemanticFallback? FindRustSemanticFallback(
+        IReadOnlyList<RustSemanticFallback> fallbacks,
+        string relativePath)
+    {
+        if (fallbacks.Count == 0 ||
+            !relativePath.EndsWith(".rs", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        return fallbacks.FirstOrDefault(fallback =>
+            fallback.WorkspaceDirectory.Length == 0 ||
+            relativePath.StartsWith(fallback.WorkspaceDirectory + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static GraphNode MarkLowConfidence(GraphNode node, RustSemanticFallback fallback)
+    {
+        var properties = node.Properties is null
+            ? new Dictionary<string, object>()
+            : new Dictionary<string, object>(node.Properties);
+        properties[GraphNodeConfidence.ConfidenceProperty] = GraphNodeConfidence.Low;
+        properties[GraphNodeConfidence.ExtractionSourceProperty] = GraphNodeConfidence.TreeSitterFallbackSource;
+        properties[GraphNodeConfidence.FallbackReasonProperty] = fallback.FailureCode;
+        return node with { Properties = properties };
+    }
 
     private static IReadOnlyList<ExtractionResult> PrepareRustSemanticResults(
         IReadOnlyList<ExtractionResult>? results)
@@ -837,7 +919,8 @@ public partial class IndexingPipeline
 
     private string? SerializeRepositoryProperties(
         ProjectMetadata metadata,
-        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats)
+        IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats,
+        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks)
     {
         var properties = DotnetSupportInspector.BuildRepositoryProperties(metadata.DotnetSupport) ??
                          new Dictionary<string, object>(StringComparer.Ordinal);
@@ -859,6 +942,9 @@ public partial class IndexingPipeline
                     StringComparer.Ordinal);
             properties["primaryLanguageBasis"] = "locNonBlank";
         }
+
+        if (rustSemanticFallbacks.Count > 0)
+            properties["rustSemanticFallbacks"] = rustSemanticFallbacks;
 
         return properties.Count == 0
             ? null

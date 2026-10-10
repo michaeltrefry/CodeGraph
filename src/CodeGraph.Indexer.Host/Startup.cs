@@ -135,6 +135,7 @@ public static class Startup
 
         services.AddSingleton<IFileSystem, LocalFileSystem>();
         services.AddSingleton<ISourceFileProvider, FileSystemSourceFileProvider>();
+        services.AddScoped<IndexingRunDiagnostics>();
         services.AddTransient<IndexingPipeline>();
         services.AddTransient<CrossRepoLinker>();
         services.AddTransient<IVitalsAnalyzer, VitalsAnalyzer>();

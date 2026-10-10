@@ -1,5 +1,7 @@
+using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -127,7 +129,12 @@ public sealed class IndexerRunBackgroundRunner(
             var message = await execution;
             monitorCancellation.Cancel();
             await IgnoreMonitorCancellationAsync(monitor);
-            if (!await store.CompleteIndexerRunAsync(lease, message, DateTime.UtcNow, CancellationToken.None))
+            var (degradationCode, degradation, degradationSummary) = DescribeDegradations(
+                scope.ServiceProvider.GetService<IndexingRunDiagnostics>());
+            if (degradationSummary is not null)
+                message = $"{message} {degradationSummary}";
+            if (!await store.CompleteIndexerRunAsync(
+                    lease, message, degradationCode, degradation, DateTime.UtcNow, CancellationToken.None))
             {
                 logger.LogWarning(
                     "Indexer run {RunId} completed work after losing lease; terminal update was fenced out",
@@ -169,6 +176,30 @@ public sealed class IndexerRunBackgroundRunner(
 
         return true;
     }
+
+    /// <summary>
+    /// Summarizes non-fatal degradations recorded while the run executed. A Rust semantic
+    /// fallback completes the run but records its failure code and affected crates.
+    /// </summary>
+    private static (string? Code, string? Detail, string? Summary) DescribeDegradations(
+        IndexingRunDiagnostics? diagnostics)
+    {
+        var fallbacks = diagnostics?.RustSemanticFallbacks ?? [];
+        if (fallbacks.Count == 0)
+            return (null, null, null);
+
+        var failureCodes = fallbacks.Select(fallback => fallback.FailureCode).Distinct().ToList();
+        var code = "rust_semantic_fallback_" + (failureCodes.Count == 1 ? failureCodes[0] : "mixed");
+        var detail = JsonSerializer.Serialize(fallbacks, DegradationJsonOptions);
+        var summary = "Rust semantic indexing fell back to low-confidence tree-sitter extraction for " +
+                      string.Join("; ", fallbacks.Select(fallback =>
+                          $"{fallback.Manifest} [{fallback.FailureCode}] crates: " +
+                          (fallback.Crates.Count == 0 ? "(unknown)" : string.Join(", ", fallback.Crates)))) +
+                      ".";
+        return (code, detail, summary);
+    }
+
+    private static readonly JsonSerializerOptions DegradationJsonOptions = new(JsonSerializerDefaults.Web);
 
     private async Task<LeaseMonitorResult> MonitorLeaseAsync(
         IndexerRunLease lease,

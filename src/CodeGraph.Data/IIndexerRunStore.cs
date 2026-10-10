@@ -53,6 +53,18 @@ public interface IIndexerRunStore
         DateTime completedAt,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Completes a run that succeeded with a recorded, non-fatal degradation (for example a
+    /// Rust semantic fallback). A null <paramref name="errorCode"/> is a clean completion.
+    /// </summary>
+    Task<bool> CompleteIndexerRunAsync(
+        IndexerRunLease lease,
+        string message,
+        string? errorCode,
+        string? error,
+        DateTime completedAt,
+        CancellationToken ct = default);
+
     Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(
         IndexerRunLease lease,
         string errorCode,

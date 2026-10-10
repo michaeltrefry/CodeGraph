@@ -269,7 +269,16 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         string message,
         DateTime completedAt,
         CancellationToken ct = default)
-        => FinishOwnedRunAsync(lease, "completed", message, null, completedAt, ct);
+        => FinishOwnedRunAsync(lease, "completed", message, null, null, completedAt, ct);
+
+    public Task<bool> CompleteIndexerRunAsync(
+        IndexerRunLease lease,
+        string message,
+        string? errorCode,
+        string? error,
+        DateTime completedAt,
+        CancellationToken ct = default)
+        => FinishOwnedRunAsync(lease, "completed", message, errorCode, error, completedAt, ct);
 
     public async Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(
         IndexerRunLease lease,
@@ -315,7 +324,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         string message,
         DateTime completedAt,
         CancellationToken ct = default)
-        => FinishOwnedRunAsync(lease, "canceled", message, null, completedAt, ct);
+        => FinishOwnedRunAsync(lease, "canceled", message, null, null, completedAt, ct);
 
     public async Task<IndexerRunEntity?> RequestIndexerRunCancellationAsync(
         long runId,
@@ -342,6 +351,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         IndexerRunLease lease,
         string status,
         string message,
+        string? errorCode,
         string? error,
         DateTime completedAt,
         CancellationToken ct)
@@ -350,7 +360,7 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
             UPDATE indexer_runs
             SET status = {status},
                 message = {message},
-                error_code = NULL,
+                error_code = {errorCode},
                 error = {error},
                 completed_at = {completedAt},
                 next_attempt_at = NULL,

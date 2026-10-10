@@ -411,102 +411,186 @@ public class IndexingPipelineTests
         }
     }
 
-    [Fact]
-    public async Task IndexProjectAsync_RustSemanticCapabilityFailure_FailsTheIndexerRun()
+    [Theory]
+    [InlineData("rust_semantic_command_timeout",
+        "Rust semantic command 'rust-analyzer' exceeded the 600-second timeout.",
+        RustSemanticFailureCategory.Timeout)]
+    [InlineData("rust_semantic_resource_exhausted",
+        "rust-analyzer scip was killed with exit 137 (SIGKILL), consistent with container memory exhaustion.",
+        RustSemanticFailureCategory.ResourceExhausted)]
+    [InlineData("rust_analyzer_scip_failed",
+        "rust-analyzer scip exited with 1: error: failed to run custom build command for `alpha v0.1.0`",
+        RustSemanticFailureCategory.BuildScript)]
+    [InlineData("rust_semantic_tools_unavailable",
+        "Rust semantic indexing tools are unavailable (rust-analyzer: False, scip: True).",
+        RustSemanticFailureCategory.Toolchain)]
+    [InlineData("rust_analyzer_scip_failed",
+        "rust-analyzer scip exited with 101: thread 'main' panicked",
+        RustSemanticFailureCategory.Other)]
+    public async Task IndexProjectAsync_RustSemanticFailure_FallsBackToLowConfidenceTreeSitterNodes(
+        string detailCode,
+        string message,
+        string expectedFailureCode)
     {
-        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-rust-failure-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(Path.Combine(rootPath, "src"));
-
+        var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-fallback");
         try
         {
-            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"),
-                "[package]\nname = \"failure_fixture\"\nversion = \"0.1.0\"\n");
-            await File.WriteAllTextAsync(Path.Combine(rootPath, "src", "lib.rs"),
-                "pub fn value() -> i32 { 1 }\n");
-
-            var pipeline = new IndexingPipeline(
-                new InMemoryGraphStore(),
-                [new MixedRustPythonMetadataExtractor()],
-                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
-                new LocalFileSystem(),
-                NullLogger<IndexingPipeline>.Instance,
-                rustAnalyzer: new CapabilityFailingRustAnalyzer());
-
-            var error = await Should.ThrowAsync<RustSemanticIndexingException>(() =>
-                pipeline.IndexProjectAsync("RustFailure", rootPath, ct: CancellationToken.None));
-
-            error.FailureCode.ShouldBe("rust_semantic_tools_unavailable");
-        }
-        finally
-        {
-            Directory.Delete(rootPath, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task IndexProjectAsync_GenericRustAnalyzerFailure_IsStructuredAndObservable()
-    {
-        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-rust-generic-failure-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(Path.Combine(rootPath, "src"));
-
-        try
-        {
-            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"),
-                "[package]\nname = \"generic_failure_fixture\"\nversion = \"0.1.0\"\n");
-            await File.WriteAllTextAsync(Path.Combine(rootPath, "src", "lib.rs"),
-                "pub fn value() -> i32 { 1 }\n");
-
-            var pipeline = new IndexingPipeline(
-                new InMemoryGraphStore(),
-                [new MixedRustPythonMetadataExtractor()],
-                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
-                new LocalFileSystem(),
-                NullLogger<IndexingPipeline>.Instance,
-                rustAnalyzer: new GenericFailingRustAnalyzer());
-
-            var error = await Should.ThrowAsync<RustSemanticIndexingException>(() =>
-                pipeline.IndexProjectAsync("RustGenericFailure", rootPath, ct: CancellationToken.None));
-
-            error.FailureCode.ShouldBe("rust_semantic_pipeline_failed");
-            error.InnerException.ShouldBeOfType<InvalidOperationException>();
-        }
-        finally
-        {
-            Directory.Delete(rootPath, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task IndexProjectAsync_MalformedLazyRustResult_DoesNotCommitPartialSemanticGraph()
-    {
-        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-rust-partial-failure-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(Path.Combine(rootPath, "src"));
-
-        try
-        {
-            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"),
-                "[package]\nname = \"partial_failure_fixture\"\nversion = \"0.1.0\"\n");
-            await File.WriteAllTextAsync(Path.Combine(rootPath, "src", "lib.rs"),
-                "pub fn value() -> i32 { 1 }\n");
-
             var store = new InMemoryGraphStore();
-            var pipeline = new IndexingPipeline(
+            var diagnostics = new IndexingRunDiagnostics();
+            var pipeline = CreateRustFallbackPipeline(
                 store,
-                [new MixedRustPythonMetadataExtractor()],
-                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
-                new LocalFileSystem(),
-                NullLogger<IndexingPipeline>.Instance,
-                rustAnalyzer: new PartiallyEnumeratingRustAnalyzer());
+                diagnostics,
+                new ThrowingRustAnalyzer(new RustSemanticIndexingException(detailCode, message)));
 
-            var error = await Should.ThrowAsync<RustSemanticIndexingException>(() =>
-                pipeline.IndexProjectAsync("RustPartialFailure", rootPath, ct: CancellationToken.None));
+            await pipeline.IndexProjectAsync("RustFallback", rootPath, ct: CancellationToken.None);
 
-            error.FailureCode.ShouldBe("rust_semantic_pipeline_failed");
-            store.Nodes.ShouldNotContain(node => node.Name == "partial-semantic-node");
+            AssertLowConfidenceTreeSitterNodes(store, "RustFallback", expectedFailureCode);
+            var fallback = diagnostics.RustSemanticFallbacks.ShouldHaveSingleItem();
+            fallback.FailureCode.ShouldBe(expectedFailureCode);
+            fallback.DetailCode.ShouldBe(detailCode);
+            fallback.Manifest.ShouldBe("Cargo.toml");
+            fallback.Crates.ShouldBe(["alpha", "beta"]);
+            fallback.Message.ShouldContain(message);
+
+            var repository = await store.GetRepositoryByName("RustFallback");
+            repository.ShouldNotBeNull();
+            repository.Properties.ShouldNotBeNull();
+            var recorded = ((JsonElement)repository.Properties["rustSemanticFallbacks"]).EnumerateArray().Single();
+            recorded.GetProperty("failureCode").GetString().ShouldBe(expectedFailureCode);
+            recorded.GetProperty("crates").EnumerateArray().Select(crate => crate.GetString())
+                .ShouldBe(["alpha", "beta"]);
         }
         finally
         {
             Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_GenericRustAnalyzerFailure_FallsBackWithOtherFailureCode()
+    {
+        var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-generic-fallback");
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var diagnostics = new IndexingRunDiagnostics();
+            var pipeline = CreateRustFallbackPipeline(
+                store,
+                diagnostics,
+                new ThrowingRustAnalyzer(new InvalidOperationException("Synthetic generic analyzer failure.")));
+
+            await pipeline.IndexProjectAsync(
+                "RustGenericFallback", rootPath, replaceExistingGraph: true, ct: CancellationToken.None);
+
+            AssertLowConfidenceTreeSitterNodes(store, "RustGenericFallback", RustSemanticFailureCategory.Other);
+            var fallback = diagnostics.RustSemanticFallbacks.ShouldHaveSingleItem();
+            fallback.FailureCode.ShouldBe(RustSemanticFailureCategory.Other);
+            fallback.DetailCode.ShouldBeNull();
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_MalformedLazyRustResult_FallsBackWithoutPartialSemanticGraph()
+    {
+        var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-partial-fallback");
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var diagnostics = new IndexingRunDiagnostics();
+            var pipeline = CreateRustFallbackPipeline(store, diagnostics, new PartiallyEnumeratingRustAnalyzer());
+
+            await pipeline.IndexProjectAsync("RustPartialFallback", rootPath, ct: CancellationToken.None);
+
+            store.Nodes.ShouldNotContain(node => node.Name == "partial-semantic-node");
+            AssertLowConfidenceTreeSitterNodes(store, "RustPartialFallback", RustSemanticFailureCategory.Other);
+            diagnostics.RustSemanticFallbacks.ShouldHaveSingleItem();
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_RustSemanticSuccess_DoesNotMarkNodesLowConfidence()
+    {
+        var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-semantic-success");
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var diagnostics = new IndexingRunDiagnostics();
+            var pipeline = CreateRustFallbackPipeline(store, diagnostics, new SucceedingRustAnalyzer());
+
+            await pipeline.IndexProjectAsync("RustSemantic", rootPath, ct: CancellationToken.None);
+
+            diagnostics.RustSemanticFallbacks.ShouldBeEmpty();
+            store.Nodes.ShouldContain(node => node.Name == "semantic_alpha");
+            store.Nodes.ShouldNotContain(node => GraphNodeConfidence.IsLowConfidence(node));
+            var repository = await store.GetRepositoryByName("RustSemantic");
+            (repository!.Properties ?? []).ShouldNotContainKey("rustSemanticFallbacks");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    private static async Task<string> CreateRustWorkspaceFixtureAsync(string prefix)
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
+        foreach (var crate in new[] { "alpha", "beta" })
+        {
+            var crateRoot = Path.Combine(rootPath, "crates", crate);
+            Directory.CreateDirectory(Path.Combine(crateRoot, "src"));
+            await File.WriteAllTextAsync(Path.Combine(crateRoot, "Cargo.toml"),
+                $"[package]\nname = \"{crate}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+            await File.WriteAllTextAsync(Path.Combine(crateRoot, "src", "lib.rs"),
+                $"pub struct {char.ToUpperInvariant(crate[0])}{crate[1..]}Widget;\n\npub fn {crate}_value() -> i32 {{ 1 }}\n");
+        }
+
+        await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\nresolver = \"2\"\n");
+        return rootPath;
+    }
+
+    private static IndexingPipeline CreateRustFallbackPipeline(
+        InMemoryGraphStore store,
+        IndexingRunDiagnostics diagnostics,
+        IRustAnalyzer rustAnalyzer) =>
+        new(
+            store,
+            [new CodeGraph.Extractors.TreeSitter.TreeSitterExtractor(
+                NullLogger<CodeGraph.Extractors.TreeSitter.TreeSitterExtractor>.Instance)],
+            Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+            new LocalFileSystem(),
+            NullLogger<IndexingPipeline>.Instance,
+            rustAnalyzer: rustAnalyzer,
+            cargoManifestExtractor: new CargoManifestExtractor(),
+            diagnostics: diagnostics);
+
+    private static void AssertLowConfidenceTreeSitterNodes(
+        InMemoryGraphStore store,
+        string project,
+        string expectedFailureCode)
+    {
+        foreach (var crate in new[] { "alpha", "beta" })
+        {
+            var filePath = $"crates/{crate}/src/lib.rs";
+            var codeNodes = store.Nodes
+                .Where(node => node.Project == project && node.FilePath == filePath &&
+                               node.Label is not (NodeLabel.File or NodeLabel.Folder))
+                .ToList();
+            codeNodes.ShouldContain(node => node.Name == $"{crate}_value" && node.Label == NodeLabel.Function);
+            codeNodes.ShouldAllBe(node => GraphNodeConfidence.IsLowConfidence(node));
+            codeNodes.ShouldAllBe(node =>
+                (string)node.Properties[GraphNodeConfidence.ExtractionSourceProperty] ==
+                GraphNodeConfidence.TreeSitterFallbackSource);
+            codeNodes.ShouldAllBe(node =>
+                (string)node.Properties[GraphNodeConfidence.FallbackReasonProperty] == expectedFailureCode);
         }
     }
 
@@ -1017,24 +1101,40 @@ public class IndexingPipelineTests
         }
     }
 
-    private sealed class CapabilityFailingRustAnalyzer : IRustAnalyzer
+    private sealed class ThrowingRustAnalyzer(Exception failure) : IRustAnalyzer
     {
         public Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
             string cargoManifestPath,
             ExtractorContext context,
             CancellationToken ct = default) =>
-            throw new RustSemanticIndexingException(
-                "rust_semantic_tools_unavailable",
-                "Synthetic structured capability failure.");
+            Task.FromException<IReadOnlyList<ExtractionResult>>(failure);
     }
 
-    private sealed class GenericFailingRustAnalyzer : IRustAnalyzer
+    private sealed class SucceedingRustAnalyzer : IRustAnalyzer
     {
         public Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
             string cargoManifestPath,
             ExtractorContext context,
             CancellationToken ct = default) =>
-            throw new InvalidOperationException("Synthetic generic analyzer failure.");
+            Task.FromResult<IReadOnlyList<ExtractionResult>>(
+            [
+                new ExtractionResult
+                {
+                    Nodes =
+                    [
+                        new GraphNode
+                        {
+                            Project = context.ProjectName,
+                            Label = NodeLabel.Function,
+                            Name = "semantic_alpha",
+                            QualifiedName = $"{context.ProjectName}:semantic_alpha",
+                            FilePath = "crates/alpha/src/lib.rs"
+                        }
+                    ],
+                    ProcessedFiles = ["crates/alpha/src/lib.rs", "crates/beta/src/lib.rs"],
+                    Metadata = new ProjectMetadata("Rust", "Cargo")
+                }
+            ]);
     }
 
     private sealed class PartiallyEnumeratingRustAnalyzer : IRustAnalyzer

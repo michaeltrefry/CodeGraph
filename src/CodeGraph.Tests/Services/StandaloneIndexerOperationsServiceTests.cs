@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
@@ -5,6 +6,7 @@ using CodeGraph.Services;
 using CodeGraph.Services.DatabaseSchema;
 using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Indexer;
+using CodeGraph.Services.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -386,6 +388,44 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
+    public async Task DurableWorker_CompletesReAnalyzeWithRustFallbackFailureCodeAndCrates()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.ReAnalyze,
+            Target = "SceneWorks",
+            ArgsJson = """{"repo":"SceneWorks"}""",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new RecordingAdminService(),
+            configure: collection => collection.AddScoped<IProjectService, RustFallbackProjectService>());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var completed = await runs.GetIndexerRunAsync(runId);
+        completed!.Status.ShouldBe("completed");
+        completed.AttemptCount.ShouldBe(1);
+        completed.ErrorCode.ShouldBe("rust_semantic_fallback_timeout");
+        completed.Message.ShouldNotBeNull();
+        completed.Message.ShouldContain("tree-sitter");
+        completed.Message.ShouldContain("alpha, beta");
+        using var detail = JsonDocument.Parse(completed.Error!);
+        var fallback = detail.RootElement.EnumerateArray().Single();
+        fallback.GetProperty("failureCode").GetString().ShouldBe("timeout");
+        fallback.GetProperty("detailCode").GetString().ShouldBe("rust_semantic_command_timeout");
+        fallback.GetProperty("crates").EnumerateArray().Select(crate => crate.GetString())
+            .ShouldBe(["alpha", "beta"]);
+    }
+
+    [Fact]
     public async Task DurableWorker_RetriesOnlySafeOperationsAndExposesAttemptState()
     {
         var runs = new FakeIndexerRunStore();
@@ -490,15 +530,20 @@ public class StandaloneIndexerOperationsServiceTests
         IDatabaseSourceStore sources,
         IDatabaseSchemaExtractor schemas,
         IAdminService admin,
-        IProjectService? projects = null)
+        IProjectService? projects = null,
+        Action<IServiceCollection>? configure = null)
     {
+        var configureProjects = configure is not null;
         var services = new ServiceCollection();
         services.AddSingleton(runs);
         services.AddSingleton(sources);
         services.AddSingleton(schemas);
         services.AddSingleton(admin);
-        services.AddSingleton(projects ?? new RecordingProjectService());
+        if (projects is not null || !configureProjects)
+            services.AddSingleton(projects ?? new RecordingProjectService());
+        services.AddScoped<IndexingRunDiagnostics>();
         services.AddTransient<IndexerRunExecutor>();
+        configure?.Invoke(services);
         return services.BuildServiceProvider();
     }
 
@@ -621,6 +666,26 @@ public class StandaloneIndexerOperationsServiceTests
         public Task ProcessRepository(
             CodeGraph.Models.Messages.ProcessRepository message,
             CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<bool> DeleteRepositoryAsync(string repo)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class RustFallbackProjectService(IndexingRunDiagnostics diagnostics) : IProjectService
+    {
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
+        {
+            diagnostics.RecordRustSemanticFallback(new RustSemanticFallback(
+                "Cargo.toml",
+                ["alpha", "beta"],
+                "timeout",
+                "rust_semantic_command_timeout",
+                "rust-analyzer timed out"));
+            return Task.FromResult<AnalysisBatchResponse?>(CreateBatch(repo));
+        }
+
+        public Task ProcessRepository(CodeGraph.Models.Messages.ProcessRepository message, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
 
         public Task<bool> DeleteRepositoryAsync(string repo)
@@ -771,6 +836,9 @@ public class StandaloneIndexerOperationsServiceTests
         public Task<bool> CompleteIndexerRunAsync(IndexerRunLease lease, string message, DateTime completedAt, CancellationToken ct = default)
             => FinishAsync(lease, "completed", message, completedAt);
 
+        public Task<bool> CompleteIndexerRunAsync(IndexerRunLease lease, string message, string? errorCode, string? error, DateTime completedAt, CancellationToken ct = default)
+            => FinishAsync(lease, "completed", message, completedAt, errorCode, error);
+
         public Task<IndexerRunFailureDisposition> FailOrRetryIndexerRunAsync(IndexerRunLease lease, string errorCode, string error, DateTime now, DateTime nextAttemptAt, int maxAttempts, CancellationToken ct = default)
         {
             if (!Owns(lease))
@@ -807,13 +875,21 @@ public class StandaloneIndexerOperationsServiceTests
             return Task.FromResult<IndexerRunEntity?>(Clone(run));
         }
 
-        private Task<bool> FinishAsync(IndexerRunLease lease, string status, string message, DateTime completedAt)
+        private Task<bool> FinishAsync(
+            IndexerRunLease lease,
+            string status,
+            string message,
+            DateTime completedAt,
+            string? errorCode = null,
+            string? error = null)
         {
             if (!Owns(lease))
                 return Task.FromResult(false);
             var run = _runs[lease.Run.Id];
             run.Status = status;
             run.Message = message;
+            run.ErrorCode = errorCode;
+            run.Error = error;
             run.CompletedAt = completedAt;
             run.ExecutionOwner = null;
             run.LeaseExpiresAt = null;
