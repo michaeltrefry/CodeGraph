@@ -180,6 +180,12 @@ public sealed class IndexerRunBackgroundRunner(
     /// <summary>
     /// Summarizes non-fatal degradations recorded while the run executed. A Rust semantic
     /// fallback completes the run but records its failure code and affected crates.
+    /// One fallback is recorded per failed crate group. The error code is
+    /// <c>rust_semantic_fallback_&lt;category&gt;</c> when every fallback shares one
+    /// <see cref="RustSemanticFailureCategory"/>, and <c>rust_semantic_fallback_mixed</c>
+    /// otherwise, independent of group order. The detail is a JSON array with one entry per
+    /// fallback (manifest, crates, failureCode, detailCode, message) in the workspace's
+    /// deterministic group order, so each group's own code stays visible under "mixed".
     /// </summary>
     private static (string? Code, string? Detail, string? Summary) DescribeDegradations(
         IndexingRunDiagnostics? diagnostics)

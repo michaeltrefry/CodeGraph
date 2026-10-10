@@ -47,6 +47,18 @@ public static class CodeGraphOptionsServiceCollectionExtensions
             .Validate(
                 options => options.RustSemanticStderrTailCharacters is >= 256 and <= 65_536,
                 "Rust semantic stderr tail must be between 256 and 65536 characters.")
+            .Validate(
+                options => options.RustSemanticCrateGroupSize is >= 1 and <= 10_000,
+                "Rust semantic crate group size must be between 1 and 10000 crates.")
+            .Validate(
+                options => options.RustSemanticGroupTimeoutSeconds is >= 1 and <= 86_400,
+                "Rust semantic group timeout must be between 1 and 86400 seconds.")
+            .Validate(
+                options => options.RustSemanticGroupMemoryLimitMb is 0 or (>= 64 and <= 1_048_576),
+                "Rust semantic group memory limit must be 0 (disabled) or between 64 and 1048576 MiB.")
+            .Validate(
+                options => !options.RustSemanticProcMacros || options.RustSemanticBuildScripts,
+                "Rust semantic proc-macro expansion requires Rust semantic build scripts to be enabled.")
             .ValidateOnStart();
 
         services.AddOptions<ConsumerOptions>()

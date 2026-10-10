@@ -404,6 +404,37 @@ public sealed class RustProjectAnalyzerCapabilityTests
             File.WriteAllText(ManifestPath,
                 "[package]\nname = \"rust_capability_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n");
             File.WriteAllText(Path.Combine(_root, "src", "lib.rs"), "pub fn value() -> i32 { 1 }\n");
+            var metadataPath = Path.Combine(_root, "cargo-metadata.json");
+            var packageId = $"path+file://{_root}#0.1.0";
+            File.WriteAllText(metadataPath, JsonSerializer.Serialize(new
+            {
+                packages = new[]
+                {
+                    new
+                    {
+                        name = "rust_capability_fixture",
+                        version = "0.1.0",
+                        id = packageId,
+                        manifest_path = ManifestPath,
+                        edition = "2024",
+                        targets = new[]
+                        {
+                            new
+                            {
+                                kind = new[] { "lib" },
+                                name = "rust_capability_fixture",
+                                src_path = Path.Combine(_root, "src", "lib.rs"),
+                                edition = "2024"
+                            }
+                        }
+                    }
+                },
+                workspace_members = new[] { packageId },
+                workspace_root = _root,
+                resolve = new { nodes = new[] { new { id = packageId, deps = Array.Empty<object>(), features = Array.Empty<string>() } } }
+            }));
+            AddTool("cargo", $"#!/bin/sh\n/bin/cat '{metadataPath}'\n");
+            AddTool("rustc", $"#!/bin/sh\necho '{Path.Combine(_root, "sysroot")}'\n");
         }
 
         public void AddTool(string name, string content)

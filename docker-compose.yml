@@ -166,6 +166,11 @@ services:
       CodeGraph__IndexingOptions__RustSemanticCommandTimeoutSeconds: ${CODEGRAPH_RUST_SEMANTIC_TIMEOUT_SECONDS:-600}
       CodeGraph__IndexingOptions__RustSemanticMaxThreads: ${CODEGRAPH_RUST_SEMANTIC_MAX_THREADS:-2}
       CodeGraph__IndexingOptions__RustSemanticStderrTailCharacters: ${CODEGRAPH_RUST_SEMANTIC_STDERR_TAIL_CHARACTERS:-4096}
+      CodeGraph__IndexingOptions__RustSemanticCrateGroupSize: ${CODEGRAPH_RUST_SEMANTIC_CRATE_GROUP_SIZE:-8}
+      CodeGraph__IndexingOptions__RustSemanticGroupTimeoutSeconds: ${CODEGRAPH_RUST_SEMANTIC_GROUP_TIMEOUT_SECONDS:-600}
+      CodeGraph__IndexingOptions__RustSemanticGroupMemoryLimitMb: ${CODEGRAPH_RUST_SEMANTIC_GROUP_MEMORY_LIMIT_MB:-8192}
+      CodeGraph__IndexingOptions__RustSemanticBuildScripts: ${CODEGRAPH_RUST_SEMANTIC_BUILD_SCRIPTS:-false}
+      CodeGraph__IndexingOptions__RustSemanticProcMacros: ${CODEGRAPH_RUST_SEMANTIC_PROC_MACROS:-false}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}

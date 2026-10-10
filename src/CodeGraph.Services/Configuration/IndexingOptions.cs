@@ -35,6 +35,41 @@ public class IndexingOptions
     /// Maximum stderr tail retained for Rust semantic command diagnostics.
     /// </summary>
     public int RustSemanticStderrTailCharacters { get; set; } = 4096;
+
+    /// <summary>
+    /// Cargo workspace members analyzed together in one rust-analyzer SCIP pass. Members are
+    /// ordered by repository-relative manifest directory (ordinal), then package name, and
+    /// chunked in that order, so the same workspace always yields the same groups. A failed
+    /// group falls back to tree-sitter on its own; the other groups stay semantic.
+    /// </summary>
+    public int RustSemanticCrateGroupSize { get; set; } = 8;
+
+    /// <summary>
+    /// Wall-clock budget for one crate group: optional <c>cargo check</c> (build scripts),
+    /// <c>rust-analyzer scip</c> and <c>scip print</c> together. Each of those commands is
+    /// additionally bounded by <see cref="RustSemanticCommandTimeoutSeconds"/>.
+    /// </summary>
+    public int RustSemanticGroupTimeoutSeconds { get; set; } = 600;
+
+    /// <summary>
+    /// Resident-memory cap in MiB for the process tree of each crate-group command. On Linux the
+    /// analyzer samples the summed RSS of the command's process group from /proc and kills the
+    /// group once it exceeds the cap; other platforms do not enforce it. 0 disables the cap.
+    /// </summary>
+    public int RustSemanticGroupMemoryLimitMb { get; set; } = 8192;
+
+    /// <summary>
+    /// Run Cargo build scripts (<c>cargo check</c>) so rust-analyzer sees their generated code,
+    /// cfgs and env. Off by default: build scripts are repository-controlled code.
+    /// </summary>
+    public bool RustSemanticBuildScripts { get; set; }
+
+    /// <summary>
+    /// Expand proc-macros with the toolchain's proc-macro server. Requires
+    /// <see cref="RustSemanticBuildScripts"/>: proc-macro dylibs only exist after
+    /// <c>cargo check</c> compiles them (which runs their build scripts).
+    /// </summary>
+    public bool RustSemanticProcMacros { get; set; }
     public string[] SkipPatterns { get; set; } =
     [
         "**/bin/**", "**/obj/**", "**/node_modules/**",

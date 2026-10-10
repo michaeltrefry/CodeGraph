@@ -2,7 +2,9 @@ using CodeGraph.Extractors.Rust;
 using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Indexer.Host;
 
@@ -31,13 +33,7 @@ internal static class RustSemanticIndexingValidator
             var manifestPath = suppliedManifest ?? Path.Combine(fixtureRoot, "Cargo.toml");
             if (ownsFixture)
             {
-                Directory.CreateDirectory(Path.Combine(fixtureRoot, "src"));
-                await File.WriteAllTextAsync(
-                    manifestPath,
-                    "[package]\nname = \"codegraph_rust_validation\"\nversion = \"0.1.0\"\nedition = \"2024\"\n");
-                await File.WriteAllTextAsync(
-                    Path.Combine(fixtureRoot, "src", "lib.rs"),
-                    "pub fn target(value: i32) -> i32 { value + 1 }\npub fn caller() -> i32 { target(41) }\n");
+                await WriteFixtureAsync(fixtureRoot);
             }
             else if (!File.Exists(manifestPath))
             {
@@ -45,52 +41,33 @@ internal static class RustSemanticIndexingValidator
                 return 66;
             }
 
-            var analyzer = new RustProjectAnalyzer(NullLogger<RustProjectAnalyzer>.Instance);
-            var results = await analyzer.AnalyzeProjectAsync(
-                manifestPath,
-                new ExtractorContext
-                {
-                    ProjectName = ownsFixture
-                        ? "RustSemanticValidation"
-                        : Path.GetFileName(fixtureRoot),
-                    RootPath = fixtureRoot
-                });
+            // Default production settings, except one crate per group so the fixture exercises
+            // several groups and the cross-group link.
+            var analyzer = new RustProjectAnalyzer(
+                NullLogger<RustProjectAnalyzer>.Instance,
+                Options.Create(new IndexingOptions { RustSemanticCrateGroupSize = ownsFixture ? 1 : 8 }));
+            var context = new ExtractorContext
+            {
+                ProjectName = ownsFixture
+                    ? "RustSemanticValidation"
+                    : Path.GetFileName(fixtureRoot),
+                RootPath = fixtureRoot
+            };
+            var analysis = await analyzer.AnalyzeWorkspaceAsync(manifestPath, context);
+            var failed = analysis.Groups.FirstOrDefault(group => group.Failure is not null);
+            if (failed?.Failure is RustSemanticIndexingException groupFailure)
+                throw groupFailure;
+            if (failed?.Failure is { } otherFailure)
+                throw otherFailure;
 
+            var results = RustScipCrossGroupLinker.Link(
+                analysis.Groups.SelectMany(group => group.Results ?? []).ToList());
             var nodes = results.SelectMany(result => result.Nodes).ToArray();
             var edges = results.SelectMany(result => result.Edges).ToArray();
             if (!ownsFixture)
                 return ValidateRepositoryResult(fixtureRoot, nodes, edges);
 
-            var caller = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "caller"));
-            var target = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "target"));
-            var fileQualifiedName = "RustSemanticValidation:src/lib.rs";
-            var hasCallerDefinitionEdge = caller is not null && edges.Any(edge =>
-                edge.Type == EdgeType.DEFINES &&
-                edge.SourceQN == fileQualifiedName &&
-                edge.TargetQN == caller.QualifiedName);
-            var hasTargetDefinitionEdge = target is not null && edges.Any(edge =>
-                edge.Type == EdgeType.DEFINES &&
-                edge.SourceQN == fileQualifiedName &&
-                edge.TargetQN == target.QualifiedName);
-            var hasResolvedCall = caller is not null && target is not null && edges.Any(edge =>
-                edge.Type == EdgeType.CALLS &&
-                edge.SourceQN == caller.QualifiedName &&
-                edge.TargetQN == target.QualifiedName);
-
-            if (caller is null || target is null ||
-                !hasCallerDefinitionEdge || !hasTargetDefinitionEdge || !hasResolvedCall)
-            {
-                Console.Error.WriteLine(
-                    $"FAIL: semantic import was incomplete (caller={caller is not null}, " +
-                    $"target={target is not null}, callerDefinition={hasCallerDefinitionEdge}, " +
-                    $"targetDefinition={hasTargetDefinitionEdge}, resolvedCall={hasResolvedCall}).");
-                return 1;
-            }
-
-            Console.WriteLine(
-                $"PASS: final image generated and imported Rust semantic definitions, references, and CALLS " +
-                $"({nodes.Length} nodes, {edges.Length} edges).");
-            return 0;
+            return ValidateFixtureResult(fixtureRoot, analysis, nodes, edges);
         }
         catch (RustSemanticIndexingException ex)
         {
@@ -110,6 +87,76 @@ internal static class RustSemanticIndexingValidator
                 catch { /* best-effort validation cleanup */ }
             }
         }
+    }
+
+    private static async Task WriteFixtureAsync(string fixtureRoot)
+    {
+        async Task WriteAsync(string relativePath, string content)
+        {
+            var path = Path.Combine(fixtureRoot, relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, content);
+        }
+
+        await WriteAsync("Cargo.toml",
+            "[workspace]\nresolver = \"2\"\nmembers = [\"crates/alpha\", \"crates/beta\", \"crates/macros\"]\n");
+        await WriteAsync("crates/alpha/Cargo.toml",
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n" +
+            "[dependencies]\nbeta = { path = \"../beta\" }\nmacros = { path = \"../macros\" }\n");
+        await WriteAsync("crates/alpha/src/lib.rs",
+            "macros::make_generated!();\n\npub fn caller() -> i32 { beta::target(41) }\n");
+        await WriteAsync("crates/beta/Cargo.toml",
+            "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nedition = \"2024\"\nbuild = \"build.rs\"\n");
+        // Proves build scripts stay off: running it would leave a marker in the fixture.
+        await WriteAsync("crates/beta/build.rs",
+            "fn main() { std::fs::write(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/" + BuildScriptMarker +
+            "\"), \"ran\").unwrap(); }\n");
+        await WriteAsync("crates/beta/src/lib.rs", "pub fn target(value: i32) -> i32 { value + 1 }\n");
+        await WriteAsync("crates/macros/Cargo.toml",
+            "[package]\nname = \"macros\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nproc-macro = true\n");
+        // Proves proc-macro expansion stays off: expanding it would define generated_by_macro.
+        await WriteAsync("crates/macros/src/lib.rs",
+            "use proc_macro::TokenStream;\n\n#[proc_macro]\npub fn make_generated(_input: TokenStream) -> TokenStream {\n" +
+            "    \"pub fn generated_by_macro() {}\".parse().unwrap()\n}\n");
+    }
+
+    private const string BuildScriptMarker = "build-script-ran";
+
+    internal static int ValidateFixtureResult(
+        string fixtureRoot,
+        RustWorkspaceAnalysis analysis,
+        IReadOnlyList<GraphNode> nodes,
+        IReadOnlyList<PendingEdge> edges)
+    {
+        var groups = string.Join(" | ", analysis.Groups.Select(group => string.Join(",", group.Crates)));
+        var caller = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "caller", "crates/alpha/src/lib.rs"));
+        var target = nodes.SingleOrDefault(node => IsExactLocalDefinition(node, "target", "crates/beta/src/lib.rs"));
+        var hasCallerDefinitionEdge = caller is not null && edges.Any(edge =>
+            edge.Type == EdgeType.DEFINES &&
+            edge.SourceQN == "RustSemanticValidation:crates/alpha/src/lib.rs" &&
+            edge.TargetQN == caller.QualifiedName);
+        var hasCrossGroupCall = caller is not null && target is not null && edges.Any(edge =>
+            edge.Type == EdgeType.CALLS &&
+            edge.SourceQN == caller.QualifiedName &&
+            edge.TargetQN == target.QualifiedName);
+        var buildScriptRan = File.Exists(Path.Combine(fixtureRoot, "crates", "beta", BuildScriptMarker));
+        var procMacroExpanded = nodes.Any(node => node.Name == "generated_by_macro");
+
+        if (analysis.Groups.Count != 3 || caller is null || target is null || !hasCallerDefinitionEdge ||
+            !hasCrossGroupCall || buildScriptRan || procMacroExpanded)
+        {
+            Console.Error.WriteLine(
+                $"FAIL: grouped semantic import was incomplete (groups={groups}, caller={caller is not null}, " +
+                $"target={target is not null}, callerDefinition={hasCallerDefinitionEdge}, " +
+                $"crossGroupCall={hasCrossGroupCall}, buildScriptRan={buildScriptRan}, " +
+                $"procMacroExpanded={procMacroExpanded}).");
+            return 1;
+        }
+
+        Console.WriteLine(
+            $"PASS: final image generated and imported Rust semantic definitions, references, and cross-group CALLS " +
+            $"for crate groups [{groups}] with build scripts and proc-macros off ({nodes.Count} nodes, {edges.Count} edges).");
+        return 0;
     }
 
     internal static int ValidateRepositoryResult(
@@ -171,9 +218,9 @@ internal static class RustSemanticIndexingValidator
         }
     }
 
-    private static bool IsExactLocalDefinition(GraphNode node, string expectedName) =>
+    private static bool IsExactLocalDefinition(GraphNode node, string expectedName, string filePath) =>
         node.Name == expectedName &&
-        node.FilePath == "src/lib.rs" &&
+        node.FilePath == filePath &&
         node.Properties.GetValueOrDefault("source")?.ToString() == "scip" &&
         !node.Properties.ContainsKey("scip_external");
 }

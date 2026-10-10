@@ -282,6 +282,7 @@ public partial class IndexingPipeline
 
         // Rust — Cargo/SCIP project analysis when rust-analyzer + SCIP data are available.
         var rustSemanticFallbacks = new List<RustSemanticFallback>();
+        var rustSourceOwners = new List<RustSourceOwner>();
         if (_rustAnalyzer is not null)
         {
             var rootCargoManifest = Path.Combine(rootPath, "Cargo.toml");
@@ -298,44 +299,88 @@ public partial class IndexingPipeline
                 _logger.LogInformation("Using Rust project analysis for {Manifest}",
                     Path.GetRelativePath(rootPath, cargoManifest));
                 stepSw.Restart();
+                RustWorkspaceAnalysis analysis;
                 try
                 {
-                    var results = await _rustAnalyzer.AnalyzeProjectAsync(
-                        cargoManifest, context, ct);
-                    var preparedResults = PrepareRustSemanticResults(results);
-                    _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
-                    // Materialize and validate the complete semantic result before the
-                    // shared graph buffer is touched. A malformed/lazy result therefore
-                    // cannot leave a partial Rust graph behind before the tree-sitter fallback.
-                    MergeResults(preparedResults, buffer);
-                    AddMetadataCandidates(detectedMetadataCandidates, preparedResults);
-                    AddSuccessfullyProcessedFiles(
-                        preparedResults,
-                        changedRelativePaths,
-                        successfullyProcessedFiles);
+                    analysis = await _rustAnalyzer.AnalyzeWorkspaceAsync(cargoManifest, context, ct)
+                        ?? throw new InvalidOperationException("The Rust analyzer returned no workspace analysis.");
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    // A failed semantic pass stays local to its Cargo workspace: nothing
-                    // from it has touched the graph buffer, so its .rs files fall through
-                    // to the registered tree-sitter Rust extractor and are marked
-                    // low-confidence instead of failing the repository's index run.
-                    var fallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex);
-                    rustSemanticFallbacks.Add(fallback);
-                    // This structured warning plus repositories.properties.rustSemanticFallbacks
-                    // is the durable record for runs without an indexer_runs row (scheduled,
-                    // CI and ProcessRepository consumer-driven indexing).
-                    _logger.LogWarning(ex,
-                        "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Project} {Manifest}; " +
-                        "falling back to low-confidence tree-sitter extraction for crates {Crates}",
-                        fallback.FailureCode,
-                        fallback.DetailCode,
-                        projectName,
-                        fallback.Manifest,
-                        fallback.Crates);
+                    // No group could be analyzed (for example the tools are missing): the
+                    // whole workspace falls back.
+                    RecordRustSemanticFallback(
+                        CreateRustSemanticFallback(rootPath, cargoManifest, ex, crateGroup: null),
+                        ex);
+                    continue;
                 }
+
+                // A failed semantic pass stays local to its crate group: nothing from a failed
+                // group touches the graph buffer, so its .rs files fall through to the
+                // registered tree-sitter Rust extractor and are marked low-confidence.
+                var succeeded = new List<ExtractionResult>();
+                foreach (var group in analysis.Groups)
+                {
+                    var failure = group.Failure;
+                    if (failure is null)
+                    {
+                        try
+                        {
+                            // Materialize and validate the complete semantic result before the
+                            // shared graph buffer is touched, so a malformed/lazy result cannot
+                            // leave a partial Rust graph behind before the tree-sitter fallback.
+                            succeeded.AddRange(PrepareRustSemanticResults(group.Results));
+                        }
+                        catch (Exception ex)
+                        {
+                            failure = ex;
+                        }
+                    }
+
+                    if (failure is not null)
+                    {
+                        RecordRustSemanticFallback(
+                            CreateRustSemanticFallback(rootPath, cargoManifest, failure, group),
+                            failure);
+                    }
+                    else if (!group.IsWholeWorkspace)
+                    {
+                        rustSourceOwners.AddRange(group.SourceDirectories
+                            .Select(directory => new RustSourceOwner(NormalizeRelativePath(directory), null)));
+                    }
+                }
+
+                _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+                if (succeeded.Count == 0)
+                    continue;
+
+                var linkedResults = RustScipCrossGroupLinker.Link(succeeded);
+                MergeResults(linkedResults, buffer);
+                AddMetadataCandidates(detectedMetadataCandidates, linkedResults);
+                AddSuccessfullyProcessedFiles(
+                    linkedResults,
+                    changedRelativePaths,
+                    successfullyProcessedFiles);
             }
+        }
+
+        void RecordRustSemanticFallback(RustSemanticFallback fallback, Exception failure)
+        {
+            rustSemanticFallbacks.Add(fallback);
+            rustSourceOwners.AddRange(fallback.SourceDirectories
+                .Select(directory => new RustSourceOwner(directory, fallback)));
+            // This structured warning plus repositories.properties.rustSemanticFallbacks
+            // is the durable record for runs without an indexer_runs row (scheduled,
+            // CI and ProcessRepository consumer-driven indexing).
+            _logger.LogWarning(failure,
+                "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Project} {Manifest}; " +
+                "falling back to low-confidence tree-sitter extraction for crates {Crates}",
+                fallback.FailureCode,
+                fallback.DetailCode,
+                projectName,
+                fallback.Manifest,
+                fallback.Crates);
         }
 
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
@@ -379,7 +424,7 @@ public partial class IndexingPipeline
         {
             stepSw.Restart();
             var perFileResult = await ExtractFilesAsync(
-                remainingFiles, rootPath, context, buffer, replaceExistingGraph, rustSemanticFallbacks, ct);
+                remainingFiles, rootPath, context, buffer, replaceExistingGraph, rustSourceOwners, ct);
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
             detectedMetadataCandidates.AddRange(perFileResult.Metadata);
             successfullyProcessedFiles.UnionWith(perFileResult.ProcessedFiles);
@@ -537,7 +582,7 @@ public partial class IndexingPipeline
 
     private async Task<PerFileExtractionResult> ExtractFilesAsync(List<string> files, string rootPath,
         ExtractorContext context, GraphBuffer buffer, bool failOnExtractionError,
-        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks, CancellationToken ct)
+        IReadOnlyList<RustSourceOwner> rustSourceOwners, CancellationToken ct)
     {
         var metadataSeen = new ConcurrentBag<ProjectMetadata>();
         var processedFiles = new ConcurrentBag<string>();
@@ -578,7 +623,7 @@ public partial class IndexingPipeline
                     }
 
                     var relativePath = NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath));
-                    var fallback = FindRustSemanticFallback(rustSemanticFallbacks, relativePath);
+                    var fallback = FindRustSemanticFallback(rustSourceOwners, relativePath);
                     foreach (var node in result.Nodes)
                         buffer.AddNode(fallback is null ? node : MarkLowConfidence(node, fallback));
                     foreach (var edge in result.Edges)
@@ -733,18 +778,23 @@ public partial class IndexingPipeline
     private RustSemanticFallback CreateRustSemanticFallback(
         string rootPath,
         string cargoManifest,
-        Exception failure)
+        Exception failure,
+        RustCrateGroupAnalysis? crateGroup)
     {
         var manifest = NormalizeRelativePath(Path.GetRelativePath(rootPath, cargoManifest));
-        var workspaceDirectory = NormalizeRelativePath(Path.GetDirectoryName(manifest) ?? "");
+        var wholeWorkspace = crateGroup is null || crateGroup.IsWholeWorkspace;
         return new RustSemanticFallback(
             manifest,
-            ReadCargoCrateNames(rootPath, cargoManifest),
+            wholeWorkspace
+                ? ReadCargoCrateNames(rootPath, cargoManifest)
+                : crateGroup!.Crates.Order(StringComparer.Ordinal).ToList(),
             RustSemanticFailureCategory.Classify(failure),
             (failure as RustSemanticIndexingException)?.FailureCode,
             failure.Message)
         {
-            WorkspaceDirectory = workspaceDirectory
+            SourceDirectories = wholeWorkspace
+                ? [NormalizeRelativePath(Path.GetDirectoryName(manifest) ?? "")]
+                : crateGroup!.SourceDirectories.Select(NormalizeRelativePath).ToList()
         };
     }
 
@@ -781,18 +831,30 @@ public partial class IndexingPipeline
         return crates.ToList();
     }
 
+    /// <summary>
+    /// The crate directory owning a <c>.rs</c> file is the longest matching source directory
+    /// across every analyzed group, so a file in a nested crate belongs to that crate's group
+    /// rather than to an enclosing (for example root) package's group.
+    /// </summary>
     private static RustSemanticFallback? FindRustSemanticFallback(
-        IReadOnlyList<RustSemanticFallback> fallbacks,
+        IReadOnlyList<RustSourceOwner> owners,
         string relativePath)
     {
-        if (fallbacks.Count == 0 ||
+        if (owners.Count == 0 ||
             !relativePath.EndsWith(".rs", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        return fallbacks.FirstOrDefault(fallback =>
-            fallback.WorkspaceDirectory.Length == 0 ||
-            relativePath.StartsWith(fallback.WorkspaceDirectory + "/", StringComparison.OrdinalIgnoreCase));
+        return owners
+            .Where(owner =>
+                owner.Directory.Length == 0 ||
+                relativePath.StartsWith(owner.Directory + "/", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(owner => owner.Directory.Length)
+            .ThenBy(owner => owner.Fallback is null ? 0 : 1)
+            .FirstOrDefault()?
+            .Fallback;
     }
+
+    private sealed record RustSourceOwner(string Directory, RustSemanticFallback? Fallback);
 
     private static GraphNode MarkLowConfidence(GraphNode node, RustSemanticFallback fallback)
     {
