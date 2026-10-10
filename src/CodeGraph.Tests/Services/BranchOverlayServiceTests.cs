@@ -381,6 +381,40 @@ public sealed class BranchOverlayServiceTests : IDisposable
         => Should.NotThrow(() => BranchOverlayGit.ValidateRef(gitRef));
 
     [Fact]
+    public async Task ResolveRemoteRefAsync_UnresponsiveOrigin_TimesOutAsTransient()
+    {
+        var git = new HangingLsRemoteGit { RemoteRefTimeout = TimeSpan.FromMilliseconds(200) };
+
+        var ex = await Should.ThrowAsync<BranchOverlayTransientException>(
+            () => git.ResolveRemoteRefAsync(Path.GetTempPath(), "factory/feature", CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(10)));
+
+        ex.Message.ShouldContain("timed out");
+        git.LsRemoteCalls.ShouldBe(1);
+
+        // The caller's own cancellation is still a cancellation, not a transient failure.
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var slow = new HangingLsRemoteGit { RemoteRefTimeout = TimeSpan.FromMinutes(5) };
+        await Should.ThrowAsync<OperationCanceledException>(
+            () => slow.ResolveRemoteRefAsync(Path.GetTempPath(), "factory/feature", cts.Token));
+    }
+
+    /// <summary>An origin that exists but never answers ls-remote.</summary>
+    private sealed class HangingLsRemoteGit : BranchOverlayGit
+    {
+        public int LsRemoteCalls { get; private set; }
+
+        protected override async Task<GitResult> RunAsync(string repoPath, IReadOnlyList<string> args, CancellationToken ct)
+        {
+            if (args[0] != "ls-remote")
+                return new GitResult(0, [], "");
+            LsRemoteCalls++;
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return new GitResult(0, [], "");
+        }
+    }
+
+    [Fact]
     public void ParseNameStatus_ParsesRenamesCopiesAndNulSeparatedPaths()
     {
         var output = Encoding.UTF8.GetBytes(

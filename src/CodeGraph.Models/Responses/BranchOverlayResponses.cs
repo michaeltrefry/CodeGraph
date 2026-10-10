@@ -22,4 +22,8 @@ public sealed record BranchOverlayResponse(
     DateTime? CompletedAt,
     DateTime ExpiresAt,
     DateTime? ExpiredAt,
-    string StatusUrl);
+    string StatusUrl)
+{
+    /// <summary>True when a reuse request returned an existing live overlay instead of creating one.</summary>
+    public bool Reused { get; init; }
+}

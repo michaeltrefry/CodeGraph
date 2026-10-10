@@ -213,19 +213,44 @@ public sealed class StandaloneIndexerOperationsService(
     {
         ArgumentNullException.ThrowIfNull(request);
         var overlays = RequireBranchOverlays();
-        var overlay = await overlays.CreateOverlayAsync(username, request.Repo, request.Ref, ct);
-        var accepted = await CreateQueuedRunAsync(
-            IndexerRunOperations.BranchOverlay,
-            NormalizeUsername(username),
-            overlay.Id.ToString(),
-            $"Queued branch overlay {overlay.Id} for {overlay.Project}@{overlay.RequestedRef}.",
-            JsonSerializer.Serialize(new BranchOverlayIndexerRunArgs(overlay.Id), JsonOptions),
-            submissionKey: null,
-            ct);
-        await overlays.AttachRunAsync(overlay.Id, accepted.RunId!.Value, ct);
-        overlay.IndexerRunId = accepted.RunId;
-        if (!accepted.Duplicate && accepted.Status == "queued")
-            await backgroundRunner.EnqueueAsync(accepted.RunId.Value, ct);
+        BranchOverlayEntity overlay;
+        if (request.ReuseLive)
+        {
+            var outcome = await overlays.RequestOverlayAsync(username, request.Repo, request.Ref, ct);
+            if (outcome.Reused)
+                return overlays.Map(outcome.Overlay) with { Reused = true };
+            overlay = outcome.Overlay;
+        }
+        else
+        {
+            overlay = await overlays.CreateOverlayAsync(username, request.Repo, request.Ref, ct);
+        }
+
+        // The overlay row exists now. Queuing its run must not be abandoned midway by the caller's
+        // (request-abort) token, or the overlay would stay queued with no run behind it; if queuing
+        // fails anyway the overlay is marked failed so it is neither reused nor polled forever.
+        IndexerAcceptedResponse accepted;
+        try
+        {
+            accepted = await CreateQueuedRunAsync(
+                IndexerRunOperations.BranchOverlay,
+                NormalizeUsername(username),
+                overlay.Id.ToString(),
+                $"Queued branch overlay {overlay.Id} for {overlay.Project}@{overlay.RequestedRef}.",
+                JsonSerializer.Serialize(new BranchOverlayIndexerRunArgs(overlay.Id), JsonOptions),
+                submissionKey: null,
+                CancellationToken.None);
+            await overlays.AttachRunAsync(overlay.Id, accepted.RunId!.Value, CancellationToken.None);
+            overlay.IndexerRunId = accepted.RunId;
+            if (!accepted.Duplicate && accepted.Status == "queued")
+                await backgroundRunner.EnqueueAsync(accepted.RunId.Value, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            await overlays.MarkOverlayUnqueuedAsync(overlay, $"Run could not be queued: {ex.Message}", CancellationToken.None);
+            throw;
+        }
+
         return overlays.Map(overlay);
     }
 

@@ -343,6 +343,14 @@ public class StandaloneIndexerOperationsServiceTests
         (await service.GetBranchOverlayAsync(overlay.OverlayId + 100)).ShouldBeNull();
         await Should.ThrowAsync<KeyNotFoundException>(() => service.StartBranchOverlayAsync(
             "Michael", new BranchOverlayRequest { Repo = "Missing", Ref = "main" }));
+
+        // A run that cannot be queued leaves a failed overlay, not one queued forever.
+        runs.CreateFailure = new InvalidOperationException("run store unavailable");
+        await Should.ThrowAsync<InvalidOperationException>(() => service.StartBranchOverlayAsync(
+            "Michael", new BranchOverlayRequest { Repo = "OverlayRepo", Ref = "factory/feature-y" }));
+        var unqueued = overlayStore.All.Single(candidate => candidate.RequestedRef == "factory/feature-y");
+        unqueued.Status.ShouldBe(BranchOverlayStatuses.Failed);
+        unqueued.Error.ShouldBe("Run could not be queued: run store unavailable");
     }
 
     [Fact]
@@ -415,7 +423,9 @@ public class StandaloneIndexerOperationsServiceTests
         }
 
         public Task<BranchOverlayEntity> CreateOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<BranchOverlayRequestOutcome> RequestOverlayAsync(string username, string repo, string gitRef, CancellationToken ct = default) => throw new NotSupportedException();
         public Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task MarkOverlayUnqueuedAsync(BranchOverlayEntity overlay, string error, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<BranchOverlayResponse?> GetOverlayAsync(long overlayId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<long>> ExpireOverlaysAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public BranchOverlayResponse Map(BranchOverlayEntity overlay) => throw new NotSupportedException();
@@ -740,7 +750,7 @@ public class StandaloneIndexerOperationsServiceTests
             }),
             NullLogger<IndexerRunBackgroundRunner>.Instance);
 
-    private sealed class FakeDatabaseSourceStore : IDatabaseSourceStore
+    internal sealed class FakeDatabaseSourceStore : IDatabaseSourceStore
     {
         private readonly Dictionary<long, DatabaseSourceEntity> _sources = new();
 
@@ -754,7 +764,7 @@ public class StandaloneIndexerOperationsServiceTests
         public Task UpdateLastSyncedAsync(long id) => Task.CompletedTask;
     }
 
-    private sealed class RecordingBackgroundRunner : IIndexerRunBackgroundRunner
+    internal sealed class RecordingBackgroundRunner : IIndexerRunBackgroundRunner
     {
         public List<long> EnqueuedRunIds { get; } = [];
 
@@ -916,14 +926,22 @@ public class StandaloneIndexerOperationsServiceTests
         DateTime.UtcNow,
         null);
 
-    private sealed class FakeIndexerRunStore : IIndexerRunStore
+    internal sealed class FakeIndexerRunStore : IIndexerRunStore
     {
         private readonly Dictionary<long, IndexerRunEntity> _runs = new();
         private long _nextId = 1;
         public bool LoseLeaseOnRenewal { get; init; }
 
+        /// <summary>When set, creating a run throws this (simulates a database error).</summary>
+        public Exception? CreateFailure { get; set; }
+
+        public CancellationToken? LastCreateToken { get; private set; }
+
         public Task<long> CreateIndexerRunAsync(IndexerRunEntity run, CancellationToken ct = default)
         {
+            LastCreateToken = ct;
+            if (CreateFailure is not null)
+                return Task.FromException<long>(CreateFailure);
             run.Id = _nextId++;
             _runs[run.Id] = Clone(run);
             return Task.FromResult(run.Id);

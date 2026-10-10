@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CodeGraph.Data;
@@ -16,6 +17,9 @@ namespace CodeGraph.Data.MariaDb;
 public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStore
 {
     private const int InsertBatchSize = 200;
+
+    /// <summary>Seconds GET_LOCK waits for the overlay request lock before reporting a timeout.</summary>
+    internal int RequestLockWaitSeconds { get; init; } = 30;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -349,6 +353,39 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
             transaction, cancellationToken: ct));
         await transaction.CommitAsync(ct);
         return ids;
+    }
+
+    public async Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string project, CancellationToken ct = default)
+    {
+        // GET_LOCK is session-scoped, so the lock lives on this store's connection, which stays
+        // open for the scope; every query made while holding it runs on the same session.
+        var conn = await GetOpenConnectionAsync(ct);
+        var lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"overlay-request:{project}")));
+        var acquired = await conn.ExecuteScalarAsync<long?>(new CommandDefinition(
+            "SELECT GET_LOCK(@LockName, @WaitSeconds)",
+            new { LockName = lockName, WaitSeconds = RequestLockWaitSeconds },
+            // Outlast the GET_LOCK wait so a contended lock answers 0 (a TimeoutException, reported
+            // as temporarily unavailable) instead of the command timing out first.
+            commandTimeout: RequestLockWaitSeconds + 15,
+            cancellationToken: ct));
+        if (acquired != 1)
+            throw new TimeoutException($"Timed out waiting for the overlay request lock for '{project}'.");
+        return new OverlayRequestLock(conn, lockName);
+    }
+
+    private sealed class OverlayRequestLock(DbConnection connection, string lockName) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await connection.ExecuteAsync("SELECT RELEASE_LOCK(@LockName)", new { LockName = lockName });
+            }
+            catch (DbException)
+            {
+                // The lock is released with the session when the connection closes.
+            }
+        }
     }
 
     private static async Task DeleteChildRowsAsync(

@@ -1,7 +1,9 @@
+using System.Net;
 using CodeGraph.Indexer.Client;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Indexer;
+using CodeGraph.Services.Overlays;
 
 namespace CodeGraph.Api.Indexer;
 
@@ -86,7 +88,36 @@ public sealed class RemoteIndexerOperationsService(IIndexerClient indexerClient)
         string username,
         BranchOverlayRequest request,
         CancellationToken ct = default)
-        => indexerClient.StartBranchOverlayAsync(username, request, ct);
+        => request.ReuseLive
+            ? StartReusableBranchOverlayAsync(username, request, ct)
+            : indexerClient.StartBranchOverlayAsync(username, request, ct);
+
+    /// <summary>
+    /// Reuse requests come from MCP tools, which answer typed errors from the same exceptions the
+    /// standalone service throws, so the indexer host's error responses are mapped back to them.
+    /// (Plain REST requests keep the pass-through error handling of IndexerClientExceptionMiddleware.)
+    /// </summary>
+    private async Task<BranchOverlayResponse> StartReusableBranchOverlayAsync(
+        string username,
+        BranchOverlayRequest request,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await indexerClient.StartBranchOverlayAsync(username, request, ct);
+        }
+        catch (IndexerClientException ex)
+        {
+            throw ex.StatusCode switch
+            {
+                HttpStatusCode.NotFound => new KeyNotFoundException(ex.Message, ex),
+                HttpStatusCode.BadRequest => new ArgumentException(ex.Message, ex),
+                HttpStatusCode.NotImplemented => new NotSupportedException(ex.Message, ex),
+                HttpStatusCode.ServiceUnavailable => new BranchOverlayTransientException(ex.Message, ex),
+                _ => ex
+            };
+        }
+    }
 
     public Task<BranchOverlayResponse?> GetBranchOverlayAsync(long overlayId, CancellationToken ct = default)
         => indexerClient.GetBranchOverlayAsync("system", overlayId, ct);
