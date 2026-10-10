@@ -127,7 +127,7 @@ public class ProjectsController(
             return this.NotIndexed(notIndexed);
 
         var result = await impactService.AnalyzeImpactAsync(node, name, Math.Clamp(depth, 1, 5), scope.Graph);
-        return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name));
+        return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name, node));
     }
 
     // GET /api/projects/{name}/impact/file?path=relative/file.cs&depth=3&sha=<full commit sha>
@@ -149,7 +149,7 @@ public class ProjectsController(
         return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name));
     }
 
-    private async Task<ImpactReport> WithCommitAsync(ImpactReport report, CommitScope scope, string project)
+    private async Task<ImpactReport> WithCommitAsync(ImpactReport report, CommitScope scope, string project, string? queriedName = null)
     {
         var projects = report.ChangedNodes.Select(node => node.Project)
             .Concat(report.AffectedNodes.Select(node => node.Project))
@@ -162,7 +162,7 @@ public class ProjectsController(
         {
             CommitSha = scope.IsPinned ? commit.CommitSha : commit.Commits.GetValueOrDefault(project) ?? commit.CommitSha,
             Commits = commit.Commits,
-            UnmappedInboundEdges = scope.Overlay?.UnmappedInboundEdgeCount
+            UnmappedInboundEdges = scope.Overlay?.CountUnmappedInboundEdges(report, queriedName)
         };
     }
 

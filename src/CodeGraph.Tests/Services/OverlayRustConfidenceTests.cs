@@ -30,6 +30,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
     private const string Repo = "RustOverlay";
     private const string LibPath = "crates/alpha/src/lib.rs";
     private const string MainPath = "crates/app/src/main.rs";
+    private const string OtherPath = "crates/app/src/other.rs";
     private static readonly DateTimeOffset Now = new(2026, 10, 10, 12, 0, 0, TimeSpan.Zero);
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-overlay-rust-{Guid.NewGuid():N}");
@@ -151,7 +152,95 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         trace.Text().ShouldContain("Start: **added_fn** (Function) — RustOverlay [low confidence]");
         trace.Text().ShouldContain("includes 1 low-confidence node(s)");
         trace.StructuredString("lowConfidence").ShouldBe("true");
+        // added_fn is in lib.rs, where main -> removed_fn pointed: that edge is relevant to this answer.
+        trace.Text().ShouldContain("**Unmapped callers:** 1");
+        trace.StructuredString("unmappedInboundEdges").ShouldBe("1");
     }
+
+    [Fact]
+    public async Task UnmappedNotice_AtSha_OnlyCountsEdgesTheAnswerWouldHaveReached()
+    {
+        // Unchanged other.rs: helper <- other (unrelated to lib.rs), orphan -> removed_fn (unmapped).
+        var helper = _store.AddNode(Scip("helper", OtherPath, 0));
+        var other = _store.AddNode(Scip("other", OtherPath, 4));
+        var orphan = _store.AddNode(Scip("orphan", OtherPath, 8));
+        var removed = (await _store.FindNodesByNameAsync(Repo, "removed_fn")).ShouldHaveSingleItem().Id;
+        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = other, TargetId = helper, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = orphan, TargetId = removed, Type = EdgeType.CALLS });
+        await BuildOverlayAsync();
+
+        // Unrelated: neither answer touches lib.rs, removed_fn, or a caller of it.
+        var trace = await Mcp().TraceCallPath("helper", "inbound", project: Repo, sha: _headSha);
+        trace.Text().ShouldContain("**other** (Function)");
+        trace.Text().ShouldNotContain("Unmapped callers");
+        trace.StructuredString("unmappedInboundEdges").ShouldBe("0");
+        var impact = await Mcp().AnalyzeImpact("helper", Repo, sha: _headSha);
+        impact.Text().ShouldNotContain("Unmapped callers");
+        var rest = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, "helper", sha: _headSha)).Result!).Value!;
+        rest.UnmappedInboundEdges.ShouldBe(0);
+        var consumers = await Mcp().FindConsumers("helper", Repo, sha: _headSha);
+        consumers.Text().ShouldNotContain("Unmapped callers");
+
+        // Related by source: orphan's own call into removed_fn (main -> removed_fn is not in this answer).
+        var outbound = await Mcp().TraceCallPath("orphan", "outbound", project: Repo, sha: _headSha);
+        outbound.Text().ShouldContain("**Unmapped callers:** 1");
+
+        // Related by name: the default branch would have found removed_fn's two callers.
+        var publishers = await Mcp().FindPublishers("removed_fn", Repo, sha: _headSha);
+        publishers.Text().ShouldContain("**Unmapped callers:** 2");
+        publishers.StructuredString("unmappedInboundEdges").ShouldBe("2");
+    }
+
+    [Fact]
+    public async Task OverlayView_NameMatch_PrefersSameEnclosingType_OverCloserLine()
+    {
+        // Base: impl A { fn new } at line 2, impl B { fn new } at line 6. The branch grows A's impl,
+        // so the head A::new (line 7) is closer to the base B::new than the head B::new (line 11).
+        var store = new InMemoryGraphStore();
+        var callerA = store.AddNode(Scip("call_a", MainPath, 0));
+        var callerB = store.AddNode(Scip("call_b", MainPath, 4));
+        var baseA = store.AddNode(ScipMethod("A", "new", 2));
+        var baseB = store.AddNode(ScipMethod("B", "new", 6));
+        store.AddEdge(new GraphEdge { Project = Repo, SourceId = callerA, TargetId = baseA, Type = EdgeType.CALLS });
+        store.AddEdge(new GraphEdge { Project = Repo, SourceId = callerB, TargetId = baseB, Type = EdgeType.CALLS });
+
+        var view = await ViewAsync(store,
+        [
+            TreeSitterMethod(21, "A", "new", 7, ownerProperty: false),
+            TreeSitterMethod(22, "B", "new", 11, ownerProperty: true)
+        ]);
+
+        (await view.FindEdgesBySourceAsync(callerA)).ShouldHaveSingleItem().TargetId.ShouldBe(-21L);
+        (await view.FindEdgesBySourceAsync(callerB)).ShouldHaveSingleItem().TargetId.ShouldBe(-22L);
+        view.UnmappedInboundEdgeCount.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task OverlayView_NameMatch_UnknownEnclosingType_StillUsesClosestLine()
+    {
+        var store = new InMemoryGraphStore();
+        var caller = store.AddNode(Scip("call_b", MainPath, 0));
+        var baseB = store.AddNode(ScipMethod("B", "new", 6));
+        store.AddEdge(new GraphEdge { Project = Repo, SourceId = caller, TargetId = baseB, Type = EdgeType.CALLS });
+
+        // A::new (known, other type) is excluded; of the two with unknown enclosing type, line 9 is closer.
+        var view = await ViewAsync(store,
+        [
+            TreeSitterMethod(31, "A", "new", 7, ownerProperty: true),
+            TreeSitter(32, "new", 9) with { Label = NodeLabel.Method },
+            TreeSitter(33, "new", 30) with { Label = NodeLabel.Method }
+        ]);
+
+        (await view.FindEdgesBySourceAsync(caller)).ShouldHaveSingleItem().TargetId.ShouldBe(-32L);
+    }
+
+    [Theory]
+    [InlineData("rust-analyzer cargo alpha 0.1.0 alpha/A#new().", "A")]
+    [InlineData("rust-analyzer cargo alpha 0.1.0 alpha/impl#[B][Display]fmt().", "B")]
+    [InlineData("rust-analyzer cargo alpha 0.1.0 alpha/free_fn().", "")]
+    [InlineData("rust-analyzer cargo alpha 0.1.0 alpha/A#", null)]
+    public void ScipEnclosingType_ParsesTheOwnerOfACallable(string symbol, string? expected)
+        => OverlayGraphView.ScipEnclosingType($"{Repo}:scip:{symbol}").ShouldBe(expected);
 
     [Fact]
     public async Task OverlayView_NameMatch_PicksClosestLine_AndLeavesTiesUnmapped()
@@ -178,6 +267,9 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         var targets = (await view.FindEdgesBySourceAsync(caller)).Select(edge => edge.TargetId).ToList();
         targets.ShouldBe([-11L]);
         view.UnmappedInboundEdgeCount.ShouldBe(1);
+        view.CountUnmappedInboundEdges(Array.Empty<GraphNode>(), "tied", [EdgeType.CALLS]).ShouldBe(1);
+        view.CountUnmappedInboundEdges(Array.Empty<GraphNode>(), "tied", [EdgeType.PUBLISHES]).ShouldBe(0);
+        view.CountUnmappedInboundEdges(Array.Empty<GraphNode>(), "near").ShouldBe(0);
     }
 
     [Fact]
@@ -286,6 +378,35 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         EndLine = line + 2,
         Properties = new Dictionary<string, object> { ["source"] = "scip" }
     };
+
+    private Task<OverlayGraphView> ViewAsync(InMemoryGraphStore store, IReadOnlyList<GraphNode> overlayNodes)
+        => OverlayGraphView.CreateAsync(
+            store,
+            new BranchOverlayEntity { Id = 1, Project = Repo, HeadSha = _headSha, BaseSha = _baseSha },
+            [new BranchOverlayFileEntity { OverlayId = 1, FilePath = LibPath, ChangeKind = BranchOverlayChangeKinds.Modified }],
+            overlayNodes,
+            []);
+
+    private static GraphNode ScipMethod(string type, string name, int line) => Scip(name, LibPath, line) with
+    {
+        Label = NodeLabel.Method,
+        QualifiedName = $"{Repo}:scip:rust-analyzer cargo alpha 0.1.0 alpha/{type}#{name}()."
+    };
+
+    // A tree-sitter impl method whose enclosing type is known from one source only: the
+    // receiver_owner property (with an unrecognized qualified name), or the qualified name
+    // (`#type:T#method:name()`) without the property.
+    private static GraphNode TreeSitterMethod(long id, string type, string name, int line, bool ownerProperty)
+    {
+        var node = TreeSitter(id, name, line) with { Label = NodeLabel.Method };
+        if (ownerProperty)
+        {
+            node.Properties["receiver_owner"] = type;
+            return node;
+        }
+
+        return node with { QualifiedName = $"{Repo}:{LibPath}#type:{type}#method:{name}()" };
+    }
 
     private static GraphNode TreeSitter(long id, string name, int line) => new()
     {
