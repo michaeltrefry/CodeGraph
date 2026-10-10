@@ -217,6 +217,18 @@ public class MariaDbBranchOverlayStoreTests
             await using (await second.AcquireOverlayRequestLockAsync("OtherRepo"))
             {
             }
+
+            // A contended lock waits the full GET_LOCK wait and then reports a TimeoutException,
+            // even when the connection's default command timeout is shorter than that wait.
+            var shortTimeout = new MySqlConnectionStringBuilder(builder.ConnectionString) { DefaultCommandTimeout = 1 };
+            await using var thirdContext = new CodeGraphDbContext(CreateOptions(shortTimeout.ConnectionString));
+            var third = new MySqlBranchOverlayStore(thirdContext) { RequestLockWaitSeconds = 3 };
+            await using (await first.AcquireOverlayRequestLockAsync("OverlayRepo"))
+            {
+                var waited = System.Diagnostics.Stopwatch.StartNew();
+                await Should.ThrowAsync<TimeoutException>(() => third.AcquireOverlayRequestLockAsync("OverlayRepo"));
+                waited.Elapsed.ShouldBeGreaterThanOrEqualTo(TimeSpan.FromSeconds(2.5));
+            }
         }
         finally
         {

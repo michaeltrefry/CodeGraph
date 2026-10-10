@@ -26,6 +26,9 @@ public interface IBranchOverlayService
 
     Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default);
 
+    /// <summary>Marks an overlay whose indexer run could not be queued as failed, so it is never reused.</summary>
+    Task MarkOverlayUnqueuedAsync(BranchOverlayEntity overlay, string error, CancellationToken ct = default);
+
     /// <summary>Current overlay status; an overlay past its TTL is expired (and its data deleted) first.</summary>
     Task<BranchOverlayResponse?> GetOverlayAsync(long overlayId, CancellationToken ct = default);
 
@@ -68,6 +71,9 @@ public sealed class BranchOverlayService(
     TimeProvider? timeProvider = null,
     IOptions<RepositorySourceOptions>? sourceOptions = null) : IBranchOverlayService
 {
+    /// <summary>How long a queued overlay may exist without an indexer run before it counts as orphaned.</summary>
+    internal static readonly TimeSpan UnqueuedOverlayGrace = TimeSpan.FromMinutes(1);
+
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private BranchOverlayOptions Options => optionsAccessor.Value;
     private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
@@ -177,6 +183,16 @@ public sealed class BranchOverlayService(
         if (overlay.Status == BranchOverlayStatuses.Expired || overlay.CreatedAt <= now - Options.Ttl)
             return false;
 
+        // A queued overlay whose run was never attached (the request died between recording the
+        // overlay and queuing its run) has nothing behind it; past a short grace period for the
+        // request that is still queuing it, it is orphaned and not reused.
+        if (overlay.Status == BranchOverlayStatuses.Queued
+            && overlay.IndexerRunId is null
+            && overlay.CreatedAt < now - UnqueuedOverlayGrace)
+        {
+            return false;
+        }
+
         var baseMatches = overlay.BaseSha is null
             || string.Equals(overlay.BaseSha, currentBaseSha, StringComparison.OrdinalIgnoreCase);
         return overlay.Status switch
@@ -189,6 +205,15 @@ public sealed class BranchOverlayService(
 
     public Task AttachRunAsync(long overlayId, long runId, CancellationToken ct = default)
         => overlayStore.SetOverlayRunAsync(overlayId, runId, ct);
+
+    public async Task MarkOverlayUnqueuedAsync(BranchOverlayEntity overlay, string error, CancellationToken ct = default)
+    {
+        var now = UtcNow;
+        await overlayStore.MarkOverlayFailedAsync(overlay.Id, error, overlay.HeadSha, overlay.BaseSha, now, ct);
+        overlay.Status = BranchOverlayStatuses.Failed;
+        overlay.Error = error;
+        overlay.CompletedAt = now;
+    }
 
     public async Task<BranchOverlayResponse?> GetOverlayAsync(long overlayId, CancellationToken ct = default)
     {

@@ -184,7 +184,40 @@ public class HttpIndexerClientTests
             "michael", new BranchOverlayRequest { Repo = "Nope", Ref = "main" }));
     }
 
-    private static HttpIndexerClient CreateClient(RecordingHandler handler)
+    [Fact]
+    public async Task RemoteOverlayMcpTools_IndexerErrorsAndUnreachableIndexer_AnswerTemporarilyUnavailable()
+    {
+        static CodeGraph.Mcp.Hub.OverlayMcpServer Tools(HttpMessageHandler handler)
+            => new(
+                new CodeGraph.Api.Indexer.RemoteIndexerOperationsService(CreateClient(handler)),
+                new Microsoft.AspNetCore.Http.HttpContextAccessor());
+
+        static void AssertUnavailable(ModelContextProtocol.Protocol.CallToolResult result)
+        {
+            result.IsError.ShouldBe(true);
+            result.StructuredContent.ShouldNotBeNull().ShouldBeOfType<JsonElement>()
+                .GetProperty("error").GetProperty("code").GetString()
+                .ShouldBe(CodeGraph.Mcp.Hub.OverlayMcpServer.TemporarilyUnavailableCode);
+        }
+
+        // The indexer host answers an error status the operations service does not map.
+        var failing = Tools(new RecordingHandler(HttpStatusCode.InternalServerError, new { error = "boom", message = "indexer exploded" }));
+        AssertUnavailable(await failing.RequestOverlay("Repo", "main"));
+        AssertUnavailable(await failing.GetOverlayStatus(7));
+
+        // The indexer host cannot be reached at all.
+        var unreachable = Tools(new UnreachableHandler());
+        AssertUnavailable(await unreachable.RequestOverlay("Repo", "main"));
+        AssertUnavailable(await unreachable.GetOverlayStatus(7));
+    }
+
+    private sealed class UnreachableHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromException<HttpResponseMessage>(new HttpRequestException("Connection refused (indexer.local:80)"));
+    }
+
+    private static HttpIndexerClient CreateClient(HttpMessageHandler handler)
     {
         var httpClient = new HttpClient(handler)
         {

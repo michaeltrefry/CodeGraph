@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeGraph.Data;
+using CodeGraph.Indexer.Client;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Indexer;
@@ -82,6 +83,10 @@ public sealed class OverlayMcpServer(
         {
             return Error(TemporarilyUnavailableCode, ex.Message);
         }
+        catch (Exception ex) when (IsRemoteIndexerFailure(ex))
+        {
+            return Error(TemporarilyUnavailableCode, ex.Message);
+        }
 
         return await AnswerAsync(overlay, overlay.Reused, cancellationToken);
     }
@@ -106,6 +111,10 @@ public sealed class OverlayMcpServer(
         catch (NotSupportedException ex)
         {
             return Error(OverlaysUnavailableCode, ex.Message);
+        }
+        catch (Exception ex) when (IsRemoteIndexerFailure(ex))
+        {
+            return Error(TemporarilyUnavailableCode, ex.Message);
         }
 
         return overlay is null
@@ -182,6 +191,13 @@ public sealed class OverlayMcpServer(
         var current = await commitScopes.GetDefaultCommitAsync(overlay.Repo, ct);
         return current is not null && !string.Equals(current, overlay.BaseSha, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// Remote-indexer mode: the indexer host is unreachable, or answered with an error the
+    /// operations service does not map to a typed exception.
+    /// </summary>
+    private static bool IsRemoteIndexerFailure(Exception ex)
+        => ex is HttpRequestException or IndexerClientException;
 
     private static CallToolResult Error(string code, string message)
     {

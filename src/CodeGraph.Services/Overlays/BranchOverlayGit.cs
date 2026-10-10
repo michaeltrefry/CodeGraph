@@ -48,6 +48,9 @@ public class BranchOverlayGit
 {
     private const int ArchiveBatchSize = 200;
 
+    /// <summary>Upper bound on <c>git ls-remote</c> when resolving a requested ref.</summary>
+    internal TimeSpan RemoteRefTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// Accepts a full commit SHA (40 or 64 hex) or a ref name that satisfies
     /// <c>git check-ref-format --allow-onelevel</c>. Revision syntax (<c>^ ~ : @{ * ? [ \</c>),
@@ -153,8 +156,23 @@ public class BranchOverlayGit
         if (!await HasOriginAsync(repoPath, ct))
             return await TryRevParseCommitAsync(repoPath, gitRef, ct);
 
-        // The second pattern brings in the peeled entry of an annotated tag.
-        var result = await RunAsync(repoPath, ["ls-remote", "origin", gitRef, gitRef + "^{}"], ct);
+        // The second pattern brings in the peeled entry of an annotated tag. ls-remote runs on the
+        // request path, so an unresponsive origin is bounded rather than holding the request open.
+        GitResult result;
+        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            timeout.CancelAfter(RemoteRefTimeout);
+            try
+            {
+                result = await RunAsync(repoPath, ["ls-remote", "origin", gitRef, gitRef + "^{}"], timeout.Token);
+            }
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+            {
+                throw new BranchOverlayTransientException(
+                    $"Listing ref '{gitRef}' on origin timed out after {RemoteRefTimeout.TotalSeconds:0} seconds.", ex);
+            }
+        }
+
         if (result.ExitCode != 0)
         {
             throw new BranchOverlayTransientException(

@@ -18,6 +18,9 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
 {
     private const int InsertBatchSize = 200;
 
+    /// <summary>Seconds GET_LOCK waits for the overlay request lock before reporting a timeout.</summary>
+    internal int RequestLockWaitSeconds { get; init; } = 30;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -359,7 +362,12 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
         var conn = await GetOpenConnectionAsync(ct);
         var lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"overlay-request:{project}")));
         var acquired = await conn.ExecuteScalarAsync<long?>(new CommandDefinition(
-            "SELECT GET_LOCK(@LockName, 30)", new { LockName = lockName }, cancellationToken: ct));
+            "SELECT GET_LOCK(@LockName, @WaitSeconds)",
+            new { LockName = lockName, WaitSeconds = RequestLockWaitSeconds },
+            // Outlast the GET_LOCK wait so a contended lock answers 0 (a TimeoutException, reported
+            // as temporarily unavailable) instead of the command timing out first.
+            commandTimeout: RequestLockWaitSeconds + 15,
+            cancellationToken: ct));
         if (acquired != 1)
             throw new TimeoutException($"Timed out waiting for the overlay request lock for '{project}'.");
         return new OverlayRequestLock(conn, lockName);

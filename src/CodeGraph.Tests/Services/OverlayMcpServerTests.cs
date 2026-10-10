@@ -28,6 +28,7 @@ public sealed class OverlayMcpServerTests : IDisposable
     private readonly InMemoryBranchOverlayStore _overlays = new();
     private readonly MutableTimeProvider _time = new(new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero));
     private readonly StandaloneIndexerOperationsServiceTests.RecordingBackgroundRunner _runner = new();
+    private readonly StandaloneIndexerOperationsServiceTests.FakeIndexerRunStore _runs = new();
     private readonly string _remote;
     private readonly string _baseSha;
     private readonly BranchOverlayService _service;
@@ -65,7 +66,7 @@ public sealed class OverlayMcpServerTests : IDisposable
             _time,
             sourceOptions);
         var operations = new StandaloneIndexerOperationsService(
-            new StandaloneIndexerOperationsServiceTests.FakeIndexerRunStore(),
+            _runs,
             new StandaloneIndexerOperationsServiceTests.FakeDatabaseSourceStore(),
             _runner,
             _service);
@@ -196,6 +197,55 @@ public sealed class OverlayMcpServerTests : IDisposable
         var afterExpiry = Structured(await _tools.RequestOverlay(Project, headSha));
         afterExpiry.GetProperty("overlayId").GetInt64().ShouldNotBe(freshId);
         afterExpiry.GetProperty("reused").GetBoolean().ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task RequestOverlay_RunCannotBeQueued_MarksOverlayFailedAndNextRequestQueuesANewOne()
+    {
+        var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
+        _runs.CreateFailure = new InvalidOperationException("run store unavailable");
+
+        await Should.ThrowAsync<InvalidOperationException>(() => _tools.RequestOverlay(Project, "factory/feature"));
+
+        var orphan = _overlays.All.ShouldHaveSingleItem();
+        orphan.Status.ShouldBe(BranchOverlayStatuses.Failed);
+        orphan.Error.ShouldBe("Run could not be queued: run store unavailable");
+        orphan.HeadSha.ShouldBe(headSha);
+
+        _runs.CreateFailure = null;
+        using var cts = new CancellationTokenSource();
+        var next = Structured(await _tools.RequestOverlay(Project, "factory/feature", cts.Token));
+        next.GetProperty("overlayId").GetInt64().ShouldNotBe(orphan.Id);
+        next.GetProperty("reused").GetBoolean().ShouldBeFalse();
+        next.GetProperty("status").GetString().ShouldBe(BranchOverlayStatuses.Queued);
+        // Queuing the run is not abandoned when the caller's request is aborted.
+        _runs.LastCreateToken.ShouldNotBeNull().CanBeCanceled.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task RequestOverlay_QueuedOverlayWithoutRun_IsReusedOnlyWithinTheGracePeriod()
+    {
+        var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
+        var now = _time.GetUtcNow().UtcDateTime;
+        var orphanId = await _overlays.CreateOverlayAsync(new BranchOverlayEntity
+        {
+            Project = Project,
+            RequestedRef = "factory/feature",
+            HeadSha = headSha,
+            BaseSha = _baseSha,
+            Status = BranchOverlayStatuses.Queued,
+            CreatedAt = now - BranchOverlayService.UnqueuedOverlayGrace + TimeSpan.FromSeconds(1)
+        });
+
+        // Still within the grace period: the request that recorded it may be queuing its run.
+        var within = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        within.GetProperty("overlayId").GetInt64().ShouldBe(orphanId);
+        within.GetProperty("reused").GetBoolean().ShouldBeTrue();
+
+        _time.Now = _time.Now.AddSeconds(2);
+        var after = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        after.GetProperty("overlayId").GetInt64().ShouldNotBe(orphanId);
+        after.GetProperty("reused").GetBoolean().ShouldBeFalse();
     }
 
     [Fact]
