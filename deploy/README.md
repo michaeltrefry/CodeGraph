@@ -117,3 +117,17 @@ The deploy workflow intentionally skips `CODEGRAPH__ANALYSISOPTIONS__...` produc
 The production compose override in `deploy/docker-compose.production.yml` replaces local builds with GHCR images for API, indexer, memory, metrics, jobs, and web. Keep shared MariaDB/RabbitMQ settings, repository mounts, TLS/reverse-proxy paths, and internal service auth values in GitHub Actions variables/secrets rather than hand-maintaining a bundled `.env` secret.
 
 API, indexer, memory, metrics, and Jobs may start concurrently. Each blocks before HTTP readiness or background-worker execution on the same database-scoped MariaDB advisory lock; the first lock owner applies pending statement-journaled migrations and the others re-check history after acquiring the lock. Ensure the shared MariaDB service is accepting connections before expecting application health checks or scheduled jobs to run. A migration error or lock timeout intentionally fails host startup so container restart policy can retry restart-safe statements from the journal instead of exposing a partially migrated schema. SQL errors remain fatal; the runner does not use a global duplicate-error reconciliation rule.
+
+`CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES` (empty by default) is forwarded to the indexer as `CodeGraph__IndexingOptions__TrustedDotnetRepositories`; set it to provider-qualified canonical repository identities to opt them in.
+
+## Post-deploy verification
+
+After `docker compose up -d`, the **Verify deployment health** step runs `deploy/verify-deployment.sh` on the host over the same SSH connection settings (every `ssh`/`scp` uses `ConnectTimeout`, `ServerAliveInterval`, and `ServerAliveCountMax` so long remote commands survive idle NAT timeouts). The script waits up to 10 minutes for every compose service to run a container on the deployed `IMAGE_TAG`, in the `running` state, not restarting, with a `healthy` docker healthcheck, then confirms no container restarted during a 30-second stability window. A service that restarts three or more times fails fast as a crash loop. On failure it prints `docker compose ps -a`, recent healthcheck output, and the last 100 log lines of each unready service (so migration errors are visible in the job log), and the job fails.
+
+The production compose override defines the healthchecks. Because every host applies migrations before it listens, a healthy check also means migrations completed:
+
+- API, indexer, memory, metrics: `GET http://127.0.0.1:<port>/health` from inside the container (the API's `/health` is anonymous but answers only loopback callers; all return only the aggregate status word, which includes the MassTransit bus check).
+- Jobs: the `/tmp/codegraph-jobs.ready` marker, cleared at process start and written after migrations.
+- Web: `GET http://127.0.0.1/` from nginx.
+
+When `CODEGRAPH_DEPLOY_ENABLED` is not `true`, the deploy job succeeds but emits a `Deployment skipped` notice and job summary.

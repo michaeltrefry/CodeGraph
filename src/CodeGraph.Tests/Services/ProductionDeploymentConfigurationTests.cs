@@ -65,6 +65,149 @@ public sealed class ProductionDeploymentConfigurationTests
         }
     }
 
+    [Fact]
+    public void TrustedDotnetRepositoriesUsedByComposeAreForwardedByDeployWorkflow()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var compose = File.ReadAllText(Path.Combine(repositoryRoot, "deploy", "docker-compose.production.yml"));
+        var workflow = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "deploy.yml"));
+
+        compose.ShouldContain("${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}");
+        PassThroughNames(workflow).ShouldContain("CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES");
+    }
+
+    [Fact]
+    public void EverySshAndScpInvocationUsesKeepaliveAndConnectTimeout()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "deploy.yml"));
+        var commands = LogicalShellLines(workflow)
+            .Where(line => line.StartsWith("ssh ", StringComparison.Ordinal) ||
+                           line.StartsWith("scp ", StringComparison.Ordinal))
+            .ToList();
+
+        commands.Count.ShouldBeGreaterThanOrEqualTo(7);
+        foreach (var command in commands)
+        {
+            command.ShouldContain("-o ConnectTimeout=", customMessage: command);
+            command.ShouldContain("-o ServerAliveInterval=", customMessage: command);
+            command.ShouldContain("-o ServerAliveCountMax=", customMessage: command);
+            command.ShouldContain("-o BatchMode=yes", customMessage: command);
+            command.ShouldContain("-o StrictHostKeyChecking=yes", customMessage: command);
+        }
+    }
+
+    [Fact]
+    public void DeployJobVerifiesHealthAfterComposeUpAndFailsTheJobOnError()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var workflow = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "deploy.yml"));
+        var script = File.ReadAllText(Path.Combine(repositoryRoot, "deploy", "verify-deployment.sh"));
+
+        var deployStep = workflow.IndexOf("- name: Deploy over SSH", StringComparison.Ordinal);
+        var verifyStep = workflow.IndexOf("- name: Verify deployment health", StringComparison.Ordinal);
+        deployStep.ShouldBeGreaterThan(0);
+        verifyStep.ShouldBeGreaterThan(deployStep);
+        var verify = workflow[verifyStep..];
+        verify.ShouldContain("if: steps.deploy-gate.outputs.enabled == 'true'");
+        verify.ShouldContain("timeout-minutes:");
+        verify.ShouldContain("IMAGE_TAG: ${{ needs.publish.outputs.image-tag }}");
+        verify.ShouldContain("sh deploy/verify-deployment.sh");
+        workflow.ShouldContain("deploy/verify-deployment.sh \"$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/deploy/\"");
+
+        // Bounded wait for the new tag + healthy + not restarting; diagnostics and a non-zero exit on failure.
+        script.ShouldContain("set -eu");
+        script.ShouldContain("CODEGRAPH_DEPLOY_VERIFY_TIMEOUT_SECONDS:-600");
+        script.ShouldContain("*\":$IMAGE_TAG\")");
+        script.ShouldContain("[ \"$health\" = \"healthy\" ]");
+        script.ShouldContain("[ \"$restarting\" = \"false\" ]");
+        script.ShouldContain("compose ps -a");
+        script.ShouldContain("compose logs --no-color --tail=\"$log_lines\"");
+        script.ShouldContain("exit 1");
+    }
+
+    [Fact]
+    public void DisabledDeployGateIsReportedAsSkippedWithoutFailing()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "deploy.yml"));
+        var gate = workflow[workflow.IndexOf("- name: Check deployment gate", StringComparison.Ordinal)..workflow.IndexOf("- name: Checkout\n        if: steps.deploy-gate", StringComparison.Ordinal)];
+
+        gate.ShouldContain("::notice title=Deployment skipped::");
+        gate.ShouldContain("## Deployment skipped");
+        gate.ShouldContain("$GITHUB_STEP_SUMMARY");
+        gate.ShouldNotContain("exit 1");
+    }
+
+    [Fact]
+    public void EveryProductionServiceDefinesAHealthcheck()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var baseCompose = File.ReadAllText(Path.Combine(repositoryRoot, "docker-compose.yml"));
+        var compose = File.ReadAllText(Path.Combine(repositoryRoot, "deploy", "docker-compose.production.yml"));
+        var expected = new Dictionary<string, string>
+        {
+            ["codegraph-api"] = "\"curl\", \"-fsS\", \"-o\", \"/dev/null\", \"http://127.0.0.1:5037/health\"",
+            ["codegraph-indexer"] = "\"curl\", \"-fsS\", \"-o\", \"/dev/null\", \"http://127.0.0.1:5042/health\"",
+            ["codegraph-memory"] = "/dev/tcp/127.0.0.1/5039",
+            ["codegraph-metrics"] = "/dev/tcp/127.0.0.1/5041",
+            ["jobs"] = $"\"test\", \"-f\", \"/tmp/{CodeGraph.Jobs.JobsReadinessMarker.FileName}\"",
+            ["codegraph-web"] = "\"wget\", \"-q\", \"-O\", \"/dev/null\", \"http://127.0.0.1/\""
+        };
+
+        ServiceNames(baseCompose).ShouldBe(expected.Keys, ignoreOrder: true);
+        ServiceNames(compose).ShouldBe(expected.Keys, ignoreOrder: true);
+        foreach (var (service, probe) in expected)
+        {
+            var block = ServiceBlock(compose, service);
+            block.ShouldContain("    healthcheck:", customMessage: service);
+            block.ShouldContain(probe, customMessage: service);
+            block.ShouldContain("      start_period:", customMessage: service);
+        }
+    }
+
+    private static IEnumerable<string> PassThroughNames(string workflow)
+    {
+        var start = workflow.IndexOf("pass_through_names = {", StringComparison.Ordinal);
+        start.ShouldBeGreaterThan(0);
+        var end = workflow.IndexOf('}', start);
+        return workflow[start..end]
+            .Split('\n')
+            .Select(line => line.Trim().TrimEnd(','))
+            .Where(line => line.StartsWith('"'))
+            .Select(line => line.Trim('"'));
+    }
+
+    // Joins backslash-continued lines so multi-line ssh invocations are checked as one command.
+    private static IEnumerable<string> LogicalShellLines(string text)
+    {
+        var current = "";
+        foreach (var raw in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.EndsWith('\\'))
+            {
+                current += line[..^1] + " ";
+                continue;
+            }
+
+            yield return current + line;
+            current = "";
+        }
+    }
+
+    private static IEnumerable<string> ServiceNames(string compose)
+    {
+        var lines = compose.Replace("\r\n", "\n").Split('\n');
+        var start = Array.IndexOf(lines, "services:");
+        start.ShouldBeGreaterThanOrEqualTo(0);
+        foreach (var line in lines.Skip(start + 1))
+        {
+            if (line.Length > 0 && line[0] != ' ')
+                yield break;
+            if (line.Length > 2 && line[..2] == "  " && line[2] != ' ' && line.TrimEnd().EndsWith(':'))
+                yield return line.Trim().TrimEnd(':');
+        }
+    }
+
     private static string ServiceBlock(string compose, string service)
     {
         var lines = compose.Replace("\r\n", "\n").Split('\n');
