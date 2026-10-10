@@ -4,7 +4,11 @@ public record NodeDetailResponse(
     GraphNode Node,
     IReadOnlyList<EdgeSummary> OutboundEdges,
     IReadOnlyList<EdgeSummary> InboundEdges,
-    IReadOnlyList<CrossRepoEdgeSummary> CrossRepoEdges);
+    IReadOnlyList<CrossRepoEdgeSummary> CrossRepoEdges)
+{
+    /// <summary>The commit this answer describes (the default-branch index commit, or the requested SHA).</summary>
+    public string? CommitSha { get; init; }
+}
 
 public record EdgeSummary(
     long EdgeId,
@@ -22,7 +26,11 @@ public record NodeSourceResponse(
     int StartLine,
     int EndLine,
     string Content,
-    string Language);
+    string Language)
+{
+    /// <summary>The commit this answer describes (the default-branch index commit, or the requested SHA).</summary>
+    public string? CommitSha { get; init; }
+}
 
 public record CrossRepoEdgeSummary(
     long EdgeId,

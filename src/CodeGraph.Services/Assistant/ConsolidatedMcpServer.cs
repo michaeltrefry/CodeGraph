@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using CodeGraph.Models.Memory;
 using CodeGraph.Services.Memory;
@@ -24,25 +25,26 @@ public sealed class ConsolidatedMcpServer
 
     [McpServerTool(Name = "codegraph_search", Title = "Search Code Graph", ReadOnly = true)]
     [Description("Search the code knowledge graph. operation=search finds nodes by name pattern; operation=schema describes node/edge types.")]
-    public static async Task<string> CodegraphSearch(
+    public static async Task<CallToolResult> CodegraphSearch(
         CodeGraphMcpServer codegraph,
         [Description("Operation: search (default) | schema.")] string operation = "search",
         [Description("Name pattern to search for (supports % wildcards). Required for operation=search.")] string? query = null,
         [Description("Filter by node type: Class, Method, Route, Service, Event, Queue, Table, Interface, etc.")] string? label = null,
         [Description("Filter by project/repository name.")] string? project = null,
-        [Description("Max results (default 20).")] int limit = 20)
+        [Description("Max results (default 20).")] int limit = 20,
+        [Description(ShaDescription)] string? sha = null)
     {
         const string tool = "codegraph_search";
         switch (Normalize(operation))
         {
             case "" or "search":
                 if (string.IsNullOrWhiteSpace(query))
-                    return Error(tool, "search", "missing_argument", "operation=search requires 'query'.");
-                return Wrap(tool, "search", await codegraph.SearchGraph(query, label, project, limit));
+                    return TextResult(Error(tool, "search", "missing_argument", "operation=search requires 'query'."));
+                return Wrap(tool, "search", await codegraph.SearchGraph(query, label, project, limit, sha));
             case "schema":
-                return Wrap(tool, "schema", codegraph.GetGraphSchema());
+                return TextResult(Wrap(tool, "schema", codegraph.GetGraphSchema()));
             default:
-                return InvalidOperation(tool, operation, "search", "schema");
+                return TextResult(InvalidOperation(tool, operation, "search", "schema"));
         }
     }
 
@@ -68,55 +70,57 @@ public sealed class ConsolidatedMcpServer
 
     [McpServerTool(Name = "graph_trace", Title = "Trace Graph Relationships", ReadOnly = true)]
     [Description("Trace relationships through the graph. operation=call_path | data_lineage | consumers | publishers | impact.")]
-    public static async Task<string> GraphTrace(
+    public static async Task<CallToolResult> GraphTrace(
         CodeGraphMcpServer codegraph,
         [Description("Operation: call_path | data_lineage | consumers | publishers | impact.")] string operation,
         [Description("The function, method, model, event, queue, or element name to trace.")] string? target = null,
         [Description("call_path direction: inbound | outbound | both (default both).")] string direction = "both",
         [Description("Traversal depth for call_path/impact (default 3).")] int depth = 3,
-        [Description("Filter by project/repository name.")] string? project = null)
+        [Description("Filter by project/repository name.")] string? project = null,
+        [Description(ShaDescription)] string? sha = null)
     {
         const string tool = "graph_trace";
         var op = Normalize(operation);
         if (op is "call_path" or "data_lineage" or "consumers" or "publishers" or "impact"
             && string.IsNullOrWhiteSpace(target))
-            return Error(tool, op, "missing_argument", $"operation={op} requires 'target'.");
+            return TextResult(Error(tool, op, "missing_argument", $"operation={op} requires 'target'."));
 
         return op switch
         {
-            "call_path" => Wrap(tool, op, await codegraph.TraceCallPath(target!, direction, depth, project)),
-            "data_lineage" => Wrap(tool, op, await codegraph.TraceDataLineage(target!, project)),
-            "consumers" => Wrap(tool, op, await codegraph.FindConsumers(target!, project)),
-            "publishers" => Wrap(tool, op, await codegraph.FindPublishers(target!, project)),
-            "impact" => Wrap(tool, op, await codegraph.AnalyzeImpact(target!, project, depth)),
-            _ => InvalidOperation(tool, operation, "call_path", "data_lineage", "consumers", "publishers", "impact"),
+            "call_path" => Wrap(tool, op, await codegraph.TraceCallPath(target!, direction, depth, project, sha)),
+            "data_lineage" => Wrap(tool, op, await codegraph.TraceDataLineage(target!, project, sha)),
+            "consumers" => Wrap(tool, op, await codegraph.FindConsumers(target!, project, sha)),
+            "publishers" => Wrap(tool, op, await codegraph.FindPublishers(target!, project, sha)),
+            "impact" => Wrap(tool, op, await codegraph.AnalyzeImpact(target!, project, depth, sha)),
+            _ => TextResult(InvalidOperation(tool, operation, "call_path", "data_lineage", "consumers", "publishers", "impact")),
         };
     }
 
     [McpServerTool(Name = "graph_source", Title = "Read Graph Source", ReadOnly = true)]
     [Description("Read source code. operation=snippet reads a file line range; operation=node reads a graph node's source.")]
-    public static async Task<string> GraphSource(
+    public static async Task<CallToolResult> GraphSource(
         CodeGraphMcpServer codegraph,
         [Description("Operation: snippet | node.")] string operation,
         [Description("Project/repository name. Required for operation=snippet.")] string? project = null,
         [Description("File path relative to repo root. Required for operation=snippet.")] string? filePath = null,
         [Description("Start line (0 for beginning).")] int startLine = 0,
         [Description("End line (0 for entire file).")] int endLine = 0,
-        [Description("Graph node id. Required for operation=node.")] long? nodeId = null)
+        [Description("Graph node id. Required for operation=node.")] long? nodeId = null,
+        [Description(ShaDescription)] string? sha = null)
     {
         const string tool = "graph_source";
         switch (Normalize(operation))
         {
             case "snippet":
                 if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(filePath))
-                    return Error(tool, "snippet", "missing_argument", "operation=snippet requires 'project' and 'filePath'.");
-                return Wrap(tool, "snippet", await codegraph.GetCodeSnippet(project, filePath, startLine, endLine));
+                    return TextResult(Error(tool, "snippet", "missing_argument", "operation=snippet requires 'project' and 'filePath'."));
+                return Wrap(tool, "snippet", await codegraph.GetCodeSnippet(project, filePath, startLine, endLine, sha));
             case "node":
                 if (nodeId is null)
-                    return Error(tool, "node", "missing_argument", "operation=node requires 'nodeId'.");
-                return Wrap(tool, "node", await codegraph.ReadNodeSource(nodeId.Value));
+                    return TextResult(Error(tool, "node", "missing_argument", "operation=node requires 'nodeId'."));
+                return Wrap(tool, "node", await codegraph.ReadNodeSource(nodeId.Value, sha));
             default:
-                return InvalidOperation(tool, operation, "snippet", "node");
+                return TextResult(InvalidOperation(tool, operation, "snippet", "node"));
         }
     }
 
@@ -317,6 +321,43 @@ public sealed class ConsolidatedMcpServer
                 return InvalidOperation(tool, operation, "write_status");
         }
     }
+
+    private const string ShaDescription =
+        "Optional full 40-hex commit SHA: answer from the ready branch overlay for that commit; a SHA " +
+        "without a ready overlay returns a typed not-indexed result. Omit for the default branch.";
+
+    /// <summary>
+    /// Wraps a commit-bound native answer. The text is the same JSON envelope as for other
+    /// operations (its <c>result</c> starts with the <c>Commit:</c> line) plus a top-level
+    /// <c>commitSha</c> (and <c>notIndexed</c> when the SHA has no ready overlay); the native
+    /// structured content (with <c>commitSha</c>) is passed through.
+    /// </summary>
+    private static CallToolResult Wrap(string tool, string operation, CallToolResult native)
+    {
+        var envelope = new JsonObject
+        {
+            ["tool"] = tool,
+            ["operation"] = operation,
+            ["formatVersion"] = FormatVersion,
+        };
+        if (native.StructuredContent is { } structured && structured.ValueKind == JsonValueKind.Object)
+        {
+            if (structured.TryGetProperty("commitSha", out var commitSha))
+                envelope["commitSha"] = JsonNode.Parse(commitSha.GetRawText());
+            if (structured.TryGetProperty("notIndexed", out var notIndexed))
+                envelope["notIndexed"] = JsonNode.Parse(notIndexed.GetRawText());
+        }
+
+        envelope["result"] = ToResultNode(CommitAnswer.TextOf(native));
+        return new CallToolResult
+        {
+            Content = [new TextContentBlock { Text = envelope.ToJsonString(EnvelopeOptions) }],
+            StructuredContent = native.StructuredContent,
+            IsError = native.IsError
+        };
+    }
+
+    private static CallToolResult TextResult(string text) => CommitAnswer.Text(text);
 
     private static string Normalize(string? operation) =>
         operation?.Trim().ToLowerInvariant() ?? string.Empty;

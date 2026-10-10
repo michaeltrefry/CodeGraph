@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -11,6 +12,7 @@ using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Overlays;
 using CodeGraph.Services.WikiRag;
 
 namespace CodeGraph.Services.Assistant;
@@ -24,8 +26,14 @@ public class CodeGraphMcpServer(
     IOptions<RepositorySourceOptions> sourceOptionsAccessor,
     ICommunityDetectionService communityDetection,
     IImpactAnalysisService impactAnalysis,
-    IConventionEmbeddingService? conventionEmbeddingService = null)
+    IConventionEmbeddingService? conventionEmbeddingService = null,
+    ICommitScopeResolver? commitScopes = null)
 {
+    private const string ShaDescription =
+        "Optional full 40-hex commit SHA. Answers from the ready branch overlay for that commit " +
+        "(its changed files over the default-branch index); a SHA without a ready overlay returns a " +
+        "typed not-indexed result. Omit for the default branch.";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -33,7 +41,27 @@ public class CodeGraphMcpServer(
         WriteIndented = true,
     };
 
-    private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
+    private readonly ICommitScopeResolver commitScopes =
+        commitScopes ?? new CommitScopeResolver(store, sourceOptionsAccessor);
+
+    /// <summary>
+    /// Resolves the graph for <paramref name="sha"/> and runs <paramref name="answer"/> against it.
+    /// The answer returns its text and the projects it is about; the result names the commit.
+    /// </summary>
+    private async Task<CallToolResult> AnswerAsync(
+        string? project,
+        string? sha,
+        Func<CommitScope, string?, Task<(string Text, IEnumerable<string?> Projects)>> answer)
+    {
+        var scope = await commitScopes.ResolveAsync(project, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return CommitAnswer.NotIndexed(notIndexed);
+
+        var effectiveProject = scope.IsPinned ? scope.Project : project;
+        var (text, projects) = await answer(scope, effectiveProject);
+        var commit = await commitScopes.DescribeAsync(scope, projects.Append(effectiveProject));
+        return CommitAnswer.Create(text, commit, scope);
+    }
 
     [McpServerTool(Name = "get_graph_schema"),
      Description("Describe the available node types, edge types, and their properties in the knowledge graph.")]
@@ -64,18 +92,18 @@ public class CodeGraphMcpServer(
 
     [Obsolete("Use search_projects instead.")]
     [McpServerTool(Name = "list_projects"),
-     Description("Obsolete. Use search_projects instead. Lists all indexed repositories without git repository URLs.")]
+     Description("Obsolete. Use search_projects instead. Lists all indexed repositories with their git repository URL and the commit of their default-branch index.")]
     public async Task<string> ListProjects()
     {
         var projects = await store.ListRepositoriesAsync();
         if (projects.Count == 0)
             return "No projects indexed yet.";
 
-        return FormatProjects(projects.OrderBy(p => p.Name).ToList(), projects.Count, includeRepoUrl: false);
+        return await FormatProjectsAsync(projects.OrderBy(p => p.Name).ToList(), projects.Count);
     }
 
     [McpServerTool(Name = "search_projects"),
-     Description("Search indexed repositories by partial or wildcard name with metadata including git repository URL. Returns the same markdown list shape as list_projects, with a Repo line for each project.")]
+     Description("Search indexed repositories by partial or wildcard name with metadata including git repository URL and the commit of the default-branch index. Returns the same markdown list shape as list_projects, with Repo and Last commit lines for each project.")]
     public async Task<string> SearchProjects(
         [Description("Optional partial or wildcard repository name search. Supports plain substrings plus * and % wildcards.")] string? search = null,
         [Description("Optional source group filter")] string? group = null,
@@ -91,11 +119,13 @@ public class CodeGraphMcpServer(
                 ? "No projects indexed yet."
                 : "No projects matched the search.";
 
-        return FormatProjects(result.Items, result.TotalCount, includeRepoUrl: true);
+        return await FormatProjectsAsync(result.Items, result.TotalCount);
     }
 
-    private static string FormatProjects(IReadOnlyList<ProjectInfo> projects, int totalCount, bool includeRepoUrl)
+    private async Task<string> FormatProjectsAsync(IReadOnlyList<ProjectInfo> projects, int totalCount)
     {
+        // The default-branch index commit: sync state first (what indexing recorded), then the repository row.
+        var syncStates = await store.GetSyncStatesAsync(projects.Select(p => p.Name).ToList());
         var lines = new List<string> { $"## Indexed Projects ({totalCount})\n" };
         foreach (var p in projects)
         {
@@ -106,9 +136,12 @@ public class CodeGraphMcpServer(
 
             var flagStr = flags.Count > 0 ? $" [{string.Join(", ", flags)}]" : "";
             var indexed = p.IndexedAt != default ? $" (indexed: {p.IndexedAt:yyyy-MM-dd HH:mm})" : "";
+            var lastCommit = syncStates.TryGetValue(p.Name, out var state) && !string.IsNullOrWhiteSpace(state.LastCommitSha)
+                ? state.LastCommitSha
+                : p.LastCommitSha;
             lines.Add($"- **{p.Name}**{flagStr}{indexed}");
-            if (includeRepoUrl)
-                lines.Add($"  Repo: {p.RepoUrl ?? "(unknown)"}");
+            lines.Add($"  Repo: {p.RepoUrl ?? "(unknown)"}");
+            lines.Add($"  Last commit: {(string.IsNullOrWhiteSpace(lastCommit) ? "(unknown)" : lastCommit)}");
         }
 
         return string.Join('\n', lines);
@@ -146,19 +179,32 @@ public class CodeGraphMcpServer(
 
     [McpServerTool(Name = "search_graph"),
      Description("Search for services, endpoints, models, events, or any code element by name pattern. Supports filtering by type and project. Results are ranked by trust score — untrusted nodes are deprioritized but not hidden.")]
-    public async Task<string> SearchGraph(
+    public Task<CallToolResult> SearchGraph(
         [Description("Name pattern to search for (supports % wildcards)")] string namePattern,
         [Description("Filter by node type: Class, Method, Route, Service, Event, Queue, Table, Interface, etc.")] string? label = null,
         [Description("Filter by project/repository name")] string? project = null,
-        [Description("Max results (default 20)")] int limit = 20)
+        [Description("Max results (default 20)")] int limit = 20,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        {
+            var (text, nodes) = await SearchGraphTextAsync(scope.Graph, namePattern, label, scopedProject, limit);
+            return (text, nodes.Select(node => (string?)node.Project).Distinct());
+        });
+
+    private async Task<(string Text, IReadOnlyList<GraphNode> Nodes)> SearchGraphTextAsync(
+        IGraphReader graph,
+        string namePattern,
+        string? label,
+        string? project,
+        int limit)
     {
         var parsedLabel = label.TryParseEnum<NodeLabel>();
 
         // Fetch extra to account for trust-based reordering
-        var result = await query.SearchAsync(new SearchRequest(namePattern, parsedLabel, project, Math.Min(limit * 2, 100)));
+        var result = await query.SearchAsync(new SearchRequest(namePattern, parsedLabel, project, Math.Min(limit * 2, 100)), graph);
 
         if (result.Nodes.Count == 0)
-            return $"No results found for '{namePattern}'.";
+            return ($"No results found for '{namePattern}'.", []);
 
         // Build trust lookup: file path → trust score (from file_metrics)
         var projects = result.Nodes.Select(n => n.Project).Distinct().ToList();
@@ -205,7 +251,7 @@ public class CodeGraphMcpServer(
                 sb.AppendLine($"  {prop.Key}: {prop.Value}");
         }
 
-        return sb.ToString();
+        return (sb.ToString(), result.Nodes);
     }
 
     [McpServerTool(Name = "get_service_summary"),
@@ -231,125 +277,143 @@ public class CodeGraphMcpServer(
 
     [McpServerTool(Name = "trace_call_path"),
      Description("Trace callers or callees of a function/method. Shows the call chain across services. Use direction 'inbound' to find callers, 'outbound' to find callees, 'both' for both.")]
-    public async Task<string> TraceCallPath(
+    public Task<CallToolResult> TraceCallPath(
         [Description("Function or method name to trace")] string functionName,
         [Description("Trace direction: inbound, outbound, or both (default: both)")] string direction = "both",
         [Description("How many levels deep to trace (default: 3)")] int depth = 3,
-        [Description("Filter by project")] string? project = null)
-    {
-        var dir = direction.TryParseEnum<TraceDirection>() ?? TraceDirection.Both;
-
-        var result = await query.TraceCallPathAsync(functionName, project, dir, depth);
-
-        if (result.Count == 0)
-            return $"No call paths found for '{functionName}'.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"## Call Path: {functionName} ({direction})\n");
-
-        foreach (var entry in result)
+        [Description("Filter by project")] string? project = null,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
         {
-            var indent = new string(' ', entry.Depth * 2);
-            sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project}");
-            sb.AppendLine($"{indent}  Edge: {entry.EdgeType}");
-            if (!string.IsNullOrEmpty(entry.Node.FilePath))
-                sb.AppendLine($"{indent}  File: {entry.Node.FilePath}:{entry.Node.StartLine}");
-        }
+            var dir = direction.TryParseEnum<TraceDirection>() ?? TraceDirection.Both;
 
-        return sb.ToString();
-    }
+            var result = await query.TraceCallPathAsync(functionName, scopedProject, dir, depth, scope.Graph);
+
+            if (result.Count == 0)
+                return ($"No call paths found for '{functionName}'.", []);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"## Call Path: {functionName} ({direction})\n");
+
+            foreach (var entry in result)
+            {
+                var indent = new string(' ', entry.Depth * 2);
+                sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project}");
+                sb.AppendLine($"{indent}  Edge: {entry.EdgeType}");
+                if (!string.IsNullOrEmpty(entry.Node.FilePath))
+                    sb.AppendLine($"{indent}  File: {entry.Node.FilePath}:{entry.Node.StartLine}");
+            }
+
+            return (sb.ToString(), ProjectsOf(result.Select(entry => entry.Node.Project)));
+        });
 
     [McpServerTool(Name = "trace_data_lineage"),
      Description("Follow a data model from its database origin through all services that produce, transform, or consume it. Shows the complete data flow across the system.")]
-    public async Task<string> TraceDataLineage(
+    public Task<CallToolResult> TraceDataLineage(
         [Description("Model/DTO/event class name to trace")] string modelName,
-        [Description("Filter by project")] string? project = null)
-    {
-        var result = await query.TraceDataLineageAsync(modelName, project);
-
-        if (result.Producers.Count == 0 && result.Consumers.Count == 0 && result.CrossRepoEdges.Count == 0)
-            return $"No data lineage found for '{modelName}'.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"## Data Lineage: {modelName}\n");
-
-        if (result.Producers.Count > 0)
+        [Description("Filter by project")] string? project = null,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
         {
-            sb.AppendLine("### Producers (inbound)\n");
-            foreach (var entry in result.Producers)
+            var result = await query.TraceDataLineageAsync(modelName, scopedProject, scope.Graph);
+
+            if (result.Producers.Count == 0 && result.Consumers.Count == 0 && result.CrossRepoEdges.Count == 0)
+                return ($"No data lineage found for '{modelName}'.", []);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"## Data Lineage: {modelName}\n");
+
+            if (result.Producers.Count > 0)
             {
-                var indent = new string(' ', entry.Depth * 2);
-                sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+                sb.AppendLine("### Producers (inbound)\n");
+                foreach (var entry in result.Producers)
+                {
+                    var indent = new string(' ', entry.Depth * 2);
+                    sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+                }
+                sb.AppendLine();
             }
-            sb.AppendLine();
-        }
 
-        if (result.Consumers.Count > 0)
-        {
-            sb.AppendLine("### Consumers (outbound)\n");
-            foreach (var entry in result.Consumers)
+            if (result.Consumers.Count > 0)
             {
-                var indent = new string(' ', entry.Depth * 2);
-                sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+                sb.AppendLine("### Consumers (outbound)\n");
+                foreach (var entry in result.Consumers)
+                {
+                    var indent = new string(' ', entry.Depth * 2);
+                    sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+                }
+                sb.AppendLine();
             }
-            sb.AppendLine();
-        }
 
-        if (result.CrossRepoEdges.Count > 0)
-        {
-            sb.AppendLine("### Cross-Repo References\n");
-            foreach (var edge in result.CrossRepoEdges)
-                sb.AppendLine($"- {edge.SourceProject} → {edge.TargetProject} ({edge.Type})");
-        }
+            if (result.CrossRepoEdges.Count > 0)
+            {
+                sb.AppendLine("### Cross-Repo References\n");
+                foreach (var edge in result.CrossRepoEdges)
+                    sb.AppendLine($"- {edge.SourceProject} → {edge.TargetProject} ({edge.Type})");
+            }
 
-        return sb.ToString();
-    }
+            return (sb.ToString(), ProjectsOf(result.Producers.Concat(result.Consumers).Select(entry => entry.Node.Project)
+                .Concat(result.CrossRepoEdges.SelectMany(edge => new[] { edge.SourceProject, edge.TargetProject }))));
+        });
 
     [McpServerTool(Name = "find_consumers"),
      Description("Find all services/methods that consume a given event, endpoint, or model. Shows cross-repo dependencies.")]
-    public async Task<string> FindConsumers(
+    public Task<CallToolResult> FindConsumers(
         [Description("Event, endpoint, or model name")] string name,
-        [Description("Filter by project")] string? project = null)
-    {
-        var result = await query.FindConsumersAsync(name, project);
-
-        if (result.Count == 0)
-            return $"No consumers found for '{name}'.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"## Consumers of {name} ({result.Count})\n");
-
-        foreach (var consumer in result)
+        [Description("Filter by project")] string? project = null,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
         {
-            sb.AppendLine($"- **{consumer.Name}** — {consumer.Project} ({consumer.EdgeType})");
-            sb.AppendLine($"  QN: {consumer.QualifiedName}");
-        }
+            var result = await query.FindConsumersAsync(name, scopedProject, scope.Graph);
 
-        return sb.ToString();
-    }
+            if (result.Count == 0)
+                return ($"No consumers found for '{name}'.", []);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"## Consumers of {name} ({result.Count})\n");
+
+            foreach (var consumer in result)
+            {
+                sb.AppendLine($"- **{consumer.Name}** — {consumer.Project} ({consumer.EdgeType})");
+                sb.AppendLine($"  QN: {consumer.QualifiedName}");
+            }
+
+            return (sb.ToString(), ProjectsOf(result.Select(consumer => consumer.Project)));
+        });
 
     [McpServerTool(Name = "find_publishers"),
      Description("Find all services that publish to a given queue, exchange, or event type.")]
-    public async Task<string> FindPublishers(
+    public Task<CallToolResult> FindPublishers(
         [Description("Queue, exchange, or event name")] string name,
-        [Description("Filter by project")] string? project = null)
-    {
-        var result = await query.FindPublishersAsync(name, project);
-
-        if (result.Count == 0)
-            return $"No publishers found for '{name}'.";
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"## Publishers to {name} ({result.Count})\n");
-
-        foreach (var publisher in result)
+        [Description("Filter by project")] string? project = null,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
         {
-            sb.AppendLine($"- **{publisher.Name}** — {publisher.Project} ({publisher.EdgeType})");
-            sb.AppendLine($"  QN: {publisher.QualifiedName}");
-        }
+            var result = await query.FindPublishersAsync(name, scopedProject, scope.Graph);
 
-        return sb.ToString();
-    }
+            if (result.Count == 0)
+                return ($"No publishers found for '{name}'.", []);
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"## Publishers to {name} ({result.Count})\n");
+
+            foreach (var publisher in result)
+            {
+                sb.AppendLine($"- **{publisher.Name}** — {publisher.Project} ({publisher.EdgeType})");
+                sb.AppendLine($"  QN: {publisher.QualifiedName}");
+            }
+
+            return (sb.ToString(), ProjectsOf(result.Select(publisher => publisher.Project)));
+        });
+
+    private static IEnumerable<string?> ProjectsOf(IEnumerable<string> projects)
+        => projects.Distinct(StringComparer.OrdinalIgnoreCase).Select(project => (string?)project).ToList();
+
+    /// <summary>Every repository an impact report names: changed and affected nodes and cross-repo impacts.</summary>
+    internal static IEnumerable<string> ImpactProjects(ImpactReport report)
+        => report.ChangedNodes.Select(node => node.Project)
+            .Concat(report.AffectedNodes.Select(node => node.Project))
+            .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }));
 
     [McpServerTool(Name = "get_architecture"),
      Description("Get architecture overview for a project — hotspots, dependency analysis, complexity metrics.")]
@@ -556,76 +620,101 @@ public class CodeGraphMcpServer(
     }
 
     [McpServerTool(Name = "get_code_snippet"),
-     Description("Read actual source code from a repository file. Use when the graph and summaries don't provide enough detail.")]
-    public async Task<string> GetCodeSnippet(
+     Description("Read actual source code from a repository file. Use when the graph and summaries don't provide enough detail. With sha, reads the file as committed at that commit.")]
+    public Task<CallToolResult> GetCodeSnippet(
         [Description("Project name")] string project,
         [Description("File path relative to repo root")] string filePath,
         [Description("Start line (0 for beginning)")] int startLine = 0,
-        [Description("End line (0 for entire file)")] int endLine = 0)
-    {
-        var lines = await RepoFileResolver.ReadAllLinesAsync(project, filePath, sourceOptions, store);
-        if (lines is null)
-            return $"File not found: {project}/{filePath}. Check that the project is indexed and the file exists in the cache or local path.";
-        var start = startLine > 0 ? startLine - 1 : 0;
-        var end = endLine > 0 ? Math.Min(endLine, lines.Length) : lines.Length;
+        [Description("End line (0 for entire file)")] int endLine = 0,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        {
+            var source = await commitScopes.ReadSourceAsync(scope, scopedProject ?? project, filePath);
+            if (source.Status != CommitSourceStatus.Found)
+            {
+                return (scope.IsPinned
+                    ? source.Message
+                    : $"File not found: {project}/{filePath}. Check that the project is indexed and the file exists in the cache or local path.", []);
+            }
 
-        if (start >= lines.Length)
-            return $"Start line {startLine} exceeds file length ({lines.Length} lines).";
+            var lines = SplitLines(source.Content!);
+            var start = startLine > 0 ? startLine - 1 : 0;
+            var end = endLine > 0 ? Math.Min(endLine, lines.Length) : lines.Length;
 
-        var snippet = lines[start..end];
-        var ext = Path.GetExtension(filePath).TrimStart('.');
-        var sb = new StringBuilder();
-        sb.AppendLine($"```{ext} // {filePath}:{start + 1}-{end}");
-        for (var i = 0; i < snippet.Length; i++)
-            sb.AppendLine($"{start + i + 1,5} | {snippet[i]}");
-        sb.AppendLine("```");
+            if (start >= lines.Length)
+                return ($"Start line {startLine} exceeds file length ({lines.Length} lines).", []);
 
-        return sb.ToString();
-    }
+            var snippet = lines[start..end];
+            var ext = Path.GetExtension(filePath).TrimStart('.');
+            var sb = new StringBuilder();
+            sb.AppendLine($"```{ext} // {filePath}:{start + 1}-{end}");
+            for (var i = 0; i < snippet.Length; i++)
+                sb.AppendLine($"{start + i + 1,5} | {snippet[i]}");
+            sb.AppendLine("```");
+
+            return (sb.ToString(), []);
+        });
 
     [McpServerTool(Name = "read_node_source"),
-     Description("Read the source code for a specific graph node by its ID. Returns the full file with the node's line range highlighted. Useful for understanding the implementation of a class, method, or other code element.")]
-    public async Task<string> ReadNodeSource(
-        [Description("Node ID from the graph")] long nodeId)
+     Description("Read the source code for a specific graph node by its ID. Returns the full file with the node's line range highlighted. Useful for understanding the implementation of a class, method, or other code element. With sha, reads the node and its file as of that commit.")]
+    public Task<CallToolResult> ReadNodeSource(
+        [Description("Node ID from the graph")] long nodeId,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(null, sha, async (scope, _) =>
+        {
+            var node = await scope.Graph.FindNodeByIdAsync(nodeId);
+            if (node is null)
+                return (scope.IsPinned ? $"Node {nodeId} not found at commit {scope.Sha}." : $"Node {nodeId} not found.", []);
+
+            if (string.IsNullOrWhiteSpace(node.FilePath))
+                return ($"Node '{node.Name}' ({node.Label}) has no source file path.", [node.Project]);
+
+            var source = await commitScopes.ReadSourceAsync(scope, node.Project, node.FilePath);
+            if (source.Status != CommitSourceStatus.Found)
+            {
+                return (scope.IsPinned ? source.Message : $"Source file not found: {node.Project}/{node.FilePath}",
+                    [node.Project]);
+            }
+
+            var lines = SplitLines(source.Content!);
+
+            // Return a window around the node: 5 lines before start through 5 lines after end,
+            // or the full file if it's small
+            var contextBefore = 5;
+            var contextAfter = 5;
+            var start = node.StartLine > 0 ? Math.Max(0, node.StartLine - 1 - contextBefore) : 0;
+            var end = node.EndLine > 0 ? Math.Min(lines.Length, node.EndLine + contextAfter) : lines.Length;
+
+            // If the file is small enough, just return it all
+            if (lines.Length <= 200)
+            {
+                start = 0;
+                end = lines.Length;
+            }
+
+            var ext = Path.GetExtension(node.FilePath).TrimStart('.');
+            var sb = new StringBuilder();
+            sb.AppendLine($"## {node.Name} ({node.Label}) — {node.Project}");
+            sb.AppendLine($"File: {node.FilePath}, lines {node.StartLine}–{node.EndLine}\n");
+            sb.AppendLine($"```{ext}");
+            for (var i = start; i < end; i++)
+            {
+                var marker = (i + 1 >= node.StartLine && i + 1 <= node.EndLine) ? "→" : " ";
+                sb.AppendLine($"{marker}{i + 1,5} | {lines[i]}");
+            }
+            sb.AppendLine("```");
+
+            return (sb.ToString(), [node.Project]);
+        });
+
+    /// <summary>Splits text into lines like <see cref="StreamReader.ReadLine"/> (no trailing empty line).</summary>
+    private static string[] SplitLines(string content)
     {
-        var node = await store.FindNodeByIdAsync(nodeId);
-        if (node is null)
-            return $"Node {nodeId} not found.";
-
-        if (string.IsNullOrWhiteSpace(node.FilePath))
-            return $"Node '{node.Name}' ({node.Label}) has no source file path.";
-
-        var lines = await RepoFileResolver.ReadAllLinesAsync(node.Project, node.FilePath, sourceOptions, store);
-        if (lines is null)
-            return $"Source file not found: {node.Project}/{node.FilePath}";
-
-        // Return a window around the node: 5 lines before start through 5 lines after end,
-        // or the full file if it's small
-        var contextBefore = 5;
-        var contextAfter = 5;
-        var start = node.StartLine > 0 ? Math.Max(0, node.StartLine - 1 - contextBefore) : 0;
-        var end = node.EndLine > 0 ? Math.Min(lines.Length, node.EndLine + contextAfter) : lines.Length;
-
-        // If the file is small enough, just return it all
-        if (lines.Length <= 200)
-        {
-            start = 0;
-            end = lines.Length;
-        }
-
-        var ext = Path.GetExtension(node.FilePath).TrimStart('.');
-        var sb = new StringBuilder();
-        sb.AppendLine($"## {node.Name} ({node.Label}) — {node.Project}");
-        sb.AppendLine($"File: {node.FilePath}, lines {node.StartLine}–{node.EndLine}\n");
-        sb.AppendLine($"```{ext}");
-        for (var i = start; i < end; i++)
-        {
-            var marker = (i + 1 >= node.StartLine && i + 1 <= node.EndLine) ? "→" : " ";
-            sb.AppendLine($"{marker}{i + 1,5} | {lines[i]}");
-        }
-        sb.AppendLine("```");
-
-        return sb.ToString();
+        var lines = new List<string>();
+        using var reader = new StringReader(content);
+        while (reader.ReadLine() is { } line)
+            lines.Add(line);
+        return lines.ToArray();
     }
 
     [McpServerTool(Name = "list_conventions"),
@@ -725,16 +814,21 @@ public class CodeGraphMcpServer(
 
     [McpServerTool(Name = "analyze_impact"),
      Description("Analyze the blast radius of changing a code element. Shows all affected nodes classified by risk (Critical/High/Medium/Low), cross-repo impact, and scope estimation. Use to assess risk before making changes.")]
-    public async Task<string> AnalyzeImpact(
+    public Task<CallToolResult> AnalyzeImpact(
         [Description("Qualified name or name of the code element to analyze (e.g., 'OrderService.CreateOrder', 'OrderCreatedEvent')")] string name,
         [Description("Filter by project/repository")] string? project = null,
-        [Description("Max traversal depth (default 3, max 5)")] int depth = 3)
+        [Description("Max traversal depth (default 3, max 5)")] int depth = 3,
+        [Description(ShaDescription)] string? sha = null)
+        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        {
+            var result = await impactAnalysis.AnalyzeImpactAsync(name, scopedProject, Math.Clamp(depth, 1, 5), scope.Graph);
+            return result is null
+                ? ($"No nodes found matching '{name}'.", [])
+                : (FormatImpact(name, result), ProjectsOf(ImpactProjects(result)));
+        });
+
+    private static string FormatImpact(string name, ImpactReport result)
     {
-        var result = await impactAnalysis.AnalyzeImpactAsync(name, project, Math.Clamp(depth, 1, 5));
-
-        if (result is null)
-            return $"No nodes found matching '{name}'.";
-
         var sb = new StringBuilder();
         sb.AppendLine($"# Blast Radius: {name}\n");
 

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
+using CodeGraph.Services.Overlays;
 
 namespace CodeGraph.Api.Controllers;
 
@@ -8,34 +9,47 @@ public record DoNotTrustRequest(bool DoNotTrust);
 
 [ApiController]
 [Route("api/nodes")]
-public class NodesController(INodeQueryService nodeQueryService) : Controller
+public class NodesController(INodeQueryService nodeQueryService, ICommitScopeResolver commitScopes) : Controller
 {
-    // GET /api/nodes/by-file?project=X&filePath=Y&line=N
+    // GET /api/nodes/by-file?project=X&filePath=Y&line=N&sha=<full commit sha>
     [HttpGet("by-file")]
-    public async Task<ActionResult<object>> ByFile(
+    public async Task<ActionResult<NodeByFileResponse>> ByFile(
         [FromQuery] string project,
         [FromQuery] string filePath,
-        [FromQuery] int? line = null)
+        [FromQuery] int? line = null,
+        [FromQuery] string? sha = null)
     {
-        var nodeId = await nodeQueryService.FindNodeByFileAsync(project, filePath, line);
-        return nodeId is null
-            ? NotFound(new { message = "No node found for file", project, filePath, line })
-            : Ok(new { nodeId = nodeId.Value });
+        var scope = await commitScopes.ResolveAsync(project, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        var result = await nodeQueryService.FindNodeByFileAsync(project, filePath, line, scope);
+        return result is null
+            ? NotFound(new { message = "No node found for file", project, filePath, line, commitSha = scope.Sha })
+            : Ok(result);
     }
 
-    // GET /api/nodes/{id}
+    // GET /api/nodes/{id}?sha=<full commit sha>
     [HttpGet("{id:long}")]
-    public async Task<ActionResult<NodeDetailResponse>> Detail(long id)
+    public async Task<ActionResult<NodeDetailResponse>> Detail(long id, [FromQuery] string? sha = null)
     {
-        var result = await nodeQueryService.GetDetailAsync(id);
+        var scope = await commitScopes.ResolveAsync(null, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        var result = await nodeQueryService.GetDetailAsync(id, scope);
         return result is null ? NotFound() : Ok(result);
     }
 
-    // GET /api/nodes/{id}/source
+    // GET /api/nodes/{id}/source?sha=<full commit sha>
     [HttpGet("{id:long}/source")]
-    public async Task<ActionResult<NodeSourceResponse>> Source(long id)
+    public async Task<ActionResult<NodeSourceResponse>> Source(long id, [FromQuery] string? sha = null)
     {
-        var result = await nodeQueryService.GetNodeSourceAsync(id);
+        var scope = await commitScopes.ResolveAsync(null, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        var result = await nodeQueryService.GetNodeSourceAsync(id, scope);
         return result is null ? NotFound() : Ok(result);
     }
 
@@ -47,15 +61,20 @@ public class NodesController(INodeQueryService nodeQueryService) : Controller
         return Ok();
     }
 
-    // GET /api/nodes/search?q=&project=&label=&page=1&pageSize=25
+    // GET /api/nodes/search?q=&project=&label=&page=1&pageSize=25&sha=<full commit sha>
     [HttpGet("search")]
     public async Task<ActionResult<NodeListResponse>> Search(
         [FromQuery] string q = "%",
         [FromQuery] string? project = null,
         [FromQuery] string? label = null,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 25)
+        [FromQuery] int pageSize = 25,
+        [FromQuery] string? sha = null)
     {
-        return Ok(await nodeQueryService.SearchAsync(q, project, label, page, pageSize));
+        var scope = await commitScopes.ResolveAsync(project, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        return Ok(await nodeQueryService.SearchAsync(q, project, label, page, pageSize, scope));
     }
 }

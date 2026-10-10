@@ -18,9 +18,9 @@ public class GraphQueryEngine
     /// <summary>
     /// Search for nodes by name pattern, label, project.
     /// </summary>
-    public async Task<SearchResult> SearchAsync(SearchRequest request)
+    public async Task<SearchResult> SearchAsync(SearchRequest request, IGraphReader? graph = null)
     {
-        var nodes = await _store.SearchNodesAsync(
+        var nodes = await (graph ?? _store).SearchNodesAsync(
             request.Project,
             request.NamePattern,
             request.Label,
@@ -34,11 +34,12 @@ public class GraphQueryEngine
     /// </summary>
     public async Task<IReadOnlyList<TraversalEntry>> TraceCallPathAsync(
         string functionName, string? project, TraceDirection direction,
-        int maxDepth = 3)
+        int maxDepth = 3, IGraphReader? graph = null)
     {
+        var reader = graph ?? _store;
         var candidates = project is not null
-            ? await _store.FindNodesByNameAsync(project, functionName)
-            : await _store.SearchNodesAsync(null, functionName, limit: 10);
+            ? await reader.FindNodesByNameAsync(project, functionName)
+            : await reader.SearchNodesAsync(null, functionName, limit: 10);
 
         if (candidates.Count == 0)
             return [];
@@ -48,18 +49,19 @@ public class GraphQueryEngine
             n.Label is NodeLabel.Method or NodeLabel.Function) ?? candidates[0];
 
         var callEdges = new[] { EdgeType.CALLS, EdgeType.HTTP_CALLS };
-        return await _store.TraverseAsync(startNode.Id, direction, maxDepth, callEdges);
+        return await reader.TraverseAsync(startNode.Id, direction, maxDepth, callEdges);
     }
 
     /// <summary>
     /// Trace data lineage: follow a model from origin through all services.
     /// </summary>
     public async Task<DataLineageResult> TraceDataLineageAsync(
-        string modelName, string? project)
+        string modelName, string? project, IGraphReader? graph = null)
     {
+        var reader = graph ?? _store;
         var candidates = project is not null
-            ? await _store.FindNodesByNameAsync(project, modelName)
-            : await _store.SearchNodesAsync(null, modelName, limit: 10);
+            ? await reader.FindNodesByNameAsync(project, modelName)
+            : await reader.SearchNodesAsync(null, modelName, limit: 10);
 
         if (candidates.Count == 0)
             return new DataLineageResult(modelName, [], [], []);
@@ -71,14 +73,14 @@ public class GraphQueryEngine
 
         // Trace outbound: who consumes/uses this model
         var dataEdges = new[] { EdgeType.USES_TYPE, EdgeType.PUBLISHES, EdgeType.CONSUMES, EdgeType.HTTP_CALLS };
-        var outbound = await _store.TraverseAsync(modelNode.Id, TraceDirection.Outbound, 4, dataEdges);
+        var outbound = await reader.TraverseAsync(modelNode.Id, TraceDirection.Outbound, 4, dataEdges);
 
         // Trace inbound: who produces this model
-        var inbound = await _store.TraverseAsync(modelNode.Id, TraceDirection.Inbound, 4, dataEdges);
+        var inbound = await reader.TraverseAsync(modelNode.Id, TraceDirection.Inbound, 4, dataEdges);
 
         // Cross-repo edges involving this model's project
         var crossRepo = modelNode.Project is not null
-            ? await _store.FindCrossRepoEdgesAsync(modelNode.Project)
+            ? await reader.FindCrossRepoEdgesAsync(modelNode.Project)
             : [];
 
         return new DataLineageResult(modelName, inbound, outbound, crossRepo);
@@ -88,11 +90,12 @@ public class GraphQueryEngine
     /// Find all consumers of an event/endpoint/model.
     /// </summary>
     public async Task<IReadOnlyList<ConsumerInfo>> FindConsumersAsync(
-        string name, string? project)
+        string name, string? project, IGraphReader? graph = null)
     {
+        var reader = graph ?? _store;
         var candidates = project is not null
-            ? await _store.FindNodesByNameAsync(project, name)
-            : await _store.SearchNodesAsync(null, name, limit: 10);
+            ? await reader.FindNodesByNameAsync(project, name)
+            : await reader.SearchNodesAsync(null, name, limit: 10);
 
         if (candidates.Count == 0)
             return [];
@@ -103,7 +106,7 @@ public class GraphQueryEngine
         var candidateIds = candidates.Select(c => c.Id).ToList();
         var relevantTypes = new[] { EdgeType.CONSUMES, EdgeType.CALLS, EdgeType.HTTP_CALLS,
             EdgeType.USES_TYPE, EdgeType.HANDLES };
-        var allEdges = await _store.FindEdgesByTargetBatchAsync(candidateIds, relevantTypes);
+        var allEdges = await reader.FindEdgesByTargetBatchAsync(candidateIds, relevantTypes);
 
         // Group edges by target node, then traverse inbound one hop per distinct edge type
         var edgesByTarget = allEdges.GroupBy(e => e.TargetId);
@@ -112,7 +115,7 @@ public class GraphQueryEngine
             var distinctTypes = group.Select(e => e.Type).Distinct();
             foreach (var edgeType in distinctTypes)
             {
-                var path = await _store.TraverseAsync(group.Key, TraceDirection.Inbound, 1,
+                var path = await reader.TraverseAsync(group.Key, TraceDirection.Inbound, 1,
                     [edgeType]);
                 foreach (var entry in path)
                 {
@@ -132,11 +135,12 @@ public class GraphQueryEngine
     /// Find all publishers to a queue/exchange.
     /// </summary>
     public async Task<IReadOnlyList<PublisherInfo>> FindPublishersAsync(
-        string name, string? project)
+        string name, string? project, IGraphReader? graph = null)
     {
+        var reader = graph ?? _store;
         var candidates = project is not null
-            ? await _store.FindNodesByNameAsync(project, name)
-            : await _store.SearchNodesAsync(null, name, limit: 10);
+            ? await reader.FindNodesByNameAsync(project, name)
+            : await reader.SearchNodesAsync(null, name, limit: 10);
 
         if (candidates.Count == 0)
             return [];
@@ -145,7 +149,7 @@ public class GraphQueryEngine
 
         foreach (var node in candidates)
         {
-            var path = await _store.TraverseAsync(node.Id, TraceDirection.Inbound, 1,
+            var path = await reader.TraverseAsync(node.Id, TraceDirection.Inbound, 1,
                 [EdgeType.PUBLISHES, EdgeType.CALLS]);
             foreach (var entry in path)
             {

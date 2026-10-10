@@ -7,6 +7,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Indexer;
+using CodeGraph.Services.Overlays;
 
 namespace CodeGraph.Api.Controllers;
 
@@ -16,7 +17,8 @@ public class ProjectsController(
     IProjectQueryService queryService,
     IProjectService projectService,
     IImpactAnalysisService impactService,
-    IIndexerOperationsService indexerOperations) : Controller
+    IIndexerOperationsService indexerOperations,
+    ICommitScopeResolver commitScopes) : Controller
 {
     // GET /api/projects?search=&page=1&pageSize=25
     [HttpGet]
@@ -109,32 +111,58 @@ public class ProjectsController(
         return content is null ? NotFound() : Ok(new { content });
     }
 
-    // GET /api/projects/{name}/impact?node=QualifiedName&depth=3
+    // GET /api/projects/{name}/impact?node=QualifiedName&depth=3&sha=<full commit sha>
     [HttpGet("{name}/impact")]
     public async Task<ActionResult<ImpactReport>> Impact(
         string name,
         [FromQuery] string node,
-        [FromQuery] int depth = 3)
+        [FromQuery] int depth = 3,
+        [FromQuery] string? sha = null)
     {
         if (string.IsNullOrWhiteSpace(node))
             return BadRequest("'node' query parameter is required (qualified name or node name).");
 
-        var result = await impactService.AnalyzeImpactAsync(node, name, Math.Clamp(depth, 1, 5));
-        return result is null ? NotFound() : Ok(result);
+        var scope = await commitScopes.ResolveAsync(name, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        var result = await impactService.AnalyzeImpactAsync(node, name, Math.Clamp(depth, 1, 5), scope.Graph);
+        return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name));
     }
 
-    // GET /api/projects/{name}/impact/file?path=relative/file.cs&depth=3
+    // GET /api/projects/{name}/impact/file?path=relative/file.cs&depth=3&sha=<full commit sha>
     [HttpGet("{name}/impact/file")]
     public async Task<ActionResult<ImpactReport>> FileImpact(
         string name,
         [FromQuery] string path,
-        [FromQuery] int depth = 3)
+        [FromQuery] int depth = 3,
+        [FromQuery] string? sha = null)
     {
         if (string.IsNullOrWhiteSpace(path))
             return BadRequest("'path' query parameter is required.");
 
-        var result = await impactService.AnalyzeFileImpactAsync(name, path, Math.Clamp(depth, 1, 5));
-        return result is null ? NotFound() : Ok(result);
+        var scope = await commitScopes.ResolveAsync(name, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        var result = await impactService.AnalyzeFileImpactAsync(name, path, Math.Clamp(depth, 1, 5), scope.Graph);
+        return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name));
+    }
+
+    private async Task<ImpactReport> WithCommitAsync(ImpactReport report, CommitScope scope, string project)
+    {
+        var projects = report.ChangedNodes.Select(node => node.Project)
+            .Concat(report.AffectedNodes.Select(node => node.Project))
+            .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }))
+            .Append(project);
+        var commit = await commitScopes.DescribeAsync(scope, projects);
+        // With a SHA, CommitSha is that SHA for the pinned repository; Commits names every repository
+        // in the report with the commit its nodes were read from.
+        return report with
+        {
+            CommitSha = scope.IsPinned ? commit.CommitSha : commit.Commits.GetValueOrDefault(project) ?? commit.CommitSha,
+            Commits = commit.Commits
+        };
     }
 
     [HttpPost(nameof(ReAnalyze))]

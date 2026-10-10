@@ -7,7 +7,17 @@ public record ImpactReport(
     IReadOnlyList<AffectedNode> ChangedNodes,
     IReadOnlyList<AffectedNode> AffectedNodes,
     IReadOnlyList<CrossRepoImpact> CrossRepoImpacts,
-    ImpactSummary Summary);
+    ImpactSummary Summary)
+{
+    /// <summary>The commit this answer describes (the default-branch index commit, or the requested SHA).</summary>
+    public string? CommitSha { get; init; }
+
+    /// <summary>
+    /// Each repository in the report and the commit its nodes describe: the requested SHA for the
+    /// pinned repository, the default-branch index commit for every other repository.
+    /// </summary>
+    public IReadOnlyDictionary<string, string?>? Commits { get; init; }
+}
 
 public record AffectedNode(
     long NodeId,

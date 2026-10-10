@@ -20,7 +20,7 @@ public class ConsolidatedMcpServerTests
     {
         var codegraph = CreateCodeGraphServer(new InMemoryGraphStore());
 
-        var response = await ConsolidatedMcpServer.CodegraphSearch(codegraph, operation: "schema");
+        var response = (await ConsolidatedMcpServer.CodegraphSearch(codegraph, operation: "schema")).Text();
 
         using var doc = JsonDocument.Parse(response);
         doc.RootElement.GetProperty("tool").GetString().ShouldBe("codegraph_search");
@@ -53,7 +53,7 @@ public class ConsolidatedMcpServerTests
     {
         var codegraph = CreateCodeGraphServer(new InMemoryGraphStore());
 
-        var response = await ConsolidatedMcpServer.CodegraphSearch(codegraph, operation: "schema");
+        var response = (await ConsolidatedMcpServer.CodegraphSearch(codegraph, operation: "schema")).Text();
 
         Result(response).ShouldBe(codegraph.GetGraphSchema());
     }
@@ -220,10 +220,10 @@ public class ConsolidatedMcpServerTests
         var memory = new RecordingMemoryOperationsService();
         return tool switch
         {
-            "codegraph_search" => await ConsolidatedMcpServer.CodegraphSearch(codegraph, operation),
+            "codegraph_search" => (await ConsolidatedMcpServer.CodegraphSearch(codegraph, operation)).Text(),
             "rag_search" => await ConsolidatedMcpServer.RagSearch(codegraph, operation),
-            "graph_trace" => await ConsolidatedMcpServer.GraphTrace(codegraph, operation),
-            "graph_source" => await ConsolidatedMcpServer.GraphSource(codegraph, operation),
+            "graph_trace" => (await ConsolidatedMcpServer.GraphTrace(codegraph, operation)).Text(),
+            "graph_source" => (await ConsolidatedMcpServer.GraphSource(codegraph, operation)).Text(),
             "project_report" => await ConsolidatedMcpServer.ProjectReport(codegraph, operation),
             "graph_cluster" => await ConsolidatedMcpServer.GraphCluster(codegraph, operation),
             "storage_table" => await ConsolidatedMcpServer.StorageTable(codegraph, operation),

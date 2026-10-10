@@ -113,6 +113,20 @@ public class MariaDbBranchOverlayStoreTests
                     ["OverlayRepo:src/a.py:alpha", "OverlayRepo:src/a.py:Alpha"], ignoreOrder: true);
                 nodes.Single(node => node.Name == "alpha").Properties["visibility"].ToString().ShouldBe("public");
                 (await store.GetOverlayEdgesAsync(oldId)).Single().Type.ShouldBe(EdgeType.CALLS);
+
+                // Lookup by commit: resolved heads, plus queued overlays requested by that SHA.
+                var queuedBySha = await store.CreateOverlayAsync(new BranchOverlayEntity
+                {
+                    Project = "OverlayRepo",
+                    RequestedRef = new string('a', 40),
+                    CreatedAt = created.AddHours(31)
+                });
+                (await store.FindOverlaysByShaAsync(new string('a', 40), "OverlayRepo"))
+                    .Select(overlay => overlay.Id).ShouldBe([queuedBySha, oldId]);
+                (await store.FindOverlaysByShaAsync(new string('a', 40), null))
+                    .Select(overlay => overlay.Id).ShouldBe([queuedBySha, oldId]);
+                (await store.FindOverlaysByShaAsync(new string('a', 40), "OtherRepo")).ShouldBeEmpty();
+                (await store.FindOverlaysByShaAsync(new string('f', 40), null)).ShouldBeEmpty();
             }
 
             await using (var conn = new MySqlConnection(builder.ConnectionString))

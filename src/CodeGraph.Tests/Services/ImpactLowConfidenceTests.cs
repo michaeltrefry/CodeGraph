@@ -29,7 +29,7 @@ public class ImpactLowConfidenceTests
         report.Summary.LowConfidenceCount.ShouldBe(1);
         report.ChangedNodes.ShouldHaveSingleItem().LowConfidence.ShouldBeTrue();
 
-        var answer = await CreateMcpServer(store, impact).AnalyzeImpact("RustRepo:alpha_value", "RustRepo");
+        var answer = (await CreateMcpServer(store, impact).AnalyzeImpact("RustRepo:alpha_value", "RustRepo")).Text();
 
         answer.ShouldContain("includes 1 low-confidence node(s)");
         answer.ShouldContain("[low confidence]");
@@ -56,7 +56,7 @@ public class ImpactLowConfidenceTests
         store.AddNode(CreateNode("gamma_value", new Dictionary<string, object> { ["confidence"] = "high" }));
         var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
 
-        var answer = await CreateMcpServer(store, impact).AnalyzeImpact("RustRepo:gamma_value", "RustRepo");
+        var answer = (await CreateMcpServer(store, impact).AnalyzeImpact("RustRepo:gamma_value", "RustRepo")).Text();
 
         answer.ShouldNotContain("low-confidence");
         answer.ShouldNotContain("[low confidence]");

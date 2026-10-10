@@ -13,6 +13,16 @@ public interface IBranchOverlayStore
 
     Task<BranchOverlayEntity?> GetOverlayAsync(long overlayId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Overlays for the commit <paramref name="sha"/> (a full lowercase SHA), newest first: overlays
+    /// whose resolved head is <paramref name="sha"/>, plus overlays requested by that SHA whose head
+    /// is not resolved yet (queued). Restricted to <paramref name="project"/> when given.
+    /// </summary>
+    Task<IReadOnlyList<BranchOverlayEntity>> FindOverlaysByShaAsync(
+        string sha,
+        string? project,
+        CancellationToken ct = default);
+
     Task SetOverlayRunAsync(long overlayId, long indexerRunId, CancellationToken ct = default);
 
     /// <summary>Moves a non-expired overlay to <c>indexing</c>. Returns false when it no longer exists or has expired.</summary>

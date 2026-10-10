@@ -4,14 +4,17 @@ using CodeGraph.Models;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extensions;
+using CodeGraph.Services.Overlays;
 
 namespace CodeGraph.Services.Query;
 
 public class NodeQueryService(
     IGraphStore store,
-    IOptions<RepositorySourceOptions> sourceOptionsAccessor) : INodeQueryService
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor,
+    ICommitScopeResolver? commitScopes = null) : INodeQueryService
 {
-    private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
+    private readonly ICommitScopeResolver commitScopes =
+        commitScopes ?? new CommitScopeResolver(store, sourceOptionsAccessor);
     private static readonly Dictionary<string, string> ExtensionToLanguage = new(StringComparer.OrdinalIgnoreCase)
     {
         [".cs"] = "csharp",
@@ -28,16 +31,20 @@ public class NodeQueryService(
         [".cfm"] = "xml",
         [".cfc"] = "xml",
     };
-    public async Task<NodeDetailResponse?> GetDetailAsync(long id)
+    public async Task<NodeDetailResponse?> GetDetailAsync(long id, CommitScope? scope = null)
     {
-        var node = await store.FindNodeByIdAsync(id);
+        scope ??= CommitScope.DefaultBranch(store, null);
+        var graph = scope.Graph;
+        var node = await graph.FindNodeByIdAsync(id);
         if (node is null)
             return null;
 
-        var outboundEdges = await store.FindEdgesBySourceAsync(id);
-        var inboundEdges = await store.FindEdgesByTargetAsync(id);
+        // At a commit, a default-branch id hidden by the overlay resolves to the head node.
+        id = node.Id;
+        var outboundEdges = await graph.FindEdgesBySourceAsync(id);
+        var inboundEdges = await graph.FindEdgesByTargetAsync(id);
 
-        var crossRepoEdges = await store.FindCrossRepoEdgesAsync(node.Project);
+        var crossRepoEdges = await graph.FindCrossRepoEdgesAsync(node.Project);
         var relevantCrossRepo = crossRepoEdges
             .Where(e => e.SourceNodeId == id || e.TargetNodeId == id)
             .ToList();
@@ -49,10 +56,11 @@ public class NodeQueryService(
             .ToList();
 
         var neighbors = neighborIds.Count > 0
-            ? await store.FindNodesByIdBatchAsync(neighborIds)
+            ? await graph.FindNodesByIdBatchAsync(neighborIds)
             : new Dictionary<long, GraphNode>();
 
-        var analysis = await store.GetNodeAnalysisAsync(id);
+        // Overlay nodes (negative ids) have no stored analysis.
+        var analysis = id > 0 ? await store.GetNodeAnalysisAsync(id) : null;
         if (analysis is not null)
             node = node with { Description = analysis.Description, AnalysisConfidence = analysis.Confidence };
 
@@ -76,57 +84,89 @@ public class NodeQueryService(
                 e.Properties);
         }).ToList();
 
-        return new NodeDetailResponse(node, outbound, inbound, crossRepo);
+        var commit = await commitScopes.DescribeAsync(scope, [node.Project]);
+        return new NodeDetailResponse(node, outbound, inbound, crossRepo) { CommitSha = commit.CommitSha };
     }
 
-    public async Task<NodeListResponse> SearchAsync(string query, string? project, string? label, int page, int pageSize)
+    public async Task<NodeListResponse> SearchAsync(
+        string query,
+        string? project,
+        string? label,
+        int page,
+        int pageSize,
+        CommitScope? scope = null)
     {
+        scope ??= CommitScope.DefaultBranch(store, project);
+        if (scope.IsPinned)
+            project ??= scope.Project;
         var parsedLabel = label.TryParseEnum<NodeLabel>();
 
         var pattern = query.HasValue() ? query : "%";
-        var nodes = await store.SearchNodesAsync(project, pattern, parsedLabel,
+        var nodes = await scope.Graph.SearchNodesAsync(project, pattern, parsedLabel,
             limit: pageSize, offset: (page - 1) * pageSize);
 
         var total = nodes.Count < pageSize
             ? (page - 1) * pageSize + nodes.Count
             : -1;
 
-        return new NodeListResponse(nodes, total, page, pageSize);
+        var commit = await commitScopes.DescribeAsync(scope, nodes.Select(node => node.Project).Append(project));
+        return new NodeListResponse(nodes, total, page, pageSize) { CommitSha = commit.CommitSha };
     }
 
-    public async Task<NodeSourceResponse?> GetNodeSourceAsync(long id)
+    public async Task<NodeSourceResponse?> GetNodeSourceAsync(long id, CommitScope? scope = null)
     {
-        var node = await store.FindNodeByIdAsync(id);
+        scope ??= CommitScope.DefaultBranch(store, null);
+        var node = await scope.Graph.FindNodeByIdAsync(id);
         if (node is null || string.IsNullOrWhiteSpace(node.FilePath))
             return null;
 
-        var content = await RepoFileResolver.ReadAllTextAsync(
-            node.Project, node.FilePath, sourceOptions, store);
-
-        if (content is null)
+        var source = await commitScopes.ReadSourceAsync(scope, node.Project, node.FilePath);
+        if (source.Status != CommitSourceStatus.Found)
             return null;
 
         var ext = Path.GetExtension(node.FilePath);
         var language = ExtensionToLanguage.GetValueOrDefault(ext, "plaintext");
 
-        return new NodeSourceResponse(node.FilePath, node.StartLine, node.EndLine, content, language);
+        var commit = await commitScopes.DescribeAsync(scope, [node.Project]);
+        return new NodeSourceResponse(node.FilePath, node.StartLine, node.EndLine, source.Content!, language)
+        {
+            CommitSha = commit.CommitSha
+        };
     }
 
-    public async Task<long?> FindNodeByFileAsync(string project, string filePath, int? line = null)
+    public async Task<NodeByFileResponse?> FindNodeByFileAsync(
+        string project,
+        string filePath,
+        int? line = null,
+        CommitScope? scope = null)
+    {
+        scope ??= CommitScope.DefaultBranch(store, project);
+        if (scope.Overlay is { } overlay && overlay.IsOverlayProject(project) && overlay.IsRemovedPath(filePath))
+            return null;
+
+        var nodeId = await FindNodeIdByFileAsync(scope.Graph, project, filePath, line);
+        if (nodeId is null)
+            return null;
+
+        var commit = await commitScopes.DescribeAsync(scope, [project]);
+        return new NodeByFileResponse(nodeId.Value, commit.CommitSha);
+    }
+
+    private static async Task<long?> FindNodeIdByFileAsync(IGraphReader graph, string project, string filePath, int? line)
     {
         // Normalize path separators — DB may store either / or \
         var forwardPath = filePath.Replace('\\', '/');
         var backPath = filePath.Replace('/', '\\');
 
         // Try both path separator styles
-        var candidates = await store.SearchNodesAsync(project, "%", filePattern: forwardPath, limit: 200);
+        var candidates = await graph.SearchNodesAsync(project, "%", filePattern: forwardPath, limit: 200);
         if (candidates.Count == 0)
-            candidates = await store.SearchNodesAsync(project, "%", filePattern: backPath, limit: 200);
+            candidates = await graph.SearchNodesAsync(project, "%", filePattern: backPath, limit: 200);
         if (candidates.Count == 0)
         {
             // Try just the filename as last resort
             var fileName = Path.GetFileName(filePath);
-            candidates = await store.SearchNodesAsync(project, "%", filePattern: fileName, limit: 200);
+            candidates = await graph.SearchNodesAsync(project, "%", filePattern: fileName, limit: 200);
         }
 
         if (candidates.Count == 0)

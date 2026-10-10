@@ -15,6 +15,7 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
     private readonly Dictionary<long, List<GraphNode>> _nodes = new();
     private readonly Dictionary<long, List<PendingEdge>> _edges = new();
     private long _nextId = 1;
+    private long _nextNodeId = 1;
 
     public Task<long> CreateOverlayAsync(BranchOverlayEntity overlay, CancellationToken ct = default)
     {
@@ -30,6 +31,25 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
     {
         lock (_sync)
             return Task.FromResult(_overlays.TryGetValue(overlayId, out var overlay) ? Clone(overlay) : null);
+    }
+
+    public Task<IReadOnlyList<BranchOverlayEntity>> FindOverlaysByShaAsync(
+        string sha,
+        string? project,
+        CancellationToken ct = default)
+    {
+        lock (_sync)
+        {
+            return Task.FromResult<IReadOnlyList<BranchOverlayEntity>>(_overlays.Values
+                .Where(overlay => string.Equals(overlay.HeadSha, sha, StringComparison.OrdinalIgnoreCase)
+                                  || (overlay.HeadSha is null
+                                      && string.Equals(overlay.RequestedRef, sha, StringComparison.OrdinalIgnoreCase)))
+                .Where(overlay => project is null || string.Equals(overlay.Project, project, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(overlay => overlay.CreatedAt)
+                .ThenByDescending(overlay => overlay.Id)
+                .Select(Clone)
+                .ToList());
+        }
     }
 
     public Task SetOverlayRunAsync(long overlayId, long indexerRunId, CancellationToken ct = default)
@@ -72,7 +92,7 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
             if (!_overlays.TryGetValue(overlayId, out var overlay) || overlay.Status == BranchOverlayStatuses.Expired)
                 return Task.FromResult(false);
             _files[overlayId] = files.ToList();
-            _nodes[overlayId] = nodes.ToList();
+            _nodes[overlayId] = nodes.Select(node => node with { Id = _nextNodeId++ }).ToList();
             _edges[overlayId] = edges.ToList();
             overlay.Status = BranchOverlayStatuses.Ready;
             overlay.HeadSha = headSha;

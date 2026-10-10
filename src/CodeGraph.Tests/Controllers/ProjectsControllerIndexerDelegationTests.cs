@@ -32,7 +32,7 @@ public class ProjectsControllerIndexerDelegationTests
     public async Task ReAnalyze_DelegatesToConfiguredIndexerOperations()
     {
         var operations = new RecordingIndexerOperations();
-        var controller = new ProjectsController(null!, null!, null!, operations)
+        var controller = new ProjectsController(null!, null!, null!, operations, null!)
         {
             ControllerContext = new ControllerContext
             {

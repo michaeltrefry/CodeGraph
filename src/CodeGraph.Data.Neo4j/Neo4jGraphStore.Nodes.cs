@@ -207,6 +207,27 @@ public partial class Neo4jGraphStore
         });
     }
 
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
+        string project,
+        IReadOnlyCollection<string> qualifiedNames)
+    {
+        if (qualifiedNames.Count == 0)
+            return [];
+
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+        var names = qualifiedNames.Distinct(StringComparer.Ordinal).ToList();
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                "MATCH (n:CodeNode {project: $project}) WHERE n.qualifiedName IN $names RETURN n",
+                new { project, names });
+            var results = new List<GraphNode>();
+            await foreach (var record in cursor)
+                results.Add(MapCodeNode(record["n"].As<INode>()));
+            return results;
+        });
+    }
+
     public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
