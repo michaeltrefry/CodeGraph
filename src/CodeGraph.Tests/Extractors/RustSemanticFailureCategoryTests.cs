@@ -38,6 +38,26 @@ public sealed class RustSemanticFailureCategoryTests
             .ShouldBe(expected);
     }
 
+    [Theory]
+    [InlineData("rust_semantic_group_timeout", RustSemanticFailureCategory.Timeout)]
+    [InlineData("rust_semantic_workspace_timeout", RustSemanticFailureCategory.Timeout)]
+    [InlineData("rust_semantic_memory_limit_exceeded", RustSemanticFailureCategory.ResourceExhausted)]
+    [InlineData("rust_sysroot_unavailable", RustSemanticFailureCategory.Toolchain)]
+    public void Classify_CrateGroupFailureCodes(string failureCode, string expected)
+    {
+        RustSemanticFailureCategory.Classify(new RustSemanticIndexingException(failureCode, "group failed"))
+            .ShouldBe(expected);
+    }
+
+    [Fact]
+    public void Classify_CargoMetadataStderr_UsesToolchainMarkers()
+    {
+        RustSemanticFailureCategory.Classify(new RustSemanticIndexingException(
+                "cargo_metadata_failed",
+                "cargo metadata exited with 1: error: toolchain '1.70.0-x86_64' is not installed"))
+            .ShouldBe(RustSemanticFailureCategory.Toolchain);
+    }
+
     [Fact]
     public void Classify_ImportFailureWrappingOutOfMemory_IsResourceExhausted()
     {

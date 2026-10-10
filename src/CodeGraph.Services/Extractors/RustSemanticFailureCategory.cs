@@ -19,7 +19,8 @@ public static class RustSemanticFailureCategory
     private static readonly HashSet<string> StderrFailureCodes =
     [
         "rust_analyzer_scip_failed",
-        "scip_print_failed"
+        "scip_print_failed",
+        "cargo_metadata_failed"
     ];
 
     private static readonly Regex ExitedWithPrefix = new(
@@ -51,10 +52,14 @@ public static class RustSemanticFailureCategory
             switch (semantic.FailureCode)
             {
                 case "rust_semantic_command_timeout":
+                case "rust_semantic_group_timeout":
+                case "rust_semantic_workspace_timeout":
                     return Timeout;
                 case "rust_semantic_resource_exhausted":
+                case "rust_semantic_memory_limit_exceeded":
                     return ResourceExhausted;
                 case "rust_semantic_tools_unavailable":
+                case "rust_sysroot_unavailable":
                     return Toolchain;
             }
 

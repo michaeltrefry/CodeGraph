@@ -1,0 +1,318 @@
+using System.Text.Json;
+using CodeGraph.Extractors.Rust;
+using CodeGraph.Models;
+using CodeGraph.Services;
+using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Extractors;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Shouldly;
+
+namespace CodeGraph.Tests.Extractors;
+
+[Collection("Process environment")]
+public sealed class RustProjectAnalyzerCrateGroupTests
+{
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_DefaultSettings_RunsScipWithoutBuildScriptsOrProcMacros()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        var analyzer = CreateAnalyzer(new IndexingOptions());
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        analysis.Groups.ShouldHaveSingleItem().Failure.ShouldBeNull();
+        // Build scripts only ever run through `cargo check`; by default cargo is asked for metadata alone.
+        (await File.ReadAllLinesAsync(toolchain.CargoLogPath))
+            .ShouldAllBe(line => line.StartsWith("metadata ", StringComparison.Ordinal));
+        var projectJson = toolchain.ProjectJsonFiles().ShouldHaveSingleItem();
+        using var project = JsonDocument.Parse(projectJson);
+        var crates = project.RootElement.GetProperty("crates").EnumerateArray().ToList();
+        crates.ShouldNotBeEmpty();
+        // rust-analyzer only expands proc-macros whose dylib the project names, and only runs
+        // build scripts for Cargo (not rust-project.json) workspaces.
+        crates.ShouldNotContain(crate => HasProperty(crate, "proc_macro_dylib_path"));
+        crates.ShouldNotContain(crate => HasProperty(crate.GetProperty("env"), "OUT_DIR"));
+        crates.Single(crate => crate.GetProperty("display_name").GetString() == "macros")
+            .GetProperty("is_proc_macro").GetBoolean().ShouldBeTrue();
+        File.Exists(Path.Combine(toolchain.RootPath, "rust-project.json")).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_OneCratePerGroup_FailingGroupFallsAloneInDeterministicOrder()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, "beta");
+        var analyzer = CreateAnalyzer(new IndexingOptions { RustSemanticCrateGroupSize = 1 });
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        analysis.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha", "beta", "macros"]);
+        analysis.Groups.Select(group => string.Join(",", group.SourceDirectories))
+            .ShouldBe(["crates/alpha", "crates/beta", "crates/macros"]);
+        toolchain.ProjectJsonFiles().Select(FakeRustToolchain.MemberCrates)
+            .ShouldBe([["alpha"], ["beta"], ["macros"]]);
+
+        var beta = analysis.Groups[1];
+        beta.Results.ShouldBeNull();
+        var failure = beta.Failure.ShouldBeOfType<RustSemanticIndexingException>();
+        failure.FailureCode.ShouldBe("rust_analyzer_scip_failed");
+        failure.Message.ShouldContain("synthetic analyzer failure for beta");
+
+        foreach (var group in new[] { analysis.Groups[0], analysis.Groups[2] })
+        {
+            group.Failure.ShouldBeNull();
+            group.Results.ShouldNotBeNull().SelectMany(result => result.ProcessedFiles)
+                .ShouldBe([$"crates/{group.Crates.Single()}/src/lib.rs"]);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeProjectAsync_CrossGroupCall_LinksToDefinitionInOtherGroup()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        var analyzer = CreateAnalyzer(new IndexingOptions { RustSemanticCrateGroupSize = 1 });
+
+        var results = await analyzer.AnalyzeProjectAsync(toolchain.ManifestPath, Context(toolchain));
+
+        var nodes = results.SelectMany(result => result.Nodes).ToList();
+        var edges = results.SelectMany(result => result.Edges).ToList();
+        var caller = nodes.Single(node => node.Name == "alpha_entry");
+        var target = nodes.Single(node => node.Name == "beta_compute" && !node.Properties.ContainsKey("scip_external"));
+        edges.ShouldContain(edge =>
+            edge.Type == EdgeType.CALLS &&
+            edge.SourceQN == caller.QualifiedName &&
+            edge.TargetQN == target.QualifiedName);
+        nodes.ShouldNotContain(node => node.Properties.ContainsKey("scip_external") &&
+                                       (string)node.Properties["scip_symbol"] ==
+                                       FakeRustToolchain.Symbol("beta", "beta_compute"));
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_GroupTimeout_FailsOnlyTheSlowGroup()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "macros");
+        var analyzer = CreateAnalyzer(new IndexingOptions
+        {
+            RustSemanticCrateGroupSize = 2,
+            // Generous enough for the fast group's fake tools under load; the slow group sleeps 30s.
+            RustSemanticGroupTimeoutSeconds = 10
+        });
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        analysis.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha,beta", "macros"]);
+        analysis.Groups[0].Failure.ShouldBeNull();
+        var failure = analysis.Groups[1].Failure.ShouldBeOfType<RustSemanticIndexingException>();
+        failure.FailureCode.ShouldBe("rust_semantic_group_timeout");
+        RustSemanticFailureCategory.Classify(failure).ShouldBe(RustSemanticFailureCategory.Timeout);
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_WorkspaceTimeout_StopsRunningGroupAndSkipsTheRest()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "alpha");
+        var analyzer = new RustProjectAnalyzer(
+            NullLogger<RustProjectAnalyzer>.Instance,
+            TimeSpan.FromSeconds(60),
+            groupSettings: new RustCrateGroupSettings(
+                GroupSize: 1,
+                GroupTimeout: TimeSpan.FromSeconds(60),
+                MemoryLimitBytes: 0,
+                BuildScripts: false,
+                ProcMacros: false,
+                WorkspaceTimeout: TimeSpan.FromSeconds(2)));
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        analysis.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha", "beta", "macros"]);
+        foreach (var group in analysis.Groups)
+        {
+            group.Results.ShouldBeNull();
+            var failure = group.Failure.ShouldBeOfType<RustSemanticIndexingException>();
+            failure.FailureCode.ShouldBe("rust_semantic_workspace_timeout");
+            RustSemanticFailureCategory.Classify(failure).ShouldBe(RustSemanticFailureCategory.Timeout);
+        }
+
+        // The running group is stopped mid-command; groups after the deadline never start.
+        analysis.Groups[0].Failure!.Message.ShouldContain("during 'rust-analyzer'");
+        analysis.Groups[1].Failure!.Message.ShouldContain("before crates beta were analyzed");
+        analysis.Groups[2].Failure!.Message.ShouldContain("before crates macros were analyzed");
+        toolchain.ProjectJsonFiles().Select(FakeRustToolchain.MemberCrates).ShouldBe([["alpha"]]);
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_BuildScriptsWithoutProcMacros_PassesBuildOutputsButNoDylib()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        SetBuildOutput(toolchain);
+        var analyzer = CreateAnalyzer(new IndexingOptions { RustSemanticBuildScripts = true });
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        analysis.Groups.ShouldHaveSingleItem().Failure.ShouldBeNull();
+        var check = (await File.ReadAllLinesAsync(toolchain.CargoLogPath))
+            .Single(line => line.StartsWith("check ", StringComparison.Ordinal));
+        check.ShouldContain("--package alpha@0.1.0");
+        check.ShouldContain("--package beta@0.1.0");
+        check.ShouldContain("--package macros@0.1.0");
+        using var project = JsonDocument.Parse(toolchain.ProjectJsonFiles().Single());
+        var beta = Crate(project, "beta");
+        beta.GetProperty("cfg").EnumerateArray().Select(cfg => cfg.GetString()).ShouldContain("has_generated_code");
+        beta.GetProperty("env").GetProperty("OUT_DIR").GetString().ShouldBe("/out/beta");
+        Crate(project, "macros").TryGetProperty("proc_macro_dylib_path", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_BuildScriptsAndProcMacros_PassesProcMacroDylib()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        SetBuildOutput(toolchain);
+        var analyzer = CreateAnalyzer(new IndexingOptions
+        {
+            RustSemanticBuildScripts = true,
+            RustSemanticProcMacros = true
+        });
+
+        await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        using var project = JsonDocument.Parse(toolchain.ProjectJsonFiles().Single());
+        Crate(project, "macros").GetProperty("proc_macro_dylib_path").GetString()
+            .ShouldBe("/target/debug/deps/libmacros.so");
+    }
+
+    [Fact]
+    public void ReadProcessGroupRssBytes_SumsOnlyTheProcessGroupsResidentPages()
+    {
+        var proc = Path.Combine(Path.GetTempPath(), $"codegraph-fake-proc-{Guid.NewGuid():N}");
+        try
+        {
+            WriteStat(proc, 100, "rust-analyzer", processGroup: 100, rssPages: 10);
+            WriteStat(proc, 101, "proc macro srv", processGroup: 100, rssPages: 5);
+            WriteStat(proc, 200, "dotnet", processGroup: 200, rssPages: 1000);
+            Directory.CreateDirectory(Path.Combine(proc, "self"));
+
+            RustProjectAnalyzer.ReadProcessGroupRssBytes(proc, 100)
+                .ShouldBe(15L * Environment.SystemPageSize);
+        }
+        finally
+        {
+            Directory.Delete(proc, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeWorkspaceAsync_GroupExceedingMemoryLimit_IsKilledAndReportedAsResourceExhausted()
+    {
+        // Enforcement samples /proc for the setsid process group: Linux only.
+        if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/setsid"))
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "alpha beta macros");
+        var analyzer = new RustProjectAnalyzer(
+            NullLogger<RustProjectAnalyzer>.Instance,
+            TimeSpan.FromSeconds(30),
+            groupSettings: new RustCrateGroupSettings(
+                GroupSize: 8,
+                GroupTimeout: TimeSpan.FromSeconds(30),
+                MemoryLimitBytes: 4096,
+                BuildScripts: false,
+                ProcMacros: false,
+                WorkspaceTimeout: TimeSpan.FromSeconds(60)));
+
+        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+
+        var failure = analysis.Groups.ShouldHaveSingleItem().Failure.ShouldBeOfType<RustSemanticIndexingException>();
+        failure.FailureCode.ShouldBe("rust_semantic_memory_limit_exceeded");
+        RustSemanticFailureCategory.Classify(failure).ShouldBe(RustSemanticFailureCategory.ResourceExhausted);
+    }
+
+    private static void WriteStat(string proc, int pid, string command, int processGroup, long rssPages)
+    {
+        var directory = Path.Combine(proc, pid.ToString());
+        Directory.CreateDirectory(directory);
+        // Fields 3..24: state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt
+        // utime stime cutime cstime priority nice threads itrealvalue starttime vsize rss
+        File.WriteAllText(Path.Combine(directory, "stat"),
+            $"{pid} ({command}) S 1 {processGroup} {processGroup} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 1000 {rssPages} 0\n");
+    }
+
+    private static bool HasProperty(JsonElement element, string name) => element.TryGetProperty(name, out _);
+
+    private static void SetBuildOutput(FakeRustToolchain toolchain) =>
+        toolchain.SetCheckOutput(
+            new Dictionary<string, object>
+            {
+                ["reason"] = "build-script-executed",
+                ["package_id"] = toolchain.PackageId("beta"),
+                ["cfgs"] = new[] { "has_generated_code" },
+                ["env"] = new[] { new[] { "GENERATED", "1" } },
+                ["out_dir"] = "/out/beta"
+            },
+            new Dictionary<string, object>
+            {
+                ["reason"] = "compiler-artifact",
+                ["package_id"] = toolchain.PackageId("macros"),
+                ["target"] = new Dictionary<string, object> { ["kind"] = new[] { "proc-macro" } },
+                ["filenames"] = new[] { "/target/debug/deps/libmacros.so" }
+            });
+
+    private static JsonElement Crate(JsonDocument project, string name) =>
+        project.RootElement.GetProperty("crates").EnumerateArray()
+            .Single(crate => crate.GetProperty("display_name").GetString() == name);
+
+    private static FakeRustToolchain CreateThreeCrateWorkspace()
+    {
+        var toolchain = new FakeRustToolchain()
+            .AddCrate(
+                "alpha",
+                "pub fn alpha_entry() -> u32 {\n    beta::beta_compute(2)\n}\n",
+                FakeRustToolchain.ScipDocument(
+                    "alpha", "alpha_entry", FakeRustToolchain.Symbol("beta", "beta_compute")),
+                dependencies: ["beta"])
+            .AddCrate(
+                "beta",
+                "pub fn beta_compute(x: u32) -> u32 {\n    x * 2\n}\n",
+                FakeRustToolchain.ScipDocument("beta", "beta_compute"))
+            .AddCrate(
+                "macros",
+                "pub fn macros_helper() -> u32 {\n    7\n}\n",
+                FakeRustToolchain.ScipDocument("macros", "macros_helper"),
+                procMacro: true);
+        toolchain.Install();
+        return toolchain;
+    }
+
+    private static RustProjectAnalyzer CreateAnalyzer(IndexingOptions options) =>
+        new(NullLogger<RustProjectAnalyzer>.Instance, Options.Create(options));
+
+    private static ExtractorContext Context(FakeRustToolchain toolchain) => new()
+    {
+        ProjectName = "RustGroups",
+        RootPath = toolchain.RootPath
+    };
+}

@@ -548,6 +548,41 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
+    public async Task DurableWorker_SeveralCrateGroupFallbacks_RecordsMixedCodeAndEachGroupInOrder()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.ReAnalyze,
+            Target = "SceneWorks",
+            ArgsJson = """{"repo":"SceneWorks"}""",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new RecordingAdminService(),
+            configure: collection => collection.AddScoped<IProjectService, CrateGroupRustFallbackProjectService>());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var completed = await runs.GetIndexerRunAsync(runId);
+        completed!.Status.ShouldBe("completed");
+        completed.ErrorCode.ShouldBe("rust_semantic_fallback_mixed");
+        using var detail = JsonDocument.Parse(completed.Error!);
+        var fallbacks = detail.RootElement.EnumerateArray().ToList();
+        fallbacks.Select(fallback => fallback.GetProperty("failureCode").GetString())
+            .ShouldBe(["timeout", "resource_exhausted"]);
+        fallbacks.Select(fallback => string.Join(",", fallback.GetProperty("crates").EnumerateArray()
+                .Select(crate => crate.GetString())))
+            .ShouldBe(["beta", "gamma,zeta"]);
+    }
+
+    [Fact]
     public void DegradationDetail_HugeFallbackMessage_FitsIndexerRunErrorColumn()
     {
         // 70,000 two-byte characters: ~140 KB of UTF-8, well over the 65,535-byte TEXT column.
@@ -827,6 +862,25 @@ public class StandaloneIndexerOperationsServiceTests
                 "timeout",
                 "rust_semantic_command_timeout",
                 "rust-analyzer timed out"));
+            return Task.FromResult<AnalysisBatchResponse?>(CreateBatch(repo));
+        }
+
+        public Task ProcessRepository(CodeGraph.Models.Messages.ProcessRepository message, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<bool> DeleteRepositoryAsync(string repo)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class CrateGroupRustFallbackProjectService(IndexingRunDiagnostics diagnostics) : IProjectService
+    {
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
+        {
+            diagnostics.RecordRustSemanticFallback(new RustSemanticFallback(
+                "Cargo.toml", ["beta"], "timeout", "rust_semantic_group_timeout", "group timed out"));
+            diagnostics.RecordRustSemanticFallback(new RustSemanticFallback(
+                "Cargo.toml", ["gamma", "zeta"], "resource_exhausted", "rust_semantic_memory_limit_exceeded",
+                "group exceeded its memory limit"));
             return Task.FromResult<AnalysisBatchResponse?>(CreateBatch(repo));
         }
 
