@@ -85,6 +85,9 @@ public class MariaDbHostEntrypointTopologyTests
                     $"{port} accepted traffic while its migration lock was blocked");
             }
 
+            File.Exists(CodeGraph.Jobs.JobsReadinessMarker.DefaultPath).ShouldBeFalse(
+                "the jobs readiness marker existed while its migration lock was blocked");
+
             var pendingMigrationCount = await lockConnection.ExecuteScalarAsync<int>("""
                 SELECT COUNT(*)
                 FROM migration_history
@@ -163,6 +166,23 @@ public class MariaDbHostEntrypointTopologyTests
                 WHERE script_name = '999_host_topology_probe.sql'
                 """);
             completedMigrationCount.ShouldBe(1);
+
+            // The production docker healthchecks probe these: anonymous /health on every HTTP host
+            // and the jobs readiness marker. This fixture has no RabbitMQ, so the MassTransit bus
+            // check may report Unhealthy (503); what matters here is that the probe answers without
+            // credentials once migrations completed and exposes only the aggregate status word.
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            foreach (var (name, _, port) in Hosts.Where(host => host.Port is not null))
+            {
+                using var response = await http.GetAsync($"http://127.0.0.1:{port}/health");
+                response.StatusCode.ShouldBeOneOf(
+                    [HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable], $"{name} /health");
+                (await response.Content.ReadAsStringAsync()).ShouldBeOneOf(
+                    ["Healthy", "Degraded", "Unhealthy"], $"{name} /health body");
+            }
+
+            File.Exists(CodeGraph.Jobs.JobsReadinessMarker.DefaultPath).ShouldBeTrue(
+                "the jobs readiness marker was not written after migrations completed");
         }
         finally
         {
