@@ -2,6 +2,7 @@ using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Services.DatabaseSchema;
+using CodeGraph.Services.Overlays;
 
 namespace CodeGraph.Services.Indexer;
 
@@ -9,7 +10,8 @@ public sealed class IndexerRunExecutor(
     IDatabaseSourceStore databaseSourceStore,
     IDatabaseSchemaExtractor databaseSchemaExtractor,
     IAdminService adminService,
-    IProjectService projectService)
+    IProjectService projectService,
+    IBranchOverlayService? branchOverlayService = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -84,6 +86,19 @@ public sealed class IndexerRunExecutor(
                 return args.Repo is null
                     ? "Completed batch analysis result processing."
                     : $"Completed batch analysis result processing for {args.Repo}.";
+            }
+
+            case IndexerRunOperations.BranchOverlay:
+            {
+                var args = DeserializeArgs<BranchOverlayIndexerRunArgs>(run.ArgsJson);
+                var overlayId = args.OverlayId > 0
+                    ? args.OverlayId
+                    : long.TryParse(run.Target, out var targetId) ? targetId : 0;
+                if (overlayId <= 0)
+                    throw new InvalidOperationException($"Indexer run '{run.Id}' has no branch overlay target.");
+                var overlays = branchOverlayService
+                    ?? throw new InvalidOperationException("Branch overlays are not available in this indexer host.");
+                return await overlays.IndexOverlayAsync(overlayId, ct);
             }
 
             default:

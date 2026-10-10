@@ -33,11 +33,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private long _nextRepositoryReviewProjectSectionId = 1;
     public Exception? ReplacementFailure { get; set; }
     public Exception? IncrementalReplacementFailure { get; set; }
+    public Exception? IndexingLockFailure { get; set; }
 
     public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
         string project,
         CancellationToken ct = default)
     {
+        if (IndexingLockFailure is not null)
+            throw IndexingLockFailure;
         var projectLock = ProjectIndexingLocks.GetOrAdd(project, _ => new SemaphoreSlim(1, 1));
         await projectLock.WaitAsync(ct);
         return new InMemoryIndexingLock(projectLock);

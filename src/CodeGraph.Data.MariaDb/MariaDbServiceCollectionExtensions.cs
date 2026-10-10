@@ -43,6 +43,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IDatabaseSourceStore, MySqlDatabaseSourceStore>();
         services.AddTransient<ILlmConfigRepository, LlmConfigRepository>();
         services.AddTransient<IIndexerRunStore, MySqlIndexerRunStore>();
+        services.AddTransient<IBranchOverlayStore, MySqlBranchOverlayStore>();
         services.AddTransient<IVectorStore, MySqlVectorStore>();
         services.AddTransient<IMemoryGraphStore, MySqlMemoryGraphStore>();
         services.AddTransient<IMemoryAdminAuditStore, MySqlMemoryAdminAuditStore>();

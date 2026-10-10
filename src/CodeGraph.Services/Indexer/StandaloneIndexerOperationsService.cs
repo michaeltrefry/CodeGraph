@@ -4,13 +4,15 @@ using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
+using CodeGraph.Services.Overlays;
 
 namespace CodeGraph.Services.Indexer;
 
 public sealed class StandaloneIndexerOperationsService(
     IIndexerRunStore runStore,
     IDatabaseSourceStore databaseSourceStore,
-    IIndexerRunBackgroundRunner backgroundRunner) : IIndexerOperationsService
+    IIndexerRunBackgroundRunner backgroundRunner,
+    IBranchOverlayService? branchOverlays = null) : IIndexerOperationsService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -204,6 +206,38 @@ public sealed class StandaloneIndexerOperationsService(
             ct);
     }
 
+    public async Task<BranchOverlayResponse> StartBranchOverlayAsync(
+        string username,
+        BranchOverlayRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var overlays = RequireBranchOverlays();
+        var overlay = await overlays.CreateOverlayAsync(username, request.Repo, request.Ref, ct);
+        var accepted = await CreateQueuedRunAsync(
+            IndexerRunOperations.BranchOverlay,
+            NormalizeUsername(username),
+            overlay.Id.ToString(),
+            $"Queued branch overlay {overlay.Id} for {overlay.Project}@{overlay.RequestedRef}.",
+            JsonSerializer.Serialize(new BranchOverlayIndexerRunArgs(overlay.Id), JsonOptions),
+            submissionKey: null,
+            ct);
+        await overlays.AttachRunAsync(overlay.Id, accepted.RunId!.Value, ct);
+        overlay.IndexerRunId = accepted.RunId;
+        if (!accepted.Duplicate && accepted.Status == "queued")
+            await backgroundRunner.EnqueueAsync(accepted.RunId.Value, ct);
+        return overlays.Map(overlay);
+    }
+
+    public Task<BranchOverlayResponse?> GetBranchOverlayAsync(long overlayId, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(overlayId);
+        return RequireBranchOverlays().GetOverlayAsync(overlayId, ct);
+    }
+
+    private IBranchOverlayService RequireBranchOverlays()
+        => branchOverlays ?? throw new NotSupportedException("Branch overlays require the MariaDB storage provider.");
+
     public async Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
     {
         var run = await runStore.GetIndexerRunAsync(runId, ct);
@@ -353,6 +387,7 @@ public static class IndexerRunOperations
     public const string DetectCommunities = "detect_communities";
     public const string LinkAndDetect = "link_and_detect";
     public const string ProcessBatchAnalysis = "process_batch_analysis";
+    public const string BranchOverlay = "branch_overlay";
 
     public static bool IsRetrySafe(string operation)
         => operation is ReAnalyze
@@ -360,7 +395,8 @@ public static class IndexerRunOperations
             or SyncAllSchemas
             or Link
             or DetectCommunities
-            or LinkAndDetect;
+            or LinkAndDetect
+            or BranchOverlay;
 }
 
 public sealed class ReAnalyzeIndexerRunArgs
@@ -375,6 +411,20 @@ public sealed class ReAnalyzeIndexerRunArgs
     }
 
     public string Repo { get; set; } = "";
+}
+
+public sealed class BranchOverlayIndexerRunArgs
+{
+    public BranchOverlayIndexerRunArgs()
+    {
+    }
+
+    public BranchOverlayIndexerRunArgs(long overlayId)
+    {
+        OverlayId = overlayId;
+    }
+
+    public long OverlayId { get; set; }
 }
 
 public sealed class BatchAnalysisIndexerRunArgs

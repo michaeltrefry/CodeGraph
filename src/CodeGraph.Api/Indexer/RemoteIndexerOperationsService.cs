@@ -82,6 +82,15 @@ public sealed class RemoteIndexerOperationsService(IIndexerClient indexerClient)
         CancellationToken ct = default)
         => indexerClient.StartProcessBatchAnalysisAsync(username, repo, submissionKey, ct);
 
+    public Task<BranchOverlayResponse> StartBranchOverlayAsync(
+        string username,
+        BranchOverlayRequest request,
+        CancellationToken ct = default)
+        => indexerClient.StartBranchOverlayAsync(username, request, ct);
+
+    public Task<BranchOverlayResponse?> GetBranchOverlayAsync(long overlayId, CancellationToken ct = default)
+        => indexerClient.GetBranchOverlayAsync("system", overlayId, ct);
+
     public Task<IndexerRunResponse?> GetRunAsync(long runId, CancellationToken ct = default)
         => indexerClient.GetRunAsync("system", runId, ct);
 
