@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -61,6 +62,55 @@ public class CodeGraphMcpServer(
         var (text, projects) = await answer(scope, effectiveProject);
         var commit = await commitScopes.DescribeAsync(scope, projects.Append(effectiveProject));
         return CommitAnswer.Create(text, commit, scope);
+    }
+
+    /// <summary>An answer that lists graph nodes, with how many of them are low-confidence.</summary>
+    private sealed record NodeAnswer(
+        string Text,
+        IEnumerable<string?> Projects,
+        int LowConfidenceCount,
+        bool SummaryInText = false);
+
+    /// <summary>
+    /// <see cref="AnswerAsync"/> for answers that list graph nodes: adds the answer-level
+    /// low-confidence line (unless the text already carries it) and
+    /// <c>structuredContent.lowConfidence</c>/<c>lowConfidenceCount</c>. With
+    /// <paramref name="reportsUnmapped"/> (impact and trace answers), an overlay answer also reports
+    /// the default-branch edges the overlay could not map (<c>unmappedInboundEdges</c>).
+    /// </summary>
+    private async Task<CallToolResult> NodeAnswerAsync(
+        string? project,
+        string? sha,
+        bool reportsUnmapped,
+        Func<CommitScope, string?, Task<NodeAnswer>> answer)
+    {
+        var scope = await commitScopes.ResolveAsync(project, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return CommitAnswer.NotIndexed(notIndexed);
+
+        var effectiveProject = scope.IsPinned ? scope.Project : project;
+        var result = await answer(scope, effectiveProject);
+        var notices = new List<string>();
+        if (!result.SummaryInText && AnswerConfidence.SummaryLine(result.LowConfidenceCount) is { } lowConfidence)
+            notices.Add(lowConfidence);
+
+        var extra = new JsonObject
+        {
+            ["lowConfidence"] = result.LowConfidenceCount > 0,
+            ["lowConfidenceCount"] = result.LowConfidenceCount
+        };
+        if (reportsUnmapped && scope.Overlay is { } overlay)
+        {
+            extra["unmappedInboundEdges"] = overlay.UnmappedInboundEdgeCount;
+            if (AnswerConfidence.UnmappedLine(overlay.UnmappedInboundEdgeCount) is { } unmapped)
+                notices.Add(unmapped);
+        }
+
+        var text = notices.Count == 0
+            ? result.Text
+            : result.Text.TrimEnd() + "\n\n" + string.Join("\n", notices) + "\n";
+        var commit = await commitScopes.DescribeAsync(scope, result.Projects.Append(effectiveProject));
+        return CommitAnswer.Create(text, commit, scope, extra);
     }
 
     [McpServerTool(Name = "get_graph_schema"),
@@ -185,14 +235,14 @@ public class CodeGraphMcpServer(
         [Description("Filter by project/repository name")] string? project = null,
         [Description("Max results (default 20)")] int limit = 20,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        => NodeAnswerAsync(project, sha, reportsUnmapped: false, async (scope, scopedProject) =>
         {
-            var (text, nodes) = await SearchGraphTextAsync(scope.Graph, namePattern, label, scopedProject, limit);
-            return (text, nodes.Select(node => (string?)node.Project).Distinct());
+            var (text, nodes, lowConfidenceCount) = await SearchGraphTextAsync(scope, namePattern, label, scopedProject, limit);
+            return new NodeAnswer(text, nodes.Select(node => (string?)node.Project).Distinct(), lowConfidenceCount);
         });
 
-    private async Task<(string Text, IReadOnlyList<GraphNode> Nodes)> SearchGraphTextAsync(
-        IGraphReader graph,
+    private async Task<(string Text, IReadOnlyList<GraphNode> Nodes, int LowConfidenceCount)> SearchGraphTextAsync(
+        CommitScope scope,
         string namePattern,
         string? label,
         string? project,
@@ -201,10 +251,10 @@ public class CodeGraphMcpServer(
         var parsedLabel = label.TryParseEnum<NodeLabel>();
 
         // Fetch extra to account for trust-based reordering
-        var result = await query.SearchAsync(new SearchRequest(namePattern, parsedLabel, project, Math.Min(limit * 2, 100)), graph);
+        var result = await query.SearchAsync(new SearchRequest(namePattern, parsedLabel, project, Math.Min(limit * 2, 100)), scope.Graph);
 
         if (result.Nodes.Count == 0)
-            return ($"No results found for '{namePattern}'.", []);
+            return ($"No results found for '{namePattern}'.", [], 0);
 
         // Build trust lookup: file path → trust score (from file_metrics)
         var projects = result.Nodes.Select(n => n.Project).Distinct().ToList();
@@ -225,7 +275,13 @@ public class CodeGraphMcpServer(
             .Select(n =>
             {
                 var isExactMatch = n.Name.Equals(namePattern, StringComparison.OrdinalIgnoreCase);
-                var fileTrust = trustByFile.GetValueOrDefault($"{n.Project}::{n.FilePath}", 0.5);
+                // file_metrics describe the default-branch version of a file; a file changed at an
+                // overlay commit has no metrics of its own, so it gets the neutral score.
+                var changedAtCommit = scope.Overlay is { } overlay
+                                      && overlay.IsOverlayProject(n.Project)
+                                      && n.FilePath is not null
+                                      && overlay.IsChangedPath(n.FilePath);
+                var fileTrust = changedAtCommit ? 0.5 : trustByFile.GetValueOrDefault($"{n.Project}::{n.FilePath}", 0.5);
                 var effectiveTrust = n.DoNotTrust ? 0.0 : fileTrust;
                 return (Node: n, IsExact: isExactMatch, Trust: effectiveTrust);
             })
@@ -241,7 +297,7 @@ public class CodeGraphMcpServer(
         foreach (var (node, _, trust) in ranked)
         {
             var trustLabel = node.DoNotTrust ? " **[UNTRUSTED]**" : trust < 0.4 ? " _(low trust)_" : "";
-            sb.AppendLine($"- **{node.Name}** ({node.Label}) — {node.Project}{trustLabel}");
+            sb.AppendLine($"- **{node.Name}** ({node.Label}) — {node.Project}{trustLabel}{AnswerConfidence.Tag(node)}");
             if (!string.IsNullOrEmpty(node.FilePath))
                 sb.AppendLine($"  File: {node.FilePath}:{node.StartLine}");
             if (!string.IsNullOrEmpty(node.QualifiedName) && node.QualifiedName != node.Name)
@@ -251,7 +307,7 @@ public class CodeGraphMcpServer(
                 sb.AppendLine($"  {prop.Key}: {prop.Value}");
         }
 
-        return (sb.ToString(), result.Nodes);
+        return (sb.ToString(), result.Nodes, AnswerConfidence.Count(ranked.Select(entry => entry.Node)));
     }
 
     [McpServerTool(Name = "get_service_summary"),
@@ -283,28 +339,38 @@ public class CodeGraphMcpServer(
         [Description("How many levels deep to trace (default: 3)")] int depth = 3,
         [Description("Filter by project")] string? project = null,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        => NodeAnswerAsync(project, sha, reportsUnmapped: true, async (scope, scopedProject) =>
         {
             var dir = direction.TryParseEnum<TraceDirection>() ?? TraceDirection.Both;
 
-            var result = await query.TraceCallPathAsync(functionName, scopedProject, dir, depth, scope.Graph);
+            var (start, result) = await query.TraceCallPathWithStartAsync(functionName, scopedProject, dir, depth, scope.Graph);
+            var lowConfidenceCount = AnswerConfidence.Count(result.Select(entry => entry.Node).Append(start));
+            var startLine = start is not null && GraphNodeConfidence.IsLowConfidence(start)
+                ? $"Start: **{start.Name}** ({start.Label}) — {start.Project}{AnswerConfidence.NodeTag}"
+                : null;
 
             if (result.Count == 0)
-                return ($"No call paths found for '{functionName}'.", []);
+            {
+                var none = $"No call paths found for '{functionName}'.";
+                return new NodeAnswer(startLine is null ? none : $"{none}\n{startLine}",
+                    start is null ? [] : [start.Project], lowConfidenceCount);
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Call Path: {functionName} ({direction})\n");
+            if (startLine is not null)
+                sb.AppendLine($"{startLine}\n");
 
             foreach (var entry in result)
             {
                 var indent = new string(' ', entry.Depth * 2);
-                sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project}");
+                sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project}{AnswerConfidence.Tag(entry.Node)}");
                 sb.AppendLine($"{indent}  Edge: {entry.EdgeType}");
                 if (!string.IsNullOrEmpty(entry.Node.FilePath))
                     sb.AppendLine($"{indent}  File: {entry.Node.FilePath}:{entry.Node.StartLine}");
             }
 
-            return (sb.ToString(), ProjectsOf(result.Select(entry => entry.Node.Project)));
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(entry => entry.Node.Project)), lowConfidenceCount);
         });
 
     [McpServerTool(Name = "trace_data_lineage"),
@@ -313,15 +379,19 @@ public class CodeGraphMcpServer(
         [Description("Model/DTO/event class name to trace")] string modelName,
         [Description("Filter by project")] string? project = null,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        => NodeAnswerAsync(project, sha, reportsUnmapped: true, async (scope, scopedProject) =>
         {
             var result = await query.TraceDataLineageAsync(modelName, scopedProject, scope.Graph);
+            var lowConfidenceCount = AnswerConfidence.Count(result.Producers.Concat(result.Consumers)
+                .Select(entry => entry.Node).Append(result.ModelNode));
 
             if (result.Producers.Count == 0 && result.Consumers.Count == 0 && result.CrossRepoEdges.Count == 0)
-                return ($"No data lineage found for '{modelName}'.", []);
+                return new NodeAnswer($"No data lineage found for '{modelName}'.", [], lowConfidenceCount);
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Data Lineage: {modelName}\n");
+            if (result.ModelNode is { } model && GraphNodeConfidence.IsLowConfidence(model))
+                sb.AppendLine($"Model: **{model.Name}** ({model.Label}) — {model.Project}{AnswerConfidence.NodeTag}\n");
 
             if (result.Producers.Count > 0)
             {
@@ -329,7 +399,7 @@ public class CodeGraphMcpServer(
                 foreach (var entry in result.Producers)
                 {
                     var indent = new string(' ', entry.Depth * 2);
-                    sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+                    sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]{AnswerConfidence.Tag(entry.Node)}");
                 }
                 sb.AppendLine();
             }
@@ -340,7 +410,7 @@ public class CodeGraphMcpServer(
                 foreach (var entry in result.Consumers)
                 {
                     var indent = new string(' ', entry.Depth * 2);
-                    sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+                    sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]{AnswerConfidence.Tag(entry.Node)}");
                 }
                 sb.AppendLine();
             }
@@ -352,8 +422,8 @@ public class CodeGraphMcpServer(
                     sb.AppendLine($"- {edge.SourceProject} → {edge.TargetProject} ({edge.Type})");
             }
 
-            return (sb.ToString(), ProjectsOf(result.Producers.Concat(result.Consumers).Select(entry => entry.Node.Project)
-                .Concat(result.CrossRepoEdges.SelectMany(edge => new[] { edge.SourceProject, edge.TargetProject }))));
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Producers.Concat(result.Consumers).Select(entry => entry.Node.Project)
+                .Concat(result.CrossRepoEdges.SelectMany(edge => new[] { edge.SourceProject, edge.TargetProject }))), lowConfidenceCount);
         });
 
     [McpServerTool(Name = "find_consumers"),
@@ -362,23 +432,24 @@ public class CodeGraphMcpServer(
         [Description("Event, endpoint, or model name")] string name,
         [Description("Filter by project")] string? project = null,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        => NodeAnswerAsync(project, sha, reportsUnmapped: true, async (scope, scopedProject) =>
         {
             var result = await query.FindConsumersAsync(name, scopedProject, scope.Graph);
+            var lowConfidenceCount = result.Count(consumer => consumer.LowConfidence);
 
             if (result.Count == 0)
-                return ($"No consumers found for '{name}'.", []);
+                return new NodeAnswer($"No consumers found for '{name}'.", [], 0);
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Consumers of {name} ({result.Count})\n");
 
             foreach (var consumer in result)
             {
-                sb.AppendLine($"- **{consumer.Name}** — {consumer.Project} ({consumer.EdgeType})");
+                sb.AppendLine($"- **{consumer.Name}** — {consumer.Project} ({consumer.EdgeType}){AnswerConfidence.Tag(consumer.LowConfidence)}");
                 sb.AppendLine($"  QN: {consumer.QualifiedName}");
             }
 
-            return (sb.ToString(), ProjectsOf(result.Select(consumer => consumer.Project)));
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(consumer => consumer.Project)), lowConfidenceCount);
         });
 
     [McpServerTool(Name = "find_publishers"),
@@ -387,23 +458,24 @@ public class CodeGraphMcpServer(
         [Description("Queue, exchange, or event name")] string name,
         [Description("Filter by project")] string? project = null,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        => NodeAnswerAsync(project, sha, reportsUnmapped: true, async (scope, scopedProject) =>
         {
             var result = await query.FindPublishersAsync(name, scopedProject, scope.Graph);
+            var lowConfidenceCount = result.Count(publisher => publisher.LowConfidence);
 
             if (result.Count == 0)
-                return ($"No publishers found for '{name}'.", []);
+                return new NodeAnswer($"No publishers found for '{name}'.", [], 0);
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Publishers to {name} ({result.Count})\n");
 
             foreach (var publisher in result)
             {
-                sb.AppendLine($"- **{publisher.Name}** — {publisher.Project} ({publisher.EdgeType})");
+                sb.AppendLine($"- **{publisher.Name}** — {publisher.Project} ({publisher.EdgeType}){AnswerConfidence.Tag(publisher.LowConfidence)}");
                 sb.AppendLine($"  QN: {publisher.QualifiedName}");
             }
 
-            return (sb.ToString(), ProjectsOf(result.Select(publisher => publisher.Project)));
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(publisher => publisher.Project)), lowConfidenceCount);
         });
 
     private static IEnumerable<string?> ProjectsOf(IEnumerable<string> projects)
@@ -660,20 +732,21 @@ public class CodeGraphMcpServer(
     public Task<CallToolResult> ReadNodeSource(
         [Description("Node ID from the graph")] long nodeId,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(null, sha, async (scope, _) =>
+        => NodeAnswerAsync(null, sha, reportsUnmapped: false, async (scope, _) =>
         {
             var node = await scope.Graph.FindNodeByIdAsync(nodeId);
             if (node is null)
-                return (scope.IsPinned ? $"Node {nodeId} not found at commit {scope.Sha}." : $"Node {nodeId} not found.", []);
+                return new NodeAnswer(scope.IsPinned ? $"Node {nodeId} not found at commit {scope.Sha}." : $"Node {nodeId} not found.", [], 0);
 
+            var lowConfidenceCount = AnswerConfidence.Count([node]);
             if (string.IsNullOrWhiteSpace(node.FilePath))
-                return ($"Node '{node.Name}' ({node.Label}) has no source file path.", [node.Project]);
+                return new NodeAnswer($"Node '{node.Name}' ({node.Label}) has no source file path.", [node.Project], lowConfidenceCount);
 
             var source = await commitScopes.ReadSourceAsync(scope, node.Project, node.FilePath);
             if (source.Status != CommitSourceStatus.Found)
             {
-                return (scope.IsPinned ? source.Message : $"Source file not found: {node.Project}/{node.FilePath}",
-                    [node.Project]);
+                return new NodeAnswer(scope.IsPinned ? source.Message : $"Source file not found: {node.Project}/{node.FilePath}",
+                    [node.Project], lowConfidenceCount);
             }
 
             var lines = SplitLines(source.Content!);
@@ -694,7 +767,7 @@ public class CodeGraphMcpServer(
 
             var ext = Path.GetExtension(node.FilePath).TrimStart('.');
             var sb = new StringBuilder();
-            sb.AppendLine($"## {node.Name} ({node.Label}) — {node.Project}");
+            sb.AppendLine($"## {node.Name} ({node.Label}) — {node.Project}{AnswerConfidence.Tag(node)}");
             sb.AppendLine($"File: {node.FilePath}, lines {node.StartLine}–{node.EndLine}\n");
             sb.AppendLine($"```{ext}");
             for (var i = start; i < end; i++)
@@ -704,7 +777,7 @@ public class CodeGraphMcpServer(
             }
             sb.AppendLine("```");
 
-            return (sb.ToString(), [node.Project]);
+            return new NodeAnswer(sb.ToString(), [node.Project], lowConfidenceCount);
         });
 
     /// <summary>Splits text into lines like <see cref="StreamReader.ReadLine"/> (no trailing empty line).</summary>
@@ -819,12 +892,13 @@ public class CodeGraphMcpServer(
         [Description("Filter by project/repository")] string? project = null,
         [Description("Max traversal depth (default 3, max 5)")] int depth = 3,
         [Description(ShaDescription)] string? sha = null)
-        => AnswerAsync(project, sha, async (scope, scopedProject) =>
+        => NodeAnswerAsync(project, sha, reportsUnmapped: true, async (scope, scopedProject) =>
         {
             var result = await impactAnalysis.AnalyzeImpactAsync(name, scopedProject, Math.Clamp(depth, 1, 5), scope.Graph);
             return result is null
-                ? ($"No nodes found matching '{name}'.", [])
-                : (FormatImpact(name, result), ProjectsOf(ImpactProjects(result)));
+                ? new NodeAnswer($"No nodes found matching '{name}'.", [], 0)
+                : new NodeAnswer(FormatImpact(name, result), ProjectsOf(ImpactProjects(result)),
+                    result.Summary.LowConfidenceCount, SummaryInText: true);
         });
 
     private static string FormatImpact(string name, ImpactReport result)

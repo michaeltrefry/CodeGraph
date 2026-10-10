@@ -12,7 +12,8 @@ namespace CodeGraph.Services.Assistant;
 /// </summary>
 public static class CommitAnswer
 {
-    public static CallToolResult Create(string text, CommitDescription commit, CommitScope scope)
+    /// <param name="extra">Additional structuredContent fields (for example the low-confidence flags).</param>
+    public static CallToolResult Create(string text, CommitDescription commit, CommitScope scope, JsonObject? extra = null)
     {
         var structured = new JsonObject
         {
@@ -35,6 +36,12 @@ public static class CommitAnswer
         {
             structured["overlayId"] = overlay.Overlay.Id;
             structured["baseSha"] = overlay.Overlay.BaseSha;
+        }
+
+        if (extra is not null)
+        {
+            foreach (var (key, value) in extra)
+                structured[key] = value?.DeepClone();
         }
 
         return Result($"{commit.HeaderLine}\n\n{text}", structured, isError: false);

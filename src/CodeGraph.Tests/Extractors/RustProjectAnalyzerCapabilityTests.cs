@@ -220,7 +220,11 @@ public sealed class RustProjectAnalyzerCapabilityTests
             NullLogger<RustProjectAnalyzer>.Instance,
             Options.Create(new IndexingOptions
             {
-                RustSemanticCommandTimeoutSeconds = 1,
+                // Every command (the fake cargo metadata and rustc ahead of the generator, then the
+                // generator itself) gets this timeout. It must leave room for process start-up and
+                // exit detection under a loaded test host, or cargo metadata itself can time out and
+                // the generator never writes its stderr line or child PID.
+                RustSemanticCommandTimeoutSeconds = CommandTimeoutSeconds,
                 RustSemanticStderrTailCharacters = 1024
             }));
 
@@ -228,7 +232,8 @@ public sealed class RustProjectAnalyzerCapabilityTests
             analyzer.AnalyzeProjectAsync(fixture.ManifestPath, fixture.Context));
 
         error.FailureCode.ShouldBe("rust_semantic_command_timeout");
-        error.Message.ShouldContain("1-second timeout");
+        error.Message.ShouldContain("'rust-analyzer' exceeded");
+        error.Message.ShouldContain($"{CommandTimeoutSeconds}-second timeout");
         error.Message.ShouldContain("generator-still-running");
         var childPid = await ReadPidAsync(childPidPath);
         await AssertProcessExitedAsync(childPid);
@@ -300,9 +305,15 @@ public sealed class RustProjectAnalyzerCapabilityTests
         }
     }
 
+    private const int CommandTimeoutSeconds = 5;
+
+    // Upper bounds for polling only (a passing test returns as soon as the condition holds), so
+    // they are generous to stay deterministic when the full suite loads the host.
+    private static readonly TimeSpan ProcessWaitLimit = TimeSpan.FromSeconds(30);
+
     private static async Task<int> ReadPidAsync(string path)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.Add(ProcessWaitLimit);
         while (!File.Exists(path) && DateTime.UtcNow < deadline)
             await Task.Delay(20);
 
@@ -312,7 +323,7 @@ public sealed class RustProjectAnalyzerCapabilityTests
 
     private static async Task AssertProcessExitedAsync(int processId)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.Add(ProcessWaitLimit);
         while (DateTime.UtcNow < deadline)
         {
             try

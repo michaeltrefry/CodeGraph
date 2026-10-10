@@ -39,7 +39,7 @@ public partial class GraphAssistant
         foreach (var node in ranked)
         {
             var trustLabel = node.DoNotTrust ? " **[UNTRUSTED]**" : "";
-            sb.AppendLine($"- **{node.Name}** ({node.Label}) — {node.Project}{trustLabel}");
+            sb.AppendLine($"- **{node.Name}** ({node.Label}) — {node.Project}{trustLabel}{AnswerConfidence.Tag(node)}");
             if (!string.IsNullOrEmpty(node.FilePath))
                 sb.AppendLine($"  File: {node.FilePath}:{node.StartLine}");
             if (!string.IsNullOrEmpty(node.QualifiedName) && node.QualifiedName != node.Name)
@@ -47,6 +47,7 @@ public partial class GraphAssistant
             foreach (var prop in node.Properties.Where(p => p.Value is not null))
                 sb.AppendLine($"  {prop.Key}: {prop.Value}");
         }
+        AppendLowConfidenceLine(sb, AnswerConfidence.Count(ranked));
         return sb.ToString();
     }
 
@@ -117,16 +118,30 @@ public partial class GraphAssistant
 
         var dir = dirStr.TryParseEnum<TraceDirection>() ?? TraceDirection.Both;
 
-        var result = await query.TraceCallPathAsync(fn, project, dir, depth);
-        if (result.Count == 0) return $"No call paths found for '{fn}'.";
+        var (start, result) = await query.TraceCallPathWithStartAsync(fn, project, dir, depth);
+        var startLine = start is not null && GraphNodeConfidence.IsLowConfidence(start)
+            ? $"Start: **{start.Name}** ({start.Label}) — {start.Project}{AnswerConfidence.NodeTag}"
+            : null;
+        var lowConfidenceCount = AnswerConfidence.Count(result.Select(entry => entry.Node).Append(start));
+        if (result.Count == 0)
+        {
+            var none = new StringBuilder($"No call paths found for '{fn}'.\n");
+            if (startLine is not null)
+                none.AppendLine(startLine);
+            AppendLowConfidenceLine(none, lowConfidenceCount);
+            return none.ToString().TrimEnd();
+        }
 
         var sb = new StringBuilder();
         sb.AppendLine($"## Call Path: {fn} ({dirStr})\n");
+        if (startLine is not null)
+            sb.AppendLine($"{startLine}\n");
         foreach (var entry in result)
         {
             var indent = new string(' ', entry.Depth * 2);
-            sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]");
+            sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]{AnswerConfidence.Tag(entry.Node)}");
         }
+        AppendLowConfidenceLine(sb, lowConfidenceCount);
         return sb.ToString();
     }
 
@@ -145,13 +160,13 @@ public partial class GraphAssistant
         {
             sb.AppendLine("### Producers\n");
             foreach (var e in result.Producers)
-                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Project} [{e.EdgeType}]");
+                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Project} [{e.EdgeType}]{AnswerConfidence.Tag(e.Node)}");
         }
         if (result.Consumers.Count > 0)
         {
             sb.AppendLine("### Consumers\n");
             foreach (var e in result.Consumers)
-                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Project} [{e.EdgeType}]");
+                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Project} [{e.EdgeType}]{AnswerConfidence.Tag(e.Node)}");
         }
         if (result.CrossRepoEdges.Count > 0)
         {
@@ -159,6 +174,8 @@ public partial class GraphAssistant
             foreach (var e in result.CrossRepoEdges)
                 sb.AppendLine($"- {e.SourceProject} → {e.TargetProject} ({e.Type})");
         }
+        AppendLowConfidenceLine(sb, AnswerConfidence.Count(result.Producers.Concat(result.Consumers)
+            .Select(entry => entry.Node).Append(result.ModelNode)));
         return sb.ToString();
     }
 
@@ -172,7 +189,8 @@ public partial class GraphAssistant
         var sb = new StringBuilder();
         sb.AppendLine($"## Consumers of {name} ({result.Count})\n");
         foreach (var c in result)
-            sb.AppendLine($"- **{c.Name}** — {c.Project} ({c.EdgeType})");
+            sb.AppendLine($"- **{c.Name}** — {c.Project} ({c.EdgeType}){AnswerConfidence.Tag(c.LowConfidence)}");
+        AppendLowConfidenceLine(sb, result.Count(c => c.LowConfidence));
         return sb.ToString();
     }
 
@@ -186,8 +204,15 @@ public partial class GraphAssistant
         var sb = new StringBuilder();
         sb.AppendLine($"## Publishers to {name} ({result.Count})\n");
         foreach (var p in result)
-            sb.AppendLine($"- **{p.Name}** — {p.Project} ({p.EdgeType})");
+            sb.AppendLine($"- **{p.Name}** — {p.Project} ({p.EdgeType}){AnswerConfidence.Tag(p.LowConfidence)}");
+        AppendLowConfidenceLine(sb, result.Count(p => p.LowConfidence));
         return sb.ToString();
+    }
+
+    private static void AppendLowConfidenceLine(StringBuilder sb, int lowConfidenceCount)
+    {
+        if (AnswerConfidence.SummaryLine(lowConfidenceCount) is { } line)
+            sb.AppendLine().AppendLine(line);
     }
 
     private async Task<string> GetArchitectureAsync(JsonElement input)

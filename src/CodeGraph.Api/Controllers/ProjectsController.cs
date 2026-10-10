@@ -161,7 +161,8 @@ public class ProjectsController(
         return report with
         {
             CommitSha = scope.IsPinned ? commit.CommitSha : commit.Commits.GetValueOrDefault(project) ?? commit.CommitSha,
-            Commits = commit.Commits
+            Commits = commit.Commits,
+            UnmappedInboundEdges = scope.Overlay?.UnmappedInboundEdgeCount
         };
     }
 

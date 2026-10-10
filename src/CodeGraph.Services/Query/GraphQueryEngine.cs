@@ -35,6 +35,14 @@ public class GraphQueryEngine
     public async Task<IReadOnlyList<TraversalEntry>> TraceCallPathAsync(
         string functionName, string? project, TraceDirection direction,
         int maxDepth = 3, IGraphReader? graph = null)
+        => (await TraceCallPathWithStartAsync(functionName, project, direction, maxDepth, graph)).Entries;
+
+    /// <summary>
+    /// <see cref="TraceCallPathAsync"/> plus the node the trace started from (null when no node matched).
+    /// </summary>
+    public async Task<CallPathResult> TraceCallPathWithStartAsync(
+        string functionName, string? project, TraceDirection direction,
+        int maxDepth = 3, IGraphReader? graph = null)
     {
         var reader = graph ?? _store;
         var candidates = project is not null
@@ -42,14 +50,14 @@ public class GraphQueryEngine
             : await reader.SearchNodesAsync(null, functionName, limit: 10);
 
         if (candidates.Count == 0)
-            return [];
+            return new CallPathResult(null, []);
 
         // Prefer Method/Function nodes, fall back to first match
         var startNode = candidates.FirstOrDefault(n =>
             n.Label is NodeLabel.Method or NodeLabel.Function) ?? candidates[0];
 
         var callEdges = new[] { EdgeType.CALLS, EdgeType.HTTP_CALLS };
-        return await reader.TraverseAsync(startNode.Id, direction, maxDepth, callEdges);
+        return new CallPathResult(startNode, await reader.TraverseAsync(startNode.Id, direction, maxDepth, callEdges));
     }
 
     /// <summary>
@@ -83,7 +91,7 @@ public class GraphQueryEngine
             ? await reader.FindCrossRepoEdgesAsync(modelNode.Project)
             : [];
 
-        return new DataLineageResult(modelName, inbound, outbound, crossRepo);
+        return new DataLineageResult(modelName, inbound, outbound, crossRepo) { ModelNode = modelNode };
     }
 
     /// <summary>
@@ -123,7 +131,8 @@ public class GraphQueryEngine
                         entry.Node.Name,
                         entry.Node.Project,
                         entry.Node.QualifiedName,
-                        edgeType));
+                        edgeType,
+                        GraphNodeConfidence.IsLowConfidence(entry.Node)));
                 }
             }
         }
@@ -157,7 +166,8 @@ public class GraphQueryEngine
                     entry.Node.Name,
                     entry.Node.Project,
                     entry.Node.QualifiedName,
-                    entry.EdgeType));
+                    entry.EdgeType,
+                    GraphNodeConfidence.IsLowConfidence(entry.Node)));
             }
         }
 
@@ -250,23 +260,31 @@ public record SearchResult(
     IReadOnlyList<GraphNode> Nodes,
     int TotalCount);
 
+public record CallPathResult(GraphNode? Start, IReadOnlyList<TraversalEntry> Entries);
+
 public record DataLineageResult(
     string ModelName,
     IReadOnlyList<TraversalEntry> Producers,
     IReadOnlyList<TraversalEntry> Consumers,
-    IReadOnlyList<CrossRepoEdge> CrossRepoEdges);
+    IReadOnlyList<CrossRepoEdge> CrossRepoEdges)
+{
+    /// <summary>The node the lineage was traced from (null when no node matched).</summary>
+    public GraphNode? ModelNode { get; init; }
+}
 
 public record ConsumerInfo(
     string Name,
     string Project,
     string QualifiedName,
-    EdgeType EdgeType);
+    EdgeType EdgeType,
+    bool LowConfidence = false);
 
 public record PublisherInfo(
     string Name,
     string Project,
     string QualifiedName,
-    EdgeType EdgeType);
+    EdgeType EdgeType,
+    bool LowConfidence = false);
 
 public record ArchitectureReport(
     string Project,

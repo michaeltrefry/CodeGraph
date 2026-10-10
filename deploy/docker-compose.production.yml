@@ -18,6 +18,8 @@ services:
       CodeGraph__Memory__Audience: ${CodeGraph__Memory__Audience:-codegraph-memory}
       CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
       CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
+      CodeGraph__BranchOverlayOptions__TtlHours: ${CODEGRAPH_BRANCH_OVERLAY_TTL_HOURS:-72}
+      CodeGraph__BranchOverlayOptions__SweepIntervalMinutes: ${CODEGRAPH_BRANCH_OVERLAY_SWEEP_INTERVAL_MINUTES:-15}
 
   codegraph-indexer:
     image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-indexer:${IMAGE_TAG:-latest}
@@ -40,6 +42,8 @@ services:
       CodeGraph__IndexingOptions__RustSemanticGroupMemoryLimitMb: ${CODEGRAPH_RUST_SEMANTIC_GROUP_MEMORY_LIMIT_MB:-8192}
       CodeGraph__IndexingOptions__RustSemanticBuildScripts: ${CODEGRAPH_RUST_SEMANTIC_BUILD_SCRIPTS:-false}
       CodeGraph__IndexingOptions__RustSemanticProcMacros: ${CODEGRAPH_RUST_SEMANTIC_PROC_MACROS:-false}
+      CodeGraph__BranchOverlayOptions__TtlHours: ${CODEGRAPH_BRANCH_OVERLAY_TTL_HOURS:-72}
+      CodeGraph__BranchOverlayOptions__SweepIntervalMinutes: ${CODEGRAPH_BRANCH_OVERLAY_SWEEP_INTERVAL_MINUTES:-15}
 
   codegraph-memory:
     image: ${IMAGE_PREFIX:-ghcr.io/tc-trefry/codegraph}-memory:${IMAGE_TAG:-latest}

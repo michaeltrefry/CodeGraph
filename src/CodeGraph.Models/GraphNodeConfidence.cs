@@ -13,6 +13,12 @@ public static class GraphNodeConfidence
     public const string Low = "low";
     public const string TreeSitterFallbackSource = "tree-sitter-fallback";
 
+    /// <summary>
+    /// <see cref="FallbackReasonProperty"/> of a branch-overlay Rust node: overlays never run the
+    /// semantic pass, so their Rust nodes are always tree-sitter fallback nodes.
+    /// </summary>
+    public const string OverlayFallbackReason = "overlay";
+
     public static bool IsLowConfidence(GraphNode node) =>
         node.Properties is not null &&
         node.Properties.TryGetValue(ConfidenceProperty, out var value) &&
