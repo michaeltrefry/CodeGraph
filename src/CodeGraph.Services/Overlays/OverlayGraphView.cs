@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Models.Responses;
 
 namespace CodeGraph.Services.Overlays;
 
@@ -23,9 +24,10 @@ namespace CodeGraph.Services.Overlays;
 /// qualified name, to the head node with the same qualified name. A Rust target the head has no
 /// qualified-name match for (the default branch may carry SCIP names while overlays always carry
 /// tree-sitter names) is retargeted to the head node in the same file with the same name and kind,
-/// closest line first; such edges carry <see cref="InferredRetargetProperty"/> and point at
-/// low-confidence overlay nodes. Base edges that still cannot be retargeted are dropped and
-/// counted in <see cref="UnmappedInboundEdgeCount"/>, which impact and trace answers report.
+/// same enclosing type when known, closest line first; such edges carry
+/// <see cref="InferredRetargetProperty"/> and point at low-confidence overlay nodes. Base edges that
+/// still cannot be retargeted are dropped and counted in <see cref="UnmappedInboundEdgeCount"/>;
+/// answers report only the ones relevant to them (<see cref="CountUnmappedInboundEdges"/>).
 /// Overlay edges are resolved by qualified name against the overlay nodes first,
 /// then the visible base nodes; an endpoint that resolves to neither is dropped. Cross-repo edges
 /// come from the default-branch index and are remapped the same way; cross-repo links that only
@@ -46,6 +48,8 @@ public sealed class OverlayGraphView : IGraphReader
     private readonly Dictionary<long, List<long>> _replacedBaseIds = new();
     private readonly List<GraphEdge> _overlayEdges = [];
     private readonly HashSet<long> _inferredReplacements = [];
+    private readonly Dictionary<(string Path, string Name), List<GraphNode>> _overlayNodesByPathAndName = new();
+    private readonly List<(GraphEdge Edge, GraphNode Target)> _unmappedInboundEdges = [];
 
     /// <summary>
     /// Set on a default-branch edge whose target was mapped to the overlay head by file, name and
@@ -146,6 +150,10 @@ public sealed class OverlayGraphView : IGraphReader
             _overlayNodes[overlayId] = effective;
             _overlayNodesByQn[node.QualifiedName] = effective;
             effectiveIdByQn[node.QualifiedName] = overlayId;
+            var key = (NormalizePath(effective.FilePath), effective.Name);
+            if (!_overlayNodesByPathAndName.TryGetValue(key, out var sameName))
+                _overlayNodesByPathAndName[key] = sameName = [];
+            sameName.Add(effective);
         }
 
         foreach (var hiddenNode in _hiddenBaseNodes.Values)
@@ -166,7 +174,7 @@ public sealed class OverlayGraphView : IGraphReader
             }
         }
 
-        await CountUnmappedInboundEdgesAsync();
+        await CollectUnmappedInboundEdgesAsync();
 
         var seen = new HashSet<(long, long, EdgeType)>();
         foreach (var edge in overlayEdges)
@@ -192,28 +200,86 @@ public sealed class OverlayGraphView : IGraphReader
 
     /// <summary>
     /// Default-branch edges from unchanged files into a changed or deleted file whose target has no
-    /// counterpart at the overlay head (removed, renamed, or not mappable to the branch version).
-    /// They are left out of every answer at the SHA, so impact and trace answers report this count.
+    /// counterpart at the overlay head (removed, renamed, or not mappable to the branch version),
+    /// across the whole overlay. They are left out of every answer at the SHA; an answer reports
+    /// only the ones relevant to it (<see cref="CountUnmappedInboundEdges"/>).
     /// </summary>
-    public int UnmappedInboundEdgeCount { get; private set; }
+    public int UnmappedInboundEdgeCount => _unmappedInboundEdges.Count;
+
+    /// <summary>
+    /// The unmapped inbound edges (see <see cref="UnmappedInboundEdgeCount"/>) an answer would have
+    /// reached on the default branch: edges whose source is one of the answer's nodes, whose target
+    /// was in the same file as one of the answer's nodes, or whose target has the queried name.
+    /// Nodes of other projects are ignored. <paramref name="edgeTypes"/>, when given, limits the
+    /// count to those edge types.
+    /// </summary>
+    public int CountUnmappedInboundEdges(
+        IEnumerable<(string? Project, long Id, string? FilePath)> answerNodes,
+        string? queriedName = null,
+        IReadOnlyCollection<EdgeType>? edgeTypes = null)
+    {
+        if (_unmappedInboundEdges.Count == 0)
+            return 0;
+
+        var ids = new HashSet<long>();
+        var files = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (project, id, filePath) in answerNodes)
+        {
+            if (!IsOverlayProject(project))
+                continue;
+            ids.Add(id);
+            if (!string.IsNullOrEmpty(filePath))
+                files.Add(NormalizePath(filePath));
+        }
+
+        return _unmappedInboundEdges.Count(unmapped =>
+            (edgeTypes is null || edgeTypes.Contains(unmapped.Edge.Type))
+            && (ids.Contains(unmapped.Edge.SourceId)
+                || files.Contains(NormalizePath(unmapped.Target.FilePath))
+                || (!string.IsNullOrEmpty(queriedName)
+                    && (string.Equals(unmapped.Target.Name, queriedName, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(unmapped.Target.QualifiedName, queriedName, StringComparison.OrdinalIgnoreCase)))));
+    }
+
+    /// <summary><see cref="CountUnmappedInboundEdges"/> for an answer made of graph nodes.</summary>
+    public int CountUnmappedInboundEdges(
+        IEnumerable<GraphNode?> answerNodes,
+        string? queriedName = null,
+        IReadOnlyCollection<EdgeType>? edgeTypes = null)
+        => CountUnmappedInboundEdges(
+            answerNodes.OfType<GraphNode>().Select(node => ((string?)node.Project, node.Id, (string?)node.FilePath)),
+            queriedName,
+            edgeTypes);
+
+    /// <summary><see cref="CountUnmappedInboundEdges"/> for an impact report's changed and affected nodes.</summary>
+    public int CountUnmappedInboundEdges(ImpactReport report, string? queriedName = null)
+        => CountUnmappedInboundEdges(
+            report.ChangedNodes.Concat(report.AffectedNodes)
+                .Select(node => ((string?)node.Project, node.NodeId, (string?)node.FilePath)),
+            queriedName);
 
     /// <summary>
     /// Base Rust nodes whose qualified name the overlay does not carry (a semantic, SCIP-named
     /// default-branch index against tree-sitter overlay names) are mapped to the overlay node in the
-    /// same file with the same name and kind family, choosing the closest start line; a tie or no
-    /// candidate leaves the node unmapped. Edges retargeted this way are inferred.
+    /// same file with the same name and kind family. When both sides know the enclosing type (the
+    /// impl's type), it must match; among the remaining candidates the closest start line wins, and
+    /// a tie or no candidate leaves the node unmapped. Edges retargeted this way are inferred.
     /// </summary>
     private GraphNode? FindRustNameMatch(GraphNode hidden)
     {
         var path = NormalizePath(hidden.FilePath);
         if (!path.EndsWith(".rs", StringComparison.OrdinalIgnoreCase) || !_changedPaths.Contains(path))
             return null;
+        if (!_overlayNodesByPathAndName.TryGetValue((path, hidden.Name), out var sameName))
+            return null;
 
         var family = KindFamily(hidden.Label);
-        var candidates = _overlayNodes.Values
-            .Where(node => NormalizePath(node.FilePath) == path
-                           && string.Equals(node.Name, hidden.Name, StringComparison.Ordinal)
-                           && KindFamily(node.Label) == family)
+        var enclosing = ScipEnclosingType(hidden.QualifiedName);
+        var candidates = sameName
+            .Where(node => KindFamily(node.Label) == family)
+            .Where(node => enclosing is null
+                           || TreeSitterEnclosingType(node) is not { } nodeEnclosing
+                           || string.Equals(nodeEnclosing, enclosing, StringComparison.Ordinal))
             .Select(node => (Node: node, Distance: Math.Abs(node.StartLine - hidden.StartLine)))
             .OrderBy(candidate => candidate.Distance)
             .Take(2)
@@ -234,15 +300,75 @@ public sealed class OverlayGraphView : IGraphReader
         _ => label.ToString()
     };
 
-    private async Task CountUnmappedInboundEdgesAsync()
+    // A SCIP callable descriptor ends `name().` (or `name(+1).`), preceded by its owner: `Type#` for
+    // an inherent method, `impl#[Type][Trait]` for a trait impl method, `/` (or nothing) for a free
+    // function in a module.
+    private static readonly Regex ScipCallable = new(
+        @"(?:impl#\[(?<impl>[^\[\]]+)\](?:\[[^\[\]]*\])?|(?<type>`[^`]+`|[^\s/#.()\[\]`]+)#|(?<free>/|^))(?:`[^`]+`|[^\s/#.()\[\]`]+)\([^()]*\)\.$",
+        RegexOptions.CultureInvariant);
+
+    // A tree-sitter callable qualified name: `...#type:Type#method:name(...)` or `...#function:name(...)`.
+    private static readonly Regex TreeSitterCallable = new(
+        @"(?:#type:(?<type>[^#]+))?#(?<kind>method|function):[^#]*$",
+        RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The enclosing type of a SCIP-named Rust callable: the type name, "" for a free function, or
+    /// null when the name is not a SCIP callable descriptor this recognizes.
+    /// </summary>
+    internal static string? ScipEnclosingType(string qualifiedName)
+    {
+        const string marker = ":scip:";
+        var at = qualifiedName.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0)
+            return null;
+        var symbol = qualifiedName[(at + marker.Length)..];
+        var match = ScipCallable.Match(symbol[(symbol.LastIndexOf(' ') + 1)..]);
+        if (!match.Success)
+            return null;
+        if (match.Groups["impl"].Success)
+            return match.Groups["impl"].Value.Trim('`');
+        return match.Groups["type"].Success ? match.Groups["type"].Value.Trim('`') : "";
+    }
+
+    /// <summary>
+    /// The enclosing type of a tree-sitter Rust callable (its <c>receiver_owner</c>, else parsed from
+    /// the qualified name): the type name, "" for a free function, or null when unknown.
+    /// </summary>
+    internal static string? TreeSitterEnclosingType(GraphNode node)
+    {
+        var owner = node.Properties.GetValueOrDefault("receiver_owner") switch
+        {
+            string text => text,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            _ => null
+        };
+        if (!string.IsNullOrEmpty(owner))
+            return owner;
+
+        var match = TreeSitterCallable.Match(node.QualifiedName);
+        if (!match.Success)
+            return null;
+        if (match.Groups["type"].Success)
+            return match.Groups["type"].Value;
+        return match.Groups["kind"].Value == "function" ? "" : null;
+    }
+
+    private async Task CollectUnmappedInboundEdgesAsync()
     {
         var unmapped = _hiddenReplacement.Where(pair => pair.Value is null).Select(pair => pair.Key).ToList();
         if (unmapped.Count == 0)
             return;
 
-        var edges = await _base.FindEdgesByTargetBatchAsync(unmapped);
-        UnmappedInboundEdgeCount = edges.Count(edge =>
-            !_hiddenBaseNodes.ContainsKey(edge.SourceId) && !StructuralEdgeTypes.Contains(edge.Type));
+        foreach (var edge in await _base.FindEdgesByTargetBatchAsync(unmapped))
+        {
+            if (!_hiddenBaseNodes.ContainsKey(edge.SourceId)
+                && !StructuralEdgeTypes.Contains(edge.Type)
+                && _hiddenBaseNodes.TryGetValue(edge.TargetId, out var target))
+            {
+                _unmappedInboundEdges.Add((edge, target));
+            }
+        }
     }
 
     private static readonly HashSet<EdgeType> StructuralEdgeTypes =

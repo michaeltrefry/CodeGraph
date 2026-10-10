@@ -64,19 +64,24 @@ public class CodeGraphMcpServer(
         return CommitAnswer.Create(text, commit, scope);
     }
 
-    /// <summary>An answer that lists graph nodes, with how many of them are low-confidence.</summary>
+    /// <summary>
+    /// An answer that lists graph nodes, with how many of them are low-confidence, and (for an
+    /// overlay answer) how many of the overlay's unmapped default-branch edges it would have reached.
+    /// </summary>
     private sealed record NodeAnswer(
         string Text,
         IEnumerable<string?> Projects,
         int LowConfidenceCount,
-        bool SummaryInText = false);
+        bool SummaryInText = false,
+        Func<OverlayGraphView, int>? CountUnmapped = null);
 
     /// <summary>
     /// <see cref="AnswerAsync"/> for answers that list graph nodes: adds the answer-level
     /// low-confidence line (unless the text already carries it) and
     /// <c>structuredContent.lowConfidence</c>/<c>lowConfidenceCount</c>. With
     /// <paramref name="reportsUnmapped"/> (impact and trace answers), an overlay answer also reports
-    /// the default-branch edges the overlay could not map (<c>unmappedInboundEdges</c>).
+    /// the default-branch edges the overlay could not map that are relevant to this answer
+    /// (<see cref="NodeAnswer.CountUnmapped"/>, <c>unmappedInboundEdges</c>).
     /// </summary>
     private async Task<CallToolResult> NodeAnswerAsync(
         string? project,
@@ -101,8 +106,9 @@ public class CodeGraphMcpServer(
         };
         if (reportsUnmapped && scope.Overlay is { } overlay)
         {
-            extra["unmappedInboundEdges"] = overlay.UnmappedInboundEdgeCount;
-            if (AnswerConfidence.UnmappedLine(overlay.UnmappedInboundEdgeCount) is { } unmapped)
+            var unmappedCount = result.CountUnmapped?.Invoke(overlay) ?? 0;
+            extra["unmappedInboundEdges"] = unmappedCount;
+            if (AnswerConfidence.UnmappedLine(unmappedCount) is { } unmapped)
                 notices.Add(unmapped);
         }
 
@@ -345,6 +351,9 @@ public class CodeGraphMcpServer(
 
             var (start, result) = await query.TraceCallPathWithStartAsync(functionName, scopedProject, dir, depth, scope.Graph);
             var lowConfidenceCount = AnswerConfidence.Count(result.Select(entry => entry.Node).Append(start));
+            int CountUnmapped(OverlayGraphView overlay)
+                => overlay.CountUnmappedInboundEdges(result.Select(entry => entry.Node).Append(start), functionName,
+                    [EdgeType.CALLS, EdgeType.HTTP_CALLS]);
             var startLine = start is not null && GraphNodeConfidence.IsLowConfidence(start)
                 ? $"Start: **{start.Name}** ({start.Label}) — {start.Project}{AnswerConfidence.NodeTag}"
                 : null;
@@ -353,7 +362,7 @@ public class CodeGraphMcpServer(
             {
                 var none = $"No call paths found for '{functionName}'.";
                 return new NodeAnswer(startLine is null ? none : $"{none}\n{startLine}",
-                    start is null ? [] : [start.Project], lowConfidenceCount);
+                    start is null ? [] : [start.Project], lowConfidenceCount, CountUnmapped: CountUnmapped);
             }
 
             var sb = new StringBuilder();
@@ -370,7 +379,8 @@ public class CodeGraphMcpServer(
                     sb.AppendLine($"{indent}  File: {entry.Node.FilePath}:{entry.Node.StartLine}");
             }
 
-            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(entry => entry.Node.Project)), lowConfidenceCount);
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(entry => entry.Node.Project)), lowConfidenceCount,
+                CountUnmapped: CountUnmapped);
         });
 
     [McpServerTool(Name = "trace_data_lineage"),
@@ -384,9 +394,12 @@ public class CodeGraphMcpServer(
             var result = await query.TraceDataLineageAsync(modelName, scopedProject, scope.Graph);
             var lowConfidenceCount = AnswerConfidence.Count(result.Producers.Concat(result.Consumers)
                 .Select(entry => entry.Node).Append(result.ModelNode));
+            int CountUnmapped(OverlayGraphView overlay) => overlay.CountUnmappedInboundEdges(
+                result.Producers.Concat(result.Consumers).Select(entry => entry.Node).Append(result.ModelNode), modelName);
 
             if (result.Producers.Count == 0 && result.Consumers.Count == 0 && result.CrossRepoEdges.Count == 0)
-                return new NodeAnswer($"No data lineage found for '{modelName}'.", [], lowConfidenceCount);
+                return new NodeAnswer($"No data lineage found for '{modelName}'.", [], lowConfidenceCount,
+                    CountUnmapped: CountUnmapped);
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Data Lineage: {modelName}\n");
@@ -423,7 +436,8 @@ public class CodeGraphMcpServer(
             }
 
             return new NodeAnswer(sb.ToString(), ProjectsOf(result.Producers.Concat(result.Consumers).Select(entry => entry.Node.Project)
-                .Concat(result.CrossRepoEdges.SelectMany(edge => new[] { edge.SourceProject, edge.TargetProject }))), lowConfidenceCount);
+                .Concat(result.CrossRepoEdges.SelectMany(edge => new[] { edge.SourceProject, edge.TargetProject }))), lowConfidenceCount,
+                CountUnmapped: CountUnmapped);
         });
 
     [McpServerTool(Name = "find_consumers"),
@@ -436,9 +450,13 @@ public class CodeGraphMcpServer(
         {
             var result = await query.FindConsumersAsync(name, scopedProject, scope.Graph);
             var lowConfidenceCount = result.Count(consumer => consumer.LowConfidence);
+            // The consumers query reads one hop of inbound edges into the nodes named `name`.
+            int CountUnmapped(OverlayGraphView overlay) => overlay.CountUnmappedInboundEdges(
+                Array.Empty<GraphNode>(), name,
+                [EdgeType.CONSUMES, EdgeType.CALLS, EdgeType.HTTP_CALLS, EdgeType.USES_TYPE, EdgeType.HANDLES]);
 
             if (result.Count == 0)
-                return new NodeAnswer($"No consumers found for '{name}'.", [], 0);
+                return new NodeAnswer($"No consumers found for '{name}'.", [], 0, CountUnmapped: CountUnmapped);
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Consumers of {name} ({result.Count})\n");
@@ -449,7 +467,8 @@ public class CodeGraphMcpServer(
                 sb.AppendLine($"  QN: {consumer.QualifiedName}");
             }
 
-            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(consumer => consumer.Project)), lowConfidenceCount);
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(consumer => consumer.Project)), lowConfidenceCount,
+                CountUnmapped: CountUnmapped);
         });
 
     [McpServerTool(Name = "find_publishers"),
@@ -462,9 +481,12 @@ public class CodeGraphMcpServer(
         {
             var result = await query.FindPublishersAsync(name, scopedProject, scope.Graph);
             var lowConfidenceCount = result.Count(publisher => publisher.LowConfidence);
+            // The publishers query reads one hop of inbound edges into the nodes named `name`.
+            int CountUnmapped(OverlayGraphView overlay) => overlay.CountUnmappedInboundEdges(
+                Array.Empty<GraphNode>(), name, [EdgeType.PUBLISHES, EdgeType.CALLS]);
 
             if (result.Count == 0)
-                return new NodeAnswer($"No publishers found for '{name}'.", [], 0);
+                return new NodeAnswer($"No publishers found for '{name}'.", [], 0, CountUnmapped: CountUnmapped);
 
             var sb = new StringBuilder();
             sb.AppendLine($"## Publishers to {name} ({result.Count})\n");
@@ -475,7 +497,8 @@ public class CodeGraphMcpServer(
                 sb.AppendLine($"  QN: {publisher.QualifiedName}");
             }
 
-            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(publisher => publisher.Project)), lowConfidenceCount);
+            return new NodeAnswer(sb.ToString(), ProjectsOf(result.Select(publisher => publisher.Project)), lowConfidenceCount,
+                CountUnmapped: CountUnmapped);
         });
 
     private static IEnumerable<string?> ProjectsOf(IEnumerable<string> projects)
@@ -896,9 +919,11 @@ public class CodeGraphMcpServer(
         {
             var result = await impactAnalysis.AnalyzeImpactAsync(name, scopedProject, Math.Clamp(depth, 1, 5), scope.Graph);
             return result is null
-                ? new NodeAnswer($"No nodes found matching '{name}'.", [], 0)
+                ? new NodeAnswer($"No nodes found matching '{name}'.", [], 0,
+                    CountUnmapped: overlay => overlay.CountUnmappedInboundEdges(Array.Empty<GraphNode>(), name))
                 : new NodeAnswer(FormatImpact(name, result), ProjectsOf(ImpactProjects(result)),
-                    result.Summary.LowConfidenceCount, SummaryInText: true);
+                    result.Summary.LowConfidenceCount, SummaryInText: true,
+                    CountUnmapped: overlay => overlay.CountUnmappedInboundEdges(result, name));
         });
 
     private static string FormatImpact(string name, ImpactReport result)
