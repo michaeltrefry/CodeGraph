@@ -2,13 +2,18 @@ name: CI
 
 on:
   pull_request:
+  # A successful run on main is what triggers the production deploy (deploy.yml workflow_run).
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a main run: every main commit needs its own CI result to be deployable.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:

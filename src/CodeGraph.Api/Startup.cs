@@ -94,6 +94,7 @@ public static class Startup
 
         services.AddControllers();
         services.AddEndpointsApiExplorer();
+        services.AddHealthChecks();
         services.AddSwaggerGen(c =>
         {
             c.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
@@ -368,6 +369,7 @@ public static class Startup
         app.UseMiddleware<McpToolEntitlementMiddleware>();
         app.UseMiddleware<McpTelemetryMiddleware>();
         app.MapControllers();
+        app.MapLocalReadinessEndpoint();
 
         var mcpEndpoint = app.MapMcp("/mcp");
         var mcpOptions = app.Services.GetRequiredService<IOptions<McpOptions>>().Value;
