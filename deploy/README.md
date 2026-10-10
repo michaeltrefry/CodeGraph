@@ -126,7 +126,7 @@ After `docker compose up -d`, the **Verify deployment health** step runs `deploy
 
 The production compose override defines the healthchecks. Because every host applies migrations before it listens, a healthy check also means migrations completed:
 
-- API, indexer, memory, metrics: `GET http://127.0.0.1:<port>/health` from inside the container (the API's `/health` is anonymous but answers only loopback callers; all return only the aggregate status word, which includes the MassTransit bus check).
+- API, indexer, memory, metrics: `GET http://127.0.0.1:<port>/health` from inside the container (the API's `/health` is anonymous but answers only loopback callers; all return only the aggregate status word, which includes the MassTransit bus check). By design, a RabbitMQ outage during a deploy therefore keeps these services unhealthy and fails verification after the 10-minute timeout.
 - Jobs: the `/tmp/codegraph-jobs.ready` marker, cleared at process start and written after migrations.
 - Web: `GET http://127.0.0.1/` from nginx.
 

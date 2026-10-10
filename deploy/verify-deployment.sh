@@ -54,7 +54,7 @@ check_service() {
   reason="image=$image status=$status restarting=$restarting restarts=$restarts health=$health"
 
   case "$image" in
-    *":$IMAGE_TAG") ;;
+    "$IMAGE_PREFIX"-*":$IMAGE_TAG") ;;
     *) return 1 ;;
   esac
   [ "$status" = "running" ] && [ "$restarting" = "false" ] && [ "$health" = "healthy" ]

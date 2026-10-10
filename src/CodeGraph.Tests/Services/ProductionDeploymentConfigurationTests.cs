@@ -117,7 +117,7 @@ public sealed class ProductionDeploymentConfigurationTests
         // Bounded wait for the new tag + healthy + not restarting; diagnostics and a non-zero exit on failure.
         script.ShouldContain("set -eu");
         script.ShouldContain("CODEGRAPH_DEPLOY_VERIFY_TIMEOUT_SECONDS:-600");
-        script.ShouldContain("*\":$IMAGE_TAG\")");
+        script.ShouldContain("\"$IMAGE_PREFIX\"-*\":$IMAGE_TAG\")");
         script.ShouldContain("[ \"$health\" = \"healthy\" ]");
         script.ShouldContain("[ \"$restarting\" = \"false\" ]");
         script.ShouldContain("compose ps -a");
