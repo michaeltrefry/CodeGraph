@@ -181,7 +181,8 @@ public sealed class VerifyDeploymentScriptTests : IDisposable
     {
         var path = Path.Combine(_bin, name);
         File.WriteAllText(path, content.Replace("\r\n", "\n"));
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     private static string FindRepositoryRoot()
