@@ -163,14 +163,18 @@ public class LmStudioAnalysisProvider(
 
         var completedCount = requests.Count(r => IsTerminalStatus(r.Status));
         var isCompleted = requests.Count > 0 && requests.All(r => IsTerminalStatus(r.Status));
-        if (isCompleted)
+        // The background runner keeps writing the batch row (status/completed count) until its task finishes,
+        // even after the last request turns terminal. Reporting completion while it is still running lets the
+        // caller mark the batch "completed" and then have the runner overwrite it back to "submitted".
+        if (isCompleted && !IsBatchRunnerActive(batchId))
         {
             await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
             return new AnalysisBatchStatusResult(batchId, "completed", IsCompleted: true);
         }
 
         await store.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
-        EnsureBatchRunnerStarted(batchId);
+        if (!isCompleted)
+            EnsureBatchRunnerStarted(batchId);
 
         return new AnalysisBatchStatusResult(
             batchId,
@@ -326,6 +330,15 @@ public class LmStudioAnalysisProvider(
                         batchRunners.Remove(batchId);
                 }
             }, TaskScheduler.Default);
+        }
+    }
+
+    /// <summary>Completes when the background runner for <paramref name="batchId"/> (if any) has finished.</summary>
+    internal Task WaitForBatchRunnerAsync(string batchId)
+    {
+        lock (batchRunnerLock)
+        {
+            return batchRunners.TryGetValue(batchId, out var runner) ? runner : Task.CompletedTask;
         }
     }
 
