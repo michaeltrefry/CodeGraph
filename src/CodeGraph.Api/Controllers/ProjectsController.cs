@@ -151,8 +151,18 @@ public class ProjectsController(
 
     private async Task<ImpactReport> WithCommitAsync(ImpactReport report, CommitScope scope, string project)
     {
-        var commit = await commitScopes.DescribeAsync(scope, [project]);
-        return report with { CommitSha = commit.CommitSha };
+        var projects = report.ChangedNodes.Select(node => node.Project)
+            .Concat(report.AffectedNodes.Select(node => node.Project))
+            .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }))
+            .Append(project);
+        var commit = await commitScopes.DescribeAsync(scope, projects);
+        // With a SHA, CommitSha is that SHA for the pinned repository; Commits names every repository
+        // in the report with the commit its nodes were read from.
+        return report with
+        {
+            CommitSha = scope.IsPinned ? commit.CommitSha : commit.Commits.GetValueOrDefault(project) ?? commit.CommitSha,
+            Commits = commit.Commits
+        };
     }
 
     [HttpPost(nameof(ReAnalyze))]

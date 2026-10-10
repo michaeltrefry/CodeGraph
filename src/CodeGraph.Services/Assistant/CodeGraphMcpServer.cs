@@ -352,7 +352,8 @@ public class CodeGraphMcpServer(
                     sb.AppendLine($"- {edge.SourceProject} → {edge.TargetProject} ({edge.Type})");
             }
 
-            return (sb.ToString(), ProjectsOf(result.Producers.Concat(result.Consumers).Select(entry => entry.Node.Project)));
+            return (sb.ToString(), ProjectsOf(result.Producers.Concat(result.Consumers).Select(entry => entry.Node.Project)
+                .Concat(result.CrossRepoEdges.SelectMany(edge => new[] { edge.SourceProject, edge.TargetProject }))));
         });
 
     [McpServerTool(Name = "find_consumers"),
@@ -407,6 +408,12 @@ public class CodeGraphMcpServer(
 
     private static IEnumerable<string?> ProjectsOf(IEnumerable<string> projects)
         => projects.Distinct(StringComparer.OrdinalIgnoreCase).Select(project => (string?)project).ToList();
+
+    /// <summary>Every repository an impact report names: changed and affected nodes and cross-repo impacts.</summary>
+    internal static IEnumerable<string> ImpactProjects(ImpactReport report)
+        => report.ChangedNodes.Select(node => node.Project)
+            .Concat(report.AffectedNodes.Select(node => node.Project))
+            .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }));
 
     [McpServerTool(Name = "get_architecture"),
      Description("Get architecture overview for a project — hotspots, dependency analysis, complexity metrics.")]
@@ -817,7 +824,7 @@ public class CodeGraphMcpServer(
             var result = await impactAnalysis.AnalyzeImpactAsync(name, scopedProject, Math.Clamp(depth, 1, 5), scope.Graph);
             return result is null
                 ? ($"No nodes found matching '{name}'.", [])
-                : (FormatImpact(name, result), ProjectsOf(result.ChangedNodes.Select(node => node.Project)));
+                : (FormatImpact(name, result), ProjectsOf(ImpactProjects(result)));
         });
 
     private static string FormatImpact(string name, ImpactReport result)

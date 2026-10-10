@@ -19,7 +19,9 @@ public static class CommitAnswer
             ["commitSha"] = commit.CommitSha,
             ["source"] = scope.Overlay is not null ? "overlay" : "default-branch"
         };
-        if (commit.CommitSha is null && commit.Commits.Count > 1)
+        // Several repositories: name each one's commit (for a pinned answer, the other repositories
+        // are answered from their default-branch index).
+        if (commit.Commits.Count > 1)
         {
             var commits = new JsonObject();
             foreach (var (project, sha) in commit.Commits.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))

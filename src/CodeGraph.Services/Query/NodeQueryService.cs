@@ -31,16 +31,20 @@ public class NodeQueryService(
         [".cfm"] = "xml",
         [".cfc"] = "xml",
     };
-    public async Task<NodeDetailResponse?> GetDetailAsync(long id)
+    public async Task<NodeDetailResponse?> GetDetailAsync(long id, CommitScope? scope = null)
     {
-        var node = await store.FindNodeByIdAsync(id);
+        scope ??= CommitScope.DefaultBranch(store, null);
+        var graph = scope.Graph;
+        var node = await graph.FindNodeByIdAsync(id);
         if (node is null)
             return null;
 
-        var outboundEdges = await store.FindEdgesBySourceAsync(id);
-        var inboundEdges = await store.FindEdgesByTargetAsync(id);
+        // At a commit, a default-branch id hidden by the overlay resolves to the head node.
+        id = node.Id;
+        var outboundEdges = await graph.FindEdgesBySourceAsync(id);
+        var inboundEdges = await graph.FindEdgesByTargetAsync(id);
 
-        var crossRepoEdges = await store.FindCrossRepoEdgesAsync(node.Project);
+        var crossRepoEdges = await graph.FindCrossRepoEdgesAsync(node.Project);
         var relevantCrossRepo = crossRepoEdges
             .Where(e => e.SourceNodeId == id || e.TargetNodeId == id)
             .ToList();
@@ -52,10 +56,11 @@ public class NodeQueryService(
             .ToList();
 
         var neighbors = neighborIds.Count > 0
-            ? await store.FindNodesByIdBatchAsync(neighborIds)
+            ? await graph.FindNodesByIdBatchAsync(neighborIds)
             : new Dictionary<long, GraphNode>();
 
-        var analysis = await store.GetNodeAnalysisAsync(id);
+        // Overlay nodes (negative ids) have no stored analysis.
+        var analysis = id > 0 ? await store.GetNodeAnalysisAsync(id) : null;
         if (analysis is not null)
             node = node with { Description = analysis.Description, AnalysisConfidence = analysis.Confidence };
 
@@ -79,7 +84,8 @@ public class NodeQueryService(
                 e.Properties);
         }).ToList();
 
-        return new NodeDetailResponse(node, outbound, inbound, crossRepo);
+        var commit = await commitScopes.DescribeAsync(scope, [node.Project]);
+        return new NodeDetailResponse(node, outbound, inbound, crossRepo) { CommitSha = commit.CommitSha };
     }
 
     public async Task<NodeListResponse> SearchAsync(

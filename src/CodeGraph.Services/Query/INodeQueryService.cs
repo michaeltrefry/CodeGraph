@@ -5,7 +5,12 @@ namespace CodeGraph.Services.Query;
 
 public interface INodeQueryService
 {
-    Task<NodeDetailResponse?> GetDetailAsync(long id);
+    /// <summary>
+    /// The read methods answer from <paramref name="scope"/> (a commit-pinned graph resolved by
+    /// <see cref="ICommitScopeResolver"/>), or from the default-branch index when it is null, and
+    /// name the commit they describe. A scope with <see cref="CommitScope.NotIndexed"/> must not be passed.
+    /// </summary>
+    Task<NodeDetailResponse?> GetDetailAsync(long id, CommitScope? scope = null);
     /// <summary>
     /// The read methods answer from <paramref name="scope"/> (a commit-pinned graph resolved by
     /// <see cref="ICommitScopeResolver"/>), or from the default-branch index when it is null, and

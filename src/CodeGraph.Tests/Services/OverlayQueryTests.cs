@@ -306,7 +306,166 @@ public sealed class OverlayQueryTests : IDisposable
         answer.Text().ShouldNotContain("uncommitted edit");
     }
 
+    [Fact]
+    public async Task NewerOverlayBeingBuilt_ReportsItsStatus_NotAnOlderOverlaysStaleness()
+    {
+        await CreateReadyOverlayAsync(_headSha, new string('e', 40));
+        var pendingId = await _overlays.CreateOverlayAsync(new BranchOverlayEntity
+        {
+            Project = Repo,
+            RequestedRef = _headSha,
+            CreatedAt = Now.UtcDateTime.AddMinutes(1)
+        });
+
+        var queued = await Mcp().GetCodeSnippet(Repo, "src/a.py", sha: _headSha);
+        AssertNotIndexed(queued, _headSha, BranchOverlayStatuses.Queued);
+        queued.StructuredContent!.Value.GetProperty("notIndexed").GetProperty("overlayId").GetInt64().ShouldBe(pendingId);
+
+        await _overlays.MarkOverlayIndexingAsync(pendingId, Now.UtcDateTime.AddMinutes(1));
+        var indexing = await ProjectsController().FileImpact(Repo, "src/a.py", sha: _headSha);
+        var body = indexing.Result.ShouldBeOfType<ConflictObjectResult>().Value.ShouldBeOfType<CommitNotIndexedResponse>();
+        body.Status.ShouldBe(BranchOverlayStatuses.Indexing);
+        body.OverlayId.ShouldBe(pendingId);
+    }
+
+    [Fact]
+    public async Task ShaOfTheDefaultBranchIndex_WithoutProject_AnswersNodeSourceAndDetail()
+    {
+        // No overlay row carries the SHA; the node surfaces take no project.
+        var mcp = await Mcp().ReadNodeSource(_alphaId, _baseSha);
+        FirstLine(mcp).ShouldBe($"Commit: {_baseSha}");
+        mcp.StructuredString("source").ShouldBe("default-branch");
+        mcp.Text().ShouldContain("base alpha");
+
+        var rest = (NodeSourceResponse)((OkObjectResult)(await NodesController().Source(_alphaId, _baseSha)).Result!).Value!;
+        rest.CommitSha.ShouldBe(_baseSha);
+        rest.Content.ShouldContain("base alpha");
+
+        var detail = (NodeDetailResponse)((OkObjectResult)(await NodesController().Detail(_alphaId, _baseSha)).Result!).Value!;
+        detail.CommitSha.ShouldBe(_baseSha);
+    }
+
+    // ── No SHA: the default-branch index commit, not the working tree ────
+
+    [Fact]
+    public async Task NoSha_ReadsTheIndexedCommit_WhenTheCheckoutIsAheadOfTheIndex()
+    {
+        // The shared checkout moved past the indexed commit (e.g. reset to the remote head) without a re-index.
+        GitFixture.Write(_root, "src/a.py", "def alpha():\n    return 'ahead alpha'\n");
+        GitFixture.Run(_root, "commit", "-q", "-am", "ahead");
+        GitFixture.Write(_root, "src/b.py", "uncommitted edit\n");
+
+        var snippet = await Mcp().GetCodeSnippet(Repo, "src/a.py");
+        FirstLine(snippet).ShouldBe($"Commit: {_baseSha}");
+        snippet.Text().ShouldContain("base alpha");
+        snippet.Text().ShouldNotContain("ahead alpha");
+
+        (await Mcp().ReadNodeSource(_betaId)).Text().ShouldNotContain("uncommitted edit");
+        var rest = (NodeSourceResponse)((OkObjectResult)(await NodesController().Source(_alphaId)).Result!).Value!;
+        rest.CommitSha.ShouldBe(_baseSha);
+        rest.Content.ShouldContain("base alpha");
+    }
+
+    [Fact]
+    public async Task NoSha_NonGitFolderSource_ReadsTheWorkingTree()
+    {
+        var folder = Path.Combine(_root + "-folder");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "notes.py"), "def folder_fn():\n    return 'folder'\n");
+            await _store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "Folder",
+                LocalPath = folder,
+                LastCommitSha = new string('a', 40)
+            });
+
+            var snippet = await Mcp().GetCodeSnippet("Folder", "notes.py");
+
+            FirstLine(snippet).ShouldBe($"Commit: {new string('a', 40)}");
+            snippet.Text().ShouldContain("return 'folder'");
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
     // ── AC3: every answer names its commit ────────────────────────────────
+
+    [Fact]
+    public async Task PinnedAnswer_NamesTheDefaultCommitOfEveryOtherRepository()
+    {
+        var otherSha = new string('f', 40);
+        await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = "Other", LastCommitSha = otherSha });
+        var callerId = _store.AddNode(new GraphNode
+        {
+            Project = "Other",
+            Label = NodeLabel.Function,
+            Name = "remote_caller",
+            QualifiedName = "Other:src/r.py:remote_caller",
+            FilePath = "src/r.py",
+            StartLine = 1,
+            EndLine = 2
+        });
+        _store.AddEdge(new GraphEdge { Project = "Other", SourceId = callerId, TargetId = _alphaId, Type = EdgeType.CALLS });
+        await _store.InsertCrossRepoEdgeAsync(new CrossRepoEdge
+        {
+            SourceProject = "Other",
+            TargetProject = Repo,
+            SourceNodeId = callerId,
+            TargetNodeId = _alphaId,
+            Type = EdgeType.CALLS
+        });
+        await CreateReadyOverlayAsync(_headSha, _baseSha);
+        var mcp = Mcp();
+
+        foreach (var answer in new[]
+                 {
+                     await mcp.TraceCallPath("alpha", "inbound", project: Repo, sha: _headSha),
+                     await mcp.AnalyzeImpact(Qn("src/a.py", "alpha"), Repo, sha: _headSha),
+                     // alpha has no data edges: Other appears only through the cross-repo reference.
+                     await mcp.TraceDataLineage("alpha", Repo, _headSha),
+                 })
+        {
+            answer.Text().ShouldContain("Other");
+            FirstLine(answer).ShouldBe($"Commit: {_headSha}");
+            answer.StructuredString("commitSha").ShouldBe(_headSha);
+            var commits = answer.StructuredContent!.Value.GetProperty("commits");
+            commits.GetProperty(Repo).GetString().ShouldBe(_headSha);
+            commits.GetProperty("Other").GetString().ShouldBe(otherSha);
+        }
+
+        var rest = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, Qn("src/a.py", "alpha"), sha: _headSha)).Result!).Value!;
+        rest.CommitSha.ShouldBe(_headSha);
+        rest.Commits.ShouldNotBeNull();
+        rest.Commits[Repo].ShouldBe(_headSha);
+        rest.Commits["Other"].ShouldBe(otherSha);
+    }
+
+    [Fact]
+    public async Task NodeDetail_WithSha_ReturnsTheOverlayNode()
+    {
+        await CreateReadyOverlayAsync(_headSha, _baseSha);
+        var headAlphaId = (await (await Resolver().ResolveAsync(Repo, _headSha)).Graph
+            .FindNodeByQualifiedNameAsync(Repo, Qn("src/a.py", "alpha")))!.Id;
+        var nodes = NodesController();
+
+        var head = (NodeDetailResponse)((OkObjectResult)(await nodes.Detail(headAlphaId, _headSha)).Result!).Value!;
+        head.CommitSha.ShouldBe(_headSha);
+        head.Node.Id.ShouldBe(headAlphaId);
+        head.Node.StartLine.ShouldBe(6);
+        head.InboundEdges.Select(edge => edge.NeighborName).ShouldBe(["beta", "newbie"], ignoreOrder: true);
+
+        (await nodes.Detail(headAlphaId)).Result.ShouldBeOfType<NotFoundResult>();
+        (await nodes.Detail(_deltaId, _headSha)).Result.ShouldBeOfType<NotFoundResult>();
+        (await nodes.Detail(_alphaId, new string('c', 40))).Result.ShouldBeOfType<ConflictObjectResult>();
+
+        var defaultBranch = (NodeDetailResponse)((OkObjectResult)(await nodes.Detail(_alphaId)).Result!).Value!;
+        defaultBranch.CommitSha.ShouldBe(_baseSha);
+        defaultBranch.Node.StartLine.ShouldBe(1);
+    }
 
     [Fact]
     public async Task EveryMcpAnswer_CarriesItsCommit_WithAndWithoutSha()

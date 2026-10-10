@@ -29,11 +29,15 @@ public class NodesController(INodeQueryService nodeQueryService, ICommitScopeRes
             : Ok(result);
     }
 
-    // GET /api/nodes/{id}
+    // GET /api/nodes/{id}?sha=<full commit sha>
     [HttpGet("{id:long}")]
-    public async Task<ActionResult<NodeDetailResponse>> Detail(long id)
+    public async Task<ActionResult<NodeDetailResponse>> Detail(long id, [FromQuery] string? sha = null)
     {
-        var result = await nodeQueryService.GetDetailAsync(id);
+        var scope = await commitScopes.ResolveAsync(null, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return this.NotIndexed(notIndexed);
+
+        var result = await nodeQueryService.GetDetailAsync(id, scope);
         return result is null ? NotFound() : Ok(result);
     }
 
