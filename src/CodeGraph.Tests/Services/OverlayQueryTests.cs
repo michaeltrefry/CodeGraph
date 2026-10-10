@@ -184,6 +184,26 @@ public sealed class OverlayQueryTests : IDisposable
         removed.Body().ShouldStartWith("No nodes found");
     }
 
+    [Fact]
+    public async Task SearchGraph_WithSha_DoesNotLabelChangedFilesWithDefaultBranchTrust()
+    {
+        await CreateReadyOverlayAsync(_headSha, _baseSha);
+        await _store.UpsertFileMetricsBatchAsync(Repo,
+        [
+            new FileMetricsEntity { Project = Repo, FilePath = "src/a.py", TrustScore = 0.1 },
+            new FileMetricsEntity { Project = Repo, FilePath = "src/b.py", TrustScore = 0.1 }
+        ]);
+
+        var head = (await Mcp().SearchGraph("%", project: Repo, sha: _headSha)).Text();
+        var defaultBranch = (await Mcp().SearchGraph("alpha", project: Repo)).Text();
+
+        // src/a.py changed at the head: its default-branch metrics do not describe it.
+        head.ShouldContain($"- **alpha** (Function) — {Repo}\n");
+        // src/b.py is unchanged at the head, so its default-branch metrics still apply.
+        head.ShouldContain($"- **beta** (Function) — {Repo} _(low trust)_");
+        defaultBranch.ShouldContain($"- **alpha** (Function) — {Repo} _(low trust)_");
+    }
+
     // ── Deleted files ─────────────────────────────────────────────────────
 
     [Fact]

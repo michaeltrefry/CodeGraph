@@ -20,13 +20,18 @@ namespace CodeGraph.Services.Overlays;
 /// <para>Edges. Mirroring incremental re-indexing of the changed files: base edges whose source is
 /// in a changed or removed file are dropped (the overlay re-extracted those files' outgoing
 /// edges); base edges from unchanged files into a changed or removed file are retargeted, by
-/// qualified name, to the head node with the same qualified name, and dropped when the head no
-/// longer has one. Overlay edges are resolved by qualified name against the overlay nodes first,
+/// qualified name, to the head node with the same qualified name. A Rust target the head has no
+/// qualified-name match for (the default branch may carry SCIP names while overlays always carry
+/// tree-sitter names) is retargeted to the head node in the same file with the same name and kind,
+/// closest line first; such edges carry <see cref="InferredRetargetProperty"/> and point at
+/// low-confidence overlay nodes. Base edges that still cannot be retargeted are dropped and
+/// counted in <see cref="UnmappedInboundEdgeCount"/>, which impact and trace answers report.
+/// Overlay edges are resolved by qualified name against the overlay nodes first,
 /// then the visible base nodes; an endpoint that resolves to neither is dropped. Cross-repo edges
 /// come from the default-branch index and are remapped the same way; cross-repo links that only
 /// exist on the branch are not computed (the cross-repo linker runs on the default-branch index).</para>
 /// <para>A base node id hidden by the overlay resolves to its head replacement (same qualified
-/// name), or to nothing when the head no longer has it.</para>
+/// name, or the Rust name match above), or to nothing when the head no longer has it.</para>
 /// </remarks>
 public sealed class OverlayGraphView : IGraphReader
 {
@@ -40,6 +45,13 @@ public sealed class OverlayGraphView : IGraphReader
     private readonly Dictionary<long, long?> _hiddenReplacement = new();
     private readonly Dictionary<long, List<long>> _replacedBaseIds = new();
     private readonly List<GraphEdge> _overlayEdges = [];
+    private readonly HashSet<long> _inferredReplacements = [];
+
+    /// <summary>
+    /// Set on a default-branch edge whose target was mapped to the overlay head by file, name and
+    /// kind rather than by qualified name (see <see cref="FindRustNameMatch"/>).
+    /// </summary>
+    public const string InferredRetargetProperty = "overlayRetarget";
 
     private OverlayGraphView(
         IGraphReader baseGraph,
@@ -139,6 +151,12 @@ public sealed class OverlayGraphView : IGraphReader
         foreach (var hiddenNode in _hiddenBaseNodes.Values)
         {
             long? replacement = _overlayNodesByQn.TryGetValue(hiddenNode.QualifiedName, out var head) ? head.Id : null;
+            if (replacement is null && FindRustNameMatch(hiddenNode) is { } inferred)
+            {
+                replacement = inferred.Id;
+                _inferredReplacements.Add(hiddenNode.Id);
+            }
+
             _hiddenReplacement[hiddenNode.Id] = replacement;
             if (replacement is { } id)
             {
@@ -147,6 +165,8 @@ public sealed class OverlayGraphView : IGraphReader
                 list.Add(hiddenNode.Id);
             }
         }
+
+        await CountUnmappedInboundEdgesAsync();
 
         var seen = new HashSet<(long, long, EdgeType)>();
         foreach (var edge in overlayEdges)
@@ -169,6 +189,67 @@ public sealed class OverlayGraphView : IGraphReader
             });
         }
     }
+
+    /// <summary>
+    /// Default-branch edges from unchanged files into a changed or deleted file whose target has no
+    /// counterpart at the overlay head (removed, renamed, or not mappable to the branch version).
+    /// They are left out of every answer at the SHA, so impact and trace answers report this count.
+    /// </summary>
+    public int UnmappedInboundEdgeCount { get; private set; }
+
+    /// <summary>
+    /// Base Rust nodes whose qualified name the overlay does not carry (a semantic, SCIP-named
+    /// default-branch index against tree-sitter overlay names) are mapped to the overlay node in the
+    /// same file with the same name and kind family, choosing the closest start line; a tie or no
+    /// candidate leaves the node unmapped. Edges retargeted this way are inferred.
+    /// </summary>
+    private GraphNode? FindRustNameMatch(GraphNode hidden)
+    {
+        var path = NormalizePath(hidden.FilePath);
+        if (!path.EndsWith(".rs", StringComparison.OrdinalIgnoreCase) || !_changedPaths.Contains(path))
+            return null;
+
+        var family = KindFamily(hidden.Label);
+        var candidates = _overlayNodes.Values
+            .Where(node => NormalizePath(node.FilePath) == path
+                           && string.Equals(node.Name, hidden.Name, StringComparison.Ordinal)
+                           && KindFamily(node.Label) == family)
+            .Select(node => (Node: node, Distance: Math.Abs(node.StartLine - hidden.StartLine)))
+            .OrderBy(candidate => candidate.Distance)
+            .Take(2)
+            .ToList();
+        if (candidates.Count == 0)
+            return null;
+        if (candidates.Count > 1 && candidates[1].Distance == candidates[0].Distance)
+            return null;
+        return candidates[0].Node;
+    }
+
+    // SCIP and tree-sitter label the same Rust item differently (a struct is Struct vs Class, an
+    // impl fn is Method vs Function); match within a family.
+    private static string KindFamily(NodeLabel label) => label switch
+    {
+        NodeLabel.Function or NodeLabel.Method or NodeLabel.Constructor => "callable",
+        NodeLabel.Class or NodeLabel.Struct or NodeLabel.Enum or NodeLabel.Interface or NodeLabel.Record => "type",
+        _ => label.ToString()
+    };
+
+    private async Task CountUnmappedInboundEdgesAsync()
+    {
+        var unmapped = _hiddenReplacement.Where(pair => pair.Value is null).Select(pair => pair.Key).ToList();
+        if (unmapped.Count == 0)
+            return;
+
+        var edges = await _base.FindEdgesByTargetBatchAsync(unmapped);
+        UnmappedInboundEdgeCount = edges.Count(edge =>
+            !_hiddenBaseNodes.ContainsKey(edge.SourceId) && !StructuralEdgeTypes.Contains(edge.Type));
+    }
+
+    private static readonly HashSet<EdgeType> StructuralEdgeTypes =
+    [
+        EdgeType.CONTAINS_FILE, EdgeType.CONTAINS_FOLDER, EdgeType.CONTAINS_NAMESPACE,
+        EdgeType.CONTAINS_PROJECT, EdgeType.DEFINES, EdgeType.DEFINES_METHOD
+    ];
 
     /// <summary>True when <paramref name="relativePath"/> was deleted (or renamed away) at the overlay head.</summary>
     public bool IsRemovedPath(string relativePath) => _removedPaths.Contains(NormalizePath(relativePath));
@@ -458,7 +539,16 @@ public sealed class OverlayGraphView : IGraphReader
             return null;
         if (!_hiddenReplacement.TryGetValue(edge.TargetId, out var replacement))
             return edge;
-        return replacement is { } target ? edge with { TargetId = target } : null;
+        if (replacement is not { } target)
+            return null;
+        if (!_inferredReplacements.Contains(edge.TargetId))
+            return edge with { TargetId = target };
+
+        var properties = new Dictionary<string, object>(edge.Properties ?? new())
+        {
+            [InferredRetargetProperty] = "name-match"
+        };
+        return edge with { TargetId = target, Properties = properties };
     }
 
     private IReadOnlyList<GraphEdge> Combine(IEnumerable<GraphEdge> baseEdges, IEnumerable<GraphEdge> overlayEdges)

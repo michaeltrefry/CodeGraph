@@ -57,6 +57,8 @@ services:
       CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes: ${CodeGraph__AnalysisOptions__LmStudio__MaxPromptNodes:-80}
       CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType: ${CodeGraph__AnalysisOptions__LmStudio__MaxRelationshipTargetsPerType:-8}
       CodeGraph__IndexingOptions__TrustedDotnetRepositories: ${CODEGRAPH_TRUSTED_DOTNET_REPOSITORIES:-}
+      CodeGraph__BranchOverlayOptions__TtlHours: ${CODEGRAPH_BRANCH_OVERLAY_TTL_HOURS:-72}
+      CodeGraph__BranchOverlayOptions__SweepIntervalMinutes: ${CODEGRAPH_BRANCH_OVERLAY_SWEEP_INTERVAL_MINUTES:-15}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}
@@ -172,6 +174,8 @@ services:
       CodeGraph__IndexingOptions__RustSemanticGroupMemoryLimitMb: ${CODEGRAPH_RUST_SEMANTIC_GROUP_MEMORY_LIMIT_MB:-8192}
       CodeGraph__IndexingOptions__RustSemanticBuildScripts: ${CODEGRAPH_RUST_SEMANTIC_BUILD_SCRIPTS:-false}
       CodeGraph__IndexingOptions__RustSemanticProcMacros: ${CODEGRAPH_RUST_SEMANTIC_PROC_MACROS:-false}
+      CodeGraph__BranchOverlayOptions__TtlHours: ${CODEGRAPH_BRANCH_OVERLAY_TTL_HOURS:-72}
+      CodeGraph__BranchOverlayOptions__SweepIntervalMinutes: ${CODEGRAPH_BRANCH_OVERLAY_SWEEP_INTERVAL_MINUTES:-15}
       CodeGraph__RabbitMqOptions__Host: ${CodeGraph__RabbitMqOptions__Host:-rabbitmq}
       CodeGraph__RabbitMqOptions__Username: ${CodeGraph__RabbitMqOptions__Username:-guest}
       CodeGraph__RabbitMqOptions__Password: ${CodeGraph__RabbitMqOptions__Password:-guest}

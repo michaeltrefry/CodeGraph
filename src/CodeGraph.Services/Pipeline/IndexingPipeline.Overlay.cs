@@ -66,7 +66,7 @@ public partial class IndexingPipeline
         CreateStructuralNodes(projectName, rootPath, files, csprojFiles, buffer);
         if (files.Count > 0)
             await ExtractFilesAsync(
-                files, rootPath, context, buffer, failOnExtractionError: false, rustSourceOwners: [], ct);
+                files, rootPath, context, buffer, failOnExtractionError: false, OverlayRustSourceOwners, ct);
 
         ResolveImports(buffer);
         await ResolveCallsAsync(
@@ -90,6 +90,22 @@ public partial class IndexingPipeline
 
         return new BranchOverlaySlice(nodes, edges);
     }
+
+    /// <summary>
+    /// Overlays never run the Rust semantic (SCIP) pass, so every overlay <c>.rs</c> node comes from
+    /// the tree-sitter Rust extractor. It is marked like a default-branch fallback node
+    /// (<c>confidence=low</c>, <c>extractionSource=tree-sitter-fallback</c>) with
+    /// <c>fallbackReason=overlay</c>, so answers at the SHA say they include low-confidence nodes.
+    /// </summary>
+    private static readonly IReadOnlyList<RustSourceOwner> OverlayRustSourceOwners =
+    [
+        new RustSourceOwner("", new RustSemanticFallback(
+            Manifest: "",
+            Crates: [],
+            FailureCode: GraphNodeConfidence.OverlayFallbackReason,
+            DetailCode: null,
+            Message: "Branch overlays index Rust with tree-sitter; the semantic (SCIP) pass is not run."))
+    ];
 }
 
 public sealed record BranchOverlaySlice(

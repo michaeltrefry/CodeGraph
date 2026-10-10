@@ -17,6 +17,13 @@ public record ImpactReport(
     /// pinned repository, the default-branch index commit for every other repository.
     /// </summary>
     public IReadOnlyDictionary<string, string?>? Commits { get; init; }
+
+    /// <summary>
+    /// For an answer at a branch-overlay commit: default-branch edges from unchanged files into
+    /// files changed or deleted at that commit that could not be mapped to the branch version of
+    /// their target, and so are not in this report. Null for default-branch answers.
+    /// </summary>
+    public int? UnmappedInboundEdges { get; init; }
 }
 
 public record AffectedNode(

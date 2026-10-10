@@ -346,6 +346,11 @@ public sealed class ConsolidatedMcpServer
                 envelope["commitSha"] = JsonNode.Parse(commitSha.GetRawText());
             if (structured.TryGetProperty("notIndexed", out var notIndexed))
                 envelope["notIndexed"] = JsonNode.Parse(notIndexed.GetRawText());
+            foreach (var name in new[] { "lowConfidence", "lowConfidenceCount", "unmappedInboundEdges" })
+            {
+                if (structured.TryGetProperty(name, out var value))
+                    envelope[name] = JsonNode.Parse(value.GetRawText());
+            }
         }
 
         envelope["result"] = ToResultNode(CommitAnswer.TextOf(native));
