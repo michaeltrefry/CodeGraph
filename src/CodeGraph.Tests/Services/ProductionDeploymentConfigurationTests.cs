@@ -126,6 +126,42 @@ public sealed class ProductionDeploymentConfigurationTests
     }
 
     [Fact]
+    public void DeployRunsOnlyAfterCiSucceedsOnMainAndDeploysTheTestedCommit()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var ci = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n");
+        var workflow = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "deploy.yml")).Replace("\r\n", "\n");
+
+        // CI runs on PRs and on every push to main, without cancelling main runs.
+        ci.ShouldStartWith("name: CI\n");
+        ci.ShouldContain("on:\n  pull_request:\n");
+        ci.ShouldContain("\n  push:\n    branches:\n      - main\n");
+        ci.ShouldContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+
+        // Deploy is triggered by a completed CI run on main (or manually), never by a raw push.
+        var on = workflow[workflow.IndexOf("\non:\n", StringComparison.Ordinal)..workflow.IndexOf("\npermissions:", StringComparison.Ordinal)];
+        on.ShouldContain("  workflow_dispatch:\n");
+        on.ShouldContain("  workflow_run:\n    workflows:\n      - CI\n    types:\n      - completed\n    branches:\n      - main\n");
+        on.ShouldNotContain("  push:");
+
+        // Publish (and therefore deploy, which needs it) runs only for a successful push-to-main CI run.
+        var publish = workflow[workflow.IndexOf("  publish:", StringComparison.Ordinal)..workflow.IndexOf("  deploy:", StringComparison.Ordinal)];
+        publish.ShouldContain("if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')");
+        workflow[workflow.IndexOf("  deploy:", StringComparison.Ordinal)..].ShouldContain("needs: publish");
+
+        // The tested commit is what is checked out, tagged, and deployed.
+        workflow.ShouldContain("DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}");
+        workflow.ShouldNotContain("${{ github.sha }}");
+        workflow.ShouldNotContain("${GITHUB_SHA}");
+        publish.ShouldContain("run: echo \"image-tag=${DEPLOY_SHA}\"");
+        var checkouts = LogicalShellLines(workflow).Count(line => line == "uses: actions/checkout@v4");
+        checkouts.ShouldBe(2);
+        workflow.Split("uses: actions/checkout@v4\n        with:\n          ref: ${{ env.DEPLOY_SHA }}").Length.ShouldBe(checkouts + 1);
+        foreach (var image in new[] { "api", "jobs", "indexer", "memory", "metrics", "web" })
+            publish.ShouldContain($"${{{{ env.IMAGE_PREFIX }}}}-{image}:${{{{ env.DEPLOY_SHA }}}}");
+    }
+
+    [Fact]
     public void DisabledDeployGateIsReportedAsSkippedWithoutFailing()
     {
         var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "deploy.yml"));

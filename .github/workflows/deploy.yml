@@ -1,8 +1,14 @@
 name: Deploy
 
+# Production deploys only a main commit whose CI run (push to main) succeeded. A failed or cancelled
+# CI run skips every job here. Manual dispatch deploys the dispatched ref's commit.
 on:
   workflow_dispatch:
-  push:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
     branches:
       - main
 
@@ -17,20 +23,25 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/codegraph
+  # workflow_run runs on the default branch's latest commit (github.sha); deploy the commit CI tested.
+  DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   publish:
     name: Publish Images
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     outputs:
       image-tag: ${{ steps.meta.outputs.image-tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Set image tag
         id: meta
-        run: echo "image-tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        run: echo "image-tag=${DEPLOY_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,7 +60,7 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-api:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-api:${{ env.DEPLOY_SHA }}
             ${{ env.IMAGE_PREFIX }}-api:latest
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
@@ -61,7 +72,7 @@ jobs:
           file: Dockerfile.jobs
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-jobs:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-jobs:${{ env.DEPLOY_SHA }}
             ${{ env.IMAGE_PREFIX }}-jobs:latest
           cache-from: type=gha,scope=jobs
           cache-to: type=gha,scope=jobs,mode=max
@@ -73,7 +84,7 @@ jobs:
           file: Dockerfile.indexer
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-indexer:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-indexer:${{ env.DEPLOY_SHA }}
             ${{ env.IMAGE_PREFIX }}-indexer:latest
           cache-from: type=gha,scope=indexer
           cache-to: type=gha,scope=indexer,mode=max
@@ -85,7 +96,7 @@ jobs:
           file: Dockerfile.memory
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-memory:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-memory:${{ env.DEPLOY_SHA }}
             ${{ env.IMAGE_PREFIX }}-memory:latest
           cache-from: type=gha,scope=memory
           cache-to: type=gha,scope=memory,mode=max
@@ -97,7 +108,7 @@ jobs:
           file: Dockerfile.metrics
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-metrics:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-metrics:${{ env.DEPLOY_SHA }}
             ${{ env.IMAGE_PREFIX }}-metrics:latest
           cache-from: type=gha,scope=metrics
           cache-to: type=gha,scope=metrics,mode=max
@@ -109,7 +120,7 @@ jobs:
           file: CodeGraphWeb/Dockerfile
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-web:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-web:${{ env.DEPLOY_SHA }}
             ${{ env.IMAGE_PREFIX }}-web:latest
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
@@ -141,6 +152,8 @@ jobs:
       - name: Checkout
         if: steps.deploy-gate.outputs.enabled == 'true'
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Validate deployment configuration
         if: steps.deploy-gate.outputs.enabled == 'true'

@@ -1,6 +1,6 @@
 # Production Deployment
 
-GitHub Actions publishes six images to GHCR on `main` and can deploy them to the public host:
+After the CI workflow succeeds for a push to `main`, GitHub Actions publishes six images to GHCR, tagged with the commit CI tested, and can deploy them to the public host. A failed CI run on `main` skips publishing and deployment:
 
 - `ghcr.io/<owner>/codegraph-api:<sha>`
 - `ghcr.io/<owner>/codegraph-jobs:<sha>`
