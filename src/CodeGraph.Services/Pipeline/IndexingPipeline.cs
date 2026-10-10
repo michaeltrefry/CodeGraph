@@ -323,13 +323,17 @@ public partial class IndexingPipeline
                     // low-confidence instead of failing the repository's index run.
                     var fallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex);
                     rustSemanticFallbacks.Add(fallback);
+                    // This structured warning plus repositories.properties.rustSemanticFallbacks
+                    // is the durable record for runs without an indexer_runs row (scheduled,
+                    // CI and ProcessRepository consumer-driven indexing).
                     _logger.LogWarning(ex,
-                        "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Manifest}; " +
+                        "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Project} {Manifest}; " +
                         "falling back to low-confidence tree-sitter extraction for crates {Crates}",
                         fallback.FailureCode,
                         fallback.DetailCode,
+                        projectName,
                         fallback.Manifest,
-                        string.Join(", ", fallback.Crates));
+                        fallback.Crates);
                 }
             }
         }
@@ -387,6 +391,10 @@ public partial class IndexingPipeline
 
         ApplyNodeCounts(languageStats, buffer.AllNodes);
         var detectedMetadata = SelectDominantMetadata(detectedMetadataCandidates, languageStats);
+        // A fallback implies a Cargo workspace; keep metadata non-null so the repository
+        // properties always carry the rustSemanticFallbacks record.
+        if (detectedMetadata is null && rustSemanticFallbacks.Count > 0)
+            detectedMetadata = new ProjectMetadata("Rust", "Cargo");
 
         // Phase 2 — Resolution
         stepSw.Restart();

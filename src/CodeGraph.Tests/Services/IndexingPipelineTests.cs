@@ -467,6 +467,79 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_ConsumerPathRustFallback_RecordsStructuredWarningAndRepositoryProperties()
+    {
+        // ProcessRepository (scheduled/CI) indexing: incremental, no IndexingRunDiagnostics and
+        // no indexer_runs row, so the log and repository properties are the only record.
+        var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-consumer-fallback");
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var logger = new RecordingLogger<IndexingPipeline>();
+            var pipeline = CreateRustFallbackPipeline(
+                store,
+                diagnostics: null,
+                new ThrowingRustAnalyzer(new RustSemanticIndexingException(
+                    "rust_semantic_command_timeout", "rust-analyzer timed out")),
+                logger);
+
+            await pipeline.IndexProjectAsync("RustConsumerFallback", rootPath, ct: CancellationToken.None);
+
+            var warning = logger.Entries.Single(entry =>
+                entry.Level == LogLevel.Warning && entry.Properties.ContainsKey("FailureCode"));
+            warning.Properties["FailureCode"].ShouldBe(RustSemanticFailureCategory.Timeout);
+            warning.Properties["DetailCode"].ShouldBe("rust_semantic_command_timeout");
+            warning.Properties["Project"].ShouldBe("RustConsumerFallback");
+            warning.Properties["Manifest"].ShouldBe("Cargo.toml");
+            ((IEnumerable<string>)warning.Properties["Crates"]!).ShouldBe(["alpha", "beta"]);
+
+            var repository = await store.GetRepositoryByName("RustConsumerFallback");
+            repository.ShouldNotBeNull();
+            repository.Properties.ShouldNotBeNull();
+            var recorded = ((JsonElement)repository.Properties["rustSemanticFallbacks"]).EnumerateArray().Single();
+            recorded.GetProperty("failureCode").GetString().ShouldBe(RustSemanticFailureCategory.Timeout);
+            recorded.GetProperty("crates").EnumerateArray().Select(crate => crate.GetString())
+                .ShouldBe(["alpha", "beta"]);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_RustFallbackWithoutOtherMetadata_StillRecordsRepositoryProperties()
+    {
+        // No .rs sources and no Cargo manifest extractor: nothing else yields project metadata,
+        // yet the fallback record must still reach repositories.properties.
+        var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-nometadata-fallback");
+        try
+        {
+            foreach (var source in Directory.GetFiles(rootPath, "*.rs", SearchOption.AllDirectories))
+                File.Delete(source);
+            var store = new InMemoryGraphStore();
+            var pipeline = CreateRustFallbackPipeline(
+                store,
+                diagnostics: null,
+                new ThrowingRustAnalyzer(new RustSemanticIndexingException(
+                    "rust_semantic_command_timeout", "rust-analyzer timed out")),
+                includeCargoManifestExtractor: false);
+
+            await pipeline.IndexProjectAsync("RustNoMetadataFallback", rootPath, ct: CancellationToken.None);
+
+            var repository = await store.GetRepositoryByName("RustNoMetadataFallback");
+            repository.ShouldNotBeNull();
+            repository.Properties.ShouldNotBeNull();
+            var recorded = ((JsonElement)repository.Properties["rustSemanticFallbacks"]).EnumerateArray().Single();
+            recorded.GetProperty("failureCode").GetString().ShouldBe(RustSemanticFailureCategory.Timeout);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_GenericRustAnalyzerFailure_FallsBackWithOtherFailureCode()
     {
         var rootPath = await CreateRustWorkspaceFixtureAsync("codegraph-rust-generic-fallback");
@@ -559,17 +632,19 @@ public class IndexingPipelineTests
 
     private static IndexingPipeline CreateRustFallbackPipeline(
         InMemoryGraphStore store,
-        IndexingRunDiagnostics diagnostics,
-        IRustAnalyzer rustAnalyzer) =>
+        IndexingRunDiagnostics? diagnostics,
+        IRustAnalyzer rustAnalyzer,
+        ILogger<IndexingPipeline>? logger = null,
+        bool includeCargoManifestExtractor = true) =>
         new(
             store,
             [new CodeGraph.Extractors.TreeSitter.TreeSitterExtractor(
                 NullLogger<CodeGraph.Extractors.TreeSitter.TreeSitterExtractor>.Instance)],
             Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
             new LocalFileSystem(),
-            NullLogger<IndexingPipeline>.Instance,
+            logger ?? NullLogger<IndexingPipeline>.Instance,
             rustAnalyzer: rustAnalyzer,
-            cargoManifestExtractor: new CargoManifestExtractor(),
+            cargoManifestExtractor: includeCargoManifestExtractor ? new CargoManifestExtractor() : null,
             diagnostics: diagnostics);
 
     private static void AssertLowConfidenceTreeSitterNodes(
@@ -1456,6 +1531,8 @@ public class IndexingPipelineTests
     {
         public List<string> Messages { get; } = [];
 
+        public List<(LogLevel Level, IReadOnlyDictionary<string, object?> Properties)> Entries { get; } = [];
+
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -1464,8 +1541,13 @@ public class IndexingPipelineTests
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter) =>
+            Func<TState, Exception?, string> formatter)
+        {
             Messages.Add(formatter(state, exception));
+            Entries.Add((logLevel, state is IEnumerable<KeyValuePair<string, object?>> pairs
+                ? pairs.ToDictionary(pair => pair.Key, pair => pair.Value)
+                : new Dictionary<string, object?>()));
+        }
     }
 
     private sealed class NullScope : IDisposable

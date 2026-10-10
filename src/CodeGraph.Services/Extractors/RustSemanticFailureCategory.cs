@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace CodeGraph.Services.Extractors;
 
 /// <summary>
@@ -12,21 +14,34 @@ public static class RustSemanticFailureCategory
     public const string Toolchain = "toolchain";
     public const string Other = "other";
 
+    // Only these failure codes carry a subprocess stderr tail in their message
+    // ("<command> exited with N: <stderr>"); other messages may embed repository paths.
+    private static readonly HashSet<string> StderrFailureCodes =
+    [
+        "rust_analyzer_scip_failed",
+        "scip_print_failed"
+    ];
+
+    private static readonly Regex ExitedWithPrefix = new(
+        @"exited with -?\d+:",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    // Specific phrases rather than bare words: "rustc"/"toolchain"/"build.rs" also appear in
+    // repository paths and rust-analyzer panic backtraces (ra_ap_rustc_* crates).
     private static readonly string[] BuildScriptMarkers =
     [
+        "failed to run custom build command",
         "build script",
-        "custom build command",
-        "build.rs",
         "build-script-build"
     ];
 
     private static readonly string[] ToolchainMarkers =
     [
-        "toolchain",
         "rustup",
+        "toolchain '",
         "sysroot",
-        "rust-src",
-        "rustc"
+        "can't load standard library",
+        "rust-src"
     ];
 
     public static string Classify(Exception failure)
@@ -43,21 +58,42 @@ public static class RustSemanticFailureCategory
                     return Toolchain;
             }
 
+            // Wrapped failures (e.g. rust_semantic_import_failed) carry the real cause inner.
+            if (semantic.InnerException is { } inner)
+            {
+                var innerCategory = ClassifyByType(inner);
+                if (innerCategory != Other)
+                    return innerCategory;
+            }
+
             // rust-analyzer reports workspace-loading failures (build scripts, missing
             // toolchain components) only through its stderr tail in the message.
-            if (ContainsAny(semantic.Message, BuildScriptMarkers))
-                return BuildScript;
-            if (ContainsAny(semantic.Message, ToolchainMarkers))
-                return Toolchain;
+            if (StderrFailureCodes.Contains(semantic.FailureCode))
+            {
+                var stderr = ExtractStderr(semantic.Message);
+                if (ContainsAny(stderr, BuildScriptMarkers))
+                    return BuildScript;
+                if (ContainsAny(stderr, ToolchainMarkers))
+                    return Toolchain;
+            }
+
             return Other;
         }
 
-        return failure switch
-        {
-            TimeoutException or OperationCanceledException => Timeout,
-            OutOfMemoryException or InsufficientExecutionStackException => ResourceExhausted,
-            _ => Other
-        };
+        return ClassifyByType(failure);
+    }
+
+    private static string ClassifyByType(Exception failure) => failure switch
+    {
+        TimeoutException or OperationCanceledException => Timeout,
+        OutOfMemoryException or InsufficientExecutionStackException => ResourceExhausted,
+        _ => Other
+    };
+
+    private static string ExtractStderr(string message)
+    {
+        var match = ExitedWithPrefix.Match(message);
+        return match.Success ? message[(match.Index + match.Length)..] : string.Empty;
     }
 
     private static bool ContainsAny(string text, IEnumerable<string> markers) =>

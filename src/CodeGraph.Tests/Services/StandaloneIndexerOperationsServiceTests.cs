@@ -426,6 +426,26 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
+    public void DegradationDetail_HugeFallbackMessage_FitsIndexerRunErrorColumn()
+    {
+        // 70,000 two-byte characters: ~140 KB of UTF-8, well over the 65,535-byte TEXT column.
+        var hugeMessage = new string('\u00e9', 70_000);
+        var detail = IndexerRunBackgroundRunner.SerializeDegradationDetail(
+        [
+            new RustSemanticFallback("Cargo.toml", ["alpha", "beta"], "other", "rust_analyzer_scip_failed", hugeMessage)
+        ]);
+
+        System.Text.Encoding.UTF8.GetByteCount(detail)
+            .ShouldBeLessThanOrEqualTo(IndexerRunBackgroundRunner.MaxDegradationDetailBytes);
+        using var parsed = JsonDocument.Parse(detail);
+        var fallback = parsed.RootElement.EnumerateArray().Single();
+        fallback.GetProperty("failureCode").GetString().ShouldBe("other");
+        fallback.GetProperty("crates").EnumerateArray().Select(crate => crate.GetString())
+            .ShouldBe(["alpha", "beta"]);
+        fallback.GetProperty("message").GetString()!.ShouldStartWith(new string('\u00e9', 100));
+    }
+
+    [Fact]
     public async Task DurableWorker_RetriesOnlySafeOperationsAndExposesAttemptState()
     {
         var runs = new FakeIndexerRunStore();
