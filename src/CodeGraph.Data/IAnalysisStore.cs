@@ -41,4 +41,35 @@ public interface IAnalysisStore
     Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project);
     Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project);
     Task<IReadOnlyList<EdgeEntity>> GetEdgesForNodesAsync(IReadOnlyList<long> nodeIds);
+
+    /// <summary>
+    /// Edges whose source or target node belongs to <paramref name="project"/>, without their
+    /// properties (<see cref="EdgeEntity.Properties"/> is null). Same edge set as
+    /// <see cref="GetEdgesForNodesAsync"/> over every node of the project, at a fraction of the memory.
+    /// </summary>
+    async Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForProjectAsync(string project)
+    {
+        var nodeIds = (await GetAllNodesByProjectAsync(project)).Select(node => node.Id).ToList();
+        return (await GetEdgesForNodesAsync(nodeIds))
+            .Select(edge => new EdgeEntity
+            {
+                Id = edge.Id, Project = edge.Project, SourceId = edge.SourceId, TargetId = edge.TargetId, Type = edge.Type
+            })
+            .ToList();
+    }
+
+    /// <summary>
+    /// The project's File nodes plus every node flagged do-not-trust, without properties
+    /// (<see cref="NodeEntity.Properties"/> is null) — what vitals needs, not the whole graph.
+    /// </summary>
+    async Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string project) =>
+        (await GetAllNodesByProjectAsync(project))
+            .Where(node => node.Label == "File" || node.DoNotTrust)
+            .Select(node => new NodeEntity
+            {
+                Id = node.Id, Project = node.Project, DotnetProject = node.DotnetProject, Label = node.Label,
+                Name = node.Name, QualifiedName = node.QualifiedName, FilePath = node.FilePath,
+                StartLine = node.StartLine, EndLine = node.EndLine, DoNotTrust = node.DoNotTrust
+            })
+            .ToList();
 }

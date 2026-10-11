@@ -986,11 +986,10 @@ public partial class MySqlGraphStore(
 
     public async Task DeleteCrossRepoEdgesForProjectAsync(string project)
     {
-        var edges = await db.CrossRepoEdges
+        // Delete server-side; tracking every cross-repo edge of a large project just to remove it is wasteful.
+        await db.CrossRepoEdges
             .Where(e => e.SourceProject == project || e.TargetProject == project)
-            .ToListAsync();
-        db.CrossRepoEdges.RemoveRange(edges);
-        await db.SaveChangesAsync();
+            .ExecuteDeleteAsync();
     }
 
     public async Task DeleteAnalysisDataForProjectAsync(string project)
@@ -1078,6 +1077,12 @@ public partial class MySqlGraphStore(
 
     public Task<IReadOnlyList<EdgeEntity>> GetEdgesForNodesAsync(IReadOnlyList<long> nodeIds)
         => analysisStore.GetEdgesForNodesAsync(nodeIds);
+
+    public Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForProjectAsync(string project)
+        => analysisStore.GetEdgeEndpointsForProjectAsync(project);
+
+    public Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string project)
+        => analysisStore.GetFileAndUntrustedNodesAsync(project);
 
     public Task UpsertFileMetricsBatchAsync(string project, IReadOnlyList<FileMetricsEntity> metrics)
         => metricsStore.UpsertFileMetricsBatchAsync(project, metrics);

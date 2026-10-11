@@ -54,9 +54,9 @@ public partial class BatchAnalysisService(
             throw new InvalidOperationException(
                 $"No nodes found for repo '{repoName}'. Index the repo first.");
 
-        // Fetch edges by node IDs (not project) so cross-project edges within the repo are included
-        var nodeIds = allNodes.Select(n => n.Id).ToList();
-        var allEdges = await store.GetEdgesForNodesAsync(nodeIds);
+        // Every edge touching one of the repo's nodes (so cross-project edges within the repo are
+        // included). Prompts only use endpoints and type, so edge properties are not loaded.
+        var allEdges = await store.GetEdgeEndpointsForProjectAsync(repoName);
 
         // Group nodes by DotnetProject — one batch request per .csproj
         var nodesByProject = allNodes
@@ -161,13 +161,24 @@ public partial class BatchAnalysisService(
         logger.LogInformation("Batch {ProviderBatchId} submitted via {Provider} for {Repo} ({Count} projects, {Mode})",
             providerBatchId, provider.ProviderName, repoName, batchRequests.Count, executionMode);
 
-        // Schedule a delayed check for batch completion
-        await messageBus.PublishAsync(new AnalysisBatchSubmitted
+        // Ask for an immediate completion check. The batch is already recorded as 'submitted', and
+        // the periodic ProcessBatchAnalysis job sweeps every submitted batch, so a failed publish
+        // only delays processing — it must not report the (successful) submission as failed.
+        try
         {
-            RepoName = repoName,
-            ProviderBatchId = providerBatchId,
-            RequestCount = batchRequests.Count
-        });
+            await messageBus.PublishAsync(new AnalysisBatchSubmitted
+            {
+                RepoName = repoName,
+                ProviderBatchId = providerBatchId,
+                RequestCount = batchRequests.Count
+            });
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not publish the completion check for batch {ProviderBatchId} ({Repo}); the periodic batch-analysis job will process it",
+                providerBatchId, repoName);
+        }
     }
 
     public async Task ProcessCompletedBatchesAsync(string? repo = null, CancellationToken ct = default)

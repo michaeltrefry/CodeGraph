@@ -76,16 +76,51 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     // ── IGraphStore implementation ──────────────────────────────────────
 
-    public Task<IReadOnlyList<GraphNode>> FindAllNodesByLabelAsync(NodeLabel label, int limit = 50000) =>
+    public virtual Task<IReadOnlyList<GraphNode>> FindAllNodesByLabelAsync(NodeLabel label, int limit = 50000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n => n.Label == label).Take(limit).ToList());
 
     public Task<Dictionary<NodeLabel, int>> GetNodeCountsByLabelAsync() =>
         Task.FromResult(_nodes.GroupBy(n => n.Label).ToDictionary(g => g.Key, g => g.Count()));
 
-    public Task<IReadOnlyList<GraphEdge>> FindAllEdgesByTypeAsync(EdgeType type) =>
+    public virtual Task<IReadOnlyList<GraphEdge>> FindAllEdgesByTypeAsync(EdgeType type) =>
         Task.FromResult<IReadOnlyList<GraphEdge>>(
             _edges.Where(e => e.Type == type).ToList());
+
+    public virtual async IAsyncEnumerable<LinkNodeRow> StreamLinkNodesAsync(
+        LinkNodeQuery query,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        foreach (var node in _nodes.ToList())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (query.Labels.Contains(node.Label) &&
+                CrossRepoLinkProjection.Matches(node.Properties, query.PropertyEquals))
+            {
+                await Task.Yield();
+                yield return CrossRepoLinkProjection.ToRow(node, query);
+            }
+        }
+    }
+
+    public virtual async IAsyncEnumerable<LinkEdgeRow> StreamLinkEdgesAsync(
+        LinkEdgeQuery query,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var nodesById = _nodes.ToDictionary(node => node.Id);
+        foreach (var edge in _edges.ToList())
+        {
+            ct.ThrowIfCancellationRequested();
+            var target = nodesById.GetValueOrDefault(edge.TargetId);
+            if (query.Types.Contains(edge.Type) &&
+                nodesById.TryGetValue(edge.SourceId, out var source) &&
+                CrossRepoLinkProjection.TargetMatches(target, query))
+            {
+                await Task.Yield();
+                yield return CrossRepoLinkProjection.ToRow(edge, source, target, query);
+            }
+        }
+    }
 
     public Task<Dictionary<EdgeType, int>> GetEdgeCountsByTypeAsync() =>
         Task.FromResult(_edges.GroupBy(e => e.Type).ToDictionary(g => g.Key, g => g.Count()));
@@ -305,7 +340,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<GraphNode?> FindNodeByIdAsync(long id) =>
         Task.FromResult(_nodes.FirstOrDefault(n => n.Id == id));
 
-    public Task<Dictionary<long, GraphNode>> FindNodesByIdBatchAsync(IReadOnlyList<long> ids)
+    public virtual Task<Dictionary<long, GraphNode>> FindNodesByIdBatchAsync(IReadOnlyList<long> ids)
     {
         var idSet = ids.ToHashSet();
         var result = _nodes.Where(n => idSet.Contains(n.Id))
@@ -313,7 +348,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(result);
     }
 
-    public Task<Dictionary<string, int>> GetNodeCountsByLabelForProjectAsync(string project) =>
+    public virtual Task<Dictionary<string, int>> GetNodeCountsByLabelForProjectAsync(string project) =>
         Task.FromResult(
             _nodes.Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(n => n.Label.ToString())
@@ -974,7 +1009,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt));
     }
 
-    public Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId)
+    public virtual Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId)
     {
         var batch = _batches
             .Where(b => string.Equals(b.ProviderBatchId, providerBatchId, StringComparison.Ordinal))
@@ -1089,7 +1124,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null)
+    public virtual Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null)
     {
         var results = _fileMetrics
             .Where(m => m.Project == project && (dotnetProject is null || m.DotnetProject == dotnetProject))
@@ -1123,7 +1158,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project) =>
+    public virtual Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project) =>
         Task.FromResult<IReadOnlyList<ProjectHealthSummaryEntity>>(
             _healthSummaries.Where(s => s.Project == project).ToList());
 
@@ -1135,7 +1170,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     private readonly List<ProjectHealthAnalysisEntity> _healthAnalyses = new();
 
-    public Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis)
+    public virtual Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis)
     {
         _healthAnalyses.RemoveAll(a =>
             a.Project == analysis.Project && a.DotnetProject == analysis.DotnetProject);

@@ -44,7 +44,9 @@ public class VitalsAnalyzer(
         var sw = Stopwatch.StartNew();
 
         // 1. Get indexed file nodes from store to know which files & their DotnetProject mapping
-        var allNodes = await store.GetAllNodesByProjectAsync(projectName);
+        // Only File nodes and do-not-trust flags are needed; never load the whole graph (with
+        // node properties) of a large repository for this.
+        var allNodes = await store.GetFileAndUntrustedNodesAsync(projectName);
         var fileNodes = allNodes.Where(n => n.Label == "File").ToList();
 
         if (fileNodes.Count == 0)
@@ -244,41 +246,60 @@ public class VitalsAnalyzer(
         var projectSummaries = healthSummaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
         var repoSummary = healthSummaries.FirstOrDefault(s => string.IsNullOrEmpty(s.DotnetProject));
 
-        // Run per-project analyses in parallel — each is an independent Claude API call
-        var projectTasks = projectSummaries.Select(async summary =>
+        // The store shares the caller's scoped DbContext, which allows one operation at a time
+        // (sc-25698: concurrent GetFileMetricsAsync/UpsertProjectHealthAnalysisAsync calls here threw
+        // "A second operation was started on this context instance"). Read the metrics sequentially,
+        // run only the independent model calls in parallel, then persist sequentially.
+        var projectPrompts = new List<(ProjectHealthSummaryEntity Summary, string Prompt)>();
+        foreach (var summary in projectSummaries)
         {
             var metrics = await store.GetFileMetricsAsync(projectName, summary.DotnetProject);
-            if (metrics.Count == 0) return;
+            if (metrics.Count == 0) continue;
 
-            var prompt = BuildHealthPrompt(projectName, summary.DotnetProject!, summary, metrics, securitySummary);
+            projectPrompts.Add((summary,
+                BuildHealthPrompt(projectName, summary.DotnetProject!, summary, metrics, securitySummary)));
+        }
+
+        var projectResponses = await Task.WhenAll(projectPrompts.Select(async item =>
+        {
+            try
+            {
+                return (item.Summary, Response: await CallAnalysisAsync(item.Prompt, ct));
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Health analysis failed for {Project}/{Dp}",
+                    projectName, item.Summary.DotnetProject);
+                return (item.Summary, Response: (AnalysisTextResponse?)null);
+            }
+        }));
+
+        foreach (var (summary, response) in projectResponses)
+        {
+            if (response is null || string.IsNullOrWhiteSpace(response.Text))
+                continue;
 
             try
             {
-                var response = await CallAnalysisAsync(prompt, ct);
-                if (response is not null && !string.IsNullOrWhiteSpace(response.Text))
+                await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
                 {
-                    await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
-                    {
-                        Project = projectName,
-                        DotnetProject = summary.DotnetProject,
-                        Analysis = response.Text,
-                        Confidence = summary.OverallHealth < 4.0 ? "high" : "medium",
-                        ModelUsed = response.ModelUsed,
-                        CreatedAt = now,
-                        UpdatedAt = now
-                    });
-                    logger.LogInformation("Health analysis stored for {Project}/{Dp}",
-                        projectName, summary.DotnetProject);
-                }
+                    Project = projectName,
+                    DotnetProject = summary.DotnetProject,
+                    Analysis = response.Text,
+                    Confidence = summary.OverallHealth < 4.0 ? "high" : "medium",
+                    ModelUsed = response.ModelUsed,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+                logger.LogInformation("Health analysis stored for {Project}/{Dp}",
+                    projectName, summary.DotnetProject);
             }
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Health analysis failed for {Project}/{Dp}",
                     projectName, summary.DotnetProject);
             }
-        }).ToList();
-
-        await Task.WhenAll(projectTasks);
+        }
 
         // Repo-level synthesis
         if (repoSummary is not null)
