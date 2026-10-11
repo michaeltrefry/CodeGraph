@@ -1,6 +1,8 @@
 using System.Text;
 using CodeGraph.Models;
 using Dapper;
+using Microsoft.Extensions.Logging;
+using MySqlConnector;
 
 namespace CodeGraph.Data.MariaDb;
 
@@ -33,22 +35,17 @@ public partial class MySqlGraphStore
                   AND target.file_path IN @Paths
                   AND NOT (source.project = @Project AND source.file_path IN @Paths)
                 """, new { Project = project, Paths = pathVariants }, transaction,
-                cancellationToken: ct))).ToList();
+                commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
 
-            await conn.ExecuteAsync(new CommandDefinition("""
-                DELETE na FROM node_analysis na
-                INNER JOIN nodes n ON n.id = na.node_id
-                WHERE n.project = @Project AND n.file_path IN @Paths
-                """, new { Project = project, Paths = pathVariants }, transaction,
-                cancellationToken: ct));
-            await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM nodes WHERE project = @Project AND file_path IN @Paths",
+            var replacedNodeIds = (await conn.QueryAsync<long>(new CommandDefinition(
+                "SELECT id FROM nodes WHERE project = @Project AND file_path IN @Paths",
                 new { Project = project, Paths = pathVariants }, transaction,
-                cancellationToken: ct));
+                commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
+            await DeleteNodesInBatchesAsync(conn, transaction, replacedNodeIds, ct);
             await conn.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM file_hashes WHERE project = @Project AND rel_path IN @Paths",
                 new { Project = project, Paths = pathVariants }, transaction,
-                cancellationToken: ct));
+                commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
             var candidates = nodes
                 .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.Ordinal)
@@ -69,7 +66,7 @@ public partial class MySqlGraphStore
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
                     "SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
                     new { Project = project, QualifiedNames = batch.ToList() }, transaction,
-                    cancellationToken: ct));
+                    commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 foreach (var row in rows)
                     qnToId[row.QualifiedName] = row.Id;
             }
@@ -104,7 +101,7 @@ public partial class MySqlGraphStore
                 }
 
                 await conn.ExecuteAsync(new CommandDefinition(
-                    sql.ToString(), parameters, transaction, cancellationToken: ct));
+                    sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             foreach (var batch in nodesToInsert
@@ -115,7 +112,7 @@ public partial class MySqlGraphStore
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
                     "SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
                     new { Project = project, QualifiedNames = batch.ToList() }, transaction,
-                    cancellationToken: ct));
+                    commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 foreach (var row in rows)
                     qnToId[row.QualifiedName] = row.Id;
             }
@@ -156,7 +153,7 @@ public partial class MySqlGraphStore
                 }
                 sql.AppendLine("ON DUPLICATE KEY UPDATE properties = VALUES(properties)");
                 await conn.ExecuteAsync(new CommandDefinition(
-                    sql.ToString(), parameters, transaction, cancellationToken: ct));
+                    sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             foreach (var batch in fileHashes.ToArray().Chunk(options.BatchSize))
@@ -174,7 +171,7 @@ public partial class MySqlGraphStore
                 }
                 sql.Append(" ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash)");
                 await conn.ExecuteAsync(new CommandDefinition(
-                    sql.ToString(), parameters, transaction, cancellationToken: ct));
+                    sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             await transaction.CommitAsync(ct);
@@ -182,7 +179,7 @@ public partial class MySqlGraphStore
         }
         catch
         {
-            await transaction.RollbackAsync(CancellationToken.None);
+            await TryRollbackAsync(transaction, project);
             throw;
         }
     }
@@ -236,20 +233,15 @@ public partial class MySqlGraphStore
                 repository.Properties,
                 CreatedAt = repository.CreatedAt == default ? now : repository.CreatedAt,
                 UpdatedAt = now
-            }, transaction, cancellationToken: ct));
+            }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
-            await conn.ExecuteAsync(new CommandDefinition("""
-                DELETE na FROM node_analysis na
-                INNER JOIN nodes n ON n.id = na.node_id
-                WHERE n.project = @Project
-                """, new { Project = project }, transaction, cancellationToken: ct));
-
-            await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM nodes WHERE project = @Project",
-                new { Project = project }, transaction, cancellationToken: ct));
+            var replacedNodeIds = (await conn.QueryAsync<long>(new CommandDefinition(
+                "SELECT id FROM nodes WHERE project = @Project",
+                new { Project = project }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
+            await DeleteNodesInBatchesAsync(conn, transaction, replacedNodeIds, ct);
             await conn.ExecuteAsync(new CommandDefinition(
                 "DELETE FROM file_hashes WHERE project = @Project",
-                new { Project = project }, transaction, cancellationToken: ct));
+                new { Project = project }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
             var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.Ordinal);
             foreach (var batch in nodes.Chunk(options.BatchSize))
@@ -280,7 +272,7 @@ public partial class MySqlGraphStore
                 }
 
                 await conn.ExecuteAsync(new CommandDefinition(
-                    sql.ToString(), parameters, transaction, cancellationToken: ct));
+                    sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
                 var storedNames = batch
                     .Select(node => Truncate(node.QualifiedName, 1000))
@@ -288,7 +280,7 @@ public partial class MySqlGraphStore
                     .ToList();
                 var rows = await conn.QueryAsync<(long id, string qualified_name)>(new CommandDefinition(
                     "SELECT id, qualified_name FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
-                    new { Project = project, QualifiedNames = storedNames }, transaction, cancellationToken: ct));
+                    new { Project = project, QualifiedNames = storedNames }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 var originalByStoredName = batch
                     .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.Ordinal)
                     .ToDictionary(group => group.Key, group => group.First().QualifiedName, StringComparer.Ordinal);
@@ -323,7 +315,7 @@ public partial class MySqlGraphStore
                 }
 
                 await conn.ExecuteAsync(new CommandDefinition(
-                    sql.ToString(), parameters, transaction, cancellationToken: ct));
+                    sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             foreach (var batch in fileHashes.ToArray().Chunk(options.BatchSize))
@@ -345,20 +337,25 @@ public partial class MySqlGraphStore
                 }
 
                 await conn.ExecuteAsync(new CommandDefinition(
-                    sql.ToString(), parameters, transaction, cancellationToken: ct));
+                    sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             if (syncState is not null)
             {
                 await conn.ExecuteAsync(new CommandDefinition("""
-                    INSERT INTO sync_state (project, last_sync_at, last_commit_sha, status, error_message)
-                    VALUES (@Project, @LastSyncAt, @LastCommitSha, @Status, @ErrorMessage)
+                    INSERT INTO sync_state (project, last_sync_at, last_commit_sha, status, error_message,
+                                            failed_commit_sha, consecutive_failures, last_failure_at)
+                    VALUES (@Project, @LastSyncAt, @LastCommitSha, @Status, @ErrorMessage,
+                            @FailedCommitSha, @ConsecutiveFailures, @LastFailureAt)
                     ON DUPLICATE KEY UPDATE
                         last_sync_at = VALUES(last_sync_at),
                         last_commit_sha = COALESCE(VALUES(last_commit_sha), last_commit_sha),
                         status = VALUES(status),
-                        error_message = VALUES(error_message)
-                    """, syncState, transaction, cancellationToken: ct));
+                        error_message = VALUES(error_message),
+                        failed_commit_sha = VALUES(failed_commit_sha),
+                        consecutive_failures = VALUES(consecutive_failures),
+                        last_failure_at = VALUES(last_failure_at)
+                    """, syncState, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             await transaction.CommitAsync(ct);
@@ -366,7 +363,7 @@ public partial class MySqlGraphStore
         }
         catch
         {
-            await transaction.RollbackAsync(CancellationToken.None);
+            await TryRollbackAsync(transaction, project);
             throw;
         }
     }
@@ -390,21 +387,74 @@ public partial class MySqlGraphStore
                     DELETE na FROM node_analysis na
                     INNER JOIN nodes n ON n.id = na.node_id
                     WHERE n.project = @Project AND n.file_path IN @Paths
-                    """, new { Project = project, Paths = paths }, transaction, cancellationToken: ct));
+                    """, new { Project = project, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 await conn.ExecuteAsync(new CommandDefinition(
                     "DELETE FROM nodes WHERE project = @Project AND file_path IN @Paths",
-                    new { Project = project, Paths = paths }, transaction, cancellationToken: ct));
+                    new { Project = project, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 await conn.ExecuteAsync(new CommandDefinition(
                     "DELETE FROM file_hashes WHERE project = @Project AND rel_path IN @Paths",
-                    new { Project = project, Paths = paths }, transaction, cancellationToken: ct));
+                    new { Project = project, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             await transaction.CommitAsync(ct);
         }
         catch
         {
-            await transaction.RollbackAsync(CancellationToken.None);
+            await TryRollbackAsync(transaction, project);
             throw;
+        }
+    }
+
+    private int GraphWriteTimeout => Math.Max(0, options.GraphWriteCommandTimeoutSeconds);
+
+    /// <summary>
+    /// Deletes nodes with their analysis rows and edges a bounded batch at a time. One statement
+    /// over a large repository's slice cascaded to hundreds of thousands of edges and ran for
+    /// minutes; batches keep each statement short and let cancellation take effect between them.
+    /// Deleting the edges explicitly before the nodes (rather than through ON DELETE CASCADE) is
+    /// ~40% faster for a 130k-node / 900k-edge slice; anything still referencing the nodes (e.g.
+    /// cross-repository rows) continues to cascade.
+    /// </summary>
+    private async Task DeleteNodesInBatchesAsync(
+        MySqlConnection conn,
+        MySqlTransaction transaction,
+        IReadOnlyList<long> nodeIds,
+        CancellationToken ct)
+    {
+        foreach (var batch in nodeIds.Order().Chunk(Math.Max(1, options.GraphDeleteBatchSize)))
+        {
+            ct.ThrowIfCancellationRequested();
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM node_analysis WHERE node_id IN @Ids",
+                new { Ids = batch }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM edges WHERE source_id IN @Ids",
+                new { Ids = batch }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM edges WHERE target_id IN @Ids",
+                new { Ids = batch }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM nodes WHERE id IN @Ids",
+                new { Ids = batch }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+        }
+    }
+
+    /// <summary>
+    /// Rolls back after a failed snapshot write without masking the failure: a command timeout or
+    /// network error leaves the connection Broken, and a throwing rollback would otherwise replace
+    /// the real cause with "Connection must be Open; current state is Broken".
+    /// </summary>
+    private async Task TryRollbackAsync(MySqlTransaction transaction, string project)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        catch (Exception rollbackException)
+        {
+            logger.LogWarning(rollbackException,
+                "Rollback of the graph write for {Project} failed; the server discards the uncommitted transaction with the connection",
+                project);
         }
     }
 

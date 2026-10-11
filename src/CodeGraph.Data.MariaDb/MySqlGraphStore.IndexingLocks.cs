@@ -8,6 +8,8 @@ namespace CodeGraph.Data.MariaDb;
 
 public partial class MySqlGraphStore
 {
+    private const int IndexingLockWaitSeconds = 600;
+
     public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
         string project,
         CancellationToken ct = default)
@@ -19,8 +21,11 @@ public partial class MySqlGraphStore
         try
         {
             var acquired = await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
-                "SELECT GET_LOCK(@LockName, 600)",
+                $"SELECT GET_LOCK(@LockName, {IndexingLockWaitSeconds})",
                 new { LockName = lockName },
+                // Outlast the server-side wait so contention reports 0 (TimeoutException below)
+                // rather than MySqlConnector's 30 s default command timeout killing the wait early.
+                commandTimeout: IndexingLockWaitSeconds + 30,
                 cancellationToken: ct));
             if (acquired != 1)
                 throw new TimeoutException($"Timed out waiting for the indexing lock for '{project}'.");

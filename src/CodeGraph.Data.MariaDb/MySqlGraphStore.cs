@@ -891,6 +891,9 @@ public partial class MySqlGraphStore(
             existing.LastCommitSha = state.LastCommitSha ?? existing.LastCommitSha;
             existing.Status = state.Status;
             existing.ErrorMessage = state.ErrorMessage;
+            existing.FailedCommitSha = state.FailedCommitSha;
+            existing.ConsecutiveFailures = state.ConsecutiveFailures;
+            existing.LastFailureAt = state.LastFailureAt;
         }
 
         await db.SaveChangesAsync();

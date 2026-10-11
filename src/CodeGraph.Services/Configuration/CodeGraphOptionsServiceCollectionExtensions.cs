@@ -60,6 +60,9 @@ public static class CodeGraphOptionsServiceCollectionExtensions
                 options => options.RustSemanticGroupMemoryLimitMb is 0 or (>= 64 and <= 1_048_576),
                 "Rust semantic group memory limit must be 0 (disabled) or between 64 and 1048576 MiB.")
             .Validate(
+                options => options.MaxConsecutiveIndexFailures >= 0,
+                "Max consecutive index failures must be 0 (disabled) or positive.")
+            .Validate(
                 options => !options.RustSemanticProcMacros || options.RustSemanticBuildScripts,
                 "Rust semantic proc-macro expansion requires Rust semantic build scripts to be enabled.")
             .ValidateOnStart();
