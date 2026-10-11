@@ -29,6 +29,15 @@ public static class IndexingFailure
     public static string GetPhase(Exception exception) =>
         exception.Data.Contains(PhaseKey) && exception.Data[PhaseKey] is string phase ? phase : "unknown";
 
+    /// <summary>
+    /// True for failures in the cheap phases before indexing starts (checkout fetch/resolve, HEAD
+    /// and up-to-date check), which are safe to retry while the message delivery is held. A failure
+    /// from indexing onward is not: an in-place retry re-runs the whole index under the same unacked
+    /// delivery, and a few such runs exceed RabbitMQ's consumer_timeout.
+    /// </summary>
+    public static bool FailedBeforeIndexing(Exception exception) =>
+        GetPhase(exception) is "resolve-repository" or "check-up-to-date";
+
     public static string Describe(Exception exception)
     {
         var description = $"[{GetPhase(exception)}] {exception.GetType().FullName}: {exception.Message}";
