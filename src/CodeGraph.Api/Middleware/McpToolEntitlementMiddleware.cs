@@ -16,7 +16,17 @@ public sealed class McpToolEntitlementMiddleware(
     IOptions<AuthOptions> authOptions,
     ILogger<McpToolEntitlementMiddleware> logger)
 {
+    /// <summary>
+    /// JSON-RPC error code (server-defined range) for a tools/call the hub refuses. The specific
+    /// reason (tool_not_entitled, tool_disabled, ...) is in <c>error.data.error</c>.
+    /// </summary>
+    public const int ToolAccessDeniedErrorCode = -32003;
+
+    /// <summary>JSON-RPC error code for a tools/list response the hub could not filter.</summary>
+    public const int ToolsListUnfilterableErrorCode = -32603;
+
     private static readonly PathString McpPath = new("/mcp");
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     // When either of these is on, the /mcp endpoint is protected by the PAT authorization
     // policy, so every request that reaches this middleware must carry a resolvable PAT
@@ -43,7 +53,7 @@ public sealed class McpToolEntitlementMiddleware(
 
         if (string.Equals(request.Method, "tools/list", StringComparison.Ordinal))
         {
-            await InvokeAndFilterToolsListAsync(context, next);
+            await InvokeAndFilterToolsListAsync(context, request);
             return;
         }
 
@@ -56,70 +66,80 @@ public sealed class McpToolEntitlementMiddleware(
         var toolName = request.ToolName;
         if (string.IsNullOrWhiteSpace(toolName))
         {
-            await RejectAsync(context, "tool_name_required", "MCP tools/call requests must include params.name.");
+            await RejectAsync(context, request.Id, null, new("tool_name_required", "MCP tools/call requests must include params.name."));
             return;
         }
 
         using var scope = scopeFactory.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IMcpHubStore>();
-        var tools = await store.ListToolsAsync(context.RequestAborted);
-        var tool = tools.FirstOrDefault(item => string.Equals(item.ToolName, toolName, StringComparison.OrdinalIgnoreCase));
+        var catalog = await LoadCatalogAsync(store, context.RequestAborted);
+        catalog.Tools.TryGetValue(toolName, out var tool);
+        var denial = await EvaluateAccessAsync(store, catalog, toolName, tool, ResolveTokenId(context), context.RequestAborted);
+        if (denial is not null)
+        {
+            await RejectAsync(context, request.Id, toolName, denial);
+            return;
+        }
+
+        await DispatchAsync(context, tool!, request);
+    }
+
+    /// <summary>
+    /// The single access predicate shared by tools/call and tools/list: a tool is listed exactly
+    /// when a call to it would be dispatched. Returns null when access is granted, otherwise the
+    /// machine-readable denial.
+    /// </summary>
+    private async Task<McpToolDenial?> EvaluateAccessAsync(
+        IMcpHubStore store,
+        McpCatalogSnapshot catalog,
+        string toolName,
+        McpHubToolEntity? tool,
+        long? tokenId,
+        CancellationToken ct)
+    {
         if (tool is null)
-        {
-            await RejectAsync(context, "tool_not_cataloged", $"MCP tool '{toolName}' is not in the hub catalog.");
-            return;
-        }
+            return new("tool_not_cataloged", $"MCP tool '{toolName}' is not in the hub catalog.");
 
-        if (tool is { Enabled: false })
-        {
-            await RejectAsync(context, "tool_disabled", $"MCP tool '{toolName}' is disabled.");
-            return;
-        }
+        if (!tool.Enabled)
+            return new("tool_disabled", $"MCP tool '{toolName}' is disabled.");
 
-        if (tool is { IsAvailable: false })
-        {
-            await RejectAsync(context, "tool_unavailable", $"MCP tool '{toolName}' is not available in this deployment.");
-            return;
-        }
+        if (!tool.IsAvailable)
+            return new("tool_unavailable", $"MCP tool '{toolName}' is not available in this deployment.");
 
-        var providers = await store.ListProvidersAsync(context.RequestAborted);
-        var provider = providers.FirstOrDefault(item => string.Equals(item.ProviderKey, tool.ProviderKey, StringComparison.OrdinalIgnoreCase));
-        if (provider is { Enabled: false })
-        {
-            await RejectAsync(context, "provider_disabled", $"MCP provider '{tool.ProviderKey}' is disabled.");
-            return;
-        }
+        if (catalog.Providers.TryGetValue(tool.ProviderKey, out var provider) && !provider.Enabled)
+            return new("provider_disabled", $"MCP provider '{tool.ProviderKey}' is disabled.");
 
-        var tokenId = ResolveTokenId(context);
         if (tokenId is null)
         {
-            if (requiresPersonalAccessToken)
-            {
-                await RejectAsync(
-                    context,
-                    "token_required",
-                    "This MCP request did not carry a personal access token, so tool entitlement could not be verified.");
-                return;
-            }
-
-            await DispatchAsync(context, tool, request);
-            return;
+            return requiresPersonalAccessToken
+                ? new("token_required", "This MCP request did not carry a personal access token, so tool entitlement could not be verified.")
+                : null;
         }
 
         try
         {
-            if (await store.IsTokenEntitledAsync(tokenId.Value, toolName, context.RequestAborted))
-            {
-                await DispatchAsync(context, tool, request);
-                return;
-            }
+            if (await store.IsTokenEntitledAsync(tokenId.Value, tool.ToolName, ct))
+                return null;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             logger.LogWarning(ex, "Failed to check MCP entitlement for token {TokenId} and tool {ToolName}", tokenId, toolName);
         }
 
-        await RejectAsync(context, "tool_not_entitled", $"This MCP token is not entitled to call '{toolName}'.");
+        return new("tool_not_entitled", $"This MCP token is not entitled to call '{toolName}'.");
+    }
+
+    private static async Task<McpCatalogSnapshot> LoadCatalogAsync(IMcpHubStore store, CancellationToken ct)
+    {
+        var providers = new Dictionary<string, McpHubProviderEntity>(StringComparer.OrdinalIgnoreCase);
+        foreach (var provider in await store.ListProvidersAsync(ct))
+            providers.TryAdd(provider.ProviderKey, provider);
+
+        var tools = new Dictionary<string, McpHubToolEntity>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tool in await store.ListToolsAsync(ct))
+            tools.TryAdd(tool.ToolName, tool);
+
+        return new(providers, tools);
     }
 
     // Hands an entitled tools/call to its server. Native and first-party-provider tools are
@@ -149,11 +169,7 @@ public sealed class McpToolEntitlementMiddleware(
             ["id"] = request.Id?.DeepClone(),
             ["result"] = resultNode,
         };
-        context.Response.StatusCode = StatusCodes.Status200OK;
-        context.Response.ContentType = "application/json";
-        await context.Response.WriteAsync(
-            response.ToJsonString(new JsonSerializerOptions(JsonSerializerDefaults.Web)),
-            context.RequestAborted);
+        await WriteJsonRpcAsync(context, response);
     }
 
     private static IReadOnlyDictionary<string, object?>? ConvertArguments(JsonNode? argumentsNode)
@@ -167,7 +183,7 @@ public sealed class McpToolEntitlementMiddleware(
         return arguments;
     }
 
-    private async Task InvokeAndFilterToolsListAsync(HttpContext context, RequestDelegate next)
+    private async Task InvokeAndFilterToolsListAsync(HttpContext context, McpRequest request)
     {
         var originalBody = context.Response.Body;
         await using var buffer = new MemoryStream();
@@ -178,12 +194,32 @@ public sealed class McpToolEntitlementMiddleware(
             await next(context);
             buffer.Position = 0;
             var body = await new StreamReader(buffer, Encoding.UTF8).ReadToEndAsync(context.RequestAborted);
-            var filtered = await TryFilterToolsListResponseAsync(context, body);
-            var output = filtered ?? body;
-            var bytes = Encoding.UTF8.GetBytes(output);
             context.Response.Body = originalBody;
-            context.Response.ContentLength = bytes.Length;
-            await context.Response.Body.WriteAsync(bytes, context.RequestAborted);
+
+            if (context.Response.StatusCode >= StatusCodes.Status400BadRequest || string.IsNullOrWhiteSpace(body))
+            {
+                await WriteRawAsync(context, body);
+                return;
+            }
+
+            var filtered = await TryFilterToolsListResponseAsync(context, body);
+            if (filtered is null)
+            {
+                // Never pass an unfiltered tools/list through: it would advertise tools the
+                // caller cannot call.
+                logger.LogWarning(
+                    "MCP tools/list response (content type {ContentType}) could not be filtered; refusing it",
+                    context.Response.ContentType);
+                await RejectAsync(
+                    context,
+                    request.Id,
+                    null,
+                    new("tools_list_unfilterable", "The MCP hub could not apply tool entitlements to the tool list."),
+                    ToolsListUnfilterableErrorCode);
+                return;
+            }
+
+            await WriteRawAsync(context, filtered);
         }
         finally
         {
@@ -191,33 +227,69 @@ public sealed class McpToolEntitlementMiddleware(
         }
     }
 
+    private static async Task WriteRawAsync(HttpContext context, string body)
+    {
+        var bytes = Encoding.UTF8.GetBytes(body);
+        context.Response.ContentLength = bytes.Length;
+        await context.Response.Body.WriteAsync(bytes, context.RequestAborted);
+    }
+
+    // The MCP SDK's streamable HTTP transport answers a POST with an SSE stream
+    // ("event: message" / "data: {json-rpc}"), not a bare JSON body. The JSON-RPC message inside
+    // each data line is filtered and the SSE framing is kept. A bare JSON body is handled too.
+    // Returns null when a message could not be parsed as JSON-RPC (the caller then fails closed).
+    // A parsed message without result.tools (e.g. a JSON-RPC error) passes through unchanged.
     private async Task<string?> TryFilterToolsListResponseAsync(HttpContext context, string body)
     {
-        if (context.Response.StatusCode >= StatusCodes.Status400BadRequest ||
-            string.IsNullOrWhiteSpace(body))
+        var isEventStream = context.Response.ContentType?
+            .StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase) == true;
+        if (!isEventStream)
+            return await TryFilterToolsListMessageAsync(context, body);
+
+        var lines = body.Split('\n');
+        var sawMessage = false;
+        for (var i = 0; i < lines.Length; i++)
         {
-            return null;
+            var carriageReturn = lines[i].EndsWith('\r');
+            var line = carriageReturn ? lines[i][..^1] : lines[i];
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+                continue;
+
+            var filtered = await TryFilterToolsListMessageAsync(context, line["data:".Length..].TrimStart(' '));
+            if (filtered is null)
+                return null;
+
+            lines[i] = "data: " + filtered + (carriageReturn ? "\r" : "");
+            sawMessage = true;
         }
 
+        return sawMessage ? string.Join('\n', lines) : null;
+    }
+
+    private async Task<string?> TryFilterToolsListMessageAsync(HttpContext context, string json)
+    {
         JsonNode? root;
         try
         {
-            root = JsonNode.Parse(body);
+            root = JsonNode.Parse(json);
         }
         catch (JsonException)
         {
             return null;
         }
 
-        if (root?["result"]?["tools"] is not JsonArray toolsArray)
+        if (root is null)
             return null;
+
+        if (root["result"]?["tools"] is not JsonArray toolsArray)
+            return json;
 
         using var scope = scopeFactory.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IMcpHubStore>();
         var (allowed, visibleShimTools) =
             await GetVisibleToolsAsync(store, ResolveTokenId(context), context.RequestAborted);
 
-        // Drop SDK-advertised tools the caller is not allowed to see.
+        // Drop SDK-advertised tools the caller cannot call.
         for (var i = toolsArray.Count - 1; i >= 0; i--)
         {
             var name = toolsArray[i]?["name"]?.GetValue<string>();
@@ -238,7 +310,7 @@ public sealed class McpToolEntitlementMiddleware(
                 toolsArray.Add(BuildShimToolListEntry(shimTool));
         }
 
-        return root.ToJsonString(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return root.ToJsonString(WebJson);
     }
 
     private async Task<(HashSet<string> Names, List<McpHubToolEntity> ShimTools)> GetVisibleToolsAsync(
@@ -246,25 +318,12 @@ public sealed class McpToolEntitlementMiddleware(
         long? tokenId,
         CancellationToken ct)
     {
-        // Fail closed: when a PAT is required but the request carried no resolvable token id,
-        // the caller sees an empty tool list rather than the full enabled catalog.
-        if (tokenId is null && requiresPersonalAccessToken)
-            return ([], []);
-
-        var providers = await store.ListProvidersAsync(ct);
-        var enabledProviders = providers
-            .Where(provider => provider.Enabled)
-            .Select(provider => provider.ProviderKey)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
+        var catalog = await LoadCatalogAsync(store, ct);
         var visible = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var shimTools = new List<McpHubToolEntity>();
-        foreach (var tool in await store.ListToolsAsync(ct))
+        foreach (var tool in catalog.Tools.Values)
         {
-            if (!tool.Enabled || !tool.IsAvailable || !enabledProviders.Contains(tool.ProviderKey))
-                continue;
-
-            if (tokenId is not null && !await store.IsTokenEntitledAsync(tokenId.Value, tool.ToolName, ct))
+            if (await EvaluateAccessAsync(store, catalog, tool.ToolName, tool, tokenId, ct) is not null)
                 continue;
 
             visible.Add(tool.ToolName);
@@ -307,11 +366,41 @@ public sealed class McpToolEntitlementMiddleware(
         ?? context.User.FindFirstValue("username")
         ?? context.User.Identity?.Name;
 
-    private static async Task RejectAsync(HttpContext context, string code, string message)
+    // A refused request is answered as a JSON-RPC 2.0 error response echoing the request id, with
+    // HTTP 200: the streamable HTTP transport carries JSON-RPC errors in a 200 application/json
+    // response, and MCP clients only correlate and surface an error that arrives inside a
+    // JSON-RPC envelope carrying the request id. The machine-readable reason is error.data.error.
+    private static Task RejectAsync(
+        HttpContext context,
+        JsonNode? id,
+        string? toolName,
+        McpToolDenial denial,
+        int code = ToolAccessDeniedErrorCode)
     {
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        var data = new JsonObject { ["error"] = denial.Code };
+        if (!string.IsNullOrWhiteSpace(toolName))
+            data["tool"] = toolName;
+
+        return WriteJsonRpcAsync(context, new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = id?.DeepClone(),
+            ["error"] = new JsonObject
+            {
+                ["code"] = code,
+                ["message"] = denial.Message,
+                ["data"] = data,
+            },
+        });
+    }
+
+    private static async Task WriteJsonRpcAsync(HttpContext context, JsonObject response)
+    {
+        context.Response.StatusCode = StatusCodes.Status200OK;
         context.Response.ContentType = "application/json";
-        await context.Response.WriteAsJsonAsync(new { error = code, message }, context.RequestAborted);
+        var bytes = Encoding.UTF8.GetBytes(response.ToJsonString(WebJson));
+        context.Response.ContentLength = bytes.Length;
+        await context.Response.Body.WriteAsync(bytes, context.RequestAborted);
     }
 
     private static long? ResolveTokenId(HttpContext context)
@@ -333,20 +422,21 @@ public sealed class McpToolEntitlementMiddleware(
             request.Body.Position = 0;
 
             var root = doc.RootElement;
-            if (!root.TryGetProperty("method", out var method) ||
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("method", out var method) ||
                 method.ValueKind != JsonValueKind.String)
             {
                 return new(null, null);
             }
 
-            var methodName = method.GetString();
-            if (!string.Equals(methodName, "tools/call", StringComparison.Ordinal))
-                return new(methodName, null);
-
-            // The JSON-RPC id is echoed back when the hub itself answers a shim tools/call.
+            // The JSON-RPC id is echoed back whenever the hub answers a request itself.
             var id = root.TryGetProperty("id", out var idElement)
                 ? JsonNode.Parse(idElement.GetRawText())
                 : null;
+
+            var methodName = method.GetString();
+            if (!string.Equals(methodName, "tools/call", StringComparison.Ordinal))
+                return new(methodName, null, id);
 
             if (!root.TryGetProperty("params", out var parameters) ||
                 parameters.ValueKind != JsonValueKind.Object ||
@@ -374,6 +464,12 @@ public sealed class McpToolEntitlementMiddleware(
             return new(null, null);
         }
     }
+
+    private sealed record McpToolDenial(string Code, string Message);
+
+    private sealed record McpCatalogSnapshot(
+        IReadOnlyDictionary<string, McpHubProviderEntity> Providers,
+        IReadOnlyDictionary<string, McpHubToolEntity> Tools);
 
     private sealed record McpRequest(
         string? Method,
