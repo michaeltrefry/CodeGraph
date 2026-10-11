@@ -13,7 +13,10 @@ public class GitLabRepoProvider(
     HttpClient httpClient,
     IExclusionService exclusionService,
     ILogger<GitLabRepoProvider> logger)
-    : RepoProviderBase(sourceOptionsAccessor.Value.ReposCachePath, logger), IRepoProvider
+    : RepoProviderBase(
+        sourceOptionsAccessor.Value.ReposCachePath,
+        logger,
+        GitHttpCredential.ForGitLab(sourceOptionsAccessor.Value.GitLab.PrivateToken)), IRepoProvider
 {
     private readonly GitLabSourceOptions _gitLab = sourceOptionsAccessor.Value.GitLab;
 
@@ -218,42 +221,40 @@ public class GitLabRepoProvider(
     private static string NormalizeRepoName(string repoName) =>
         Regex.Replace(repoName, "[^A-Za-z0-9]+", "").ToLowerInvariant();
 
-    protected override async Task FetchAsync(string repoPath, CancellationToken ct)
-    {
-        // If using token auth, ensure the remote URL is HTTPS (may have been cloned via SSH previously)
-        if (!string.IsNullOrWhiteSpace(_gitLab.PrivateToken))
-        {
-            var currentUrl = (await RunGitOutputAsync(repoPath, "remote get-url origin", ct)).Trim();
-            if (currentUrl.StartsWith("git@", StringComparison.OrdinalIgnoreCase))
-            {
-                var httpsUrl = ToHttpsUrlWithToken(currentUrl, _gitLab.PrivateToken);
-                await RunGitAsync(repoPath, $"remote set-url origin \"{httpsUrl}\"", ct);
-            }
-        }
-
-        await RunGitAsync(repoPath, "fetch origin", ct);
-        await ResetToFetchedHeadAsync(repoPath, ct);
-    }
-
+    /// <summary>
+    /// With a token: a token-free HTTPS URL (the token is passed to each git command by
+    /// <see cref="RepoProviderBase"/>, never stored in origin). Without one: SSH.
+    /// </summary>
     internal string ToCloneUrl(string url)
     {
-        if (!string.IsNullOrWhiteSpace(_gitLab.PrivateToken))
-            return ToHttpsUrlWithToken(url, _gitLab.PrivateToken);
+        if (Credential is not null)
+            return ToHttpsUrl(url);
 
         return ToSshUrl(url);
     }
 
-    internal static string ToHttpsUrlWithToken(string url, string token)
+    /// <summary>
+    /// With a token, existing checkouts (SSH, or HTTPS with a token embedded by an earlier
+    /// version) are normalized to the token-free HTTPS URL on every fetch. Without one, origin is
+    /// kept apart from any embedded user-info.
+    /// </summary>
+    protected override string ToOriginUrl(string currentUrl) =>
+        Credential is not null ? ToHttpsUrl(currentUrl) : GitRemoteUrl.StripUserInfo(currentUrl);
+
+    internal static string ToHttpsUrl(string url)
     {
-        var uri = new Uri(url.StartsWith("git@", StringComparison.OrdinalIgnoreCase)
-            ? SshToHttps(url)
-            : url);
+        if (!Uri.TryCreate(url.StartsWith("git@", StringComparison.OrdinalIgnoreCase) ? SshToHttps(url) : url,
+                UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            return url;
+        }
 
         var path = uri.AbsolutePath.TrimStart('/');
         if (!path.EndsWith(".git"))
             path += ".git";
 
-        return $"https://oauth2:{token}@{uri.Host}/{path}";
+        return $"https://{uri.Authority}/{path}";
     }
 
     internal static string ToSshUrl(string url)

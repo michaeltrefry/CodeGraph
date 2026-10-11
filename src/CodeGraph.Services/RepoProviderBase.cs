@@ -4,10 +4,14 @@ using Microsoft.Extensions.Logging;
 namespace CodeGraph.Services;
 
 /// <summary>
-/// Shared git clone/fetch helpers for repo providers that cache repos locally.
+/// Shared git clone/fetch helpers for repo providers that cache repos locally. Credentials are
+/// supplied per git command (<see cref="GitHttpCredential"/>) and never stored in the checkout's
+/// remote URL, so a rotated token takes effect on the next fetch.
 /// </summary>
-public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
+public abstract class RepoProviderBase(string reposCachePath, ILogger logger, GitHttpCredential? credential = null)
 {
+    protected GitHttpCredential? Credential { get; } = credential;
+
     /// <summary>
     /// Ensures a repo exists in the cache. Fetches if already cloned, otherwise clones.
     /// </summary>
@@ -32,27 +36,80 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
                 $"No local path, cached repo, or remote URL available for '{repoName}'.");
 
         var cloneUrl = toCloneUrl(repoUrl);
-        logger.LogInformation("Cloning {Repo} from {Url} into {Path}", repoName, cloneUrl, cachedPath);
+        logger.LogInformation("Cloning {Repo} from {Url} into {Path}", repoName, Redact(cloneUrl), cachedPath);
         await CloneAsync(cloneUrl, cachedPath, ct);
 
         return cachedPath;
     }
 
     /// <summary>
-    /// Provider-specific fetch logic (e.g., token URL rewriting).
-    /// Default: git fetch + reset --hard to the remote's default branch.
+    /// Normalizes the origin URL (<see cref="ToOriginUrl"/>), then git fetch + reset --hard to the
+    /// remote's default branch. Normalizing on every fetch migrates checkouts whose origin still
+    /// carries a token embedded by an earlier version.
     /// </summary>
     protected virtual async Task FetchAsync(string repoPath, CancellationToken ct)
     {
+        var originUrl = await NormalizeOriginUrlAsync(repoPath, ct);
         await EnsureOriginFetchRefspecAsync(repoPath, ct);
-        await RunGitAsync(repoPath, "fetch origin", ct);
+        await RunGitAsync(repoPath, "fetch origin", ct, originUrl);
         await ResetToFetchedHeadAsync(repoPath, ct);
+    }
+
+    /// <summary>
+    /// The credential-free origin URL a checkout should have. Default: <paramref name="currentUrl"/>
+    /// without user-info.
+    /// </summary>
+    protected virtual string ToOriginUrl(string currentUrl) => GitRemoteUrl.StripUserInfo(currentUrl);
+
+    /// <summary>Rewrites origin to <see cref="ToOriginUrl"/> when it differs; returns the origin URL.</summary>
+    protected async Task<string> NormalizeOriginUrlAsync(string repoPath, CancellationToken ct)
+    {
+        var currentUrl = (await RunGitOutputAsync(repoPath, "remote get-url origin", ct)).Trim();
+        if (string.IsNullOrEmpty(currentUrl))
+            return currentUrl;
+
+        var originUrl = ToOriginUrl(currentUrl);
+        if (!string.Equals(originUrl, currentUrl, StringComparison.Ordinal))
+        {
+            logger.LogInformation(
+                "Rewriting origin of {RepoPath} from {OldUrl} to {NewUrl}",
+                repoPath, Redact(currentUrl), Redact(originUrl));
+            await RunGitAsync(repoPath, $"remote set-url origin \"{originUrl}\"", ct);
+        }
+
+        return originUrl;
     }
 
     protected async Task CloneAsync(string cloneUrl, string targetPath, CancellationToken ct)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-        await RunGitAsync(null, $"clone --single-branch \"{cloneUrl}\" \"{targetPath}\"", ct);
+        await RunGitAsync(null, $"clone --single-branch \"{cloneUrl}\" \"{targetPath}\"", ct, cloneUrl);
+    }
+
+    protected string Redact(string text) => GitHttpCredential.Redact(text, Credential);
+
+    /// <summary>
+    /// Process settings for one git command: no interactive prompts, and the credential for
+    /// <paramref name="remoteUrl"/> passed through the environment rather than the arguments.
+    /// </summary>
+    internal ProcessStartInfo CreateGitStartInfo(string? workingDir, string arguments, string? remoteUrl)
+    {
+        var psi = new ProcessStartInfo("git", arguments)
+        {
+            WorkingDirectory = workingDir ?? "",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        if (Credential is not null && remoteUrl is not null)
+        {
+            foreach (var (key, value) in Credential.EnvironmentFor(remoteUrl))
+                psi.Environment[key] = value;
+        }
+
+        return psi;
     }
 
     protected async Task<string> RunGitOutputAsync(string? workingDir, string arguments, CancellationToken ct)
@@ -74,19 +131,12 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
         return stdout;
     }
 
-    protected async Task RunGitAsync(string? workingDir, string arguments, CancellationToken ct)
+    protected async Task RunGitAsync(string? workingDir, string arguments, CancellationToken ct, string? remoteUrl = null)
     {
-        var psi = new ProcessStartInfo("git", arguments)
-        {
-            WorkingDirectory = workingDir ?? "",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+        var psi = CreateGitStartInfo(workingDir, arguments, remoteUrl);
 
         using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException($"Failed to start git {arguments}");
+            ?? throw new InvalidOperationException($"Failed to start git {Redact(arguments)}");
 
         var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
         var stderr = await proc.StandardError.ReadToEndAsync(ct);
@@ -94,12 +144,14 @@ public abstract class RepoProviderBase(string reposCachePath, ILogger logger)
 
         if (proc.ExitCode != 0)
         {
-            logger.LogError("git {Args} failed (exit {Code}): {StdErr}", arguments, proc.ExitCode, stderr);
-            throw new InvalidOperationException($"git {arguments} failed with exit code {proc.ExitCode}: {stderr}");
+            var safeArguments = Redact(arguments);
+            var safeStderr = Redact(stderr);
+            logger.LogError("git {Args} failed (exit {Code}): {StdErr}", safeArguments, proc.ExitCode, safeStderr);
+            throw new InvalidOperationException($"git {safeArguments} failed with exit code {proc.ExitCode}: {safeStderr}");
         }
 
         if (!string.IsNullOrWhiteSpace(stderr))
-            logger.LogDebug("git {Args} stderr: {StdErr}", arguments, stderr);
+            logger.LogDebug("git {Args} stderr: {StdErr}", Redact(arguments), Redact(stderr));
     }
 
     protected async Task ResetToFetchedHeadAsync(string repoPath, CancellationToken ct)

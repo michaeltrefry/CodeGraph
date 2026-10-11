@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Formats.Tar;
 using System.Text;
+using CodeGraph.Services.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services.Overlays;
 
@@ -43,10 +45,16 @@ public sealed class BranchOverlayTransientException(string message, Exception? i
 /// which <see cref="BranchOverlayService"/> runs before these commands, does fetch and reset the
 /// checkout to the remote default branch; that runs under the project indexing lock and is the
 /// same resync default-branch indexing performs. Arguments are passed as an argument vector (no shell).
+/// When the repository source has a token, remote commands send it per command through the
+/// environment (<see cref="GitHttpCredential"/>) against origin's URL without user-info, so a
+/// token persisted in an old checkout's origin is never used.
 /// </summary>
-public class BranchOverlayGit
+public class BranchOverlayGit(IOptions<RepositorySourceOptions>? sourceOptions = null)
 {
     private const int ArchiveBatchSize = 200;
+
+    private readonly GitHttpCredential? _credential =
+        sourceOptions is null ? null : GitHttpCredential.FromOptions(sourceOptions.Value);
 
     /// <summary>Upper bound on <c>git ls-remote</c> when resolving a requested ref.</summary>
     internal TimeSpan RemoteRefTimeout { get; init; } = TimeSpan.FromSeconds(30);
@@ -111,17 +119,17 @@ public class BranchOverlayGit
         if (IsFullSha(gitRef) && await TryRevParseCommitAsync(repoPath, gitRef, ct) is { } localSha)
             return localSha;
 
-        if (await HasOriginAsync(repoPath, ct))
+        if (await GetOriginAsync(repoPath, ct) is { } origin)
         {
-            var fetch = await RunAsync(repoPath, ["fetch", "--no-tags", "--no-write-fetch-head", "origin",
-                $"+{gitRef}:{OverlayFetchRef}"], ct);
+            var fetch = await RunAsync(repoPath, ["fetch", "--no-tags", "--no-write-fetch-head", origin.Remote,
+                $"+{gitRef}:{OverlayFetchRef}"], ct, origin.Environment);
             if (fetch.ExitCode == 0
                 && await TryRevParseCommitAsync(repoPath, OverlayFetchRef, ct) is { } fetched)
             {
                 return fetched;
             }
 
-            var fetchError = fetch.StdErrText.Trim();
+            var fetchError = Redact(fetch.StdErrText.Trim());
             if (fetch.ExitCode != 0 && !IsMissingRemoteObject(fetchError))
             {
                 throw new BranchOverlayTransientException(
@@ -153,7 +161,7 @@ public class BranchOverlayGit
         if (IsFullSha(gitRef))
             return gitRef.ToLowerInvariant();
 
-        if (!await HasOriginAsync(repoPath, ct))
+        if (await GetOriginAsync(repoPath, ct) is not { } origin)
             return await TryRevParseCommitAsync(repoPath, gitRef, ct);
 
         // The second pattern brings in the peeled entry of an annotated tag. ls-remote runs on the
@@ -164,7 +172,8 @@ public class BranchOverlayGit
             timeout.CancelAfter(RemoteRefTimeout);
             try
             {
-                result = await RunAsync(repoPath, ["ls-remote", "origin", gitRef, gitRef + "^{}"], timeout.Token);
+                result = await RunAsync(repoPath, ["ls-remote", origin.Remote, gitRef, gitRef + "^{}"], timeout.Token,
+                    origin.Environment);
             }
             catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
             {
@@ -176,7 +185,7 @@ public class BranchOverlayGit
         if (result.ExitCode != 0)
         {
             throw new BranchOverlayTransientException(
-                $"Listing ref '{gitRef}' on origin failed: {result.StdErrText.Trim()}");
+                $"Listing ref '{gitRef}' on origin failed: {Redact(result.StdErrText.Trim())}");
         }
 
         var advertised = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -251,13 +260,14 @@ public class BranchOverlayGit
         if (await TryRevParseCommitAsync(repoPath, sha, ct) is not null)
             return;
 
-        if (await HasOriginAsync(repoPath, ct))
+        if (await GetOriginAsync(repoPath, ct) is { } origin)
         {
-            var fetch = await RunAsync(repoPath, ["fetch", "--no-tags", "--no-write-fetch-head", "origin", sha], ct);
+            var fetch = await RunAsync(repoPath, ["fetch", "--no-tags", "--no-write-fetch-head", origin.Remote, sha], ct,
+                origin.Environment);
             if (await TryRevParseCommitAsync(repoPath, sha, ct) is not null)
                 return;
 
-            var fetchError = fetch.StdErrText.Trim();
+            var fetchError = Redact(fetch.StdErrText.Trim());
             if (fetch.ExitCode != 0 && !IsMissingRemoteObject(fetchError))
             {
                 throw new BranchOverlayTransientException(
@@ -384,8 +394,20 @@ public class BranchOverlayGit
             .Split('\0', StringSplitOptions.RemoveEmptyEntries)
             .ToList();
 
-    private async Task<bool> HasOriginAsync(string repoPath, CancellationToken ct)
-        => (await RunAsync(repoPath, ["remote", "get-url", "origin"], ct)).ExitCode == 0;
+    /// <summary>
+    /// The remote to name in fetch/ls-remote (<see cref="GitHttpCredential.ForOrigin"/>), or null
+    /// when the checkout has no <c>origin</c>.
+    /// </summary>
+    internal async Task<GitRemoteTarget?> GetOriginAsync(string repoPath, CancellationToken ct)
+    {
+        var result = await RunAsync(repoPath, ["remote", "get-url", "origin"], ct);
+        if (result.ExitCode != 0)
+            return null;
+
+        return GitHttpCredential.ForOrigin(_credential, Encoding.UTF8.GetString(result.StdOut));
+    }
+
+    private string Redact(string text) => GitHttpCredential.Redact(text, _credential);
 
     private async Task<string?> TryRevParseCommitAsync(string repoPath, string rev, CancellationToken ct)
     {
@@ -403,13 +425,17 @@ public class BranchOverlayGit
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"git {args.FirstOrDefault(arg => !arg.StartsWith('-'))} failed with exit code {result.ExitCode}: {result.StdErrText.Trim()}");
+                $"git {args.FirstOrDefault(arg => !arg.StartsWith('-'))} failed with exit code {result.ExitCode}: {Redact(result.StdErrText.Trim())}");
         }
 
         return result;
     }
 
-    protected virtual async Task<GitResult> RunAsync(string repoPath, IReadOnlyList<string> args, CancellationToken ct)
+    protected virtual async Task<GitResult> RunAsync(
+        string repoPath,
+        IReadOnlyList<string> args,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         var psi = new ProcessStartInfo("git")
         {
@@ -420,6 +446,12 @@ public class BranchOverlayGit
             CreateNoWindow = true
         };
         psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+                psi.Environment[key] = value;
+        }
+
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
 
