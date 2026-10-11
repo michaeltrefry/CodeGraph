@@ -1,4 +1,6 @@
 using System.Text.Json;
+using CodeGraph.Data;
+using CodeGraph.Data.MariaDb;
 using CodeGraph.Extractors.Rust;
 using CodeGraph.Models;
 using CodeGraph.Services;
@@ -6,9 +8,14 @@ using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Metadata;
 using CodeGraph.Services.Pipeline;
+using CodeGraph.Services.Query;
+using CodeGraph.Tests.Data;
 using CodeGraph.Tests.Extractors;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using MySqlConnector;
+using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
 using Shouldly;
 
 namespace CodeGraph.Tests.Services;
@@ -64,6 +71,99 @@ public sealed class RustCrateGroupPipelineTests
         var repository = await store.GetRepositoryByName("RustGroups");
         var recorded = ((JsonElement)repository!.Properties!["rustSemanticFallbacks"]).EnumerateArray().Single();
         recorded.GetProperty("crates").EnumerateArray().Select(crate => crate.GetString()).ShouldBe(["gamma"]);
+
+        // Every group has an outcome; only gamma's is a fallback.
+        var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+        outcomes.Groups.Select(group => group.Outcome).ShouldBe(["semantic", "semantic", "fallback"]);
+        (outcomes.SemanticGroups, outcomes.FallbackGroups, outcomes.SkippedGroups).ShouldBe((2, 1, 0));
+        var gamma = outcomes.Groups[2];
+        gamma.Crates.ShouldBe(["gamma"]);
+        gamma.FailureCode.ShouldBe(fallback.FailureCode);
+        gamma.DetailCode.ShouldBe("rust_analyzer_scip_failed");
+        gamma.DurationMs.ShouldBeGreaterThan(0);
+        gamma.Documents.ShouldBeNull();
+        outcomes.Groups[0].FailureCode.ShouldBeNull();
+        outcomes.Groups[0].Documents.ShouldBe(1);
+        var persisted = (JsonElement)repository.Properties["rustSemanticOutcomes"];
+        persisted.GetProperty("groups").EnumerateArray().Select(group => group.GetProperty("outcome").GetString())
+            .ShouldBe(["semantic", "semantic", "fallback"]);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_AllGroupsSemantic_RecordsEveryGroupOutcomeAndSettingsSnapshot()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        var store = new InMemoryGraphStore();
+        var diagnostics = new IndexingRunDiagnostics();
+        var pipeline = CreatePipeline(store, diagnostics);
+
+        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+
+        diagnostics.RustSemanticFallbacks.ShouldBeEmpty();
+        var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+        outcomes.Manifest.ShouldBe("Cargo.toml");
+        (outcomes.CrateCount, outcomes.GroupCount, outcomes.GroupSize).ShouldBe((3, 3, 1));
+        (outcomes.SemanticGroups, outcomes.FallbackGroups, outcomes.SkippedGroups).ShouldBe((3, 0, 0));
+        outcomes.TotalDurationMs.ShouldBeGreaterThan(0);
+        outcomes.Settings.ShouldBe(new RustSemanticSettingsSnapshot(
+            GroupSize: 1,
+            GroupTimeoutSeconds: 600,
+            WorkspaceTimeoutSeconds: 3600,
+            GroupMemoryLimitMb: 8192,
+            BuildScripts: false,
+            ProcMacros: false));
+        outcomes.Groups.Select(group => group.Index).ShouldBe([0, 1, 2]);
+        outcomes.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha", "beta", "gamma"]);
+        foreach (var group in outcomes.Groups)
+        {
+            group.Outcome.ShouldBe(RustSemanticGroupOutcome.Semantic);
+            group.FailureCode.ShouldBeNull();
+            group.DetailCode.ShouldBeNull();
+            group.DurationMs.ShouldBeGreaterThan(0);
+            group.Documents.ShouldBe(1);
+            group.Nodes.ShouldNotBeNull().ShouldBeGreaterThan(0);
+            group.Edges.ShouldNotBeNull();
+            // Peak RSS comes from the /proc sampling of the setsid process group (Linux only).
+            if (OperatingSystem.IsLinux() && File.Exists("/usr/bin/setsid"))
+                group.PeakRssMb.ShouldNotBeNull();
+            else
+                group.PeakRssMb.ShouldBeNull();
+        }
+
+        outcomes.Summary().ShouldBe(
+            $"Rust semantic: 3 groups (3 semantic, 0 fallback, 0 skipped), 3 crates, " +
+            $"{Math.Round(outcomes.TotalDurationMs / 1000.0)}s.");
+
+        var repository = await store.GetRepositoryByName("RustGroups");
+        repository!.Properties!.ShouldNotContainKey("rustSemanticFallbacks");
+        var persisted = (JsonElement)repository.Properties["rustSemanticOutcomes"];
+        persisted.GetProperty("semanticGroups").GetInt32().ShouldBe(3);
+        persisted.GetProperty("settings").GetProperty("groupMemoryLimitMb").GetInt32().ShouldBe(8192);
+        var groups = persisted.GetProperty("groups").EnumerateArray().ToList();
+        groups.Select(group => group.GetProperty("crates").EnumerateArray().Single().GetString())
+            .ShouldBe(["alpha", "beta", "gamma"]);
+        groups.ShouldAllBe(group => group.GetProperty("durationMs").GetInt64() > 0);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_MultiCrateGroups_OutcomesListEachGroupsCrates()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        using var toolchain = CreateThreeCrateWorkspace();
+        var diagnostics = new IndexingRunDiagnostics();
+        var pipeline = CreatePipeline(new InMemoryGraphStore(), diagnostics, groupSize: 2);
+
+        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+
+        var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+        (outcomes.CrateCount, outcomes.GroupCount, outcomes.GroupSize).ShouldBe((3, 2, 2));
+        outcomes.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha,beta", "gamma"]);
+        outcomes.Groups.Select(group => group.Documents).ShouldBe([2, 1]);
     }
 
     [Fact]
@@ -112,6 +212,88 @@ public sealed class RustCrateGroupPipelineTests
             nodes.ShouldNotBeEmpty();
             nodes.ShouldAllBe(node => GraphNodeConfidence.IsLowConfidence(node));
         }
+
+        // alpha ran and was stopped; beta and gamma never started.
+        var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+        outcomes.Groups.Select(group => group.Outcome).ShouldBe(["fallback", "skipped", "skipped"]);
+        (outcomes.SemanticGroups, outcomes.FallbackGroups, outcomes.SkippedGroups).ShouldBe((0, 1, 2));
+        outcomes.Settings.WorkspaceTimeoutSeconds.ShouldBe(1);
+        outcomes.Groups[0].DurationMs.ShouldBeGreaterThan(0);
+        outcomes.Groups.Skip(1).ShouldAllBe(group =>
+            group.DurationMs == 0 &&
+            group.PeakRssMb == null &&
+            group.FailureCode == RustSemanticFailureCategory.Timeout &&
+            group.DetailCode == "rust_semantic_workspace_timeout");
+        outcomes.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha", "beta", "gamma"]);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_MariaDb_PersistsRustSemanticOutcomesReadableFromProjectList()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            Database = $"codegraph_rust_outcomes_test_{Guid.NewGuid():N}"
+        };
+        var storageOptions = Options.Create(new MariaDbStorageOptions
+        {
+            ConnectionString = builder.ConnectionString,
+            MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+        });
+        var runner = new MariaDbMigrationRunner(storageOptions, NullLogger<MariaDbMigrationRunner>.Instance);
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, "beta");
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                .UseMySql(builder.ConnectionString, ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                .Options;
+            await using var context = new CodeGraphDbContext(dbOptions);
+            var store = new MySqlGraphStore(
+                context,
+                storageOptions,
+                NullLogger<MySqlGraphStore>.Instance,
+                new MySqlAnalysisStore(context),
+                new MySqlMetricsStore(context),
+                new MySqlReviewStore(context),
+                runner);
+            var pipeline = CreatePipeline(store, new IndexingRunDiagnostics());
+
+            await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+
+            // GET /api/projects?search=RustGroups serializes this response with the web defaults.
+            var list = await new ProjectQueryService(store, Options.Create(new RepositorySourceOptions()))
+                .ListAsync("RustGroups", null, 1, 25);
+            using var response = JsonDocument.Parse(
+                JsonSerializer.Serialize(list, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            var properties = response.RootElement.GetProperty("items").EnumerateArray().Single()
+                .GetProperty("properties");
+            var outcomes = properties.GetProperty("rustSemanticOutcomes");
+            outcomes.GetProperty("groupCount").GetInt32().ShouldBe(3);
+            outcomes.GetProperty("fallbackGroups").GetInt32().ShouldBe(1);
+            outcomes.GetProperty("settings").GetProperty("groupSize").GetInt32().ShouldBe(1);
+            var groups = outcomes.GetProperty("groups").EnumerateArray().ToList();
+            groups.Select(group => group.GetProperty("outcome").GetString())
+                .ShouldBe(["semantic", "fallback", "semantic"]);
+            groups[1].GetProperty("crates").EnumerateArray().Select(crate => crate.GetString()).ShouldBe(["beta"]);
+            groups[1].GetProperty("detailCode").GetString().ShouldBe("rust_analyzer_scip_failed");
+            groups.ShouldAllBe(group => group.GetProperty("durationMs").GetInt64() > 0);
+            // The fallback record is unchanged alongside the outcomes.
+            properties.GetProperty("rustSemanticFallbacks").EnumerateArray().Single()
+                .GetProperty("crates").EnumerateArray().Single().GetString().ShouldBe("beta");
+        }
+        finally
+        {
+            await using var connection = new MySqlConnection(connectionString);
+            await connection.OpenAsync();
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = $"DROP DATABASE IF EXISTS `{builder.Database}`";
+            await drop.ExecuteNonQueryAsync();
+        }
     }
 
     private static List<GraphNode> CodeNodes(InMemoryGraphStore store, string filePath) =>
@@ -142,14 +324,15 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     private static IndexingPipeline CreatePipeline(
-        InMemoryGraphStore store,
+        IGraphStore store,
         IndexingRunDiagnostics diagnostics,
-        int workspaceTimeoutSeconds = 3600)
+        int workspaceTimeoutSeconds = 3600,
+        int groupSize = 1)
     {
         var options = Options.Create(new IndexingOptions
         {
             MaxParallelFiles = 1,
-            RustSemanticCrateGroupSize = 1,
+            RustSemanticCrateGroupSize = groupSize,
             RustSemanticWorkspaceTimeoutSeconds = workspaceTimeoutSeconds
         });
         return new IndexingPipeline(

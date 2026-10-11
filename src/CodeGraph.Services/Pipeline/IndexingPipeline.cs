@@ -282,6 +282,7 @@ public partial class IndexingPipeline
 
         // Rust — Cargo/SCIP project analysis when rust-analyzer + SCIP data are available.
         var rustSemanticFallbacks = new List<RustSemanticFallback>();
+        RustSemanticOutcomes? rustSemanticOutcomes = null;
         var rustSourceOwners = new List<RustSourceOwner>();
         if (_rustAnalyzer is not null)
         {
@@ -310,19 +311,38 @@ public partial class IndexingPipeline
                 {
                     // No group could be analyzed (for example the tools are missing): the
                     // whole workspace falls back.
-                    RecordRustSemanticFallback(
-                        CreateRustSemanticFallback(rootPath, cargoManifest, ex, crateGroup: null),
-                        ex);
+                    var failedAfterMs = stepSw.ElapsedMilliseconds;
+                    var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex, crateGroup: null);
+                    RecordRustSemanticFallback(workspaceFallback, ex);
+                    rustSemanticOutcomes = RecordRustSemanticOutcomes(
+                        projectName,
+                        workspaceFallback.Manifest,
+                        settings: null,
+                        [new RustSemanticGroupOutcome(
+                            0,
+                            workspaceFallback.Crates,
+                            RustSemanticGroupOutcome.Fallback,
+                            workspaceFallback.FailureCode,
+                            workspaceFallback.DetailCode,
+                            failedAfterMs,
+                            PeakRssMb: null,
+                            Documents: null,
+                            Nodes: null,
+                            Edges: null)],
+                        failedAfterMs);
                     continue;
                 }
 
                 // A failed semantic pass stays local to its crate group: nothing from a failed
                 // group touches the graph buffer, so its .rs files fall through to the
                 // registered tree-sitter Rust extractor and are marked low-confidence.
+                var analysisMs = stepSw.ElapsedMilliseconds;
                 var succeeded = new List<ExtractionResult>();
+                var groupOutcomes = new List<RustSemanticGroupOutcome>(analysis.Groups.Count);
                 foreach (var group in analysis.Groups)
                 {
                     var failure = group.Failure;
+                    IReadOnlyList<ExtractionResult>? prepared = null;
                     if (failure is null)
                     {
                         try
@@ -330,7 +350,8 @@ public partial class IndexingPipeline
                             // Materialize and validate the complete semantic result before the
                             // shared graph buffer is touched, so a malformed/lazy result cannot
                             // leave a partial Rust graph behind before the tree-sitter fallback.
-                            succeeded.AddRange(PrepareRustSemanticResults(group.Results));
+                            prepared = PrepareRustSemanticResults(group.Results);
+                            succeeded.AddRange(prepared);
                         }
                         catch (Exception ex)
                         {
@@ -338,19 +359,33 @@ public partial class IndexingPipeline
                         }
                     }
 
+                    RustSemanticFallback? groupFallback = null;
                     if (failure is not null)
                     {
-                        RecordRustSemanticFallback(
-                            CreateRustSemanticFallback(rootPath, cargoManifest, failure, group),
-                            failure);
+                        groupFallback = CreateRustSemanticFallback(rootPath, cargoManifest, failure, group);
+                        RecordRustSemanticFallback(groupFallback, failure);
                     }
                     else if (!group.IsWholeWorkspace)
                     {
                         rustSourceOwners.AddRange(group.SourceDirectories
                             .Select(directory => new RustSourceOwner(NormalizeRelativePath(directory), null)));
                     }
+
+                    groupOutcomes.Add(CreateRustSemanticGroupOutcome(
+                        rootPath,
+                        cargoManifest,
+                        group,
+                        groupFallback,
+                        prepared,
+                        analysis.Groups.Count == 1 ? analysisMs : 0));
                 }
 
+                rustSemanticOutcomes = RecordRustSemanticOutcomes(
+                    projectName,
+                    NormalizeRelativePath(Path.GetRelativePath(rootPath, cargoManifest)),
+                    analysis.Settings,
+                    groupOutcomes,
+                    analysisMs);
                 _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                 if (succeeded.Count == 0)
                     continue;
@@ -381,6 +416,76 @@ public partial class IndexingPipeline
                 projectName,
                 fallback.Manifest,
                 fallback.Crates);
+        }
+
+        RustSemanticOutcomes RecordRustSemanticOutcomes(
+            string project,
+            string manifest,
+            RustSemanticSettingsSnapshot? settings,
+            IReadOnlyList<RustSemanticGroupOutcome> groups,
+            long totalDurationMs)
+        {
+            settings ??= new RustSemanticSettingsSnapshot(
+                _options.RustSemanticCrateGroupSize,
+                _options.RustSemanticGroupTimeoutSeconds,
+                _options.RustSemanticWorkspaceTimeoutSeconds,
+                _options.RustSemanticGroupMemoryLimitMb,
+                _options.RustSemanticBuildScripts,
+                _options.RustSemanticProcMacros);
+            var outcomes = new RustSemanticOutcomes(
+                manifest,
+                groups.Sum(group => group.Crates.Count),
+                groups.Count,
+                settings.GroupSize,
+                groups.Count(group => group.Outcome == RustSemanticGroupOutcome.Semantic),
+                groups.Count(group => group.Outcome == RustSemanticGroupOutcome.Fallback),
+                groups.Count(group => group.Outcome == RustSemanticGroupOutcome.Skipped),
+                totalDurationMs,
+                settings,
+                groups);
+
+            // Structured per-group record, also for runs without an indexer_runs row.
+            foreach (var group in groups)
+            {
+                _logger.LogInformation(
+                    "Rust semantic group outcome for {Project} {Manifest}: group {Group} {Outcome} " +
+                    "({FailureCode}/{DetailCode}) in {DurationMs}ms, peak RSS {PeakRssMb}MB, " +
+                    "{Documents} documents, {Nodes} nodes, {Edges} edges; crates {Crates}",
+                    project,
+                    manifest,
+                    group.Index,
+                    group.Outcome,
+                    group.FailureCode,
+                    group.DetailCode,
+                    group.DurationMs,
+                    group.PeakRssMb,
+                    group.Documents,
+                    group.Nodes,
+                    group.Edges,
+                    group.Crates);
+            }
+
+            _logger.LogInformation(
+                "Rust semantic outcomes for {Project} {Manifest}: {GroupCount} groups ({SemanticGroups} semantic, " +
+                "{FallbackGroups} fallback, {SkippedGroups} skipped), {CrateCount} crates, {TotalDurationMs}ms " +
+                "(group size {GroupSize}, group timeout {GroupTimeoutSeconds}s, workspace timeout " +
+                "{WorkspaceTimeoutSeconds}s, group memory limit {GroupMemoryLimitMb}MB, build scripts " +
+                "{BuildScripts}, proc-macros {ProcMacros})",
+                project,
+                manifest,
+                outcomes.GroupCount,
+                outcomes.SemanticGroups,
+                outcomes.FallbackGroups,
+                outcomes.SkippedGroups,
+                outcomes.CrateCount,
+                outcomes.TotalDurationMs,
+                settings.GroupSize,
+                settings.GroupTimeoutSeconds,
+                settings.WorkspaceTimeoutSeconds,
+                settings.GroupMemoryLimitMb,
+                settings.BuildScripts,
+                settings.ProcMacros);
+            return outcomes;
         }
 
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
@@ -438,7 +543,7 @@ public partial class IndexingPipeline
         var detectedMetadata = SelectDominantMetadata(detectedMetadataCandidates, languageStats);
         // A fallback implies a Cargo workspace; keep metadata non-null so the repository
         // properties always carry the rustSemanticFallbacks record.
-        if (detectedMetadata is null && rustSemanticFallbacks.Count > 0)
+        if (detectedMetadata is null && (rustSemanticFallbacks.Count > 0 || rustSemanticOutcomes is not null))
             detectedMetadata = new ProjectMetadata("Rust", "Cargo");
 
         // Phase 2 — Resolution
@@ -466,7 +571,8 @@ public partial class IndexingPipeline
                 buffer.AllNodes.ToList(),
                 buffer.AllPendingEdges.ToList(),
                 buffer.AllFileHashes,
-                BuildRepositorySnapshot(repository, detectedMetadata, languageStats, rustSemanticFallbacks),
+                BuildRepositorySnapshot(
+                    repository, detectedMetadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes),
                 replacementSyncState,
                 ct);
             _logger.LogInformation(
@@ -503,12 +609,15 @@ public partial class IndexingPipeline
         if (!replaceExistingGraph && detectedMetadata is not null)
         {
             await _store.UpsertRepositoryAsync(
-                BuildRepositorySnapshot(repository, detectedMetadata, languageStats, rustSemanticFallbacks));
+                BuildRepositorySnapshot(
+                    repository, detectedMetadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes));
         }
 
         // Report degradations only once the graph that reflects them has been committed.
         foreach (var fallback in rustSemanticFallbacks)
             _diagnostics?.RecordRustSemanticFallback(fallback);
+        if (rustSemanticOutcomes is not null)
+            _diagnostics?.RecordRustSemanticOutcomes(rustSemanticOutcomes);
 
         pipelineSw.Stop();
         _logger.LogInformation("Indexed {Project}: {Nodes} nodes, {Edges} edges in {TotalMs}ms",
@@ -659,13 +768,14 @@ public partial class IndexingPipeline
         RepositoryEntity repository,
         ProjectMetadata? metadata,
         IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats,
-        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks)
+        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks,
+        RustSemanticOutcomes? rustSemanticOutcomes)
     {
         repository.Language = metadata?.Language;
         repository.Framework = metadata?.Framework;
         repository.Properties = metadata is null
             ? null
-            : SerializeRepositoryProperties(metadata, languageStats, rustSemanticFallbacks);
+            : SerializeRepositoryProperties(metadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes);
         return repository;
     }
 
@@ -836,6 +946,38 @@ public partial class IndexingPipeline
     /// across every analyzed group, so a file in a nested crate belongs to that crate's group
     /// rather than to an enclosing (for example root) package's group.
     /// </summary>
+    /// <param name="measuredWorkspaceMs">
+    /// Duration to use when the analyzer did not time the group (a single whole-workspace group).
+    /// </param>
+    private RustSemanticGroupOutcome CreateRustSemanticGroupOutcome(
+        string rootPath,
+        string cargoManifest,
+        RustCrateGroupAnalysis group,
+        RustSemanticFallback? fallback,
+        IReadOnlyList<ExtractionResult>? semanticResults,
+        long measuredWorkspaceMs)
+    {
+        var crates = fallback?.Crates ?? (group.IsWholeWorkspace
+            ? ReadCargoCrateNames(rootPath, cargoManifest)
+            : group.Crates.Order(StringComparer.Ordinal).ToList());
+        var outcome = fallback is null
+            ? RustSemanticGroupOutcome.Semantic
+            : group.Skipped ? RustSemanticGroupOutcome.Skipped : RustSemanticGroupOutcome.Fallback;
+        return new RustSemanticGroupOutcome(
+            group.Index,
+            crates,
+            outcome,
+            fallback?.FailureCode,
+            fallback?.DetailCode,
+            group.Duration is { } duration ? (long)duration.TotalMilliseconds : measuredWorkspaceMs,
+            group.PeakRssBytes is { } peak ? (peak + BytesPerMegabyte - 1) / BytesPerMegabyte : null,
+            semanticResults?.Sum(result => result.ProcessedFiles.Count),
+            semanticResults?.Sum(result => result.Nodes.Count),
+            semanticResults?.Sum(result => result.Edges.Count));
+    }
+
+    private const long BytesPerMegabyte = 1024L * 1024L;
+
     private static RustSemanticFallback? FindRustSemanticFallback(
         IReadOnlyList<RustSourceOwner> owners,
         string relativePath)
@@ -990,7 +1132,8 @@ public partial class IndexingPipeline
     private string? SerializeRepositoryProperties(
         ProjectMetadata metadata,
         IReadOnlyDictionary<string, LanguageStatAccumulator> languageStats,
-        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks)
+        IReadOnlyList<RustSemanticFallback> rustSemanticFallbacks,
+        RustSemanticOutcomes? rustSemanticOutcomes)
     {
         var properties = DotnetSupportInspector.BuildRepositoryProperties(metadata.DotnetSupport) ??
                          new Dictionary<string, object>(StringComparer.Ordinal);
@@ -1015,6 +1158,8 @@ public partial class IndexingPipeline
 
         if (rustSemanticFallbacks.Count > 0)
             properties["rustSemanticFallbacks"] = rustSemanticFallbacks;
+        if (rustSemanticOutcomes is not null)
+            properties["rustSemanticOutcomes"] = rustSemanticOutcomes;
 
         return properties.Count == 0
             ? null

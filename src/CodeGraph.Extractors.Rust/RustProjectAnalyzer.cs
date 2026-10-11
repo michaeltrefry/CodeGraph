@@ -154,7 +154,12 @@ public class RustProjectAnalyzer : IRustAnalyzer
                     context.ProjectName,
                     skipped.FailureCode,
                     group.Crates);
-                outcomes.Add(new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, null, skipped));
+                outcomes.Add(new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, null, skipped)
+                {
+                    Index = group.Index,
+                    Skipped = true,
+                    Duration = TimeSpan.Zero
+                });
                 continue;
             }
 
@@ -163,7 +168,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 workspaceDeadline.Token, ct));
         }
 
-        return new RustWorkspaceAnalysis(outcomes);
+        return new RustWorkspaceAnalysis(outcomes) { Settings = _groupSettings.ToSnapshot() };
     }
 
     private async Task<RustCrateGroupAnalysis> AnalyzeGroupAsync(
@@ -185,7 +190,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
             _groupSettings.GroupTimeout,
             _groupSettings.MemoryLimitBytes,
             workspaceDeadline,
-            _groupSettings.WorkspaceTimeout);
+            _groupSettings.WorkspaceTimeout,
+            new PeakRssTracker());
         var stopwatch = Stopwatch.StartNew();
         var tempDir = Path.Combine(Path.GetTempPath(), $"codegraph-rust-scip-{Guid.NewGuid():N}");
         try
@@ -224,7 +230,12 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 stopwatch.ElapsedMilliseconds,
                 result.Nodes.Count,
                 result.Edges.Count);
-            return new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, [result], null);
+            return new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, [result], null)
+            {
+                Index = group.Index,
+                Duration = stopwatch.Elapsed,
+                PeakRssBytes = budget.PeakRss!.PeakBytes
+            };
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -245,7 +256,12 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 failure.FailureCode,
                 stopwatch.ElapsedMilliseconds,
                 group.Crates);
-            return new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, null, failure);
+            return new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, null, failure)
+            {
+                Index = group.Index,
+                Duration = stopwatch.Elapsed,
+                PeakRssBytes = budget.PeakRss!.PeakBytes
+            };
         }
         finally
         {
@@ -523,12 +539,14 @@ public class RustProjectAnalyzer : IRustAnalyzer
             : Task.FromResult("");
         var stderrTask = ReadBoundedTailAsync(process.StandardError, _stderrTailCharacters);
         using var watchdogStop = new CancellationTokenSource();
-        var watchdog = StartMemoryWatchdog(process, processGroupId, budget.MemoryLimitBytes, watchdogStop.Token);
+        var watchdog = StartMemoryWatchdog(
+            process, processGroupId, budget.MemoryLimitBytes, budget.PeakRss is not null, watchdogStop.Token);
 
         try
         {
             await process.WaitForExitAsync(timeout.Token);
             var memory = await StopWatchdogAsync(watchdog, watchdogStop);
+            budget.PeakRss?.Observe(memory);
             var result = new CommandResult(
                 process.ExitCode,
                 await stdoutTask.WaitAsync(timeout.Token),
@@ -562,6 +580,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 stdoutTask,
                 stderrTask);
             var memory = await StopWatchdogAsync(watchdog, watchdogStop);
+            budget.PeakRss?.Observe(memory);
             stopwatch.Stop();
 
             // Preserve caller cancellation as cancellation, rather than translating it
@@ -624,22 +643,24 @@ public class RustProjectAnalyzer : IRustAnalyzer
     /// <summary>
     /// Enforces the crate-group memory cap on Linux: samples the summed RSS of the command's
     /// process group (setsid makes it the command's own) from /proc and kills the whole group
-    /// once it exceeds the cap. Without a process group or /proc nothing is enforced.
+    /// once it exceeds the cap. Without a process group or /proc nothing is sampled or enforced.
+    /// Crate-group commands are sampled for their peak even without a cap (limit 0).
     /// </summary>
     private Task<MemorySample> StartMemoryWatchdog(
         Process process,
         int? processGroupId,
         long limitBytes,
+        bool sampleWithoutLimit,
         CancellationToken stop)
     {
-        if (limitBytes <= 0)
-            return Task.FromResult(new MemorySample(0, false));
+        if (limitBytes <= 0 && !sampleWithoutLimit)
+            return Task.FromResult(new MemorySample(0, false, false));
         if (processGroupId is null || !Directory.Exists(_procRootPath))
         {
             _logger.LogDebug(
                 "Rust semantic memory limit is not enforced on this platform (no setsid process group or {ProcRoot}).",
                 _procRootPath);
-            return Task.FromResult(new MemorySample(0, false));
+            return Task.FromResult(new MemorySample(0, false, false));
         }
 
         return Task.Run(async () =>
@@ -649,19 +670,19 @@ public class RustProjectAnalyzer : IRustAnalyzer
             {
                 var rss = ReadProcessGroupRssBytes(_procRootPath, processGroupId.Value);
                 peak = Math.Max(peak, rss);
-                if (rss > limitBytes)
+                if (limitBytes > 0 && rss > limitBytes)
                 {
                     KillUnixProcessGroup(processGroupId.Value);
                     try { process.Kill(entireProcessTree: true); }
                     catch (InvalidOperationException) { /* already exited */ }
-                    return new MemorySample(peak, true);
+                    return new MemorySample(peak, true, true);
                 }
 
                 try { await Task.Delay(MemorySampleInterval, stop); }
                 catch (OperationCanceledException) { break; }
             }
 
-            return new MemorySample(peak, false);
+            return new MemorySample(peak, false, true);
         }, CancellationToken.None);
     }
 
@@ -925,14 +946,30 @@ public class RustProjectAnalyzer : IRustAnalyzer
 
     private sealed record RustTools(string RustAnalyzer, string Scip, string Cargo, string Rustc);
 
-    private sealed record MemorySample(long PeakBytes, bool Exceeded);
+    /// <param name="Sampled">True when /proc was sampled for the command's process group.</param>
+    private sealed record MemorySample(long PeakBytes, bool Exceeded, bool Sampled);
 
+    /// <summary>Highest process-group RSS sampled across one crate group's commands.</summary>
+    private sealed class PeakRssTracker
+    {
+        /// <summary>Null until a command of the group was sampled from /proc.</summary>
+        public long? PeakBytes { get; private set; }
+
+        public void Observe(MemorySample sample)
+        {
+            if (sample.Sampled)
+                PeakBytes = Math.Max(PeakBytes ?? 0, sample.PeakBytes);
+        }
+    }
+
+    /// <param name="PeakRss">Collects the group's peak RSS; null for workspace-level commands.</param>
     private sealed record CommandBudget(
         CancellationToken GroupDeadline,
         TimeSpan GroupTimeout,
         long MemoryLimitBytes,
         CancellationToken WorkspaceDeadline,
-        TimeSpan WorkspaceTimeout)
+        TimeSpan WorkspaceTimeout,
+        PeakRssTracker? PeakRss = null)
     {
         public static CommandBudget None { get; } = new(
             CancellationToken.None, Timeout.InfiniteTimeSpan, 0, CancellationToken.None, Timeout.InfiniteTimeSpan);
@@ -979,4 +1016,12 @@ internal sealed record RustCrateGroupSettings(
         options.RustSemanticBuildScripts,
         options.RustSemanticProcMacros,
         TimeSpan.FromSeconds(options.RustSemanticWorkspaceTimeoutSeconds));
+
+    public RustSemanticSettingsSnapshot ToSnapshot() => new(
+        GroupSize,
+        (int)GroupTimeout.TotalSeconds,
+        (int)WorkspaceTimeout.TotalSeconds,
+        (int)(MemoryLimitBytes / (1024L * 1024L)),
+        BuildScripts,
+        ProcMacros);
 }
