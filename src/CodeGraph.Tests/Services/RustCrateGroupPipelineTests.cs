@@ -1,11 +1,16 @@
+using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Extractors.Rust;
 using CodeGraph.Models;
+using CodeGraph.Models.Messages;
 using CodeGraph.Services;
+using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Metadata;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Query;
@@ -294,6 +299,255 @@ public sealed class RustCrateGroupPipelineTests
             drop.CommandText = $"DROP DATABASE IF EXISTS `{builder.Database}`";
             await drop.ExecuteNonQueryAsync();
         }
+    }
+
+    [Fact]
+    public async Task ProcessRepositoryThenReAnalyze_MariaDb_RustRecordsReplaceTheLastRunsAlongsideLanguageStats()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        await using var database = await MariaDbRustDatabase.CreateAsync();
+        using var toolchain = CreateThreeCrateWorkspace();
+
+        // A row written before Rust outcomes existed: only the language-stats keys.
+        await database.UseStoreAsync(store => store.UpsertRepositoryAsync(new RepositoryEntity
+        {
+            Name = "RustGroups",
+            Language = "Rust",
+            Framework = "Cargo",
+            Properties = """{"languageStats":{"Rust":{"files":1}},"primaryLanguageBasis":"locNonBlank"}"""
+        }));
+
+        // Consumer-driven run (POST /api/indexer/repositories/process → ProcessRepository).
+        toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, "beta");
+        await database.UseStoreAsync(store => CreateProjectService(store, toolchain.RootPath)
+            .ProcessRepository(new ProcessRepository
+            {
+                Name = "RustGroups",
+                ShouldIndex = true,
+                ShouldAnalyze = false,
+                SkipIfUpToDate = false
+            }, CancellationToken.None));
+
+        var afterProcess = await database.UseStoreAsync(ListedPropertiesAsync);
+        afterProcess.GetProperty("languageStats").GetProperty("Rust").GetProperty("files").GetInt32().ShouldBe(3);
+        afterProcess.GetProperty("primaryLanguageBasis").GetString().ShouldBe("locNonBlank");
+        var processOutcomes = afterProcess.GetProperty("rustSemanticOutcomes");
+        (processOutcomes.GetProperty("semanticGroups").GetInt32(), processOutcomes.GetProperty("fallbackGroups").GetInt32())
+            .ShouldBe((2, 1));
+        afterProcess.GetProperty("rustSemanticFallbacks").EnumerateArray().Single()
+            .GetProperty("crates").EnumerateArray().Single().GetString().ShouldBe("beta");
+
+        // Durable ReAnalyze run (replacement path) without fallbacks: outcomes are replaced
+        // and the fallback record of the previous run is gone.
+        toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, null);
+        await database.UseStoreAsync(store => CreateProjectService(store, toolchain.RootPath)
+            .ReAnalyzeRepository("RustGroups", CancellationToken.None));
+
+        var afterReAnalyze = await database.UseStoreAsync(ListedPropertiesAsync);
+        afterReAnalyze.GetProperty("languageStats").GetProperty("Rust").GetProperty("files").GetInt32().ShouldBe(3);
+        var reAnalyzeOutcomes = afterReAnalyze.GetProperty("rustSemanticOutcomes");
+        (reAnalyzeOutcomes.GetProperty("semanticGroups").GetInt32(), reAnalyzeOutcomes.GetProperty("fallbackGroups").GetInt32())
+            .ShouldBe((3, 0));
+        afterReAnalyze.TryGetProperty("rustSemanticFallbacks", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_MariaDb_RunFailingAfterRustAnalysisKeepsTheLastCompletedIndexResults()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        await using var database = await MariaDbRustDatabase.CreateAsync();
+        using var toolchain = CreateThreeCrateWorkspace();
+        toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, "beta");
+        await database.UseStoreAsync(store => CreatePipeline(store, new IndexingRunDiagnostics())
+            .IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None));
+        var completed = await database.UseStoreAsync(store => store.GetRepositoryByName("RustGroups"));
+
+        // The next run analyzes the workspace (no fallback this time) but its graph write fails.
+        toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, null);
+        var failure = await Should.ThrowAsync<InvalidOperationException>(database.UseStoreAsync(store =>
+            CreatePipeline(FailingFileReplacementStore.Wrap(store), new IndexingRunDiagnostics())
+                .IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None)));
+        failure.Message.ShouldBe(FailingFileReplacementStore.FailureMessage);
+
+        // The repository still describes the last completed run: same indexedAt, same records.
+        var afterFailure = await database.UseStoreAsync(store => store.GetRepositoryByName("RustGroups"));
+        afterFailure!.IndexedAt.ShouldBe(completed!.IndexedAt);
+        var properties = await database.UseStoreAsync(ListedPropertiesAsync);
+        properties.GetProperty("rustSemanticOutcomes").GetProperty("fallbackGroups").GetInt32().ShouldBe(1);
+        properties.GetProperty("rustSemanticFallbacks").EnumerateArray().Single()
+            .GetProperty("crates").EnumerateArray().Single().GetString().ShouldBe("beta");
+    }
+
+    /// <summary>The project's properties as GET /api/projects?search= serializes them.</summary>
+    private static async Task<JsonElement> ListedPropertiesAsync(IGraphStore store)
+    {
+        var list = await new ProjectQueryService(store, Options.Create(new RepositorySourceOptions()))
+            .ListAsync("RustGroups", null, 1, 25);
+        using var response = JsonDocument.Parse(
+            JsonSerializer.Serialize(list, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        return response.RootElement.GetProperty("items").EnumerateArray().Single()
+            .GetProperty("properties").Clone();
+    }
+
+    private static ProjectService CreateProjectService(IGraphStore store, string rootPath) =>
+        new(
+            store,
+            new NoOpBatchAnalysisService(),
+            new NoOpMessageBus(),
+            new FixedRepoProvider(rootPath),
+            CreatePipeline(store, new IndexingRunDiagnostics()),
+            Options.Create(new IndexingOptions { MaxParallelRepos = 1 }),
+            NullLogger<ProjectService>.Instance);
+
+    /// <summary>A throwaway MariaDB database; each operation gets its own DbContext, like a request scope.</summary>
+    private sealed class MariaDbRustDatabase : IAsyncDisposable
+    {
+        private readonly string _serverConnectionString;
+        private readonly MySqlConnectionStringBuilder _builder;
+        private readonly IOptions<MariaDbStorageOptions> _storageOptions;
+        private readonly MariaDbMigrationRunner _runner;
+
+        private MariaDbRustDatabase(string serverConnectionString)
+        {
+            _serverConnectionString = serverConnectionString;
+            _builder = new MySqlConnectionStringBuilder(serverConnectionString)
+            {
+                Database = $"codegraph_rust_persist_test_{Guid.NewGuid():N}"
+            };
+            _storageOptions = Options.Create(new MariaDbStorageOptions
+            {
+                ConnectionString = _builder.ConnectionString,
+                MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+            });
+            _runner = new MariaDbMigrationRunner(_storageOptions, NullLogger<MariaDbMigrationRunner>.Instance);
+        }
+
+        public static async Task<MariaDbRustDatabase> CreateAsync()
+        {
+            var database = new MariaDbRustDatabase(MariaDbTestEnvironment.RequireConnectionString());
+            await database._runner.ApplyConfiguredMigrationsAsync();
+            return database;
+        }
+
+        public Task UseStoreAsync(Func<IGraphStore, Task> action) =>
+            UseStoreAsync(async store =>
+            {
+                await action(store);
+                return true;
+            });
+
+        public async Task<T> UseStoreAsync<T>(Func<IGraphStore, Task<T>> action)
+        {
+            var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                .UseMySql(_builder.ConnectionString, ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                .Options;
+            await using var context = new CodeGraphDbContext(dbOptions);
+            return await action(new MySqlGraphStore(
+                context,
+                _storageOptions,
+                NullLogger<MySqlGraphStore>.Instance,
+                new MySqlAnalysisStore(context),
+                new MySqlMetricsStore(context),
+                new MySqlReviewStore(context),
+                _runner));
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await using var connection = new MySqlConnection(_serverConnectionString);
+            await connection.OpenAsync();
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = $"DROP DATABASE IF EXISTS `{_builder.Database}`";
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>Delegates to a real store but fails the incremental graph write.</summary>
+    public class FailingFileReplacementStore : DispatchProxy
+    {
+        public const string FailureMessage = "Simulated graph write failure.";
+        private IGraphStore _inner = null!;
+
+        public static IGraphStore Wrap(IGraphStore inner)
+        {
+            var proxy = Create<IGraphStore, FailingFileReplacementStore>();
+            ((FailingFileReplacementStore)(object)proxy)._inner = inner;
+            return proxy;
+        }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod!.Name == nameof(IGraphStore.ReplaceProjectFilesAsync))
+                throw new InvalidOperationException(FailureMessage);
+            try
+            {
+                return targetMethod.Invoke(_inner, args);
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException is not null)
+            {
+                ExceptionDispatchInfo.Throw(ex.InnerException);
+                throw;
+            }
+        }
+    }
+
+    private sealed class FixedRepoProvider(string rootPath) : IRepoProvider
+    {
+        public Task<ResolvedRepository> ResolveRepositoryAsync(
+            string repoName,
+            string? localPath,
+            string? repoUrl,
+            CancellationToken ct = default) =>
+            Task.FromResult(new ResolvedRepository(rootPath, $"folder:{repoName}", rootPath, null));
+
+        public Task<string> EnsureLocalAsync(
+            string repoName,
+            string? localPath,
+            string? repoUrl,
+            CancellationToken ct = default) => Task.FromResult(rootPath);
+
+        public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default) =>
+            Task.FromResult(new List<DiscoveredProject>());
+
+        public Task<List<DiscoveredProject>> SearchProjectsAsync(
+            string searchTerm,
+            CancellationToken ct = default) =>
+            Task.FromResult(new List<DiscoveredProject>());
+    }
+
+    private sealed class NoOpMessageBus : IMessageBus
+    {
+        public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class =>
+            Task.CompletedTask;
+    }
+
+    private sealed class NoOpBatchAnalysisService : IBatchAnalysisService
+    {
+        public Task SubmitAnalysisBatchAsync(
+            string repoName,
+            string? repoPath = null,
+            bool includeAllSource = false,
+            CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task ProcessCompletedBatchesAsync(string? repo = null, CancellationToken ct = default) =>
+            Task.CompletedTask;
+
+        public Task ProcessCompletedBatchAsync(
+            string repoName,
+            string providerBatchId,
+            CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task SynthesizeRepoSummaryAsync(
+            string repoName,
+            string batchId,
+            CancellationToken ct) => Task.CompletedTask;
+
+        public Task WriteCodeGraphDocsAsync(string repoName, CancellationToken ct) =>
+            Task.CompletedTask;
     }
 
     private static List<GraphNode> CodeNodes(InMemoryGraphStore store, string filePath) =>

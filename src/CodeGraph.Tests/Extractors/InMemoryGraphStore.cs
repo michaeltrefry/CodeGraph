@@ -346,6 +346,23 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
+    public Task EnsureRepositoryAsync(RepositoryEntity repository)
+    {
+        var index = _projects.FindIndex(p => p.Name.Equals(repository.Name, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            return UpsertRepositoryAsync(repository);
+
+        var existing = _projects[index];
+        _projects[index] = existing with
+        {
+            RepoUrl = repository.RepoUrl ?? existing.RepoUrl,
+            SourceGroup = repository.SourceGroup ?? existing.SourceGroup,
+            LocalPath = repository.LocalPath ?? existing.LocalPath,
+            IsFoundational = repository.IsFoundational
+        };
+        return Task.CompletedTask;
+    }
+
     public Task DeleteRepositoryAsync(string project)
     {
         _projects.RemoveAll(p => p.Name.Equals(project, StringComparison.OrdinalIgnoreCase));
