@@ -9,6 +9,8 @@ public interface IMetricsStore
     // File metrics (vitals)
     Task UpsertFileMetricsBatchAsync(string project, IReadOnlyList<FileMetricsEntity> metrics);
     Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null);
+    /// <summary>The metrics row for one repo-relative file path (exact, case-sensitive match), or null.</summary>
+    Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath);
     Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10);
     Task DeleteFileMetricsAsync(string project);
 

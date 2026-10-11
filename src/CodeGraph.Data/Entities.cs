@@ -209,6 +209,12 @@ public class FileMetricsEntity
     public double RecurringChurnScore { get; set; }
 
     public DateTime ComputedAt { get; set; }
+
+    /// <summary>
+    /// The default-branch commit (checkout HEAD) these metrics were computed at. Null for metrics
+    /// computed before the commit was recorded, or for a source that is not a git checkout.
+    /// </summary>
+    public string? CommitSha { get; set; }
 }
 
 public class ProjectHealthSummaryEntity

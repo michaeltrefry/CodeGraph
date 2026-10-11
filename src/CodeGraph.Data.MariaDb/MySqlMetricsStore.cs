@@ -46,6 +46,7 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
             existing.HealthScore = metric.HealthScore;
             existing.Role = metric.Role;
             existing.RiskScore = metric.RiskScore;
+            existing.ConcernScore = metric.ConcernScore;
             existing.Churn30d = metric.Churn30d;
             existing.Churn90d = metric.Churn90d;
             existing.Churn365d = metric.Churn365d;
@@ -54,6 +55,7 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
             existing.BugFixRatio365d = metric.BugFixRatio365d;
             existing.RecurringChurnScore = metric.RecurringChurnScore;
             existing.ComputedAt = metric.ComputedAt;
+            existing.CommitSha = metric.CommitSha;
         }
 
         await db.SaveChangesAsync();
@@ -70,6 +72,15 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         }
 
         return await query.OrderBy(m => m.FilePath).ToListAsync();
+    }
+
+    public async Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath)
+    {
+        // file_path uses a case-insensitive collation; repository paths are case-sensitive.
+        var candidates = await db.FileMetrics.AsNoTracking()
+            .Where(m => m.Project == project && m.FilePath == filePath)
+            .ToListAsync();
+        return candidates.FirstOrDefault(m => string.Equals(m.FilePath, filePath, StringComparison.Ordinal));
     }
 
     public async Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10)

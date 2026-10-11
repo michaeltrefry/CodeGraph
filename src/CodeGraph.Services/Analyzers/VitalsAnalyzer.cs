@@ -79,6 +79,12 @@ public class VitalsAnalyzer(
 
         var filePaths = fileToDotnetProject.Keys.ToList();
 
+        // The checkout can be fetched and hard-reset (overlay build, scheduled sync) while this
+        // runs, since vitals do not hold the project indexing lock. Read HEAD before any history,
+        // lint or complexity is read and again after; only an unchanged HEAD is recorded as the
+        // commit these metrics describe.
+        var headBefore = await ReadHeadCommitShaAsync(repoPath, ct);
+
         // 2. Run git-based metrics + ESLint in parallel
         var historyTask = ReadHistorySnapshotAsync(repoPath, ct);
         var couplingTask = ComputeCouplingAsync(repoPath, ct: ct);
@@ -118,6 +124,13 @@ public class VitalsAnalyzer(
 
         // 3. Run structural complexity
         var complexity = ComputeComplexityBatch(repoPath, filePaths);
+
+        var headAfter = await ReadHeadCommitShaAsync(repoPath, ct);
+        var commitSha = headBefore == headAfter ? headBefore : null;
+        if (headBefore != headAfter)
+            logger.LogWarning(
+                "Checkout HEAD moved from {Before} to {After} while computing vitals for {Project}; metrics are stored without a commit",
+                headBefore, headAfter, projectName);
 
         // 4. Build FileMetricsEntity list
         var now = DateTime.UtcNow;
@@ -196,7 +209,8 @@ public class VitalsAnalyzer(
                     fileHistory?.WeightedTouches365d ?? 0),
                 BugFixWeightedTouches365d = fileHistory?.WeightedTouches365d ?? 0,
                 RecurringChurnScore = recurringChurnScore,
-                ComputedAt = now
+                ComputedAt = now,
+                CommitSha = commitSha
             });
         }
 
@@ -1476,6 +1490,21 @@ public class VitalsAnalyzer(
             logger.LogDebug(ex, "Failed to enumerate source files in {RepoPath}", repoPath);
         }
         return result;
+    }
+
+    /// <summary>
+    /// The commit the checkout is at. Read before and after history, complexity and lint are read
+    /// so a checkout that moved mid-run is stamped with neither commit. Null when <paramref name="repoPath"/> is not
+    /// itself a git checkout (a folder source; a parent directory's repository is not used).
+    /// </summary>
+    private async Task<string?> ReadHeadCommitShaAsync(string repoPath, CancellationToken ct)
+    {
+        var dotGit = Path.Combine(repoPath, ".git");
+        if (!Directory.Exists(dotGit) && !File.Exists(dotGit))
+            return null;
+
+        var sha = (await RunGitAsync(repoPath, "rev-parse --verify HEAD", ct)).Trim().ToLowerInvariant();
+        return sha.Length is 40 or 64 && sha.All(char.IsAsciiHexDigit) ? sha : null;
     }
 
     private async Task<string> RunGitAsync(string repoPath, string arguments,

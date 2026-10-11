@@ -926,6 +926,191 @@ public class CodeGraphMcpServer(
                     CountUnmapped: overlay => overlay.CountUnmappedInboundEdges(result, name));
         });
 
+    public const string AnalyzeImpactFileTool = "analyze_impact_file";
+    public const string FileHotspotTool = "file_hotspot";
+    public const string RepoNotFoundCode = "repo_not_found";
+    public const string InvalidPathCode = "invalid_path";
+
+    [McpServerTool(Name = AnalyzeImpactFileTool, Title = "Analyze File Impact", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
+     Description("Per-file blast radius: the union of the inbound dependents of every code element in one file, " +
+                 "as structured counts. Answers {path, found, blastRadius, criticalCount, highCount, mediumCount, " +
+                 "lowCount, totalAffected, crossRepoCount, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
+                 "and source (overlay or default-branch). blastRadius is the worst risk level among the affected " +
+                 "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
+                 "nodes (found: false). path is matched case-sensitively. unmappedInboundEdges is null for default-branch answers. No model is called.")]
+    public async Task<CallToolResult> AnalyzeImpactFile(
+        [Description("Indexed repository name.")] string repo,
+        [Description("Repo-relative file path, e.g. src/Orders/OrderService.cs.")] string path,
+        [Description(ShaDescription)] string? sha = null,
+        [Description("Max traversal depth (default 3, max 5)")] int depth = 3)
+    {
+        var (repository, normalizedPath, error) = await ResolveRepoFileAsync(repo, path);
+        if (error is not null)
+            return error;
+
+        var scope = await commitScopes.ResolveAsync(repository!.Name, sha);
+        if (scope.NotIndexed is { } notIndexed)
+            return CommitAnswer.NotIndexed(notIndexed);
+
+        var effectiveDepth = Math.Clamp(depth, 1, 5);
+        var report = await impactAnalysis.AnalyzeFileImpactAsync(repository.Name, normalizedPath!, effectiveDepth, scope.Graph);
+        // The store's file lookup is case-insensitive; match file paths exactly, as file_hotspot does.
+        if (report is not null
+            && !report.ChangedNodes.Any(node => string.Equals(node.FilePath, normalizedPath, StringComparison.Ordinal)))
+            report = null;
+        var summary = report?.Summary;
+        var blastRadius = BlastRadius(report);
+
+        int? unmapped = null;
+        if (scope.Overlay is { } overlay)
+        {
+            // Edges into the queried file count even when it has no nodes at the commit (deleted).
+            var answerNodes = (report is null
+                    ? []
+                    : report.ChangedNodes.Concat(report.AffectedNodes)
+                        .Select(node => ((string?)node.Project, node.NodeId, (string?)node.FilePath)))
+                .Append(((string?)repository.Name, long.MinValue, (string?)normalizedPath));
+            unmapped = overlay.CountUnmappedInboundEdges(answerNodes);
+        }
+
+        var extra = new JsonObject
+        {
+            ["repo"] = repository.Name,
+            ["path"] = normalizedPath,
+            ["depth"] = effectiveDepth,
+            ["found"] = report is not null,
+            ["blastRadius"] = blastRadius,
+            ["criticalCount"] = summary?.CriticalCount ?? 0,
+            ["highCount"] = summary?.HighCount ?? 0,
+            ["mediumCount"] = summary?.MediumCount ?? 0,
+            ["lowCount"] = summary?.LowCount ?? 0,
+            ["totalAffected"] = summary?.TotalAffected ?? 0,
+            ["crossRepoCount"] = summary?.CrossRepoCount ?? 0,
+            ["lowConfidenceCount"] = summary?.LowConfidenceCount ?? 0,
+            ["unmappedInboundEdges"] = unmapped
+        };
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"# File Blast Radius: {repository.Name}/{normalizedPath}\n");
+        if (summary is null)
+        {
+            sb.AppendLine("No graph nodes in this file (found: false); blast radius: none.");
+        }
+        else
+        {
+            sb.AppendLine($"**Blast radius:** {blastRadius}");
+            sb.AppendLine($"**Total affected:** {summary.TotalAffected} nodes ({summary.CriticalCount} critical, " +
+                          $"{summary.HighCount} high, {summary.MediumCount} medium, {summary.LowCount} low)");
+            sb.AppendLine($"**Cross-repo impact:** {summary.CrossRepoCount} other project(s)");
+            if (AnswerConfidence.SummaryLine(summary.LowConfidenceCount) is { } lowConfidence)
+                sb.AppendLine(lowConfidence);
+        }
+
+        if (AnswerConfidence.UnmappedLine(unmapped ?? 0) is { } unmappedLine)
+            sb.AppendLine(unmappedLine);
+
+        var projects = report is null ? [] : ImpactProjects(report);
+        var commit = await commitScopes.DescribeAsync(scope, ProjectsOf(projects.Append(repository.Name)));
+        // Unpinned: name this repository's default-branch index commit; commits names every repository.
+        if (!scope.IsPinned)
+            commit = commit with { CommitSha = commit.Commits.GetValueOrDefault(repository.Name) };
+        return CommitAnswer.Create(sb.ToString(), commit, scope, extra);
+    }
+
+    [McpServerTool(Name = FileHotspotTool, Title = "File Hotspot", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
+     Description("Default-branch vitals for one file: {path, found, riskScore, concernScore, healthScore, churn365d, " +
+                 "complexityScore, computedAt, commitSha}. commitSha is the default-branch commit the metrics were " +
+                 "computed at; it is null for metrics computed before the commit was recorded (concernScore is " +
+                 "then null too, as it was not stored) until the next vitals run. indexCommitSha is the current " +
+                 "default-branch index commit. A file with no metrics answers found: false. No model is called.")]
+    public async Task<CallToolResult> FileHotspot(
+        [Description("Indexed repository name.")] string repo,
+        [Description("Repo-relative file path, e.g. src/Orders/OrderService.cs.")] string path)
+    {
+        var (repository, normalizedPath, error) = await ResolveRepoFileAsync(repo, path);
+        if (error is not null)
+            return error;
+
+        var scope = await commitScopes.ResolveAsync(repository!.Name, null);
+        var indexCommit = await commitScopes.GetDefaultCommitAsync(repository.Name);
+        var metric = await store.GetFileMetricAsync(repository.Name, normalizedPath!);
+        var commitSha = metric?.CommitSha;
+        // A row without a recorded commit predates persisted concern scores (stored as the 0 default).
+        double? concernScore = metric is null || commitSha is null ? null : metric.ConcernScore;
+
+        var extra = new JsonObject
+        {
+            ["repo"] = repository.Name,
+            ["path"] = normalizedPath,
+            ["found"] = metric is not null,
+            ["riskScore"] = metric?.RiskScore,
+            ["concernScore"] = concernScore,
+            ["healthScore"] = metric?.HealthScore,
+            ["churn365d"] = metric?.Churn365d,
+            ["complexityScore"] = metric?.ComplexityScore,
+            ["computedAt"] = metric is null ? null : DateTime.SpecifyKind(metric.ComputedAt, DateTimeKind.Utc),
+            ["commitSha"] = commitSha,
+            ["indexCommitSha"] = indexCommit
+        };
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"# File Hotspot: {repository.Name}/{normalizedPath}\n");
+        if (metric is null)
+        {
+            sb.AppendLine("No vitals metrics for this file on the default branch (found: false).");
+        }
+        else
+        {
+            sb.AppendLine($"**Risk:** {metric.RiskScore:F1}");
+            sb.AppendLine($"**Concern:** {(concernScore is { } concern ? concern.ToString("F1") : "unknown (computed before concern scores were stored)")}");
+            sb.AppendLine($"**Health:** {metric.HealthScore:F1}/10");
+            sb.AppendLine($"**Yearly churn:** {metric.Churn365d:F2}");
+            sb.AppendLine($"**Complexity:** {metric.ComplexityScore}");
+            sb.AppendLine($"**Computed:** {metric.ComputedAt:u} at commit {commitSha ?? "unknown (not recorded for this run)"}");
+            if (commitSha is not null && indexCommit is not null
+                && !string.Equals(commitSha, indexCommit, StringComparison.OrdinalIgnoreCase))
+                sb.AppendLine($"The default-branch index has since moved to {indexCommit}; these metrics describe {commitSha}.");
+        }
+
+        var commit = new CommitDescription(commitSha, new Dictionary<string, string?> { [repository.Name] = commitSha });
+        return CommitAnswer.Create(sb.ToString(), commit, scope, extra);
+    }
+
+    /// <summary>The worst risk level among the affected nodes, or none.</summary>
+    internal static string BlastRadius(ImpactReport? report)
+        => report is null || report.AffectedNodes.Count == 0
+            ? "none"
+            : report.AffectedNodes.Min(node => node.Risk).ToString().ToLowerInvariant();
+
+    private async Task<(ProjectInfo? Repository, string? Path, CallToolResult? Error)> ResolveRepoFileAsync(string repo, string path)
+    {
+        var normalized = NormalizeRepoRelativePath(path);
+        if (normalized is null)
+            return (null, null, CommitAnswer.Error(InvalidPathCode,
+                "path must be a repository-relative file path (no absolute paths, '..' or '.' segments)."));
+        if (string.IsNullOrWhiteSpace(repo))
+            return (null, null, CommitAnswer.Error(RepoNotFoundCode, "repo is required."));
+
+        var repository = await store.GetRepositoryByName(repo.Trim());
+        return repository is null
+            ? (null, null, CommitAnswer.Error(RepoNotFoundCode, $"Repository '{repo.Trim()}' is not indexed."))
+            : (repository, normalized, null);
+    }
+
+    /// <summary>
+    /// Repo-relative path with forward slashes and no leading <c>./</c>; null when it is empty,
+    /// rooted, or contains traversal or empty segments.
+    /// </summary>
+    internal static string? NormalizeRepoRelativePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+        var normalized = path.Trim().Replace('\\', '/');
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+            normalized = normalized[2..];
+        return RepoFileResolver.IsSafeRelativePath(normalized) ? normalized : null;
+    }
+
     private static string FormatImpact(string name, ImpactReport result)
     {
         var sb = new StringBuilder();

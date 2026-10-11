@@ -1080,6 +1080,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult<IReadOnlyList<FileMetricsEntity>>(results);
     }
 
+    public Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath) =>
+        Task.FromResult(_fileMetrics.FirstOrDefault(m =>
+            m.Project == project && string.Equals(m.FilePath, filePath, StringComparison.Ordinal)));
+
     public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10) =>
         Task.FromResult<IReadOnlyList<FileMetricsEntity>>(
             _fileMetrics.Where(m => m.Project == project)

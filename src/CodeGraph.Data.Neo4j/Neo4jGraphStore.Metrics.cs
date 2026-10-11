@@ -48,7 +48,8 @@ public partial class Neo4jGraphStore
                 ["bugFixRatio365d"] = m.BugFixRatio365d,
                 ["bugFixWeightedTouches365d"] = m.BugFixWeightedTouches365d,
                 ["recurringChurnScore"] = m.RecurringChurnScore,
-                ["computedAt"] = m.ComputedAt
+                ["computedAt"] = m.ComputedAt,
+                ["commitSha"] = m.CommitSha
             }).ToList();
 
             await session.ExecuteWriteAsync(async tx =>
@@ -80,7 +81,8 @@ public partial class Neo4jGraphStore
                         fm.bugFixRatio365d = m.bugFixRatio365d,
                         fm.bugFixWeightedTouches365d = m.bugFixWeightedTouches365d,
                         fm.recurringChurnScore = m.recurringChurnScore,
-                        fm.computedAt = m.computedAt
+                        fm.computedAt = m.computedAt,
+                        fm.commitSha = m.commitSha
                     """,
                     new { project, items });
             });
@@ -104,6 +106,20 @@ public partial class Neo4jGraphStore
             await foreach (var record in cursor)
                 results.Add(MapFileMetricsNode(record["fm"].As<INode>()));
             return results;
+        });
+    }
+
+    public async Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath)
+    {
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                "MATCH (fm:FileMetrics {project: $project, filePath: $filePath}) RETURN fm LIMIT 1",
+                new { project, filePath });
+            await foreach (var record in cursor)
+                return MapFileMetricsNode(record["fm"].As<INode>());
+            return null;
         });
     }
 
@@ -310,7 +326,8 @@ public partial class Neo4jGraphStore
         BugFixRatio365d = node.Properties.ContainsKey("bugFixRatio365d") ? node["bugFixRatio365d"].As<double>() : 0,
         BugFixWeightedTouches365d = node.Properties.ContainsKey("bugFixWeightedTouches365d") ? node["bugFixWeightedTouches365d"].As<double>() : 0,
         RecurringChurnScore = node.Properties.ContainsKey("recurringChurnScore") ? node["recurringChurnScore"].As<double>() : 0,
-        ComputedAt = GetDateTimeOrNull(node, "computedAt") ?? DateTime.MinValue
+        ComputedAt = GetDateTimeOrNull(node, "computedAt") ?? DateTime.MinValue,
+        CommitSha = GetStringOrNull(node, "commitSha")
     };
 
     private static ProjectHealthSummaryEntity MapHealthSummaryNode(INode node) => new()

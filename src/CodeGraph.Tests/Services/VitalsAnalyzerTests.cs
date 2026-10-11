@@ -88,6 +88,8 @@ public class VitalsAnalyzerTests
             metrics.Count.ShouldBe(1);
             metrics[0].LintErrors.ShouldBe(1);
             metrics[0].LintWarnings.ShouldBe(2);
+            // Not a git checkout: no commit is recorded.
+            metrics[0].CommitSha.ShouldBeNull();
 
             var diagnostics = await store.GetProjectDiagnosticsAsync("TestProject", "TestProject.Api");
             diagnostics.Count.ShouldBe(1);
@@ -217,6 +219,9 @@ public class VitalsAnalyzerTests
             foo.BugFixRatio365d.ShouldBe(0.5, 0.001);
             foo.BugFixWeightedTouches365d.ShouldBe(1.0, 0.001);
             foo.ConcernScore.ShouldBeGreaterThan(0);
+            // The checkout HEAD the metrics were computed at.
+            var head = (await RunGitAsync(repoPath, "rev-parse HEAD")).Trim();
+            metrics.ShouldAllBe(m => m.CommitSha == head);
 
             var repoSummary = (await store.GetProjectHealthSummariesAsync("TestProject"))
                 .Single(s => string.IsNullOrEmpty(s.DotnetProject));
@@ -311,6 +316,54 @@ public class VitalsAnalyzerTests
         }
     }
 
+    [Fact]
+    public async Task ComputeMetricsAsync_RecordsNoCommit_WhenHeadMovesDuringTheRun()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestProject");
+
+        try
+        {
+            await InitializeGitRepoAsync(repoPath);
+            Directory.CreateDirectory(Path.Combine(repoPath, "src"));
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "src", "Foo.cs"), "namespace Example; public class Foo { }");
+            await CommitAllAsync(repoPath, "initial commit", DateTime.UtcNow.AddDays(-10));
+
+            store.AddNode(new GraphNode
+            {
+                Project = "TestProject",
+                DotnetProject = "TestProject.Api",
+                Label = NodeLabel.File,
+                Name = "Foo.cs",
+                QualifiedName = "src/Foo.cs",
+                FilePath = "src/Foo.cs"
+            });
+
+            // Roslyn lint results make the analyzer run the lint step, during which the
+            // checkout moves to a new commit (as a concurrent sync's fetch + reset would).
+            var lintCache = new LintResultCache();
+            lintCache.Set("TestProject", new Dictionary<string, LintResult> { ["src/Foo.cs"] = new(0, 1) });
+            var movingRunner = new HeadMovingLintRunner(async () =>
+            {
+                await File.WriteAllTextAsync(Path.Combine(repoPath, "src", "Foo.cs"),
+                    "namespace Example; public class Foo { public int Value => 1; }");
+                await CommitAllAsync(repoPath, "moved", DateTime.UtcNow.AddDays(-1));
+            });
+            var analyzer = CreateAnalyzer(store, lintCache, new DiagnosticDetailCache(), movingRunner);
+
+            await analyzer.ComputeMetricsAsync("TestProject", repoPath);
+
+            movingRunner.CallCount.ShouldBe(1);
+            var metrics = await store.GetFileMetricsAsync("TestProject", "TestProject.Api");
+            metrics.ShouldNotBeEmpty();
+            metrics.ShouldAllBe(m => m.CommitSha == null);
+        }
+        finally
+        {
+            Directory.Delete(repoPath, recursive: true);
+        }
+    }
+
     private static VitalsAnalyzer CreateAnalyzer(
         InMemoryGraphStore store,
         LintResultCache lintCache,
@@ -355,7 +408,7 @@ public class VitalsAnalyzerTests
         await RunGitAsync(repoPath, $"commit -m \"{message}\"", ("GIT_AUTHOR_DATE", isoDate), ("GIT_COMMITTER_DATE", isoDate));
     }
 
-    private static async Task RunGitAsync(string repoPath, string arguments, params (string Name, string Value)[] environment)
+    private static async Task<string> RunGitAsync(string repoPath, string arguments, params (string Name, string Value)[] environment)
     {
         var psi = new ProcessStartInfo("git", arguments)
         {
@@ -376,6 +429,7 @@ public class VitalsAnalyzerTests
         await process.WaitForExitAsync();
 
         process.ExitCode.ShouldBe(0, $"git {arguments} failed.\nstdout: {stdout}\nstderr: {stderr}");
+        return stdout;
     }
 
     private sealed class StubLintRunner : ILintRunner
@@ -386,6 +440,18 @@ public class VitalsAnalyzerTests
         {
             CallCount++;
             return Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
+        }
+    }
+
+    private sealed class HeadMovingLintRunner(Func<Task> moveHead) : ILintRunner
+    {
+        public int CallCount { get; private set; }
+
+        public async Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default)
+        {
+            CallCount++;
+            await moveHead();
+            return new Dictionary<string, LintResult>();
         }
     }
 
