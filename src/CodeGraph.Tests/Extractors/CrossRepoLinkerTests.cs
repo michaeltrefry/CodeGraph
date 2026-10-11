@@ -661,4 +661,59 @@ public class CrossRepoLinkerTests
         await _linker.LinkAsync(CancellationToken.None);
         _store.CrossEdges.Count.ShouldBe(0);
     }
+
+    [Fact]
+    public async Task LinkForProjectAsync_LinksScopeProjectWithoutLoadingWholeGraphRows()
+    {
+        var store = new FullScanRejectingGraphStore();
+        CrossRepoLinkFleet.SeedInMemory(store);
+        var linker = new CrossRepoLinker(store, NullLogger<CrossRepoLinker>.Instance);
+
+        await linker.LinkForProjectAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
+
+        CrossRepoLinkFleet.ShouldMatch(store.CrossEdges, QualifiedNameOf(store), CrossRepoLinkFleet.ConsumerLinks);
+        store.CrossEdges.ShouldAllBe(edge =>
+            edge.SourceProject == CrossRepoLinkFleet.Consumer && edge.TargetProject == CrossRepoLinkFleet.Provider);
+    }
+
+    [Fact]
+    public async Task LinkForProjectAsync_LeavesLinksBetweenOtherProjectsAlone()
+    {
+        CrossRepoLinkFleet.SeedInMemory(_store);
+
+        await _linker.LinkForProjectAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
+
+        CrossRepoLinkFleet.ShouldMatch(_store.CrossEdges, QualifiedNameOf(_store), CrossRepoLinkFleet.ConsumerLinks);
+    }
+
+    [Fact]
+    public async Task LinkAsync_LinksEveryProjectPair()
+    {
+        CrossRepoLinkFleet.SeedInMemory(_store);
+
+        await _linker.LinkAsync(CancellationToken.None);
+
+        CrossRepoLinkFleet.ShouldMatch(_store.CrossEdges, QualifiedNameOf(_store),
+            [.. CrossRepoLinkFleet.ConsumerLinks, CrossRepoLinkFleet.OtherLink]);
+    }
+
+    private static Func<long, string> QualifiedNameOf(InMemoryGraphStore store) =>
+        id => store.Nodes.Single(node => node.Id == id).QualifiedName;
+
+    /// <summary>
+    /// sc-25698: post-index linking loaded every CALLS edge and every definition node of every
+    /// project (with their JSON properties) and ran the indexer out of memory once one repository
+    /// reached ~900k edges. The linker must read only the streamed link projections.
+    /// </summary>
+    private sealed class FullScanRejectingGraphStore : InMemoryGraphStore
+    {
+        public override Task<IReadOnlyList<GraphNode>> FindAllNodesByLabelAsync(NodeLabel label, int limit = 50000) =>
+            throw new InvalidOperationException($"Linker loaded every {label} node row");
+
+        public override Task<IReadOnlyList<GraphEdge>> FindAllEdgesByTypeAsync(EdgeType type) =>
+            throw new InvalidOperationException($"Linker loaded every {type} edge row");
+
+        public override Task<Dictionary<long, GraphNode>> FindNodesByIdBatchAsync(IReadOnlyList<long> ids) =>
+            throw new InvalidOperationException($"Linker loaded {ids.Count} whole node rows");
+    }
 }

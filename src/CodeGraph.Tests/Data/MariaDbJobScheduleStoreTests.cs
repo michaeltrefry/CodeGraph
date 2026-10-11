@@ -61,6 +61,8 @@ public class MariaDbJobScheduleStoreTests
             await runner.ApplyConfiguredMigrationsAsync();
 
             await using var context = new CodeGraphDbContext(CreateOptions(builder.ConnectionString));
+            // Start from an empty table: migration 068 seeds the default batch-analysis sweep.
+            await context.Database.ExecuteSqlRawAsync("DELETE FROM job_schedules");
             var store = new MySqlJobScheduleStore(context);
             var now = TrimToSecond(DateTime.UtcNow);
 

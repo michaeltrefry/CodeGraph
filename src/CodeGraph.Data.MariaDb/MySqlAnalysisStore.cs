@@ -341,6 +341,36 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
             .ToListAsync();
     }
 
+    public async Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForProjectAsync(string project)
+    {
+        // Join on the project's nodes instead of sending every node id as an IN list, and leave the
+        // JSON properties on the server: a ~130k-node repository has ~900k edges.
+        var outbound = db.Edges.AsNoTracking()
+            .Join(db.Nodes.Where(n => n.Project == project), e => e.SourceId, n => n.Id,
+                (e, _) => new { e.Id, e.Project, e.SourceId, e.TargetId, e.Type });
+        var inbound = db.Edges.AsNoTracking()
+            .Join(db.Nodes.Where(n => n.Project == project), e => e.TargetId, n => n.Id,
+                (e, _) => new { e.Id, e.Project, e.SourceId, e.TargetId, e.Type });
+
+        var rows = await outbound.Union(inbound).OrderBy(e => e.Id).ToListAsync();
+        return rows.Select(e => new EdgeEntity
+        {
+            Id = e.Id, Project = e.Project, SourceId = e.SourceId, TargetId = e.TargetId, Type = e.Type
+        }).ToList();
+    }
+
+    public async Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string project)
+        => await db.Nodes.AsNoTracking()
+            .Where(n => n.Project == project && (n.Label == "File" || n.DoNotTrust))
+            .OrderBy(n => n.Id)
+            .Select(n => new NodeEntity
+            {
+                Id = n.Id, Project = n.Project, DotnetProject = n.DotnetProject, Label = n.Label, Name = n.Name,
+                QualifiedName = n.QualifiedName, FilePath = n.FilePath, StartLine = n.StartLine,
+                EndLine = n.EndLine, DoNotTrust = n.DoNotTrust
+            })
+            .ToListAsync();
+
     private static StoredAnalysisBatch MapBatch(AnalysisBatchEntity entity)
         => new(entity.Id, entity.Repo, entity.ProviderBatchId, entity.ProviderName, entity.ExecutionMode,
             entity.IncludeAllSource, entity.Status, entity.RequestCount, entity.CompletedCount, entity.SubmittedAt,

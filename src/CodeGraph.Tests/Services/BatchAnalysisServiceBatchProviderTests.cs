@@ -59,6 +59,61 @@ public class BatchAnalysisServiceBatchProviderTests
         messageBus.PublishedMessages.OfType<ProjectAnalysisResultsProcessed>().Count().ShouldBe(1);
     }
 
+    /// <summary>
+    /// sc-25698: the completion-check publish can fail (broker trouble) after the provider accepted
+    /// the batch. The submission must still succeed and the 'submitted' batch must be left for the
+    /// periodic ProcessBatchAnalysis sweep rather than orphaned or reported as a failed submission.
+    /// </summary>
+    [Fact]
+    public async Task SubmitAnalysisBatch_CompletionCheckPublishFails_BatchIsSweptLater()
+    {
+        var store = new InMemoryGraphStore();
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "demo-repo" });
+        var nodeId = await store.UpsertNodeAsync(new GraphNode
+        {
+            Project = "demo-repo",
+            DotnetProject = "Demo.Project",
+            Label = NodeLabel.Class,
+            Name = "OrderService",
+            QualifiedName = "Demo.Project.OrderService",
+            FilePath = "OrderService.cs"
+        });
+        var provider = new RecordingBatchProvider(nodeId);
+        var messageBus = new FailingCompletionCheckMessageBus();
+        var service = new BatchAnalysisService(
+            store,
+            new SingleProviderRegistry(provider),
+            messageBus,
+            new NoOpExclusionService(),
+            Options.Create(new AnalysisOptions { DefaultProvider = "lmstudio" }),
+            new LocalFileSystem(),
+            NullLogger<BatchAnalysisService>.Instance);
+
+        await service.SubmitAnalysisBatchAsync("demo-repo");
+
+        provider.SubmitCalls.ShouldBe(1);
+        (await store.GetPendingBatchesAsync("demo-repo")).ShouldHaveSingleItem();
+
+        await service.ProcessCompletedBatchesAsync();
+
+        (await store.GetPendingBatchesAsync("demo-repo")).ShouldBeEmpty();
+        (await store.GetProjectAnalysesAsync("demo-repo")).Count.ShouldBe(1);
+        messageBus.PublishedMessages.OfType<ProjectAnalysisResultsProcessed>().Count().ShouldBe(1);
+    }
+
+    private sealed class FailingCompletionCheckMessageBus : IMessageBus
+    {
+        public List<object> PublishedMessages { get; } = [];
+
+        public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class
+        {
+            if (message is AnalysisBatchSubmitted)
+                throw new InvalidOperationException("PRECONDITION_FAILED - unknown exchange type 'x-delayed-message'");
+            PublishedMessages.Add(message);
+            return Task.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task SubmitAnalysisBatch_IncludesDefinesMethodChildren_InPrompt()
     {

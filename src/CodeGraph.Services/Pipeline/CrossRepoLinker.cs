@@ -7,7 +7,34 @@ namespace CodeGraph.Services.Pipeline;
 
 public class CrossRepoLinker
 {
-    private const int CrossRepoNodeScanLimit = 250_000;
+    private static readonly IReadOnlyList<NodeLabel> RustDefinitionLabels =
+    [
+        NodeLabel.Function,
+        NodeLabel.Method,
+        NodeLabel.Constructor,
+        NodeLabel.Class,
+        NodeLabel.Struct,
+        NodeLabel.Enum,
+        NodeLabel.Interface,
+        NodeLabel.Namespace,
+        NodeLabel.Property
+    ];
+
+    private static readonly LinkEdgeQuery RustExternalReferenceQuery =
+        new([EdgeType.CALLS, EdgeType.USES_TYPE, EdgeType.IMPLEMENTS])
+        {
+            TargetLabels = [NodeLabel.ExternalSymbol],
+            TargetPropertyEquals = new Dictionary<string, string>
+            {
+                ["source"] = "scip",
+                ["scip_external"] = "true"
+            },
+            TargetPropertyKeys = ["scip_symbol"]
+        };
+
+    private static readonly IReadOnlyDictionary<string, string?> EmptyProperties =
+        new Dictionary<string, string?>();
+
     private readonly IGraphStore _store;
     private readonly ILogger<CrossRepoLinker> _logger;
 
@@ -21,29 +48,26 @@ public class CrossRepoLinker
     {
         _logger.LogInformation("Starting cross-repo linking");
 
-        // Run sequentially — the underlying DbContext is not thread-safe
-        var http = await LinkHttpRoutesAsync(ct);
-        var messaging = await LinkMessagingAsync(ct);
-        var nuget = await LinkNuGetPackagesAsync(ct);
-        var cargo = await LinkCargoPackagesAsync(ct);
-        var rust = await LinkRustSymbolsAsync(ct);
+        var counts = await LinkCoreAsync(scopeProject: null, ct);
 
         _logger.LogInformation(
             "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Rust} Rust semantic links",
-            http, messaging, nuget, cargo, rust);
+            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Rust);
     }
 
     /// <summary>
-    /// Incremental cross-repo linking scoped to a single project.
-    /// Removes stale cross-repo edges for this project, then re-links.
+    /// Incremental cross-repo linking scoped to a single project: removes this project's cross-repo
+    /// edges, then re-creates the links in which it is the source or the target. Links between two
+    /// other projects are left as those projects' own runs wrote them.
     /// Called by RepositoryIndexingCompletedConsumer after a repo is indexed.
     /// </summary>
-    /// <summary>
-    /// Incremental cross-repo linking scoped to a single project.
-    /// Removes stale cross-repo edges for this project, then re-links.
-    /// Runs sequentially (not parallel) because the underlying DbContext is not thread-safe
-    /// when called from a consumer's scoped instance.
-    /// </summary>
+    /// <remarks>
+    /// Every pass reads compact projections streamed from the store (linking keys only), never the
+    /// full node/edge rows of every project: once one repository reached ~130k nodes / ~900k edges,
+    /// loading all CALLS edges and all definition nodes with their properties for each small repo's
+    /// post-index linking exhausted the indexer's managed heap. Passes run sequentially because the
+    /// store's DbContext is not thread-safe.
+    /// </remarks>
     public async Task LinkForProjectAsync(string project, CancellationToken ct)
     {
         _logger.LogInformation("Running incremental cross-repo linking for {Project}", project);
@@ -51,32 +75,58 @@ public class CrossRepoLinker
         // Clear existing cross-repo edges for this project so stale links are removed
         await _store.DeleteCrossRepoEdgesForProjectAsync(project);
 
-        var http = await LinkHttpRoutesAsync(ct);
-        var messaging = await LinkMessagingAsync(ct);
-        var nuget = await LinkNuGetPackagesAsync(ct);
-        var cargo = await LinkCargoPackagesAsync(ct);
-        var rust = await LinkRustSymbolsAsync(ct);
+        var counts = await LinkCoreAsync(project, ct);
 
         _logger.LogInformation(
             "Incremental linking for {Project} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Rust} Rust semantic",
-            project, http, messaging, nuget, cargo, rust);
+            project, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Rust);
     }
 
-    private async Task<int> LinkHttpRoutesAsync(CancellationToken ct)
+    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Rust)> LinkCoreAsync(
+        string? scopeProject, CancellationToken ct)
     {
-        // Collect all HTTP_CALLS edges
-        var httpCallEdges = await _store.FindAllEdgesByTypeAsync(EdgeType.HTTP_CALLS);
+        var http = await LinkHttpRoutesAsync(scopeProject, ct);
+        var messaging = await LinkMessagingAsync(scopeProject, ct);
+        var nuget = await LinkNuGetPackagesAsync(scopeProject, ct);
+        var cargo = await LinkCargoPackagesAsync(scopeProject, ct);
+        var rust = await LinkRustSymbolsAsync(scopeProject, ct);
+        return (http, messaging, nuget, cargo, rust);
+    }
+
+    private static bool InScope(string? scopeProject, string sourceProject, string targetProject) =>
+        scopeProject is null ||
+        sourceProject.Equals(scopeProject, StringComparison.OrdinalIgnoreCase) ||
+        targetProject.Equals(scopeProject, StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<List<T>> ToListAsync<T>(IAsyncEnumerable<T> rows, CancellationToken ct)
+    {
+        var list = new List<T>();
+        await foreach (var row in rows.WithCancellation(ct))
+            list.Add(row);
+        return list;
+    }
+
+    private async Task<int> LinkHttpRoutesAsync(string? scopeProject, CancellationToken ct)
+    {
+        // HTTP_CALLS edges with their source project, the target stub's qualified name (it may carry
+        // a concrete route project hint such as route:OrdersApi:GET:api/orders/{id}) and the call keys.
+        var httpCallEdges = await ToListAsync(_store.StreamLinkEdgesAsync(
+            new LinkEdgeQuery([EdgeType.HTTP_CALLS])
+            {
+                EdgePropertyKeys = ["gateway_call", "request_dto", "service_name", "url_pattern", "http_method"]
+            }, ct), ct);
         if (httpCallEdges.Count == 0)
             return 0;
 
-        // Collect all Route nodes across all projects (may be empty for gateway-only calls)
-        var routes = await _store.FindAllNodesByLabelAsync(NodeLabel.Route);
+        // Route keys across all projects (may be empty for gateway-only calls)
+        var routes = await ToListAsync(_store.StreamLinkNodesAsync(
+            new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = ["http_method", "route_template"] }, ct), ct);
 
         // Build route lookup: normalize templates for matching
         var routeLookup = routes
             .GroupBy(r => NormalizeRouteTemplate(
-                r.Properties.GetValueOrDefault("http_method")?.ToString() ?? "",
-                r.Properties.GetValueOrDefault("route_template")?.ToString() ?? ""))
+                r.Properties.GetValueOrDefault("http_method") ?? "",
+                r.Properties.GetValueOrDefault("route_template") ?? ""))
             .ToDictionary(g => g.Key, g => g.ToList());
 
         var crossEdges = new List<CrossRepoEdge>();
@@ -85,35 +135,24 @@ public class CrossRepoLinker
         var projects = await _store.ListRepositoriesAsync();
         var projectNames = projects.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Batch-fetch endpoint nodes for HTTP_CALLS edges. The source tells us
-        // where the call came from; the target stub may carry a concrete route
-        // project hint such as route:OrdersApi:GET:api/orders/{id}.
-        var httpNodeIds = httpCallEdges
-            .SelectMany(e => new[] { e.SourceId, e.TargetId })
-            .Where(id => id > 0)
-            .Distinct()
-            .ToList();
-        var nodeById = await _store.FindNodesByIdBatchAsync(httpNodeIds);
-
         foreach (var edge in httpCallEdges)
         {
-            var gatewayRaw = edge.Properties.GetValueOrDefault("gateway_call");
-            var isGatewayCall = gatewayRaw is true || (gatewayRaw is string s && bool.TryParse(s, out var b) && b);
-            var requestDto = edge.Properties.GetValueOrDefault("request_dto")?.ToString();
+            var isGatewayCall = GetBoolean(edge.EdgeProperties.GetValueOrDefault("gateway_call"));
+            var requestDto = edge.EdgeProperties.GetValueOrDefault("request_dto");
 
             if (isGatewayCall && requestDto is not null && !requestDto.StartsWith("route:"))
             {
-                var serviceName = edge.Properties.GetValueOrDefault("service_name")?.ToString();
+                var serviceName = edge.EdgeProperties.GetValueOrDefault("service_name");
                 var targetProject = ResolveGatewayTargetProject(serviceName, requestDto, projectNames);
                 if (targetProject is null)
                     continue;
 
-                if (!nodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
-                if (sourceNode.Project == targetProject)
+                if (edge.SourceProject == targetProject ||
+                    !InScope(scopeProject, edge.SourceProject, targetProject))
                     continue;
 
                 crossEdges.Add(CreateCrossRepoEdge(
-                    sourceNode.Project, targetProject, edge.SourceId, edge.TargetId,
+                    edge.SourceProject, targetProject, edge.SourceId, edge.TargetId,
                     EdgeType.HTTP_CALLS, new()
                     {
                         ["request_dto"] = requestDto,
@@ -124,8 +163,8 @@ public class CrossRepoLinker
             }
 
             // Standard route-based HTTP_CALLS matching
-            var urlPattern = edge.Properties.GetValueOrDefault("url_pattern")?.ToString();
-            var httpMethod = edge.Properties.GetValueOrDefault("http_method")?.ToString();
+            var urlPattern = edge.EdgeProperties.GetValueOrDefault("url_pattern");
+            var httpMethod = edge.EdgeProperties.GetValueOrDefault("http_method");
 
             if (urlPattern is null || httpMethod is null)
                 continue;
@@ -134,11 +173,10 @@ public class CrossRepoLinker
 
             // Try exact match first, then pattern match
             var matchedRoutes = FindMatchingRoutes(normalizedCall, httpMethod, urlPattern, routeLookup);
-            var targetNode = nodeById.GetValueOrDefault(edge.TargetId);
             var targetProjectHint = ResolveHttpTargetProject(
-                edge.Properties.GetValueOrDefault("service_name")?.ToString(),
+                edge.EdgeProperties.GetValueOrDefault("service_name"),
                 requestDto,
-                targetNode,
+                edge.TargetQualifiedName,
                 projectNames);
 
             if (targetProjectHint is not null)
@@ -168,12 +206,12 @@ public class CrossRepoLinker
 
             foreach (var route in matchedRoutes)
             {
-                if (!nodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
-                if (sourceNode.Project == route.Project)
+                if (edge.SourceProject == route.Project ||
+                    !InScope(scopeProject, edge.SourceProject, route.Project))
                     continue;
 
                 crossEdges.Add(CreateCrossRepoEdge(
-                    sourceNode.Project, route.Project, edge.SourceId, route.Id,
+                    edge.SourceProject, route.Project, edge.SourceId, route.Id,
                     EdgeType.HTTP_CALLS, new()
                     {
                         ["http_method"] = httpMethod,
@@ -186,65 +224,50 @@ public class CrossRepoLinker
 
         if (crossEdges.Count > 0)
         {
-            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges);
+            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
             _logger.LogInformation("Linked {Count} HTTP call(s) to routes across repos", crossEdges.Count);
         }
 
         return crossEdges.Count;
     }
 
-    private async Task<int> LinkMessagingAsync(CancellationToken ct)
+    private async Task<int> LinkMessagingAsync(string? scopeProject, CancellationToken ct)
     {
-        var publishEdges = await _store.FindAllEdgesByTypeAsync(EdgeType.PUBLISHES);
-        var consumeEdges = await _store.FindAllEdgesByTypeAsync(EdgeType.CONSUMES);
-
-        if (publishEdges.Count == 0 || consumeEdges.Count == 0)
-            return 0;
-
-        // Batch-fetch all node IDs referenced by these edges
-        var allNodeIds = publishEdges.Select(e => e.TargetId)
-            .Concat(publishEdges.Select(e => e.SourceId))
-            .Concat(consumeEdges.Select(e => e.TargetId))
-            .Concat(consumeEdges.Select(e => e.SourceId))
-            .Distinct().ToList();
-        var nodeById = await _store.FindNodesByIdBatchAsync(allNodeIds);
-
         // Group consumers by the event type QN they consume
-        var consumersByEvent = new Dictionary<string, List<GraphEdge>>();
-        foreach (var edge in consumeEdges)
+        var consumersByEvent = new Dictionary<string, List<LinkEdgeRow>>();
+        await foreach (var edge in _store.StreamLinkEdgesAsync(
+                           new LinkEdgeQuery([EdgeType.CONSUMES]), ct).WithCancellation(ct))
         {
-            if (!nodeById.TryGetValue(edge.TargetId, out var targetNode)) continue;
-
-            if (!consumersByEvent.TryGetValue(targetNode.QualifiedName, out var list))
+            if (!consumersByEvent.TryGetValue(edge.TargetQualifiedName, out var list))
             {
-                list = new List<GraphEdge>();
-                consumersByEvent[targetNode.QualifiedName] = list;
+                list = new List<LinkEdgeRow>();
+                consumersByEvent[edge.TargetQualifiedName] = list;
             }
             list.Add(edge);
         }
 
+        if (consumersByEvent.Count == 0)
+            return 0;
+
         var crossEdges = new List<CrossRepoEdge>();
 
-        foreach (var pubEdge in publishEdges)
+        await foreach (var pubEdge in _store.StreamLinkEdgesAsync(
+                           new LinkEdgeQuery([EdgeType.PUBLISHES]), ct).WithCancellation(ct))
         {
-            if (!nodeById.TryGetValue(pubEdge.TargetId, out var pubTarget)) continue;
-
-            if (!consumersByEvent.TryGetValue(pubTarget.QualifiedName, out var consumers))
+            if (!consumersByEvent.TryGetValue(pubEdge.TargetQualifiedName, out var consumers))
                 continue;
-
-            if (!nodeById.TryGetValue(pubEdge.SourceId, out var publisherSource)) continue;
 
             foreach (var conEdge in consumers)
             {
-                if (!nodeById.TryGetValue(conEdge.SourceId, out var consumerSource)) continue;
-                if (consumerSource.Project == publisherSource.Project)
+                if (conEdge.SourceProject == pubEdge.SourceProject ||
+                    !InScope(scopeProject, pubEdge.SourceProject, conEdge.SourceProject))
                     continue;
 
                 crossEdges.Add(CreateCrossRepoEdge(
-                    publisherSource.Project, consumerSource.Project, pubEdge.SourceId, conEdge.SourceId,
+                    pubEdge.SourceProject, conEdge.SourceProject, pubEdge.SourceId, conEdge.SourceId,
                     EdgeType.PUBLISHES, new()
                     {
-                        ["event_type"] = pubTarget.QualifiedName,
+                        ["event_type"] = pubEdge.TargetQualifiedName,
                         ["confidence_band"] = "high"
                     }));
             }
@@ -252,22 +275,22 @@ public class CrossRepoLinker
 
         if (crossEdges.Count > 0)
         {
-            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges);
+            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
             _logger.LogInformation("Linked {Count} publisher→consumer pair(s) across repos", crossEdges.Count);
         }
 
         return crossEdges.Count;
     }
 
-    private async Task<int> LinkNuGetPackagesAsync(CancellationToken ct)
+    private async Task<int> LinkNuGetPackagesAsync(string? scopeProject, CancellationToken ct)
     {
-        // Find all NuGetPackage nodes
-        var nugetNodes = await _store.FindAllNodesByLabelAsync(NodeLabel.NuGetPackage);
-        if (nugetNodes.Count == 0)
-            return 0;
-
-        // Find all REFERENCES_PACKAGE edges
-        var refEdges = await _store.FindAllEdgesByTypeAsync(EdgeType.REFERENCES_PACKAGE);
+        // REFERENCES_PACKAGE edges whose target is a NuGetPackage node
+        var refEdges = await ToListAsync(_store.StreamLinkEdgesAsync(
+            new LinkEdgeQuery([EdgeType.REFERENCES_PACKAGE])
+            {
+                TargetLabels = [NodeLabel.NuGetPackage],
+                TargetPropertyKeys = ["version"]
+            }, ct), ct);
         if (refEdges.Count == 0)
             return 0;
 
@@ -277,99 +300,86 @@ public class CrossRepoLinker
 
         // Map package names to project names when the stripped package name resolves
         // to another indexed repository.
-        var packageToProject = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pkg in nugetNodes)
-        {
-            var candidateProject = DerivProjectFromPackage(pkg.Name);
-            if (candidateProject is not null && projectNames.Contains(candidateProject))
-            {
-                packageToProject[pkg.Name] = candidateProject;
-            }
-        }
-
-        // Batch-fetch all nodes referenced by these edges
-        var allNuGetNodeIds = refEdges.Select(e => e.TargetId)
-            .Concat(refEdges.Select(e => e.SourceId))
-            .Distinct().ToList();
-        var nugetNodeById = await _store.FindNodesByIdBatchAsync(allNuGetNodeIds);
-
+        var packageToProject = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var crossEdges = new List<CrossRepoEdge>();
 
         foreach (var edge in refEdges)
         {
-            if (!nugetNodeById.TryGetValue(edge.TargetId, out var nugetNode)) continue;
+            if (!packageToProject.TryGetValue(edge.TargetName, out var targetProject))
+            {
+                var candidateProject = DerivProjectFromPackage(edge.TargetName);
+                targetProject = candidateProject is not null && projectNames.Contains(candidateProject)
+                    ? candidateProject
+                    : null;
+                packageToProject[edge.TargetName] = targetProject;
+            }
 
-            if (!packageToProject.TryGetValue(nugetNode.Name, out var targetProject))
-                continue;
-
-            if (!nugetNodeById.TryGetValue(edge.SourceId, out var sourceNode)) continue;
-            if (sourceNode.Project == targetProject)
+            if (targetProject is null ||
+                edge.SourceProject == targetProject ||
+                !InScope(scopeProject, edge.SourceProject, targetProject))
                 continue;
 
             crossEdges.Add(CreateCrossRepoEdge(
-                sourceNode.Project, targetProject, edge.SourceId, nugetNode.Id,
+                edge.SourceProject, targetProject, edge.SourceId, edge.TargetId,
                 EdgeType.REFERENCES_PACKAGE, new()
                 {
-                    ["package_name"] = nugetNode.Name,
-                    ["version"] = nugetNode.Properties.GetValueOrDefault("version") ?? "",
+                    ["package_name"] = edge.TargetName,
+                    ["version"] = edge.TargetProperties.GetValueOrDefault("version") ?? "",
                     ["confidence_band"] = "high"
                 }));
         }
 
         if (crossEdges.Count > 0)
         {
-            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges);
+            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
             _logger.LogInformation("Linked {Count} NuGet package reference(s) across repos", crossEdges.Count);
         }
 
         return crossEdges.Count;
     }
 
-    private async Task<int> LinkCargoPackagesAsync(CancellationToken ct)
+    private async Task<int> LinkCargoPackagesAsync(string? scopeProject, CancellationToken ct)
     {
-        var packageNodes = await _store.FindAllNodesByLabelAsync(
-            NodeLabel.Package, CrossRepoNodeScanLimit);
-        var cargoNodes = packageNodes
-            .Where(node => PropertyEquals(node.Properties, "ecosystem", "cargo"))
-            .ToList();
-        if (cargoNodes.Count == 0)
-            return 0;
+        var definitions = await ToListAsync(_store.StreamLinkNodesAsync(
+            new LinkNodeQuery([NodeLabel.Package])
+            {
+                PropertyEquals = new Dictionary<string, string>
+                {
+                    ["ecosystem"] = "cargo",
+                    ["is_definition"] = "true"
+                },
+                PropertyKeys = ["package_key", "version"]
+            }, ct), ct);
 
-        var definitionsByKey = cargoNodes
-            .Where(node => GetBoolean(node.Properties, "is_definition"))
-            .Where(node => !string.IsNullOrWhiteSpace(GetString(node.Properties, "package_key")))
-            .GroupBy(node => GetString(node.Properties, "package_key")!, StringComparer.Ordinal)
+        var definitionsByKey = definitions
+            .Where(node => !string.IsNullOrWhiteSpace(node.Properties.GetValueOrDefault("package_key")))
+            .GroupBy(node => node.Properties["package_key"]!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
         if (definitionsByKey.Count == 0)
             return 0;
 
-        var packageById = cargoNodes.ToDictionary(node => node.Id);
-        var referenceEdges = await _store.FindAllEdgesByTypeAsync(EdgeType.REFERENCES_PACKAGE);
-        var relevantEdges = referenceEdges
-            .Where(edge => packageById.ContainsKey(edge.TargetId))
-            .ToList();
-        if (relevantEdges.Count == 0)
-            return 0;
-
-        var sourceNodes = await _store.FindNodesByIdBatchAsync(
-            relevantEdges.Select(edge => edge.SourceId).Distinct().ToList());
         var crossEdges = new List<CrossRepoEdge>();
         var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var edge in relevantEdges)
+        await foreach (var edge in _store.StreamLinkEdgesAsync(
+                           new LinkEdgeQuery([EdgeType.REFERENCES_PACKAGE])
+                           {
+                               TargetLabels = [NodeLabel.Package],
+                               TargetPropertyEquals = new Dictionary<string, string> { ["ecosystem"] = "cargo" },
+                               TargetPropertyKeys = ["package_key", "version", "package_name", "local_name"]
+                           }, ct).WithCancellation(ct))
         {
-            var dependency = packageById[edge.TargetId];
-            var packageKey = GetString(dependency.Properties, "package_key");
+            var dependency = edge.TargetProperties;
+            var packageKey = dependency.GetValueOrDefault("package_key");
             if (string.IsNullOrWhiteSpace(packageKey) ||
-                !definitionsByKey.TryGetValue(packageKey, out var candidates) ||
-                !sourceNodes.TryGetValue(edge.SourceId, out var sourceNode))
+                !definitionsByKey.TryGetValue(packageKey, out var candidates))
             {
                 continue;
             }
 
             var targetProjects = candidates
                 .Where(candidate => !candidate.Project.Equals(
-                    sourceNode.Project, StringComparison.OrdinalIgnoreCase))
+                    edge.SourceProject, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(candidate => candidate.Project, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (targetProjects.Count != 1)
@@ -385,12 +395,12 @@ public class CrossRepoLinker
             }
 
             var targetCandidates = targetProjects[0].ToList();
-            var requestedVersion = GetString(dependency.Properties, "version");
+            var requestedVersion = dependency.GetValueOrDefault("version");
             var exactVersionCandidates = string.IsNullOrWhiteSpace(requestedVersion)
                 ? targetCandidates
                 : targetCandidates
                     .Where(candidate => string.Equals(
-                        GetString(candidate.Properties, "version"),
+                        candidate.Properties.GetValueOrDefault("version"),
                         requestedVersion,
                         StringComparison.Ordinal))
                     .ToList();
@@ -407,12 +417,16 @@ public class CrossRepoLinker
                     targetProjects[0].Key);
                 continue;
             }
+
+            if (!InScope(scopeProject, edge.SourceProject, target.Project))
+                continue;
+
             var key = $"{edge.SourceId}\n{target.Id}\n{EdgeType.REFERENCES_PACKAGE}";
             if (!edgeKeys.Add(key))
                 continue;
 
             crossEdges.Add(CreateCrossRepoEdge(
-                sourceNode.Project,
+                edge.SourceProject,
                 target.Project,
                 edge.SourceId,
                 target.Id,
@@ -421,9 +435,9 @@ public class CrossRepoLinker
                 {
                     ["ecosystem"] = "cargo",
                     ["package_key"] = packageKey,
-                    ["package_name"] = GetString(dependency.Properties, "package_name") ?? dependency.Name,
-                    ["local_name"] = GetString(dependency.Properties, "local_name") ?? dependency.Name,
-                    ["version"] = GetString(dependency.Properties, "version") ?? "",
+                    ["package_name"] = dependency.GetValueOrDefault("package_name") ?? edge.TargetName,
+                    ["local_name"] = dependency.GetValueOrDefault("local_name") ?? edge.TargetName,
+                    ["version"] = requestedVersion ?? "",
                     ["confidence_band"] = "high"
                 }));
         }
@@ -438,73 +452,65 @@ public class CrossRepoLinker
         return crossEdges.Count;
     }
 
-    private async Task<int> LinkRustSymbolsAsync(CancellationToken ct)
+    /// <summary>
+    /// Links references to SCIP external symbols to the one definition carrying the same symbol in
+    /// another project. Three streamed passes keep memory proportional to the distinct referenced
+    /// symbols and their definitions, not to every CALLS edge and definition node in the graph:
+    /// (1) collect the distinct referenced symbols, (2) keep only definitions of those symbols,
+    /// (3) resolve each reference.
+    /// </summary>
+    private async Task<int> LinkRustSymbolsAsync(string? scopeProject, CancellationToken ct)
     {
-        var externalTargets = await _store.FindAllNodesByLabelAsync(
-            NodeLabel.ExternalSymbol, CrossRepoNodeScanLimit);
-        var rustTargets = externalTargets
-            .Where(node => PropertyEquals(node.Properties, "source", "scip") &&
-                           GetBoolean(node.Properties, "scip_external"))
-            .ToDictionary(node => node.Id);
-        if (rustTargets.Count == 0)
+        var referencedSymbols = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var edge in _store.StreamLinkEdgesAsync(RustExternalReferenceQuery, ct).WithCancellation(ct))
+        {
+            var symbol = edge.TargetProperties.GetValueOrDefault("scip_symbol");
+            if (!string.IsNullOrWhiteSpace(symbol))
+                referencedSymbols.Add(symbol);
+        }
+        if (referencedSymbols.Count == 0)
             return 0;
 
-        var definitionLabels = new[]
+        var definitionsBySymbol = new Dictionary<string, List<LinkNodeRow>>(StringComparer.Ordinal);
+        await foreach (var node in _store.StreamLinkNodesAsync(
+                           new LinkNodeQuery(RustDefinitionLabels)
+                           {
+                               PropertyEquals = new Dictionary<string, string> { ["source"] = "scip" },
+                               PropertyKeys = ["scip_symbol", "scip_external"]
+                           }, ct).WithCancellation(ct))
         {
-            NodeLabel.Function,
-            NodeLabel.Method,
-            NodeLabel.Constructor,
-            NodeLabel.Class,
-            NodeLabel.Struct,
-            NodeLabel.Enum,
-            NodeLabel.Interface,
-            NodeLabel.Namespace,
-            NodeLabel.Property
-        };
-        var definitions = new List<GraphNode>();
-        foreach (var label in definitionLabels)
-        {
-            definitions.AddRange((await _store.FindAllNodesByLabelAsync(
-                    label, CrossRepoNodeScanLimit))
-                .Where(node => PropertyEquals(node.Properties, "source", "scip"))
-                .Where(node => !GetBoolean(node.Properties, "scip_external")));
-        }
+            if (GetBoolean(node.Properties.GetValueOrDefault("scip_external")))
+                continue;
+            var symbol = node.Properties.GetValueOrDefault("scip_symbol");
+            if (string.IsNullOrWhiteSpace(symbol) || !referencedSymbols.TryGetValue(symbol, out var shared))
+                continue;
 
-        var definitionsBySymbol = definitions
-            .Where(node => !string.IsNullOrWhiteSpace(GetString(node.Properties, "scip_symbol")))
-            .GroupBy(node => GetString(node.Properties, "scip_symbol")!, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+            if (!definitionsBySymbol.TryGetValue(shared, out var list))
+            {
+                list = new List<LinkNodeRow>(1);
+                definitionsBySymbol[shared] = list;
+            }
+            list.Add(node with { Properties = EmptyProperties });
+        }
+        referencedSymbols.Clear();
         if (definitionsBySymbol.Count == 0)
             return 0;
 
-        var semanticEdges = new List<GraphEdge>();
-        foreach (var edgeType in new[] { EdgeType.CALLS, EdgeType.USES_TYPE, EdgeType.IMPLEMENTS })
-        {
-            semanticEdges.AddRange((await _store.FindAllEdgesByTypeAsync(edgeType))
-                .Where(edge => rustTargets.ContainsKey(edge.TargetId)));
-        }
-        if (semanticEdges.Count == 0)
-            return 0;
-
-        var sourcesById = await _store.FindNodesByIdBatchAsync(
-            semanticEdges.Select(edge => edge.SourceId).Distinct().ToList());
         var crossEdges = new List<CrossRepoEdge>();
         var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var edge in semanticEdges)
+        await foreach (var edge in _store.StreamLinkEdgesAsync(RustExternalReferenceQuery, ct).WithCancellation(ct))
         {
-            var externalTarget = rustTargets[edge.TargetId];
-            var symbol = GetString(externalTarget.Properties, "scip_symbol");
+            var symbol = edge.TargetProperties.GetValueOrDefault("scip_symbol");
             if (string.IsNullOrWhiteSpace(symbol) ||
-                !definitionsBySymbol.TryGetValue(symbol, out var candidates) ||
-                !sourcesById.TryGetValue(edge.SourceId, out var sourceNode))
+                !definitionsBySymbol.TryGetValue(symbol, out var candidates))
             {
                 continue;
             }
 
             var targetProjects = candidates
                 .Where(candidate => !candidate.Project.Equals(
-                    sourceNode.Project, StringComparison.OrdinalIgnoreCase))
+                    edge.SourceProject, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(candidate => candidate.Project, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (targetProjects.Count != 1)
@@ -530,12 +536,15 @@ public class CrossRepoLinker
             }
 
             var target = targetCandidates[0];
+            if (!InScope(scopeProject, edge.SourceProject, target.Project))
+                continue;
+
             var key = $"{edge.SourceId}\n{target.Id}\n{edge.Type}";
             if (!edgeKeys.Add(key))
                 continue;
 
             crossEdges.Add(CreateCrossRepoEdge(
-                sourceNode.Project,
+                edge.SourceProject,
                 target.Project,
                 edge.SourceId,
                 target.Id,
@@ -571,21 +580,8 @@ public class CrossRepoLinker
         Properties = properties
     };
 
-    private static bool PropertyEquals(
-        IReadOnlyDictionary<string, object> properties,
-        string key,
-        string expected) =>
-        string.Equals(GetString(properties, key), expected, StringComparison.OrdinalIgnoreCase);
-
-    private static string? GetString(IReadOnlyDictionary<string, object> properties, string key) =>
-        properties.GetValueOrDefault(key)?.ToString();
-
-    private static bool GetBoolean(IReadOnlyDictionary<string, object> properties, string key)
-    {
-        var value = properties.GetValueOrDefault(key);
-        return value is true ||
-               bool.TryParse(value?.ToString(), out var parsed) && parsed;
-    }
+    private static bool GetBoolean(string? value) =>
+        bool.TryParse(value, out var parsed) && parsed;
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -634,9 +630,9 @@ public class CrossRepoLinker
         return false;
     }
 
-    private static List<GraphNode> FindMatchingRoutes(
+    private static List<LinkNodeRow> FindMatchingRoutes(
         string normalizedCall, string httpMethod, string urlPattern,
-        Dictionary<string, List<GraphNode>> routeLookup)
+        Dictionary<string, List<LinkNodeRow>> routeLookup)
     {
         // Exact match after normalization
         if (routeLookup.TryGetValue(normalizedCall, out var exact))
@@ -669,16 +665,16 @@ public class CrossRepoLinker
     private static string? ResolveHttpTargetProject(
         string? serviceName,
         string? requestDto,
-        GraphNode? targetNode,
+        string? targetQualifiedName,
         HashSet<string> projectNames)
     {
         var serviceProject = ResolveProjectName(serviceName, projectNames);
         if (serviceProject is not null)
             return serviceProject;
 
-        if (targetNode is not null)
+        if (targetQualifiedName is not null)
         {
-            var routeProject = TryGetProjectFromRouteQualifiedName(targetNode.QualifiedName);
+            var routeProject = TryGetProjectFromRouteQualifiedName(targetQualifiedName);
             if (routeProject is not null && projectNames.Contains(routeProject))
                 return routeProject;
         }

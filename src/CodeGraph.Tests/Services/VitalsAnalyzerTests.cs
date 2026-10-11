@@ -459,4 +459,117 @@ public class VitalsAnalyzerTests
     {
         public IAnalysisModelProvider GetProvider(string? providerName = null) => throw new NotSupportedException();
     }
+
+    /// <summary>
+    /// sc-25698: per-project health analyses ran their store reads and writes in parallel on the
+    /// caller's scoped DbContext and failed with "A second operation was started on this context".
+    /// </summary>
+    [Fact]
+    public async Task AnalyzeHealthAsync_DoesNotOverlapStoreOperations()
+    {
+        var store = new ConcurrencyDetectingGraphStore();
+        string[] dotnetProjects = ["Demo.Api", "Demo.Core", "Demo.Jobs"];
+        foreach (var dotnetProject in dotnetProjects.Append(null))
+        {
+            await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
+            {
+                Project = "Demo",
+                DotnetProject = dotnetProject,
+                OverallHealth = 6.0,
+                TotalFiles = 1
+            });
+        }
+        await store.UpsertFileMetricsBatchAsync("Demo", dotnetProjects
+            .Select(dotnetProject => new FileMetricsEntity
+            {
+                Project = "Demo", DotnetProject = dotnetProject, FilePath = $"{dotnetProject}/A.cs"
+            })
+            .ToList());
+
+        var analyzer = new VitalsAnalyzer(
+            store,
+            new SlowAnalysisProviderRegistry(),
+            Options.Create(new AnalysisOptions()),
+            new LocalFileSystem(),
+            new CompositeLintRunner(new LintResultCache(), new NoOpLintRunner(), NullLogger<CompositeLintRunner>.Instance),
+            new LintResultCache(),
+            new DiagnosticDetailCache(),
+            NullLogger<VitalsAnalyzer>.Instance);
+
+        await analyzer.AnalyzeHealthAsync("Demo");
+
+        store.OverlapDetected.ShouldBeFalse();
+        (await store.GetProjectHealthAnalysesAsync("Demo")).Select(a => a.DotnetProject ?? "(repo)").Order()
+            .ShouldBe(["(repo)", "Demo.Api", "Demo.Core", "Demo.Jobs"]);
+    }
+
+    private sealed class ConcurrencyDetectingGraphStore : InMemoryGraphStore
+    {
+        private int _activeOperations;
+
+        public bool OverlapDetected { get; private set; }
+
+        public override Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null) =>
+            TrackAsync(() => base.GetFileMetricsAsync(project, dotnetProject));
+
+        public override Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis) =>
+            TrackAsync(async () =>
+            {
+                await base.UpsertProjectHealthAnalysisAsync(analysis);
+                return true;
+            });
+
+        private async Task<T> TrackAsync<T>(Func<Task<T>> operation)
+        {
+            if (Interlocked.Increment(ref _activeOperations) > 1)
+                OverlapDetected = true;
+            try
+            {
+                await Task.Delay(20);
+                return await operation();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeOperations);
+            }
+        }
+    }
+
+    private sealed class NoOpLintRunner : ILintRunner
+    {
+        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
+    }
+
+    private sealed class SlowAnalysisProviderRegistry : IAnalysisProviderRegistry
+    {
+        private readonly SlowProvider _provider = new();
+
+        public IAnalysisModelProvider GetProvider(string? providerName = null) => _provider;
+
+        private sealed class SlowProvider : IAnalysisModelProvider
+        {
+            public string ProviderName => "slow";
+
+            public AnalysisProviderCapabilities Capabilities { get; } = new(false, false, false, false);
+
+            public async Task<AnalysisTextResponse> ExecuteAsync(
+                AnalysisPrompt prompt, AnalysisRequestOptions request, CancellationToken ct = default)
+            {
+                await Task.Delay(Random.Shared.Next(5, 40), ct);
+                return new AnalysisTextResponse("Healthy.", "test-model", ProviderName);
+            }
+
+            public Task<AnalysisBatchSubmissionResult> SubmitBatchAsync(
+                IReadOnlyList<AnalysisBatchRequestItem> items, AnalysisRequestOptions request, CancellationToken ct = default) =>
+                throw new NotSupportedException();
+
+            public Task<AnalysisBatchStatusResult> GetBatchStatusAsync(string batchId, CancellationToken ct = default) =>
+                throw new NotSupportedException();
+
+            public Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
+                string batchId, IReadOnlyList<string>? requestIds = null, CancellationToken ct = default) =>
+                throw new NotSupportedException();
+        }
+    }
 }

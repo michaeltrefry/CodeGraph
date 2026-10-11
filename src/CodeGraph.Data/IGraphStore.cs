@@ -51,6 +51,12 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
     Task<IReadOnlyList<GraphEdge>> FindAllEdgesByTypeAsync(EdgeType type);
     Task<Dictionary<EdgeType, int>> GetEdgeCountsByTypeAsync();
 
+    // Cross-repo link projections: stream only the linking keys, never whole rows of every project.
+    IAsyncEnumerable<LinkNodeRow> StreamLinkNodesAsync(LinkNodeQuery query, CancellationToken ct = default)
+        => CrossRepoLinkProjection.StreamNodesAsync(this, query, ct);
+    IAsyncEnumerable<LinkEdgeRow> StreamLinkEdgesAsync(LinkEdgeQuery query, CancellationToken ct = default)
+        => CrossRepoLinkProjection.StreamEdgesAsync(this, query, ct);
+
     // Cross-repo edges
     Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge);
     Task InsertCrossRepoEdgeBatchAsync(IReadOnlyList<CrossRepoEdge> edges, CancellationToken ct = default);
