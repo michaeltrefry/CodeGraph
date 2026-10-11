@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
@@ -68,10 +69,15 @@ public partial class IndexingPipeline
     {
         var projectLock = ProjectLocks.GetOrAdd(projectName, _ => new SemaphoreSlim(1, 1));
         await projectLock.WaitAsync(ct);
+        var phase = new StrongBox<string>("discovery");
         try
         {
             await IndexProjectCoreAsync(projectName, rootPath, knowledge, changedFilesOnly,
-                repoUrl, sourceGroup, repositoryToolingIdentity, replaceExistingGraph, replacementSyncState, ct);
+                repoUrl, sourceGroup, repositoryToolingIdentity, replaceExistingGraph, replacementSyncState, phase, ct);
+        }
+        catch (Exception ex) when (IndexingFailure.TagPhase(ex, phase.Value!))
+        {
+            throw; // unreachable: TagPhase only annotates
         }
         finally
         {
@@ -87,6 +93,7 @@ public partial class IndexingPipeline
         string? repositoryToolingIdentity,
         bool replaceExistingGraph,
         SyncStateEntity? replacementSyncState,
+        StrongBox<string> phase,
         CancellationToken ct)
     {
         var pipelineSw = Stopwatch.StartNew();
@@ -163,6 +170,7 @@ public partial class IndexingPipeline
         var csprojFiles = _fileSystem.EnumerateFiles(rootPath, "*.csproj", SearchOption.AllDirectories).ToArray();
 
         // Pass 1: Structural nodes (Project, Folder, File)
+        phase.Value = "extraction";
         stepSw.Restart();
         CreateStructuralNodes(projectName, rootPath, files, csprojFiles, buffer);
         _logger.LogInformation("[Timing] Structural nodes: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
@@ -550,6 +558,7 @@ public partial class IndexingPipeline
             detectedMetadata = new ProjectMetadata("Rust", "Cargo");
 
         // Phase 2 — Resolution
+        phase.Value = "resolution";
         stepSw.Restart();
         _logger.LogInformation("Pre-resolution: {Nodes} nodes, {PendingEdges} pending edges, {UnresolvedCalls} unresolved calls",
             buffer.AllNodes.Count, buffer.AllPendingEdges.Count, buffer.AllUnresolvedCalls.Count);
@@ -565,6 +574,7 @@ public partial class IndexingPipeline
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
         // Phase 3 — Flush
+        phase.Value = "graph-write";
         stepSw.Restart();
         int edgeCount;
         if (replaceExistingGraph)
@@ -609,6 +619,7 @@ public partial class IndexingPipeline
         }
 
         // Publish detected metadata only after the graph write succeeds.
+        phase.Value = "repository-metadata";
         if (!replaceExistingGraph && detectedMetadata is not null)
         {
             await _store.UpsertRepositoryAsync(

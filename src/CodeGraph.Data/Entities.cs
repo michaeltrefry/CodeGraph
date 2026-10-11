@@ -94,6 +94,14 @@ public class SyncStateEntity
     public string? LastCommitSha { get; set; }
     public string Status { get; set; } = "idle";
     public string? ErrorMessage { get; set; }
+
+    /// <summary>Commit whose indexing has been failing; null once a run succeeds.</summary>
+    public string? FailedCommitSha { get; set; }
+
+    /// <summary>Consecutive failed indexing runs of <see cref="FailedCommitSha"/>; reset to 0 by a success.</summary>
+    public int ConsecutiveFailures { get; set; }
+
+    public DateTime? LastFailureAt { get; set; }
 }
 
 public class MigrationHistoryEntity

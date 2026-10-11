@@ -89,6 +89,33 @@ public class ProjectService(
 
     private async Task ProcessRepositoryCore(ProcessRepository message, CancellationToken cancellationToken)
     {
+        var phase = "resolve-repository";
+        string? commitSha = null;
+        try
+        {
+            await ProcessRepositoryPhasesAsync(
+                message, value => phase = value, sha => commitSha = sha, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            IndexingFailure.TagPhase(ex, phase);
+            // Host shutdown is not a failure of this commit; everything else counts toward suspension.
+            if (message.ShouldIndex && commitSha is not null
+                && !(ex is OperationCanceledException && cancellationToken.IsCancellationRequested))
+            {
+                await RecordIndexingFailureAsync(message.Name, commitSha, ex);
+            }
+
+            throw;
+        }
+    }
+
+    private async Task ProcessRepositoryPhasesAsync(
+        ProcessRepository message,
+        Action<string> setPhase,
+        Action<string?> setCommitSha,
+        CancellationToken cancellationToken)
+    {
         // 0. Resolve repo URL — fall back to stored repo_url if not provided
         var repoUrl = message.RepoUrl;
         if (string.IsNullOrWhiteSpace(message.Path) && string.IsNullOrWhiteSpace(repoUrl))
@@ -113,21 +140,34 @@ public class ProjectService(
         var sourceGroup = resolvedRepository.SourceGroup;
 
         // 1. Skip if up to date
+        setPhase("check-up-to-date");
+        var commitSha = GetHeadCommitSha(repoPath);
+        setCommitSha(commitSha);
         if (message.SkipIfUpToDate)
         {
             var syncState = await graphStore.GetSyncStateAsync(message.Name);
-            var currentSha = GetHeadCommitSha(repoPath);
-            if (syncState?.LastCommitSha == currentSha && currentSha is not null)
+            if (syncState?.LastCommitSha == commitSha && commitSha is not null)
             {
-                logger.LogInformation("Skipping {Repo} — already at HEAD {Sha}", message.Name, currentSha);
+                logger.LogInformation("Skipping {Repo} — already at HEAD {Sha}", message.Name, commitSha);
+                return;
+            }
+
+            // Routine syncs stop re-running a commit that keeps failing; a new commit or a
+            // manual reindex (SkipIfUpToDate=false) tries again.
+            if (message.ShouldIndex && IsIndexingSuspended(syncState, commitSha))
+            {
+                logger.LogWarning(
+                    "Skipping {Repo} at {Sha}: indexing failed {Failures} consecutive times (last at {LastFailureAt:o}: {LastError}); automatic retries are suspended until the commit changes or a manual reindex",
+                    message.Name, commitSha, syncState!.ConsecutiveFailures, syncState.LastFailureAt,
+                    syncState.ErrorMessage);
                 return;
             }
         }
 
         // 2. Index
-        var commitSha = GetHeadCommitSha(repoPath);
         if (message.ShouldIndex)
         {
+            setPhase("index");
             logger.LogInformation("Indexing {Repo}", message.Name);
             await pipeline.IndexProjectAsync(message.Name, repoPath,
                 repoUrl: repoUrl,
@@ -139,10 +179,12 @@ public class ProjectService(
                     : null,
                 ct: cancellationToken);
 
+            setPhase("sync-state");
             if (!message.ReplaceExistingGraph)
                 await graphStore.UpsertSyncStateAsync(CreateIdleSyncState(message.Name, commitSha));
 
             // 3. Publish event — downstream consumers handle linking, vitals, and analysis
+            setPhase("publish-completion");
             await messageBus.PublishAsync(new RepositoryIndexingCompleted
             {
                 Name = message.Name,
@@ -158,6 +200,7 @@ public class ProjectService(
         }
         else if (message.ShouldAnalyze)
         {
+            setPhase("submit-analysis");
             // Analysis-only (no indexing) — verify graph data exists, then submit directly
             var allNodes = await graphStore.GetAllNodesByProjectAsync(message.Name);
             var hasAnalyzableNodes = allNodes.Any(n =>
@@ -168,6 +211,54 @@ public class ProjectService(
 
             logger.LogInformation("Submitting analysis batch for {Repo} (no indexing)", message.Name);
             await batchService.SubmitAnalysisBatchAsync(message.Name, repoPath, message.IncludeAllSource, cancellationToken);
+        }
+    }
+
+    private bool IsIndexingSuspended(SyncStateEntity? syncState, string? commitSha) =>
+        indexingOptions.MaxConsecutiveIndexFailures > 0
+        && commitSha is not null
+        && syncState is not null
+        && string.Equals(syncState.FailedCommitSha, commitSha, StringComparison.OrdinalIgnoreCase)
+        && syncState.ConsecutiveFailures >= indexingOptions.MaxConsecutiveIndexFailures;
+
+    /// <summary>
+    /// Counts consecutive failures per commit on the sync state, keeping the last successful
+    /// commit untouched so SkipIfUpToDate semantics are unchanged. Never throws: a failure to
+    /// record must not replace the indexing failure being reported.
+    /// </summary>
+    private async Task RecordIndexingFailureAsync(string repository, string commitSha, Exception failure)
+    {
+        try
+        {
+            var existing = await graphStore.GetSyncStateAsync(repository);
+            var failures = existing is not null
+                           && string.Equals(existing.FailedCommitSha, commitSha, StringComparison.OrdinalIgnoreCase)
+                ? existing.ConsecutiveFailures + 1
+                : 1;
+            await graphStore.UpsertSyncStateAsync(new SyncStateEntity
+            {
+                Project = repository,
+                LastSyncAt = existing?.LastSyncAt,
+                LastCommitSha = existing?.LastCommitSha,
+                Status = "error",
+                ErrorMessage = IndexingFailure.Describe(failure),
+                FailedCommitSha = commitSha,
+                ConsecutiveFailures = failures,
+                LastFailureAt = DateTime.UtcNow
+            });
+
+            var limit = indexingOptions.MaxConsecutiveIndexFailures;
+            if (limit > 0 && failures >= limit)
+            {
+                logger.LogError(
+                    "Indexing {Repo} at {Sha} has failed {Failures} consecutive times (limit {Limit}); routine syncs will skip this commit until it changes or a manual reindex runs",
+                    repository, commitSha, failures, limit);
+            }
+        }
+        catch (Exception recordFailure)
+        {
+            logger.LogError(recordFailure,
+                "Could not record the indexing failure of {Repo} at {Sha}", repository, commitSha);
         }
     }
 

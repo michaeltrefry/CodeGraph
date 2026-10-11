@@ -135,6 +135,9 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(s => s.LastCommitSha).HasColumnName("last_commit_sha");
             e.Property(s => s.Status).HasColumnName("status");
             e.Property(s => s.ErrorMessage).HasColumnName("error_message");
+            e.Property(s => s.FailedCommitSha).HasColumnName("failed_commit_sha");
+            e.Property(s => s.ConsecutiveFailures).HasColumnName("consecutive_failures");
+            e.Property(s => s.LastFailureAt).HasColumnName("last_failure_at");
         });
     }
 

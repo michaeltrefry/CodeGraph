@@ -16,6 +16,7 @@ public class CodeGraphStorageOptions
     public string MariaDbConnectionString { get; set; } = "";
     public string MariaDbMigrationsPath { get; set; } = "sql/migrations";
     public int MariaDbMigrationLockTimeoutSeconds { get; set; } = 120;
+    public int MariaDbGraphWriteCommandTimeoutSeconds { get; set; } = 3600;
     public string? MariaDbEncryptionKey { get; set; }
 
     // Embeddings

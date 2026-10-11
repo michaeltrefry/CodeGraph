@@ -19,6 +19,14 @@ public class IndexingOptions
     public int MaxFileSizeKb { get; set; } = 512;
 
     /// <summary>
+    /// Consecutive failed indexing runs of the same repository commit after which routine
+    /// (SkipIfUpToDate) syncs stop retrying it until HEAD moves or a manual reindex
+    /// (SkipIfUpToDate=false) runs. The failure is recorded on the repository's sync state.
+    /// 0 disables the suspension.
+    /// </summary>
+    public int MaxConsecutiveIndexFailures { get; set; } = 3;
+
+    /// <summary>
     /// Maximum wall-clock time allowed for one rust-analyzer SCIP generation command.
     /// Large workspaces may need to resolve and compile build scripts on a cold cache.
     /// </summary>

@@ -514,6 +514,7 @@ public static class Startup
                 options.ConnectionString = storageOptions.MariaDbConnectionString;
                 options.MigrationsPath = storageOptions.MariaDbMigrationsPath;
                 options.MigrationLockTimeoutSeconds = storageOptions.MariaDbMigrationLockTimeoutSeconds;
+                options.GraphWriteCommandTimeoutSeconds = storageOptions.MariaDbGraphWriteCommandTimeoutSeconds;
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
             services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Api);

@@ -1,5 +1,8 @@
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Pipeline;
 using MassTransit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Host.Shared.Consumers;
 
@@ -47,9 +50,17 @@ public static class SharedConsumerTopology
         IBusRegistrationContext context,
         ConsumerOptions options)
     {
+        var maxParallelRepos = Math.Max(1, context.GetRequiredService<IOptions<IndexingOptions>>().Value.MaxParallelRepos);
         bus.ReceiveEndpoint("process-repository", endpoint =>
         {
-            ConsumerConfiguration.ConfigureStandardRetries(endpoint, options);
+            // Only take a delivery when it can start: ProjectService admits MaxParallelRepos runs at a
+            // time, and a prefetched message waiting behind a long run stays unacked. Past RabbitMQ's
+            // consumer_timeout (30 min default) the broker closes the channel and redelivers everything.
+            ConfigureDeliveryLimit(endpoint, maxParallelRepos);
+            // An in-place retry would re-run the whole index under the same unacked delivery, so only
+            // the cheap pre-index phases retry immediately. Delayed redelivery (a fresh delivery), the
+            // 15-minute scheduled sync and the per-commit failure limit cover the rest.
+            ConsumerConfiguration.ConfigureRetries(endpoint, options, IndexingFailure.FailedBeforeIndexing);
             endpoint.ConfigureConsumer<ProcessRepositoryConsumer>(context);
         });
         bus.ReceiveEndpoint("repository-indexing-completed", endpoint =>
@@ -59,7 +70,8 @@ public static class SharedConsumerTopology
         });
         bus.ReceiveEndpoint("analysis-batch-submitted", endpoint =>
         {
-            endpoint.ConcurrentMessageLimit = 1;
+            // Batch result processing runs one at a time; do not hold further deliveries unacked behind it.
+            ConfigureDeliveryLimit(endpoint, 1);
             ConsumerConfiguration.ConfigureStandardRetries(endpoint, options);
             endpoint.ConfigureConsumer<AnalysisBatchSubmittedConsumer>(context);
         });
@@ -78,6 +90,12 @@ public static class SharedConsumerTopology
             ConsumerConfiguration.ConfigureStandardRetries(endpoint, options);
             endpoint.ConfigureConsumer<RepositoryRemovedConsumer>(context);
         });
+    }
+
+    private static void ConfigureDeliveryLimit(IRabbitMqReceiveEndpointConfigurator endpoint, int limit)
+    {
+        endpoint.PrefetchCount = limit;
+        endpoint.ConcurrentMessageLimit = limit;
     }
 
     public static void ConfigureMemoryEndpoint(

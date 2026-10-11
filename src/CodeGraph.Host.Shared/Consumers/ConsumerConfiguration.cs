@@ -6,7 +6,18 @@ namespace CodeGraph.Host.Shared.Consumers;
 
 public static class ConsumerConfiguration
 {
-    public static void ConfigureStandardRetries(IReceiveEndpointConfigurator endpoint, ConsumerOptions options)
+    public static void ConfigureStandardRetries(IReceiveEndpointConfigurator endpoint, ConsumerOptions options) =>
+        ConfigureRetries(endpoint, options, _ => true);
+
+    /// <summary>
+    /// As <see cref="ConfigureStandardRetries"/>, but in-memory (immediate) retries only apply to
+    /// exceptions matching <paramref name="retryInPlace"/>. Use it where a retry would redo long work
+    /// while the delivery stays unacked; delayed redelivery (a fresh delivery) is unchanged.
+    /// </summary>
+    public static void ConfigureRetries(
+        IReceiveEndpointConfigurator endpoint,
+        ConsumerOptions options,
+        Func<Exception, bool> retryInPlace)
     {
         endpoint.UseMessageRetry(retry =>
         {
@@ -14,7 +25,7 @@ public static class ConsumerConfiguration
                     options.ConsumerRetryLimit,
                     TimeSpan.FromMilliseconds(options.ConsumerRetryInitialInterval),
                     TimeSpan.FromMilliseconds(options.ConsumerRetryIntervalIncrement))
-                .Ignore<Exception>(ex => ex is DoNotRetryException);
+                .Ignore<Exception>(ex => ex is DoNotRetryException || !retryInPlace(ex));
         });
 
         endpoint.UseDelayedRedelivery(redeliver =>
