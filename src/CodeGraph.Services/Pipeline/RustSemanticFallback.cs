@@ -43,4 +43,10 @@ public sealed class IndexingRunDiagnostics
 
     public void RecordRustSemanticFallback(RustSemanticFallback fallback) =>
         _rustSemanticFallbacks.Enqueue(fallback);
+
+    /// <summary>Per-group outcomes of the run's Rust semantic analysis; null when none ran.</summary>
+    public RustSemanticOutcomes? RustSemanticOutcomes { get; private set; }
+
+    public void RecordRustSemanticOutcomes(RustSemanticOutcomes outcomes) =>
+        RustSemanticOutcomes = outcomes;
 }

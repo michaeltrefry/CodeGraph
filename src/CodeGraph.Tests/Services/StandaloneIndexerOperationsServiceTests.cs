@@ -558,6 +558,38 @@ public class StandaloneIndexerOperationsServiceTests
     }
 
     [Fact]
+    public async Task DurableWorker_CleanRustSemanticRun_CompletesWithOutcomeSummaryAndNoErrorCode()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runId = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = IndexerRunOperations.ReAnalyze,
+            Target = "SceneWorks",
+            ArgsJson = """{"repo":"SceneWorks"}""",
+            Status = "queued",
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        using var services = CreateWorkerServices(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            new RecordingAdminService(),
+            configure: collection => collection.AddScoped<IProjectService, RustOutcomesProjectService>());
+        var worker = CreateWorker(services);
+
+        (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
+
+        var completed = await runs.GetIndexerRunAsync(runId);
+        completed!.Status.ShouldBe("completed");
+        completed.ErrorCode.ShouldBeNull();
+        completed.Error.ShouldBeNull();
+        completed.Message.ShouldNotBeNull();
+        completed.Message.ShouldEndWith(
+            " Rust semantic: 2 groups (2 semantic, 0 fallback, 0 skipped), 5 crates, 1834s.");
+    }
+
+    [Fact]
     public async Task DurableWorker_SeveralCrateGroupFallbacks_RecordsMixedCodeAndEachGroupInOrder()
     {
         var runs = new FakeIndexerRunStore();
@@ -872,6 +904,27 @@ public class StandaloneIndexerOperationsServiceTests
                 "timeout",
                 "rust_semantic_command_timeout",
                 "rust-analyzer timed out"));
+            return Task.FromResult<AnalysisBatchResponse?>(CreateBatch(repo));
+        }
+
+        public Task ProcessRepository(CodeGraph.Models.Messages.ProcessRepository message, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<bool> DeleteRepositoryAsync(string repo)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class RustOutcomesProjectService(IndexingRunDiagnostics diagnostics) : IProjectService
+    {
+        public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
+        {
+            diagnostics.RecordRustSemanticOutcomes(new RustSemanticOutcomes(
+                "Cargo.toml", 5, 2, 4, 2, 0, 0, 1_834_200,
+                new RustSemanticSettingsSnapshot(4, 600, 3600, 8192, false, false),
+                [
+                    new RustSemanticGroupOutcome(0, ["a", "b", "c", "d"], "semantic", null, null, 1_000_000, 512, 40, 900, 1200),
+                    new RustSemanticGroupOutcome(1, ["e"], "semantic", null, null, 834_200, 256, 10, 300, 400)
+                ]));
             return Task.FromResult<AnalysisBatchResponse?>(CreateBatch(repo));
         }
 

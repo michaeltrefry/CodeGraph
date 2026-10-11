@@ -29,7 +29,20 @@ public interface IRustAnalyzer
 }
 
 /// <summary>Per-crate-group outcome of one Cargo workspace analysis.</summary>
-public sealed record RustWorkspaceAnalysis(IReadOnlyList<RustCrateGroupAnalysis> Groups);
+public sealed record RustWorkspaceAnalysis(IReadOnlyList<RustCrateGroupAnalysis> Groups)
+{
+    /// <summary>The crate-group settings the analysis ran with, when the analyzer reports them.</summary>
+    public RustSemanticSettingsSnapshot? Settings { get; init; }
+}
+
+/// <summary>Effective crate-group settings of one Rust semantic analysis.</summary>
+public sealed record RustSemanticSettingsSnapshot(
+    int GroupSize,
+    int GroupTimeoutSeconds,
+    int WorkspaceTimeoutSeconds,
+    int GroupMemoryLimitMb,
+    bool BuildScripts,
+    bool ProcMacros);
 
 /// <summary>
 /// One crate group's semantic analysis.
@@ -48,6 +61,21 @@ public sealed record RustCrateGroupAnalysis(
     Exception? Failure)
 {
     public bool IsWholeWorkspace => Crates.Count == 0 && SourceDirectories.Count == 0;
+
+    /// <summary>Zero-based position of the group in the workspace's deterministic group order.</summary>
+    public int Index { get; init; }
+
+    /// <summary>True when the group never started because the workspace deadline had passed.</summary>
+    public bool Skipped { get; init; }
+
+    /// <summary>Wall-clock time spent analyzing the group; null when the analyzer did not measure it.</summary>
+    public TimeSpan? Duration { get; init; }
+
+    /// <summary>
+    /// Highest resident memory sampled for any of the group's commands (summed over the command's
+    /// process group from /proc); null where the platform offers no such sampling.
+    /// </summary>
+    public long? PeakRssBytes { get; init; }
 
     public static RustCrateGroupAnalysis WholeWorkspace(IReadOnlyList<ExtractionResult> results) =>
         new([], [], results, null);

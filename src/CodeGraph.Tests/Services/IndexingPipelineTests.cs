@@ -459,6 +459,15 @@ public class IndexingPipelineTests
             recorded.GetProperty("failureCode").GetString().ShouldBe(expectedFailureCode);
             recorded.GetProperty("crates").EnumerateArray().Select(crate => crate.GetString())
                 .ShouldBe(["alpha", "beta"]);
+
+            // No group could run: one whole-workspace fallback outcome, settings from the options.
+            var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+            var group = outcomes.Groups.ShouldHaveSingleItem();
+            group.Outcome.ShouldBe(RustSemanticGroupOutcome.Fallback);
+            group.Crates.ShouldBe(["alpha", "beta"]);
+            (group.FailureCode, group.DetailCode).ShouldBe((expectedFailureCode, detailCode));
+            (outcomes.CrateCount, outcomes.FallbackGroups).ShouldBe((2, 1));
+            outcomes.Settings.ShouldBe(new RustSemanticSettingsSnapshot(8, 600, 3600, 8192, false, false));
         }
         finally
         {
@@ -581,6 +590,11 @@ public class IndexingPipelineTests
             store.Nodes.ShouldNotContain(node => node.Name == "partial-semantic-node");
             AssertLowConfidenceTreeSitterNodes(store, "RustPartialFallback", RustSemanticFailureCategory.Other);
             diagnostics.RustSemanticFallbacks.ShouldHaveSingleItem();
+            // A group the pipeline could not merge is a fallback, not semantic.
+            var group = diagnostics.RustSemanticOutcomes.ShouldNotBeNull().Groups.ShouldHaveSingleItem();
+            group.Outcome.ShouldBe(RustSemanticGroupOutcome.Fallback);
+            group.FailureCode.ShouldBe(RustSemanticFailureCategory.Other);
+            group.Documents.ShouldBeNull();
         }
         finally
         {
@@ -605,6 +619,17 @@ public class IndexingPipelineTests
             store.Nodes.ShouldNotContain(node => GraphNodeConfidence.IsLowConfidence(node));
             var repository = await store.GetRepositoryByName("RustSemantic");
             (repository!.Properties ?? []).ShouldNotContainKey("rustSemanticFallbacks");
+
+            // A whole-workspace analyzer still reports one semantic group covering every crate.
+            var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+            var group = outcomes.Groups.ShouldHaveSingleItem();
+            group.Outcome.ShouldBe(RustSemanticGroupOutcome.Semantic);
+            group.Crates.ShouldBe(["alpha", "beta"]);
+            (group.Documents, group.Nodes, group.Edges).ShouldBe((2, 1, 0));
+            group.DurationMs.ShouldBe(outcomes.TotalDurationMs);
+            group.DurationMs.ShouldBeGreaterThanOrEqualTo(SucceedingRustAnalyzer.AnalysisDelayMs);
+            outcomes.CrateCount.ShouldBe(2);
+            repository.Properties!.ShouldContainKey("rustSemanticOutcomes");
         }
         finally
         {
@@ -1187,11 +1212,15 @@ public class IndexingPipelineTests
 
     private sealed class SucceedingRustAnalyzer : IRustAnalyzer
     {
-        public Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
+        public const int AnalysisDelayMs = 20;
+
+        public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
             string cargoManifestPath,
             ExtractorContext context,
-            CancellationToken ct = default) =>
-            Task.FromResult<IReadOnlyList<ExtractionResult>>(
+            CancellationToken ct = default)
+        {
+            await Task.Delay(AnalysisDelayMs, ct);
+            return
             [
                 new ExtractionResult
                 {
@@ -1209,7 +1238,8 @@ public class IndexingPipelineTests
                     ProcessedFiles = ["crates/alpha/src/lib.rs", "crates/beta/src/lib.rs"],
                     Metadata = new ProjectMetadata("Rust", "Cargo")
                 }
-            ]);
+            ];
+        }
     }
 
     private sealed class PartiallyEnumeratingRustAnalyzer : IRustAnalyzer

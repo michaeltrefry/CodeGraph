@@ -59,6 +59,10 @@ public sealed class RustProjectAnalyzerCrateGroupTests
         toolchain.ProjectJsonFiles().Select(FakeRustToolchain.MemberCrates)
             .ShouldBe([["alpha"], ["beta"], ["macros"]]);
 
+        analysis.Groups.Select(group => group.Index).ShouldBe([0, 1, 2]);
+        analysis.Groups.ShouldAllBe(group => !group.Skipped && group.Duration > TimeSpan.Zero);
+        analysis.Settings.ShouldBe(new RustSemanticSettingsSnapshot(1, 600, 3600, 8192, false, false));
+
         var beta = analysis.Groups[1];
         beta.Results.ShouldBeNull();
         var failure = beta.Failure.ShouldBeOfType<RustSemanticIndexingException>();
@@ -155,6 +159,10 @@ public sealed class RustProjectAnalyzerCrateGroupTests
         analysis.Groups[0].Failure!.Message.ShouldContain("during 'rust-analyzer'");
         analysis.Groups[1].Failure!.Message.ShouldContain("before crates beta were analyzed");
         analysis.Groups[2].Failure!.Message.ShouldContain("before crates macros were analyzed");
+        analysis.Groups.Select(group => group.Skipped).ShouldBe([false, true, true]);
+        analysis.Groups.Select(group => group.Index).ShouldBe([0, 1, 2]);
+        analysis.Groups[0].Duration.ShouldNotBeNull().ShouldBeGreaterThan(TimeSpan.Zero);
+        analysis.Groups.Skip(1).ShouldAllBe(group => group.Duration == TimeSpan.Zero && group.PeakRssBytes == null);
         toolchain.ProjectJsonFiles().Select(FakeRustToolchain.MemberCrates).ShouldBe([["alpha"]]);
     }
 

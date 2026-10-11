@@ -130,8 +130,12 @@ public sealed class IndexerRunBackgroundRunner(
             var message = await execution;
             monitorCancellation.Cancel();
             await IgnoreMonitorCancellationAsync(monitor);
-            var (degradationCode, degradation, degradationSummary) = DescribeDegradations(
-                scope.ServiceProvider.GetService<IndexingRunDiagnostics>());
+            var diagnostics = scope.ServiceProvider.GetService<IndexingRunDiagnostics>();
+            var (degradationCode, degradation, degradationSummary) = DescribeDegradations(diagnostics);
+            // The full per-group record lives in repositories.properties.rustSemanticOutcomes;
+            // the run message keeps a short per-run summary.
+            if (diagnostics?.RustSemanticOutcomes is { } rustOutcomes)
+                message = $"{message} {rustOutcomes.Summary()}";
             if (degradationSummary is not null)
                 message = $"{message} {degradationSummary}";
             if (!await store.CompleteIndexerRunAsync(
