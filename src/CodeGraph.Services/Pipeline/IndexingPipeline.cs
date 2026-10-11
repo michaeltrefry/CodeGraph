@@ -104,9 +104,12 @@ public partial class IndexingPipeline
         };
 
         // Routine upserts need the repository row before node writes for the MariaDB FK.
-        // Replacement creates/updates it inside the graph transaction instead.
+        // Replacement creates/updates it inside the graph transaction instead. Only ensure
+        // the row exists here: indexed_at and the index-result properties (languageStats,
+        // rustSemanticOutcomes, rustSemanticFallbacks, ...) advance together after the graph
+        // write succeeds, so a run that fails or is still running never looks completed.
         if (!replaceExistingGraph)
-            await _store.UpsertRepositoryAsync(repository);
+            await _store.EnsureRepositoryAsync(repository);
 
         var buffer = new GraphBuffer();
         var detectedMetadataCandidates = new List<ProjectMetadata>();

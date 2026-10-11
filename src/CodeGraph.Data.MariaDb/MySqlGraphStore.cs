@@ -65,6 +65,23 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
+    public async Task EnsureRepositoryAsync(RepositoryEntity repository)
+    {
+        var existing = await db.Repositories.FindAsync(repository.Name);
+        if (existing is null)
+        {
+            await UpsertRepositoryAsync(repository);
+            return;
+        }
+
+        existing.RepoUrl = repository.RepoUrl ?? existing.RepoUrl;
+        existing.SourceGroup = repository.SourceGroup ?? existing.SourceGroup;
+        existing.LocalPath = repository.LocalPath ?? existing.LocalPath;
+        existing.IsFoundational = repository.IsFoundational;
+        existing.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
     public async Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync()
     {
         var repositories = await db.Repositories.AsNoTracking()

@@ -15,6 +15,12 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
 
     // Repositories
     Task UpsertRepositoryAsync(RepositoryEntity repository);
+    /// <summary>
+    /// Creates the repository row when it is missing (so graph writes can reference it).
+    /// An existing row only has its identity fields refreshed; its index results
+    /// (indexed_at, language, framework, properties) stay as the last completed run left them.
+    /// </summary>
+    Task EnsureRepositoryAsync(RepositoryEntity repository);
     Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync();
     Task<RepositorySearchResult> SearchRepositoriesAsync(string? search = null, string? group = null,
         int page = 1, int pageSize = 25);

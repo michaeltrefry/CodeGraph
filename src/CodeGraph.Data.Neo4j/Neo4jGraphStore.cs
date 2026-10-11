@@ -101,6 +101,44 @@ public partial class Neo4jGraphStore(
         });
     }
 
+    public async Task EnsureRepositoryAsync(RepositoryEntity repository)
+    {
+        await using var session = sessionFactory.GetSession();
+        var now = DateTime.UtcNow;
+
+        var updated = await session.ExecuteWriteAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                $"MATCH (r:{RepositoryMetadataLabel} {{name: $name}}) RETURN count(r) AS count",
+                new { name = repository.Name });
+            var exists = (await cursor.SingleAsync())["count"].As<long>() > 0;
+            if (!exists)
+                return false;
+
+            await tx.RunAsync($$"""
+                MATCH (r:{{RepositoryMetadataLabel}} {name: $name})
+                SET r.repoUrl = COALESCE($repoUrl, r.repoUrl),
+                    r.sourceGroup = COALESCE($sourceGroup, r.sourceGroup),
+                    r.localPath = COALESCE($localPath, r.localPath),
+                    r.isFoundational = $isFoundational,
+                    r.updatedAt = $now
+                """,
+                new
+                {
+                    name = repository.Name,
+                    now,
+                    repoUrl = repository.RepoUrl,
+                    sourceGroup = repository.SourceGroup,
+                    localPath = repository.LocalPath,
+                    isFoundational = repository.IsFoundational
+                });
+            return true;
+        });
+
+        if (!updated)
+            await UpsertRepositoryAsync(repository);
+    }
+
     public async Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync()
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
