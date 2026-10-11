@@ -404,7 +404,11 @@ public sealed class BranchOverlayServiceTests : IDisposable
     {
         public int LsRemoteCalls { get; private set; }
 
-        protected override async Task<GitResult> RunAsync(string repoPath, IReadOnlyList<string> args, CancellationToken ct)
+        protected override async Task<GitResult> RunAsync(
+            string repoPath,
+            IReadOnlyList<string> args,
+            CancellationToken ct,
+            IReadOnlyDictionary<string, string>? environment = null)
         {
             if (args[0] != "ls-remote")
                 return new GitResult(0, [], "");

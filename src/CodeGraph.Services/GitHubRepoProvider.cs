@@ -13,7 +13,10 @@ public class GitHubRepoProvider(
     HttpClient httpClient,
     IExclusionService exclusionService,
     ILogger<GitHubRepoProvider> logger)
-    : RepoProviderBase(sourceOptionsAccessor.Value.ReposCachePath, logger), IRepoProvider
+    : RepoProviderBase(
+        sourceOptionsAccessor.Value.ReposCachePath,
+        logger,
+        GitHttpCredential.ForGitHub(sourceOptionsAccessor.Value.GitHub.PersonalAccessToken)), IRepoProvider
 {
     private readonly GitHubSourceOptions _github = sourceOptionsAccessor.Value.GitHub;
 
@@ -285,37 +288,32 @@ public class GitHubRepoProvider(
     private static string NormalizeRepoName(string repoName) =>
         Regex.Replace(repoName, "[^A-Za-z0-9]+", "").ToLowerInvariant();
 
-    private string ToCloneUrl(string url)
+    /// <summary>
+    /// The token-free HTTPS URL used for the clone and stored as origin. The PAT is never embedded
+    /// in it: <see cref="RepoProviderBase"/> passes it to each git command, so a rotated PAT takes
+    /// effect on the next fetch.
+    /// </summary>
+    internal string ToCloneUrl(string url)
     {
-        if (string.IsNullOrWhiteSpace(_github.PersonalAccessToken))
-            return url;
+        if (Credential is null
+            || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            return GitRemoteUrl.StripUserInfo(url);
+        }
 
-        // Embed PAT in HTTPS URL: https://x-access-token:{token}@github.com/owner/repo.git
-        var uri = new Uri(url);
         var path = uri.AbsolutePath.TrimStart('/');
         if (!path.EndsWith(".git"))
             path += ".git";
 
-        return $"https://x-access-token:{_github.PersonalAccessToken}@{uri.Host}/{path}";
+        return $"https://{uri.Authority}/{path}";
     }
 
-    protected override async Task FetchAsync(string repoPath, CancellationToken ct)
-    {
-        // Ensure HTTPS URL with token for fetch
-        if (!string.IsNullOrWhiteSpace(_github.PersonalAccessToken))
-        {
-            var currentUrl = (await RunGitOutputAsync(repoPath, "remote get-url origin", ct)).Trim();
-            if (!currentUrl.Contains("x-access-token"))
-            {
-                var httpsUrl = ToCloneUrl(currentUrl);
-                await RunGitAsync(repoPath, $"remote set-url origin \"{httpsUrl}\"", ct);
-            }
-        }
-
-        await EnsureOriginFetchRefspecAsync(repoPath, ct);
-        await RunGitAsync(repoPath, "fetch origin", ct);
-        await ResetToFetchedHeadAsync(repoPath, ct);
-    }
+    /// <summary>
+    /// Existing checkouts are normalized on every fetch, which also removes a token an earlier
+    /// version embedded in origin (otherwise the old token would be reused after rotation).
+    /// </summary>
+    protected override string ToOriginUrl(string currentUrl) => ToCloneUrl(currentUrl);
 }
 
 internal sealed record GitHubDiscoveryScope(string DisplayName, string RepositoryEndpoint);

@@ -270,7 +270,13 @@ public partial class BatchAnalysisService
 
         var publishedCommitSha = await TryGetHeadCommitShaAsync(repoRoot, ct);
         if (options.AutoPushDocs)
-            await RunGitAsync(repoRoot, ["push", "origin", "HEAD"], ct);
+        {
+            // The repository source credential is passed per command, never stored in origin.
+            var credential = GitHttpCredential.FromOptions(repositorySourceOptions);
+            var originUrl = await TryRunGitAsync(repoRoot, ["remote", "get-url", "origin"], ct);
+            var target = GitHttpCredential.ForOrigin(credential, originUrl);
+            await TryRunGitAsync(repoRoot, ["push", target.Remote, "HEAD"], ct, target.Environment, credential);
+        }
 
         return publishedCommitSha;
     }
@@ -294,7 +300,12 @@ public partial class BatchAnalysisService
         return sha.Length >= 40 ? sha : null;
     }
 
-    private async Task<string> TryRunGitAsync(string repoRoot, IReadOnlyList<string> arguments, CancellationToken ct)
+    private async Task<string> TryRunGitAsync(
+        string repoRoot,
+        IReadOnlyList<string> arguments,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null,
+        GitHttpCredential? credential = null)
     {
         var psi = new ProcessStartInfo("git")
         {
@@ -304,10 +315,17 @@ public partial class BatchAnalysisService
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+                psi.Environment[key] = value;
+        }
+
         foreach (var argument in arguments)
             psi.ArgumentList.Add(argument);
 
-        var formattedArgs = FormatGitArguments(arguments);
+        var formattedArgs = GitHttpCredential.Redact(FormatGitArguments(arguments), credential);
 
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start git {formattedArgs}");
@@ -317,7 +335,8 @@ public partial class BatchAnalysisService
         await proc.WaitForExitAsync(ct);
 
         if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"git {formattedArgs} failed with exit code {proc.ExitCode}: {stderr}");
+            throw new InvalidOperationException(
+                $"git {formattedArgs} failed with exit code {proc.ExitCode}: {GitHttpCredential.Redact(stderr, credential)}");
 
         return stdout;
     }

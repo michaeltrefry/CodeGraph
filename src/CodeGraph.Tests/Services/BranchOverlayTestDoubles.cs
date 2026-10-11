@@ -278,11 +278,15 @@ internal sealed class RecordingBranchOverlayGit : CodeGraph.Services.Overlays.Br
 {
     public List<string> Commands { get; } = [];
 
-    protected override Task<GitResult> RunAsync(string repoPath, IReadOnlyList<string> args, CancellationToken ct)
+    protected override Task<GitResult> RunAsync(
+        string repoPath,
+        IReadOnlyList<string> args,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         lock (Commands)
             Commands.Add(string.Join(' ', args));
-        return base.RunAsync(repoPath, args, ct);
+        return base.RunAsync(repoPath, args, ct, environment);
     }
 }
 
