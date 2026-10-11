@@ -937,7 +937,7 @@ public class CodeGraphMcpServer(
                  "lowCount, totalAffected, crossRepoCount, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
                  "and source (overlay or default-branch). blastRadius is the worst risk level among the affected " +
                  "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
-                 "nodes (found: false). unmappedInboundEdges is null for default-branch answers. No model is called.")]
+                 "nodes (found: false). path is matched case-sensitively. unmappedInboundEdges is null for default-branch answers. No model is called.")]
     public async Task<CallToolResult> AnalyzeImpactFile(
         [Description("Indexed repository name.")] string repo,
         [Description("Repo-relative file path, e.g. src/Orders/OrderService.cs.")] string path,
@@ -954,6 +954,10 @@ public class CodeGraphMcpServer(
 
         var effectiveDepth = Math.Clamp(depth, 1, 5);
         var report = await impactAnalysis.AnalyzeFileImpactAsync(repository.Name, normalizedPath!, effectiveDepth, scope.Graph);
+        // The store's file lookup is case-insensitive; match file paths exactly, as file_hotspot does.
+        if (report is not null
+            && !report.ChangedNodes.Any(node => string.Equals(node.FilePath, normalizedPath, StringComparison.Ordinal)))
+            report = null;
         var summary = report?.Summary;
         var blastRadius = BlastRadius(report);
 

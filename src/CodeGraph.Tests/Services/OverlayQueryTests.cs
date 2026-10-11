@@ -680,6 +680,27 @@ public sealed class OverlayQueryTests : IDisposable
     }
 
     [Fact]
+    public async Task PerFileTools_MatchThePathCaseSensitively()
+    {
+        await _store.UpsertFileMetricsBatchAsync(Repo,
+            [new FileMetricsEntity { Project = Repo, FilePath = "src/a.py", RiskScore = 5, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+        var mcp = Mcp();
+
+        // The store's file-node lookup is case-insensitive (as MariaDB's collation is); the tools are not.
+        var impact = (await mcp.AnalyzeImpactFile(Repo, "src/A.py")).StructuredContent!.Value;
+        impact.GetProperty("found").GetBoolean().ShouldBeFalse();
+        impact.GetProperty("blastRadius").GetString().ShouldBe("none");
+        impact.GetProperty("totalAffected").GetInt32().ShouldBe(0);
+        (await mcp.FileHotspot(Repo, "src/A.py")).StructuredContent!.Value
+            .GetProperty("found").GetBoolean().ShouldBeFalse();
+
+        (await mcp.AnalyzeImpactFile(Repo, "src/a.py")).StructuredContent!.Value
+            .GetProperty("found").GetBoolean().ShouldBeTrue();
+        (await mcp.FileHotspot(Repo, "src/a.py")).StructuredContent!.Value
+            .GetProperty("found").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
     public async Task AnalyzeImpactFile_WithOverlaySha_AnswersFromTheOverlay_AndCountsUnmappedEdges()
     {
         var overlayId = await CreateReadyOverlayAsync(_headSha, _baseSha);
