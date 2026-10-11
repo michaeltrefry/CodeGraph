@@ -146,7 +146,7 @@ public class McpToolEntitlementMiddlewareTests
         allList.Body.ShouldContain(first);
         allList.Body.ShouldContain(second);
         var allCall = await InvokeAsync(middleware, 42, Call(2, first));
-        allCall.StatusCode.ShouldNotBe(StatusCodes.Status403Forbidden);
+        allCall.Body.ShouldNotContain("tool_not_entitled");
         dispatched.ShouldContain(body => body.Contains(first));
 
         // Token 43: restricted to an allow-list that excludes the new tools.
@@ -158,14 +158,15 @@ public class McpToolEntitlementMiddlewareTests
         foreach (var name in new[] { first, second })
         {
             var refused = await InvokeAsync(middleware, 43, Call(4, name));
-            refused.StatusCode.ShouldBe(StatusCodes.Status403Forbidden);
+            refused.StatusCode.ShouldBe(StatusCodes.Status200OK);
             refused.Body.ShouldContain("tool_not_entitled");
         }
 
         // Token 44: an allow-list that includes them.
         await store.ReplaceTokenEntitlementsAsync(44, [first, second]);
         var selected = await InvokeAsync(middleware, 44, Call(5, second));
-        selected.StatusCode.ShouldNotBe(StatusCodes.Status403Forbidden);
+        selected.Body.ShouldNotContain("tool_not_entitled");
+        dispatched.ShouldContain(body => body.Contains("\"id\":5"));
     }
 
     private static async Task<(int StatusCode, string Body)> InvokeAsync(McpToolEntitlementMiddleware middleware, long tokenId, string request)
@@ -205,7 +206,7 @@ public class McpToolEntitlementMiddlewareTests
 
         await middleware.InvokeAsync(context);
 
-        context.Response.StatusCode.ShouldBe(StatusCodes.Status403Forbidden);
+        context.Response.StatusCode.ShouldBe(StatusCodes.Status200OK);
         context.Response.Body.Position = 0;
         var body = await new StreamReader(context.Response.Body).ReadToEndAsync();
         body.ShouldContain("provider_disabled");
@@ -237,7 +238,7 @@ public class McpToolEntitlementMiddlewareTests
         await middleware.InvokeAsync(context);
 
         nextCalled.ShouldBeFalse();
-        context.Response.StatusCode.ShouldBe(StatusCodes.Status403Forbidden);
+        context.Response.StatusCode.ShouldBe(StatusCodes.Status200OK);
         context.Response.Body.Position = 0;
         (await new StreamReader(context.Response.Body).ReadToEndAsync()).ShouldContain("token_required");
     }
@@ -301,6 +302,34 @@ public class McpToolEntitlementMiddlewareTests
     }
 
     [Fact]
+    public async Task InvokeAsync_ToolsList_FailsClosed_WhenTheResponseCannotBeParsed()
+    {
+        var store = new RecordingMcpHubStore
+        {
+            Providers = [new() { ProviderKey = "codegraph", Enabled = true }],
+            Tools = [new() { ToolName = "search_graph", ProviderKey = "codegraph", Enabled = true }]
+        };
+        store.Entitlements[42] = ["search_graph"];
+        using var serviceProvider = new ServiceCollection()
+            .AddSingleton<IMcpHubStore>(store)
+            .BuildServiceProvider(validateScopes: true);
+
+        var middleware = CreateMiddleware(
+            context =>
+            {
+                context.Response.ContentType = "text/event-stream";
+                return context.Response.WriteAsync("event: message\ndata: {\"result\":{\"tools\":[{\"name\":\"search_graph\"}\n\n");
+            },
+            serviceProvider.GetRequiredService<IServiceScopeFactory>());
+
+        var response = await InvokeAsync(middleware, 42, """{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{}}""");
+
+        response.Body.ShouldNotContain("search_graph");
+        response.Body.ShouldContain("\"id\":9");
+        response.Body.ShouldContain("tools_list_unfilterable");
+    }
+
+    [Fact]
     public async Task InvokeAsync_RejectsToolCall_WhenToolIsUnavailable()
     {
         var store = new RecordingMcpHubStore
@@ -324,7 +353,7 @@ public class McpToolEntitlementMiddlewareTests
 
         await middleware.InvokeAsync(context);
 
-        context.Response.StatusCode.ShouldBe(StatusCodes.Status403Forbidden);
+        context.Response.StatusCode.ShouldBe(StatusCodes.Status200OK);
         context.Response.Body.Position = 0;
         (await new StreamReader(context.Response.Body).ReadToEndAsync()).ShouldContain("tool_unavailable");
     }
