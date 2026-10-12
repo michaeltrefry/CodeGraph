@@ -43,6 +43,59 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         }
     }
 
+    public async Task<IndexerRunSubmissionResult> CreateOrCoalesceActiveIndexerRunAsync(
+        IndexerRunEntity run,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(run.SubmissionHash);
+        // A server-wide named lock (connection scoped, max 64 chars) serializes the check and the
+        // insert across hosts, so concurrent submissions of the same work create one run.
+        var lockName = $"cg-run:{run.SubmissionHash}";
+        if (lockName.Length > 64)
+            lockName = lockName[..64];
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            var connection = db.Database.GetDbConnection();
+            await using (var acquire = connection.CreateCommand())
+            {
+                acquire.CommandText = "SELECT GET_LOCK(@name, 30)";
+                acquire.CommandTimeout = 60;
+                acquire.Parameters.Add(new MySqlParameter("@name", lockName));
+                if (Convert.ToInt64(await acquire.ExecuteScalarAsync(ct) ?? 0L) != 1)
+                    throw new TimeoutException($"Timed out waiting to submit indexer run '{run.Operation}' for '{run.Target}'.");
+            }
+
+            try
+            {
+                var existingId = await db.IndexerRuns
+                    .AsNoTracking()
+                    .Where(existing =>
+                        existing.Operation == run.Operation &&
+                        existing.SubmissionHash == run.SubmissionHash &&
+                        (existing.Status == "queued" || existing.Status == "running"))
+                    .OrderBy(existing => existing.Id)
+                    .Select(existing => existing.Id)
+                    .FirstOrDefaultAsync(ct);
+                if (existingId != 0)
+                    return new IndexerRunSubmissionResult(existingId, Created: false);
+
+                return await CreateOrGetIndexerRunAsync(run, ct);
+            }
+            finally
+            {
+                await using var release = connection.CreateCommand();
+                release.CommandText = "SELECT RELEASE_LOCK(@name)";
+                release.Parameters.Add(new MySqlParameter("@name", lockName));
+                await release.ExecuteScalarAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
     public async Task UpdateIndexerRunStatusAsync(
         long runId,
         string status,
@@ -109,11 +162,20 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         CancellationToken ct = default)
         => await TryClaimNextIndexerRunAsync(owner, now, leaseExpiresAt, int.MaxValue, ct);
 
+    public Task<IndexerRunLease?> TryClaimNextIndexerRunAsync(
+        string owner,
+        DateTime now,
+        DateTime leaseExpiresAt,
+        int maxAttempts,
+        CancellationToken ct = default)
+        => TryClaimNextIndexerRunAsync(owner, now, leaseExpiresAt, maxAttempts, filter: null, ct);
+
     public async Task<IndexerRunLease?> TryClaimNextIndexerRunAsync(
         string owner,
         DateTime now,
         DateTime leaseExpiresAt,
         int maxAttempts,
+        IndexerRunOperationFilter? filter,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(owner);
@@ -190,18 +252,22 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
         // deadlock cycles under concurrent polling.
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
+        var filterOperation = filter?.Operation;
+        var includeOperation = filter?.Include ?? true;
         var run = await db.IndexerRuns
             .FromSqlInterpolated($"""
                 SELECT *
                 FROM indexer_runs
-                WHERE (status = 'queued'
+                WHERE ((status = 'queued'
                        AND attempt_count < {maxAttempts}
                        AND (next_attempt_at IS NULL OR next_attempt_at <= {now}))
                    OR (status = 'running'
                        AND retry_safe = TRUE
                        AND cancel_requested_at IS NULL
                        AND attempt_count < {maxAttempts}
-                       AND (lease_expires_at IS NULL OR lease_expires_at <= {now}))
+                       AND (lease_expires_at IS NULL OR lease_expires_at <= {now})))
+                  AND ({filterOperation} IS NULL
+                       OR (operation = {filterOperation}) = {includeOperation})
                 ORDER BY created_at, id
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED

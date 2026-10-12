@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -20,7 +21,8 @@ public class ProjectService(
     IRepoProvider repoProvider,
     IndexingPipeline pipeline,
     IOptions<IndexingOptions> indexingOptionsAccessor,
-    ILogger<ProjectService> logger) : IProjectService
+    ILogger<ProjectService> logger,
+    IHostApplicationLifetime? hostLifetime = null) : IProjectService
 {
     private readonly IndexingOptions indexingOptions = indexingOptionsAccessor.Value;
     // Shared across all transient instances to limit concurrent repo processing.
@@ -99,9 +101,11 @@ public class ProjectService(
         catch (Exception ex)
         {
             IndexingFailure.TagPhase(ex, phase);
-            // Host shutdown is not a failure of this commit; everything else counts toward suspension.
+            // Graceful host shutdown is not a failure of this commit. Every other cancellation (a
+            // lost run lease, a cancel request) counts toward suspension like any failure, so a
+            // repository whose run keeps being cancelled cannot be retried forever.
             if (message.ShouldIndex && commitSha is not null
-                && !(ex is OperationCanceledException && cancellationToken.IsCancellationRequested))
+                && !(ex is OperationCanceledException && IsHostShuttingDown))
             {
                 await RecordIndexingFailureAsync(message.Name, commitSha, ex);
             }
@@ -227,6 +231,8 @@ public class ProjectService(
             await batchService.SubmitAnalysisBatchAsync(message.Name, repoPath, message.IncludeAllSource, cancellationToken);
         }
     }
+
+    private bool IsHostShuttingDown => hostLifetime?.ApplicationStopping.IsCancellationRequested == true;
 
     private bool IsIndexingSuspended(SyncStateEntity? syncState, string? commitSha) =>
         indexingOptions.MaxConsecutiveIndexFailures > 0

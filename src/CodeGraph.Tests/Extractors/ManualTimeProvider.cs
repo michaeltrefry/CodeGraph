@@ -24,6 +24,16 @@ internal sealed class ManualTimeProvider : TimeProvider
         return timer;
     }
 
+    /// <summary>Timers waiting to fire (for example a pending <c>Task.Delay</c>).</summary>
+    public int PendingTimers
+    {
+        get
+        {
+            lock (_gate)
+                return _timers.Count;
+        }
+    }
+
     /// <summary>Moves virtual time forward and runs every timer that became due.</summary>
     public void Advance(TimeSpan by)
     {

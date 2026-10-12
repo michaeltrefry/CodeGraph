@@ -476,6 +476,119 @@ public class MariaDbIndexerRunStoreTests
     }
 
     [Fact]
+    public async Task CoalescedSubmissions_CreateOneActiveRunPerWork_WhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            Database = $"cg_idx_coalesce_{Guid.NewGuid():N}"
+        };
+        var databaseName = builder.Database;
+
+        try
+        {
+            await CreateMigrationRunner(builder.ConnectionString).ApplyConfiguredMigrationsAsync();
+            var contexts = Enumerable.Range(0, 4)
+                .Select(_ => new CodeGraphDbContext(CreateOptions(builder.ConnectionString)))
+                .ToList();
+            try
+            {
+                var submissions = await Task.WhenAll(contexts.Select(context =>
+                    new MySqlIndexerRunStore(context).CreateOrCoalesceActiveIndexerRunAsync(NewRun(new string('b', 64)))));
+                submissions.Count(result => result.Created).ShouldBe(1);
+                submissions.Select(result => result.RunId).Distinct().Count().ShouldBe(1);
+                var runId = submissions[0].RunId;
+
+                var store = new MySqlIndexerRunStore(contexts[0]);
+                (await store.CreateOrCoalesceActiveIndexerRunAsync(NewRun(new string('c', 64)))).Created.ShouldBeTrue();
+
+                // Running work still coalesces; terminal work does not.
+                var now = DateTime.UtcNow;
+                var lease = (await store.TryClaimNextIndexerRunAsync("worker-a", now, now.AddMinutes(1), 3))!;
+                lease.Run.Id.ShouldBe(runId);
+                (await store.CreateOrCoalesceActiveIndexerRunAsync(NewRun(new string('b', 64)))).RunId.ShouldBe(runId);
+                (await store.CompleteIndexerRunAsync(lease, "done", DateTime.UtcNow)).ShouldBeTrue();
+                var next = await store.CreateOrCoalesceActiveIndexerRunAsync(NewRun(new string('b', 64)));
+                next.Created.ShouldBeTrue();
+                next.RunId.ShouldNotBe(runId);
+            }
+            finally
+            {
+                foreach (var context in contexts)
+                    await context.DisposeAsync();
+            }
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+
+        static IndexerRunEntity NewRun(string hash) => new()
+        {
+            Operation = "process_repository",
+            RequestedByUsername = "process-repository",
+            Target = "SceneWorks",
+            ArgsJson = """{"name":"SceneWorks"}""",
+            Status = "queued",
+            SubmissionHash = hash,
+            RetrySafe = true,
+            CreatedAt = DateTime.UtcNow
+        };
+    }
+
+    [Fact]
+    public async Task OperationFilteredClaims_SeparateLanesAndRecoverAnAbandonedRepositoryRun_WhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            Database = $"cg_idx_lanes_{Guid.NewGuid():N}"
+        };
+        var databaseName = builder.Database;
+        var repositoryLane = new IndexerRunOperationFilter("process_repository", Include: true);
+        var generalLane = new IndexerRunOperationFilter("process_repository", Include: false);
+
+        try
+        {
+            await CreateMigrationRunner(builder.ConnectionString).ApplyConfiguredMigrationsAsync();
+            await using var context = new CodeGraphDbContext(CreateOptions(builder.ConnectionString));
+            var store = new MySqlIndexerRunStore(context);
+            var start = DateTime.UtcNow;
+            var repoRun = await store.CreateIndexerRunAsync(new IndexerRunEntity
+            {
+                Operation = "process_repository", Target = "SceneWorks", Status = "queued", RetrySafe = true,
+                CreatedAt = start.AddSeconds(-2)
+            });
+            var linkRun = await store.CreateIndexerRunAsync(new IndexerRunEntity
+            {
+                Operation = "link", Target = "all", Status = "queued", RetrySafe = true,
+                CreatedAt = start.AddSeconds(-1)
+            });
+
+            // The older repository run is not visible to the general lane, and vice versa.
+            (await store.TryClaimNextIndexerRunAsync("general", start, start.AddSeconds(45), 3, generalLane))!
+                .Run.Id.ShouldBe(linkRun);
+            var held = (await store.TryClaimNextIndexerRunAsync("worker-a", start, start.AddSeconds(45), 3, repositoryLane))!;
+            held.Run.Id.ShouldBe(repoRun);
+            (await store.TryClaimNextIndexerRunAsync("worker-b", start, start.AddSeconds(45), 3, repositoryLane)).ShouldBeNull();
+
+            // worker-a dies (container restart): nothing is reclaimed while its lease is live...
+            (await store.TryClaimNextIndexerRunAsync(
+                "worker-b", start.AddSeconds(30), start.AddSeconds(75), 3, repositoryLane)).ShouldBeNull();
+            // ...and the retry-safe run is recovered once the lease has expired.
+            var recovered = (await store.TryClaimNextIndexerRunAsync(
+                "worker-b", start.AddSeconds(60), start.AddSeconds(105), 3, repositoryLane))!;
+            recovered.Run.Id.ShouldBe(repoRun);
+            recovered.Run.AttemptCount.ShouldBe(2);
+            (await store.CompleteIndexerRunAsync(held, "stale", start.AddSeconds(61))).ShouldBeFalse();
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+    }
+
+    [Fact]
     public async Task DurableSubmissionIdentity_DeduplicatesConcurrentRequests_WhenConnectionIsConfigured()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();

@@ -1,8 +1,5 @@
 using CodeGraph.Services.Configuration;
-using CodeGraph.Services.Pipeline;
 using MassTransit;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Host.Shared.Consumers;
 
@@ -50,17 +47,12 @@ public static class SharedConsumerTopology
         IBusRegistrationContext context,
         ConsumerOptions options)
     {
-        var maxParallelRepos = Math.Max(1, context.GetRequiredService<IOptions<IndexingOptions>>().Value.MaxParallelRepos);
         bus.ReceiveEndpoint("process-repository", endpoint =>
         {
-            // Only take a delivery when it can start: ProjectService admits MaxParallelRepos runs at a
-            // time, and a prefetched message waiting behind a long run stays unacked. Past RabbitMQ's
-            // consumer_timeout (30 min default) the broker closes the channel and redelivers everything.
-            ConfigureDeliveryLimit(endpoint, maxParallelRepos);
-            // An in-place retry would re-run the whole index under the same unacked delivery, so only
-            // the cheap pre-index phases retry. A failure from indexing onward faults to _error at once;
-            // the 15-minute scheduled sync and the per-commit failure limit cover it.
-            ConsumerConfiguration.ConfigureRetries(endpoint, options, IndexingFailure.FailedBeforeIndexing);
+            // The consumer only records a durable indexer run and acks; the index itself runs in
+            // IndexerRunBackgroundRunner (MaxParallelRepos workers) under a heartbeated lease, so
+            // no delivery is held for the length of an index (RabbitMQ consumer_timeout, sc-25698).
+            ConsumerConfiguration.ConfigureStandardRetries(endpoint, options);
             endpoint.ConfigureConsumer<ProcessRepositoryConsumer>(context);
         });
         bus.ReceiveEndpoint("repository-indexing-completed", endpoint =>
