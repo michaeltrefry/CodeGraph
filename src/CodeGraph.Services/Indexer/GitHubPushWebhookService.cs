@@ -35,6 +35,7 @@ public sealed record GitHubWebhookResult(
 public sealed class GitHubPushWebhookService(
     IOptions<RepositorySourceOptions> repositorySourceOptions,
     IGraphStore graphStore,
+    IExclusionService exclusionService,
     IIndexerOperationsService indexerOperations,
     ILogger<GitHubPushWebhookService> logger)
 {
@@ -88,6 +89,10 @@ public sealed class GitHubPushWebhookService(
         if (project is null)
             return Ignored($"Repository '{repository.FullName}' is not indexed.");
 
+        var exclusionType = await exclusionService.GetExclusionTypeAsync(project.Name, project.SourceGroup);
+        if (exclusionType == "complete")
+            return Ignored($"Repository '{project.Name}' is excluded.");
+
         var sha = payload.After.Trim().ToLowerInvariant();
         IndexerAcceptedResponse accepted;
         try
@@ -98,7 +103,7 @@ public sealed class GitHubPushWebhookService(
                 {
                     Repos = [project.Name],
                     ShouldIndex = true,
-                    ShouldAnalyze = true,
+                    ShouldAnalyze = exclusionType != "no_analysis",
                     SkipIfUpToDate = true
                 },
                 $"github-push:{project.Name}:{sha}",

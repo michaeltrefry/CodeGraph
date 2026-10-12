@@ -1,9 +1,12 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Net;
 using CodeGraph.Api.Controllers;
 using CodeGraph.Data;
+using CodeGraph.Indexer.Client;
 using CodeGraph.Models.Requests;
+using CodeGraph.Services;
 using CodeGraph.Services.Indexer;
 using CodeGraph.Tests.Extractors;
 using CodeGraph.Tests.Services;
@@ -45,6 +48,7 @@ public class GitHubWebhookControllerTests
         var request = JsonSerializer.Deserialize<ProcessRequest>(run.ArgsJson!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         request.Repos.ShouldBe(["dark-factory-sandbox"]);
         request.ShouldIndex.ShouldBeTrue();
+        request.ShouldAnalyze.ShouldBeTrue();
         request.SkipIfUpToDate.ShouldBeTrue();
         _runner.EnqueuedRunIds.ShouldBe([run.Id]);
     }
@@ -118,6 +122,42 @@ public class GitHubWebhookControllerTests
     }
 
     [Fact]
+    public async Task RepositoryExcludedByGroupRule_IsAcknowledgedAndIgnored()
+    {
+        await AddExclusionAsync("group", "michaeltrefry", "complete");
+
+        var result = await DeliverAsync("push", PushBody());
+
+        result.ShouldBeOfType<OkObjectResult>();
+        (await RunsAsync()).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task RepositoryExcludedFromAnalysisByGroupRule_QueuesIndexOnlySync()
+    {
+        await AddExclusionAsync("group", "michaeltrefry", "no_analysis");
+
+        var result = await DeliverAsync("push", PushBody());
+
+        result.ShouldBeOfType<AcceptedResult>();
+        var run = (await RunsAsync()).ShouldHaveSingleItem();
+        var request = JsonSerializer.Deserialize<ProcessRequest>(run.ArgsJson!, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        request.ShouldIndex.ShouldBeTrue();
+        request.ShouldAnalyze.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task RemoteIndexerSubmissionConflict_IsAcknowledgedAndIgnored()
+    {
+        _runs.CreateFailure = new IndexerClientException(HttpStatusCode.Conflict, "idempotency_conflict", "conflict");
+
+        var result = await DeliverAsync("push", PushBody());
+
+        result.ShouldBeOfType<OkObjectResult>();
+        _runner.EnqueuedRunIds.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task MissingSignature_IsRefusedAndQueuesNothing()
     {
         var result = await DeliverAsync("push", PushBody(), signature: null);
@@ -177,9 +217,11 @@ public class GitHubWebhookControllerTests
     {
         var options = new RepositorySourceOptions();
         options.GitHub.WebhookSecret = secret;
+        graph ??= _graph;
         var service = new GitHubPushWebhookService(
             Options.Create(options),
-            graph ?? _graph,
+            graph,
+            new ExclusionService(graph, NullLogger<ExclusionService>.Instance),
             new StandaloneIndexerOperationsService(_runs, new StandaloneIndexerOperationsServiceTests.FakeDatabaseSourceStore(), _runner),
             NullLogger<GitHubPushWebhookService>.Instance);
 
@@ -197,6 +239,15 @@ public class GitHubWebhookControllerTests
         };
         return await controller.Receive(CancellationToken.None);
     }
+
+    private Task AddExclusionAsync(string targetType, string targetValue, string exclusionType)
+        => _graph.CreateExclusionRuleAsync(new ExclusionRuleEntity
+        {
+            TargetType = targetType,
+            TargetValue = targetValue,
+            ExclusionType = exclusionType,
+            CreatedBy = "test"
+        });
 
     private Task<IReadOnlyList<IndexerRunEntity>> RunsAsync() => _runs.ListIndexerRunsAsync(take: 200);
 
