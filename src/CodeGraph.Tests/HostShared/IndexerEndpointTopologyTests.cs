@@ -43,14 +43,22 @@ public class IndexerEndpointTopologyTests
     }
 
     [Theory]
-    [InlineData("graph-write", 1)]
-    [InlineData("resolution", 1)]
-    [InlineData("unknown", 1)]
-    [InlineData("resolve-repository", 4)]
-    [InlineData("check-up-to-date", 4)]
-    public async Task ProcessRepositoryRetries_OnlyRetryPreIndexFailuresInPlace(string phase, int expectedAttempts)
+    [InlineData("graph-write", false, 1)]
+    [InlineData("resolution", false, 1)]
+    [InlineData("unknown", false, 1)]
+    [InlineData("resolve-repository", false, 4)]
+    [InlineData("check-up-to-date", false, 4)]
+    // Transient failures take the long-interval policy (2 test intervals), but still only before indexing.
+    [InlineData("graph-write", true, 1)]
+    [InlineData("unknown", true, 1)]
+    [InlineData("resolve-repository", true, 3)]
+    [InlineData("check-up-to-date", true, 3)]
+    public async Task ProcessRepositoryRetries_OnlyRetryPreIndexFailuresInPlace(
+        string phase,
+        bool transient,
+        int expectedAttempts)
     {
-        var service = new CountingFailingProjectService(phase);
+        var service = new CountingFailingProjectService(phase, transient);
         await using var provider = new ServiceCollection()
             .AddSingleton<IProjectService>(service)
             .AddMassTransitTestHarness(x =>
@@ -59,13 +67,9 @@ public class IndexerEndpointTopologyTests
                 x.AddConfigureEndpointsCallback((_, endpoint) =>
                     ConsumerConfiguration.ConfigureRetries(
                         endpoint,
-                        new ConsumerOptions
-                        {
-                            ConsumerRetryLimit = 3,
-                            ConsumerRetryInitialInterval = 1,
-                            ConsumerRetryIntervalIncrement = 1
-                        },
-                        IndexingFailure.FailedBeforeIndexing));
+                        ConsumerRetryPolicyTests.FastOptions,
+                        IndexingFailure.FailedBeforeIndexing,
+                        [TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1)]));
             })
             .BuildServiceProvider(true);
         var harness = provider.GetRequiredService<ITestHarness>();
@@ -126,7 +130,7 @@ public class IndexerEndpointTopologyTests
         }
     }
 
-    private sealed class CountingFailingProjectService(string phase) : IProjectService
+    private sealed class CountingFailingProjectService(string phase, bool transient) : IProjectService
     {
         private int _attempts;
         public int Attempts => _attempts;
@@ -137,7 +141,9 @@ public class IndexerEndpointTopologyTests
         public Task ProcessRepository(ProcessRepository message, CancellationToken cancellationToken = new())
         {
             Interlocked.Increment(ref _attempts);
-            var failure = new InvalidOperationException($"failed in {phase}");
+            Exception failure = transient
+                ? new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused)
+                : new InvalidOperationException($"failed in {phase}");
             if (phase != "unknown")
                 IndexingFailure.TagPhase(failure, phase);
             return Task.FromException(failure);

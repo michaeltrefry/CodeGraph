@@ -187,13 +187,10 @@ public static class Startup
     {
         services.AddMassTransit(x =>
         {
-            x.AddDelayedMessageScheduler();
             SharedConsumerTopology.AddIndexerConsumers(x);
 
             x.UsingRabbitMq((context, cfg) =>
             {
-                cfg.UseDelayedMessageScheduler();
-
                 var rabbitOptions = context.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
                 cfg.Host(rabbitOptions.Host, "/", h =>
                 {
