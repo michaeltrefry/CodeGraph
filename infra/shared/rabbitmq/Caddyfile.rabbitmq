@@ -1,0 +1,7 @@
+# RabbitMQ management UI on trefry.net. Paste this site block into /etc/caddy/Caddyfile on the host.
+# Caddy provides HTTPS automatically (it obtains and renews the certificate) once DNS for
+# rabbitmq.trefry.net points at the host. Caddy adds TLS only. RabbitMQ's own admin login still
+# protects the UI. AMQP (5672) is not proxied. Steps: infra/shared/README.md, "Remote management UI".
+rabbitmq.trefry.net {
+	reverse_proxy 127.0.0.1:15672
+}

@@ -160,6 +160,58 @@ public sealed class ProductionDeploymentConfigurationTests
     }
 
     [Fact]
+    public void DeployNeverTouchesSharedInfrastructure()
+    {
+        // infra/shared (the trefry.net MariaDB/RabbitMQ shared by other apps) is applied manually on the
+        // host. A CodeGraph deploy must never copy or reference it, or a merge could restart them.
+        var repositoryRoot = FindRepositoryRoot();
+        var workflow = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "deploy.yml"));
+        workflow.ShouldNotContain("infra/shared");
+
+        var scripts = Directory.GetFiles(Path.Combine(repositoryRoot, "deploy"), "*.sh");
+        scripts.ShouldNotBeEmpty();
+        foreach (var script in scripts)
+            File.ReadAllText(script).ShouldNotContain("infra/shared", customMessage: script);
+
+        var scpCommands = LogicalShellLines(workflow)
+            .Where(line => line.StartsWith("scp ", StringComparison.Ordinal))
+            .ToList();
+        scpCommands.ShouldNotBeEmpty();
+        foreach (var command in scpCommands)
+        {
+            var sources = ScpSources(command).ToList();
+            sources.ShouldNotBeEmpty(command);
+            foreach (var source in sources)
+            {
+                var normalized = source.Trim('"', '\'').Replace('\\', '/').TrimStart('.', '/');
+                normalized.StartsWith("infra", StringComparison.Ordinal)
+                    .ShouldBeFalse($"deploy copies '{source}' to the host: {command}");
+            }
+        }
+    }
+
+    // Local source operands of an scp command: everything after the options except the final destination.
+    private static IEnumerable<string> ScpSources(string command)
+    {
+        var tokens = command.Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1).ToList();
+        var operands = new List<string>();
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if (tokens[i].StartsWith('-'))
+            {
+                // Options that take a separate value.
+                if (tokens[i] is "-o" or "-i" or "-P" or "-F" or "-c" or "-l" or "-S" or "-J")
+                    i++;
+                continue;
+            }
+
+            operands.Add(tokens[i]);
+        }
+
+        return operands.Take(Math.Max(0, operands.Count - 1));
+    }
+
+    [Fact]
     public void DeployNeverBuildsImages()
     {
         var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "deploy.yml"));

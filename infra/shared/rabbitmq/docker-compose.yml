@@ -1,0 +1,43 @@
+# Shared RabbitMQ on trefry.net (used by CodeGraph and other apps).
+# Applied MANUALLY on the host -- never by CodeGraph's deploy. See ../README.md, including the
+# one-time migration from the hand-run `docker run` container.
+services:
+  rabbitmq:
+    # Pinned to the version currently running (the live container uses the floating
+    # rabbitmq:3-management tag, which resolved to 3.13.7). A floating tag could jump versions on pull.
+    image: rabbitmq:3.13.7-management
+    container_name: rabbitmq
+    # MUST stay "439e97697844": RabbitMQ stores its data under rabbit@<hostname>. A different hostname
+    # starts an EMPTY broker (users, vhosts, queues and messages appear lost) even on the same volume.
+    hostname: "439e97697844"
+    # The live container has restart policy `no` and does not come back after a host reboot.
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set in .env}
+    # Neither port is public. The hand-run container published both on 0.0.0.0. This file binds them
+    # to localhost only:
+    # - 5672 (AMQP): containers reach the broker as `rabbitmq:5672` over trefry-network. The host
+    #   binding is only for local tools on the host.
+    # - 15672 (management UI): remote access goes through the host's reverse proxy over HTTPS (see
+    #   "Remote management UI" in ../README.md; Caddy site block in Caddyfile.rabbitmq). RabbitMQ's own
+    #   admin login stays in front of it.
+    # Do not change these back to 0.0.0.0.
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      trefry-network:
+        aliases:
+          - rabbitmq
+volumes:
+  # The live container's existing anonymous volume, adopted as an external named volume so
+  # recreating the container keeps all broker data. Compose never creates or deletes it.
+  rabbitmq-data:
+    external: true
+    name: 974d2f346a35fc36e0285721e2157842b695764cb2aedaa5dc56316fc8a05fad
+networks:
+  trefry-network:
+    external: true
