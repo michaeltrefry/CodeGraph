@@ -104,9 +104,9 @@ docker exec rabbitmq rabbitmqctl list_connections peer_host peer_port user name
 #    Every peer_host should be a trefry-network container IP (check with
 #    `docker network inspect trefry-network`) or 127.0.0.1. Move any external client to the
 #    reverse proxy, a VPN, or an on-host container before continuing.
-#    Also set up and test the reverse-proxy route for the management UI before you rely on remote
-#    UI access (see "Remote management UI"). Once 15672 is localhost-only, the proxy is the only
-#    remote way in.
+#    Also complete "Remote management UI" steps a-e (DNS, Caddy site block, validate, reload, log in
+#    at https://rabbitmq.trefry.net) before continuing. Once 15672 is localhost-only, Caddy is the
+#    only remote way in.
 
 # 1. Verify the facts still match the compose file
 docker inspect rabbitmq --format '{{.Config.Hostname}}'                     # expect 439e97697844
@@ -158,18 +158,46 @@ Never run `docker volume rm` or `docker compose down -v` against
 The RabbitMQ management UI (port 15672) is not published publicly. The compose file binds it to
 `127.0.0.1` only. Remote access works like this:
 
-- The UI is served through the host's reverse proxy **over HTTPS** at a dedicated hostname, for
-  example `https://rabbitmq.trefry.net`. The proxy terminates TLS and forwards to
-  `http://127.0.0.1:15672` if the proxy runs on the host, or to `http://rabbitmq:15672` if the proxy
-  runs as a container on `trefry-network`.
-- **RabbitMQ's own admin login stays in front of the UI.** The proxy only adds TLS. It does not
+- The UI is served **over HTTPS** at `https://rabbitmq.trefry.net` by Caddy. Caddy is installed on
+  the host (not in a container) and configured in `/etc/caddy/Caddyfile`. Caddy terminates TLS
+  with a certificate it obtains and renews automatically, and forwards to `127.0.0.1:15672`. The
+  site block is in [`rabbitmq/Caddyfile.rabbitmq`](rabbitmq/Caddyfile.rabbitmq).
+- **RabbitMQ's own admin login stays in front of the UI.** Caddy only adds TLS. It does not
   replace or bypass RabbitMQ authentication. Use the `admin` user (password in `rabbitmq/.env`) or
   a dedicated management-tagged user.
 - AMQP (5672) is **not** proxied. It stays reachable only from the host and over `trefry-network`.
-- Set up and test this route before the migration removes the public 15672 binding.
 
-<!-- PLACEHOLDER: reverse-proxy config for the RabbitMQ management UI. -->
-> **TODO (placeholder): reverse-proxy configuration.** The proxy type (Caddy, nginx or Traefik) is
-> not decided yet. Add here the exact site/router config that serves `rabbitmq.trefry.net` over
-> HTTPS, forwards to the management UI as described above, and does not expose 5672. Include where
-> the config file lives on the host and how to reload the proxy.
+### Apply steps (do these in order, before the RabbitMQ migration)
+
+a. Create a DNS A/AAAA record for `rabbitmq.trefry.net` that points to the host. Caddy cannot get
+   a certificate until this record resolves.
+
+b. Append the site block to the Caddyfile:
+   ```sh
+   cat infra/shared/rabbitmq/Caddyfile.rabbitmq | ssh root@trefry.net 'cat >> /etc/caddy/Caddyfile'
+   # or, on the host, from the copied folder:
+   cat /opt/trefry/infra/rabbitmq/Caddyfile.rabbitmq >> /etc/caddy/Caddyfile
+   ```
+
+c. Validate the config:
+   ```sh
+   caddy validate --config /etc/caddy/Caddyfile
+   ```
+
+d. Reload Caddy. A reload does not drop the other sites:
+   ```sh
+   systemctl reload caddy
+   ```
+
+e. Open https://rabbitmq.trefry.net and log in with the RabbitMQ admin account. If the certificate
+   is not issued yet, check `journalctl -u caddy`.
+
+f. Only then switch the container to the localhost-bound compose file (see
+   [RabbitMQ: one-time migration](#rabbitmq-one-time-migration-from-the-hand-run-container)).
+
+**Why the order matters.** The hand-run container publishes 15672 on `0.0.0.0`, which includes
+`127.0.0.1`. That means Caddy's `reverse_proxy 127.0.0.1:15672` already works before the migration,
+so you can prove the HTTPS route while the old public port is still there as a fallback. The
+compose file binds 15672 to `127.0.0.1` only. If you change the bindings first, remote UI access
+is lost until DNS, the certificate and the Caddy config all work. You would then have to fix them
+over SSH with no UI.
