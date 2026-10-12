@@ -946,7 +946,9 @@ public class CodeGraphMcpServer(
                  "lowCount, totalAffected, crossRepoCount, crossRepoImpacts, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
                  "and source (overlay or default-branch). crossRepoImpacts lists {sourceRepo, targetRepo, edgeType, count} " +
                  "per repository pair; for a Rust file it includes the repositories whose Cargo manifests depend on the " +
-                 "file's crate (edgeType REFERENCES_PACKAGE), which are crate-level dependents and not affected nodes. " +
+                 "file's crate (edgeType REFERENCES_PACKAGE), which are crate-level dependents and not affected nodes; " +
+                 "they are read from the default-branch Cargo manifests even with sha, and a file with no nodes " +
+                 "(found: false) reports none. " +
                  "blastRadius is the worst risk level among the affected " +
                  "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
                  "nodes (found: false). path is matched case-sensitively. unmappedInboundEdges is null for default-branch answers. No model is called.")]
@@ -1042,8 +1044,9 @@ public class CodeGraphMcpServer(
     [McpServerTool(Name = RepoDependenciesTool, Title = "Repository Dependencies", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
      Description("Default-branch cross-repository dependencies of one repository, and how its Rust code was indexed. " +
                  "Answers {repo, inbound, outbound, rustSemantic} plus commitSha. inbound lists the repositories that " +
-                 "depend on this one and outbound the repositories it depends on, each as {repo, edgeType, count} " +
-                 "(count is the number of links of that edge type). rustSemantic is {status, manifest, groupCount, " +
+                 "depend on this one and outbound the repositories it depends on, each as {repo, edgeType, count, " +
+                 "confidenceBand} (count is the number of links of that edge type; confidenceBand is the weakest of " +
+                 "them, high|medium|low or null — a Cargo path dependency matched by crate name is medium). rustSemantic is {status, manifest, groupCount, " +
                  "semanticGroups, fallbackGroups, skippedGroups, treeSitterGroups}: status is semantic (every crate " +
                  "group indexed by rust-analyzer), partial or fallback (some or all crate groups indexed by " +
                  "tree-sitter instead), or not_analyzed (no Rust semantic pass was recorded for the repository). " +
@@ -1061,10 +1064,10 @@ public class CodeGraphMcpServer(
         var edges = await store.FindCrossRepoEdgesAsync(name);
         var inbound = GroupDependencies(edges
             .Where(edge => edge.TargetProject.Equals(name, StringComparison.OrdinalIgnoreCase))
-            .Select(edge => (edge.SourceProject, edge.Type)));
+            .Select(edge => (edge.SourceProject, edge)));
         var outbound = GroupDependencies(edges
             .Where(edge => edge.SourceProject.Equals(name, StringComparison.OrdinalIgnoreCase))
-            .Select(edge => (edge.TargetProject, edge.Type)));
+            .Select(edge => (edge.TargetProject, edge)));
         var rustSemantic = RustSemanticStatus(repository);
 
         var sb = new StringBuilder();
@@ -1092,16 +1095,23 @@ public class CodeGraphMcpServer(
         return CommitAnswer.Create(sb.ToString(), commit, scope, extra);
     }
 
-    private static JsonArray GroupDependencies(IEnumerable<(string Repo, EdgeType Type)> edges)
+    private static readonly string[] ConfidenceBands = ["low", "medium", "high"];
+
+    private static JsonArray GroupDependencies(IEnumerable<(string Repo, CrossRepoEdge Edge)> edges)
         => new(edges
-            .GroupBy(edge => (Repo: edge.Repo.ToLowerInvariant(), edge.Type))
+            .GroupBy(edge => (Repo: edge.Repo.ToLowerInvariant(), edge.Edge.Type))
             .OrderBy(group => group.Key.Repo, StringComparer.Ordinal)
             .ThenBy(group => group.Key.Type.ToString(), StringComparer.Ordinal)
             .Select(group => (JsonNode)new JsonObject
             {
                 ["repo"] = group.First().Repo,
                 ["edgeType"] = group.Key.Type.ToString(),
-                ["count"] = group.Count()
+                ["count"] = group.Count(),
+                // The weakest link of the group; null when its links carry no band.
+                ["confidenceBand"] = group
+                    .Select(edge => edge.Edge.Properties.GetValueOrDefault("confidence_band")?.ToString()?.ToLowerInvariant())
+                    .Where(band => Array.IndexOf(ConfidenceBands, band) >= 0)
+                    .MinBy(band => Array.IndexOf(ConfidenceBands, band))
             }).ToArray());
 
     private static void AppendDependencies(StringBuilder sb, string title, JsonArray dependencies)
@@ -1110,7 +1120,8 @@ public class CodeGraphMcpServer(
         if (dependencies.Count == 0)
             sb.AppendLine("None.");
         foreach (var dependency in dependencies)
-            sb.AppendLine($"- {dependency!["repo"]} ({dependency["edgeType"]}, {dependency["count"]})");
+            sb.AppendLine($"- {dependency!["repo"]} ({dependency["edgeType"]}, {dependency["count"]}" +
+                          (dependency["confidenceBand"] is { } band ? $", {band} confidence)" : ")"));
         sb.AppendLine();
     }
 

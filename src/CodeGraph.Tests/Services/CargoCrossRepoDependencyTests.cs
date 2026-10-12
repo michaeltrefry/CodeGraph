@@ -163,6 +163,31 @@ public sealed class CargoCrossRepoDependencyTests
         ], ignoreOrder: true);
     }
 
+    [Theory]
+    [InlineData(false, 1)] // one other repository defines the crate: linked by name
+    [InlineData(true, 0)]  // two define it and neither is named on the path: ambiguous, not linked
+    public async Task Linker_EscapingPathWithNoRepositoryNamedOnIt_LinksOnlyAnUnambiguousCrateName(
+        bool secondDefinition, int expectedLinks)
+    {
+        Index("Upstream", null, new() { ["Cargo.toml"] = Crate("shared-lib") });
+        if (secondDefinition)
+            Index("Mirror", null, new() { ["Cargo.toml"] = Crate("shared-lib") });
+        Index("Downstream", null, new()
+        {
+            ["Cargo.toml"] = Crate("downstream", """shared-lib = { path = "../checkout/shared-lib" }""")
+        });
+
+        await new CrossRepoLinker(_store, NullLogger<CrossRepoLinker>.Instance).LinkAsync(CancellationToken.None);
+
+        _store.CrossEdges.Count.ShouldBe(expectedLinks);
+        if (expectedLinks == 1)
+        {
+            var edge = _store.CrossEdges.Single();
+            (edge.SourceProject, edge.TargetProject).ShouldBe(("Downstream", "Upstream"));
+            edge.Properties["confidence_band"].ShouldBe("medium");
+        }
+    }
+
     [Fact]
     public async Task Extractor_MarksOnlyPathDependenciesThatLeaveTheRepository()
     {
@@ -233,8 +258,8 @@ public sealed class CargoCrossRepoDependencyTests
         // A second link kind and a second link of one kind, to pin the grouping.
         await _store.InsertCrossRepoEdgeBatchAsync(
         [
-            new CrossRepoEdge { SourceProject = Inference, TargetProject = Tools, SourceNodeId = 1, TargetNodeId = 2, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = Inference, TargetProject = Tools, SourceNodeId = 3, TargetNodeId = 2, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceProject = Inference, TargetProject = Tools, SourceNodeId = 1, TargetNodeId = 2, Type = EdgeType.CALLS, Properties = new() { ["confidence_band"] = "high" } },
+            new CrossRepoEdge { SourceProject = Inference, TargetProject = Tools, SourceNodeId = 3, TargetNodeId = 2, Type = EdgeType.CALLS, Properties = new() { ["confidence_band"] = "medium" } },
             new CrossRepoEdge { SourceProject = SceneWorks, TargetProject = Inference, SourceNodeId = 4, TargetNodeId = 5, Type = EdgeType.HTTP_CALLS }
         ]);
         var mcp = Mcp();
@@ -247,19 +272,21 @@ public sealed class CargoCrossRepoDependencyTests
         s.GetProperty("commitSha").GetString().ShouldBe("sha-" + Inference);
         Dependencies(s, "inbound").ShouldBe(
         [
-            (SceneWorks, "HTTP_CALLS", 1),
-            (SceneWorks, "REFERENCES_PACKAGE", 1),
-            (Tools, "REFERENCES_PACKAGE", 1)
+            (SceneWorks, "HTTP_CALLS", 1, null),
+            (SceneWorks, "REFERENCES_PACKAGE", 1, "high"),
+            (Tools, "REFERENCES_PACKAGE", 1, "medium")
         ]);
-        Dependencies(s, "outbound").ShouldBe([(Tools, "CALLS", 2)]);
-        answer.Text().ShouldContain($"- {Tools} (CALLS, 2)");
+        // The weakest band of the two CALLS links.
+        Dependencies(s, "outbound").ShouldBe([(Tools, "CALLS", 2, "medium")]);
+        answer.Text().ShouldContain($"- {Tools} (CALLS, 2, medium confidence)");
+        answer.Text().ShouldContain($"- {SceneWorks} (HTTP_CALLS, 1)");
 
         var downstream = (await mcp.GetRepoDependencies(SceneWorks)).StructuredContent!.Value;
         Dependencies(downstream, "inbound").ShouldBeEmpty();
         Dependencies(downstream, "outbound").ShouldBe(
         [
-            (Inference, "HTTP_CALLS", 1),
-            (Inference, "REFERENCES_PACKAGE", 1)
+            (Inference, "HTTP_CALLS", 1, null),
+            (Inference, "REFERENCES_PACKAGE", 1, "high")
         ]);
 
         var missing = await mcp.GetRepoDependencies("nope");
@@ -335,11 +362,12 @@ public sealed class CargoCrossRepoDependencyTests
                 impact.GetProperty("count").GetInt32()))
             .ToList();
 
-    private static List<(string Repo, string EdgeType, int Count)> Dependencies(JsonElement structured, string direction)
+    private static List<(string Repo, string EdgeType, int Count, string? Band)> Dependencies(JsonElement structured, string direction)
         => structured.GetProperty(direction).EnumerateArray()
             .Select(dependency => (
                 dependency.GetProperty("repo").GetString()!,
                 dependency.GetProperty("edgeType").GetString()!,
-                dependency.GetProperty("count").GetInt32()))
+                dependency.GetProperty("count").GetInt32(),
+                dependency.GetProperty("confidenceBand").GetString()))
             .ToList();
 }
