@@ -311,4 +311,83 @@ public class RustScipImporterTests
             edge.TargetQN == external.QualifiedName &&
             edge.Type == EdgeType.CALLS);
     }
+
+    [Fact]
+    public void Import_ScopesDocumentLocalSymbolsToTheirDocument()
+    {
+        const string outerA = "rust-analyzer cargo demo 0.1.0 demo/a/outer_a().";
+        const string outerB = "rust-analyzer cargo demo 0.1.0 demo/b/outer_b().";
+        const string traitSymbol = "rust-analyzer cargo demo 0.1.0 demo/Shape#";
+
+        // Both documents define `local 0` (a nested fn) and call it. src/b.rs also defines
+        // `local 1` (a nested struct implementing a crate trait); src/a.rs references a `local 1`
+        // it never defines (a variable) and must not reach b.rs's struct.
+        var json = $$"""
+            {
+              "documents": [
+                {
+                  "language": "rust",
+                  "relativePath": "src/a.rs",
+                  "symbols": [
+                    { "symbol": "{{outerA}}", "kind": "Function", "displayName": "outer_a" },
+                    { "symbol": "local 0", "kind": "Function", "displayName": "inner_a" },
+                    { "symbol": "local 1", "kind": "Variable", "displayName": "count" }
+                  ],
+                  "occurrences": [
+                    { "symbol": "{{outerA}}", "symbolRoles": 1, "range": [0, 7, 14], "enclosingRange": [0, 0, 9, 1] },
+                    { "symbol": "local 0", "symbolRoles": 1, "range": [1, 7, 14], "enclosingRange": [1, 4, 3, 5] },
+                    { "symbol": "local 0", "symbolRoles": 8, "range": [5, 4, 11] },
+                    { "symbol": "local 1", "symbolRoles": 8, "range": [6, 4, 9] }
+                  ]
+                },
+                {
+                  "language": "rust",
+                  "relativePath": "src/b.rs",
+                  "symbols": [
+                    { "symbol": "{{outerB}}", "kind": "Function", "displayName": "outer_b" },
+                    { "symbol": "local 0", "kind": "Function", "displayName": "inner_b" },
+                    {
+                      "symbol": "local 1",
+                      "kind": "Struct",
+                      "displayName": "Square",
+                      "relationships": [ { "symbol": "{{traitSymbol}}", "isImplementation": true } ]
+                    }
+                  ],
+                  "occurrences": [
+                    { "symbol": "{{outerB}}", "symbolRoles": 1, "range": [0, 7, 14], "enclosingRange": [0, 0, 9, 1] },
+                    { "symbol": "local 0", "symbolRoles": 1, "range": [1, 7, 14], "enclosingRange": [1, 4, 3, 5] },
+                    { "symbol": "local 1", "symbolRoles": 1, "range": [4, 11, 17], "enclosingRange": [4, 4, 4, 18] },
+                    { "symbol": "local 0", "symbolRoles": 8, "range": [6, 4, 11] }
+                  ]
+                }
+              ]
+            }
+            """;
+
+        var result = ScipJsonImporter.Import(json, TestContext);
+
+        var innerA = result.Nodes.Where(node => node.Name == "inner_a").ShouldHaveSingleItem();
+        var innerB = result.Nodes.Where(node => node.Name == "inner_b").ShouldHaveSingleItem();
+        var square = result.Nodes.Where(node => node.Name == "Square").ShouldHaveSingleItem();
+        innerA.QualifiedName.ShouldNotBe(innerB.QualifiedName);
+        innerA.FilePath.ShouldBe("src/a.rs");
+        innerB.FilePath.ShouldBe("src/b.rs");
+        // Linkers join on scip_symbol; a document-local symbol must not carry it.
+        new[] { innerA, innerB, square }.ShouldAllBe(node => !node.Properties.ContainsKey("scip_symbol"));
+
+        result.Edges.ShouldContain(edge =>
+            edge.SourceQN == $"DemoRust:scip:{outerA}" && edge.TargetQN == innerA.QualifiedName &&
+            edge.Type == EdgeType.CALLS);
+        result.Edges.ShouldContain(edge =>
+            edge.SourceQN == $"DemoRust:scip:{outerB}" && edge.TargetQN == innerB.QualifiedName &&
+            edge.Type == EdgeType.CALLS);
+        result.Edges.ShouldContain(edge =>
+            edge.SourceQN == square.QualifiedName && edge.Type == EdgeType.IMPLEMENTS);
+        // No a.rs reference reaches a b.rs local, and no unresolved local becomes a placeholder.
+        result.Edges.Where(edge => edge.SourceQN == $"DemoRust:scip:{outerA}")
+            .Select(edge => edge.TargetQN)
+            .ShouldBe([innerA.QualifiedName]);
+        result.Nodes.ShouldNotContain(node => node.Label == NodeLabel.ExternalSymbol &&
+                                              node.QualifiedName.Contains("local "));
+    }
 }
