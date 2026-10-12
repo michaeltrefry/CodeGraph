@@ -64,9 +64,10 @@ public partial class MySqlGraphStore
             var qnToId = new Dictionary<string, long>(StringComparer.Ordinal);
             foreach (var batch in endpointNames.Chunk(1000))
             {
+                var lookup = new DynamicParameters(new { Project = project });
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
-                    "SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
-                    new { Project = project, QualifiedNames = batch.ToList() }, transaction,
+                    $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND {QualifiedNameMatch(batch, lookup)}",
+                    lookup, transaction,
                     commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 foreach (var row in rows)
                     qnToId[row.QualifiedName] = row.Id;
@@ -110,9 +111,10 @@ public partial class MySqlGraphStore
                          .Distinct(StringComparer.Ordinal)
                          .Chunk(1000))
             {
+                var lookup = new DynamicParameters(new { Project = project });
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
-                    "SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
-                    new { Project = project, QualifiedNames = batch.ToList() }, transaction,
+                    $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND {QualifiedNameMatch(batch, lookup)}",
+                    lookup, transaction,
                     commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 foreach (var row in rows)
                     qnToId[row.QualifiedName] = row.Id;
@@ -133,7 +135,7 @@ public partial class MySqlGraphStore
             foreach (var edge in edges)
                 pendingByKey[EdgeKey(edge)] = edge;
 
-            var resolvedEdges = ResolveFileSliceEdges(project, pendingByKey.Values, qnToId);
+            var resolvedEdges = InInsertOrder(ResolveFileSliceEdges(project, pendingByKey.Values, qnToId));
             foreach (var batch in resolvedEdges.Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
@@ -283,9 +285,10 @@ public partial class MySqlGraphStore
                     .Select(node => Truncate(node.QualifiedName, 1000))
                     .Distinct(StringComparer.Ordinal)
                     .ToList();
+                var lookup = new DynamicParameters(new { Project = project });
                 var rows = await conn.QueryAsync<(long id, string qualified_name)>(new CommandDefinition(
-                    "SELECT id, qualified_name FROM nodes WHERE project = @Project AND qualified_name IN @QualifiedNames",
-                    new { Project = project, QualifiedNames = storedNames }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+                    $"SELECT id, qualified_name FROM nodes WHERE project = @Project AND {QualifiedNameMatch(storedNames, lookup)}",
+                    lookup, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 var originalByStoredName = batch
                     .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.Ordinal)
                     .ToDictionary(group => group.Key, group => group.First().QualifiedName, StringComparer.Ordinal);
@@ -297,7 +300,7 @@ public partial class MySqlGraphStore
                 }
             }
 
-            var resolvedEdges = ResolveSnapshotEdges(project, edges, qnToId);
+            var resolvedEdges = InInsertOrder(ResolveSnapshotEdges(project, edges, qnToId));
             foreach (var batch in resolvedEdges.Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
@@ -530,6 +533,17 @@ public partial class MySqlGraphStore
         }
         return resolved;
     }
+
+    /// <summary>
+    /// Orders edges by (source, target) for insertion. Pending edges arrive in extraction order,
+    /// which scatters every insert across the edge indexes; with uq_edge/idx_edges_source and the
+    /// auto-increment key all following source order, inserting the inference graph's ~730k edges
+    /// was ~9x faster in isolation (50 s random vs 5.8 s sorted, 128 MB buffer pool), and the next
+    /// replacement's per-source deletes then touch contiguous pages. The sort is stable, so edges
+    /// that collide on one key keep their relative order (and ON DUPLICATE KEY outcome).
+    /// </summary>
+    private static List<GraphEdge> InInsertOrder(List<GraphEdge> edges) =>
+        edges.OrderBy(edge => edge.SourceId).ThenBy(edge => edge.TargetId).ToList();
 
     private static string EdgeKey(PendingEdge edge) =>
         $"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}";

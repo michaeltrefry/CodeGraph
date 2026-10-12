@@ -237,9 +237,10 @@ public partial class MySqlGraphStore(
 
             var projects = batch.Select(n => n.Project).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var qualifiedNames = batch.Select(n => Truncate(n.QualifiedName, 1000)).Distinct(StringComparer.Ordinal).ToList();
+            var lookup = new DynamicParameters(new { Projects = projects });
             var rows = await conn.QueryAsync<(long id, string project, string qualified_name)>(
-                "SELECT id, project, qualified_name FROM nodes WHERE project IN @Projects AND qualified_name IN @QualifiedNames",
-                new { Projects = projects, QualifiedNames = qualifiedNames });
+                $"SELECT id, project, qualified_name FROM nodes WHERE project IN @Projects AND {QualifiedNameMatch(qualifiedNames, lookup)}",
+                lookup);
 
             foreach (var row in rows)
             {
@@ -259,8 +260,14 @@ public partial class MySqlGraphStore(
     public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName)
     {
         var truncatedQualifiedName = Truncate(qualifiedName, 1000);
-        var node = await db.Nodes.AsNoTracking()
-            .FirstOrDefaultAsync(n => n.Project == project && n.QualifiedName == truncatedQualifiedName);
+        // Seek uq_node (project, qualified_name_hash); qualified_name alone is not indexed.
+        var node = await db.Nodes
+            .FromSqlRaw(
+                "SELECT * FROM nodes WHERE project = {0} AND qualified_name_hash = UNHEX(SHA2({1}, 256))",
+                project,
+                truncatedQualifiedName)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(n => n.QualifiedName == truncatedQualifiedName);
 
         return node is null ? null : MapNode(node);
     }
@@ -279,8 +286,15 @@ public partial class MySqlGraphStore(
                      .Chunk(500))
         {
             var names = batch.ToList();
-            var nodes = await db.Nodes.AsNoTracking()
-                .Where(n => n.Project == project && names.Contains(n.QualifiedName))
+            // Seek uq_node (project, qualified_name_hash); qualified_name alone is not indexed.
+            // The SQL holds only positional placeholders; every value is a parameter.
+            var sql = "SELECT * FROM nodes WHERE project = {0} AND qualified_name_hash IN ("
+                + string.Join(", ", names.Select((_, i) => $"UNHEX(SHA2({{{i + 1}}}, 256))"))
+                + ")";
+            var nodes = await db.Nodes
+                .FromSqlRaw(sql, [project, .. names])
+                .AsNoTracking()
+                .Where(n => names.Contains(n.QualifiedName))
                 .OrderBy(n => n.Id)
                 .ToListAsync();
             result.AddRange(nodes.Select(MapNode));
@@ -1339,6 +1353,38 @@ public partial class MySqlGraphStore(
 
     private static string Truncate(string value, int maxLength)
         => value.Length <= maxLength ? value : value[..maxLength];
+
+    /// <summary>
+    /// Builds an indexed exact-match predicate over <c>nodes.qualified_name</c>. The column has
+    /// no index of its own — uniqueness is enforced on <c>(project, qualified_name_hash)</c>, a
+    /// stored SHA-256 of the name (migration 061) — so a bare <c>qualified_name = …</c> or
+    /// <c>IN (…)</c> scans every node of the project. Matching the digest first lets MariaDB
+    /// range-scan <c>uq_node</c>; the name comparison keeps the result an exact match.
+    /// Each name is bound once, as <c>@Qn{i}</c>.
+    /// </summary>
+    internal static string QualifiedNameMatch(IReadOnlyList<string> qualifiedNames, DynamicParameters parameters)
+    {
+        if (qualifiedNames.Count == 0)
+            return "1 = 0";
+
+        var hashes = new StringBuilder();
+        var names = new StringBuilder();
+        for (var i = 0; i < qualifiedNames.Count; i++)
+        {
+            if (i > 0)
+            {
+                hashes.Append(", ");
+                names.Append(", ");
+            }
+
+            var name = $"@Qn{i}";
+            hashes.Append("UNHEX(SHA2(").Append(name).Append(", 256))");
+            names.Append(name);
+            parameters.Add($"Qn{i}", qualifiedNames[i]);
+        }
+
+        return $"qualified_name_hash IN ({hashes}) AND qualified_name IN ({names})";
+    }
 
     private sealed record TraversalRow(
         long Id,

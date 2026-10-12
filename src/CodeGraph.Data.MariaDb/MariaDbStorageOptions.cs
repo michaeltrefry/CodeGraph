@@ -14,8 +14,14 @@ public class MariaDbStorageOptions
     /// </summary>
     public int GraphWriteCommandTimeoutSeconds { get; set; } = 3600;
 
-    /// <summary>Node ids deleted per statement during a snapshot write, bounding each cascaded edge delete.</summary>
-    public int GraphDeleteBatchSize { get; set; } = 2000;
+    /// <summary>
+    /// Node ids deleted per statement during a snapshot write, bounding each cascaded edge delete.
+    /// Larger batches let InnoDB delete many edge rows per index/data page it reads: replacing the
+    /// ~93k-node / ~730k-edge inference slice took 72 s at 2,000 ids per statement and 23 s at
+    /// 25,000 with the default 128 MB buffer pool (6.6 s vs 5.4 s once the tables fit in a 2 GB
+    /// pool). Each statement stays a few seconds, so cancellation still takes effect between them.
+    /// </summary>
+    public int GraphDeleteBatchSize { get; set; } = 25_000;
 
     // Encryption key for database source connection strings and LLM tokens (AES-256, base64-encoded).
     public string? EncryptionKey { get; set; }
