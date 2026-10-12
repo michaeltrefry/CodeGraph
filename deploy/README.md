@@ -1,6 +1,6 @@
 # Production Deployment
 
-After the CI workflow succeeds for a push to `main`, GitHub Actions publishes six images to GHCR, tagged with the commit CI tested, and can deploy them to the public host. A failed CI run on `main` skips publishing and deployment:
+On a push to `main`, the CI workflow builds six images once and pushes them to GHCR tagged with the commit SHA (pull requests build but never push). After that CI run succeeds, the deploy workflow retags those exact images as `latest` without rebuilding and can deploy them to the public host. A failed CI run on `main` skips deployment, and a manual dispatch is refused unless a CI push run succeeded for the commit:
 
 - `ghcr.io/<owner>/codegraph-api:<sha>`
 - `ghcr.io/<owner>/codegraph-jobs:<sha>`

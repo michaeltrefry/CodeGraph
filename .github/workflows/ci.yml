@@ -154,12 +154,41 @@ jobs:
       - name: Browser smoke
         run: npm run test:browser
 
+  # One parallel job per image, not gated on Backend/Frontend: deploy.yml only runs after the whole CI
+  # run succeeds, so an image pushed here is never deployed unless every job passed for this exact
+  # commit. On push to main each image is pushed to GHCR tagged with the commit SHA, and deploy.yml
+  # deploys those exact images instead of rebuilding them. PR builds never push images or write the
+  # build cache; they only read the cache main wrote.
   docker-build:
-    name: Docker Build
+    name: Docker Build (${{ matrix.image }})
     runs-on: ubuntu-latest
-    needs:
-      - backend
-      - frontend
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            context: .
+            file: Dockerfile
+          - image: jobs
+            context: .
+            file: Dockerfile.jobs
+          - image: indexer
+            context: .
+            file: Dockerfile.indexer
+          - image: memory
+            context: .
+            file: Dockerfile.memory
+          - image: metrics
+            context: .
+            file: Dockerfile.metrics
+          - image: web
+            context: CodeGraphWeb
+            file: CodeGraphWeb/Dockerfile
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/codegraph-${{ matrix.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -167,87 +196,63 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build API image
-        uses: docker/build-push-action@v6
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          context: .
-          file: Dockerfile
-          push: false
-          tags: codegraph-api:ci
-          cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build jobs image
+      # Registry cache (no 10 GB GitHub Actions cache limit to thrash); the old gha scope stays a read-only fallback.
+      - name: Build image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile.jobs
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: false
-          tags: codegraph-jobs:ci
-          cache-from: type=gha,scope=jobs
-          cache-to: type=gha,scope=jobs,mode=max
-
-      - name: Build indexer image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.indexer
-          push: false
-          load: true
-          tags: codegraph-indexer:ci
-          cache-from: type=gha,scope=indexer
-          cache-to: type=gha,scope=indexer,mode=max
+          load: ${{ matrix.image == 'indexer' }}
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache
+            type=gha,scope=${{ matrix.image }}
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true', env.IMAGE) || '' }}
 
       - name: Validate Rust semantic indexing in final image
-        run: docker run --rm codegraph-indexer:ci --validate-rust-semantic-indexing
+        if: matrix.image == 'indexer'
+        run: docker run --rm "$IMAGE:$GITHUB_SHA" --validate-rust-semantic-indexing
 
-      - name: Build memory image
+      # Same inputs as "Build image" in the same builder, so this is a full cache hit that only pushes.
+      - name: Push image tagged with the tested commit
+        if: github.event_name == 'push'
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile.memory
-          push: false
-          tags: codegraph-memory:ci
-          cache-from: type=gha,scope=memory
-          cache-to: type=gha,scope=memory,mode=max
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
 
-      - name: Build metrics image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.metrics
-          push: false
-          tags: codegraph-metrics:ci
-          cache-from: type=gha,scope=metrics
-          cache-to: type=gha,scope=metrics,mode=max
-
-      - name: Build web image
-        uses: docker/build-push-action@v6
-        with:
-          context: CodeGraphWeb
-          file: CodeGraphWeb/Dockerfile
-          push: false
-          tags: codegraph-web:ci
-          cache-from: type=gha,scope=web
-          cache-to: type=gha,scope=web,mode=max
-
+  # Native ARM64 runner (free for public repositories) instead of QEMU emulation.
   rust-semantic-arm64:
     name: Rust Semantic (ARM64)
-    runs-on: ubuntu-latest
-    needs:
-      - backend
-      - frontend
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/codegraph-indexer
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build ARM64 final indexer image
         uses: docker/build-push-action@v6
@@ -258,8 +263,10 @@ jobs:
           push: false
           load: true
           tags: codegraph-indexer:ci-arm64
-          cache-from: type=gha,scope=indexer-arm64
-          cache-to: type=gha,scope=indexer-arm64,mode=max
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-arm64
+            type=gha,scope=indexer-arm64
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}:buildcache-arm64,mode=max,image-manifest=true,oci-mediatypes=true', env.IMAGE) || '' }}
 
       - name: Validate Rust semantic indexing in ARM64 final image
         run: docker run --rm --platform linux/arm64 codegraph-indexer:ci-arm64 --validate-rust-semantic-indexing
