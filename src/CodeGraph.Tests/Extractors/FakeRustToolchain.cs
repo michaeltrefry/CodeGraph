@@ -22,6 +22,9 @@ internal sealed class FakeRustToolchain : IDisposable
     public string ToolDirectory => Path.Combine(_root, "tools");
     public string CargoLogPath => Path.Combine(_root, "cargo.log");
     public string ProjectJsonDirectory => Path.Combine(_root, "project-json");
+
+    /// <summary>Created by the fake rust-analyzer once a slow crate's group is recorded and sleeping.</summary>
+    public string SlowAnalyzerStartedPath => Path.Combine(_root, "slow-analyzer-started");
     private string ScipDirectory => Path.Combine(_root, "scip");
     private string MetadataPath => Path.Combine(_root, "metadata.json");
     private string CheckOutputPath => Path.Combine(_root, "check-output.json");
@@ -120,7 +123,7 @@ internal sealed class FakeRustToolchain : IDisposable
             $"n=$(/bin/ls '{ProjectJsonDirectory}' | /usr/bin/wc -l | /usr/bin/tr -d ' ')\n" +
             $"/bin/cp \"$root/rust-project.json\" '{ProjectJsonDirectory}'/\"$n.json\"\n" +
             $"for crate in ${SlowCratesVariable}; do\n" +
-            "  if /usr/bin/grep -q \"\\\"display_name\\\":\\\"$crate\\\".*\\\"is_workspace_member\\\":true\" \"$root/rust-project.json\"; then /bin/sleep 30; fi\n" +
+            $"  if /usr/bin/grep -q \"\\\"display_name\\\":\\\"$crate\\\".*\\\"is_workspace_member\\\":true\" \"$root/rust-project.json\"; then : > '{SlowAnalyzerStartedPath}'; /bin/sleep 30; fi\n" +
             "done\n" +
             $"for crate in ${FailingCratesVariable}; do\n" +
             "  if /usr/bin/grep -q \"\\\"display_name\\\":\\\"$crate\\\".*\\\"is_workspace_member\\\":true\" \"$root/rust-project.json\"; then\n" +
@@ -136,6 +139,17 @@ internal sealed class FakeRustToolchain : IDisposable
             "done\nprintf ']}'\n");
 
         SetEnvironment("PATH", ToolDirectory);
+    }
+
+    /// <summary>Waits (bounded) until a slow crate's fake rust-analyzer is running.</summary>
+    public async Task WaitForSlowAnalyzerAsync()
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (!File.Exists(SlowAnalyzerStartedPath) && DateTime.UtcNow < deadline)
+            await Task.Delay(20);
+
+        if (!File.Exists(SlowAnalyzerStartedPath))
+            throw new TimeoutException("The slow fake rust-analyzer never started.");
     }
 
     public void SetEnvironment(string name, string? value)

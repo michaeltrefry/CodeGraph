@@ -25,6 +25,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Fixture sources are indexing inputs, not part of this test assembly. -->
+    <Compile Remove="Fixtures/**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Fixtures/**/*" Exclude="Fixtures/**/bin/**;Fixtures/**/obj/**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

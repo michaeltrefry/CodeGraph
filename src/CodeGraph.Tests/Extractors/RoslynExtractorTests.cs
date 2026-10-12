@@ -223,11 +223,52 @@ public class RoslynExtractorTests
 
         var result = ExtractFromSource(code);
 
+        // worker.Helper(): the receiver is a parameter, so its owner is unproven.
         result.UnresolvedCalls.Count(call =>
                 call.CalleeName == "Helper"
                 && call.ReceiverType is null
                 && call.ReceiverKind == CallReceiverKind.Unresolved)
-            .ShouldBe(2);
+            .ShouldBe(1);
+        // Helper(): the enclosing type declares Helper, so the implicit `this` owner is proven.
+        result.UnresolvedCalls.Count(call =>
+                call.CalleeName == "Helper"
+                && call.ReceiverType == "TestProject.Worker"
+                && call.ReceiverKind == CallReceiverKind.Resolved)
+            .ShouldBe(1);
+    }
+
+    [Fact]
+    public void SyntaxOnlyCalls_TypeNameReceiver_IsResolvedUnlessShadowedByAValue()
+    {
+        var code = """
+            namespace App;
+            class Caller
+            {
+                private Other Field = new();
+                void Run(Other Param)
+                {
+                    TextTools.Count();
+                    App.TextTools.Count();
+                    var Local = new Other();
+                    Local.Count();
+                    Param.Count();
+                    Field.Count();
+                    this.Run(Param);
+                    Missing();
+                }
+            }
+            """;
+
+        var result = ExtractFromSource(code);
+
+        result.UnresolvedCalls
+            .Where(call => call.ReceiverKind == CallReceiverKind.Resolved)
+            .Select(call => $"{call.ReceiverType}.{call.CalleeName}")
+            .ShouldBe(["TextTools.Count", "App.TextTools.Count", "App.Caller.Run"], ignoreOrder: true);
+        result.UnresolvedCalls
+            .Where(call => call.ReceiverKind == CallReceiverKind.Unresolved)
+            .Select(call => call.CalleeName)
+            .ShouldBe(["Count", "Count", "Count", "Missing"], ignoreOrder: true);
     }
 
     [Fact]

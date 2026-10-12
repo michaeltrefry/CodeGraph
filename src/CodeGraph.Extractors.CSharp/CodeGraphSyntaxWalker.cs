@@ -16,6 +16,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
     private readonly List<UnresolvedImport> _imports = new();
 
     private readonly Stack<string> _scopeStack = new();
+    private readonly Dictionary<SyntaxNode, string> _typeQualifiedNames = new();
 
     private static readonly HashSet<string> RouteAttributeNames = new()
     {
@@ -175,6 +176,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
             DetectEventMessageFields(symbol, qn);
         }
 
+        _typeQualifiedNames[node] = qn;
         _scopeStack.Push(qn);
         base.VisitClassDeclaration(node);
         _scopeStack.Pop();
@@ -208,6 +210,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
                     iface.ToDisplayString(), EdgeType.INHERITS));
         }
 
+        _typeQualifiedNames[node] = qn;
         _scopeStack.Push(qn);
         base.VisitInterfaceDeclaration(node);
         _scopeStack.Pop();
@@ -244,6 +247,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
                 _edges.Add(new PendingEdge(qn, iface.ToDisplayString(), EdgeType.IMPLEMENTS));
         }
 
+        _typeQualifiedNames[node] = qn;
         _scopeStack.Push(qn);
         base.VisitRecordDeclaration(node);
         _scopeStack.Pop();
@@ -272,6 +276,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
                 _edges.Add(new PendingEdge(qn, iface.ToDisplayString(), EdgeType.IMPLEMENTS));
         }
 
+        _typeQualifiedNames[node] = qn;
         _scopeStack.Push(qn);
         base.VisitStructDeclaration(node);
         _scopeStack.Pop();
@@ -441,6 +446,8 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
             if (methodName is not null)
             {
                 var receiverType = GetReceiverType(node);
+                if (receiverType is null && _model is null)
+                    receiverType = GetSyntacticReceiverOwner(node, methodName);
                 _calls.Add(new UnresolvedCall(
                     _scopeStack.Peek(),
                     methodName,
@@ -448,6 +455,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
                     0.5,
                     node.Expression switch
                     {
+                        IdentifierNameSyntax when receiverType is not null => CallReceiverKind.Resolved,
                         IdentifierNameSyntax => CallReceiverKind.Unresolved,
                         MemberAccessExpressionSyntax when receiverType is not null => CallReceiverKind.Resolved,
                         MemberAccessExpressionSyntax => CallReceiverKind.Unresolved,
@@ -1351,6 +1359,111 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
             return typeInfo.Type?.ToDisplayString();
         }
         return null;
+    }
+
+    /// <summary>
+    /// Syntax-only (untrusted, no compilation) receiver proof. Returns the owner the call
+    /// site syntactically names, or null when the receiver could be a value:
+    /// <list type="bullet">
+    /// <item><c>this.M()</c> / bare <c>M()</c> declared by the enclosing type → that type.</item>
+    /// <item><c>Type.M()</c> / <c>Ns.Type.M()</c> whose leftmost identifier is not a local,
+    /// parameter, field, property, or event in scope → that type name; the resolver
+    /// still requires it to match a unique indexed type that owns <c>M</c>.</item>
+    /// </list>
+    /// </summary>
+    private string? GetSyntacticReceiverOwner(InvocationExpressionSyntax node, string methodName)
+    {
+        switch (node.Expression)
+        {
+            case IdentifierNameSyntax:
+            {
+                if (IsValueNameInScope(node, methodName))
+                    return null;
+                var enclosingType = node.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+                return enclosingType is not null
+                       && enclosingType.Members.OfType<MethodDeclarationSyntax>()
+                           .Any(m => m.Identifier.Text == methodName)
+                    ? _typeQualifiedNames.GetValueOrDefault(enclosingType)
+                    : null;
+            }
+            case MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }:
+            {
+                var enclosingType = node.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+                return enclosingType is null ? null : _typeQualifiedNames.GetValueOrDefault(enclosingType);
+            }
+            case MemberAccessExpressionSyntax { Expression: var receiver }:
+            {
+                var identifiers = new List<string>();
+                var current = receiver;
+                while (current is MemberAccessExpressionSyntax { Name: IdentifierNameSyntax name } access)
+                {
+                    identifiers.Insert(0, name.Identifier.Text);
+                    current = access.Expression;
+                }
+                if (current is not IdentifierNameSyntax leftmost
+                    || IsValueNameInScope(node, leftmost.Identifier.Text))
+                    return null;
+                identifiers.Insert(0, leftmost.Identifier.Text);
+                return string.Join('.', identifiers);
+            }
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is declared as a value (local, parameter, local
+    /// function, pattern/foreach/catch/query variable, field, property, event, or primary
+    /// constructor parameter) in the member or any enclosing type around <paramref name="site"/>.
+    /// Over-approximates scopes on purpose: a false "in scope" only fails closed.
+    /// </summary>
+    private static bool IsValueNameInScope(SyntaxNode site, string name)
+    {
+        SyntaxNode? memberScope = site.Ancestors()
+            .FirstOrDefault(a => a is MemberDeclarationSyntax and not BaseTypeDeclarationSyntax);
+        if (memberScope is GlobalStatementSyntax or null)
+            memberScope = site.SyntaxTree.GetRoot();
+
+        foreach (var declared in memberScope.DescendantNodesAndSelf())
+        {
+            var identifier = declared switch
+            {
+                ParameterSyntax p => p.Identifier,
+                VariableDeclaratorSyntax v => v.Identifier,
+                SingleVariableDesignationSyntax d => d.Identifier,
+                ForEachStatementSyntax f => f.Identifier,
+                CatchDeclarationSyntax c => c.Identifier,
+                LocalFunctionStatementSyntax l => l.Identifier,
+                FromClauseSyntax q => q.Identifier,
+                LetClauseSyntax q => q.Identifier,
+                JoinClauseSyntax q => q.Identifier,
+                QueryContinuationSyntax q => q.Identifier,
+                _ => default
+            };
+            if (identifier.Text == name)
+                return true;
+        }
+
+        foreach (var type in site.Ancestors().OfType<TypeDeclarationSyntax>())
+        {
+            if (type.ParameterList?.Parameters.Any(p => p.Identifier.Text == name) == true)
+                return true;
+            foreach (var member in type.Members)
+            {
+                var declaresName = member switch
+                {
+                    BaseFieldDeclarationSyntax field =>
+                        field.Declaration.Variables.Any(v => v.Identifier.Text == name),
+                    PropertyDeclarationSyntax property => property.Identifier.Text == name,
+                    EventDeclarationSyntax @event => @event.Identifier.Text == name,
+                    _ => false
+                };
+                if (declaresName)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsFrameworkType(ITypeSymbol type)
