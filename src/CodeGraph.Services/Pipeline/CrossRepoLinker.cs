@@ -338,6 +338,11 @@ public class CrossRepoLinker
         return crossEdges.Count;
     }
 
+    /// <summary>
+    /// Links Cargo dependency references to the crate definition in another indexed repository:
+    /// by exact package key (registry crates), by the dependency's git URL matching a repository's
+    /// URL, or — for a path dependency that leaves its repository — by crate name.
+    /// </summary>
     private async Task<int> LinkCargoPackagesAsync(string? scopeProject, CancellationToken ct)
     {
         var definitions = await ToListAsync(_store.StreamLinkNodesAsync(
@@ -350,13 +355,24 @@ public class CrossRepoLinker
                 },
                 PropertyKeys = ["package_key", "version"]
             }, ct), ct);
+        if (definitions.Count == 0)
+            return 0;
 
         var definitionsByKey = definitions
             .Where(node => !string.IsNullOrWhiteSpace(node.Properties.GetValueOrDefault("package_key")))
             .GroupBy(node => node.Properties["package_key"]!, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
-        if (definitionsByKey.Count == 0)
-            return 0;
+        var definitionsByName = definitions
+            .GroupBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        // Repository URL → project, for git dependencies. A URL shared by several projects is ambiguous.
+        var projectsByGitUrl = (await _store.ListRepositoriesAsync())
+            .Select(repository => (repository.Name, Url: NormalizeGitUrl(repository.RepoUrl)))
+            .Where(repository => repository.Url is not null)
+            .GroupBy(repository => repository.Url!, StringComparer.Ordinal)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.Single().Name, StringComparer.Ordinal);
 
         var crossEdges = new List<CrossRepoEdge>();
         var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -366,13 +382,61 @@ public class CrossRepoLinker
                            {
                                TargetLabels = [NodeLabel.Package],
                                TargetPropertyEquals = new Dictionary<string, string> { ["ecosystem"] = "cargo" },
-                               TargetPropertyKeys = ["package_key", "version", "package_name", "local_name"]
+                               TargetPropertyKeys =
+                               [
+                                   "package_key", "version", "package_name", "local_name",
+                                   "source_kind", "source", "external_path"
+                               ]
                            }, ct).WithCancellation(ct))
         {
             var dependency = edge.TargetProperties;
             var packageKey = dependency.GetValueOrDefault("package_key");
-            if (string.IsNullOrWhiteSpace(packageKey) ||
-                !definitionsByKey.TryGetValue(packageKey, out var candidates))
+            if (string.IsNullOrWhiteSpace(packageKey))
+                continue;
+
+            var packageName = dependency.GetValueOrDefault("package_name") ?? edge.TargetName;
+            var sourceKind = dependency.GetValueOrDefault("source_kind");
+            IReadOnlyList<LinkNodeRow> candidates;
+            string matchedBy;
+            string confidenceBand;
+            if (definitionsByKey.TryGetValue(packageKey, out var keyed))
+            {
+                candidates = keyed;
+                matchedBy = "package_key";
+                confidenceBand = "high";
+            }
+            else if (sourceKind == "git")
+            {
+                // The repository at the dependency's git URL defines the crate under its own key.
+                var gitUrl = NormalizeGitUrl(dependency.GetValueOrDefault("source"));
+                if (gitUrl is null ||
+                    !projectsByGitUrl.TryGetValue(gitUrl, out var gitProject) ||
+                    !definitionsByName.TryGetValue(packageName, out var named))
+                {
+                    continue;
+                }
+
+                candidates = named
+                    .Where(candidate => candidate.Project.Equals(gitProject, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                matchedBy = "git_url";
+                confidenceBand = "high";
+            }
+            else if (sourceKind == "path" &&
+                     dependency.GetValueOrDefault("external_path") is { Length: > 0 } externalPath &&
+                     definitionsByName.TryGetValue(packageName, out var named))
+            {
+                // A path outside the repository names no repository, only a checkout directory:
+                // match the crate name, preferring a repository named like a directory on the path.
+                var segments = externalPath.Split('/');
+                var onPath = named
+                    .Where(candidate => segments.Contains(candidate.Project, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+                candidates = onPath.Count > 0 ? onPath : named;
+                matchedBy = "path";
+                confidenceBand = "medium";
+            }
+            else
             {
                 continue;
             }
@@ -435,10 +499,11 @@ public class CrossRepoLinker
                 {
                     ["ecosystem"] = "cargo",
                     ["package_key"] = packageKey,
-                    ["package_name"] = dependency.GetValueOrDefault("package_name") ?? edge.TargetName,
+                    ["package_name"] = packageName,
                     ["local_name"] = dependency.GetValueOrDefault("local_name") ?? edge.TargetName,
                     ["version"] = requestedVersion ?? "",
-                    ["confidence_band"] = "high"
+                    ["matched_by"] = matchedBy,
+                    ["confidence_band"] = confidenceBand
                 }));
         }
 
@@ -450,6 +515,43 @@ public class CrossRepoLinker
         }
 
         return crossEdges.Count;
+    }
+
+    /// <summary>
+    /// A git remote as <c>host/path</c>, lowercase, without scheme, user, port, <c>.git</c> or
+    /// trailing slash, so https, ssh and scp-style spellings of one repository compare equal.
+    /// </summary>
+    internal static string? NormalizeGitUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return null;
+
+        var value = url.Trim();
+        var scheme = value.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0)
+            value = value[(scheme + 3)..];
+        else if (value.IndexOf(':') is var colon and > 0 && !value[..colon].Contains('/'))
+            value = $"{value[..colon]}/{value[(colon + 1)..]}"; // scp style: git@host:owner/repo
+
+        var slash = value.IndexOf('/');
+        if (slash <= 0)
+            return null;
+        var host = value[..slash];
+        host = host[(host.LastIndexOf('@') + 1)..];
+        if (host.IndexOf(':') is var port and > 0)
+            host = host[..port];
+
+        var path = value[(slash + 1)..];
+        var end = path.IndexOfAny(['?', '#']);
+        if (end >= 0)
+            path = path[..end];
+        path = path.Trim('/');
+        if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+            path = path[..^4].TrimEnd('/');
+
+        return host.Length == 0 || path.Length == 0
+            ? null
+            : $"{host}/{path}".ToLowerInvariant();
     }
 
     /// <summary>

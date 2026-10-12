@@ -44,9 +44,13 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         var qualifiedNames = await db.QualifiedNamesAsync();
         var edges = await store.GetAllCrossRepoEdgesAsync();
         CrossRepoLinkFleet.ShouldMatch(edges, id => qualifiedNames[id], CrossRepoLinkFleet.ConsumerLinks);
-        var cargo = edges.Single(edge => edge.Properties.ContainsKey("package_key"));
+        var cargo = edges.Single(edge => edge.Properties.GetValueOrDefault("matched_by")?.ToString() == "package_key");
         cargo.Properties["local_name"].ToString().ShouldBe("provider_alias");
         cargo.Properties["version"].ToString().ShouldBe("1.5.0");
+        // The git dependency resolves through Provider's repository URL, not a shared package key.
+        var git = edges.Single(edge => edge.Properties.GetValueOrDefault("matched_by")?.ToString() == "git_url");
+        qualifiedNames[git.TargetNodeId].ShouldBe("package:git-lib-definition");
+        git.Properties["package_key"].ToString().ShouldStartWith("cargo:git:");
     }
 
     [Fact]
@@ -112,7 +116,7 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
 
         // JSON true and the string "True" both count; the non-definition dependency does not.
         definitions.Select(node => node.QualifiedName).Order(StringComparer.Ordinal)
-            .ShouldBe(["package:consumer", "package:provider-lib-definition"]);
+            .ShouldBe(["package:consumer", "package:git-lib-definition", "package:provider-lib-definition"]);
     }
 
     /// <summary>
@@ -262,7 +266,7 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
             foreach (var (project, (nodes, edges)) in CrossRepoLinkFleet.Build())
             {
                 await store.ReplaceProjectGraphAsync(project, nodes, edges, new Dictionary<string, string>(),
-                    new RepositoryEntity { Name = project }, null);
+                    new RepositoryEntity { Name = project, RepoUrl = CrossRepoLinkFleet.RepoUrl(project) }, null);
             }
         }
 
