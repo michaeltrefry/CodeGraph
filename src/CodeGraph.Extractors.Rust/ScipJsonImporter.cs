@@ -3,15 +3,28 @@ using CodeGraph.Models;
 
 namespace CodeGraph.Extractors.Rust;
 
+/// <summary>
+/// Maps a <c>scip print --json</c> index to graph nodes and edges.
+/// </summary>
+/// <remarks>
+/// SCIP document-local symbols (<c>local N</c>) are only unique within their document, so they are
+/// scoped to it: a local definition's qualified name includes the document's path, its symbol
+/// information is read from that document only, and a reference to a local resolves only to the
+/// same document's definition. A local with no graph node (a variable, parameter or other local
+/// whose kind does not map to a label) produces no node or edge. Local nodes carry
+/// <c>scip_local_symbol</c> instead of <c>scip_symbol</c>, so the cross-group and cross-repo
+/// linkers, which join on <c>scip_symbol</c>, never match one document's local to another's.
+/// </remarks>
 public static class ScipJsonImporter
 {
     private const int DefinitionRole = 0x1;
+    private const string LocalSymbolPrefix = "local ";
 
     public static ExtractionResult Import(string json, ExtractorContext context)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        var symbolInfos = ReadSymbolInfos(root);
+        var (symbolInfos, localSymbolInfos) = ReadSymbolInfos(root);
         var nodes = new List<GraphNode>();
         var edges = new List<PendingEdge>();
         var knownNodes = new Dictionary<string, DefinitionNode>(StringComparer.Ordinal);
@@ -62,12 +75,13 @@ public static class ScipJsonImporter
                 if (!TryReadSymbolRange(occurrence, out var symbolRange))
                     continue;
 
-                symbolInfos.TryGetValue(symbol, out var info);
+                var isLocal = IsLocalSymbol(symbol);
+                var info = LookupInfo(symbolInfos, localSymbolInfos, relativePath, symbol);
                 var label = ToNodeLabel(info?.Kind);
                 if (label is null)
                     continue;
 
-                var qualifiedName = ToQualifiedName(context.ProjectName, symbol);
+                var qualifiedName = ResolveQualifiedName(context.ProjectName, relativePath, symbol);
                 if (knownNodes.ContainsKey(qualifiedName))
                     continue;
 
@@ -87,7 +101,7 @@ public static class ScipJsonImporter
                     Properties = new Dictionary<string, object>
                     {
                         ["source"] = "scip",
-                        ["scip_symbol"] = symbol,
+                        [SymbolProperty(symbol)] = symbol,
                         ["confidence"] = "high"
                     }
                 };
@@ -145,11 +159,17 @@ public static class ScipJsonImporter
                 if (!TryReadSymbolRange(occurrence, out var occurrenceRange))
                     continue;
 
-                var targetQN = ToQualifiedName(context.ProjectName, symbol);
+                var targetQN = ResolveQualifiedName(context.ProjectName, relativePath, symbol);
                 GraphNode targetNode;
                 if (knownNodes.TryGetValue(targetQN, out var localTarget))
                 {
                     targetNode = localTarget.Node;
+                }
+                else if (IsLocalSymbol(symbol))
+                {
+                    // A local with no definition node in this document (a variable or parameter)
+                    // has nothing to link to; never fall back to a project-wide placeholder.
+                    continue;
                 }
                 else
                 {
@@ -184,25 +204,53 @@ public static class ScipJsonImporter
                         ["source"] = "scip",
                         ["confidence"] = 0.85,
                         ["symbol_roles"] = roles,
-                        ["scip_symbol"] = symbol
+                        [SymbolProperty(symbol)] = symbol
                     }));
             }
         }
 
         foreach (var (symbol, info) in symbolInfos)
         {
-            var sourceQN = ToQualifiedName(context.ProjectName, symbol);
-            if (!knownNodes.ContainsKey(sourceQN))
-                continue;
+            if (knownNodes.TryGetValue(ToQualifiedName(context.ProjectName, symbol), out var definition))
+                AddImplementationEdges(definition.Node, info);
+        }
 
+        foreach (var (relativePath, infos) in localSymbolInfos)
+        {
+            foreach (var (symbol, info) in infos)
+            {
+                if (knownNodes.TryGetValue(
+                        ToLocalQualifiedName(context.ProjectName, relativePath, symbol), out var definition))
+                {
+                    AddImplementationEdges(definition.Node, info);
+                }
+            }
+        }
+
+        return new ExtractionResult
+        {
+            Nodes = nodes,
+            Edges = edges,
+            ProcessedFiles = rustDocuments.Select(document => document.RelativePath).ToList(),
+            Metadata = new ProjectMetadata("Rust", "Cargo")
+        };
+
+        void AddImplementationEdges(GraphNode sourceNode, SymbolInfo info)
+        {
+            var sourceQN = sourceNode.QualifiedName;
             foreach (var relationship in info.Relationships)
             {
                 if (!relationship.IsImplementation)
                     continue;
 
-                var targetQN = ToQualifiedName(context.ProjectName, relationship.Symbol);
+                // A local target resolves only within the implementing symbol's own document.
+                var targetQN = ResolveQualifiedName(
+                    context.ProjectName, sourceNode.FilePath ?? "", relationship.Symbol);
                 if (!knownNodes.ContainsKey(targetQN))
                 {
+                    if (IsLocalSymbol(relationship.Symbol))
+                        continue;
+
                     targetQN = GetOrCreateExternalNode(
                         context,
                         relationship.Symbol,
@@ -218,19 +266,11 @@ public static class ScipJsonImporter
                     new()
                     {
                         ["source"] = "scip",
-                        ["scip_symbol"] = relationship.Symbol,
+                        [SymbolProperty(relationship.Symbol)] = relationship.Symbol,
                         ["confidence"] = 0.95
                     }));
             }
         }
-
-        return new ExtractionResult
-        {
-            Nodes = nodes,
-            Edges = edges,
-            ProcessedFiles = rustDocuments.Select(document => document.RelativePath).ToList(),
-            Metadata = new ProjectMetadata("Rust", "Cargo")
-        };
     }
 
     private static GraphNode GetOrCreateExternalNode(
@@ -280,21 +320,28 @@ public static class ScipJsonImporter
         Metadata = new ProjectMetadata("Rust", "Cargo")
     };
 
-    private static Dictionary<string, SymbolInfo> ReadSymbolInfos(JsonElement root)
+    /// <summary>
+    /// Reads symbol information: global symbols into one index-wide map, and document-local
+    /// symbols into one map per document (keyed by normalized relative path), because the same
+    /// <c>local N</c> names unrelated symbols in different documents.
+    /// </summary>
+    private static (Dictionary<string, SymbolInfo> Global, Dictionary<string, Dictionary<string, SymbolInfo>> Local)
+        ReadSymbolInfos(JsonElement root)
     {
         var result = new Dictionary<string, SymbolInfo>(StringComparer.Ordinal);
+        var locals = new Dictionary<string, Dictionary<string, SymbolInfo>>(StringComparer.Ordinal);
         if ((TryGetProperty(root, "externalSymbols", out var externalSymbols) ||
              TryGetProperty(root, "external_symbols", out externalSymbols)) &&
             externalSymbols.ValueKind is JsonValueKind.Array)
         {
             foreach (var symbol in externalSymbols.EnumerateArray())
-                AddSymbolInfo(result, symbol);
+                AddSymbolInfo(result, documentLocals: null, symbol);
         }
 
         if (!TryGetProperty(root, "documents", out var documents) ||
             documents.ValueKind is not JsonValueKind.Array)
         {
-            return result;
+            return (result, locals);
         }
 
         foreach (var document in documents.EnumerateArray())
@@ -305,18 +352,46 @@ public static class ScipJsonImporter
                 continue;
             }
 
+            var relativePath = NormalizePath(GetString(document, "relativePath", "relative_path") ?? "");
+            if (!locals.TryGetValue(relativePath, out var documentLocals))
+            {
+                documentLocals = new Dictionary<string, SymbolInfo>(StringComparer.Ordinal);
+                locals[relativePath] = documentLocals;
+            }
+
             foreach (var symbol in symbols.EnumerateArray())
-                AddSymbolInfo(result, symbol);
+                AddSymbolInfo(result, documentLocals, symbol);
         }
 
-        return result;
+        return (result, locals);
     }
 
-    private static void AddSymbolInfo(Dictionary<string, SymbolInfo> infos, JsonElement element)
+    private static SymbolInfo? LookupInfo(
+        Dictionary<string, SymbolInfo> global,
+        Dictionary<string, Dictionary<string, SymbolInfo>> locals,
+        string relativePath,
+        string symbol) =>
+        IsLocalSymbol(symbol)
+            ? locals.GetValueOrDefault(relativePath)?.GetValueOrDefault(symbol)
+            : global.GetValueOrDefault(symbol);
+
+    private static void AddSymbolInfo(
+        Dictionary<string, SymbolInfo> globalInfos,
+        Dictionary<string, SymbolInfo>? documentLocals,
+        JsonElement element)
     {
         var symbol = GetString(element, "symbol");
         if (string.IsNullOrWhiteSpace(symbol))
             return;
+
+        var infos = globalInfos;
+        if (IsLocalSymbol(symbol))
+        {
+            // A local symbol outside a document has no scope to belong to.
+            if (documentLocals is null)
+                return;
+            infos = documentLocals;
+        }
 
         var relationships = new List<RelationshipInfo>();
         if (TryGetProperty(element, "relationships", out var relationshipElements) &&
@@ -502,6 +577,21 @@ public static class ScipJsonImporter
 
     private static string ToQualifiedName(string projectName, string symbol) =>
         $"{projectName}:scip:{symbol}";
+
+    private static string ToLocalQualifiedName(string projectName, string relativePath, string symbol) =>
+        $"{projectName}:scip-local:{relativePath}:{symbol}";
+
+    private static string ResolveQualifiedName(string projectName, string relativePath, string symbol) =>
+        IsLocalSymbol(symbol)
+            ? ToLocalQualifiedName(projectName, relativePath, symbol)
+            : ToQualifiedName(projectName, symbol);
+
+    private static bool IsLocalSymbol(string symbol) =>
+        symbol.StartsWith(LocalSymbolPrefix, StringComparison.Ordinal);
+
+    // Linkers join on scip_symbol; a document-local symbol must never take part in that join.
+    private static string SymbolProperty(string symbol) =>
+        IsLocalSymbol(symbol) ? "scip_local_symbol" : "scip_symbol";
 
     private static string ToExternalQualifiedName(string projectName, string symbol) =>
         $"{projectName}:scip-external:{symbol}";

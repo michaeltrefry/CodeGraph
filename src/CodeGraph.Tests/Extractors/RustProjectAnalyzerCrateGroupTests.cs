@@ -102,6 +102,98 @@ public sealed class RustProjectAnalyzerCrateGroupTests
     }
 
     [Fact]
+    public async Task AnalyzeProjectAsync_DocumentLocalSymbols_SameGraphForAnyGroupSize()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        // Every crate's document defines and calls its own `local 0`; how crates are grouped
+        // must not change which nodes exist, what they are named, or what the edges connect.
+        var oneCratePerGroup = await AnalyzeLocalsWorkspaceAsync(groupSize: 1);
+        var allCratesInOneGroup = await AnalyzeLocalsWorkspaceAsync(groupSize: 8);
+
+        oneCratePerGroup.Nodes.ShouldBe(allCratesInOneGroup.Nodes);
+        oneCratePerGroup.Edges.ShouldBe(allCratesInOneGroup.Edges);
+        oneCratePerGroup.Nodes.Count(node => node.Contains(":scip-local:")).ShouldBe(3);
+        oneCratePerGroup.Edges.ShouldContain(
+            $"CALLS {FakeRustToolchain.Symbol("alpha", "alpha_entry")} -> alpha_inner@crates/alpha/src/lib.rs");
+    }
+
+    private static async Task<(List<string> Nodes, List<string> Edges)> AnalyzeLocalsWorkspaceAsync(int groupSize)
+    {
+        using var toolchain = new FakeRustToolchain()
+            .AddCrate("alpha", "pub fn alpha_entry() {}\n",
+                LocalsScipDocument("alpha", "alpha_entry", FakeRustToolchain.Symbol("beta", "beta_compute")),
+                dependencies: ["beta"])
+            .AddCrate("beta", "pub fn beta_compute() {}\n", LocalsScipDocument("beta", "beta_compute"))
+            .AddCrate("gamma", "pub fn gamma_run() {}\n", LocalsScipDocument("gamma", "gamma_run"));
+        toolchain.Install();
+        var analyzer = CreateAnalyzer(new IndexingOptions { RustSemanticCrateGroupSize = groupSize });
+
+        var results = await analyzer.AnalyzeProjectAsync(toolchain.ManifestPath, Context(toolchain));
+
+        var nodes = results.SelectMany(result => result.Nodes).ToList();
+        var byQualifiedName = nodes.GroupBy(node => node.QualifiedName)
+            .ToDictionary(group => group.Key, group => group.First());
+        string Describe(string qualifiedName) =>
+            byQualifiedName.TryGetValue(qualifiedName, out var node) && node.Properties.ContainsKey("scip_symbol")
+                ? (string)node.Properties["scip_symbol"]
+                : byQualifiedName.TryGetValue(qualifiedName, out node)
+                    ? $"{node.Name}@{node.FilePath}"
+                    : qualifiedName;
+        return (
+            nodes.Select(node => $"{node.QualifiedName}|{node.Name}|{node.FilePath}|{node.Label}")
+                .Order(StringComparer.Ordinal).ToList(),
+            results.SelectMany(result => result.Edges)
+                .Select(edge => $"{edge.Type} {Describe(edge.SourceQN)} -> {Describe(edge.TargetQN)}")
+                .Order(StringComparer.Ordinal).ToList());
+    }
+
+    /// <summary>
+    /// A crate document whose function defines a nested fn as SCIP <c>local 0</c>, calls it, reads
+    /// a variable (<c>local 1</c>) and optionally calls another crate's function.
+    /// </summary>
+    private static string LocalsScipDocument(string crate, string function, string? calledSymbol = null)
+    {
+        var symbol = FakeRustToolchain.Symbol(crate, function);
+        var occurrences = new List<object>
+        {
+            new Dictionary<string, object>
+            {
+                ["symbol"] = symbol, ["symbolRoles"] = 1,
+                ["range"] = new[] { 0, 7, 7 + function.Length }, ["enclosingRange"] = new[] { 0, 0, 9, 1 }
+            },
+            new Dictionary<string, object>
+            {
+                ["symbol"] = "local 0", ["symbolRoles"] = 1,
+                ["range"] = new[] { 1, 7, 12 }, ["enclosingRange"] = new[] { 1, 4, 3, 5 }
+            },
+            new Dictionary<string, object> { ["symbol"] = "local 0", ["symbolRoles"] = 8, ["range"] = new[] { 5, 4, 9 } },
+            new Dictionary<string, object> { ["symbol"] = "local 1", ["symbolRoles"] = 8, ["range"] = new[] { 6, 4, 9 } }
+        };
+        if (calledSymbol is not null)
+        {
+            occurrences.Add(new Dictionary<string, object>
+            {
+                ["symbol"] = calledSymbol, ["symbolRoles"] = 8, ["range"] = new[] { 7, 4, 16 }
+            });
+        }
+
+        return JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["language"] = "rust",
+            ["relativePath"] = $"crates/{crate}/src/lib.rs",
+            ["symbols"] = new object[]
+            {
+                new Dictionary<string, object> { ["symbol"] = symbol, ["kind"] = "Function", ["displayName"] = function },
+                new Dictionary<string, object> { ["symbol"] = "local 0", ["kind"] = "Function", ["displayName"] = $"{crate}_inner" },
+                new Dictionary<string, object> { ["symbol"] = "local 1", ["kind"] = "Variable", ["displayName"] = "value" }
+            },
+            ["occurrences"] = occurrences
+        });
+    }
+
+    [Fact]
     public async Task AnalyzeWorkspaceAsync_GroupTimeout_FailsOnlyTheSlowGroup()
     {
         if (OperatingSystem.IsWindows())
