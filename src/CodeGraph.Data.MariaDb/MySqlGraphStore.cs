@@ -803,6 +803,14 @@ public partial class MySqlGraphStore(
             .Where(f => f.Project == project)
             .ToDictionaryAsync(f => f.RelPath, f => f.ContentHash, StringComparer.OrdinalIgnoreCase);
 
+    public async Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project)
+        => await db.FileHashes.AsNoTracking()
+            .Where(f => f.Project == project)
+            .ToDictionaryAsync(
+                f => f.RelPath,
+                f => new FileHashRecord(f.ContentHash, f.ExtractionVersion),
+                StringComparer.OrdinalIgnoreCase);
+
     public async Task UpsertFileHashBatchAsync(
         string project,
         Dictionary<string, string> hashes,
@@ -894,6 +902,7 @@ public partial class MySqlGraphStore(
             existing.FailedCommitSha = state.FailedCommitSha;
             existing.ConsecutiveFailures = state.ConsecutiveFailures;
             existing.LastFailureAt = state.LastFailureAt;
+            existing.ExtractionFingerprint = state.ExtractionFingerprint ?? existing.ExtractionFingerprint;
         }
 
         await db.SaveChangesAsync();

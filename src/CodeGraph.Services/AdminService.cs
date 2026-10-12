@@ -40,7 +40,8 @@ public class AdminService(
                 ShouldIndex      = request.ShouldIndex,
                 ShouldAnalyze    = exclusionType == "no_analysis" ? false : request.ShouldAnalyze,
                 SkipIfUpToDate   = request.SkipIfUpToDate,
-                IncludeAllSource = request.IncludeAllSource
+                IncludeAllSource = request.IncludeAllSource,
+                ReplaceExistingGraph = request.ReplaceExistingGraph
             };
 
             if (!string.IsNullOrWhiteSpace(explicitPath) && explicitPath.StartsWith("http", StringComparison.OrdinalIgnoreCase))

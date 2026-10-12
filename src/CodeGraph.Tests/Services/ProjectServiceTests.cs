@@ -273,6 +273,62 @@ public class ProjectServiceTests
     }
 
     [Fact]
+    public async Task ProcessRepository_RoutineSyncAtUnchangedHeadReindexesOnceAfterExtractionVersionBump()
+    {
+        var rootPath = CreateGitRepository();
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var bus = new RecordingMessageBus();
+            var extractor = new CountingExtractor();
+            var routine = new ProcessRepository
+            {
+                Name = "inference",
+                RepoUrl = rootPath,
+                ShouldIndex = true,
+                ShouldAnalyze = true,
+                SkipIfUpToDate = true
+            };
+
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus)
+                .ProcessRepository(routine);
+            extractor.Runs.ShouldBe(1);
+            var first = bus.Messages.OfType<RepositoryIndexingCompleted>().ShouldHaveSingleItem();
+            first.ShouldAnalyze.ShouldBeTrue();
+            first.ShouldComputeVitals.ShouldBeTrue();
+
+            // Same HEAD, same extractor versions: the routine sync is skipped.
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus)
+                .ProcessRepository(routine);
+            extractor.Runs.ShouldBe(1);
+            bus.Messages.Count.ShouldBe(1);
+
+            // An extractor upgrade is deployed: the unchanged HEAD is re-indexed without
+            // repeating the commit's LLM analysis or health analysis.
+            extractor.Version = "2";
+            var upgraded = CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus);
+            await upgraded.ProcessRepository(routine);
+            extractor.Runs.ShouldBe(2);
+            var refresh = bus.Messages.OfType<RepositoryIndexingCompleted>().Last();
+            bus.Messages.Count.ShouldBe(2);
+            refresh.ShouldAnalyze.ShouldBeFalse();
+            refresh.ShouldComputeVitals.ShouldBeFalse();
+            var state = (await store.GetSyncStateAsync("inference"))!;
+            state.LastCommitSha.ShouldBe(GitHead(rootPath));
+            state.ExtractionFingerprint.ShouldNotBeNull();
+
+            // The refresh is recorded: later routine syncs skip again.
+            await upgraded.ProcessRepository(routine);
+            extractor.Runs.ShouldBe(2);
+            bus.Messages.Count.ShouldBe(2);
+        }
+        finally
+        {
+            DeleteDirectory(rootPath);
+        }
+    }
+
+    [Fact]
     public async Task ProcessRepository_HostCancellationIsNotCountedAsACommitFailure()
     {
         var rootPath = CreateGitRepository();
@@ -300,7 +356,8 @@ public class ProjectServiceTests
     }
 
     private static ProjectService CreateService(
-        InMemoryGraphStore store, ICodeExtractor extractor, string rootPath, int maxConsecutiveFailures)
+        InMemoryGraphStore store, ICodeExtractor extractor, string rootPath, int maxConsecutiveFailures,
+        IMessageBus? messageBus = null)
     {
         var options = Options.Create(new IndexingOptions
         {
@@ -311,7 +368,7 @@ public class ProjectServiceTests
         return new ProjectService(
             store,
             new RecordingBatchAnalysisService(store),
-            new NoOpMessageBus(),
+            messageBus ?? new NoOpMessageBus(),
             new FixedRepoProvider(rootPath),
             new IndexingPipeline(store, [extractor], options, new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance),
@@ -365,6 +422,9 @@ public class ProjectServiceTests
         private int _runs;
         public int Runs => _runs;
         public Action? OnExtract { get; init; }
+        public string Version { get; set; } = "1";
+
+        public string GetExtractionVersion(string extension) => Version;
 
         public IReadOnlySet<string> SupportedExtensions { get; } =
             new HashSet<string>([".py"], StringComparer.OrdinalIgnoreCase);
@@ -471,6 +531,17 @@ public class ProjectServiceTests
             string searchTerm,
             CancellationToken ct = default) =>
             Task.FromResult(new List<DiscoveredProject>());
+    }
+
+    private sealed class RecordingMessageBus : IMessageBus
+    {
+        public List<object> Messages { get; } = [];
+
+        public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class
+        {
+            Messages.Add(message);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NoOpMessageBus : IMessageBus

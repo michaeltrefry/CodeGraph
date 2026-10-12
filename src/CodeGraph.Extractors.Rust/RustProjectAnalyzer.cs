@@ -27,6 +27,9 @@ namespace CodeGraph.Extractors.Rust;
 /// </summary>
 public class RustProjectAnalyzer : IRustAnalyzer
 {
+    /// <summary>Bump when extraction output changes for unchanged input (see ExtractionVersionCatalog).</summary>
+    public string ExtractionVersion => "1";
+
     private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(10);
     private const int DefaultStderrTailCharacters = 4096;
     private const int SigkillExitCode = 137;

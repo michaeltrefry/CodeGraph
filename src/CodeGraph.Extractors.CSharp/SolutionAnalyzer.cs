@@ -15,6 +15,8 @@ namespace CodeGraph.Extractors.CSharp;
 
 public class SolutionAnalyzer : ISolutionAnalyzer
 {
+    public string ExtractionVersion => CSharpExtractionVersion.Current;
+
     private static int _msBuildRegistered;
     private readonly ILogger<SolutionAnalyzer> _logger;
     private readonly LintResultCache _lintCache;

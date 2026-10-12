@@ -15,6 +15,9 @@ public class ColdFusionExtractor : ICodeExtractor
     public IReadOnlySet<string> SupportedExtensions { get; } =
         new HashSet<string> { ".cfm", ".cfc" };
 
+    /// <summary>Bump when extraction output changes for unchanged input (see ExtractionVersionCatalog).</summary>
+    public string GetExtractionVersion(string extension) => "1";
+
     public Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
     {

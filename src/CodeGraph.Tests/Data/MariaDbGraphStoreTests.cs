@@ -537,6 +537,123 @@ public class MariaDbGraphStoreTests
     }
 
     [Fact]
+    public async Task MySqlGraphStore_PersistsFileExtractionVersionsAndSyncFingerprintWhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var databaseName = $"codegraph_xver_test_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+        var migrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations");
+        var storageOptions = Options.Create(new MariaDbStorageOptions
+        {
+            ConnectionString = builder.ConnectionString,
+            MigrationsPath = migrationsPath
+        });
+        var runner = new MariaDbMigrationRunner(storageOptions, NullLogger<MariaDbMigrationRunner>.Instance);
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+            // The migration is idempotent: re-running its statements is a no-op.
+            await using (var connection = new MySqlConnection(builder.ConnectionString))
+            {
+                await connection.OpenAsync();
+                var migration = await File.ReadAllTextAsync(Path.Combine(migrationsPath, "069_extraction_versions.sql"));
+                await connection.ExecuteAsync(migration);
+            }
+
+            var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                .UseMySql(builder.ConnectionString,
+                    ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                .Options;
+            await using var context = new CodeGraphDbContext(dbOptions);
+            var store = new MySqlGraphStore(
+                context,
+                storageOptions,
+                NullLogger<MySqlGraphStore>.Instance,
+                new MySqlAnalysisStore(context),
+                new MySqlMetricsStore(context),
+                new MySqlReviewStore(context),
+                runner);
+
+            await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "Versioned" });
+            // A row written without a version (as every row before migration 069) reads back null.
+            await store.UpsertFileHashBatchAsync("Versioned", new Dictionary<string, string> { ["a.cs"] = "h1" });
+            (await store.GetFileHashRecordsAsync("Versioned"))["a.cs"]
+                .ShouldBe(new FileHashRecord("h1", null));
+
+            // Incremental file-slice replacement writes the version alongside the hash.
+            await store.ReplaceProjectFilesAsync(
+                "Versioned",
+                ["a.cs"],
+                [Node("Versioned.A", "a.cs")],
+                [],
+                new Dictionary<string, string> { ["a.cs"] = "h1" },
+                new Dictionary<string, string> { ["a.cs"] = "p1;RoslynExtractor=2" });
+            (await store.GetFileHashRecordsAsync("Versioned"))["a.cs"]
+                .ShouldBe(new FileHashRecord("h1", "p1;RoslynExtractor=2"));
+            (await store.GetFileHashesAsync("Versioned"))["a.cs"].ShouldBe("h1");
+
+            // Full replacement writes versions and the sync-state fingerprint atomically.
+            await store.ReplaceProjectGraphAsync(
+                "Versioned",
+                [Node("Versioned.B", "b.cs")],
+                [],
+                new Dictionary<string, string> { ["b.cs"] = "h2" },
+                new RepositoryEntity { Name = "Versioned" },
+                new SyncStateEntity
+                {
+                    Project = "Versioned",
+                    LastCommitSha = "abc",
+                    LastSyncAt = DateTime.UtcNow,
+                    Status = "idle",
+                    ExtractionFingerprint = "FP1"
+                },
+                new Dictionary<string, string> { ["b.cs"] = "p1;RoslynExtractor=3" });
+            var records = await store.GetFileHashRecordsAsync("Versioned");
+            records.Keys.ShouldBe(["b.cs"]);
+            records["b.cs"].ShouldBe(new FileHashRecord("h2", "p1;RoslynExtractor=3"));
+            (await store.GetSyncStateAsync("Versioned"))!.ExtractionFingerprint.ShouldBe("FP1");
+
+            // A sync-state write without a fingerprint (failure record) keeps the stored one;
+            // a successful index replaces it.
+            context.ChangeTracker.Clear();
+            await store.UpsertSyncStateAsync(new SyncStateEntity
+            {
+                Project = "Versioned",
+                Status = "error",
+                FailedCommitSha = "abc",
+                ConsecutiveFailures = 1
+            });
+            context.ChangeTracker.Clear();
+            (await store.GetSyncStateAsync("Versioned"))!.ExtractionFingerprint.ShouldBe("FP1");
+            await store.UpsertSyncStateAsync(new SyncStateEntity
+            {
+                Project = "Versioned",
+                LastCommitSha = "abc",
+                Status = "idle",
+                ExtractionFingerprint = "FP2"
+            });
+            context.ChangeTracker.Clear();
+            (await store.GetSyncStateAsync("Versioned"))!.ExtractionFingerprint.ShouldBe("FP2");
+            (await store.GetSyncStatesAsync(["Versioned"]))["Versioned"].ExtractionFingerprint.ShouldBe("FP2");
+        }
+        finally
+        {
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+
+        static GraphNode Node(string qn, string filePath) => new()
+        {
+            Project = "Versioned",
+            Label = NodeLabel.Class,
+            Name = qn,
+            QualifiedName = qn,
+            FilePath = filePath
+        };
+    }
+
+    [Fact]
     public async Task MySqlGraphStore_AtomicReplacementPreservesCaseDistinctQualifiedNames()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();

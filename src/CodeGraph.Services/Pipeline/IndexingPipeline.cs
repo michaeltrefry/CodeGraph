@@ -27,6 +27,7 @@ public partial class IndexingPipeline
     private readonly IndexingRunDiagnostics? _diagnostics;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
+    private readonly ExtractionVersionCatalog _extractionVersions;
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectLocks =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -55,7 +56,15 @@ public partial class IndexingPipeline
         _cargoManifestExtractor = cargoManifestExtractor;
         _diagnostics = diagnostics;
         _foundationalRepos = _options.FoundationalRepos ?? [];
+        _extractionVersions = new ExtractionVersionCatalog(
+            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer);
     }
+
+    /// <summary>
+    /// Digest of the current extraction version of every file type this pipeline indexes.
+    /// Stored on sync state so routine syncs re-index unchanged commits after an extractor bump.
+    /// </summary>
+    public string ExtractionFingerprint => _extractionVersions.Fingerprint;
 
     public async Task IndexProjectAsync(string projectName, string rootPath,
         FoundationalKnowledge? knowledge = null,
@@ -133,15 +142,21 @@ public partial class IndexingPipeline
 
         var existingHashes = replaceExistingGraph
             ? []
-            : await _store.GetFileHashesAsync(projectName);
+            : await _store.GetFileHashRecordsAsync(projectName);
 
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
         var deletedFiles = GetDeletedFiles(rootPath, changedFilesOnly);
         var languageStats = ComputeLanguageStats(files);
-        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer);
+        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, out var outdatedVersionFiles);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+        if (outdatedVersionFiles > 0)
+        {
+            _logger.LogInformation(
+                "Re-extracting {Count} unchanged files of {Project} whose extraction version is outdated",
+                outdatedVersionFiles, projectName);
+        }
 
         // If no files changed but the project has no extraction nodes (e.g. extractor was
         // just added/fixed), force a full re-extraction by clearing hashes.
@@ -587,6 +602,7 @@ public partial class IndexingPipeline
                 BuildRepositorySnapshot(
                     repository, detectedMetadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes),
                 replacementSyncState,
+                ExtractionVersionsFor(buffer.AllFileHashes.Keys),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic graph replacement ({NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -612,6 +628,7 @@ public partial class IndexingPipeline
                 replacementNodes,
                 replacementEdges,
                 replacementHashes,
+                ExtractionVersionsFor(replacementHashes.Keys),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -675,10 +692,15 @@ public partial class IndexingPipeline
             .ToList();
     }
 
+    /// <summary>
+    /// Files to extract: new files, files whose content changed, and unchanged files whose stored
+    /// extraction version differs from the current one (a missing version counts as different).
+    /// </summary>
     private List<string> FilterByHash(List<string> files, string rootPath,
-        Dictionary<string, string> existingHashes, GraphBuffer buffer)
+        Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, out int outdatedVersionFiles)
     {
         var changed = new List<string>();
+        outdatedVersionFiles = 0;
         foreach (var file in files)
         {
             var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
@@ -686,13 +708,25 @@ public partial class IndexingPipeline
             buffer.AddFileHash(relPath, hash);
 
             if (!existingHashes.TryGetValue(relPath, out var existing) ||
-                existing != hash)
+                existing.ContentHash != hash)
             {
                 changed.Add(file);
+            }
+            else if (!string.Equals(existing.ExtractionVersion, _extractionVersions.ForPath(relPath),
+                         StringComparison.Ordinal))
+            {
+                changed.Add(file);
+                outdatedVersionFiles++;
             }
         }
         return changed;
     }
+
+    private Dictionary<string, string> ExtractionVersionsFor(IEnumerable<string> relativePaths) =>
+        relativePaths.ToDictionary(
+            path => path,
+            _extractionVersions.ForPath,
+            StringComparer.OrdinalIgnoreCase);
 
     private string ComputeHash(string filePath)
     {

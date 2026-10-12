@@ -73,6 +73,22 @@ public class HttpIndexerClientTests
         var body = await request.Content!.ReadAsStringAsync();
         body.ShouldContain("\"repos\":[\"CodeGraph\"]");
         body.ShouldContain("\"includeAllSource\":true");
+        body.ShouldContain("\"replaceExistingGraph\":false");
+    }
+
+    [Fact]
+    public async Task StartProcessRepositoriesAsync_ForwardsReplaceExistingGraph()
+    {
+        var handler = new RecordingHandler(new IndexerAcceptedResponse("queued", "ok", 43, "/api/indexer/runs/43"));
+        var client = CreateClient(handler);
+
+        await client.StartProcessRepositoriesAsync(
+            "Michael",
+            new ProcessRequest { Repos = ["CodeGraph"], ShouldAnalyze = false, ReplaceExistingGraph = true },
+            "submission-43");
+
+        var body = await handler.Requests.Single().Content!.ReadAsStringAsync();
+        body.ShouldContain("\"replaceExistingGraph\":true");
     }
 
     [Fact]

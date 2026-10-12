@@ -75,6 +75,10 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 - `IGraphStore` (in Data) — Storage abstraction. Implemented for runtime by `MySqlGraphStore` in Data.MariaDb; Neo4j remains for compatibility/export.
 - `IRepoProvider` (in Services) — Repository discovery and local materialization via folder, GitHub, or GitLab sources.
 
+### Extractor Output Changes Must Bump The Extraction Version
+
+Incremental indexing only re-extracts files whose content hash or stored extraction version changed. Any change that alters what an extractor/analyzer emits for unchanged source must bump that component's version (`ICodeExtractor.GetExtractionVersion`, `LanguageSpec.ExtractionVersion`, `CSharpExtractionVersion.Current`, the `ExtractionVersion` of the solution/TypeScript/Rust analyzers, or `ExtractionVersionCatalog.PipelineVersion` for resolution changes). Otherwise the improvement never reaches existing repos. See `ExtractionVersionCatalog`.
+
 ## Legacy Codebase Conventions
 
 Many of the originally indexed repos followed a consistent C# structure:

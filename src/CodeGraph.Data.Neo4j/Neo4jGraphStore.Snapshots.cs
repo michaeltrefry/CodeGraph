@@ -11,6 +11,7 @@ public partial class Neo4jGraphStore
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
     {
         if (filePaths.Count == 0) return 0;
@@ -185,14 +186,16 @@ public partial class Neo4jGraphStore
                      {
                          ["project"] = project,
                          ["relPath"] = hash.Key,
-                         ["contentHash"] = hash.Value
+                         ["contentHash"] = hash.Value,
+                         ["extractionVersion"] = extractionVersions?.GetValueOrDefault(hash.Key)
                      }).ToList(), 200))
             {
                 ct.ThrowIfCancellationRequested();
                 await tx.RunAsync("""
                     UNWIND $items AS item
                     MERGE (hash:FileHash {project: item.project, relPath: item.relPath})
-                    SET hash.contentHash = item.contentHash
+                    SET hash.contentHash = item.contentHash,
+                        hash.extractionVersion = item.extractionVersion
                     """, new { items = batch });
             }
 
@@ -207,6 +210,7 @@ public partial class Neo4jGraphStore
         IReadOnlyDictionary<string, string> fileHashes,
         RepositoryEntity repository,
         SyncStateEntity? syncState,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
     {
         await using var session = sessionFactory.GetSession();
@@ -350,7 +354,8 @@ public partial class Neo4jGraphStore
                 {
                     ["project"] = project,
                     ["relPath"] = hash.Key,
-                    ["contentHash"] = hash.Value
+                    ["contentHash"] = hash.Value,
+                    ["extractionVersion"] = extractionVersions?.GetValueOrDefault(hash.Key)
                 }).ToList();
 
                 const int hashBatchSize = 200;
@@ -359,7 +364,8 @@ public partial class Neo4jGraphStore
                     ct.ThrowIfCancellationRequested();
                     await tx.RunAsync("""
                         UNWIND $items AS h
-                        CREATE (f:FileHash {project: h.project, relPath: h.relPath, contentHash: h.contentHash})
+                        CREATE (f:FileHash {project: h.project, relPath: h.relPath, contentHash: h.contentHash,
+                                            extractionVersion: h.extractionVersion})
                         """, new { items = batch });
                 }
             }
@@ -370,11 +376,13 @@ public partial class Neo4jGraphStore
                     MERGE (s:SyncState {project: $project})
                     SET s.lastSyncAt = $lastSyncAt,
                         s.lastCommitSha = COALESCE($lastCommitSha, s.lastCommitSha),
+                        s.extractionFingerprint = COALESCE($extractionFingerprint, s.extractionFingerprint),
                         s.status = $status,
                         s.errorMessage = $errorMessage
                     """, new
                 {
                     project = syncState.Project,
+                    extractionFingerprint = syncState.ExtractionFingerprint,
                     lastSyncAt = syncState.LastSyncAt,
                     lastCommitSha = syncState.LastCommitSha,
                     status = syncState.Status,

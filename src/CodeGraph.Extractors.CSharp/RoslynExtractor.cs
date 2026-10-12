@@ -9,6 +9,8 @@ public class RoslynExtractor : ICodeExtractor
     public IReadOnlySet<string> SupportedExtensions { get; } =
         new HashSet<string> { ".cs" };
 
+    public string GetExtractionVersion(string extension) => CSharpExtractionVersion.Current;
+
     /// <summary>
     /// Individual file extraction (fallback when no solution available).
     /// Without a compilation we get syntax-only analysis — still useful for

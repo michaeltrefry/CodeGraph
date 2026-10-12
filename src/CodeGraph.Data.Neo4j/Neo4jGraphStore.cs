@@ -301,7 +301,8 @@ public partial class Neo4jGraphStore(
                     LastSyncAt = GetDateTimeOrNull(node, "lastSyncAt"),
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
-                    ErrorMessage = GetStringOrNull(node, "errorMessage")
+                    ErrorMessage = GetStringOrNull(node, "errorMessage"),
+                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint")
                 };
             }
             return null;
@@ -334,7 +335,8 @@ public partial class Neo4jGraphStore(
                     LastSyncAt = GetDateTimeOrNull(node, "lastSyncAt"),
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
-                    ErrorMessage = GetStringOrNull(node, "errorMessage")
+                    ErrorMessage = GetStringOrNull(node, "errorMessage"),
+                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint")
                 };
                 results[entity.Project] = entity;
             }
@@ -352,12 +354,14 @@ public partial class Neo4jGraphStore(
                 MERGE (s:SyncState {project: $project})
                 SET s.lastSyncAt = $lastSyncAt,
                     s.lastCommitSha = COALESCE($lastCommitSha, s.lastCommitSha),
+                    s.extractionFingerprint = COALESCE($extractionFingerprint, s.extractionFingerprint),
                     s.status = $status,
                     s.errorMessage = $errorMessage
                 """,
                 new
                 {
                     project = state.Project,
+                    extractionFingerprint = state.ExtractionFingerprint,
                     lastSyncAt = state.LastSyncAt,
                     lastCommitSha = state.LastCommitSha,
                     status = state.Status,

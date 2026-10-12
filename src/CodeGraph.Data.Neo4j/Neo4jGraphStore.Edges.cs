@@ -434,6 +434,28 @@ public partial class Neo4jGraphStore
         });
     }
 
+    public async Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project)
+    {
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH (f:FileHash {project: $project})
+                RETURN f.relPath AS relPath, f.contentHash AS contentHash, f.extractionVersion AS extractionVersion
+                """,
+                new { project });
+            var result = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
+            await foreach (var record in cursor)
+            {
+                result[record["relPath"].As<string>()] = new FileHashRecord(
+                    record["contentHash"].As<string>(),
+                    record["extractionVersion"].As<string?>());
+            }
+            return result;
+        });
+    }
+
     public async Task UpsertFileHashBatchAsync(string project, Dictionary<string, string> hashes, CancellationToken ct = default)
     {
         if (hashes.Count == 0) return;

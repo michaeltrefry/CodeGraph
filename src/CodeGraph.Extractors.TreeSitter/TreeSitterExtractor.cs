@@ -25,6 +25,18 @@ public class TreeSitterExtractor : ICodeExtractor
     public IReadOnlySet<string> SupportedExtensions { get; } =
         new HashSet<string>(LanguageSpecs.SupportedExtensions, StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Version of the generic AST walk shared by every language. Bump it when the shared walk's
+    /// output changes; bump <see cref="LanguageSpec.ExtractionVersion"/> for a single language
+    /// (see ExtractionVersionCatalog).
+    /// </summary>
+    public const int WalkerVersion = 1;
+
+    public string GetExtractionVersion(string extension) =>
+        LanguageSpecs.ForExtension(extension) is { } spec
+            ? $"{WalkerVersion}.{spec.ExtractionVersion}"
+            : WalkerVersion.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     public Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
     {

@@ -14,6 +14,13 @@ public sealed class LanguageSpec
     public required string? Framework { get; init; }
     public required Func<Language> GetLanguage { get; init; }
 
+    /// <summary>
+    /// Version of this language's extraction output (spec data and its domain extractor).
+    /// Bump it whenever the output changes for unchanged source so existing repositories are
+    /// re-extracted (see ExtractionVersionCatalog).
+    /// </summary>
+    public int ExtractionVersion { get; init; } = 1;
+
     /// <summary>AST node types that represent function/method definitions.</summary>
     public string[] FunctionNodeTypes { get; init; } = [];
 

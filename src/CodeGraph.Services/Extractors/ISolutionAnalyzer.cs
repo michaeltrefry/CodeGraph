@@ -8,6 +8,13 @@ namespace CodeGraph.Services.Extractors;
 /// </summary>
 public interface ISolutionAnalyzer
 {
+    /// <summary>
+    /// Version of this analyzer's output; part of the per-file extraction version of the files
+    /// it covers. Bump it whenever the output changes for unchanged input — see
+    /// <see cref="CodeGraph.Services.Pipeline.ExtractionVersionCatalog"/>.
+    /// </summary>
+    string ExtractionVersion => "1";
+
     Task<SolutionAnalysisResult> AnalyzeSolutionAsync(
         string solutionPath, ExtractorContext context, CancellationToken ct);
 }

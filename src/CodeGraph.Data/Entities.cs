@@ -58,7 +58,13 @@ public class FileHashEntity
     public string Project { get; set; } = "";
     public string RelPath { get; set; } = "";
     public string ContentHash { get; set; } = "";
+
+    /// <summary>Extraction version the file was last extracted with; null when unknown.</summary>
+    public string? ExtractionVersion { get; set; }
 }
+
+/// <summary>Stored content hash and extraction version of one indexed file.</summary>
+public sealed record FileHashRecord(string ContentHash, string? ExtractionVersion);
 
 public class RepositorySummaryEntity
 {
@@ -102,6 +108,13 @@ public class SyncStateEntity
     public int ConsecutiveFailures { get; set; }
 
     public DateTime? LastFailureAt { get; set; }
+
+    /// <summary>
+    /// Extraction-version fingerprint of the last successful index. A routine sync re-indexes an
+    /// unchanged HEAD when it differs from the running indexer's fingerprint. Null keeps the
+    /// stored value on upsert.
+    /// </summary>
+    public string? ExtractionFingerprint { get; set; }
 }
 
 public class MigrationHistoryEntity
