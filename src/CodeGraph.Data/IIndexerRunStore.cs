@@ -39,6 +39,31 @@ public interface IIndexerRunStore
         CancellationToken ct = default)
         => throw new NotSupportedException("This indexer run store does not support bounded stale-lease recovery.");
 
+    /// <summary>
+    /// As the bounded claim above, but only considers runs matching <paramref name="filter"/>, so
+    /// separate worker lanes can claim different kinds of work. A null filter claims any run.
+    /// </summary>
+    Task<IndexerRunLease?> TryClaimNextIndexerRunAsync(
+        string owner,
+        DateTime now,
+        DateTime leaseExpiresAt,
+        int maxAttempts,
+        IndexerRunOperationFilter? filter,
+        CancellationToken ct = default)
+        => filter is null
+            ? TryClaimNextIndexerRunAsync(owner, now, leaseExpiresAt, maxAttempts, ct)
+            : throw new NotSupportedException("This indexer run store does not support operation-filtered claims.");
+
+    /// <summary>
+    /// Creates <paramref name="run"/> unless an active (queued or running) run with the same
+    /// operation and <see cref="IndexerRunEntity.SubmissionHash"/> already exists; that run is
+    /// returned instead (<c>Created: false</c>). Concurrent submissions of the same work coalesce.
+    /// </summary>
+    Task<IndexerRunSubmissionResult> CreateOrCoalesceActiveIndexerRunAsync(
+        IndexerRunEntity run,
+        CancellationToken ct = default)
+        => throw new NotSupportedException("This indexer run store does not support coalesced submissions.");
+
     Task<IndexerRunLeaseRenewal> RenewIndexerRunLeaseAsync(
         long runId,
         string owner,
@@ -87,6 +112,9 @@ public interface IIndexerRunStore
 }
 
 public sealed record IndexerRunLease(IndexerRunEntity Run, string Owner, long FencingToken);
+
+/// <summary>Claims only runs of <paramref name="Operation"/> (<paramref name="Include"/>) or only other runs.</summary>
+public sealed record IndexerRunOperationFilter(string Operation, bool Include);
 
 public sealed record IndexerRunSubmissionResult(long RunId, bool Created);
 

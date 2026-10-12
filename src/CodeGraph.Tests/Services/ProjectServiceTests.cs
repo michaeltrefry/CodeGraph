@@ -329,15 +329,17 @@ public class ProjectServiceTests
     }
 
     [Fact]
-    public async Task ProcessRepository_HostCancellationIsNotCountedAsACommitFailure()
+    public async Task ProcessRepository_HostShutdownCancellationIsNotCountedAsACommitFailure()
     {
         var rootPath = CreateGitRepository();
         try
         {
             var store = new InMemoryGraphStore();
+            var lifetime = new TestHostLifetime();
             using var cts = new CancellationTokenSource();
-            var extractor = new CountingExtractor { OnExtract = cts.Cancel };
-            var service = CreateService(store, extractor, rootPath, maxConsecutiveFailures: 1);
+            // Graceful shutdown signals ApplicationStopping before it cancels running work.
+            var extractor = new CountingExtractor { OnExtract = () => { lifetime.StopApplication(); cts.Cancel(); } };
+            var service = CreateService(store, extractor, rootPath, maxConsecutiveFailures: 1, hostLifetime: lifetime);
 
             await Should.ThrowAsync<OperationCanceledException>(() => service.ProcessRepository(
                 new ProcessRepository
@@ -355,9 +357,59 @@ public class ProjectServiceTests
         }
     }
 
+    /// <summary>
+    /// sc-25698: a run cancelled for any reason other than host shutdown (lost durable-run lease,
+    /// cancel request, formerly the broker's consumer_timeout) is a failure of the commit, so a
+    /// repository whose run keeps being cancelled is suspended instead of looping forever.
+    /// </summary>
+    [Fact]
+    public async Task ProcessRepository_NonShutdownCancellationCountsAndSuspendsAfterTheLimit()
+    {
+        var rootPath = CreateGitRepository();
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var lifetime = new TestHostLifetime();
+            CancellationTokenSource? cts = null;
+            var extractor = new CountingExtractor { OnExtract = () => cts!.Cancel() };
+            var service = CreateService(store, extractor, rootPath, maxConsecutiveFailures: 2, hostLifetime: lifetime);
+            var routine = new ProcessRepository
+            {
+                Name = "inference", RepoUrl = rootPath, ShouldIndex = true, SkipIfUpToDate = true
+            };
+
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                using (cts = new CancellationTokenSource())
+                    await Should.ThrowAsync<OperationCanceledException>(() => service.ProcessRepository(routine, cts.Token));
+                var state = (await store.GetSyncStateAsync("inference")).ShouldNotBeNull();
+                state.ConsecutiveFailures.ShouldBe(attempt);
+                state.ErrorMessage!.ShouldContain("canceled");
+            }
+
+            extractor.Runs.ShouldBe(2);
+            // Limit reached: the next routine sync of the same commit skips instead of re-indexing.
+            await service.ProcessRepository(routine);
+            extractor.Runs.ShouldBe(2);
+        }
+        finally
+        {
+            DeleteDirectory(rootPath);
+        }
+    }
+
+    private sealed class TestHostLifetime : Microsoft.Extensions.Hosting.IHostApplicationLifetime
+    {
+        private readonly CancellationTokenSource _stopping = new();
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => _stopping.Token;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() => _stopping.Cancel();
+    }
+
     private static ProjectService CreateService(
         InMemoryGraphStore store, ICodeExtractor extractor, string rootPath, int maxConsecutiveFailures,
-        IMessageBus? messageBus = null)
+        IMessageBus? messageBus = null, Microsoft.Extensions.Hosting.IHostApplicationLifetime? hostLifetime = null)
     {
         var options = Options.Create(new IndexingOptions
         {
@@ -373,7 +425,8 @@ public class ProjectServiceTests
             new IndexingPipeline(store, [extractor], options, new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance),
             options,
-            NullLogger<ProjectService>.Instance);
+            NullLogger<ProjectService>.Instance,
+            hostLifetime);
     }
 
     private static string CreateGitRepository()

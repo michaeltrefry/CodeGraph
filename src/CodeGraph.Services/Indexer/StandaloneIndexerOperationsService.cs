@@ -393,7 +393,7 @@ public sealed class StandaloneIndexerOperationsService(
         return submissionKey;
     }
 
-    private static string ComputeSubmissionHash(string operation, string? target, string? argsJson)
+    internal static string ComputeSubmissionHash(string operation, string? target, string? argsJson)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{operation}\n{target ?? string.Empty}\n{argsJson ?? string.Empty}"))).ToLowerInvariant();
 }
@@ -413,6 +413,8 @@ public static class IndexerRunOperations
     public const string LinkAndDetect = "link_and_detect";
     public const string ProcessBatchAnalysis = "process_batch_analysis";
     public const string BranchOverlay = "branch_overlay";
+    /// <summary>One repository's ProcessRepository message, handed off by the process-repository consumer.</summary>
+    public const string ProcessRepository = "process_repository";
 
     public static bool IsRetrySafe(string operation)
         => operation is ReAnalyze
@@ -421,7 +423,8 @@ public static class IndexerRunOperations
             or Link
             or DetectCommunities
             or LinkAndDetect
-            or BranchOverlay;
+            or BranchOverlay
+            or ProcessRepository;
 }
 
 public sealed class ReAnalyzeIndexerRunArgs

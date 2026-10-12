@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CodeGraph.Data;
+using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Overlays;
 using CodeGraph.Services.Pipeline;
@@ -19,34 +20,62 @@ public sealed class IndexerRunWorkerOptions
     public int MaxAttempts { get; set; } = 3;
 }
 
+/// <summary>
+/// Executes durable indexer runs. ProcessRepository runs (one repository's index, which can take
+/// hours) execute in their own lane of <see cref="IndexingOptions.MaxParallelRepos"/> workers, so they
+/// neither wait behind nor block the single lane that runs every other operation.
+/// </summary>
 public sealed class IndexerRunBackgroundRunner(
     IServiceScopeFactory scopeFactory,
     IOptions<IndexerRunWorkerOptions> optionsAccessor,
-    ILogger<IndexerRunBackgroundRunner> logger) : BackgroundService, IIndexerRunBackgroundRunner
+    ILogger<IndexerRunBackgroundRunner> logger,
+    IOptions<IndexingOptions>? indexingOptions = null,
+    TimeProvider? timeProvider = null) : BackgroundService, IIndexerRunBackgroundRunner
 {
-    private readonly SemaphoreSlim _wake = new(0, 1);
+    internal static readonly IndexerRunOperationFilter RepositoryLane =
+        new(IndexerRunOperations.ProcessRepository, Include: true);
+    internal static readonly IndexerRunOperationFilter GeneralLane =
+        new(IndexerRunOperations.ProcessRepository, Include: false);
+
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly string _owner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+    private volatile SemaphoreSlim[] _wakes = [];
 
     public Task EnqueueAsync(long runId, CancellationToken ct = default)
     {
-        try
+        foreach (var wake in _wakes)
         {
-            _wake.Release();
-        }
-        catch (SemaphoreFullException)
-        {
-            // A wake-up is already pending; persisted work will be drained in order.
+            try
+            {
+                wake.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // A wake-up is already pending; persisted work will be drained in order.
+            }
         }
         return Task.CompletedTask;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var repositoryWorkers = Math.Max(1, indexingOptions?.Value.MaxParallelRepos ?? 1);
+        var lanes = new[] { GeneralLane }
+            .Concat(Enumerable.Repeat(RepositoryLane, repositoryWorkers))
+            .ToArray();
+        var wakes = lanes.Select(_ => new SemaphoreSlim(0, 1)).ToArray();
+        _wakes = wakes;
+        return Task.WhenAll(lanes.Select((lane, index) => RunLaneAsync(lane, wakes[index], stoppingToken)));
+    }
+
+    private async Task RunLaneAsync(IndexerRunOperationFilter lane, SemaphoreSlim wake, CancellationToken stoppingToken)
+    {
+        await Task.Yield();
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (await TryExecuteNextAsync(stoppingToken))
+                if (await TryExecuteNextAsync(stoppingToken, lane))
                     continue;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -60,7 +89,7 @@ public sealed class IndexerRunBackgroundRunner(
 
             try
             {
-                await _wake.WaitAsync(optionsAccessor.Value.PollInterval, stoppingToken);
+                await wake.WaitAsync(optionsAccessor.Value.PollInterval, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -69,22 +98,40 @@ public sealed class IndexerRunBackgroundRunner(
         }
     }
 
-    internal async Task<bool> TryExecuteNextAsync(CancellationToken stoppingToken)
+    private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
+
+    /// <summary>Claims and executes one run; <paramref name="lane"/> null claims any run.</summary>
+    internal async Task<bool> TryExecuteNextAsync(
+        CancellationToken stoppingToken,
+        IndexerRunOperationFilter? lane = null)
     {
         var options = optionsAccessor.Value;
         ValidateOptions(options);
 
         using var scope = scopeFactory.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IIndexerRunStore>();
-        var now = DateTime.UtcNow;
-        var lease = await store.TryClaimNextIndexerRunAsync(
-            _owner,
-            now,
-            now + options.LeaseDuration,
-            options.MaxAttempts,
-            stoppingToken);
+        var now = UtcNow;
+        var lease = lane is null
+            ? await store.TryClaimNextIndexerRunAsync(
+                _owner,
+                now,
+                now + options.LeaseDuration,
+                options.MaxAttempts,
+                stoppingToken)
+            : await store.TryClaimNextIndexerRunAsync(
+                _owner,
+                now,
+                now + options.LeaseDuration,
+                options.MaxAttempts,
+                lane,
+                stoppingToken);
         if (lease is null)
             return false;
+
+        var started = _time.GetTimestamp();
+        logger.LogInformation(
+            "Indexer run {RunId} started: {Operation} {Target} (attempt {Attempt})",
+            lease.Run.Id, lease.Run.Operation, lease.Run.Target, lease.Run.AttemptCount);
 
         var executor = scope.ServiceProvider.GetRequiredService<IndexerRunExecutor>();
         using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -113,7 +160,7 @@ public sealed class IndexerRunBackgroundRunner(
                     await store.CancelOwnedIndexerRunAsync(
                         lease,
                         "Canceled by request while the operation was running.",
-                        DateTime.UtcNow,
+                        UtcNow,
                         CancellationToken.None);
                 }
                 else
@@ -139,11 +186,17 @@ public sealed class IndexerRunBackgroundRunner(
             if (degradationSummary is not null)
                 message = $"{message} {degradationSummary}";
             if (!await store.CompleteIndexerRunAsync(
-                    lease, message, degradationCode, degradation, DateTime.UtcNow, CancellationToken.None))
+                    lease, message, degradationCode, degradation, UtcNow, CancellationToken.None))
             {
                 logger.LogWarning(
                     "Indexer run {RunId} completed work after losing lease; terminal update was fenced out",
                     lease.Run.Id);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Indexer run {RunId} finished: {Operation} {Target} completed in {Elapsed}",
+                    lease.Run.Id, lease.Run.Operation, lease.Run.Target, _time.GetElapsedTime(started));
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -169,21 +222,31 @@ public sealed class IndexerRunBackgroundRunner(
             // BranchOverlayIndexingException is raised only for overlay failures that are
             // deterministic for the requested ref and base commit, so it is not replayed either;
             // transient overlay failures arrive unwrapped and follow the normal retry policy.
+            // A repository index that failed from indexing onward is not replayed either: the run
+            // recorded the failure against the commit (sync_state), and the scheduled sync with
+            // its per-commit failure limit decides whether it runs again. Only the cheap pre-index
+            // phases (checkout, HEAD check) are retried here.
+            var isRepositoryRun = lease.Run.Operation == IndexerRunOperations.ProcessRepository;
             var maxAttempts = ex is RustSemanticIndexingException or BranchOverlayIndexingException
+                              || (isRepositoryRun && !IndexingFailure.FailedBeforeIndexing(ex))
                 ? 1
                 : options.MaxAttempts;
             var disposition = await store.FailOrRetryIndexerRunAsync(
                 lease,
                 errorCode,
-                ex.Message,
-                DateTime.UtcNow,
-                DateTime.UtcNow + options.RetryDelay,
+                isRepositoryRun ? IndexingFailure.Describe(ex) : ex.Message,
+                UtcNow,
+                UtcNow + options.RetryDelay,
                 maxAttempts,
                 CancellationToken.None);
-            logger.LogWarning(
+            logger.Log(
+                isRepositoryRun ? LogLevel.Error : LogLevel.Warning,
                 ex,
-                "Indexer run {RunId} failed with durable disposition {Disposition}",
+                "Indexer run {RunId} ({Operation} {Target}) failed in phase {Phase} with durable disposition {Disposition}",
                 lease.Run.Id,
+                lease.Run.Operation,
+                lease.Run.Target,
+                IndexingFailure.GetPhase(ex),
                 disposition);
         }
 
@@ -262,17 +325,28 @@ public sealed class IndexerRunBackgroundRunner(
     {
         while (true)
         {
-            await Task.Delay(options.HeartbeatInterval, ct);
+            await Task.Delay(options.HeartbeatInterval, _time, ct);
             using var scope = scopeFactory.CreateScope();
             var store = scope.ServiceProvider.GetRequiredService<IIndexerRunStore>();
-            var now = DateTime.UtcNow;
-            var renewal = await store.RenewIndexerRunLeaseAsync(
-                lease.Run.Id,
-                lease.Owner,
-                lease.FencingToken,
-                now,
-                now + options.LeaseDuration,
-                ct);
+            var now = UtcNow;
+            IndexerRunLeaseRenewal renewal;
+            try
+            {
+                renewal = await store.RenewIndexerRunLeaseAsync(
+                    lease.Run.Id,
+                    lease.Owner,
+                    lease.FencingToken,
+                    now,
+                    now + options.LeaseDuration,
+                    ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                // One failed heartbeat (a database blip) must not abort an hours-long run. The next
+                // heartbeat tries again; once the lease has expired, renewal reports it lost.
+                logger.LogWarning(ex, "Indexer run {RunId} heartbeat failed; retrying", lease.Run.Id);
+                continue;
+            }
             if (!renewal.Renewed)
                 return LeaseMonitorResult.LeaseLost;
             if (renewal.CancellationRequested)

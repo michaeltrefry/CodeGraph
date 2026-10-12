@@ -789,7 +789,7 @@ public class StandaloneIndexerOperationsServiceTests
         abandoned.LeaseExpiresAt.ShouldNotBeNull();
     }
 
-    private static ServiceProvider CreateWorkerServices(
+    internal static ServiceProvider CreateWorkerServices(
         IIndexerRunStore runs,
         IDatabaseSourceStore sources,
         IDatabaseSchemaExtractor schemas,
@@ -852,7 +852,7 @@ public class StandaloneIndexerOperationsServiceTests
         }
     }
 
-    private sealed class RecordingDatabaseSchemaExtractor : IDatabaseSchemaExtractor
+    internal sealed class RecordingDatabaseSchemaExtractor : IDatabaseSchemaExtractor
     {
         public List<DatabaseSourceEntity> SyncedSources { get; } = [];
         public int SyncAllCalls { get; private set; }
@@ -895,7 +895,7 @@ public class StandaloneIndexerOperationsServiceTests
         public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
-    private sealed class RecordingAdminService : IAdminService
+    internal sealed class RecordingAdminService : IAdminService
     {
         public int ReIndexAllCalls { get; private set; }
         public ProcessReposResponse ReIndexAllResponse { get; set; } = new([], 0);
@@ -1048,9 +1048,16 @@ public class StandaloneIndexerOperationsServiceTests
 
     internal sealed class FakeIndexerRunStore : IIndexerRunStore
     {
-        private readonly Dictionary<long, IndexerRunEntity> _runs = new();
-        private long _nextId = 1;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<long, IndexerRunEntity> _runs = new();
+        private readonly object _gate = new();
+        private long _nextId;
         public bool LoseLeaseOnRenewal { get; init; }
+
+        /// <summary>Like the MariaDB store: an expired lease (lease_expires_at &lt;= now) cannot be renewed.</summary>
+        public bool EnforceLeaseExpiry { get; init; }
+
+        /// <summary>The next N lease renewals throw (a transient database failure).</summary>
+        public int FailNextRenewals { get; set; }
 
         /// <summary>When set, creating a run throws this (simulates a database error).</summary>
         public Exception? CreateFailure { get; set; }
@@ -1062,9 +1069,69 @@ public class StandaloneIndexerOperationsServiceTests
             LastCreateToken = ct;
             if (CreateFailure is not null)
                 return Task.FromException<long>(CreateFailure);
-            run.Id = _nextId++;
+            run.Id = Interlocked.Increment(ref _nextId);
             _runs[run.Id] = Clone(run);
             return Task.FromResult(run.Id);
+        }
+
+        public async Task<IndexerRunSubmissionResult> CreateOrCoalesceActiveIndexerRunAsync(
+            IndexerRunEntity run,
+            CancellationToken ct = default)
+        {
+            lock (_gate)
+            {
+                var active = _runs.Values
+                    .Where(candidate =>
+                        candidate.Operation == run.Operation &&
+                        candidate.SubmissionHash == run.SubmissionHash &&
+                        candidate.Status is "queued" or "running")
+                    .OrderBy(candidate => candidate.Id)
+                    .FirstOrDefault();
+                if (active is not null)
+                    return new IndexerRunSubmissionResult(active.Id, Created: false);
+                run.Id = Interlocked.Increment(ref _nextId);
+                _runs[run.Id] = Clone(run);
+            }
+
+            await Task.Yield();
+            return new IndexerRunSubmissionResult(run.Id, Created: true);
+        }
+
+        /// <summary>Test hook: marks a run terminal as if its owner finished it.</summary>
+        public void SetStatus(long runId, string status) => _runs[runId].Status = status;
+
+        /// <summary>Claims like the MariaDB store: due queued runs, or expired retry-safe running runs.</summary>
+        public Task<IndexerRunLease?> TryClaimNextIndexerRunAsync(
+            string owner,
+            DateTime now,
+            DateTime leaseExpiresAt,
+            int maxAttempts,
+            IndexerRunOperationFilter? filter,
+            CancellationToken ct = default)
+        {
+            lock (_gate)
+            {
+                var run = _runs.Values
+                    .Where(candidate => filter is null || (candidate.Operation == filter.Operation) == filter.Include)
+                    .Where(candidate => candidate.AttemptCount < maxAttempts)
+                    .Where(candidate =>
+                        (candidate.Status == "queued" && (candidate.NextAttemptAt is null || candidate.NextAttemptAt <= now))
+                        || (candidate.Status == "running" && candidate.RetrySafe && candidate.CancelRequestedAt is null
+                            && (candidate.LeaseExpiresAt is null || candidate.LeaseExpiresAt <= now)))
+                    .OrderBy(candidate => candidate.CreatedAt)
+                    .ThenBy(candidate => candidate.Id)
+                    .FirstOrDefault();
+                if (run is null)
+                    return Task.FromResult<IndexerRunLease?>(null);
+                run.Status = "running";
+                run.ExecutionOwner = owner;
+                run.LeaseExpiresAt = leaseExpiresAt;
+                run.HeartbeatAt = now;
+                run.NextAttemptAt = null;
+                run.AttemptCount++;
+                run.FencingToken++;
+                return Task.FromResult<IndexerRunLease?>(new IndexerRunLease(Clone(run), owner, run.FencingToken));
+            }
         }
 
         public async Task<IndexerRunSubmissionResult> CreateOrGetIndexerRunAsync(
@@ -1157,11 +1224,17 @@ public class StandaloneIndexerOperationsServiceTests
         {
             if (LoseLeaseOnRenewal)
                 return Task.FromResult(new IndexerRunLeaseRenewal(false, false));
+            if (FailNextRenewals > 0)
+            {
+                FailNextRenewals--;
+                return Task.FromException<IndexerRunLeaseRenewal>(new TimeoutException("simulated database blip"));
+            }
 
             var owned = _runs.TryGetValue(runId, out var run)
                 && run.ExecutionOwner == owner
                 && run.FencingToken == fencingToken
-                && run.Status == "running";
+                && run.Status == "running"
+                && (!EnforceLeaseExpiry || run.LeaseExpiresAt > now);
             if (owned)
             {
                 run!.HeartbeatAt = now;

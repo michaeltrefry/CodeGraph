@@ -101,6 +101,16 @@ public sealed class IndexerRunExecutor(
                 return await overlays.IndexOverlayAsync(overlayId, ct);
             }
 
+            case IndexerRunOperations.ProcessRepository:
+            {
+                var message = DeserializeArgs<CodeGraph.Models.Messages.ProcessRepository>(run.ArgsJson);
+                if (string.IsNullOrWhiteSpace(message.Name))
+                    throw new InvalidOperationException($"Indexer run '{run.Id}' has no repository to process.");
+
+                await projectService.ProcessRepository(message, ct);
+                return $"Processed repository {message.Name}.";
+            }
+
             default:
                 throw new InvalidOperationException($"Unsupported indexer run operation '{run.Operation}'.");
         }

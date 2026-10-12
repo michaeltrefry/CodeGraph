@@ -1,33 +1,17 @@
 using MassTransit;
 using CodeGraph.Models.Messages;
-using CodeGraph.Services;
-using CodeGraph.Services.Pipeline;
+using CodeGraph.Services.Indexer;
 
 namespace CodeGraph.Host.Shared.Consumers;
 
-public class ProcessRepositoryConsumer(
-    IProjectService projectService,
-    ILogger<ProcessRepositoryConsumer> logger) : IConsumer<ProcessRepository>
+/// <summary>
+/// Hands each ProcessRepository message to the durable indexer run queue and acks it at once.
+/// Indexing never runs while the delivery is held: a full index of a large repository outlasts
+/// RabbitMQ's consumer_timeout (30 min by default), after which the broker closes the channel,
+/// cancels the consume and redelivers the message, in a loop (sc-25698).
+/// </summary>
+public class ProcessRepositoryConsumer(ProcessRepositoryHandoff handoff) : IConsumer<ProcessRepository>
 {
-    public async Task Consume(ConsumeContext<ProcessRepository> context)
-    {
-        logger.LogInformation("Processing repository {Repo}", context.Message.Name);
-        try
-        {
-            await projectService.ProcessRepository(context.Message, context.CancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // Every failed consume is reported here with its repository and phase before MassTransit
-            // retries it; the retry/redelivery middleware alone only logs a Warning without context.
-            logger.LogError(ex,
-                "ProcessRepository failed for {Repo} in phase {Phase}{Cancelled} (retry attempt {RetryAttempt}, redelivery {RedeliveryCount})",
-                context.Message.Name,
-                IndexingFailure.GetPhase(ex),
-                ex is OperationCanceledException ? " (cancelled)" : "",
-                context.GetRetryAttempt(),
-                context.GetRedeliveryCount());
-            throw;
-        }
-    }
+    public Task Consume(ConsumeContext<ProcessRepository> context) =>
+        handoff.HandOffAsync(context.Message, context.CancellationToken);
 }

@@ -307,6 +307,7 @@ public static class Startup
 
         services.AddTransient<IDatabaseSchemaExtractor, DatabaseSchemaExtractor>();
         services.AddTransient<IndexerRunExecutor>();
+        services.AddTransient<ProcessRepositoryHandoff>();
         services.Configure<IndexerRunWorkerOptions>(configuration.GetSection("IndexerRunWorker"));
         services.AddSingleton<IndexerRunBackgroundRunner>();
         services.AddSingleton<IIndexerRunBackgroundRunner>(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
