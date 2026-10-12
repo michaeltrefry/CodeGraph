@@ -149,6 +149,7 @@ jobs:
           SECRET_RABBITMQ_PASSWORD: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__PASSWORD }}
           SECRET_RABBITMQ_USERNAME: ${{ secrets.CODEGRAPH__RABBITMQOPTIONS__USERNAME }}
           SECRET_REPOSITORY_GITHUB_PAT: ${{ secrets.CODEGRAPH__REPOSITORYSOURCE__GITHUB__PERSONALACCESSTOKEN }}
+          SECRET_REPOSITORY_GITHUB_WEBHOOK_SECRET: ${{ secrets.CODEGRAPH__REPOSITORYSOURCE__GITHUB__WEBHOOKSECRET }}
           SECRET_REPOSITORY_GITLAB_TOKEN: ${{ secrets.CODEGRAPH__REPOSITORYSOURCE__GITLAB__PRIVATETOKEN }}
           SECRET_STORAGE_MARIADB_CONNECTION_STRING: ${{ secrets.CODEGRAPH__STORAGEOPTIONS__MARIADBCONNECTIONSTRING }}
           SECRET_STORAGE_MARIADB_ENCRYPTION_KEY: ${{ secrets.CODEGRAPH__STORAGEOPTIONS__MARIADBENCRYPTIONKEY }}
@@ -225,6 +226,7 @@ jobs:
               "USERNAME": "Username",
               "USERACCOUNTS": "UserAccounts",
               "USEJSONOBJECTRESPONSEFORMAT": "UseJsonObjectResponseFormat",
+              "WEBHOOKSECRET": "WebhookSecret",
           }
 
           analysis_options_appsettings_allowlist = {
@@ -271,6 +273,7 @@ jobs:
               "CodeGraph__RabbitMqOptions__Password": "SECRET_RABBITMQ_PASSWORD",
               "CodeGraph__RabbitMqOptions__Username": "SECRET_RABBITMQ_USERNAME",
               "CodeGraph__RepositorySource__GitHub__PersonalAccessToken": "SECRET_REPOSITORY_GITHUB_PAT",
+              "CodeGraph__RepositorySource__GitHub__WebhookSecret": "SECRET_REPOSITORY_GITHUB_WEBHOOK_SECRET",
               "CodeGraph__RepositorySource__GitLab__PrivateToken": "SECRET_REPOSITORY_GITLAB_TOKEN",
               "CodeGraph__StorageOptions__MariaDbConnectionString": "SECRET_STORAGE_MARIADB_CONNECTION_STRING",
               "CodeGraph__StorageOptions__MariaDbEncryptionKey": "SECRET_STORAGE_MARIADB_ENCRYPTION_KEY",

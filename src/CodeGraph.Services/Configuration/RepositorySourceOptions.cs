@@ -86,6 +86,13 @@ public class GitHubSourceOptions
     /// this organization. Prefer <see cref="Organizations"/> for new configurations.
     /// </summary>
     public string Organization { get; set; } = "";
+
+    /// <summary>
+    /// Shared secret for GitHub <c>push</c> webhooks (HMAC-SHA256, <c>X-Hub-Signature-256</c>).
+    /// A signed push to an indexed repository's default branch queues its incremental sync.
+    /// Empty disables the webhook: every delivery is refused.
+    /// </summary>
+    public string WebhookSecret { get; set; } = "";
 }
 
 public class FolderSourceOptions
