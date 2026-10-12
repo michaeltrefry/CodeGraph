@@ -41,6 +41,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
     private readonly string _cgroupRootPath;
     private readonly string _procRootPath;
     private readonly RustCrateGroupSettings _groupSettings;
+    private readonly TimeProvider _timeProvider;
 
     public RustProjectAnalyzer(ILogger<RustProjectAnalyzer> logger)
         : this(logger, DefaultScipGenerationTimeout, DefaultStderrTailCharacters)
@@ -66,7 +67,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
         int maxThreads = 2,
         string cgroupRootPath = DefaultCgroupRootPath,
         RustCrateGroupSettings? groupSettings = null,
-        string procRootPath = DefaultProcRootPath)
+        string procRootPath = DefaultProcRootPath,
+        TimeProvider? timeProvider = null)
     {
         if (scipGenerationTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(scipGenerationTimeout));
@@ -96,6 +98,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
         _cgroupRootPath = cgroupRootPath;
         _procRootPath = procRootPath;
         _groupSettings = groupSettings;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -140,7 +143,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
             _groupSettings.ProcMacros ? "on" : "off");
 
         // Groups run one after another; this deadline bounds all of them together.
-        using var workspaceDeadline = new CancellationTokenSource(_groupSettings.WorkspaceTimeout);
+        using var workspaceDeadline = new CancellationTokenSource(_groupSettings.WorkspaceTimeout, _timeProvider);
         var outcomes = new List<RustCrateGroupAnalysis>(groups.Count);
         foreach (var group in groups)
         {
@@ -183,8 +186,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
         CancellationToken workspaceDeadline,
         CancellationToken ct)
     {
-        using var groupDeadline = CancellationTokenSource.CreateLinkedTokenSource(workspaceDeadline);
-        groupDeadline.CancelAfter(_groupSettings.GroupTimeout);
+        using var groupTimeout = new CancellationTokenSource(_groupSettings.GroupTimeout, _timeProvider);
+        using var groupDeadline = CancellationTokenSource.CreateLinkedTokenSource(workspaceDeadline, groupTimeout.Token);
         var budget = new CommandBudget(
             groupDeadline.Token,
             _groupSettings.GroupTimeout,
@@ -512,8 +515,8 @@ public class RustProjectAnalyzer : IRustAnalyzer
     {
         var commandName = Path.GetFileName(fileName);
         var stopwatch = Stopwatch.StartNew();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.GroupDeadline);
-        timeout.CancelAfter(_scipGenerationTimeout);
+        using var commandTimeout = new CancellationTokenSource(_scipGenerationTimeout, _timeProvider);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, budget.GroupDeadline, commandTimeout.Token);
 
         var useSetsid = !OperatingSystem.IsWindows() && File.Exists("/usr/bin/setsid");
 

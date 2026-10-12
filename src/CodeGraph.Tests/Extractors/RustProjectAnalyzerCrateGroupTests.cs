@@ -109,14 +109,22 @@ public sealed class RustProjectAnalyzerCrateGroupTests
 
         using var toolchain = CreateThreeCrateWorkspace();
         toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "macros");
-        var analyzer = CreateAnalyzer(new IndexingOptions
-        {
-            RustSemanticCrateGroupSize = 2,
-            // Generous enough for the fast group's fake tools under load; the slow group sleeps 30s.
-            RustSemanticGroupTimeoutSeconds = 10
-        });
+        // Deadlines run on a manual clock: the group timeout passes only once the slow group's
+        // analyzer is running, so host load cannot time out the fast group or the setup.
+        var clock = new ManualTimeProvider();
+        var analyzer = CreateAnalyzer(
+            new IndexingOptions
+            {
+                RustSemanticCrateGroupSize = 2,
+                // Virtual seconds: far beyond the slow group's 30s sleep, so only the manual clock can fire it.
+                RustSemanticGroupTimeoutSeconds = 300
+            },
+            clock);
 
-        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+        var running = analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+        await toolchain.WaitForSlowAnalyzerAsync();
+        clock.Advance(TimeSpan.FromSeconds(300));
+        var analysis = await running;
 
         analysis.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha,beta", "macros"]);
         analysis.Groups[0].Failure.ShouldBeNull();
@@ -133,6 +141,9 @@ public sealed class RustProjectAnalyzerCrateGroupTests
 
         using var toolchain = CreateThreeCrateWorkspace();
         toolchain.SetEnvironment(FakeRustToolchain.SlowCratesVariable, "alpha");
+        // The workspace deadline passes on a manual clock once alpha's analyzer is running, so the
+        // stage it interrupts does not depend on how fast the host gets through setup.
+        var clock = new ManualTimeProvider();
         var analyzer = new RustProjectAnalyzer(
             NullLogger<RustProjectAnalyzer>.Instance,
             TimeSpan.FromSeconds(60),
@@ -142,9 +153,14 @@ public sealed class RustProjectAnalyzerCrateGroupTests
                 MemoryLimitBytes: 0,
                 BuildScripts: false,
                 ProcMacros: false,
-                WorkspaceTimeout: TimeSpan.FromSeconds(2)));
+                // Virtual: far beyond alpha's 30s sleep, so only the manual clock can fire it.
+                WorkspaceTimeout: TimeSpan.FromHours(1)),
+            timeProvider: clock);
 
-        var analysis = await analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+        var running = analyzer.AnalyzeWorkspaceAsync(toolchain.ManifestPath, Context(toolchain));
+        await toolchain.WaitForSlowAnalyzerAsync();
+        clock.Advance(TimeSpan.FromHours(1));
+        var analysis = await running;
 
         analysis.Groups.Select(group => string.Join(",", group.Crates)).ShouldBe(["alpha", "beta", "macros"]);
         foreach (var group in analysis.Groups)
@@ -317,6 +333,15 @@ public sealed class RustProjectAnalyzerCrateGroupTests
 
     private static RustProjectAnalyzer CreateAnalyzer(IndexingOptions options) =>
         new(NullLogger<RustProjectAnalyzer>.Instance, Options.Create(options));
+
+    private static RustProjectAnalyzer CreateAnalyzer(IndexingOptions options, TimeProvider timeProvider) =>
+        new(
+            NullLogger<RustProjectAnalyzer>.Instance,
+            TimeSpan.FromSeconds(options.RustSemanticCommandTimeoutSeconds),
+            options.RustSemanticStderrTailCharacters,
+            options.RustSemanticMaxThreads,
+            groupSettings: RustCrateGroupSettings.From(options),
+            timeProvider: timeProvider);
 
     private static ExtractorContext Context(FakeRustToolchain toolchain) => new()
     {

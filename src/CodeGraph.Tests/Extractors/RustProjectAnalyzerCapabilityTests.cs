@@ -216,26 +216,26 @@ public sealed class RustProjectAnalyzerCapabilityTests
         fixture.AddTool("scip", "#!/bin/sh\nexit 0\n");
         using var path = new PathScope(fixture.ToolDirectory);
         using var pidVariable = new EnvironmentVariableScope("CODEGRAPH_TEST_CHILD_PID", childPidPath);
+        // Every command (cargo metadata and rustc ahead of the generator, then the generator) gets
+        // this timeout. It runs on a manual clock and passes only once the generator is running,
+        // so a loaded host cannot time out an earlier command instead.
+        var clock = new ManualTimeProvider();
         var analyzer = new RustProjectAnalyzer(
             NullLogger<RustProjectAnalyzer>.Instance,
-            Options.Create(new IndexingOptions
-            {
-                // Every command (the fake cargo metadata and rustc ahead of the generator, then the
-                // generator itself) gets this timeout. It must leave room for process start-up and
-                // exit detection under a loaded test host, or cargo metadata itself can time out and
-                // the generator never writes its stderr line or child PID.
-                RustSemanticCommandTimeoutSeconds = CommandTimeoutSeconds,
-                RustSemanticStderrTailCharacters = 1024
-            }));
+            TimeSpan.FromSeconds(CommandTimeoutSeconds),
+            stderrTailCharacters: 1024,
+            timeProvider: clock);
 
-        var error = await Should.ThrowAsync<RustSemanticIndexingException>(() =>
-            analyzer.AnalyzeProjectAsync(fixture.ManifestPath, fixture.Context));
+        var analysis = analyzer.AnalyzeProjectAsync(fixture.ManifestPath, fixture.Context);
+        var childPid = await ReadPidAsync(childPidPath);
+        clock.Advance(TimeSpan.FromSeconds(CommandTimeoutSeconds));
+
+        var error = await Should.ThrowAsync<RustSemanticIndexingException>(() => analysis);
 
         error.FailureCode.ShouldBe("rust_semantic_command_timeout");
         error.Message.ShouldContain("'rust-analyzer' exceeded");
         error.Message.ShouldContain($"{CommandTimeoutSeconds}-second timeout");
         error.Message.ShouldContain("generator-still-running");
-        var childPid = await ReadPidAsync(childPidPath);
         await AssertProcessExitedAsync(childPid);
     }
 
@@ -252,9 +252,11 @@ public sealed class RustProjectAnalyzerCapabilityTests
         using var path = new PathScope(fixture.ToolDirectory);
         using var pidVariable = new EnvironmentVariableScope("CODEGRAPH_TEST_CHILD_PID", childPidPath);
         using var cancellation = new CancellationTokenSource();
+        // A clock that is never advanced: no command timeout can preempt the caller's cancellation.
         var analyzer = new RustProjectAnalyzer(
             NullLogger<RustProjectAnalyzer>.Instance,
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(30),
+            timeProvider: new ManualTimeProvider());
 
         var analysis = analyzer.AnalyzeProjectAsync(
             fixture.ManifestPath,
@@ -281,9 +283,11 @@ public sealed class RustProjectAnalyzerCapabilityTests
         using var path = new PathScope(fixture.ToolDirectory);
         using var pidVariable = new EnvironmentVariableScope("CODEGRAPH_TEST_CHILD_PID", childPidPath);
         using var cancellation = new CancellationTokenSource();
+        // A clock that is never advanced: no command timeout can preempt the caller's cancellation.
         var analyzer = new RustProjectAnalyzer(
             NullLogger<RustProjectAnalyzer>.Instance,
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(30),
+            timeProvider: new ManualTimeProvider());
 
         var analysis = analyzer.AnalyzeProjectAsync(
             fixture.ManifestPath,
@@ -294,8 +298,10 @@ public sealed class RustProjectAnalyzerCapabilityTests
 
         try
         {
+            // A hang bound, not a speed assertion: the escaped descendant outlives it by far, so
+            // waiting on the descendant's pipes instead of killing it fails here.
             var error = await Should.ThrowAsync<OperationCanceledException>(() =>
-                analysis.WaitAsync(TimeSpan.FromSeconds(2)));
+                analysis.WaitAsync(EscapedDescendantReturnLimit));
             error.CancellationToken.ShouldBe(cancellation.Token);
             await AssertProcessExitedAsync(childPid);
         }
@@ -305,7 +311,9 @@ public sealed class RustProjectAnalyzerCapabilityTests
         }
     }
 
-    private const int CommandTimeoutSeconds = 5;
+    // Virtual seconds on the manual clock: far beyond the generator's 30s sleep, so only the
+    // clock (never wall time) can fire it.
+    private const int CommandTimeoutSeconds = 300;
 
     // Upper bounds for polling only (a passing test returns as soon as the condition holds), so
     // they are generous to stay deterministic when the full suite loads the host.
@@ -365,6 +373,8 @@ public sealed class RustProjectAnalyzerCapabilityTests
         "printf '%s' \"$child\" > \"$CODEGRAPH_TEST_CHILD_PID\"\n" +
         "wait \"$child\"\n";
 
+    private static readonly TimeSpan EscapedDescendantReturnLimit = TimeSpan.FromSeconds(30);
+
     private const string EscapedDescendantGeneratorScript =
         "#!/bin/sh\n" +
         "out=\"\"\n" +
@@ -372,7 +382,7 @@ public sealed class RustProjectAnalyzerCapabilityTests
         "  if [ \"$1\" = \"--output\" ]; then out=\"$2\"; shift 2; else shift; fi\n" +
         "done\n" +
         ": > \"$out\"\n" +
-        "/bin/sleep 30 &\n" +
+        "/bin/sleep 600 &\n" +
         "child=$!\n" +
         "printf '%s' \"$child\" > \"$CODEGRAPH_TEST_CHILD_PID\"\n" +
         "exit 0\n";
