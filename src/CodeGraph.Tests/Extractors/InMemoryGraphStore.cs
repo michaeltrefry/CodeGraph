@@ -75,6 +75,8 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public void AddProject(string name, bool isFoundational = false) =>
         _projects.Add(new ProjectInfo(name, null, null, null, null, null, null, null, isFoundational, null));
 
+    public void AddProject(ProjectInfo project) => _projects.Add(project);
+
     // ── IGraphStore implementation ──────────────────────────────────────
 
     public virtual Task<IReadOnlyList<GraphNode>> FindAllNodesByLabelAsync(NodeLabel label, int limit = 50000) =>

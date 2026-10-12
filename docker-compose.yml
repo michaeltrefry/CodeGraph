@@ -73,6 +73,7 @@ services:
       CodeGraph__RepositorySource__GitHub__UserAccounts: ${CodeGraph__RepositorySource__GitHub__UserAccounts:-}
       CodeGraph__RepositorySource__GitHub__Organizations: ${CodeGraph__RepositorySource__GitHub__Organizations:-}
       CodeGraph__RepositorySource__GitHub__Organization: ${CodeGraph__RepositorySource__GitHub__Organization:-}
+      CodeGraph__RepositorySource__GitHub__WebhookSecret: ${CodeGraph__RepositorySource__GitHub__WebhookSecret:-}
       CodeGraph__AuthOptions__Enabled: ${CodeGraph__AuthOptions__Enabled:-false}
       CodeGraph__AuthOptions__Authority: ${CodeGraph__AuthOptions__Authority:-}
       CodeGraph__AuthOptions__Audience: ${CodeGraph__AuthOptions__Audience:-codegraph-api}

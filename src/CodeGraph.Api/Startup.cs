@@ -189,6 +189,7 @@ public static class Startup
         services.AddTransient<IAdminService, AdminService>();
         services.AddTransient<IAdminReportsService, AdminReportsService>();
         RegisterIndexerOperations(services, configuration);
+        services.AddTransient<GitHubPushWebhookService>();
         services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();

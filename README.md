@@ -204,6 +204,17 @@ CodeGraph__RepositorySource__GitHub__Organizations=SceneWorks
 
 Use comma-separated values such as `SceneWorks,AnotherOrg` or `octocat,another-user` for additional scopes. `UserAccounts` uses GitHub's named-user endpoint, which returns public repositories. The authenticated-user endpoint retains private repositories that the token can access; organization scopes include private repositories only when the token has access. The legacy singular `Organization` setting remains supported and, when used alone, retains its organization-only behavior.
 
+#### Push webhook
+
+A GitHub `push` webhook refreshes a repository's default-branch index within seconds instead of waiting for the scheduled sync, which remains the fallback. Set `CodeGraph__RepositorySource__GitHub__WebhookSecret` (production: the `CODEGRAPH__REPOSITORYSOURCE__GITHUB__WEBHOOKSECRET` Actions secret), then add a webhook on the repository or organization:
+
+- Payload URL: `https://<codegraph-api-host>/api/webhooks/github`
+- Content type: `application/json`
+- Secret: the same value
+- Events: just the `push` event
+
+A signed push to an indexed repository's default branch queues that repository's incremental sync (skipped when HEAD is already indexed) and answers `202`; repeated deliveries for the same head SHA queue at most one sync. Other branches, unindexed repositories and other events are acknowledged with `200` and ignored. A missing or invalid `X-Hub-Signature-256` answers `401`; with no secret configured every delivery is refused.
+
 ### 2. Run locally
 
 ```bash
