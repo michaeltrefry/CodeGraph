@@ -110,7 +110,7 @@ public sealed class ProductionDeploymentConfigurationTests
         var verify = workflow[verifyStep..];
         verify.ShouldContain("if: steps.deploy-gate.outputs.enabled == 'true'");
         verify.ShouldContain("timeout-minutes:");
-        verify.ShouldContain("IMAGE_TAG: ${{ needs.publish.outputs.image-tag }}");
+        verify.ShouldContain("IMAGE_TAG: ${{ needs.promote.outputs.image-tag }}");
         verify.ShouldContain("sh deploy/verify-deployment.sh");
         workflow.ShouldContain("deploy/verify-deployment.sh \"$CODEGRAPH_DEPLOY_USER@$CODEGRAPH_DEPLOY_HOST:$CODEGRAPH_DEPLOY_PATH/deploy/\"");
 
@@ -144,22 +144,80 @@ public sealed class ProductionDeploymentConfigurationTests
         on.ShouldContain("  workflow_run:\n    workflows:\n      - CI\n    types:\n      - completed\n    branches:\n      - main\n");
         on.ShouldNotContain("  push:");
 
-        // Publish (and therefore deploy, which needs it) runs only for a successful push-to-main CI run.
-        var publish = workflow[workflow.IndexOf("  publish:", StringComparison.Ordinal)..workflow.IndexOf("  deploy:", StringComparison.Ordinal)];
-        publish.ShouldContain("if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')");
-        workflow[workflow.IndexOf("  deploy:", StringComparison.Ordinal)..].ShouldContain("needs: publish");
+        // Promote (and therefore deploy, which needs it) runs only for a successful push-to-main CI run.
+        var promote = PromoteJob(workflow);
+        promote.ShouldContain("if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')");
+        workflow[workflow.IndexOf("  deploy:", StringComparison.Ordinal)..].ShouldContain("needs: promote");
 
         // The tested commit is what is checked out, tagged, and deployed.
         workflow.ShouldContain("DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}");
         workflow.ShouldNotContain("${{ github.sha }}");
         workflow.ShouldNotContain("${GITHUB_SHA}");
-        publish.ShouldContain("run: echo \"image-tag=${DEPLOY_SHA}\"");
+        promote.ShouldContain("run: echo \"image-tag=${DEPLOY_SHA}\"");
         var checkouts = LogicalShellLines(workflow).Count(line => line == "uses: actions/checkout@v4");
-        checkouts.ShouldBe(2);
+        checkouts.ShouldBe(1);
         workflow.Split("uses: actions/checkout@v4\n        with:\n          ref: ${{ env.DEPLOY_SHA }}").Length.ShouldBe(checkouts + 1);
-        foreach (var image in new[] { "api", "jobs", "indexer", "memory", "metrics", "web" })
-            publish.ShouldContain($"${{{{ env.IMAGE_PREFIX }}}}-{image}:${{{{ env.DEPLOY_SHA }}}}");
     }
+
+    [Fact]
+    public void DeployNeverBuildsImages()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "deploy.yml"));
+
+        workflow.ShouldNotContain("build-push-action");
+        workflow.ShouldNotMatch(@"(?s).*\bdocker( buildx)? (build|bake)\s.*");
+        workflow.ShouldNotMatch(@"(?s).*\bdocker( compose)?\b[^\n]* build\b.*");
+        workflow.ShouldNotContain("cache-from");
+    }
+
+    [Fact]
+    public void DeployDeploysTheImagesCiPushedForTheTestedCommit()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var workflow = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "deploy.yml")).Replace("\r\n", "\n");
+        var promote = PromoteJob(workflow);
+
+        // Same registry prefix CI pushes to.
+        workflow.ShouldContain("IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/codegraph\n");
+
+        // Even a manual dispatch deploys only a commit with a successful CI push run.
+        promote.ShouldContain("actions/workflows/ci.yml/runs?head_sha=$DEPLOY_SHA&event=push&status=success");
+        promote.ShouldContain("if [ \"$runs\" -lt 1 ]; then");
+
+        // Every image is resolved by the tested SHA (a missing image fails the retag), and that SHA is the deployed tag.
+        promote.ShouldContain("for image in api jobs indexer memory metrics web; do");
+        LogicalShellLines(promote).ShouldContain(
+            "docker buildx imagetools create --tag \"$IMAGE_PREFIX-$image:latest\" \"$IMAGE_PREFIX-$image:$DEPLOY_SHA\"");
+        var deploy = workflow[workflow.IndexOf("- name: Deploy over SSH", StringComparison.Ordinal)..workflow.IndexOf("- name: Verify deployment health", StringComparison.Ordinal)];
+        deploy.ShouldContain("IMAGE_TAG: ${{ needs.promote.outputs.image-tag }}");
+        deploy.ShouldContain("IMAGE_TAG='$IMAGE_TAG' docker compose -f docker-compose.yml -f docker-compose.production.yml pull");
+    }
+
+    [Fact]
+    public void CiPushesEveryImageTaggedWithTheCommitOnlyOnPushToMain()
+    {
+        var ci = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "ci.yml")).Replace("\r\n", "\n");
+        var job = ci[ci.IndexOf("\n  docker-build:\n", StringComparison.Ordinal)..ci.IndexOf("\n  rust-semantic-arm64:\n", StringComparison.Ordinal)];
+
+        foreach (var image in new[] { "api", "jobs", "indexer", "memory", "metrics", "web" })
+            job.ShouldContain($"          - image: {image}\n");
+        job.ShouldContain("IMAGE: ghcr.io/${{ github.repository_owner }}/codegraph-${{ matrix.image }}\n");
+        job.ShouldContain("packages: write");
+
+        // The build step never pushes; only the push step does, only for push events (never PRs), and
+        // only after the indexer image passed its semantic-indexing validation.
+        var build = job[job.IndexOf("- name: Build image", StringComparison.Ordinal)..job.IndexOf("- name: Validate Rust semantic indexing", StringComparison.Ordinal)];
+        build.ShouldContain("push: false");
+        build.ShouldContain("cache-to: ${{ github.event_name == 'push' && ");
+        var push = job[job.IndexOf("- name: Push image tagged with the tested commit", StringComparison.Ordinal)..];
+        push.ShouldContain("if: github.event_name == 'push'\n");
+        push.ShouldContain("push: true");
+        push.ShouldContain("tags: ${{ env.IMAGE }}:${{ github.sha }}\n");
+        job.Split("push: true").Length.ShouldBe(2);
+    }
+
+    private static string PromoteJob(string workflow) =>
+        workflow[workflow.IndexOf("  promote:", StringComparison.Ordinal)..workflow.IndexOf("  deploy:", StringComparison.Ordinal)];
 
     [Fact]
     public void DisabledDeployGateIsReportedAsSkippedWithoutFailing()
