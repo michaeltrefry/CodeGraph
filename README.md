@@ -331,6 +331,17 @@ Typical flow:
 4. Analysis results are synthesized into repository summaries and `CODEGRAPH.md`.
 5. Memory writes are queued separately through their own consumer path.
 
+### Consumer retries and `_error`
+
+CodeGraph does not need the RabbitMQ `rabbitmq_delayed_message_exchange` plugin: no host configures delayed redelivery, a delayed message scheduler, or scheduled publishes. Every receive endpoint retries in process while it holds the delivery (`ConsumerConfiguration` in `CodeGraph.Host.Shared`):
+
+- Transient infrastructure failures (`MySqlException`, `SocketException`, Neo4j `ServiceUnavailableException`, `RetryableAnalysisException`) retry after 5 s, 15 s, 30 s and 60 s (about 2 minutes of waiting).
+- Any other failure retries `ConsumerRetryLimit` times (default 3) after 1 s, 2 s, 3 s (`ConsumerRetryInitialInterval` / `ConsumerRetryIntervalIncrement`).
+- `DoNotRetryException` is not retried.
+- `process-repository` retries only failures in the pre-index phases (`resolve-repository`, `check-up-to-date`); a failure from indexing onward is not retried in place, and the scheduled sync picks the repository up again.
+
+When the retries are used up, MassTransit moves the message to the endpoint's `<queue>_error` queue. Retry time per delivery stays far below RabbitMQ's 30-minute `consumer_timeout`.
+
 The API host currently registers consumers for:
 
 - `ProcessRepository`

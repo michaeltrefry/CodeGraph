@@ -58,8 +58,8 @@ public static class SharedConsumerTopology
             // consumer_timeout (30 min default) the broker closes the channel and redelivers everything.
             ConfigureDeliveryLimit(endpoint, maxParallelRepos);
             // An in-place retry would re-run the whole index under the same unacked delivery, so only
-            // the cheap pre-index phases retry immediately. Delayed redelivery (a fresh delivery), the
-            // 15-minute scheduled sync and the per-commit failure limit cover the rest.
+            // the cheap pre-index phases retry. A failure from indexing onward faults to _error at once;
+            // the 15-minute scheduled sync and the per-commit failure limit cover it.
             ConsumerConfiguration.ConfigureRetries(endpoint, options, IndexingFailure.FailedBeforeIndexing);
             endpoint.ConfigureConsumer<ProcessRepositoryConsumer>(context);
         });
