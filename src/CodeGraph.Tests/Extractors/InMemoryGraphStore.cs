@@ -451,7 +451,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return result;
     }
 
-    public Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName) =>
+    public virtual Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName) =>
         Task.FromResult(_nodes.FirstOrDefault(n =>
             n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
             n.QualifiedName.Equals(qualifiedName, StringComparison.Ordinal)));
@@ -467,7 +467,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 names.Contains(n.QualifiedName)).ToList());
     }
 
-    public Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000) =>
+    public virtual Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
                 n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&

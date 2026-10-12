@@ -42,7 +42,7 @@ public partial class IndexingPipeline
     /// Resolve method calls to target method nodes.
     /// Phase 2 stub — full resolution happens when extractors populate UnresolvedCalls.
     /// </summary>
-    private async Task ResolveCallsAsync(
+    internal async Task ResolveCallsAsync(
         string projectName,
         GraphBuffer buffer,
         bool includePersistedNodes,
@@ -78,6 +78,45 @@ public partial class IndexingPipeline
             string.IsNullOrWhiteSpace(node.FilePath)
             || !excludedPersistedFiles.Contains(NormalizeRelativePath(node.FilePath));
 
+        // Every lookup below is a pure function of its key for the duration of this loop: the
+        // loop only adds edges (never nodes) to the buffer and the store is not written. Memoizing
+        // per receiver type and per (callee, receiver type) therefore yields the same edges while
+        // replacing one store round trip and one O(candidates) ownership scan per call with one
+        // per distinct key — large Rust workspaces repeat the same receivers tens of thousands
+        // of times.
+        var receiversByType = new Dictionary<string, ReceiverOwnership?>(StringComparer.Ordinal);
+        var ownedCandidates = new Dictionary<(string CalleeName, string ReceiverType), IReadOnlyList<GraphNode>>();
+
+        async Task<ReceiverOwnership?> FindReceiverAsync(string receiverType)
+        {
+            if (receiversByType.TryGetValue(receiverType, out var cached))
+                return cached;
+
+            var receiver = await ResolveReceiverOwnerAsync(
+                projectName,
+                buffer,
+                receiverType,
+                includePersistedNodes,
+                IsPersistedNodeEligible,
+                FindCandidatesAsync,
+                ct);
+            if (receiver is not null)
+            {
+                var receiverOwners = (await FindCandidatesAsync(receiver.Name))
+                    .Where(node => IsReceiverOwnerLabel(node.Label))
+                    .ToList();
+                var allowSymbolicOwnership = receiverOwners.Count == 1
+                    && string.Equals(
+                        receiverOwners[0].QualifiedName,
+                        receiver.QualifiedName,
+                        StringComparison.Ordinal);
+                cached = new ReceiverOwnership(receiver, allowSymbolicOwnership);
+            }
+
+            receiversByType[receiverType] = cached;
+            return cached;
+        }
+
         foreach (var call in buffer.AllUnresolvedCalls)
         {
             ct.ThrowIfCancellationRequested();
@@ -90,28 +129,21 @@ public partial class IndexingPipeline
                 if (string.IsNullOrWhiteSpace(call.ReceiverType))
                     continue;
 
-                var receiver = await ResolveReceiverOwnerAsync(
-                    projectName,
-                    buffer,
-                    call.ReceiverType,
-                    includePersistedNodes,
-                    IsPersistedNodeEligible,
-                    FindCandidatesAsync,
-                    ct);
-                if (receiver is null)
+                var ownership = await FindReceiverAsync(call.ReceiverType);
+                if (ownership is null)
                     continue;
 
-                var receiverOwners = (await FindCandidatesAsync(receiver.Name))
-                    .Where(node => IsReceiverOwnerLabel(node.Label))
-                    .ToList();
-                var allowSymbolicOwnership = receiverOwners.Count == 1
-                    && string.Equals(
-                        receiverOwners[0].QualifiedName,
-                        receiver.QualifiedName,
-                        StringComparison.Ordinal);
-                candidates = candidates
-                    .Where(candidate => IsOwnedBy(candidate, receiver, allowSymbolicOwnership))
-                    .ToList();
+                var key = (call.CalleeName, call.ReceiverType);
+                if (!ownedCandidates.TryGetValue(key, out var owned))
+                {
+                    owned = candidates
+                        .Where(candidate => IsOwnedBy(
+                            candidate, ownership.Receiver, ownership.AllowSymbolicOwnership))
+                        .ToList();
+                    ownedCandidates[key] = owned;
+                }
+
+                candidates = owned;
             }
 
             if (candidates.Count == 1)
@@ -128,6 +160,8 @@ public partial class IndexingPipeline
             }
         }
     }
+
+    private sealed record ReceiverOwnership(GraphNode Receiver, bool AllowSymbolicOwnership);
 
     private static bool IsReceiverOwnerLabel(NodeLabel label) =>
         label is NodeLabel.Namespace or NodeLabel.Class or NodeLabel.Interface
@@ -171,10 +205,18 @@ public partial class IndexingPipeline
         GraphNode owner,
         bool allowSymbolicOwnership)
     {
-        if (candidate.QualifiedName.StartsWith(owner.QualifiedName + ".", StringComparison.Ordinal)
-            || candidate.QualifiedName.StartsWith(owner.QualifiedName + "#method:", StringComparison.Ordinal))
+        // Equivalent to StartsWith(owner + ".") || StartsWith(owner + "#method:") without
+        // allocating both prefixes for every candidate.
+        var qualifiedName = candidate.QualifiedName.AsSpan();
+        var ownerName = owner.QualifiedName;
+        if (qualifiedName.StartsWith(ownerName, StringComparison.Ordinal))
         {
-            return true;
+            var rest = qualifiedName[ownerName.Length..];
+            if (rest.StartsWith(".", StringComparison.Ordinal)
+                || rest.StartsWith("#method:", StringComparison.Ordinal))
+            {
+                return true;
+            }
         }
 
         return allowSymbolicOwnership

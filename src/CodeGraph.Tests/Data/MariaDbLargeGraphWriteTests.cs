@@ -88,6 +88,57 @@ public class MariaDbLargeGraphWriteTests
     }
 
     [Fact]
+    public async Task SnapshotWrites_InsertEdgesInSourceOrder()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        var (nodes, edges, hashes) = BuildGraph();
+        await db.Seed(nodes, edges, hashes);
+        (await db.EdgeSourcesOutOfInsertOrderAsync()).ShouldBe(0);
+
+        var store = db.Store(new MariaDbStorageOptions());
+        await using var _ = store.Context;
+        await store.Value.ReplaceProjectFilesAsync(Project, hashes.Keys.ToList(), nodes, edges, Rehash(hashes));
+
+        (await db.CountAsync("edges")).ShouldBe(EdgeCount);
+        (await db.EdgeSourcesOutOfInsertOrderAsync()).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task QualifiedNameLookups_SeekTheDigestIndexAndMatchExactly()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        var (nodes, edges, hashes) = BuildGraph();
+        await db.Seed(nodes, edges, hashes);
+        var store = db.Store(new MariaDbStorageOptions());
+        await using var _ = store.Context;
+        await store.Context.Database.OpenConnectionAsync();
+        var connection = (MySqlConnection)store.Context.Database.GetDbConnection();
+        var wanted = new[] { nodes[17].QualifiedName, nodes[4_321].QualifiedName };
+
+        // A scan of the project's 5,000 nodes reads thousands of rows; the digest seek reads a few.
+        var before = await RowsReadAsync(connection);
+        var single = await store.Value.FindNodeByQualifiedNameAsync(Project, wanted[0]);
+        var caseVariant = await store.Value.FindNodeByQualifiedNameAsync(Project, wanted[0].ToUpperInvariant());
+        var batch = await store.Value.FindNodesByQualifiedNamesAsync(Project, [.. wanted, "missing", wanted[1].ToUpperInvariant()]);
+        var parameters = new DynamicParameters(new { Project });
+        var rows = (await connection.QueryAsync<string>(
+            $"SELECT qualified_name FROM nodes WHERE project = @Project AND {MySqlGraphStore.QualifiedNameMatch(wanted, parameters)}",
+            parameters)).ToList();
+        var rowsRead = await RowsReadAsync(connection) - before;
+
+        single!.QualifiedName.ShouldBe(wanted[0]);
+        caseVariant.ShouldBeNull();
+        batch.Select(node => node.QualifiedName).ShouldBe(wanted, ignoreOrder: true);
+        rows.ShouldBe(wanted, ignoreOrder: true);
+        rowsRead.ShouldBeLessThan(100);
+    }
+
+    private static async Task<long> RowsReadAsync(MySqlConnection connection) =>
+        (await connection.QueryAsync<(string Name, string Value)>(
+            "SHOW SESSION STATUS WHERE Variable_name IN ('Handler_read_rnd_next', 'Handler_read_next')"))
+        .Sum(row => long.Parse(row.Value));
+
+    [Fact]
     public async Task SyncState_RoundTripsFailureTrackingAndSnapshotReplacementClearsIt()
     {
         await using var db = await TestDatabase.CreateAsync();
@@ -248,6 +299,15 @@ public class MariaDbLargeGraphWriteTests
         public async Task<long> GlobalDeleteStatementCountAsync() =>
             long.Parse(await ScalarAsync<string>(
                 "SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'COM_DELETE'"));
+
+        /// <summary>Edges whose source id is lower than that of the edge inserted just before them.</summary>
+        public async Task<long> EdgeSourcesOutOfInsertOrderAsync() =>
+            await ScalarAsync<long>("""
+                SELECT COUNT(*) FROM (
+                    SELECT source_id < LAG(source_id) OVER (ORDER BY id) AS out_of_order FROM edges
+                ) ordered
+                WHERE out_of_order
+                """);
 
         public async Task<long> CountAsync(string table) =>
             await ScalarAsync<long>($"SELECT COUNT(*) FROM {table}");
