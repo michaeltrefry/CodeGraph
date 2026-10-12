@@ -20,6 +20,8 @@ TestResults/
 *-Debug.json
 # Environment / secrets
 .env
+infra/shared/.env
+infra/shared/**/.env
 appsettings.Development.json
 
 # OS

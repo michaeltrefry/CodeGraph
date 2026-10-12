@@ -1,0 +1,30 @@
+# Shared MariaDB on trefry.net (used by Keycloak and CodeGraph).
+# Applied MANUALLY on the host -- never by CodeGraph's deploy. See ../README.md.
+# Mirrors the live /root/mariadb.docker-compose.yml; secrets live in an untracked .env next to this file.
+services:
+  mariadb:
+    # Consider pinning to an exact 11.8.x patch (e.g. mariadb:11.8.N) so a `docker compose pull`
+    # cannot silently move the shared database to a new patch release.
+    image: mariadb:11.8
+    container_name: mariadb
+    # Buffer pool is 2G because MariaDB 11.8 fixes innodb_buffer_pool_size_max at startup (the pool
+    # cannot be grown past it at runtime), and CodeGraph graph writes touch ~1M edges for large repos.
+    # Profiled delete phase: ~23 s at the 128 MB default vs ~6 s at 2 GB.
+    command: ["mariadbd", "--innodb-buffer-pool-size=2G"]
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set in .env}
+      MARIADB_DATABASE: keycloak
+      MARIADB_USER: keycloak
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?set in .env}
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - /opt/trefry/mariadb/data:/var/lib/mysql
+    networks:
+      trefry-network:
+        aliases:
+          - mariadb
+networks:
+  trefry-network:
+    external: true
