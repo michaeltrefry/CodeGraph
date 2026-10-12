@@ -14,6 +14,7 @@ public partial class MySqlGraphStore
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
     {
         if (filePaths.Count == 0) return 0;
@@ -159,17 +160,20 @@ public partial class MySqlGraphStore
             foreach (var batch in fileHashes.ToArray().Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
-                var sql = new StringBuilder("INSERT INTO file_hashes (project, rel_path, content_hash) VALUES ");
+                var sql = new StringBuilder(
+                    "INSERT INTO file_hashes (project, rel_path, content_hash, extraction_version) VALUES ");
                 var parameters = new DynamicParameters();
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.Append($"(@Project{i}, @RelPath{i}, @ContentHash{i})");
+                    sql.Append($"(@Project{i}, @RelPath{i}, @ContentHash{i}, @ExtractionVersion{i})");
                     parameters.Add($"Project{i}", project);
                     parameters.Add($"RelPath{i}", batch[i].Key);
                     parameters.Add($"ContentHash{i}", batch[i].Value);
+                    parameters.Add($"ExtractionVersion{i}", extractionVersions?.GetValueOrDefault(batch[i].Key));
                 }
-                sql.Append(" ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash)");
+                sql.Append(" ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash), " +
+                           "extraction_version = VALUES(extraction_version)");
                 await conn.ExecuteAsync(new CommandDefinition(
                     sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
@@ -191,6 +195,7 @@ public partial class MySqlGraphStore
         IReadOnlyDictionary<string, string> fileHashes,
         RepositoryEntity repository,
         SyncStateEntity? syncState,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
     {
         await using var conn = await GetOpenConnectionAsync();
@@ -322,7 +327,7 @@ public partial class MySqlGraphStore
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder("""
-                    INSERT INTO file_hashes (project, rel_path, content_hash)
+                    INSERT INTO file_hashes (project, rel_path, content_hash, extraction_version)
                     VALUES
                     """);
                 var parameters = new DynamicParameters();
@@ -330,10 +335,11 @@ public partial class MySqlGraphStore
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.AppendLine($"(@Project{i}, @RelPath{i}, @ContentHash{i})");
+                    sql.AppendLine($"(@Project{i}, @RelPath{i}, @ContentHash{i}, @ExtractionVersion{i})");
                     parameters.Add($"Project{i}", project);
                     parameters.Add($"RelPath{i}", batch[i].Key);
                     parameters.Add($"ContentHash{i}", batch[i].Value);
+                    parameters.Add($"ExtractionVersion{i}", extractionVersions?.GetValueOrDefault(batch[i].Key));
                 }
 
                 await conn.ExecuteAsync(new CommandDefinition(
@@ -344,12 +350,15 @@ public partial class MySqlGraphStore
             {
                 await conn.ExecuteAsync(new CommandDefinition("""
                     INSERT INTO sync_state (project, last_sync_at, last_commit_sha, status, error_message,
-                                            failed_commit_sha, consecutive_failures, last_failure_at)
+                                            failed_commit_sha, consecutive_failures, last_failure_at,
+                                            extraction_fingerprint)
                     VALUES (@Project, @LastSyncAt, @LastCommitSha, @Status, @ErrorMessage,
-                            @FailedCommitSha, @ConsecutiveFailures, @LastFailureAt)
+                            @FailedCommitSha, @ConsecutiveFailures, @LastFailureAt,
+                            @ExtractionFingerprint)
                     ON DUPLICATE KEY UPDATE
                         last_sync_at = VALUES(last_sync_at),
                         last_commit_sha = COALESCE(VALUES(last_commit_sha), last_commit_sha),
+                        extraction_fingerprint = COALESCE(VALUES(extraction_fingerprint), extraction_fingerprint),
                         status = VALUES(status),
                         error_message = VALUES(error_message),
                         failed_commit_sha = VALUES(failed_commit_sha),

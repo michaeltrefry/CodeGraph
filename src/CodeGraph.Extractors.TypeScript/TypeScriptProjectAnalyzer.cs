@@ -6,6 +6,12 @@ namespace CodeGraph.Extractors.TypeScript;
 
 public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
 {
+    /// <summary>
+    /// Bump when extraction output (including the Node.js sidecar's) changes for unchanged input
+    /// (see ExtractionVersionCatalog).
+    /// </summary>
+    public string ExtractionVersion => "1";
+
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
 

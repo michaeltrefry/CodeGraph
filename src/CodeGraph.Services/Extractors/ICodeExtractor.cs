@@ -5,6 +5,16 @@ namespace CodeGraph.Services.Extractors;
 public interface ICodeExtractor
 {
     IReadOnlySet<string> SupportedExtensions { get; }
+
+    /// <summary>
+    /// Version of the output this extractor produces for files with <paramref name="extension"/>.
+    /// Persisted per file (file_hashes.extraction_version); a stored value that differs from the
+    /// current one makes incremental indexing re-extract the file even though its content is
+    /// unchanged. Bump it whenever the extractor's output changes for unchanged input — see
+    /// <see cref="CodeGraph.Services.Pipeline.ExtractionVersionCatalog"/> for the contract.
+    /// </summary>
+    string GetExtractionVersion(string extension) => "1";
+
     Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default);
 }

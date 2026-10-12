@@ -76,6 +76,7 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         IReadOnlyDictionary<string, string> fileHashes,
         RepositoryEntity repository,
         SyncStateEntity? syncState,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default);
     Task<int> ReplaceProjectFilesAsync(
         string project,
@@ -83,6 +84,7 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default);
     Task DeleteFilesFromProjectGraphAsync(
         string project,
@@ -91,6 +93,9 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
 
     // File hashes (incremental indexing)
     Task<Dictionary<string, string>> GetFileHashesAsync(string project);
+
+    /// <summary>Content hash and extraction version of every indexed file, keyed by relative path.</summary>
+    Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project);
     Task UpsertFileHashBatchAsync(string project, Dictionary<string, string> hashes, CancellationToken ct = default);
     Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths);
 

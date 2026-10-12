@@ -8,6 +8,13 @@ namespace CodeGraph.Services.Extractors;
 public interface IRustAnalyzer
 {
     /// <summary>
+    /// Version of this analyzer's output; part of the per-file extraction version of the files
+    /// it covers. Bump it whenever the output changes for unchanged input — see
+    /// <see cref="CodeGraph.Services.Pipeline.ExtractionVersionCatalog"/>.
+    /// </summary>
+    string ExtractionVersion => "1";
+
+    /// <summary>
     /// Analyzes the whole workspace and returns its semantic results, or throws when any
     /// part of it could not be analyzed.
     /// </summary>

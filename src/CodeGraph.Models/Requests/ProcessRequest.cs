@@ -22,4 +22,11 @@ public class ProcessRequest
     /// Use for repos that do not follow the usual controller/service/consumer conventions.
     /// </summary>
     public bool IncludeAllSource { get; set; }
+
+    /// <summary>
+    /// Atomically rebuild each repository's graph from a full extraction instead of the
+    /// hash-incremental update. Unlike re-analysis it submits no analysis unless
+    /// <see cref="ShouldAnalyze"/> is set. Defaults to false.
+    /// </summary>
+    public bool ReplaceExistingGraph { get; set; }
 }

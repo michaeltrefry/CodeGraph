@@ -143,13 +143,26 @@ public class ProjectService(
         setPhase("check-up-to-date");
         var commitSha = GetHeadCommitSha(repoPath);
         setCommitSha(commitSha);
+        // True when HEAD is already indexed and only the extraction versions moved on: the run
+        // re-extracts outdated files but must not repeat per-commit LLM work (analysis, health).
+        var extractionRefreshOnly = false;
         if (message.SkipIfUpToDate)
         {
             var syncState = await graphStore.GetSyncStateAsync(message.Name);
-            if (syncState?.LastCommitSha == commitSha && commitSha is not null)
+            if (syncState is not null && syncState.LastCommitSha == commitSha && commitSha is not null)
             {
-                logger.LogInformation("Skipping {Repo} — already at HEAD {Sha}", message.Name, commitSha);
-                return;
+                if (!message.ShouldIndex
+                    || string.Equals(syncState.ExtractionFingerprint, pipeline.ExtractionFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    logger.LogInformation("Skipping {Repo} — already at HEAD {Sha}", message.Name, commitSha);
+                    return;
+                }
+
+                extractionRefreshOnly = true;
+                logger.LogInformation(
+                    "Re-indexing {Repo} at unchanged HEAD {Sha}: extraction versions changed ({StoredFingerprint} -> {CurrentFingerprint}); analysis and health analysis are skipped",
+                    message.Name, commitSha, syncState.ExtractionFingerprint ?? "none", pipeline.ExtractionFingerprint);
             }
 
             // Routine syncs stop re-running a commit that keeps failing; a new commit or a
@@ -175,13 +188,14 @@ public class ProjectService(
                 repositoryToolingIdentity: resolvedRepository.CanonicalIdentity,
                 replaceExistingGraph: message.ReplaceExistingGraph,
                 replacementSyncState: message.ReplaceExistingGraph
-                    ? CreateIdleSyncState(message.Name, commitSha)
+                    ? CreateIdleSyncState(message.Name, commitSha, pipeline.ExtractionFingerprint)
                     : null,
                 ct: cancellationToken);
 
             setPhase("sync-state");
             if (!message.ReplaceExistingGraph)
-                await graphStore.UpsertSyncStateAsync(CreateIdleSyncState(message.Name, commitSha));
+                await graphStore.UpsertSyncStateAsync(
+                    CreateIdleSyncState(message.Name, commitSha, pipeline.ExtractionFingerprint));
 
             // 3. Publish event — downstream consumers handle linking, vitals, and analysis
             setPhase("publish-completion");
@@ -191,9 +205,9 @@ public class ProjectService(
                 RepoPath = repoPath,
                 RepoUrl = repoUrl,
                 CommitSha = commitSha,
-                ShouldAnalyze = message.ShouldAnalyze,
+                ShouldAnalyze = message.ShouldAnalyze && !extractionRefreshOnly,
                 IncludeAllSource = message.IncludeAllSource,
-                ShouldComputeVitals = message.ShouldComputeVitals
+                ShouldComputeVitals = message.ShouldComputeVitals && !extractionRefreshOnly
             });
 
             logger.LogInformation("Published RepositoryIndexingCompleted for {Repo}", message.Name);
@@ -294,10 +308,12 @@ public class ProjectService(
         }
     }
 
-    private static SyncStateEntity CreateIdleSyncState(string project, string? commitSha) => new()
+    private static SyncStateEntity CreateIdleSyncState(
+        string project, string? commitSha, string extractionFingerprint) => new()
     {
         Project = project,
         LastCommitSha = commitSha,
+        ExtractionFingerprint = extractionFingerprint,
         LastSyncAt = DateTime.UtcNow,
         Status = "idle"
     };

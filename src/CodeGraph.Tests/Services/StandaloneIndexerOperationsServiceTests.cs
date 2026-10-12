@@ -171,6 +171,51 @@ public class StandaloneIndexerOperationsServiceTests
         run.ArgsJson.ShouldContain("includeAllSource");
     }
 
+    [Theory]
+    [InlineData("""{"repos":["dark-factory-sandbox"],"shouldIndex":true,"shouldAnalyze":false,"skipIfUpToDate":false,"replaceExistingGraph":true}""", true)]
+    [InlineData("""{"repos":["dark-factory-sandbox"],"shouldIndex":true,"shouldAnalyze":false,"skipIfUpToDate":false}""", false)]
+    public async Task ProcessEndpoint_ReplaceExistingGraphFlowsFromRequestBodyToProcessRepositoryMessage(
+        string body, bool expectedReplace)
+    {
+        // Bind the body as ASP.NET Core does, then follow the request through the indexer host
+        // endpoint, the durable run (args JSON) and the executor to the published message.
+        var request = JsonSerializer.Deserialize<ProcessRequest>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var runs = new FakeIndexerRunStore();
+        var operations = new StandaloneIndexerOperationsService(
+            runs,
+            new FakeDatabaseSourceStore(),
+            new RecordingBackgroundRunner());
+        var httpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+        {
+            User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+                [new System.Security.Claims.Claim("preferred_username", "Michael")], "test"))
+        };
+        httpContext.Request.Headers["Idempotency-Key"] = "process-replace";
+        var controller = new CodeGraph.Indexer.Host.Controllers.IndexerController(operations)
+        {
+            ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = httpContext }
+        };
+
+        var result = await controller.ProcessRepositories(request, CancellationToken.None);
+        var accepted = result.Result.ShouldBeOfType<Microsoft.AspNetCore.Mvc.AcceptedResult>()
+            .Value.ShouldBeOfType<IndexerAcceptedResponse>();
+
+        var bus = new PublishedMessages();
+        var admin = new AdminService(bus, null!, null!, null!, new AllowAllExclusions(), null!, null!);
+        var executor = new IndexerRunExecutor(
+            new FakeDatabaseSourceStore(),
+            new RecordingDatabaseSchemaExtractor(),
+            admin,
+            new RecordingProjectService());
+        await executor.ExecuteAsync(
+            new IndexerRunLease((await runs.GetIndexerRunAsync(accepted.RunId!.Value))!, "worker", 1));
+
+        var message = bus.Messages.OfType<CodeGraph.Models.Messages.ProcessRepository>().ShouldHaveSingleItem();
+        message.Name.ShouldBe("dark-factory-sandbox");
+        message.ReplaceExistingGraph.ShouldBe(expectedReplace);
+        message.ShouldAnalyze.ShouldBeFalse();
+    }
+
     [Fact]
     public async Task UnsafeSubmission_RequiresAndDeduplicatesDurableIdentity()
     {
@@ -870,6 +915,28 @@ public class StandaloneIndexerOperationsServiceTests
         public Task ProcessBatchAnalysisAsync(string? repo, CancellationToken ct = default) => Task.CompletedTask;
         public Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default)
             => Task.FromResult(new DiscoverResponse(0, 0, 0, 0, 0, []));
+    }
+
+    private sealed class PublishedMessages : CodeGraph.Services.Messaging.IMessageBus
+    {
+        public List<object> Messages { get; } = [];
+
+        public Task PublishAsync<T>(T message, CancellationToken ct = default) where T : class
+        {
+            Messages.Add(message);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class AllowAllExclusions : IExclusionService
+    {
+        public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) => Task.FromResult<string?>(null);
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) => Task.FromResult(new HashSet<string>());
+        public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() => Task.FromResult<IReadOnlyList<ExclusionRuleEntity>>([]);
+        public Task<ExclusionRuleEntity> CreateRuleAsync(string targetType, string targetValue, string exclusionType, string? reason, string createdBy) => throw new NotSupportedException();
+        public Task<ExclusionRuleEntity?> UpdateRuleAsync(long id, string exclusionType, string? reason) => throw new NotSupportedException();
+        public Task<bool> DeleteRuleAsync(long id) => throw new NotSupportedException();
+        public Task SeedFromConfigAsync(IReadOnlyList<string> excludedGroups) => Task.CompletedTask;
     }
 
     private sealed class RecordingProjectService : IProjectService

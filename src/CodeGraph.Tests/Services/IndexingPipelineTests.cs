@@ -1120,6 +1120,208 @@ public class IndexingPipelineTests
         }
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_ExtractionVersionBump_ReextractsUnchangedFilesOnce()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-extraction-version-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "one.py"), "class One:\n    pass\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "two.py"), "class Two:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor();
+
+            await CreatePipeline(store, extractor).IndexProjectAsync("VersionRepo", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+
+            // Matching version: unchanged files stay incremental.
+            await CreatePipeline(store, extractor).IndexProjectAsync("VersionRepo", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+
+            // Deploying a bumped extractor re-extracts every unchanged file exactly once.
+            extractor.Versions[".py"] = "2";
+            var bumped = CreatePipeline(store, extractor);
+            await bumped.IndexProjectAsync("VersionRepo", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(4);
+            (await store.GetFileHashRecordsAsync("VersionRepo"))["one.py"].ExtractionVersion
+                .ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion};VersionedExtractor=2");
+
+            await bumped.IndexProjectAsync("VersionRepo", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(4);
+            (await store.FindNodeByQualifiedNameAsync("VersionRepo", "VersionRepo.one")).ShouldNotBeNull();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_MissingStoredExtractionVersion_ReextractsUnchangedFiles()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-extraction-legacy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "one.py"), "class One:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor();
+            var pipeline = CreatePipeline(store, extractor);
+            await pipeline.IndexProjectAsync("LegacyRepo", rootPath, ct: CancellationToken.None);
+
+            // Rows written before extraction versioning have no version.
+            store.ClearFileExtractionVersions("LegacyRepo");
+            await pipeline.IndexProjectAsync("LegacyRepo", rootPath, ct: CancellationToken.None);
+
+            extractor.CallCount.ShouldBe(2);
+            (await store.GetFileHashRecordsAsync("LegacyRepo"))["one.py"].ExtractionVersion.ShouldNotBeNull();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullReplacementRecordsExtractionVersions()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-extraction-replace-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "one.py"), "class One:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor();
+            var pipeline = CreatePipeline(store, extractor);
+
+            await pipeline.IndexProjectAsync("ReplaceRepo", rootPath, replaceExistingGraph: true, ct: CancellationToken.None);
+            await pipeline.IndexProjectAsync("ReplaceRepo", rootPath, ct: CancellationToken.None);
+
+            // The rebuild stored current versions, so the routine index stays incremental.
+            extractor.CallCount.ShouldBe(1);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExtractionVersionCatalog_ComposesSpecializedAnalyzerVersionsPerFileType()
+    {
+        var extractors = new ICodeExtractor[] { new RoslynExtractor(), new VersionedExtractor() };
+        var v1 = new ExtractionVersionCatalog(extractors, new RecordingSolutionAnalyzer());
+        var v2 = new ExtractionVersionCatalog(extractors, new RecordingSolutionAnalyzer { Version = "2" });
+
+        v1.ForPath("src/App.cs").ShouldBe(
+            $"p{ExtractionVersionCatalog.PipelineVersion};RoslynExtractor=2;RecordingSolutionAnalyzer=1");
+        v2.ForPath("src/App.cs").ShouldEndWith(";RecordingSolutionAnalyzer=2");
+        v1.ForPath("app.py").ShouldBe(v2.ForPath("app.py"));
+        v1.Fingerprint.ShouldNotBe(v2.Fingerprint);
+        new ExtractionVersionCatalog(extractors, new RecordingSolutionAnalyzer()).Fingerprint.ShouldBe(v1.Fingerprint);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_ExtractionVersionBumpForOneFileType_KeepsCrossFileEdgesWithUnchangedFiles()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-extraction-crossfile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "caller.ca"), "caller");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "target.tg"), "target");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor(".ca", ".tg");
+
+            await CreatePipeline(store, extractor).IndexProjectAsync("CrossRepo", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+
+            extractor.Versions[".ca"] = "2";
+            await CreatePipeline(store, extractor).IndexProjectAsync("CrossRepo", rootPath, ct: CancellationToken.None);
+
+            // Only the bumped file type was re-extracted.
+            extractor.CallCount.ShouldBe(3);
+            var caller = (await store.FindNodeByQualifiedNameAsync("CrossRepo", "CrossRepo.caller"))!;
+            var target = (await store.FindNodeByQualifiedNameAsync("CrossRepo", "CrossRepo.target"))!;
+            // Re-extracted -> unchanged: the unresolved call resolves against the persisted node.
+            (await store.FindEdgesBySourceAsync(caller.Id, EdgeType.CALLS))
+                .ShouldContain(edge => edge.TargetId == target.Id);
+            // Unchanged -> re-extracted: the incoming edge survives the file-slice replacement.
+            (await store.FindEdgesBySourceAsync(target.Id, EdgeType.CALLS))
+                .ShouldContain(edge => edge.TargetId == caller.Id);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Emits one class node per file whose name is the file name. A "caller" file calls the
+    /// "target" node (bare call resolved by the pipeline); a "target" file calls "caller" directly.
+    /// </summary>
+    private sealed class VersionedExtractor : ICodeExtractor
+    {
+        private int _callCount;
+
+        public VersionedExtractor(params string[] extensions)
+        {
+            if (extensions.Length == 0)
+                extensions = [".py"];
+            SupportedExtensions = new HashSet<string>(extensions, StringComparer.OrdinalIgnoreCase);
+            foreach (var extension in extensions)
+                Versions[extension] = "1";
+        }
+
+        public Dictionary<string, string> Versions { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public int CallCount => _callCount;
+        public IReadOnlySet<string> SupportedExtensions { get; }
+
+        public string GetExtractionVersion(string extension) => Versions[extension];
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath,
+            string content,
+            ExtractorContext context,
+            CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _callCount);
+            var name = Path.GetFileNameWithoutExtension(filePath);
+            var qualifiedName = $"{context.ProjectName}.{name}";
+            return Task.FromResult(new ExtractionResult
+            {
+                Nodes =
+                [
+                    new GraphNode
+                    {
+                        Project = context.ProjectName,
+                        Label = NodeLabel.Class,
+                        Name = name,
+                        QualifiedName = qualifiedName,
+                        FilePath = Path.GetRelativePath(context.RootPath, filePath),
+                        StartLine = 1,
+                        EndLine = 1
+                    }
+                ],
+                Edges = content == "target"
+                    ? [new PendingEdge(qualifiedName, $"{context.ProjectName}.caller", EdgeType.CALLS)]
+                    : [],
+                UnresolvedCalls = content == "caller"
+                    ? [new UnresolvedCall(qualifiedName, "target", null, 0.9, CallReceiverKind.Bare)]
+                    : []
+            });
+        }
+    }
+
     private static IndexingPipeline CreatePipeline(InMemoryGraphStore store, ICodeExtractor extractor) =>
         new(
             store,
@@ -1541,6 +1743,9 @@ public class IndexingPipelineTests
     private sealed class RecordingSolutionAnalyzer(
         Func<string, ExtractorContext, SolutionAnalysisResult>? analyze = null) : ISolutionAnalyzer
     {
+        public string Version { get; init; } = "1";
+        public string ExtractionVersion => Version;
+
         public string? CalledSolutionPath { get; private set; }
         public List<string> CalledSolutionPaths { get; } = [];
         public RepositoryToolingTrust? ObservedTrust { get; private set; }

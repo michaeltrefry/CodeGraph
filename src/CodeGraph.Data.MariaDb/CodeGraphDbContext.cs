@@ -138,6 +138,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(s => s.FailedCommitSha).HasColumnName("failed_commit_sha");
             e.Property(s => s.ConsecutiveFailures).HasColumnName("consecutive_failures");
             e.Property(s => s.LastFailureAt).HasColumnName("last_failure_at");
+            e.Property(s => s.ExtractionFingerprint).HasColumnName("extraction_fingerprint");
         });
     }
 
@@ -198,6 +199,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(f => f.Project).HasColumnName("project");
             e.Property(f => f.RelPath).HasColumnName("rel_path");
             e.Property(f => f.ContentHash).HasColumnName("content_hash");
+            e.Property(f => f.ExtractionVersion).HasColumnName("extraction_version");
         });
     }
 

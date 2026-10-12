@@ -19,6 +19,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private readonly List<CrossRepoEdge> _crossEdges = new();
     private readonly List<ProjectInfo> _projects = new();
     private readonly Dictionary<string, Dictionary<string, string>> _fileHashes = new();
+    private readonly Dictionary<string, Dictionary<string, string>> _fileExtractionVersions = new();
     private readonly Dictionary<string, ProjectSummary> _summaries = new();
     private readonly List<ProjectDiagnosticEntity> _projectDiagnostics = new();
     private readonly List<ProjectReviewRunEntity> _projectReviewRuns = new();
@@ -413,6 +414,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             e.SourceProject.Equals(project, StringComparison.OrdinalIgnoreCase) ||
             e.TargetProject.Equals(project, StringComparison.OrdinalIgnoreCase));
         _fileHashes.Remove(project);
+        _fileExtractionVersions.Remove(project);
         _summaries.Remove(project);
         return Task.CompletedTask;
     }
@@ -630,6 +632,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         IReadOnlyDictionary<string, string> fileHashes,
         RepositoryEntity repository,
         SyncStateEntity? syncState,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -676,6 +679,9 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         _nodes.AddRange(replacementNodes);
         _edges.AddRange(replacementEdges);
         _fileHashes[project] = new Dictionary<string, string>(fileHashes, StringComparer.OrdinalIgnoreCase);
+        _fileExtractionVersions[project] = fileHashes.Keys
+            .Where(path => extractionVersions?.ContainsKey(path) == true)
+            .ToDictionary(path => path, path => extractionVersions![path], StringComparer.OrdinalIgnoreCase);
         _ = UpsertRepositoryAsync(repository);
         if (syncState is not null)
             _syncStates[project] = syncState;
@@ -690,6 +696,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
+        IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -728,8 +735,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var stagedHashes = _fileHashes.TryGetValue(project, out var existingHashes)
             ? new Dictionary<string, string>(existingHashes, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var stagedVersions = _fileExtractionVersions.TryGetValue(project, out var existingVersions)
+            ? new Dictionary<string, string>(existingVersions, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in paths)
+        {
             stagedHashes.Remove(path);
+            stagedVersions.Remove(path);
+        }
 
         var nextId = _nextId;
         var qnToId = stagedNodes
@@ -769,7 +782,11 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             stagedEdges.Add(edge);
         }
         foreach (var hash in fileHashes)
+        {
             stagedHashes[hash.Key] = hash.Value;
+            if (extractionVersions?.TryGetValue(hash.Key, out var version) == true)
+                stagedVersions[hash.Key] = version;
+        }
 
         _nodes.Clear();
         _nodes.AddRange(stagedNodes);
@@ -781,6 +798,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         foreach (var analysis in stagedAnalyses)
             _nodeAnalyses[analysis.Key] = analysis.Value;
         _fileHashes[project] = stagedHashes;
+        _fileExtractionVersions[project] = stagedVersions;
         _nextId = nextId;
 
         return Task.FromResult(resolved.Count);
@@ -830,6 +848,20 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (_fileHashes.TryGetValue(project, out var hashes))
             return Task.FromResult(new Dictionary<string, string>(hashes));
         return Task.FromResult(new Dictionary<string, string>());
+    }
+
+    /// <summary>Simulates file_hashes rows written before extraction versioning existed.</summary>
+    public void ClearFileExtractionVersions(string project) => _fileExtractionVersions.Remove(project);
+
+    public Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project)
+    {
+        var result = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
+        if (!_fileHashes.TryGetValue(project, out var hashes))
+            return Task.FromResult(result);
+        _fileExtractionVersions.TryGetValue(project, out var versions);
+        foreach (var hash in hashes)
+            result[hash.Key] = new FileHashRecord(hash.Value, versions?.GetValueOrDefault(hash.Key));
+        return Task.FromResult(result);
     }
 
     public Task UpsertFileHashBatchAsync(string project, Dictionary<string, string> hashes, CancellationToken ct = default)
@@ -916,6 +948,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task UpsertSyncStateAsync(SyncStateEntity state)
     {
+        // Mirrors the MariaDB store: a null fingerprint keeps the stored one.
+        if (state.ExtractionFingerprint is null &&
+            _syncStates.TryGetValue(state.Project, out var existing))
+        {
+            state.ExtractionFingerprint = existing.ExtractionFingerprint;
+        }
+
         _syncStates[state.Project] = state;
         return Task.CompletedTask;
     }
