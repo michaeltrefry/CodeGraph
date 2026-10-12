@@ -19,9 +19,9 @@ services:
     # to localhost only:
     # - 5672 (AMQP): containers reach the broker as `rabbitmq:5672` over trefry-network. The host
     #   binding is only for local tools on the host.
-    # - 15672 (management UI): remote access goes through the host's reverse proxy over HTTPS (see
-    #   "Remote management UI" in ../README.md; Caddy site block in Caddyfile.rabbitmq). RabbitMQ's own
-    #   admin login stays in front of it.
+    # - 15672 (management UI): remote access goes through the host's Caddy over HTTPS at
+    #   https://mqapps.trefry.net (see "Remote management UI" in ../README.md; Caddy site block in
+    #   Caddyfile.rabbitmq). RabbitMQ's own admin login stays in front of it.
     # Do not change these back to 0.0.0.0.
     ports:
       - "127.0.0.1:5672:5672"
