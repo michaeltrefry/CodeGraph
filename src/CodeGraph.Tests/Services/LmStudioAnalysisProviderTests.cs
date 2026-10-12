@@ -472,23 +472,16 @@ public class LmStudioAnalysisProviderTests
             }),
             NullLogger<LmStudioAnalysisProvider>.Instance);
 
+        // The first poll sees a pending request, so it starts the background runner and cannot report completion.
+        // ("submitted" only if the runner already finished before the status was computed.)
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
-        for (var attempt = 0;
-             attempt < 20 && firstStatus.ProcessingStatus is "submitted";
-             attempt++)
-        {
-            await Task.Delay(25);
-            firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
-        }
+        firstStatus.IsCompleted.ShouldBeFalse();
+        firstStatus.ProcessingStatus.ShouldBeOneOf("processing", "submitted");
 
-        firstStatus.ProcessingStatus.ShouldBeOneOf("processing", "completed");
+        // Completion is only reported once the runner task has finished, so await it instead of polling on a timer.
+        await provider.WaitForBatchRunnerAsync(batch.ProviderBatchId);
 
-        AnalysisBatchRequestEntity storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
-        for (var attempt = 0; attempt < 20 && !string.Equals(storedRequest.Status, "succeeded", StringComparison.OrdinalIgnoreCase); attempt++)
-        {
-            await Task.Delay(25);
-            storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
-        }
+        var storedRequest = (await store.GetBatchRequestsAsync(batchId)).Single();
 
         var secondStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
         var results = await provider.GetBatchResultsAsync(batch.ProviderBatchId, ["req_1"], CancellationToken.None);
@@ -554,12 +547,8 @@ public class LmStudioAnalysisProviderTests
         var firstStatus = await provider.GetBatchStatusAsync(batch.ProviderBatchId, CancellationToken.None);
         firstStatus.IsCompleted.ShouldBeFalse();
 
-        AnalysisBatchRequestEntity afterFirstAttempt = (await store.GetBatchRequestsAsync(batchId)).Single();
-        for (var attempt = 0; attempt < 20 && afterFirstAttempt.AttemptCount == 0; attempt++)
-        {
-            await Task.Delay(25);
-            afterFirstAttempt = (await store.GetBatchRequestsAsync(batchId)).Single();
-        }
+        await provider.WaitForBatchRunnerAsync(batch.ProviderBatchId);
+        var afterFirstAttempt = (await store.GetBatchRequestsAsync(batchId)).Single();
 
         afterFirstAttempt.Status.ShouldBe("pending");
         afterFirstAttempt.AttemptCount.ShouldBe(1);
@@ -591,12 +580,8 @@ public class LmStudioAnalysisProviderTests
 
         await provider.GetBatchStatusAsync(providerBatchId, CancellationToken.None);
 
-        AnalysisBatchRequestEntity scopedRequest = (await scopedStore.GetBatchRequestsAsync(scopedBatchId)).Single();
-        for (var attempt = 0; attempt < 20 && scopedRequest.AttemptCount == 0; attempt++)
-        {
-            await Task.Delay(25);
-            scopedRequest = (await scopedStore.GetBatchRequestsAsync(scopedBatchId)).Single();
-        }
+        await provider.WaitForBatchRunnerAsync(providerBatchId);
+        var scopedRequest = (await scopedStore.GetBatchRequestsAsync(scopedBatchId)).Single();
 
         scopedRequest.AttemptCount.ShouldBe(1);
         var rootRequest = (await rootStore.GetBatchRequestsAsync(rootBatchId)).Single();
