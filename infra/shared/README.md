@@ -87,12 +87,27 @@ The live broker was started with plain `docker run`, not compose. The facts that
   file changes this to `unless-stopped`, so after the migration the broker survives reboots.
 - **Image.** The live container uses `rabbitmq:3-management`, which is 3.13.7. The compose file
   pins `rabbitmq:3.13.7-management`.
-- **Ports.** 5672 and 15672 are published on `0.0.0.0` and stay that way. See the warning in
-  `rabbitmq/docker-compose.yml`. Bind them to `127.0.0.1` once no remote client needs them.
+- **Ports.** The live container publishes 5672 (AMQP) and 15672 (management UI) on `0.0.0.0`, so
+  both are public. The compose file binds both to `127.0.0.1`, so neither port is public after the
+  migration. Containers keep reaching the broker as `rabbitmq:5672` over `trefry-network`. The
+  management UI is reached remotely through the reverse proxy (see
+  [Remote management UI](#remote-management-ui)).
 
 Steps:
 
 ```sh
+# 0. Before switching, check that nothing outside the host uses AMQP on 5672. After the migration,
+#    off-host clients can no longer connect. Look for established connections whose peer is not
+#    loopback and not a trefry-network container:
+ss -tn state established '( sport = :5672 )'
+docker exec rabbitmq rabbitmqctl list_connections peer_host peer_port user name
+#    Every peer_host should be a trefry-network container IP (check with
+#    `docker network inspect trefry-network`) or 127.0.0.1. Move any external client to the
+#    reverse proxy, a VPN, or an on-host container before continuing.
+#    Also set up and test the reverse-proxy route for the management UI before you rely on remote
+#    UI access (see "Remote management UI"). Once 15672 is localhost-only, the proxy is the only
+#    remote way in.
+
 # 1. Verify the facts still match the compose file
 docker inspect rabbitmq --format '{{.Config.Hostname}}'                     # expect 439e97697844
 docker inspect rabbitmq --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
@@ -117,6 +132,8 @@ docker compose logs --tail=50 rabbitmq
 docker exec rabbitmq rabbitmqctl list_users
 docker exec rabbitmq rabbitmqctl list_queues name messages
 docker inspect rabbitmq --format '{{.HostConfig.RestartPolicy.Name}}'        # expect unless-stopped
+docker port rabbitmq                                                         # expect only 127.0.0.1 bindings
+curl -fsS -o /dev/null -w '%{http_code}\n' https://rabbitmq.trefry.net/      # remote UI via the proxy, expect 200
 
 # 6. After the apps reconnect, remove the old container. Do NOT pass -v: the volume must be kept.
 docker rm rabbitmq-old
@@ -130,5 +147,29 @@ docker rename rabbitmq-old rabbitmq
 docker start rabbitmq
 ```
 
+Rollback restores the old `0.0.0.0` bindings, so 5672 and 15672 become public again until you
+re-apply.
+
 Never run `docker volume rm` or `docker compose down -v` against
 `974d2f346a35fc36e0285721e2157842b695764cb2aedaa5dc56316fc8a05fad`. It holds all broker data.
+
+## Remote management UI
+
+The RabbitMQ management UI (port 15672) is not published publicly. The compose file binds it to
+`127.0.0.1` only. Remote access works like this:
+
+- The UI is served through the host's reverse proxy **over HTTPS** at a dedicated hostname, for
+  example `https://rabbitmq.trefry.net`. The proxy terminates TLS and forwards to
+  `http://127.0.0.1:15672` if the proxy runs on the host, or to `http://rabbitmq:15672` if the proxy
+  runs as a container on `trefry-network`.
+- **RabbitMQ's own admin login stays in front of the UI.** The proxy only adds TLS. It does not
+  replace or bypass RabbitMQ authentication. Use the `admin` user (password in `rabbitmq/.env`) or
+  a dedicated management-tagged user.
+- AMQP (5672) is **not** proxied. It stays reachable only from the host and over `trefry-network`.
+- Set up and test this route before the migration removes the public 15672 binding.
+
+<!-- PLACEHOLDER: reverse-proxy config for the RabbitMQ management UI. -->
+> **TODO (placeholder): reverse-proxy configuration.** The proxy type (Caddy, nginx or Traefik) is
+> not decided yet. Add here the exact site/router config that serves `rabbitmq.trefry.net` over
+> HTTPS, forwards to the management UI as described above, and does not expose 5672. Include where
+> the config file lives on the host and how to reload the proxy.

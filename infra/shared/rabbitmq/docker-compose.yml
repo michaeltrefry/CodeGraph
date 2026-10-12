@@ -15,14 +15,16 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: admin
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set in .env}
-    # WARNING: 5672 (AMQP) and 15672 (management UI) are published on ALL interfaces (0.0.0.0), which
-    # exposes them publicly unless a host firewall blocks them. Kept as-is to match the live container
-    # so nothing that connects via the host ports breaks. Once the owner confirms no remote client needs
-    # the host ports (containers reach the broker as `rabbitmq` over trefry-network), change these to
-    # "127.0.0.1:5672:5672" and "127.0.0.1:15672:15672".
+    # Neither port is public. The hand-run container published both on 0.0.0.0. This file binds them
+    # to localhost only:
+    # - 5672 (AMQP): containers reach the broker as `rabbitmq:5672` over trefry-network. The host
+    #   binding is only for local tools on the host.
+    # - 15672 (management UI): remote access goes through the host's reverse proxy over HTTPS (see
+    #   "Remote management UI" in ../README.md). RabbitMQ's own admin login stays in front of it.
+    # Do not change these back to 0.0.0.0.
     ports:
-      - "0.0.0.0:5672:5672"
-      - "0.0.0.0:15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     networks:
