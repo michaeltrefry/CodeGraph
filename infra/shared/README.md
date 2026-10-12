@@ -104,8 +104,8 @@ docker exec rabbitmq rabbitmqctl list_connections peer_host peer_port user name
 #    Every peer_host should be a trefry-network container IP (check with
 #    `docker network inspect trefry-network`) or 127.0.0.1. Move any external client to the
 #    reverse proxy, a VPN, or an on-host container before continuing.
-#    Also complete "Remote management UI" steps a-e (DNS, Caddy site block, validate, reload, log in
-#    at https://rabbitmq.trefry.net) before continuing. Once 15672 is localhost-only, Caddy is the
+#    Also complete "Remote management UI" steps a-b (Caddy block matches the repo file, and
+#    https://mqapps.trefry.net loads) before continuing. Once 15672 is localhost-only, Caddy is the
 #    only remote way in.
 
 # 1. Verify the facts still match the compose file
@@ -133,7 +133,7 @@ docker exec rabbitmq rabbitmqctl list_users
 docker exec rabbitmq rabbitmqctl list_queues name messages
 docker inspect rabbitmq --format '{{.HostConfig.RestartPolicy.Name}}'        # expect unless-stopped
 docker port rabbitmq                                                         # expect only 127.0.0.1 bindings
-curl -fsS -o /dev/null -w '%{http_code}\n' https://rabbitmq.trefry.net/      # remote UI via the proxy, expect 200
+curl -fsS -o /dev/null -w '%{http_code}\n' https://mqapps.trefry.net/      # remote UI via the proxy, expect 200
 
 # 6. After the apps reconnect, remove the old container. Do NOT pass -v: the volume must be kept.
 docker rm rabbitmq-old
@@ -158,10 +158,12 @@ Never run `docker volume rm` or `docker compose down -v` against
 The RabbitMQ management UI (port 15672) is not published publicly. The compose file binds it to
 `127.0.0.1` only. Remote access works like this:
 
-- The UI is served **over HTTPS** at `https://rabbitmq.trefry.net` by Caddy. Caddy is installed on
+- The UI is served **over HTTPS** at `https://mqapps.trefry.net` by Caddy. Caddy is installed on
   the host (not in a container) and configured in `/etc/caddy/Caddyfile`. Caddy terminates TLS
   with a certificate it obtains and renews automatically, and forwards to `127.0.0.1:15672`. The
-  site block is in [`rabbitmq/Caddyfile.rabbitmq`](rabbitmq/Caddyfile.rabbitmq).
+  site block is mirrored in [`rabbitmq/Caddyfile.rabbitmq`](rabbitmq/Caddyfile.rabbitmq).
+- **DNS and the Caddy route already exist** (verified 2026-10-12): `mqapps.trefry.net` resolves to
+  the host, the certificate is valid, and the site block is live in `/etc/caddy/Caddyfile`.
 - **RabbitMQ's own admin login stays in front of the UI.** Caddy only adds TLS. It does not
   replace or bypass RabbitMQ authentication. Use the `admin` user (password in `rabbitmq/.env`) or
   a dedicated management-tagged user.
@@ -169,35 +171,20 @@ The RabbitMQ management UI (port 15672) is not published publicly. The compose f
 
 ### Apply steps (do these in order, before the RabbitMQ migration)
 
-a. Create a DNS A/AAAA record for `rabbitmq.trefry.net` that points to the host. Caddy cannot get
-   a certificate until this record resolves.
-
-b. Append the site block to the Caddyfile:
+a. Verify the `mqapps.trefry.net` block in `/etc/caddy/Caddyfile` on the host matches
+   [`rabbitmq/Caddyfile.rabbitmq`](rabbitmq/Caddyfile.rabbitmq):
    ```sh
-   cat infra/shared/rabbitmq/Caddyfile.rabbitmq | ssh root@trefry.net 'cat >> /etc/caddy/Caddyfile'
-   # or, on the host, from the copied folder:
-   cat /opt/trefry/infra/rabbitmq/Caddyfile.rabbitmq >> /etc/caddy/Caddyfile
+   grep -A2 '^mqapps.trefry.net' /etc/caddy/Caddyfile
    ```
 
-c. Validate the config:
-   ```sh
-   caddy validate --config /etc/caddy/Caddyfile
-   ```
+b. Open https://mqapps.trefry.net and confirm it loads (log in with the RabbitMQ admin account).
+   If it does not, check `journalctl -u caddy`.
 
-d. Reload Caddy. A reload does not drop the other sites:
-   ```sh
-   systemctl reload caddy
-   ```
-
-e. Open https://rabbitmq.trefry.net and log in with the RabbitMQ admin account. If the certificate
-   is not issued yet, check `journalctl -u caddy`.
-
-f. Only then switch the container to the localhost-bound compose file (see
+c. Only then switch the container to the localhost-bound compose file (see
    [RabbitMQ: one-time migration](#rabbitmq-one-time-migration-from-the-hand-run-container)).
 
-**Why the order matters.** The hand-run container publishes 15672 on `0.0.0.0`, which includes
-`127.0.0.1`. That means Caddy's `reverse_proxy 127.0.0.1:15672` already works before the migration,
-so you can prove the HTTPS route while the old public port is still there as a fallback. The
-compose file binds 15672 to `127.0.0.1` only. If you change the bindings first, remote UI access
-is lost until DNS, the certificate and the Caddy config all work. You would then have to fix them
-over SSH with no UI.
+**Why this is safe.** Caddy's upstream is `127.0.0.1:15672`. The hand-run container publishes
+15672 on `0.0.0.0`, which includes `127.0.0.1`, and the compose file binds 15672 to `127.0.0.1`
+only. Either way Caddy reaches the UI, so moving the container's ports to `127.0.0.1` keeps
+https://mqapps.trefry.net reachable. Steps a-b confirm the route works before the switch-over, while
+the old public port is still there as a fallback.
