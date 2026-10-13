@@ -82,8 +82,114 @@ public class ImpactAnalysisService(
         if (meaningfulNodes.Count == 0)
             meaningfulNodes = fileNodes.ToList();
 
-        return await BuildImpactReportAsync(graph, meaningfulNodes, maxDepth);
+        var report = await BuildImpactReportAsync(graph, meaningfulNodes, maxDepth);
+
+        // Repositories that depend on the file's crate, which symbol edges alone do not show.
+        var crateImpacts = (await FindCrateDependentReposAsync(graph, project, filePath, maxDepth))
+            .Where(crate => !report.CrossRepoImpacts.Any(existing =>
+                (existing.SourceProject == crate.SourceProject && existing.TargetProject == crate.TargetProject) ||
+                (existing.SourceProject == crate.TargetProject && existing.TargetProject == crate.SourceProject)))
+            .ToList();
+        if (crateImpacts.Count == 0)
+            return report;
+
+        var crossRepoImpacts = report.CrossRepoImpacts.Concat(crateImpacts).ToList();
+        return report with
+        {
+            CrossRepoImpacts = crossRepoImpacts,
+            Summary = report.Summary with { CrossRepoCount = crossRepoImpacts.Count }
+        };
     }
+
+    /// <summary>
+    /// Cross-repo Cargo package dependencies on the crate that owns a Rust file: other repositories
+    /// that reference the crate, directly or through crates that depend on it, within
+    /// <paramref name="maxDepth"/> package hops. These are crate-level dependents — they are not
+    /// affected nodes and do not change the risk counts.
+    /// </summary>
+    private static async Task<IReadOnlyList<CrossRepoImpact>> FindCrateDependentReposAsync(
+        IGraphReader graph, string project, string filePath, int maxDepth)
+    {
+        var crate = await FindOwningCrateAsync(graph, project, filePath);
+        if (crate is null)
+            return [];
+
+        var visited = new HashSet<long> { crate.Id };
+        var frontier = new HashSet<long> { crate.Id };
+        var crossRepoEdges = new Dictionary<string, IReadOnlyList<CrossRepoEdge>>(StringComparer.OrdinalIgnoreCase);
+        var projects = new List<string> { project };
+        var dependents = new Dictionary<(long Source, long Target), CrossRepoEdge>();
+
+        for (var depth = 1; depth <= maxDepth && frontier.Count > 0; depth++)
+        {
+            var next = new HashSet<long>();
+            foreach (var edge in await graph.FindEdgesByTargetBatchAsync(
+                         frontier.ToList(), [EdgeType.REFERENCES_PACKAGE]))
+            {
+                if (visited.Add(edge.SourceId))
+                    next.Add(edge.SourceId);
+            }
+
+            foreach (var edgeProject in projects.ToList())
+            {
+                if (!crossRepoEdges.TryGetValue(edgeProject, out var edges))
+                {
+                    edges = await graph.FindCrossRepoEdgesAsync(edgeProject, EdgeType.REFERENCES_PACKAGE);
+                    crossRepoEdges[edgeProject] = edges;
+                }
+
+                foreach (var edge in edges.Where(edge => frontier.Contains(edge.TargetNodeId)))
+                {
+                    dependents.TryAdd((edge.SourceNodeId, edge.TargetNodeId), edge);
+                    if (visited.Add(edge.SourceNodeId))
+                        next.Add(edge.SourceNodeId);
+                    if (!projects.Contains(edge.SourceProject, StringComparer.OrdinalIgnoreCase))
+                        projects.Add(edge.SourceProject);
+                }
+            }
+
+            frontier = next;
+        }
+
+        return dependents.Values
+            .GroupBy(edge => (edge.SourceProject, edge.TargetProject))
+            .Select(group => new CrossRepoImpact(
+                group.Key.SourceProject, group.Key.TargetProject,
+                EdgeType.REFERENCES_PACKAGE.ToString(), group.Count()))
+            .ToList();
+    }
+
+    /// <summary>The Cargo package defined by the nearest <c>Cargo.toml</c> above a <c>.rs</c> file.</summary>
+    private static async Task<GraphNode?> FindOwningCrateAsync(IGraphReader graph, string project, string filePath)
+    {
+        if (!filePath.EndsWith(".rs", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var directory = filePath.Replace('\\', '/');
+        while (directory.Length > 0)
+        {
+            var slash = directory.LastIndexOf('/');
+            directory = slash < 0 ? "" : directory[..slash];
+            var manifest = directory.Length == 0 ? "Cargo.toml" : $"{directory}/Cargo.toml";
+            var definition = (await graph.FindNodesByFileAsync(project, manifest))
+                .FirstOrDefault(node => node.Label == NodeLabel.Package && IsDefinition(node));
+            if (definition is not null)
+                return definition;
+        }
+
+        return null;
+    }
+
+    private static bool IsDefinition(GraphNode node) =>
+        node.Properties is not null &&
+        node.Properties.TryGetValue("is_definition", out var value) &&
+        value switch
+        {
+            bool flag => flag,
+            string text => bool.TryParse(text, out var parsed) && parsed,
+            System.Text.Json.JsonElement element => element.ValueKind == System.Text.Json.JsonValueKind.True,
+            _ => false
+        };
 
     private static async Task<IReadOnlyList<GraphNode>> ResolveNodesAsync(IGraphReader graph, string qualifiedName, string? project)
     {

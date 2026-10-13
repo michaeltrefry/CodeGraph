@@ -143,6 +143,14 @@ public class CodeGraphMcpServer(
             - Method: signature, return_type, is_async, complexity, is_entry_point
             - CALLS edge: confidence, confidence_band
             - HTTP_CALLS edge: url_pattern, http_method, source_repo, target_repo
+            - Package (Cargo): ecosystem, package_name, local_name, version, package_key,
+              source_kind (registry|git|path|workspace), source, is_definition, manifest_path,
+              dependency_scope, workspace_inherited, optional, target, git_reference, external_path
+            - REFERENCES_PACKAGE cross-repo edge (Cargo): package_key, package_name, local_name,
+              version, matched_by (package_key|git_url|path), confidence_band
+            - Rust nodes from SCIP: source (scip), scip_symbol
+            - ExternalSymbol: source (scip), scip_symbol, scip_external
+            - Tree-sitter fallback nodes: confidence (low), extractionSource, fallbackReason
             """;
     }
 
@@ -928,14 +936,20 @@ public class CodeGraphMcpServer(
 
     public const string AnalyzeImpactFileTool = "analyze_impact_file";
     public const string FileHotspotTool = "file_hotspot";
+    public const string RepoDependenciesTool = "get_repo_dependencies";
     public const string RepoNotFoundCode = "repo_not_found";
     public const string InvalidPathCode = "invalid_path";
 
     [McpServerTool(Name = AnalyzeImpactFileTool, Title = "Analyze File Impact", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
      Description("Per-file blast radius: the union of the inbound dependents of every code element in one file, " +
                  "as structured counts. Answers {path, found, blastRadius, criticalCount, highCount, mediumCount, " +
-                 "lowCount, totalAffected, crossRepoCount, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
-                 "and source (overlay or default-branch). blastRadius is the worst risk level among the affected " +
+                 "lowCount, totalAffected, crossRepoCount, crossRepoImpacts, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
+                 "and source (overlay or default-branch). crossRepoImpacts lists {sourceRepo, targetRepo, edgeType, count} " +
+                 "per repository pair; for a Rust file it includes the repositories whose Cargo manifests depend on the " +
+                 "file's crate (edgeType REFERENCES_PACKAGE), which are crate-level dependents and not affected nodes; " +
+                 "they are read from the default-branch Cargo manifests even with sha, and a file with no nodes " +
+                 "(found: false) reports none. " +
+                 "blastRadius is the worst risk level among the affected " +
                  "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
                  "nodes (found: false). path is matched case-sensitively. unmappedInboundEdges is null for default-branch answers. No model is called.")]
     public async Task<CallToolResult> AnalyzeImpactFile(
@@ -986,6 +1000,14 @@ public class CodeGraphMcpServer(
             ["lowCount"] = summary?.LowCount ?? 0,
             ["totalAffected"] = summary?.TotalAffected ?? 0,
             ["crossRepoCount"] = summary?.CrossRepoCount ?? 0,
+            ["crossRepoImpacts"] = new JsonArray((report?.CrossRepoImpacts ?? [])
+                .Select(impact => (JsonNode)new JsonObject
+                {
+                    ["sourceRepo"] = impact.SourceProject,
+                    ["targetRepo"] = impact.TargetProject,
+                    ["edgeType"] = impact.EdgeType,
+                    ["count"] = impact.AffectedNodeCount
+                }).ToArray()),
             ["lowConfidenceCount"] = summary?.LowConfidenceCount ?? 0,
             ["unmappedInboundEdges"] = unmapped
         };
@@ -1002,6 +1024,8 @@ public class CodeGraphMcpServer(
             sb.AppendLine($"**Total affected:** {summary.TotalAffected} nodes ({summary.CriticalCount} critical, " +
                           $"{summary.HighCount} high, {summary.MediumCount} medium, {summary.LowCount} low)");
             sb.AppendLine($"**Cross-repo impact:** {summary.CrossRepoCount} other project(s)");
+            foreach (var impact in report!.CrossRepoImpacts)
+                sb.AppendLine($"- {impact.SourceProject} → {impact.TargetProject} ({impact.EdgeType}, {impact.AffectedNodeCount})");
             if (AnswerConfidence.SummaryLine(summary.LowConfidenceCount) is { } lowConfidence)
                 sb.AppendLine(lowConfidence);
         }
@@ -1015,6 +1039,135 @@ public class CodeGraphMcpServer(
         if (!scope.IsPinned)
             commit = commit with { CommitSha = commit.Commits.GetValueOrDefault(repository.Name) };
         return CommitAnswer.Create(sb.ToString(), commit, scope, extra);
+    }
+
+    [McpServerTool(Name = RepoDependenciesTool, Title = "Repository Dependencies", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
+     Description("Default-branch cross-repository dependencies of one repository, and how its Rust code was indexed. " +
+                 "Answers {repo, inbound, outbound, rustSemantic} plus commitSha. inbound lists the repositories that " +
+                 "depend on this one and outbound the repositories it depends on, each as {repo, edgeType, count, " +
+                 "confidenceBand} (count is the number of links of that edge type; confidenceBand is the weakest of " +
+                 "them, high|medium|low or null — a Cargo path dependency matched by crate name is medium). rustSemantic is {status, manifest, groupCount, " +
+                 "semanticGroups, fallbackGroups, skippedGroups, treeSitterGroups}: status is semantic (every crate " +
+                 "group indexed by rust-analyzer), partial or fallback (some or all crate groups indexed by " +
+                 "tree-sitter instead), or not_analyzed (no Rust semantic pass was recorded for the repository). " +
+                 "treeSitterGroups lists each crate group that was not indexed semantically as {index, crates, outcome, " +
+                 "failureCode, detailCode}; those crates have no symbol-level cross-repository edges, so an absent " +
+                 "dependency on them is not evidence of independence. No model is called.")]
+    public async Task<CallToolResult> GetRepoDependencies(
+        [Description("Indexed repository name.")] string repo)
+    {
+        var repository = string.IsNullOrWhiteSpace(repo) ? null : await store.GetRepositoryByName(repo.Trim());
+        if (repository is null)
+            return CommitAnswer.Error(RepoNotFoundCode, $"Repository '{repo?.Trim()}' is not indexed.");
+
+        var name = repository.Name;
+        var edges = await store.FindCrossRepoEdgesAsync(name);
+        var inbound = GroupDependencies(edges
+            .Where(edge => edge.TargetProject.Equals(name, StringComparison.OrdinalIgnoreCase))
+            .Select(edge => (edge.SourceProject, edge)));
+        var outbound = GroupDependencies(edges
+            .Where(edge => edge.SourceProject.Equals(name, StringComparison.OrdinalIgnoreCase))
+            .Select(edge => (edge.TargetProject, edge)));
+        var rustSemantic = RustSemanticStatus(repository);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"# Repository Dependencies: {name}\n");
+        AppendDependencies(sb, "Inbound (repositories that depend on this one)", inbound);
+        AppendDependencies(sb, "Outbound (repositories this one depends on)", outbound);
+        var treeSitterGroups = rustSemantic["treeSitterGroups"]!.AsArray();
+        sb.AppendLine($"**Rust semantic indexing:** {rustSemantic["status"]}");
+        foreach (var group in treeSitterGroups)
+        {
+            var crates = string.Join(", ", group!["crates"]!.AsArray().Select(crate => crate!.GetValue<string>()));
+            sb.AppendLine($"- group {group["index"]} {group["outcome"]} ({group["failureCode"]}): {crates}");
+        }
+
+        var extra = new JsonObject
+        {
+            ["repo"] = name,
+            ["inbound"] = inbound,
+            ["outbound"] = outbound,
+            ["rustSemantic"] = rustSemantic
+        };
+        var scope = await commitScopes.ResolveAsync(name, null);
+        var commit = await commitScopes.DescribeAsync(scope, [name]);
+        commit = commit with { CommitSha = commit.Commits.GetValueOrDefault(name) };
+        return CommitAnswer.Create(sb.ToString(), commit, scope, extra);
+    }
+
+    private static readonly string[] ConfidenceBands = ["low", "medium", "high"];
+
+    private static JsonArray GroupDependencies(IEnumerable<(string Repo, CrossRepoEdge Edge)> edges)
+        => new(edges
+            .GroupBy(edge => (Repo: edge.Repo.ToLowerInvariant(), edge.Edge.Type))
+            .OrderBy(group => group.Key.Repo, StringComparer.Ordinal)
+            .ThenBy(group => group.Key.Type.ToString(), StringComparer.Ordinal)
+            .Select(group => (JsonNode)new JsonObject
+            {
+                ["repo"] = group.First().Repo,
+                ["edgeType"] = group.Key.Type.ToString(),
+                ["count"] = group.Count(),
+                // The weakest link of the group; null when its links carry no band.
+                ["confidenceBand"] = group
+                    .Select(edge => edge.Edge.Properties.GetValueOrDefault("confidence_band")?.ToString()?.ToLowerInvariant())
+                    .Where(band => Array.IndexOf(ConfidenceBands, band) >= 0)
+                    .MinBy(band => Array.IndexOf(ConfidenceBands, band))
+            }).ToArray());
+
+    private static void AppendDependencies(StringBuilder sb, string title, JsonArray dependencies)
+    {
+        sb.AppendLine($"## {title}\n");
+        if (dependencies.Count == 0)
+            sb.AppendLine("None.");
+        foreach (var dependency in dependencies)
+            sb.AppendLine($"- {dependency!["repo"]} ({dependency["edgeType"]}, {dependency["count"]}" +
+                          (dependency["confidenceBand"] is { } band ? $", {band} confidence)" : ")"));
+        sb.AppendLine();
+    }
+
+    /// <summary>
+    /// The repository's recorded Rust semantic outcomes (<c>properties.rustSemanticOutcomes</c>),
+    /// reduced to which crate groups were indexed by tree-sitter instead of rust-analyzer.
+    /// </summary>
+    internal static JsonObject RustSemanticStatus(ProjectInfo repository)
+    {
+        JsonNode? outcomes = null;
+        if (repository.Properties is not null &&
+            repository.Properties.TryGetValue("rustSemanticOutcomes", out var recorded) && recorded is not null)
+            outcomes = JsonSerializer.SerializeToNode(recorded, JsonOptions);
+
+        var treeSitterGroups = new JsonArray();
+        if (outcomes?["groups"] is not JsonArray groups)
+        {
+            return new JsonObject { ["status"] = "not_analyzed", ["treeSitterGroups"] = treeSitterGroups };
+        }
+
+        foreach (var group in groups)
+        {
+            if (group is null || group["outcome"]?.GetValue<string>() == "semantic")
+                continue;
+            treeSitterGroups.Add(new JsonObject
+            {
+                ["index"] = group["index"]?.DeepClone(),
+                ["crates"] = group["crates"]?.DeepClone() ?? new JsonArray(),
+                ["outcome"] = group["outcome"]?.DeepClone(),
+                ["failureCode"] = group["failureCode"]?.DeepClone(),
+                ["detailCode"] = group["detailCode"]?.DeepClone()
+            });
+        }
+
+        return new JsonObject
+        {
+            ["status"] = treeSitterGroups.Count == 0 ? "semantic"
+                : treeSitterGroups.Count == groups.Count ? "fallback"
+                : "partial",
+            ["manifest"] = outcomes["manifest"]?.DeepClone(),
+            ["groupCount"] = groups.Count,
+            ["semanticGroups"] = outcomes["semanticGroups"]?.DeepClone(),
+            ["fallbackGroups"] = outcomes["fallbackGroups"]?.DeepClone(),
+            ["skippedGroups"] = outcomes["skippedGroups"]?.DeepClone(),
+            ["treeSitterGroups"] = treeSitterGroups
+        };
     }
 
     [McpServerTool(Name = FileHotspotTool, Title = "File Hotspot", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),

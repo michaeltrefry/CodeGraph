@@ -249,6 +249,14 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
                 nodeProperties["target"] = target;
             if (specification.GitReference is not null)
                 nodeProperties["git_reference"] = specification.GitReference;
+            // A path dependency that leaves the repository (a sibling checkout): the cross-repo
+            // linker resolves it to the indexed repository that defines the crate.
+            var rootPath = Path.GetFullPath(context.RootPath);
+            if (targetDefinition is null && specification.ResolvedPath is { } resolvedPath &&
+                !IsWithinDirectory(resolvedPath, rootPath))
+            {
+                nodeProperties["external_path"] = NormalizePath(Path.GetRelativePath(rootPath, resolvedPath));
+            }
 
             var edgeProperties = new Dictionary<string, object>(nodeProperties)
             {

@@ -1,3 +1,4 @@
+using CodeGraph.Data;
 using CodeGraph.Models;
 using Shouldly;
 
@@ -38,6 +39,13 @@ internal static class CrossRepoLinkFleet
                 ["ecosystem"] = "Cargo", ["is_definition"] = false, ["package_key"] = PackageKey,
                 ["package_name"] = "provider-lib", ["local_name"] = "provider_alias", ["version"] = "1.5.0"
             }),
+            Node(Consumer, NodeLabel.Package, "git-lib", "package:git-lib-ref", new()
+            {
+                ["ecosystem"] = "cargo", ["is_definition"] = false,
+                ["package_key"] = "cargo:git:https://example.test/acme/provider-repo:git-lib",
+                ["package_name"] = "git-lib", ["local_name"] = "git-lib", ["version"] = "",
+                ["source_kind"] = "git", ["source"] = "https://example.test/Acme/Provider-Repo"
+            }),
             Node(Consumer, NodeLabel.Repository, "Consumer", "Consumer"),
             Node(Consumer, NodeLabel.NuGetPackage, "Provider.Models", "nuget:Provider.Models", new() { ["version"] = "2.1.0" }),
             Node(Consumer, NodeLabel.Method, "GetItem", "Consumer.ItemClient.GetItem"),
@@ -49,6 +57,7 @@ internal static class CrossRepoLinkFleet
         {
             new("Consumer:caller", "Consumer:external:run", EdgeType.CALLS, new() { ["line"] = 12 }),
             new("package:consumer", "package:provider-lib-ref", EdgeType.REFERENCES_PACKAGE),
+            new("package:consumer", "package:git-lib-ref", EdgeType.REFERENCES_PACKAGE),
             new("Consumer", "nuget:Provider.Models", EdgeType.REFERENCES_PACKAGE),
             new("Consumer.ItemClient.GetItem", "route:Provider:GET:api/items/{id}", EdgeType.HTTP_CALLS, new()
             {
@@ -66,6 +75,11 @@ internal static class CrossRepoLinkFleet
             Node(Provider, NodeLabel.Package, "provider-lib", "package:provider-lib-definition", new()
             {
                 ["ecosystem"] = "cargo", ["is_definition"] = "True", ["package_key"] = PackageKey, ["version"] = "1.5.0"
+            }),
+            Node(Provider, NodeLabel.Package, "git-lib", "package:git-lib-definition", new()
+            {
+                ["ecosystem"] = "cargo", ["is_definition"] = true,
+                ["package_key"] = "cargo:workspace:provider:git-lib", ["version"] = "0.3.0"
             }),
             Node(Provider, NodeLabel.Route, "GET api/items/{id}", "Provider.ItemsController.Get", new()
             {
@@ -103,11 +117,15 @@ internal static class CrossRepoLinkFleet
         };
     }
 
+    /// <summary>Provider's remote, spelled differently from Consumer's git dependency on it.</summary>
+    public static string? RepoUrl(string project) =>
+        project == Provider ? "git@example.test:acme/provider-repo.git" : null;
+
     public static void SeedInMemory(InMemoryGraphStore store)
     {
         foreach (var (project, (nodes, edges)) in Build())
         {
-            store.AddProject(project);
+            store.AddProject(new ProjectInfo(project, RepoUrl(project), null, null, null, null, null, null, false, null));
             var ids = nodes.ToDictionary(node => node.QualifiedName, node => store.AddNode(node));
             foreach (var edge in edges)
             {
@@ -130,6 +148,7 @@ internal static class CrossRepoLinkFleet
         (EdgeType.PUBLISHES, "Consumer.ItemPublisher", "Provider.ItemCreatedConsumer"),
         (EdgeType.REFERENCES_PACKAGE, "Consumer", "nuget:Provider.Models"),
         (EdgeType.REFERENCES_PACKAGE, "package:consumer", "package:provider-lib-definition"),
+        (EdgeType.REFERENCES_PACKAGE, "package:consumer", "package:git-lib-definition"),
         (EdgeType.CALLS, "Consumer:caller", "Provider:run")
     ];
 
