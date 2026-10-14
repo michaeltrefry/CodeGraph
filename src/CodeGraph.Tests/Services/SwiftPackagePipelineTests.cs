@@ -158,6 +158,47 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task IndexProjectAsync_IncrementalRun_ReplacesDeclaredDependenciesEvenWhenSwiftSourceExtractionFails()
+    {
+        static string Manifest(string dependency) => $$"""
+            let package = Package(
+                name: "ShapeKit",
+                dependencies: [.package(url: "https://github.com/apple/{{dependency}}", from: "1.0.0")]
+            )
+            """;
+        Write("Package.swift", Manifest("swift-log"));
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store, new FailingSwiftExtractor())
+            .IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+        store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package && node.Name == "swift-log");
+
+        Write("Package.swift", Manifest("swift-nio"));
+        await CreatePipeline(store, new FailingSwiftExtractor())
+            .IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+
+        var packages = store.Nodes.Where(node => node.Label == NodeLabel.Package).ToList();
+        packages.Select(node => node.QualifiedName).ShouldBe([
+            "package:swiftpm:local:shapekit:shapekit@*",
+            "package:swiftpm:scm:github.com/apple/swift-nio@upToNextMajor:1.0.0"
+        ], ignoreOrder: true);
+        var definition = packages.Single(node => node.Name == "ShapeKit");
+        var nio = packages.Single(node => node.Name == "swift-nio");
+        store.Edges.ShouldContain(edge =>
+            edge.SourceId == definition.Id && edge.TargetId == nio.Id &&
+            edge.Type == EdgeType.REFERENCES_PACKAGE);
+    }
+
+    private sealed class FailingSwiftExtractor : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } =
+            new HashSet<string>([".swift"], StringComparer.OrdinalIgnoreCase);
+
+        public Task<ExtractionResult> ExtractAsync(
+            string filePath, string content, ExtractorContext context, CancellationToken ct = default) =>
+            Task.FromResult(new ExtractionResult { Succeeded = false, FailureReason = "grammar unavailable" });
+    }
+
+    [Fact]
     public void ExtractionVersionCatalog_VersionsPackageSwiftWithTheManifestExtractor()
     {
         ICodeExtractor[] extractors = [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)];
@@ -172,10 +213,10 @@ public class SwiftPackagePipelineTests : IDisposable
         with.ForPath("src/lib.rs").ShouldBe(without.ForPath("src/lib.rs"));
     }
 
-    private IndexingPipeline CreatePipeline(InMemoryGraphStore store) =>
+    private IndexingPipeline CreatePipeline(InMemoryGraphStore store, ICodeExtractor? extractor = null) =>
         new(
             store,
-            [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+            [extractor ?? new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
             Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
             new LocalFileSystem(),
             NullLogger<IndexingPipeline>.Instance,

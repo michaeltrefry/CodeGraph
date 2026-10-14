@@ -411,6 +411,56 @@ public class IndexingPipelineTests
         }
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalRun_ReplacesChangedCargoDependencies()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-cargo-incremental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(rootPath, "src"));
+
+        try
+        {
+            static string Manifest(string dependency) => $"""
+                [package]
+                name = "consumer"
+                version = "0.1.0"
+
+                [dependencies]
+                {dependency} = "1"
+                """;
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"), Manifest("serde"));
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "src", "lib.rs"), "pub fn run() {}\n");
+
+            var store = new InMemoryGraphStore();
+            IndexingPipeline CreatePipeline() => new(
+                store,
+                [new MixedRustPythonMetadataExtractor()],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                cargoManifestExtractor: new CargoManifestExtractor());
+
+            await CreatePipeline().IndexProjectAsync("Consumer", rootPath, ct: CancellationToken.None);
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package && node.Name == "serde");
+
+            // Only Cargo.toml changes; lib.rs is unchanged, so nothing is re-extracted per file.
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"), Manifest("tokio"));
+            await CreatePipeline().IndexProjectAsync("Consumer", rootPath, ct: CancellationToken.None);
+
+            var packages = store.Nodes.Where(node => node.Label == NodeLabel.Package).ToList();
+            packages.Select(node => node.Name).ShouldBe(["consumer", "tokio"], ignoreOrder: true);
+            var consumer = packages.Single(node => node.Name == "consumer");
+            var tokio = packages.Single(node => node.Name == "tokio");
+            store.Edges.ShouldContain(edge =>
+                edge.SourceId == consumer.Id && edge.TargetId == tokio.Id &&
+                edge.Type == EdgeType.REFERENCES_PACKAGE);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("rust_semantic_command_timeout",
         "Rust semantic command 'rust-analyzer' exceeded the 600-second timeout.",

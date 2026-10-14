@@ -517,6 +517,11 @@ public partial class IndexingPipeline
             return outcomes;
         }
 
+        // Manifest files whose extracted package slice replaces the stored one on incremental runs.
+        // Manifests are re-extracted on every run, but a manifest that is not a discovered source
+        // file (or whose source extractor did not process it) never reaches successfullyProcessedFiles.
+        var manifestReplacementPaths = new List<string>();
+
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
         if (_cargoManifestExtractor is not null)
         {
@@ -539,6 +544,8 @@ public partial class IndexingPipeline
                     MergeResults([cargoResult], buffer);
                     if (cargoResult.Metadata is not null)
                         detectedMetadataCandidates.Add(cargoResult.Metadata);
+                    manifestReplacementPaths.AddRange(cargoManifestPaths.Select(path =>
+                        NormalizeRelativePath(Path.GetRelativePath(rootPath, path))));
                 }
                 catch (Exception ex)
                 {
@@ -550,7 +557,6 @@ public partial class IndexingPipeline
 
         // Swift Package Manager / Xcode — package definitions, declared dependencies, resolved
         // pins and Swift/Xcode vs Swift/SwiftPM classification.
-        var swiftResolvedManifestPaths = new List<string>();
         if (_swiftPackageManifestExtractor is not null)
         {
             try
@@ -561,10 +567,12 @@ public partial class IndexingPipeline
                     MergeResults([swiftResult], buffer);
                     if (swiftResult.Metadata is not null)
                         detectedMetadataCandidates.Add(swiftResult.Metadata);
-                    // Package.resolved is not a discovered source file: its pins are re-extracted
-                    // on every run and replace the stored slice for that path.
-                    swiftResolvedManifestPaths.AddRange(swiftResult.ProcessedFiles.Where(path =>
-                        Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageResolvedFileName));
+                    // Package.resolved is not a discovered source file, so its slice is always
+                    // replaced; a changed Package.swift is replaced even when its Swift source
+                    // extraction failed.
+                    manifestReplacementPaths.AddRange(swiftResult.ProcessedFiles.Where(path =>
+                        Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageResolvedFileName ||
+                        changedRelativePaths.Contains(path)));
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -642,7 +650,7 @@ public partial class IndexingPipeline
         {
             var replacementPaths = successfullyProcessedFiles
                 .Concat(deletedFiles)
-                .Concat(swiftResolvedManifestPaths)
+                .Concat(manifestReplacementPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(

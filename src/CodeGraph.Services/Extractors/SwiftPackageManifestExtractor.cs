@@ -34,7 +34,10 @@ public sealed partial class SwiftPackageManifestExtractor(
         var ordered = manifests
             .Select(kv => (FullPath: Path.GetFullPath(kv.Key), Content: kv.Value))
             .Select(m => (m.FullPath, m.Content, RelativePath: NormalizePath(Path.GetRelativePath(rootPath, m.FullPath))))
-            .OrderBy(m => m.RelativePath, StringComparer.Ordinal)
+            // Shallowest first, so the repository's own root manifest wins over nested copies
+            // (worktrees, vendored checkouts) that define the same package.
+            .OrderBy(m => m.RelativePath.Count(ch => ch == '/'))
+            .ThenBy(m => m.RelativePath, StringComparer.Ordinal)
             .ToList();
         var packageSwifts = ordered.Where(m => IsFile(m.FullPath, PackageSwiftFileName)).ToList();
         var resolvedFiles = ordered.Where(m => IsFile(m.FullPath, PackageResolvedFileName)).ToList();
@@ -53,7 +56,7 @@ public sealed partial class SwiftPackageManifestExtractor(
             ParsedPackageSwift parsed;
             try
             {
-                parsed = ParsePackageSwift(content);
+                parsed = ParsePackageSwift(content, relativePath, context.ProjectName);
             }
             catch (Exception ex)
             {
@@ -89,9 +92,11 @@ public sealed partial class SwiftPackageManifestExtractor(
                     ["confidence"] = "high"
                 }
             };
-            if (nodes.TryAdd(definition.QualifiedName, definition))
+            var added = nodes.TryAdd(definition.QualifiedName, definition);
+            // A second manifest defining the same package shares the first one's definition.
+            definitionByDirectory[Path.GetDirectoryName(fullPath) ?? rootPath] = nodes[definition.QualifiedName];
+            if (added)
             {
-                definitionByDirectory[Path.GetDirectoryName(fullPath) ?? rootPath] = definition;
                 AddEdge(edges, edgeKeys, new PendingEdge(
                     context.ProjectName,
                     definition.QualifiedName,
@@ -166,7 +171,7 @@ public sealed partial class SwiftPackageManifestExtractor(
 
     // ── Package.swift ────────────────────────────────────────────────────
 
-    private static ParsedPackageSwift ParsePackageSwift(string content)
+    private ParsedPackageSwift ParsePackageSwift(string content, string relativePath, string project)
     {
         var (code, masked) = Scan(content);
         var nameMatch = PackageNameRegex().Match(masked);
@@ -185,6 +190,10 @@ public sealed partial class SwiftPackageManifestExtractor(
             var declaration = ParseDeclaration(code, masked, open + 1, close);
             if (declaration is not null)
                 dependencies.Add(declaration);
+            else
+                _logger.LogDebug(
+                    "Skipping .package(...) without a literal url, path or id in {Manifest} of {Project}: {Declaration}",
+                    relativePath, project, code[call.Index..(close + 1)].Trim());
         }
 
         return new ParsedPackageSwift(name, dependencies);
@@ -577,12 +586,24 @@ public sealed partial class SwiftPackageManifestExtractor(
             ? value.GetString()
             : null;
 
+    /// <summary>
+    /// The value of a single-line string literal, plain (<c>"..."</c>) or raw (<c>#"..."#</c>).
+    /// Null for anything else, including interpolated literals whose value is not static.
+    /// </summary>
     private static string? ReadStringLiteral(string value)
     {
+        var raw = RawStringLiteralRegex().Match(value);
+        if (raw.Success)
+        {
+            var literal = raw.Groups["value"].Value;
+            var interpolation = "\\" + raw.Groups["hashes"].Value + "(";
+            return literal.Contains(interpolation, StringComparison.Ordinal) ? null : literal;
+        }
+
         var match = StringLiteralRegex().Match(value);
-        return match.Success
-            ? match.Groups["value"].Value.Replace("\\\"", "\"").Replace("\\\\", "\\")
-            : null;
+        if (!match.Success || match.Groups["value"].Value.Contains("\\(", StringComparison.Ordinal))
+            return null;
+        return match.Groups["value"].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
     }
 
     /// <summary>
@@ -629,16 +650,23 @@ public sealed partial class SwiftPackageManifestExtractor(
                     }
                 } while (depth > 0 && i < content.Length);
             }
-            else if (c == '"')
+            else if (c == '"' || RawStringStart(content, i) > 0)
             {
-                var multiline = i + 2 < content.Length && content[i + 1] == '"' && content[i + 2] == '"';
-                var delimiter = multiline ? "\"\"\"" : "\"";
-                code.Append(delimiter);
-                masked.Append(delimiter);
-                i += delimiter.Length;
+                // Raw strings (#"..."#) close on the quote followed by the same number of hashes
+                // and have no escapes.
+                var hashes = RawStringStart(content, i);
+                var quoteAt = i + hashes;
+                var multiline = quoteAt + 2 < content.Length &&
+                                content[quoteAt + 1] == '"' && content[quoteAt + 2] == '"';
+                var quotes = multiline ? "\"\"\"" : "\"";
+                var opening = new string('#', hashes) + quotes;
+                var delimiter = quotes + new string('#', hashes);
+                code.Append(opening);
+                masked.Append(opening);
+                i += opening.Length;
                 while (i < content.Length)
                 {
-                    if (content[i] == '\\' && i + 1 < content.Length)
+                    if (hashes == 0 && content[i] == '\\' && i + 1 < content.Length)
                     {
                         code.Append(content, i, 2);
                         masked.Append("__");
@@ -668,6 +696,15 @@ public sealed partial class SwiftPackageManifestExtractor(
         }
 
         return (code.ToString(), masked.ToString());
+    }
+
+    /// <summary>Number of leading hashes when a raw string literal starts at <paramref name="i"/>, else 0.</summary>
+    private static int RawStringStart(string content, int i)
+    {
+        var j = i;
+        while (j < content.Length && content[j] == '#')
+            j++;
+        return j > i && j < content.Length && content[j] == '"' ? j - i : 0;
     }
 
     private static void AppendBlank(StringBuilder code, StringBuilder masked, string content, ref int i, int count)
@@ -740,7 +777,7 @@ public sealed partial class SwiftPackageManifestExtractor(
     [GeneratedRegex(@"(?:(?<![\w\])])|(?<=\bDependency))\.package\s*\(")]
     private static partial Regex PackageCallRegex();
 
-    [GeneratedRegex(@"\bPackage\s*\(\s*name\s*:\s*(?<value>""_*"")")]
+    [GeneratedRegex(@"\bPackage\s*\(\s*name\s*:\s*(?<value>(?<hashes>#*)""_*""\k<hashes>)")]
     private static partial Regex PackageNameRegex();
 
     [GeneratedRegex(@"^\s*(?<label>[A-Za-z_]\w*)\s*:(?!:)")]
@@ -748,6 +785,9 @@ public sealed partial class SwiftPackageManifestExtractor(
 
     [GeneratedRegex(@"^\s*""(?<value>(?:[^""\\]|\\.)*)""\s*$")]
     private static partial Regex StringLiteralRegex();
+
+    [GeneratedRegex(@"^\s*(?<hashes>#+)""(?<value>[^\n]*)""\k<hashes>\s*$")]
+    private static partial Regex RawStringLiteralRegex();
 
     [GeneratedRegex(@"^\s*""(?<lower>[^""]+)""\s*(?<op>\.\.<|\.\.\.)\s*""(?<upper>[^""]+)""\s*$")]
     private static partial Regex RangeRegex();

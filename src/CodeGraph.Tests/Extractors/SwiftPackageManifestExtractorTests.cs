@@ -342,7 +342,7 @@ public class SwiftPackageManifestExtractorTests
     }
 
     [Fact]
-    public void Extract_SamePinInSeveralResolvedFiles_IsOneNodeOwnedByTheFirstPathInOrdinalOrder()
+    public void Extract_SamePinInSeveralResolvedFiles_IsOneNodeOwnedByTheShallowestThenOrdinalFirstPath()
     {
         var manifests = new Dictionary<string, string>
         {
@@ -355,7 +355,7 @@ public class SwiftPackageManifestExtractorTests
         var second = Extract(manifests.Reverse().ToDictionary(), hasXcodeProject: true);
 
         var sparkle = first.Nodes.Where(node => node.Name == "sparkle").ShouldHaveSingleItem();
-        sparkle.FilePath.ShouldBe("a.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved");
+        sparkle.FilePath.ShouldBe("b.xcworkspace/xcshareddata/swiftpm/Package.resolved");
         first.Edges.Count(edge => edge.TargetQN == sparkle.QualifiedName).ShouldBe(1);
         first.Nodes.Count.ShouldBe(4);
         second.Nodes.Select(node => (node.QualifiedName, node.FilePath))
@@ -403,6 +403,76 @@ public class SwiftPackageManifestExtractorTests
         dependencies.Select(node => node.QualifiedName)
             .ShouldBe(["package:swiftpm:scm:example.test/qualified@exact:3.1.4"]);
         result.Nodes.Single(node => (bool)node.Properties["is_definition"]).Name.ShouldBe("Strings");
+    }
+
+    [Fact]
+    public void Extract_NestedCopyOfTheRootManifest_RootOwnsTheDefinitionAndItsDependencies()
+    {
+        var result = Extract(new Dictionary<string, string>
+        {
+            [Full(".claude/worktrees/x/Package.swift")] = PackageSwift,
+            [Full("Package.swift")] = PackageSwift
+        });
+
+        var definition = result.Nodes.Where(node => (bool)node.Properties["is_definition"]).ShouldHaveSingleItem();
+        definition.FilePath.ShouldBe("Package.swift");
+        var log = result.Nodes.Single(node =>
+            node.QualifiedName == "package:swiftpm:scm:github.com/apple/swift-log@exact:1.5.3");
+        log.FilePath.ShouldBe("Package.swift");
+        result.Edges.Where(edge => edge.Type == EdgeType.REFERENCES_PACKAGE)
+            .ShouldAllBe(edge => edge.SourceQN == definition.QualifiedName);
+        // 12 from the root; the copy adds only its two path dependencies, which resolve elsewhere.
+        result.Edges.Count(edge => edge.Type == EdgeType.REFERENCES_PACKAGE).ShouldBe(14);
+    }
+
+    [Fact]
+    public void Extract_InterpolatedAndRawStringLiterals()
+    {
+        var logger = new ListLogger();
+        var result = new SwiftPackageManifestExtractor(logger).Extract(new Dictionary<string, string>
+        {
+            [Full("Package.swift")] = """
+                let version = "1.0.0"
+                let base = "https://example.test"
+                let package = Package(
+                    name: #"Raw"#,
+                    dependencies: [
+                        .package(url: "https://example.test/interpolated", from: "\(version)"),
+                        .package(url: #"https://example.test/raw.git"#, exact: #"2.0.0"#),
+                        .package(url: ##"https://example.test/"quoted""##, branch: "main"),
+                        .package(url: "\(base)/dropped", from: "1.0.0"),
+                    ]
+                )
+                """
+        }, hasXcodeProject: false, Context);
+
+        result.Nodes.Single(node => (bool)node.Properties["is_definition"]).Name.ShouldBe("Raw");
+        result.Nodes.Where(node => !(bool)node.Properties["is_definition"])
+            .Select(node => node.QualifiedName)
+            .ShouldBe([
+                "package:swiftpm:scm:example.test/interpolated@*",
+                "package:swiftpm:scm:example.test/raw@exact:2.0.0",
+                "package:swiftpm:scm:example.test/\"quoted\"@branch:main"
+            ], ignoreOrder: true);
+        logger.Messages.ShouldContain(message =>
+            message.Contains("without a literal url", StringComparison.Ordinal) &&
+            message.Contains("dropped", StringComparison.Ordinal));
+    }
+
+    private sealed class ListLogger : Microsoft.Extensions.Logging.ILogger<SwiftPackageManifestExtractor>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
     }
 
     [Fact]
