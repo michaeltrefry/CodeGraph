@@ -102,7 +102,7 @@ public class ImpactAnalysisService(
     }
 
     /// <summary>
-    /// Cross-repo Cargo package dependencies on the crate that owns a Rust file: other repositories
+    /// Cross-repo Cargo/SwiftPM package dependencies on the package that owns a Rust or Swift file: other repositories
     /// that reference the crate, directly or through crates that depend on it, within
     /// <paramref name="maxDepth"/> package hops. These are crate-level dependents — they are not
     /// affected nodes and do not change the risk counts.
@@ -159,10 +159,18 @@ public class ImpactAnalysisService(
             .ToList();
     }
 
-    /// <summary>The Cargo package defined by the nearest <c>Cargo.toml</c> above a <c>.rs</c> file.</summary>
+    /// <summary>
+    /// The package defined by the nearest manifest above a source file: <c>Cargo.toml</c> for a
+    /// <c>.rs</c> file, <c>Package.swift</c> for a <c>.swift</c> file.
+    /// </summary>
     private static async Task<GraphNode?> FindOwningCrateAsync(IGraphReader graph, string project, string filePath)
     {
-        if (!filePath.EndsWith(".rs", StringComparison.OrdinalIgnoreCase))
+        string manifestName;
+        if (filePath.EndsWith(".rs", StringComparison.OrdinalIgnoreCase))
+            manifestName = "Cargo.toml";
+        else if (filePath.EndsWith(".swift", StringComparison.OrdinalIgnoreCase))
+            manifestName = "Package.swift";
+        else
             return null;
 
         var directory = filePath.Replace('\\', '/');
@@ -170,7 +178,7 @@ public class ImpactAnalysisService(
         {
             var slash = directory.LastIndexOf('/');
             directory = slash < 0 ? "" : directory[..slash];
-            var manifest = directory.Length == 0 ? "Cargo.toml" : $"{directory}/Cargo.toml";
+            var manifest = directory.Length == 0 ? manifestName : $"{directory}/{manifestName}";
             var definition = (await graph.FindNodesByFileAsync(project, manifest))
                 .FirstOrDefault(node => node.Label == NodeLabel.Package && IsDefinition(node));
             if (definition is not null)

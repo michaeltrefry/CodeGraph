@@ -51,8 +51,8 @@ public class CrossRepoLinker
         var counts = await LinkCoreAsync(scopeProject: null, ct);
 
         _logger.LogInformation(
-            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Rust} Rust semantic links",
-            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Rust);
+            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic links",
+            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
     }
 
     /// <summary>
@@ -78,19 +78,20 @@ public class CrossRepoLinker
         var counts = await LinkCoreAsync(project, ct);
 
         _logger.LogInformation(
-            "Incremental linking for {Project} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Rust} Rust semantic",
-            project, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Rust);
+            "Incremental linking for {Project} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic",
+            project, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
     }
 
-    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Rust)> LinkCoreAsync(
+    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust)> LinkCoreAsync(
         string? scopeProject, CancellationToken ct)
     {
         var http = await LinkHttpRoutesAsync(scopeProject, ct);
         var messaging = await LinkMessagingAsync(scopeProject, ct);
         var nuget = await LinkNuGetPackagesAsync(scopeProject, ct);
-        var cargo = await LinkCargoPackagesAsync(scopeProject, ct);
+        var cargo = await LinkManifestPackagesAsync(Cargo, scopeProject, ct);
+        var swift = await LinkManifestPackagesAsync(SwiftPm, scopeProject, ct);
         var rust = await LinkRustSymbolsAsync(scopeProject, ct);
-        return (http, messaging, nuget, cargo, rust);
+        return (http, messaging, nuget, cargo, swift, rust);
     }
 
     private static bool InScope(string? scopeProject, string sourceProject, string targetProject) =>
@@ -338,22 +339,49 @@ public class CrossRepoLinker
         return crossEdges.Count;
     }
 
+    /// <summary>How one manifest ecosystem's dependency references are matched to definitions.</summary>
+    /// <param name="Ecosystem">The <c>ecosystem</c> property of the Package nodes.</param>
+    /// <param name="DisplayName">Name used in log messages.</param>
+    /// <param name="RemoteSourceKind">The <c>source_kind</c> of a dependency fetched from a git URL.</param>
+    /// <param name="RemoteUrlProperty">The dependency property holding that URL as written.</param>
+    /// <param name="RootManifest">
+    /// When set, a URL dependency resolves to the package defined by the repository's root manifest
+    /// of this name (SwiftPM); otherwise to the definition of the dependency's package name (Cargo).
+    /// </param>
+    /// <param name="LocalNameProperty">Dependency property copied onto the link (default: the node name).</param>
+    private sealed record PackageEcosystem(
+        string Ecosystem,
+        string DisplayName,
+        string RemoteSourceKind,
+        string RemoteUrlProperty,
+        string? RootManifest,
+        string LocalNameProperty);
+
+    private static readonly PackageEcosystem Cargo = new(
+        "cargo", "Cargo package", RemoteSourceKind: "git", RemoteUrlProperty: "source",
+        RootManifest: null, LocalNameProperty: "local_name");
+
+    private static readonly PackageEcosystem SwiftPm = new(
+        "swiftpm", "Swift package", RemoteSourceKind: "remote", RemoteUrlProperty: "location",
+        RootManifest: "Package.swift", LocalNameProperty: "identity");
+
     /// <summary>
-    /// Links Cargo dependency references to the crate definition in another indexed repository:
-    /// by exact package key (registry crates), by the dependency's git URL matching a repository's
-    /// URL, or — for a path dependency that leaves its repository — by crate name.
+    /// Links manifest dependency references to the package definition in another indexed
+    /// repository: by exact package key (registry crates), by the dependency's git URL matching a
+    /// repository's URL, or — for a path dependency that leaves its repository — by package name.
     /// </summary>
-    private async Task<int> LinkCargoPackagesAsync(string? scopeProject, CancellationToken ct)
+    private async Task<int> LinkManifestPackagesAsync(
+        PackageEcosystem ecosystem, string? scopeProject, CancellationToken ct)
     {
         var definitions = await ToListAsync(_store.StreamLinkNodesAsync(
             new LinkNodeQuery([NodeLabel.Package])
             {
                 PropertyEquals = new Dictionary<string, string>
                 {
-                    ["ecosystem"] = "cargo",
+                    ["ecosystem"] = ecosystem.Ecosystem,
                     ["is_definition"] = "true"
                 },
-                PropertyKeys = ["package_key", "version"]
+                PropertyKeys = ["package_key", "version", "manifest_path"]
             }, ct), ct);
         if (definitions.Count == 0)
             return 0;
@@ -381,11 +409,11 @@ public class CrossRepoLinker
                            new LinkEdgeQuery([EdgeType.REFERENCES_PACKAGE])
                            {
                                TargetLabels = [NodeLabel.Package],
-                               TargetPropertyEquals = new Dictionary<string, string> { ["ecosystem"] = "cargo" },
+                               TargetPropertyEquals = new Dictionary<string, string> { ["ecosystem"] = ecosystem.Ecosystem },
                                TargetPropertyKeys =
                                [
-                                   "package_key", "version", "package_name", "local_name",
-                                   "source_kind", "source", "external_path"
+                                   "package_key", "version", "package_name", ecosystem.LocalNameProperty,
+                                   "source_kind", "source", ecosystem.RemoteUrlProperty, "external_path"
                                ]
                            }, ct).WithCancellation(ct))
         {
@@ -405,20 +433,21 @@ public class CrossRepoLinker
                 matchedBy = "package_key";
                 confidenceBand = "high";
             }
-            else if (sourceKind == "git")
+            else if (sourceKind == ecosystem.RemoteSourceKind)
             {
-                // The repository at the dependency's git URL defines the crate under its own key.
-                var gitUrl = NormalizeGitUrl(dependency.GetValueOrDefault("source"));
-                if (gitUrl is null ||
-                    !projectsByGitUrl.TryGetValue(gitUrl, out var gitProject) ||
-                    !definitionsByName.TryGetValue(packageName, out var named))
-                {
+                // The repository at the dependency's git URL defines the package under its own key.
+                var gitUrl = NormalizeGitUrl(dependency.GetValueOrDefault(ecosystem.RemoteUrlProperty));
+                if (gitUrl is null || !projectsByGitUrl.TryGetValue(gitUrl, out var gitProject))
                     continue;
-                }
 
-                candidates = named
+                candidates = ecosystem.RootManifest is { } rootManifest
+                    ? RootPackageOf(gitProject, rootManifest)
+                    : definitionsByName.GetValueOrDefault(packageName) ?? [];
+                candidates = candidates
                     .Where(candidate => candidate.Project.Equals(gitProject, StringComparison.OrdinalIgnoreCase))
                     .ToList();
+                if (candidates.Count == 0)
+                    continue;
                 matchedBy = "git_url";
                 confidenceBand = "high";
             }
@@ -427,7 +456,7 @@ public class CrossRepoLinker
                      definitionsByName.TryGetValue(packageName, out var named))
             {
                 // A path outside the repository names no repository, only a checkout directory:
-                // match the crate name, preferring a repository named like a directory on the path.
+                // match the package name, preferring a repository named like a directory on the path.
                 var segments = externalPath.Split('/');
                 var onPath = named
                     .Where(candidate => segments.Contains(candidate.Project, StringComparer.OrdinalIgnoreCase))
@@ -451,7 +480,8 @@ public class CrossRepoLinker
                 if (targetProjects.Count > 1)
                 {
                     _logger.LogDebug(
-                        "Skipping ambiguous Cargo package match for {PackageKey}: {ProjectCount} projects",
+                        "Skipping ambiguous {Ecosystem} match for {PackageKey}: {ProjectCount} projects",
+                        ecosystem.DisplayName,
                         packageKey,
                         targetProjects.Count);
                 }
@@ -476,7 +506,8 @@ public class CrossRepoLinker
             if (target is null)
             {
                 _logger.LogDebug(
-                    "Skipping ambiguous Cargo package match for {PackageKey} within {Project}",
+                    "Skipping ambiguous {Ecosystem} match for {PackageKey} within {Project}",
+                    ecosystem.DisplayName,
                     packageKey,
                     targetProjects[0].Key);
                 continue;
@@ -497,10 +528,10 @@ public class CrossRepoLinker
                 EdgeType.REFERENCES_PACKAGE,
                 new()
                 {
-                    ["ecosystem"] = "cargo",
+                    ["ecosystem"] = ecosystem.Ecosystem,
                     ["package_key"] = packageKey,
                     ["package_name"] = packageName,
-                    ["local_name"] = dependency.GetValueOrDefault("local_name") ?? edge.TargetName,
+                    [ecosystem.LocalNameProperty] = dependency.GetValueOrDefault(ecosystem.LocalNameProperty) ?? edge.TargetName,
                     ["version"] = requestedVersion ?? "",
                     ["matched_by"] = matchedBy,
                     ["confidence_band"] = confidenceBand
@@ -511,10 +542,17 @@ public class CrossRepoLinker
         {
             await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
             _logger.LogInformation(
-                "Linked {Count} Cargo package reference(s) across repos", crossEdges.Count);
+                "Linked {Count} {Ecosystem} reference(s) across repos", crossEdges.Count, ecosystem.DisplayName);
         }
 
         return crossEdges.Count;
+
+        // SwiftPM resolves a URL dependency to the package at the repository's root.
+        IReadOnlyList<LinkNodeRow> RootPackageOf(string project, string rootManifest) => definitions
+            .Where(candidate => candidate.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(candidate.Properties.GetValueOrDefault("manifest_path"),
+                                    rootManifest, StringComparison.Ordinal))
+            .ToList();
     }
 
     /// <summary>
