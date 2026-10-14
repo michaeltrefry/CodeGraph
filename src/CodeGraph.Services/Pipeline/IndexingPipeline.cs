@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.FileSystemGlobbing;
+using Microsoft.Extensions.FileSystemGlobbing.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -61,7 +62,8 @@ public partial class IndexingPipeline
         _foundationalRepos = _options.FoundationalRepos ?? [];
         _extractionVersions = new ExtractionVersionCatalog(
             extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor,
-            DiscoveryExcludePatterns);
+            DiscoveryExcludePatterns,
+            FileSizeLimitsFingerprint);
     }
 
     /// <summary>
@@ -153,7 +155,10 @@ public partial class IndexingPipeline
         var files = DiscoverFiles(rootPath, changedFilesOnly);
         var deletedFiles = GetDeletedFiles(projectName, rootPath, changedFilesOnly, files, existingHashes);
         var languageStats = ComputeLanguageStats(files);
-        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, out var outdatedVersionFiles);
+        // Files over their size limit record their oversize version whichever component
+        // processes them, so the stored version always matches what FilterByHash expects.
+        var oversizeFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, oversizeFiles, out var outdatedVersionFiles);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
         if (outdatedVersionFiles > 0)
         {
@@ -184,7 +189,6 @@ public partial class IndexingPipeline
             .Select(file => NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var successfullyProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var oversizeFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Discover .csproj files once and reuse for structural nodes + NuGet extraction
         var csprojFiles = _fileSystem.EnumerateFiles(rootPath, "*.csproj", SearchOption.AllDirectories).ToArray();
@@ -318,7 +322,7 @@ public partial class IndexingPipeline
         if (_rustAnalyzer is not null)
         {
             // Every independent Cargo workspace (sc-26145: only the first one found was analyzed).
-            var cargoManifests = CargoWorkspaceRoots.Find(_fileSystem, rootPath);
+            var cargoManifests = CargoWorkspaceRoots.Find(_fileSystem, DiscoverCargoManifests(rootPath));
 
             foreach (var cargoManifest in cargoManifests)
             {
@@ -525,12 +529,7 @@ public partial class IndexingPipeline
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
         if (_cargoManifestExtractor is not null)
         {
-            var cargoManifestPaths = _fileSystem
-                .EnumerateFiles(rootPath, CargoManifestFileName, SearchOption.AllDirectories)
-                .Where(path => !path.Contains(
-                    $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                    StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+            var cargoManifestPaths = DiscoverCargoManifests(rootPath).ToArray();
             discoveredManifestNames.Add(CargoManifestFileName);
             discoveredManifestPaths.UnionWith(cargoManifestPaths.Select(path =>
                 NormalizeRelativePath(Path.GetRelativePath(rootPath, path))));
@@ -734,22 +733,52 @@ public partial class IndexingPipeline
     // ── File Discovery & Hashing ─────────────────────────────────────────
 
     /// <summary>
-    /// Directories holding SwiftPM/Xcode build output, generated workspaces or third-party
-    /// checkouts (<c>.build/checkouts</c>, <c>DerivedData/.../SourcePackages</c>, CocoaPods,
-    /// Carthage). Their sources and manifests are dependencies, never the repository's own code,
-    /// so glob discovery (source files, Swift package manifests, overlays) excludes them in addition to
-    /// the configured <see cref="IndexingOptions.SkipPatterns"/>.
+    /// Directories holding SwiftPM/Xcode build output or third-party checkouts
+    /// (<c>.build/checkouts</c>, <c>.swiftpm</c>, <c>DerivedData/.../SourcePackages</c>). Their
+    /// sources and manifests are dependencies, never the repository's own code, so every discovery
+    /// walk (source files, Swift and Cargo manifests, overlays) skips them in addition to the
+    /// configured <see cref="IndexingOptions.SkipPatterns"/>. Matched by exact (ordinal) name:
+    /// these tools only ever create them with this spelling.
     /// </summary>
     internal static readonly IReadOnlyList<string> GeneratedDependencyDirectories =
-        [".build", ".swiftpm", "DerivedData", "SourcePackages", "Carthage", "Pods"];
+        [".build", ".swiftpm", "DerivedData", "SourcePackages"];
 
     /// <summary>
-    /// Every glob discovery excludes: the configured skip patterns and the generated dependency
-    /// directories. Part of the extraction fingerprint, so a change re-runs indexing at an
-    /// unchanged commit and the full scan removes files that left the indexed universe.
+    /// Dependency directories a package manager creates next to its manifest: CocoaPods installs
+    /// <c>Pods/</c> beside the <c>Podfile</c>, Carthage checks out into <c>Carthage/</c> beside the
+    /// <c>Cartfile</c> (or <c>Cartfile.resolved</c>). They are skipped only with that sibling
+    /// manifest present and by exact name, so an ordinary <c>pkg/pods</c> package stays indexed.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string[]> ManagedDependencyDirectories =
+        new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["Pods"] = ["Podfile"],
+            ["Carthage"] = ["Cartfile", "Cartfile.resolved"]
+        };
+
+    /// <summary>
+    /// Every discovery exclusion as fingerprint text: the configured skip patterns and the
+    /// generated and managed dependency directory rules. Part of the extraction fingerprint, so a
+    /// change re-runs indexing at an unchanged commit and the full scan adds or removes the files
+    /// that entered or left the indexed universe.
     /// </summary>
     internal IEnumerable<string> DiscoveryExcludePatterns =>
-        _options.SkipPatterns.Concat(GeneratedDependencyDirectories.Select(directory => $"**/{directory}/**"));
+        _options.SkipPatterns
+            .Concat(GeneratedDependencyDirectories.Select(directory => $"dir:{directory}"))
+            .Concat(ManagedDependencyDirectories
+                .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"));
+
+    /// <summary>
+    /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
+    /// unchanged commit and that run's full scan re-evaluates which files are oversize.
+    /// </summary>
+    private string FileSizeLimitsFingerprint =>
+        string.Join(';', _options.MaxFileSizeKbByExtension
+            .Select(entry => (Extension: entry.Key.ToLowerInvariant(), Limit: entry.Value))
+            .OrderBy(entry => entry.Extension, StringComparer.Ordinal)
+            .Select(entry => $"{entry.Extension}={entry.Limit}")
+            .Prepend($"*={_options.MaxFileSizeKb}"));
 
     private const string CargoManifestFileName = "Cargo.toml";
 
@@ -783,15 +812,71 @@ public partial class IndexingPipeline
         return removed;
     }
 
-    /// <summary>A matcher for <paramref name="includePatterns"/> minus <see cref="DiscoveryExcludePatterns"/>.</summary>
+    /// <summary>
+    /// A matcher for <paramref name="includePatterns"/> minus the configured skip patterns
+    /// (case-insensitive globs). Dependency directories are excluded by <see cref="DiscoverPaths"/>
+    /// and <see cref="IsDependencyPath"/>, not by this matcher.
+    /// </summary>
     private Matcher CreateDiscoveryMatcher(params string[] includePatterns)
     {
         var matcher = new Matcher();
         matcher.AddIncludePatterns(includePatterns);
-        foreach (var pattern in DiscoveryExcludePatterns)
+        foreach (var pattern in _options.SkipPatterns)
             matcher.AddExclude(pattern);
         return matcher;
     }
+
+    /// <summary>
+    /// Full paths of the files under <paramref name="rootPath"/> that match
+    /// <paramref name="includePatterns"/> and no discovery exclusion. The walk never descends into
+    /// a skipped dependency directory.
+    /// </summary>
+    private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns)
+    {
+        var root = Path.GetFullPath(rootPath);
+        var directory = new DiscoveryDirectory(
+            new DirectoryInfoWrapper(new DirectoryInfo(root)), IsDependencyDirectory);
+        return CreateDiscoveryMatcher(includePatterns).Execute(directory).Files
+            .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
+    }
+
+    /// <summary>True when the directory at <paramref name="fullPath"/> is a skipped dependency directory.</summary>
+    private bool IsDependencyDirectory(string fullPath) =>
+        IsDependencyDirectory(Path.GetFileName(fullPath),
+            manifest => _fileSystem.FileExists(Path.Combine(Path.GetDirectoryName(fullPath) ?? "", manifest)));
+
+    private static bool IsDependencyDirectory(string name, Func<string, bool> siblingExists) =>
+        GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal) ||
+        (ManagedDependencyDirectories.TryGetValue(name, out var manifests) && manifests.Any(siblingExists));
+
+    /// <summary>
+    /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory;
+    /// <paramref name="repositoryFileExists"/> answers for repository-relative paths.
+    /// </summary>
+    private static bool IsDependencyPath(string relativePath, Func<string, bool> repositoryFileExists)
+    {
+        var segments = NormalizeRelativePath(relativePath).Split('/');
+        for (var index = 0; index < segments.Length - 1; index++)
+        {
+            var parent = string.Join('/', segments.Take(index));
+            if (IsDependencyDirectory(segments[index], manifest =>
+                    repositoryFileExists(parent.Length == 0 ? manifest : $"{parent}/{manifest}")))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Every <c>Cargo.toml</c> discovery includes, minus Cargo build output under <c>target/</c>.
+    /// </summary>
+    private IReadOnlyList<string> DiscoverCargoManifests(string rootPath) =>
+        DiscoverPaths(rootPath, $"**/{CargoManifestFileName}")
+            .Where(path => Path.GetFileName(path) == CargoManifestFileName)
+            .Where(path => !path.Contains(
+                $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
     private List<string> DiscoverFiles(string rootPath,
         IReadOnlyList<string>? changedFilesOnly)
@@ -806,13 +891,11 @@ public partial class IndexingPipeline
         if (!_fileSystem.DirectoryExists(rootPath))
             throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
 
-        var matcher = CreateDiscoveryMatcher("**/*");
-
         var supportedExtensions = _extractors
             .SelectMany(e => e.SupportedExtensions)
             .ToHashSet();
 
-        return matcher.GetResultsInFullPath(rootPath)
+        return DiscoverPaths(rootPath, "**/*")
             .Where(f => supportedExtensions.Contains(Path.GetExtension(f)))
             .ToList();
     }
@@ -871,26 +954,34 @@ public partial class IndexingPipeline
     /// <summary>
     /// Files to extract: new files, files whose content changed, and unchanged files whose stored
     /// extraction version differs from the current one (a missing version counts as different).
+    /// The current version of a file over its size limit is its <see cref="OversizeVersion"/>, so
+    /// lowering a limit re-processes (and empties) an unchanged file that is now oversize, and
+    /// raising it extracts a previously skipped one.
     /// </summary>
     private List<string> FilterByHash(List<string> files, string rootPath,
-        Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, out int outdatedVersionFiles)
+        Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, ISet<string> oversizeFiles,
+        out int outdatedVersionFiles)
     {
         var changed = new List<string>();
         outdatedVersionFiles = 0;
         foreach (var file in files)
         {
             var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
-            var hash = ComputeHash(file);
+            var bytes = _fileSystem.ReadAllBytes(file);
+            var hash = Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
             buffer.AddFileHash(relPath, hash);
+            var oversize = IsOversize(file, relPath, bytes.Length);
+            if (oversize)
+                oversizeFiles.Add(relPath);
 
             if (!existingHashes.TryGetValue(relPath, out var existing) ||
                 existing.ContentHash != hash)
             {
                 changed.Add(file);
             }
-            else if (!string.Equals(existing.ExtractionVersion, _extractionVersions.ForPath(relPath),
-                         StringComparison.Ordinal)
-                     && !string.Equals(existing.ExtractionVersion, OversizeVersion(relPath), StringComparison.Ordinal))
+            else if (!string.Equals(existing.ExtractionVersion,
+                         oversize ? OversizeVersion(relPath) : _extractionVersions.ForPath(relPath),
+                         StringComparison.Ordinal))
             {
                 changed.Add(file);
                 outdatedVersionFiles++;
@@ -908,16 +999,21 @@ public partial class IndexingPipeline
 
     /// <summary>
     /// The version recorded for a file skipped as oversize: it names the limit, so the file is
-    /// extracted again once the limit (or its extractor) changes, but not while both stay.
+    /// processed again once the limit (or its extractor) changes, but not while both stay. The
+    /// limits are part of the extraction fingerprint, so a limit change triggers that run.
     /// </summary>
     private string OversizeVersion(string relativePath) =>
         $"{_extractionVersions.ForPath(relativePath)};oversize>{_options.MaxFileSizeKbFor(Path.GetExtension(relativePath))}KB";
 
-    private string ComputeHash(string filePath)
+    /// <summary>
+    /// True when the file exceeds its size limit, by the same text-length test per-file extraction
+    /// applies. Text is decoded only when the byte length exceeds the limit, since a file never
+    /// holds more characters than bytes.
+    /// </summary>
+    private bool IsOversize(string file, string relativePath, int byteLength)
     {
-        var bytes = _fileSystem.ReadAllBytes(filePath);
-        var hash = System.IO.Hashing.XxHash3.Hash(bytes);
-        return Convert.ToHexString(hash);
+        var limit = _options.MaxFileSizeKbFor(Path.GetExtension(relativePath)) * 1024;
+        return byteLength > limit && _fileSystem.ReadAllText(file).Length > limit;
     }
 
     // ── Per-File Extraction ──────────────────────────────────────────────

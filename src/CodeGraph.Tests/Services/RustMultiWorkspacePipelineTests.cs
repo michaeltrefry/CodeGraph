@@ -110,7 +110,8 @@ public class RustMultiWorkspacePipelineTests
             WriteCrate(rootPath, "crates/member", "member");
             WriteFile(rootPath, "Cargo.toml", "[workspace.package]\nversion = \"0.1.0\"\n");
 
-            CargoWorkspaceRoots.Find(new LocalFileSystem(), rootPath)
+            CargoWorkspaceRoots.Find(new LocalFileSystem(),
+                    Directory.EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories))
                 .Select(path => Path.GetRelativePath(rootPath, path).Replace('\\', '/'))
                 .ShouldBe(["Cargo.toml"]);
         }
@@ -120,17 +121,82 @@ public class RustMultiWorkspacePipelineTests
         }
     }
 
-    private static async Task<(RecordingRustAnalyzer Analyzer, IndexingRunDiagnostics Diagnostics, InMemoryGraphStore Store)>
-        IndexAsync(string rootPath)
+    /// <summary>
+    /// A Cargo workspace copied under an agent worktree or a dependency directory is not the
+    /// repository's own code: it is neither analyzed (a full SCIP run per copy) nor emitted as
+    /// duplicate Package definitions.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_WorkspacesUnderExcludedDirectories_AreNeitherAnalyzedNorEmittedAsPackages()
     {
-        var store = new InMemoryGraphStore();
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteWorkspace(rootPath, "engine", "engine_core");
+            WriteWorkspace(rootPath, ".claude/worktrees/agent-1/engine", "engine_core");
+            WriteWorkspace(rootPath, "web/node_modules/native-addon", "addon_core");
+
+            var (analyzer, _, store) = await IndexAsync(rootPath);
+
+            analyzer.Manifests.ShouldBe(["engine/Cargo.toml"]);
+            store.Nodes.Where(node => node.Label == NodeLabel.Package)
+                .Select(node => node.FilePath).Distinct().Order(StringComparer.Ordinal)
+                .ShouldBe(["engine/crates/engine_core/Cargo.toml"]);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Package slices of a workspace copy indexed before it was excluded are removed by the next
+    /// run, whose changed exclusions alter the extraction fingerprint.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_PreviouslyIndexedWorktreeWorkspace_IsRemovedOnceExcluded()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteWorkspace(rootPath, "engine", "engine_core");
+            WriteWorkspace(rootPath, ".claude/worktrees/agent-1/engine", "engine_copy");
+            var store = new InMemoryGraphStore();
+            var previousDefaults = new IndexingOptions().SkipPatterns
+                .Where(pattern => pattern != "**/.claude/worktrees/**").ToArray();
+
+            var (before, _, _) = await IndexAsync(rootPath, store, previousDefaults);
+            before.Manifests.Count.ShouldBe(2);
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package
+                && node.FilePath!.StartsWith(".claude/", StringComparison.Ordinal));
+
+            var (after, _, _) = await IndexAsync(rootPath, store);
+            after.Manifests.ShouldBe(["engine/Cargo.toml"]);
+            store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package
+                && node.FilePath!.StartsWith(".claude/", StringComparison.Ordinal));
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package
+                && node.FilePath == "engine/crates/engine_core/Cargo.toml");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    private static async Task<(RecordingRustAnalyzer Analyzer, IndexingRunDiagnostics Diagnostics, InMemoryGraphStore Store)>
+        IndexAsync(string rootPath, InMemoryGraphStore? existingStore = null, string[]? skipPatterns = null)
+    {
+        var store = existingStore ?? new InMemoryGraphStore();
         var diagnostics = new IndexingRunDiagnostics();
         var analyzer = new RecordingRustAnalyzer(rootPath);
+        var options = new IndexingOptions { MaxParallelFiles = 1 };
+        if (skipPatterns is not null)
+            options.SkipPatterns = skipPatterns;
         var pipeline = new IndexingPipeline(
             store,
             [new CodeGraph.Extractors.TreeSitter.TreeSitterExtractor(
                 NullLogger<CodeGraph.Extractors.TreeSitter.TreeSitterExtractor>.Instance)],
-            Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+            Options.Create(options),
             new LocalFileSystem(),
             NullLogger<IndexingPipeline>.Instance,
             rustAnalyzer: analyzer,

@@ -67,7 +67,9 @@ public class ProjectService(
                 ShouldAnalyze = false,
                 SkipIfUpToDate = false,
                 IncludeAllSource = true,
-                ReplaceExistingGraph = true
+                ReplaceExistingGraph = true,
+                // The batch is submitted below; health analysis still runs post-index.
+                ShouldAnalyzeHealth = true
             };
 
             await ProcessRepositoryCore(message, cancellationToken);
@@ -211,7 +213,8 @@ public class ProjectService(
                 CommitSha = commitSha,
                 ShouldAnalyze = message.ShouldAnalyze && !extractionRefreshOnly,
                 IncludeAllSource = message.IncludeAllSource,
-                ShouldComputeVitals = message.ShouldComputeVitals && !extractionRefreshOnly
+                ShouldComputeVitals = message.ShouldComputeVitals && !extractionRefreshOnly,
+                ShouldAnalyzeHealth = message.ShouldAnalyzeHealth && !extractionRefreshOnly
             });
 
             logger.LogInformation("Published RepositoryIndexingCompleted for {Repo}", message.Name);

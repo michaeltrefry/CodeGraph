@@ -1,4 +1,3 @@
-using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Models;
 using CodeGraph.Services.Extractors;
@@ -17,8 +16,9 @@ public partial class IndexingPipeline
     private ExtractionResult? ExtractSwiftPackageManifests(
         string rootPath, ExtractorContext context, out IReadOnlyList<string> manifestRelativePaths)
     {
-        // Same exclusions as DiscoverFiles: the matcher prunes excluded directories while walking.
-        var matcher = CreateDiscoveryMatcher(
+        // Same exclusions as DiscoverFiles: the walk prunes excluded directories.
+        var discovered = DiscoverPaths(
+            rootPath,
             $"**/{SwiftPackageManifestExtractor.PackageSwiftFileName}",
             $"**/{SwiftPackageManifestExtractor.PackageResolvedFileName}",
             "**/*.xcodeproj/project.pbxproj",
@@ -26,7 +26,7 @@ public partial class IndexingPipeline
 
         var manifestPaths = new List<string>();
         var hasXcodeProject = false;
-        foreach (var path in matcher.GetResultsInFullPath(rootPath))
+        foreach (var path in discovered)
         {
             var fileName = Path.GetFileName(path);
             if (fileName is SwiftPackageManifestExtractor.PackageSwiftFileName

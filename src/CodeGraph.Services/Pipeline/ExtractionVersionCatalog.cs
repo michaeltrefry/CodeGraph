@@ -38,10 +38,16 @@ namespace CodeGraph.Services.Pipeline;
 /// (so a bump triggers the refresh run that rewrites the <c>Package.resolved</c> pins).
 /// </para>
 /// <para>
-/// The discovery exclusions (skip patterns and generated dependency directories) are part of the
+/// The discovery exclusions (skip patterns and dependency directory rules) are part of the
 /// <see cref="Fingerprint"/> but not of any file's version: changing them re-runs a routine sync at
-/// an unchanged commit, whose full scan removes the files that left the indexed universe without
-/// re-extracting the files that stayed.
+/// an unchanged commit, whose full scan removes the files that left the indexed universe and
+/// extracts the files that entered it, without re-extracting the files that stayed.
+/// </para>
+/// <para>
+/// The effective file size limits are part of the <see cref="Fingerprint"/> too. A file skipped as
+/// oversize records a version naming its limit, and the pipeline expects that version for every
+/// file over the current limit, so the refresh run after a limit change extracts a file that is no
+/// longer oversize and empties the slice of a file that now is.
 /// </para>
 /// </remarks>
 public sealed class ExtractionVersionCatalog
@@ -62,6 +68,7 @@ public sealed class ExtractionVersionCatalog
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
     private readonly IReadOnlyList<string>? _discoveryExcludePatterns;
+    private readonly string? _fileSizeLimits;
 
     public ExtractionVersionCatalog(
         IEnumerable<ICodeExtractor> extractors,
@@ -69,7 +76,8 @@ public sealed class ExtractionVersionCatalog
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
         IRustAnalyzer? rustAnalyzer = null,
         ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null,
-        IEnumerable<string>? discoveryExcludePatterns = null)
+        IEnumerable<string>? discoveryExcludePatterns = null,
+        string? fileSizeLimits = null)
     {
         _extractors = extractors.ToList();
         _solutionAnalyzer = solutionAnalyzer;
@@ -77,6 +85,7 @@ public sealed class ExtractionVersionCatalog
         _rustAnalyzer = rustAnalyzer;
         _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
         _discoveryExcludePatterns = discoveryExcludePatterns?.ToList();
+        _fileSizeLimits = fileSizeLimits;
         Fingerprint = ComputeFingerprint();
     }
 
@@ -138,7 +147,8 @@ public sealed class ExtractionVersionCatalog
                 : [$"{SwiftPackageManifestExtractor.PackageSwiftFileName}={ForPath(SwiftPackageManifestExtractor.PackageSwiftFileName)}"])
             .Concat(_discoveryExcludePatterns is null
                 ? []
-                : [$"discovery-excludes={string.Join('|', _discoveryExcludePatterns)}"]);
+                : [$"discovery-excludes={string.Join('|', _discoveryExcludePatterns)}"])
+            .Concat(_fileSizeLimits is null ? [] : [$"max-file-size-kb={_fileSizeLimits}"]);
         var bytes = Encoding.UTF8.GetBytes(string.Join('\n', lines));
         return Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
     }
