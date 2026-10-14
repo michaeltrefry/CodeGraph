@@ -158,6 +158,8 @@ public class MariaDbDatabaseSourceStoreTests
 
         await using var conn = new MySqlConnection(builder.ConnectionString);
         await conn.OpenAsync();
+        // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+        await MySqlConnection.ClearAllPoolsAsync();
         await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
     }
 }

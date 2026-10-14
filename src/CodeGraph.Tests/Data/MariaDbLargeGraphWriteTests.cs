@@ -339,6 +339,8 @@ public class MariaDbLargeGraphWriteTests
             var database = builder.Database;
             builder.Database = "";
             await using var connection = new MySqlConnection(builder.ConnectionString);
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             await connection.ExecuteAsync(new CommandDefinition($"DROP DATABASE IF EXISTS `{database}`", commandTimeout: 300));
         }
     }

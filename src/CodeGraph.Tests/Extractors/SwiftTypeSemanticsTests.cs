@@ -445,8 +445,8 @@ public class SwiftTypeSemanticsTests
         }
 
         /// <summary>
-        /// An incremental run. Deleted files are only detected from an explicit change list
-        /// (<paramref name="changedFiles"/>), as in the pipeline's change-list contract.
+        /// An incremental run: with <paramref name="changedFiles"/> a change-list run, otherwise a
+        /// full scan that also detects files deleted since the last run.
         /// </summary>
         public ILogger<IndexingPipeline>? Logger { get; set; }
 
@@ -523,6 +523,14 @@ public class SwiftTypeSemanticsTests
 
             // The type is deleted: its members and conformance fall back to an external stub.
             await repo.Delete("Sources/Square.swift").IndexAsync("Sources/Square.swift");
+            ShouldHaveExactly(repo.Store, BaselineEdges("swift-external:Square"));
+            Stubs(repo.Store)["swift-external:Square"].ShouldBe(NodeLabel.Class);
+
+            // It comes back, then is deleted again and noticed by a routine full scan
+            // (no change list): the same fallback as a reported deletion.
+            await repo.Write("Sources/Square.swift", SquareDeclaration + "\n").IndexAsync();
+            ShouldHaveExactly(repo.Store, BaselineEdges($"{Project}:Sources/Square.swift#type:Square"));
+            await repo.Delete("Sources/Square.swift").IndexAsync();
             ShouldHaveExactly(repo.Store, BaselineEdges("swift-external:Square"));
             Stubs(repo.Store)["swift-external:Square"].ShouldBe(NodeLabel.Class);
 

@@ -1144,6 +1144,133 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_RemovesFilesDeletedFromDisk()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-delete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "keep.py"), "class Keep:\n    pass\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "gone.py"), "class Gone:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("FullScanRepo", rootPath, ct: CancellationToken.None);
+            var goneIds = (await store.FindNodesByFileAsync("FullScanRepo", "gone.py"))
+                .Select(node => node.Id).ToHashSet();
+            goneIds.ShouldNotBeEmpty();
+            store.Edges.ShouldContain(edge => goneIds.Contains(edge.SourceId) || goneIds.Contains(edge.TargetId));
+
+            File.Delete(Path.Combine(rootPath, "gone.py"));
+            await pipeline.IndexProjectAsync("FullScanRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("FullScanRepo", "gone.py")).ShouldBeEmpty();
+            store.Edges.ShouldNotContain(edge => goneIds.Contains(edge.SourceId) || goneIds.Contains(edge.TargetId));
+            var hashes = await store.GetFileHashesAsync("FullScanRepo");
+            hashes.ShouldNotContainKey("gone.py");
+            hashes.ShouldContainKey("keep.py");
+            (await store.FindNodesByFileAsync("FullScanRepo", "keep.py"))
+                .ShouldContain(node => node.Label == NodeLabel.Class);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_RemovesFilesANewSkipPatternExcludes()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-skip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(rootPath, "vendor"));
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class App:\n    pass\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "vendor", "lib.py"), "class Lib:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            await CreatePipeline(store, new NodeProducingExtractor())
+                .IndexProjectAsync("SkipRepo", rootPath, ct: CancellationToken.None);
+            (await store.FindNodesByFileAsync("SkipRepo", "vendor/lib.py")).ShouldNotBeEmpty();
+
+            var skipping = new IndexingPipeline(
+                store,
+                [new NodeProducingExtractor()],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1, SkipPatterns = ["vendor/**"] }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+            await skipping.IndexProjectAsync("SkipRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("SkipRepo", "vendor/lib.py")).ShouldBeEmpty();
+            (await store.GetFileHashesAsync("SkipRepo")).ShouldNotContainKey("vendor/lib.py");
+            (await store.FindNodesByFileAsync("SkipRepo", "app.py")).ShouldNotBeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_MissingCheckoutFailsWithoutDeleting()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-missing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class App:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("MissingRepo", rootPath, ct: CancellationToken.None);
+            var nodeCount = store.Nodes.Count;
+
+            Directory.Delete(rootPath, recursive: true);
+            // Fails up front, naming the missing checkout, before any deletion is inferred.
+            var error = await Should.ThrowAsync<DirectoryNotFoundException>(() =>
+                pipeline.IndexProjectAsync("MissingRepo", rootPath, ct: CancellationToken.None));
+            error.Message.ShouldContain("checkout not found");
+
+            store.Nodes.Count.ShouldBe(nodeCount);
+            (await store.GetFileHashesAsync("MissingRepo")).ShouldContainKey("app.py");
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_EmptyDiscoveryKeepsTheIndexedGraph()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-empty-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class App:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("EmptyRepo", rootPath, ct: CancellationToken.None);
+
+            // The checkout exists but yields nothing (e.g. an interrupted materialization).
+            File.Delete(Path.Combine(rootPath, "app.py"));
+            await pipeline.IndexProjectAsync("EmptyRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("EmptyRepo", "app.py")).ShouldNotBeEmpty();
+            (await store.GetFileHashesAsync("EmptyRepo")).ShouldContainKey("app.py");
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_SerializesReplacementForSameRepository()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-replacement-lock-{Guid.NewGuid():N}");

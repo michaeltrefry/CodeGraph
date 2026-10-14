@@ -126,7 +126,7 @@ public class GraphSliceRetractionContract
                 new MySqlConnectionStringBuilder(builder.ConnectionString) { Database = "" }.ConnectionString);
             await conn.OpenAsync();
             // Release this database's pooled connections so the suite stays under max_connections.
-            await MySqlConnection.ClearPoolAsync(new MySqlConnection(builder.ConnectionString));
+            await MySqlConnection.ClearAllPoolsAsync();
             await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
         }
     }
@@ -176,7 +176,7 @@ public class GraphSliceRetractionContract
                 new MySqlConnectionStringBuilder(builder.ConnectionString) { Database = "" }.ConnectionString);
             await conn.OpenAsync();
             // Release this database's pooled connections so the suite stays under max_connections.
-            await MySqlConnection.ClearPoolAsync(new MySqlConnection(builder.ConnectionString));
+            await MySqlConnection.ClearAllPoolsAsync();
             await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
         }
     }
