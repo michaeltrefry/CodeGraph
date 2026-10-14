@@ -41,10 +41,41 @@ public class TreeSitterExtractor : ICodeExtractor
     /// </summary>
     public const int WalkerVersion = 1;
 
-    public string GetExtractionVersion(string extension) =>
-        LanguageSpecs.ForExtension(extension) is { } spec
-            ? $"{WalkerVersion}.{spec.ExtractionVersion}"
-            : WalkerVersion.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>
+    /// Suffix on the extraction version of a language whose native grammar cannot be loaded.
+    /// Files skipped for that reason are recorded under a version a working deployment never
+    /// reports, so they are re-extracted once the grammar is available.
+    /// </summary>
+    public const string GrammarUnavailableVersionSuffix = "-grammar-unavailable";
+
+    public string GetExtractionVersion(string extension)
+    {
+        if (_specForExtension(extension) is not { } spec)
+            return WalkerVersion.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        var version = $"{WalkerVersion}.{spec.ExtractionVersion}";
+        return IsGrammarAvailable(spec) ? version : version + GrammarUnavailableVersionSuffix;
+    }
+
+    // One load attempt per spec for the process lifetime; a fixed deployment is a new process.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<LanguageSpec, bool>
+        GrammarAvailability = new(ReferenceEqualityComparer.Instance);
+
+    private bool IsGrammarAvailable(LanguageSpec spec) =>
+        GrammarAvailability.GetOrAdd(spec, s =>
+        {
+            try
+            {
+                using var language = s.GetLanguage();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Tree-sitter grammar for {Lang} cannot be loaded; its files " +
+                    "are skipped until it is available", s.LanguageName);
+                return false;
+            }
+        });
 
     public Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
@@ -57,12 +88,23 @@ public class TreeSitterExtractor : ICodeExtractor
         if (spec is null)
             return Task.FromResult(EmptyResult);
 
+        if (!IsGrammarAvailable(spec))
+        {
+            // Recorded under the grammar-unavailable extraction version (GetExtractionVersion),
+            // never under the version a working deployment records.
+            _logger.LogWarning("Tree-sitter grammar for {Lang} is unavailable; skipping {File}",
+                spec.LanguageName, filePath);
+            return Task.FromResult(spec.SkipFileOnExtractionFailure
+                ? EmptyResult
+                : ExtractionResult.Failure($"Tree-sitter grammar for {spec.LanguageName} is unavailable"));
+        }
+
         try
         {
             var result = ExtractWithSpec(spec, filePath, content, context);
             return Task.FromResult(result);
         }
-        catch (Exception ex) when (spec.SkipFileOnExtractionFailure)
+        catch (Exception ex) when (spec.SkipFileOnExtractionFailure && ex is not GrammarLoadException)
         {
             _logger.LogWarning(ex, "Tree-sitter extraction failed for {File} ({Lang}); skipping file",
                 filePath, spec.LanguageName);
@@ -80,7 +122,16 @@ public class TreeSitterExtractor : ICodeExtractor
         string content, ExtractorContext context)
     {
         using var parser = new Parser();
-        parser.Language = spec.GetLanguage();
+        try
+        {
+            parser.Language = spec.GetLanguage();
+        }
+        catch (Exception ex)
+        {
+            // A grammar that stops loading after a successful probe must not be skipped as a
+            // success under the working extraction version.
+            throw new GrammarLoadException(spec.LanguageName, ex);
+        }
 
         using var tree = parser.Parse(content);
         if (tree is null)
@@ -668,6 +719,9 @@ public class TreeSitterExtractor : ICodeExtractor
     }
 
     private static readonly ExtractionResult EmptyResult = new();
+
+    private sealed class GrammarLoadException(string language, Exception inner)
+        : Exception($"Tree-sitter grammar for {language} could not be loaded: {inner.Message}", inner);
 
     private sealed record CallTarget(
         string CalleeName,

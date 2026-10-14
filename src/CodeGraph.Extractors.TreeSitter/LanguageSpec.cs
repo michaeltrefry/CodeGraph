@@ -95,9 +95,11 @@ public sealed class LanguageSpec
     public Func<Node, string?>? ParametersExtractor { get; init; }
 
     /// <summary>
-    /// When true, a file whose extraction throws (grammar unavailable, parser failure) is logged
-    /// and skipped with an empty successful result instead of reporting an extraction failure,
-    /// so it can never fail an index run.
+    /// When true, a file whose parse or AST walk throws is logged and skipped with an empty
+    /// successful result instead of reporting an extraction failure, so it can never fail an
+    /// index run. A grammar that cannot be loaded at all is also skipped, but under a distinct
+    /// "grammar unavailable" extraction version so the files are re-extracted once it loads;
+    /// a grammar that fails to load mid-run is reported as an extraction failure.
     /// </summary>
     public bool SkipFileOnExtractionFailure { get; init; }
 

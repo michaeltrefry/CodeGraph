@@ -31,8 +31,11 @@
   -->
   <PropertyGroup>
     <TreeSitterSwiftGrammarScript>$(MSBuildThisFileDirectory)native/build-tree-sitter-swift.sh</TreeSitterSwiftGrammarScript>
-    <TreeSitterSwiftLibraryFileName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libtree-sitter-swift.dylib</TreeSitterSwiftLibraryFileName>
-    <TreeSitterSwiftLibraryFileName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libtree-sitter-swift.so</TreeSitterSwiftLibraryFileName>
+    <!-- The target OS decides the library name: the RuntimeIdentifier when one is set, else the host. -->
+    <TreeSitterSwiftLibraryFileName Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">libtree-sitter-swift.dylib</TreeSitterSwiftLibraryFileName>
+    <TreeSitterSwiftLibraryFileName Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">libtree-sitter-swift.so</TreeSitterSwiftLibraryFileName>
+    <TreeSitterSwiftLibraryFileName Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('osx'))">libtree-sitter-swift.dylib</TreeSitterSwiftLibraryFileName>
+    <TreeSitterSwiftLibraryFileName Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('linux'))">libtree-sitter-swift.so</TreeSitterSwiftLibraryFileName>
     <BuildTreeSitterSwift Condition="'$(TreeSitterSwiftLibraryFileName)' != '' and '$(TreeSitterSwiftLibrary)' == ''">true</BuildTreeSitterSwift>
     <TreeSitterSwiftLibrary Condition="'$(BuildTreeSitterSwift)' == 'true'">$(MSBuildThisFileDirectory)obj/native/$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())/$(TreeSitterSwiftLibraryFileName)</TreeSitterSwiftLibrary>
   </PropertyGroup>
@@ -45,8 +48,15 @@
           Visible="false" />
   </ItemGroup>
 
+  <Target Name="CheckTreeSitterSwiftTarget" Condition="'$(BuildTreeSitterSwift)' == 'true'">
+    <!-- The build script compiles for the host only; a cross-RID build must supply the library. -->
+    <Error Condition="'$(RuntimeIdentifier)' != '' and '$(RuntimeIdentifier)' != '$(NETCoreSdkPortableRuntimeIdentifier)'"
+           Text="The tree-sitter Swift grammar is compiled for the host ($(NETCoreSdkPortableRuntimeIdentifier)), not for RuntimeIdentifier '$(RuntimeIdentifier)'. Build libtree-sitter-swift for that target with src/CodeGraph.Extractors.TreeSitter/native/build-tree-sitter-swift.sh and pass it with -p:TreeSitterSwiftLibrary=&lt;path&gt;." />
+  </Target>
+
   <Target Name="BuildTreeSitterSwiftGrammar"
           BeforeTargets="BeforeBuild"
+          DependsOnTargets="CheckTreeSitterSwiftTarget"
           Condition="'$(BuildTreeSitterSwift)' == 'true'"
           Inputs="$(TreeSitterSwiftGrammarScript)"
           Outputs="$(TreeSitterSwiftLibrary)">

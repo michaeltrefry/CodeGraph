@@ -105,6 +105,46 @@ public class SwiftTreeSitterExtractorTests
     }
 
     [Fact]
+    public async Task ExtractAsync_SwiftFixture_YieldsInitializersDeinitializersAndSubscripts()
+    {
+        var result = await ExtractFixtureAsync();
+
+        // Protocol initializer requirement.
+        AssertCallable(result, "init", NodeLabel.Method, $"{FileQN}#type:Shape")
+            .QualifiedName.ShouldBe($"{FileQN}#type:Shape#method:init(radius:Double)");
+
+        // Overloaded initializers keep distinct identities.
+        AssertMethodQNs(result, "init", $"{FileQN}#type:Circle",
+            $"{FileQN}#type:Circle#method:init(radius:Double)",
+            $"{FileQN}#type:Circle#method:init()");
+
+        AssertCallable(result, "deinit", NodeLabel.Method, $"{FileQN}#type:ShapeStore")
+            .QualifiedName.ShouldBe($"{FileQN}#type:ShapeStore#method:deinit()");
+
+        var subscript = AssertCallable(result, "subscript", NodeLabel.Method,
+            $"{FileQN}#type:ShapeStore");
+        subscript.QualifiedName.ShouldBe($"{FileQN}#type:ShapeStore#method:subscript(index:Int)");
+        subscript.Properties["return_type"].ShouldBe("Element");
+
+        // No callable is named after a type the grammar tags with "name".
+        result.Nodes.ShouldNotContain(node =>
+            node.Label == NodeLabel.Method && node.Name == "Element");
+    }
+
+    [Fact]
+    public async Task ExtractAsync_SwiftFunctions_CarryReturnTypes()
+    {
+        var result = await ExtractFixtureAsync();
+
+        result.Nodes.Single(node => node.Name == "totalArea")
+            .Properties["return_type"].ShouldBe("Double");
+        result.Nodes.Single(node => node.QualifiedName == $"{FileQN}#type:Shape#method:describe(prefix:String)")
+            .Properties["return_type"].ShouldBe("String");
+        result.Nodes.Single(node => node.Name == "increment")
+            .Properties.ShouldNotContainKey("return_type");
+    }
+
+    [Fact]
     public async Task ExtractAsync_SwiftExtension_DoesNotDuplicateTheExtendedType()
     {
         var result = await ExtractFixtureAsync();
@@ -139,33 +179,75 @@ public class SwiftTreeSitterExtractorTests
         var result = await ExtractFixtureAsync();
 
         var circle = result.Nodes.Single(node => node.Name == "Circle");
-        circle.StartLine.ShouldBe(8);
-        circle.EndLine.ShouldBe(18);
+        circle.StartLine.ShouldBe(9);
+        circle.EndLine.ShouldBe(27);
     }
 
+    private static TreeSitterExtractor GrammarUnavailableExtractor() =>
+        new(NullLogger<TreeSitterExtractor>.Instance, extension => extension == ".swift"
+            ? new LanguageSpec
+            {
+                LanguageName = LanguageSpecs.Swift.LanguageName,
+                Framework = null,
+                GetLanguage = () => throw new DllNotFoundException("libtree-sitter-swift"),
+                ExtractionVersion = LanguageSpecs.Swift.ExtractionVersion,
+                SkipFileOnExtractionFailure = LanguageSpecs.Swift.SkipFileOnExtractionFailure
+            }
+            : null);
+
     [Fact]
-    public async Task ExtractAsync_SwiftGrammarUnavailable_LogsAndSkipsFileInsteadOfFailing()
+    public async Task ExtractAsync_SwiftGrammarUnavailable_SkipsFileUnderADistinctExtractionVersion()
     {
-        var brokenSwift = new LanguageSpec
-        {
-            LanguageName = LanguageSpecs.Swift.LanguageName,
-            Framework = null,
-            GetLanguage = () => throw new DllNotFoundException("libtree-sitter-swift"),
-            SkipFileOnExtractionFailure = LanguageSpecs.Swift.SkipFileOnExtractionFailure
-        };
-        var extractor = new TreeSitterExtractor(
-            NullLogger<TreeSitterExtractor>.Instance,
-            extension => extension == ".swift" ? brokenSwift : null);
+        var extractor = GrammarUnavailableExtractor();
+        var working = new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance);
 
         var result = await extractor.ExtractAsync(
             "/test/Sources/Shapes.swift", FixtureSource, TestContext);
 
         result.Succeeded.ShouldBeTrue();
         result.Nodes.ShouldBeEmpty();
+        extractor.GetExtractionVersion(".swift")
+            .ShouldNotBe(working.GetExtractionVersion(".swift"));
     }
 
     [Fact]
-    public async Task IndexProjectAsync_SwiftRepository_ReportsSwiftLanguageStatsAndSurvivesUnparsableFiles()
+    public async Task IndexProjectAsync_SwiftGrammarUnavailable_FilesAreReExtractedOnceTheGrammarLoads()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-swift-nogrammar-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(rootPath, "Sources"));
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Sources", "Shapes.swift"), FixtureSource);
+            var store = new InMemoryGraphStore();
+
+            IndexingPipeline Pipeline(TreeSitterExtractor extractor) => new(
+                store,
+                [extractor],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+
+            // Deployment without the grammar: the run completes and the file is skipped.
+            await Pipeline(GrammarUnavailableExtractor())
+                .IndexProjectAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
+            store.Nodes.ShouldNotContain(node => node.Name == "ShapeStore");
+
+            // Same unchanged file after the grammar is fixed: it must be extracted again.
+            await Pipeline(new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance))
+                .IndexProjectAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
+            store.Nodes.ShouldContain(node =>
+                node.Name == "ShapeStore" && node.Label == NodeLabel.Class);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_SwiftRepository_ReportsSwiftLanguageStatsAndRecoversFromSyntaxErrors()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-swift-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(rootPath, "Sources"));
@@ -173,8 +255,10 @@ public class SwiftTreeSitterExtractorTests
         try
         {
             await File.WriteAllTextAsync(Path.Combine(rootPath, "Sources", "Shapes.swift"), FixtureSource);
+            // Syntax errors around one valid declaration: tree-sitter recovers rather than failing.
             await File.WriteAllTextAsync(
                 Path.Combine(rootPath, "Sources", "Broken.swift"),
+                "struct Recovered {}\n" +
                 "class {{{ func ]]] protocol : : @@@ }\n\u0000\u0001 extension\n");
 
             var store = new InMemoryGraphStore();
@@ -191,6 +275,15 @@ public class SwiftTreeSitterExtractorTests
                 node.Name == "ShapeStore" && node.Label == NodeLabel.Class);
             store.Nodes.ShouldContain(node =>
                 node.Name == "Shape" && node.Label == NodeLabel.Interface);
+
+            // The broken file is processed, keeps its recoverable declaration, and yields no
+            // definitions invented from the garbage around it.
+            var brokenDefinitions = store.Nodes
+                .Where(node => node.FilePath == "Sources/Broken.swift" &&
+                               node.Label is not (NodeLabel.File or NodeLabel.Folder))
+                .Select(node => $"{node.Label}:{node.Name}")
+                .ToList();
+            brokenDefinitions.ShouldBe(["Struct:Recovered"]);
 
             var repo = await store.GetRepositoryByName("SwiftRepo");
             repo.ShouldNotBeNull();
@@ -218,6 +311,22 @@ public class SwiftTreeSitterExtractorTests
             edge.SourceQN == parentQN &&
             edge.TargetQN == qualifiedName &&
             edge.Type == EdgeType.DEFINES);
+    }
+
+    private static void AssertMethodQNs(ExtractionResult result, string name, string parentQN,
+        params string[] expectedQNs)
+    {
+        var qns = result.Nodes
+            .Where(node => node.Name == name && node.Label == NodeLabel.Method &&
+                           node.QualifiedName.StartsWith(parentQN + "#method:", StringComparison.Ordinal))
+            .Select(node => node.QualifiedName)
+            .ToList();
+        qns.ShouldBe(expectedQNs, ignoreOrder: true);
+        foreach (var qn in qns)
+            result.Edges.ShouldContain(edge =>
+                edge.SourceQN == parentQN &&
+                edge.TargetQN == qn &&
+                edge.Type == EdgeType.DEFINES_METHOD);
     }
 
     private static GraphNode AssertCallable(ExtractionResult result, string name,

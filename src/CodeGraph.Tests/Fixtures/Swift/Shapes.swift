@@ -1,12 +1,21 @@
 import Foundation
 
 protocol Shape {
+    init(radius: Double)
     func area() -> Double
     func describe(prefix: String) -> String
 }
 
 struct Circle: Shape {
     let radius: Double
+
+    init(radius: Double) {
+        self.radius = radius
+    }
+
+    init() {
+        self.init(radius: 1)
+    }
 
     func area() -> Double {
         return Double.pi * radius * radius
@@ -19,6 +28,14 @@ struct Circle: Shape {
 
 final class ShapeStore<Element: Shape> {
     private var shapes: [Element] = []
+
+    deinit {
+        shapes.removeAll()
+    }
+
+    subscript(index: Int) -> Element {
+        return shapes[index]
+    }
 
     func add(_ shape: Element) {
         shapes.append(shape)

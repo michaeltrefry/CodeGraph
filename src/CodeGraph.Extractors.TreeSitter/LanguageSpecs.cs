@@ -320,7 +320,8 @@ public static class LanguageSpecs
         Framework = null,
         GetLanguage = () => new Language("Swift"),
         ExtractionVersion = 1,
-        FunctionNodeTypes = ["function_declaration", "protocol_function_declaration"],
+        FunctionNodeTypes = ["function_declaration", "protocol_function_declaration",
+                             "init_declaration", "deinit_declaration", "subscript_declaration"],
         ClassNodeTypes = ["class_declaration", "protocol_declaration"],
         ClassNameExtractor = GetSwiftTypeName,
         ClassKindExtractor = GetSwiftDeclarationKind,
@@ -334,12 +335,26 @@ public static class LanguageSpecs
         // An extension adds members to a type declared elsewhere; it never emits a type node.
         IsContainerOnlyClass = node => GetSwiftDeclarationKind(node) == "extension",
         ParametersExtractor = GetSwiftParameters,
+        NameExtractor = GetSwiftCallableName,
         NameField = "name",
         ReturnTypeField = "return_type",
         BodyField = "body",
         FunctionLabel = NodeLabel.Function,
         ClassLabel = NodeLabel.Class,
         SkipFileOnExtractionFailure = true
+    };
+
+    /// <summary>
+    /// Initializers, deinitializers and subscripts are named by their keyword. Their "name" field
+    /// is not usable: deinit has none, and on a subscript the grammar tags the element type
+    /// with it.
+    /// </summary>
+    private static string? GetSwiftCallableName(Node node) => node.Type switch
+    {
+        "init_declaration" => "init",
+        "deinit_declaration" => "deinit",
+        "subscript_declaration" => "subscript",
+        _ => node.GetChildForField("name")?.Text
     };
 
     private static string? GetSwiftDeclarationKind(Node node) =>
