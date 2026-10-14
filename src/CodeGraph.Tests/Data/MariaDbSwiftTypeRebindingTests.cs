@@ -175,6 +175,11 @@ public class MariaDbSwiftTypeRebindingTests
             Write("Sources/Use.swift", "func use() { _ = Circle() }\n");
             await IndexAsync();
             (await CallsAsync(builder.ConnectionString)).ShouldBe([(caller, $"{circle}#method:init()")]);
+
+            // And back: init()'s persisted empty signature still rules it out for a labeled call.
+            Write("Sources/Use.swift", "func use() { _ = Circle(radius: 1) }\n");
+            await IndexAsync();
+            (await CallsAsync(builder.ConnectionString)).ShouldBe([(caller, $"{circle}#method:init(radius:Double)")]);
         }
         finally
         {

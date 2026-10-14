@@ -39,26 +39,44 @@ public static class ArgumentLabels
     {
         var parameters = Split(declared).Select(Parameter.Parse).ToList();
         var arguments = Split(call);
-        var index = 0;
-        foreach (var parameter in parameters)
+        return Matches(parameters, 0, arguments, 0);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="arguments"/> from <paramref name="argument"/> on bind to
+    /// <paramref name="parameters"/> from <paramref name="parameter"/> on, in order. A required
+    /// parameter takes exactly one argument; a defaulted one takes one or none; a variadic one
+    /// takes none, or one followed by any number of unlabeled arguments. Every choice is tried,
+    /// so a trailing closure (<c>*</c>) reaches a later parameter past defaulted or variadic ones.
+    /// </summary>
+    private static bool Matches(List<Parameter> parameters, int parameter, List<string> arguments, int argument)
+    {
+        if (parameter == parameters.Count)
+            return argument == arguments.Count;
+
+        var current = parameters[parameter];
+        if ((current.HasDefault || current.Variadic)
+            && Matches(parameters, parameter + 1, arguments, argument))
         {
-            if (index < arguments.Count && LabelMatches(parameter.Label, arguments[index]))
-            {
-                index++;
-                if (parameter.Variadic)
-                {
-                    while (index < arguments.Count && arguments[index] == "_")
-                        index++;
-                }
-
-                continue;
-            }
-
-            if (!parameter.HasDefault && !parameter.Variadic)
-                return false;
+            return true;
         }
 
-        return index == arguments.Count;
+        if (argument >= arguments.Count || !LabelMatches(current.Label, arguments[argument]))
+            return false;
+
+        if (Matches(parameters, parameter + 1, arguments, argument + 1))
+            return true;
+
+        if (!current.Variadic)
+            return false;
+
+        for (var next = argument + 1; next < arguments.Count && arguments[next] == "_"; next++)
+        {
+            if (Matches(parameters, parameter + 1, arguments, next + 1))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool LabelMatches(string parameterLabel, string argumentLabel) =>

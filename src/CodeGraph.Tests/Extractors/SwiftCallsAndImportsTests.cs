@@ -197,6 +197,17 @@ public class SwiftCallsAndImportsTests
     [InlineData("_:", "*:", true)]
     [InlineData("named:_:", "*:", false)]
     [InlineData("_:onDone:", "*:onDone:", true)]
+    // A trailing closure reaches a later parameter past defaulted / variadic ones.
+    [InlineData("force=:completion:", "*:", true)]
+    [InlineData("force=:completion:", "force:*:", true)]
+    [InlineData("_...:body:", "*:", true)]
+    [InlineData("_...:body:", "_:_:*:", true)]
+    // Multiple and labeled trailing closures.
+    [InlineData("first:second:", "*:second:", true)]
+    [InlineData("first:second=:", "*:", true)]
+    [InlineData("first:second:", "*:", false)]
+    [InlineData("_:other:", "*:second:", false)]
+    [InlineData("a=:b=:", "*:b:", true)]
     public void ArgumentLabels_Accepts(string declared, string call, bool expected) =>
         ArgumentLabels.Accepts(declared, call).ShouldBe(expected);
 
@@ -226,6 +237,7 @@ public class SwiftCallsAndImportsTests
             func batch(_ body: () -> Void) {}
             func batch(named: String, _ body: () -> Void) {}
             func flush() {}
+            func load(force: Bool = false, completion: () -> Void) {}
         }
 
         struct Stack {
@@ -233,6 +245,13 @@ public class SwiftCallsAndImportsTests
         }
 
         func log(_ message: String) {}
+
+        // Same-named functions that calls of closure variables must not link to.
+        func completion(_ value: Int) {}
+        func handler() {}
+        func done() {}
+        func notify() {}
+        func tick() {}
         """;
 
     private const string ScaleSource = """
@@ -265,6 +284,18 @@ public class SwiftCallsAndImportsTests
                 scene.renderer.flush()
                 var values: [Int] = []
                 values.append(1)
+                renderer.load { }
+            }
+
+            var notify: () -> Void = { }
+
+            func load(completion: (Int) -> Void) {
+                completion(1)
+                let handler = { }
+                handler()
+                [1].forEach { done in done() }
+                notify()
+                if let tick = Optional(notify) { tick() }
             }
 
             func reset() {}
@@ -298,6 +329,7 @@ public class SwiftCallsAndImportsTests
         (Render, $"{X}#extension:Circle#method:scaled(byfactor:Double)"),
         (Render, $"{Renderer}#method:batch(_body:()->Void)"),
         (Render, $"{Renderer}#method:flush()"),
+        (Render, $"{Renderer}#method:load(force:Bool,completion:()->Void)"),
         ($"{C}#function:helper(_c:Circle?)", $"{Circle}#method:area()")
     ];
 

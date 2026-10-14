@@ -91,6 +91,11 @@ internal sealed class SwiftCallSites
                     return new CallSite(name, owner, CallReceiverKind.Resolved, labels);
                 }
 
+                // Calling a closure held by a parameter, local or property (`completion(1)`) is
+                // not a call of a function of that name.
+                if (IsBoundVariable(name, function))
+                    return new CallSite(name, null, CallReceiverKind.Unresolved, labels);
+
                 return new CallSite(name, null, CallReceiverKind.Bare, labels);
             }
 
@@ -357,6 +362,60 @@ internal sealed class SwiftCallSites
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="name"/> names a variable visible at <paramref name="from"/>: a
+    /// parameter, closure parameter, loop variable, <c>if let</c>/<c>guard let</c> binding, local
+    /// or global declaration, or a property of an enclosing type declared in the file.
+    /// </summary>
+    private bool IsBoundVariable(string name, Node from)
+    {
+        var child = from;
+        for (var scope = from.Parent; scope is not null; child = scope, scope = scope.Parent)
+        {
+            switch (scope.Type)
+            {
+                case "statements" or "source_file":
+                    foreach (var statement in scope.NamedChildren)
+                    {
+                        if (scope.Type == "statements" && statement.StartIndex >= child.StartIndex)
+                            break;
+                        if (statement.Type == "property_declaration" && BoundName(statement) == name
+                            || statement.Type == "guard_statement" && BindsName(statement, name))
+                        {
+                            return true;
+                        }
+                    }
+
+                    break;
+
+                case "if_statement" or "while_statement" when BindsName(scope, name):
+                    return true;
+
+                case "for_statement" when scope.GetChildForField("item")
+                    ?.GetChildForField("bound_identifier")?.Text == name:
+                    return true;
+
+                case "lambda_literal" when ClosureParameters(scope).Contains(name):
+                    return true;
+
+                case "function_declaration" or "init_declaration" or "subscript_declaration"
+                    when scope.NamedChildren.Any(node =>
+                        node.Type == "parameter" && ParameterParts(node).Internal == name):
+                    return true;
+
+                case "class_body" or "protocol_body" or "enum_class_body"
+                    when scope.Parent is { } declaration && PathOf(declaration) is { } typePath
+                        && _typeBlocks.TryGetValue(typePath, out var blocks)
+                        && blocks.Any(block => block.GetChildForField("body")?.NamedChildren.Any(member =>
+                            member.Type is "property_declaration" or "protocol_property_declaration"
+                            && BoundName(member) == name) == true):
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>The written type of property <paramref name="member"/> of the type at <paramref name="typePath"/>.</summary>
