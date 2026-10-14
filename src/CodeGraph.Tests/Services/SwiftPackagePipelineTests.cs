@@ -289,7 +289,6 @@ public class SwiftPackagePipelineTests : IDisposable
         Write(".swiftpm/xcode/Generated.swift", "struct Generated {}\n");
         Write(".claude/worktrees/agent-1/Sources/ShapeKit/Shape.swift", "public struct Shape {}\n");
         Write(".claude/worktrees/agent-1/Package.swift", "let package = Package(name: \"ShapeKit\")\n");
-        Write("Carthage/Checkouts/Kit/Cargo.toml", "[package]\nname = \"copy\"\nversion = \"0.1.0\"\n");
 
         var store = new InMemoryGraphStore();
         await CreatePipeline(store).IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);

@@ -529,7 +529,6 @@ public partial class IndexingPipeline
                 .Where(path => !path.Contains(
                     $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
                     StringComparison.OrdinalIgnoreCase))
-                .Where(path => IsDiscoverable(rootPath, path))
                 .ToArray();
             discoveredManifestNames.Add(CargoManifestFileName);
             discoveredManifestPaths.UnionWith(cargoManifestPaths.Select(path =>
@@ -736,7 +735,7 @@ public partial class IndexingPipeline
     /// Directories holding SwiftPM/Xcode build output, generated workspaces or third-party
     /// checkouts (<c>.build/checkouts</c>, <c>DerivedData/.../SourcePackages</c>, CocoaPods,
     /// Carthage). Their sources and manifests are dependencies, never the repository's own code,
-    /// so every discovery (source files, package manifests, overlays) excludes them in addition to
+    /// so glob discovery (source files, Swift package manifests, overlays) excludes them in addition to
     /// the configured <see cref="IndexingOptions.SkipPatterns"/>.
     /// </summary>
     internal static readonly IReadOnlyList<string> GeneratedDependencyDirectories =
@@ -755,12 +754,6 @@ public partial class IndexingPipeline
     private static bool IsSwiftManifest(string path) =>
         Path.GetFileName(path) is SwiftPackageManifestExtractor.PackageSwiftFileName
             or SwiftPackageManifestExtractor.PackageResolvedFileName;
-
-    /// <summary>Whether discovery includes <paramref name="fullPath"/> (no exclusion matches it).</summary>
-    private bool IsDiscoverable(string rootPath, string fullPath) =>
-        CreateDiscoveryMatcher("**/*")
-            .Match(NormalizeRelativePath(Path.GetRelativePath(rootPath, fullPath)))
-            .HasMatches;
 
     /// <summary>
     /// Manifests (named one of <paramref name="manifestNames"/>) that own stored Package nodes of

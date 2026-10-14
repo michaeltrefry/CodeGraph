@@ -17,7 +17,7 @@ The working inventory is tracked in [plans/standalone-rebase-inventory.md](/User
 ## What CodeGraph Does
 
 - Indexes repositories into a structural graph of code, APIs, messaging, jobs, packages, and database objects
-- Extracts across multiple languages: C# via Roslyn, TypeScript/Angular via a Node sidecar, T-SQL via ScriptDom, Ansible, Terraform/HCL, ColdFusion, and Tree-sitter as a fallback
+- Extracts across multiple languages: C# via Roslyn, TypeScript/Angular via a Node sidecar, T-SQL via ScriptDom, Rust via rust-analyzer/SCIP (Tree-sitter fallback), Swift via Tree-sitter (SwiftPM and Xcode packages, cross-file types, calls and imports), Ansible, Terraform/HCL, ColdFusion, and Tree-sitter for other languages
 - Recognizes modern .NET repository layouts, including solution-level analysis from top-level `.sln` and `.slnx` files
 - Links repositories through HTTP calls, MassTransit messaging, shared packages, and other cross-repo signals
 - Generates natural-language repository and project analysis with confidence indicators and optional auto-commit/auto-push of `CODEGRAPH.md`
