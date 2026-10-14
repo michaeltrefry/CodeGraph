@@ -60,7 +60,8 @@ public partial class IndexingPipeline
         _diagnostics = diagnostics;
         _foundationalRepos = _options.FoundationalRepos ?? [];
         _extractionVersions = new ExtractionVersionCatalog(
-            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor);
+            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor,
+            DiscoveryExcludePatterns);
     }
 
     /// <summary>
@@ -515,16 +516,24 @@ public partial class IndexingPipeline
         // Manifests are re-extracted on every run, but a manifest that is not a discovered source
         // file (or whose source extractor did not process it) never reaches successfullyProcessedFiles.
         var manifestReplacementPaths = new List<string>();
+        // Manifest file names discovered this run, and the manifests found under them. A stored
+        // package slice of such a manifest that was not found again is emptied below.
+        var discoveredManifestNames = new HashSet<string>(StringComparer.Ordinal);
+        var discoveredManifestPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
         if (_cargoManifestExtractor is not null)
         {
             var cargoManifestPaths = _fileSystem
-                .EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
+                .EnumerateFiles(rootPath, CargoManifestFileName, SearchOption.AllDirectories)
                 .Where(path => !path.Contains(
                     $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
                     StringComparison.OrdinalIgnoreCase))
+                .Where(path => IsDiscoverable(rootPath, path))
                 .ToArray();
+            discoveredManifestNames.Add(CargoManifestFileName);
+            discoveredManifestPaths.UnionWith(cargoManifestPaths.Select(path =>
+                NormalizeRelativePath(Path.GetRelativePath(rootPath, path))));
 
             if (cargoManifestPaths.Length > 0)
             {
@@ -555,7 +564,10 @@ public partial class IndexingPipeline
         {
             try
             {
-                var swiftResult = ExtractSwiftPackageManifests(rootPath, context);
+                var swiftResult = ExtractSwiftPackageManifests(rootPath, context, out var swiftManifestPaths);
+                discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageSwiftFileName);
+                discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageResolvedFileName);
+                discoveredManifestPaths.UnionWith(swiftManifestPaths);
                 if (swiftResult is not null)
                 {
                     MergeResults([swiftResult], buffer);
@@ -575,6 +587,17 @@ public partial class IndexingPipeline
                 _logger.LogWarning(ex,
                     "Swift package manifest extraction failed for {Project}", projectName);
             }
+        }
+
+        // A manifest that is gone (deleted, moved, or now excluded from discovery) leaves its package
+        // slice behind: Package.resolved and Cargo.toml are not hash-tracked source files, so the
+        // full scan never reports them deleted. Replacing their paths with nothing removes their
+        // Package nodes and REFERENCES_PACKAGE edges; the post-index cross-repo linking of this
+        // project then rebuilds its links without them.
+        if (!replaceExistingGraph && existingHashes.Count > 0 && discoveredManifestNames.Count > 0)
+        {
+            manifestReplacementPaths.AddRange(await FindRemovedManifestPathsAsync(
+                projectName, discoveredManifestNames, discoveredManifestPaths));
         }
 
         // Per-file extraction for everything not successfully handled by a specialized analyzer
@@ -692,6 +715,68 @@ public partial class IndexingPipeline
 
     // ── File Discovery & Hashing ─────────────────────────────────────────
 
+    /// <summary>
+    /// Directories holding SwiftPM/Xcode build output, generated workspaces or third-party
+    /// checkouts (<c>.build/checkouts</c>, <c>DerivedData/.../SourcePackages</c>, CocoaPods,
+    /// Carthage). Their sources and manifests are dependencies, never the repository's own code,
+    /// so every discovery (source files, package manifests, overlays) excludes them in addition to
+    /// the configured <see cref="IndexingOptions.SkipPatterns"/>.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> GeneratedDependencyDirectories =
+        [".build", ".swiftpm", "DerivedData", "SourcePackages", "Carthage", "Pods"];
+
+    /// <summary>
+    /// Every glob discovery excludes: the configured skip patterns and the generated dependency
+    /// directories. Part of the extraction fingerprint, so a change re-runs indexing at an
+    /// unchanged commit and the full scan removes files that left the indexed universe.
+    /// </summary>
+    internal IEnumerable<string> DiscoveryExcludePatterns =>
+        _options.SkipPatterns.Concat(GeneratedDependencyDirectories.Select(directory => $"**/{directory}/**"));
+
+    private const string CargoManifestFileName = "Cargo.toml";
+
+    /// <summary>Whether discovery includes <paramref name="fullPath"/> (no exclusion matches it).</summary>
+    private bool IsDiscoverable(string rootPath, string fullPath) =>
+        CreateDiscoveryMatcher("**/*")
+            .Match(NormalizeRelativePath(Path.GetRelativePath(rootPath, fullPath)))
+            .HasMatches;
+
+    /// <summary>
+    /// Manifests (named one of <paramref name="manifestNames"/>) that own stored Package nodes of
+    /// <paramref name="projectName"/> but were not discovered this run.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> FindRemovedManifestPathsAsync(
+        string projectName,
+        IReadOnlySet<string> manifestNames,
+        IReadOnlySet<string> discoveredPaths)
+    {
+        var removed = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Package, int.MaxValue))
+            .Select(node => node.FilePath)
+            .OfType<string>()
+            .Select(NormalizeRelativePath)
+            .Where(path => manifestNames.Contains(Path.GetFileName(path)) && !discoveredPaths.Contains(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (removed.Count > 0)
+        {
+            _logger.LogInformation(
+                "Removing the package slices of {Count} manifest(s) of {Project} that are no longer present: {Manifests}",
+                removed.Count, projectName, string.Join(", ", removed));
+        }
+
+        return removed;
+    }
+
+    /// <summary>A matcher for <paramref name="includePatterns"/> minus <see cref="DiscoveryExcludePatterns"/>.</summary>
+    private Matcher CreateDiscoveryMatcher(params string[] includePatterns)
+    {
+        var matcher = new Matcher();
+        matcher.AddIncludePatterns(includePatterns);
+        foreach (var pattern in DiscoveryExcludePatterns)
+            matcher.AddExclude(pattern);
+        return matcher;
+    }
+
     private List<string> DiscoverFiles(string rootPath,
         IReadOnlyList<string>? changedFilesOnly)
     {
@@ -705,10 +790,7 @@ public partial class IndexingPipeline
         if (!_fileSystem.DirectoryExists(rootPath))
             throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
 
-        var matcher = new Matcher();
-        matcher.AddInclude("**/*");
-        foreach (var skip in _options.SkipPatterns)
-            matcher.AddExclude(skip);
+        var matcher = CreateDiscoveryMatcher("**/*");
 
         var supportedExtensions = _extractors
             .SelectMany(e => e.SupportedExtensions)

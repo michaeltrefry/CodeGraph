@@ -91,13 +91,18 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     }
 
     public Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project, string propertyKey, IReadOnlyCollection<string> values, CancellationToken ct = default)
+        string project,
+        IReadOnlyCollection<EdgeType> types,
+        string propertyKey,
+        IReadOnlyCollection<string> values,
+        CancellationToken ct = default)
     {
         CountLookup(nameof(FindEdgesByPropertyAsync));
         var wanted = values.ToHashSet(StringComparer.Ordinal);
         var nodeById = _nodes.ToDictionary(node => node.Id);
         return Task.FromResult<IReadOnlyList<StoredEdge>>(_edges
             .Where(edge => edge.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                           && types.Contains(edge.Type)
                            && edge.Properties?.GetValueOrDefault(propertyKey)?.ToString() is { } value
                            && wanted.Contains(value))
             .Select(edge => new StoredEdge(

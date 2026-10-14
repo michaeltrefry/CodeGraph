@@ -89,12 +89,17 @@ public class IndexingOptions
     /// <c>cargo check</c> compiles them (which runs their build scripts).
     /// </summary>
     public bool RustSemanticProcMacros { get; set; }
+    /// <summary>
+    /// Globs (relative to the repository root) that discovery never indexes. The default also
+    /// excludes Claude Code agent worktrees (<c>.claude/worktrees</c>): each is a full copy of the
+    /// repository, never its own code.
+    /// </summary>
     public string[] SkipPatterns { get; set; } =
     [
         "**/bin/**", "**/obj/**", "**/node_modules/**",
         "**/build/**", "**/managed_components/**", "**/.cache/**",
         "**/wwwroot/lib/**", "**/*.min.js", "**/.git/**",
-        "**/packages/**", "**/TestResults/**"
+        "**/packages/**", "**/TestResults/**", "**/.claude/worktrees/**"
     ];
 
     public string[] FoundationalRepos { get; set; } = [];

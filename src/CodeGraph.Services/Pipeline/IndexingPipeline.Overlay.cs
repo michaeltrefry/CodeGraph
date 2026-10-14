@@ -12,7 +12,7 @@ public partial class IndexingPipeline
 {
     /// <summary>
     /// True when <paramref name="relativePath"/> belongs to the file universe the default-branch
-    /// index covers (a supported extension that no skip pattern excludes).
+    /// index covers (a supported extension that no discovery exclusion excludes).
     /// </summary>
     public bool IsIndexablePath(string relativePath)
     {
@@ -21,11 +21,7 @@ public partial class IndexingPipeline
         if (!_extractors.Any(extractor => extractor.SupportedExtensions.Contains(extension)))
             return false;
 
-        var matcher = new Matcher();
-        matcher.AddInclude("**/*");
-        foreach (var skip in _options.SkipPatterns)
-            matcher.AddExclude(skip);
-        return matcher.Match(normalized).HasMatches;
+        return CreateDiscoveryMatcher("**/*").Match(normalized).HasMatches;
     }
 
     /// <summary>

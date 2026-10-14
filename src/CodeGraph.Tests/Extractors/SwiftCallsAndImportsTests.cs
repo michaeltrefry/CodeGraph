@@ -392,4 +392,49 @@ public class SwiftCallsAndImportsTests
                 ExpectedCalls.Append(($"{C}#function:later()", $"{S}#function:log(_message:String)")),
                 ignoreOrder: true);
         });
+
+    [Fact]
+    public async Task IndexProject_ReceiverOnANestedTypeDeclaredInAnotherFile_ResolvesByItsFullPath()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-swift-nested-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "Outer.swift"),
+                "struct Outer {\n    struct Inner {\n        static func make() -> Int { 1 }\n    }\n}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "Outer+Build.swift"),
+                "extension Outer.Inner {\n    static func build() -> Int { 2 }\n}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "User.swift"), """
+                struct User {
+                    func run() {
+                        _ = Outer.Inner.make()
+                        _ = Outer.Inner.build()
+                        _ = Missing.Inner.make()
+                    }
+                }
+                """);
+            var store = new InMemoryGraphStore();
+            await IndexAsync(store, root);
+
+            const string run = $"{Project}:User.swift#type:User#method:run()";
+            const string make = $"{Project}:Outer.swift#type:Outer#type:Inner#method:make()";
+            const string build = $"{Project}:Outer+Build.swift#extension:Outer.Inner#method:build()";
+            // Missing.Inner is not the repository's Outer.Inner, although both are named Inner.
+            Calls(store).ShouldBe([(run, make), (run, build)], ignoreOrder: true);
+
+            // A second type named Inner (with same-named members) does not make Outer.Inner ambiguous.
+            await File.WriteAllTextAsync(Path.Combine(root, "Other.swift"),
+                "struct Other {\n    struct Inner {\n        static func make() -> Int { 3 }\n    }\n}\n" +
+                "extension Other.Inner {\n    static func build() -> Int { 4 }\n}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "User.swift"),
+                await File.ReadAllTextAsync(Path.Combine(root, "User.swift")) + "\n");
+            await IndexAsync(store, root);
+
+            Calls(store).ShouldBe([(run, make), (run, build)], ignoreOrder: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

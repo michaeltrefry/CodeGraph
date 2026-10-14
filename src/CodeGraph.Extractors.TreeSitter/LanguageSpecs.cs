@@ -339,7 +339,7 @@ public static class LanguageSpecs
         // the pipeline resolves it (SwiftTypeReference).
         ContainerOwnerReference = node =>
             GetSwiftDeclarationKind(node) == "extension"
-            && GetSwiftTypePath(node.GetChildForField("name")) is { } extendedPath
+            && SwiftCallSites.TypePath(node.GetChildForField("name")) is { } extendedPath
                 ? new ContainerOwner(extendedPath, SwiftTypeReference.Create(extendedPath))
                 : null,
         TypeRelationExtractor = AddSwiftTypeRelations,
@@ -402,26 +402,6 @@ public static class LanguageSpecs
         "(" + string.Join(",", node.NamedChildren
             .Where(child => child.Type == "parameter")
             .Select(child => child.Text)) + ")";
-
-    /// <summary>
-    /// Dotted path of a Swift type reference without generic arguments:
-    /// <c>Outer.Inner&lt;T&gt;</c> → <c>Outer.Inner</c>. Null for non-nominal types.
-    /// </summary>
-    internal static string? GetSwiftTypePath(Node? type)
-    {
-        if (type is null)
-            return null;
-        if (type.Type == "type_identifier")
-            return type.Text;
-        if (type.Type != "user_type")
-            return type.NamedChildren.Select(GetSwiftTypePath).FirstOrDefault(path => path is not null);
-
-        var parts = type.NamedChildren
-            .Where(child => child.Type == "type_identifier")
-            .Select(child => child.Text)
-            .ToList();
-        return parts.Count == 0 ? null : string.Join('.', parts);
-    }
 
     // Standard-library and Apple-framework protocols that commonly come first in a class's
     // inheritance clause. A first entry that is not declared in the repository is a protocol
@@ -492,7 +472,7 @@ public static class LanguageSpecs
         var kind = GetSwiftDeclarationKind(context.Node);
         var entries = context.Node.NamedChildren
             .Where(child => child.Type == "inheritance_specifier")
-            .Select(child => GetSwiftTypePath(
+            .Select(child => SwiftCallSites.TypePath(
                 child.GetChildForField("inherits_from") ?? child.NamedChildren.FirstOrDefault()))
             .ToList();
 

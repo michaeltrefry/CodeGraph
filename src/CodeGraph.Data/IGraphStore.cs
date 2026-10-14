@@ -114,11 +114,17 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         string project, IReadOnlyCollection<string> names, CancellationToken ct = default);
 
     /// <summary>
-    /// Edges of <paramref name="project"/> whose string property <paramref name="propertyKey"/>
-    /// equals one of <paramref name="values"/>, with their endpoints' qualified names and files.
+    /// Edges of <paramref name="project"/> of one of <paramref name="types"/> whose string property
+    /// <paramref name="propertyKey"/> equals one of <paramref name="values"/>, with their endpoints'
+    /// qualified names and files. The type predicate lets the store narrow the scan by edge type
+    /// before it inspects edge properties.
     /// </summary>
     Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project, string propertyKey, IReadOnlyCollection<string> values, CancellationToken ct = default);
+        string project,
+        IReadOnlyCollection<EdgeType> types,
+        string propertyKey,
+        IReadOnlyCollection<string> values,
+        CancellationToken ct = default);
     Task DeleteFilesFromProjectGraphAsync(
         string project,
         IReadOnlyList<string> filePaths,

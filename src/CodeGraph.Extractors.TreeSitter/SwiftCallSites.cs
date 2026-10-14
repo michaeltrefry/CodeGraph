@@ -85,10 +85,10 @@ internal sealed class SwiftCallSites
                     return new CallSite("init", ResolveType(name, context), CallReceiverKind.Resolved, labels);
 
                 // An unqualified call of a method the enclosing type declares is a call on self.
-                if (EnclosingTypePath(call) is { } enclosing && DeclaresFunction(enclosing, name)
-                    && (context.EnclosingTypeQN ?? context.EnclosingOwnerName) is { } owner)
+                if (EnclosingTypePath(call) is { } enclosing && DeclaresFunction(enclosing, name))
                 {
-                    return new CallSite(name, owner, CallReceiverKind.Resolved, labels);
+                    return new CallSite(name, context.EnclosingTypeQN ?? SwiftTypeReference.Create(enclosing),
+                        CallReceiverKind.Resolved, labels);
                 }
 
                 // Calling a closure held by a parameter, local or property (`completion(1)`) is
@@ -264,7 +264,7 @@ internal sealed class SwiftCallSites
 
     private TypeRef? EnclosingType(Node node, CallSiteContext context, bool isType) =>
         EnclosingTypePath(node) is { } path
-            ? new TypeRef(path, context.EnclosingTypeQN ?? context.EnclosingOwnerName ?? path, isType)
+            ? new TypeRef(path, context.EnclosingTypeQN ?? SwiftTypeReference.Create(path), isType)
             : null;
 
     /// <summary>The type an implicit member expression (<c>.init(...)</c>) is resolved against.</summary>
@@ -510,8 +510,13 @@ internal sealed class SwiftCallSites
             ? pattern.GetChildForField("bound_identifier")?.Text ?? pattern.Text
             : null;
 
+    /// <summary>
+    /// A receiver type: the qualified name of a type declared in this file, else a Swift type
+    /// reference carrying the full dotted path, which the pipeline resolves to the type at that
+    /// path (<see cref="SwiftTypeReference"/>).
+    /// </summary>
     private static string ResolveType(string path, CallSiteContext context) =>
-        context.ResolveLocalType(path) ?? path[(path.LastIndexOf('.') + 1)..];
+        context.ResolveLocalType(path) ?? SwiftTypeReference.Create(path);
 
     /// <summary>Swift types are UpperCamelCase; values and functions are lowerCamelCase.</summary>
     private static bool IsTypeName(string name) => name.Length > 0 && char.IsUpper(name[0]);
@@ -530,7 +535,7 @@ internal sealed class SwiftCallSites
 
             var isExtension = child.GetChildForField("declaration_kind")?.Text == "extension";
             var name = isExtension
-                ? LanguageSpecs.GetSwiftTypePath(child.GetChildForField("name"))
+                ? TypePath(child.GetChildForField("name"))
                 : child.GetChildForField("name")?.Text;
             if (string.IsNullOrWhiteSpace(name))
             {
@@ -582,7 +587,8 @@ internal sealed class SwiftCallSites
 
     /// <summary>
     /// Dotted path of a nominal type, without generic arguments; <c>T?</c> and <c>T!</c> unwrap to
-    /// <c>T</c>. Null for structural types (arrays, dictionaries, tuples, functions).
+    /// <c>T</c>. Null for structural types (arrays, dictionaries, tuples, functions). The single
+    /// Swift type-path reader: extension names, inheritance entries and receivers all use it.
     /// </summary>
     internal static string? TypePath(Node? type)
     {
