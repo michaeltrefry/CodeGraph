@@ -24,6 +24,7 @@ public partial class IndexingPipeline
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly ICargoManifestExtractor? _cargoManifestExtractor;
+    private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
     private readonly IndexingRunDiagnostics? _diagnostics;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
@@ -42,7 +43,8 @@ public partial class IndexingPipeline
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
         IRustAnalyzer? rustAnalyzer = null,
         ICargoManifestExtractor? cargoManifestExtractor = null,
-        IndexingRunDiagnostics? diagnostics = null)
+        IndexingRunDiagnostics? diagnostics = null,
+        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null)
     {
         _store = store;
         _extractors = extractors;
@@ -54,10 +56,11 @@ public partial class IndexingPipeline
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
         _cargoManifestExtractor = cargoManifestExtractor;
+        _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
         _diagnostics = diagnostics;
         _foundationalRepos = _options.FoundationalRepos ?? [];
         _extractionVersions = new ExtractionVersionCatalog(
-            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer);
+            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor);
     }
 
     /// <summary>
@@ -545,6 +548,33 @@ public partial class IndexingPipeline
             }
         }
 
+        // Swift Package Manager / Xcode — package definitions, declared dependencies, resolved
+        // pins and Swift/Xcode vs Swift/SwiftPM classification.
+        var swiftResolvedManifestPaths = new List<string>();
+        if (_swiftPackageManifestExtractor is not null)
+        {
+            try
+            {
+                var swiftResult = ExtractSwiftPackageManifests(rootPath, context);
+                if (swiftResult is not null)
+                {
+                    MergeResults([swiftResult], buffer);
+                    if (swiftResult.Metadata is not null)
+                        detectedMetadataCandidates.Add(swiftResult.Metadata);
+                    // Package.resolved is not a discovered source file: its pins are re-extracted
+                    // on every run and replace the stored slice for that path.
+                    swiftResolvedManifestPaths.AddRange(swiftResult.ProcessedFiles.Where(path =>
+                        Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageResolvedFileName));
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Swift package manifest extraction failed for {Project}", projectName);
+            }
+        }
+
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
             .Where(file => !successfullyProcessedFiles.Contains(
@@ -612,6 +642,7 @@ public partial class IndexingPipeline
         {
             var replacementPaths = successfullyProcessedFiles
                 .Concat(deletedFiles)
+                .Concat(swiftResolvedManifestPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
