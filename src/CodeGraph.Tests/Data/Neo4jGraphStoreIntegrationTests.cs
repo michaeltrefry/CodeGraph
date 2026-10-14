@@ -22,6 +22,7 @@ public class Neo4jGraphStoreIntegrationTests
             Neo4jUsername = username,
             Neo4jPassword = password
         });
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var sessions = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
 

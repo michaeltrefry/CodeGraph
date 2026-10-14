@@ -80,6 +80,7 @@ public class ArchitectureAggregateStoreTests
         });
         var project = $"Arch_{Guid.NewGuid():N}";
         var otherProject = $"ArchOther_{Guid.NewGuid():N}";
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var sessions = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
         const int fillerMethodCount = 40;
