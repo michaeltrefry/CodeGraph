@@ -12,6 +12,7 @@ public partial class Neo4jGraphStore
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
+        GraphSliceRetractions? retractions = null,
         CancellationToken ct = default)
     {
         if (filePaths.Count == 0) return 0;
@@ -21,6 +22,26 @@ public partial class Neo4jGraphStore
         {
             ct.ThrowIfCancellationRequested();
             var pathVariants = ExpandPathVariants(filePaths);
+
+            // Retracted edges go first, so they are never preserved below.
+            if (retractions is { Edges.Count: > 0 })
+            {
+                var retracted = retractions.Edges.Select(edge => new Dictionary<string, object?>
+                {
+                    ["source"] = edge.SourceQN,
+                    ["target"] = edge.TargetQN,
+                    ["type"] = edge.Type.ToString()
+                }).ToList();
+                foreach (var batch in Chunk(retracted, 500))
+                {
+                    await tx.RunAsync("""
+                        UNWIND $edges AS e
+                        MATCH (source:CodeNode {project: $project, qualifiedName: e.source})-[edge]->(target:CodeNode {project: $project, qualifiedName: e.target})
+                        WHERE type(edge) = e.type
+                        DELETE edge
+                        """, new { project, edges = batch });
+                }
+            }
 
             var incomingCursor = await tx.RunAsync("""
                 MATCH (source:CodeNode)-[edge]->(target:CodeNode {project: $project})
@@ -180,6 +201,16 @@ public partial class Neo4jGraphStore
                 ct.ThrowIfCancellationRequested();
                 foreach (var group in batch.GroupBy(edge => edge.Type))
                     await UpsertRelationshipAsync(tx, group.Key, group.Select(BuildEdgeParams).ToList());
+            }
+
+            if (retractions is { OrphanCandidateQNs.Count: > 0 })
+            {
+                await tx.RunAsync("""
+                    UNWIND $qualifiedNames AS qn
+                    MATCH (n:CodeNode {project: $project, qualifiedName: qn})
+                    WHERE (n.filePath IS NULL OR n.filePath = '') AND NOT (n)-[]-(:CodeNode)
+                    DETACH DELETE n
+                    """, new { project, qualifiedNames = retractions.OrphanCandidateQNs.Distinct().ToList() });
             }
 
             foreach (var batch in Chunk(fileHashes.Select(hash => new Dictionary<string, object?>

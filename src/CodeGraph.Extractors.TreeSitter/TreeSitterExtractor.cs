@@ -222,6 +222,7 @@ public class TreeSitterExtractor : ICodeExtractor
         var fileQN = GetFileQualifiedName(context, filePath);
         var fileTypes = new FileTypes(
             knownTypeLabels,
+            fileQN,
             fileQN[(context.ProjectName.Length + 1)..]);
         WalkForDefinitionsAndCalls(root, spec, context, content,
             nodes, edges, unresolvedCalls, makeNode, fileQN,
@@ -252,9 +253,14 @@ public class TreeSitterExtractor : ICodeExtractor
                 var container = enclosingClassQN ?? parentQN;
                 var props = new Dictionary<string, object> { ["confidence"] = "high" };
                 var isContainerOnly = spec.IsContainerOnlyClass?.Invoke(node) == true;
-                var ownerQN = isContainerOnly
-                    ? ResolveKnownReceiverType(name, knownReceiverTypes)
-                    : $"{container}#type:{name}";
+                // A container-only definition with an owner path (Swift extension) extends the
+                // top-level type at that path; extensions only appear at file scope.
+                var extendedType = isContainerOnly ? spec.ContainerOwnerReference?.Invoke(node) : null;
+                var ownerQN = !isContainerOnly
+                    ? $"{container}#type:{name}"
+                    : extendedType is not null
+                        ? fileTypes.Find(fileTypes.FileQN, extendedType.Path)
+                        : ResolveKnownReceiverType(name, knownReceiverTypes);
 
                 if (spec.ClassKindExtractor?.Invoke(node) is { } declarationKind)
                     props["declaration_kind"] = declarationKind;
@@ -272,31 +278,29 @@ public class TreeSitterExtractor : ICodeExtractor
                 // A container-only definition whose owner is declared in another file: its
                 // members live under "#extension:{path}" and their definition edges start at a
                 // symbolic owner reference that the pipeline resolves across files.
-                var crossFileOwner = isContainerOnly && ownerQN is null
-                    ? spec.ContainerOwnerReference?.Invoke(node)
-                    : null;
+                var crossFileOwner = ownerQN is null ? extendedType : null;
                 var ownerLink = crossFileOwner is null
                     ? null
                     : new OwnerLink(crossFileOwner.ReferenceQN, new Dictionary<string, object>
                     {
-                        [SwiftTypeReference.OwnerReferenceProperty] = crossFileOwner.ReferenceQN,
-                        [SwiftTypeReference.ExtensionFileProperty] = fileTypes.RelativePath
+                        [SwiftTypeReference.OriginFileProperty] = fileTypes.RelativePath
                     });
 
                 if (spec.TypeRelationExtractor is not null
                     && (ownerQN ?? crossFileOwner?.ReferenceQN) is { } typeQN)
                 {
+                    // Names in an inheritance clause resolve outward from the declaring scope.
+                    var scopeQN = isContainerOnly ? fileTypes.FileQN : container;
                     spec.TypeRelationExtractor(new TypeDeclarationContext
                     {
                         Node = node,
                         TypeQN = typeQN,
                         IsContainerOnly = isContainerOnly,
                         TypeProperties = isContainerOnly ? null : props,
-                        OwnerEdgeProperties = ownerLink?.EdgeProperties ?? EmptyEdgeProperties,
-                        ResolveLocalType = typeName =>
-                            ResolveKnownReceiverType(typeName, knownReceiverTypes) is { } localQN
-                            && fileTypes.Labels.TryGetValue(localQN, out var localLabel)
-                                ? new LocalType(localQN, localLabel)
+                        OriginFile = fileTypes.RelativePath,
+                        ResolveLocalType = typePath =>
+                            fileTypes.FindInScope(scopeQN, typePath) is { } localQN
+                                ? new LocalType(localQN, fileTypes.Labels[localQN])
                                 : null,
                         Edges = edges
                     });
@@ -654,7 +658,21 @@ public class TreeSitterExtractor : ICodeExtractor
     {
         var knownTypes = new Dictionary<string, string>(StringComparer.Ordinal);
         var ambiguousNames = new HashSet<string>(StringComparer.Ordinal);
-        CollectKnownReceiverTypes(root, spec, fileQN, knownTypes, ambiguousNames, labels);
+        var extensions = new List<Node>();
+        CollectKnownReceiverTypes(root, spec, fileQN, knownTypes, ambiguousNames, labels, extensions);
+
+        // Members of an extension are named under the extended type when it is declared in this
+        // file, else under "#extension:{path}" — as the definition walk names them.
+        foreach (var extension in extensions)
+        {
+            var path = spec.ContainerOwnerReference!(extension)!.Path;
+            var ownerQN = new FileTypes(labels, fileQN, "").Find(fileQN, path)
+                ?? $"{fileQN}#extension:{path}";
+            var body = spec.BodyField is null ? null : extension.GetChildForField(spec.BodyField);
+            foreach (var child in (body ?? extension).Children)
+                CollectKnownReceiverTypes(child, spec, ownerQN, knownTypes, ambiguousNames, labels, extensions: null);
+        }
+
         foreach (var ambiguousName in ambiguousNames)
             knownTypes.Remove(ambiguousName);
         return knownTypes;
@@ -666,8 +684,17 @@ public class TreeSitterExtractor : ICodeExtractor
         string parentQN,
         Dictionary<string, string> knownTypes,
         HashSet<string> ambiguousNames,
-        Dictionary<string, NodeLabel> labels)
+        Dictionary<string, NodeLabel> labels,
+        List<Node>? extensions)
     {
+        if (extensions is not null && spec.ClassNodeTypes.Contains(node.Type)
+            && spec.IsContainerOnlyClass?.Invoke(node) == true
+            && spec.ContainerOwnerReference?.Invoke(node) is not null)
+        {
+            extensions.Add(node);
+            return;
+        }
+
         if (spec.ClassNodeTypes.Contains(node.Type)
             && spec.IsContainerOnlyClass?.Invoke(node) != true)
         {
@@ -694,7 +721,7 @@ public class TreeSitterExtractor : ICodeExtractor
                     foreach (var child in (body ?? node).Children)
                     {
                         CollectKnownReceiverTypes(
-                            child, spec, qualifiedName, knownTypes, ambiguousNames, labels);
+                            child, spec, qualifiedName, knownTypes, ambiguousNames, labels, extensions);
                     }
                     return;
                 }
@@ -702,7 +729,7 @@ public class TreeSitterExtractor : ICodeExtractor
         }
 
         foreach (var child in node.Children)
-            CollectKnownReceiverTypes(child, spec, parentQN, knownTypes, ambiguousNames, labels);
+            CollectKnownReceiverTypes(child, spec, parentQN, knownTypes, ambiguousNames, labels, extensions);
     }
 
     private static void AddKnownReceiverType(
@@ -817,11 +844,38 @@ public class TreeSitterExtractor : ICodeExtractor
     private static readonly IReadOnlyDictionary<string, string> EmptyReceiverAliases =
         new Dictionary<string, string>();
 
-    private static readonly IReadOnlyDictionary<string, object> EmptyEdgeProperties =
-        new Dictionary<string, object>();
+    /// <summary>
+    /// Types declared in the file being extracted (qualified name to label), the file's qualified
+    /// name and its repository-relative path.
+    /// </summary>
+    private sealed record FileTypes(
+        IReadOnlyDictionary<string, NodeLabel> Labels, string FileQN, string RelativePath)
+    {
+        /// <summary>The type at dotted <paramref name="typePath"/> directly under <paramref name="scopeQN"/>.</summary>
+        public string? Find(string scopeQN, string typePath)
+        {
+            var qualifiedName = scopeQN + "#type:" + typePath.Replace(".", "#type:", StringComparison.Ordinal);
+            return Labels.ContainsKey(qualifiedName) ? qualifiedName : null;
+        }
 
-    /// <summary>Types declared in the file being extracted, and the file's repository-relative path.</summary>
-    private sealed record FileTypes(IReadOnlyDictionary<string, NodeLabel> Labels, string RelativePath);
+        /// <summary>
+        /// Lexical lookup: the type at <paramref name="typePath"/> in <paramref name="scopeQN"/> or
+        /// the nearest enclosing scope, up to the file's top level.
+        /// </summary>
+        public string? FindInScope(string scopeQN, string typePath)
+        {
+            var scope = scopeQN;
+            while (true)
+            {
+                if (Find(scope, typePath) is { } found)
+                    return found;
+                var parent = scope.LastIndexOf('#');
+                if (scope.Length <= FileQN.Length || parent < FileQN.Length)
+                    return null;
+                scope = scope[..parent];
+            }
+        }
+    }
 
     /// <summary>
     /// The cross-file owner a container-only definition's direct members attach to: their

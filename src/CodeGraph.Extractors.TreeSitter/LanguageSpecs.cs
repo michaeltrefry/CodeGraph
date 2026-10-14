@@ -443,9 +443,20 @@ public static class LanguageSpecs
         "UInt32", "UInt64", "Float", "Float16", "Float80", "Double", "CGFloat"
     };
 
+    // Framework classes whose names carry a protocol naming convention.
+    private static readonly HashSet<string> WellKnownSwiftClasses = new(StringComparer.Ordinal)
+    {
+        "UITableViewDiffableDataSource", "UICollectionViewDiffableDataSource",
+        "NSTableViewDiffableDataSource", "NSCollectionViewDiffableDataSource",
+        "UITableViewDiffableDataSourceReference", "UICollectionViewDiffableDataSourceReference",
+        "NSCollectionViewDiffableDataSourceReference"
+    };
+
     private static bool LooksLikeSwiftProtocol(string typePath)
     {
         var simpleName = SwiftTypeReference.SimpleName(typePath);
+        if (WellKnownSwiftClasses.Contains(simpleName))
+            return false;
         return WellKnownSwiftProtocols.Contains(simpleName)
             || SwiftProtocolNameSuffixes.Any(suffix =>
                 simpleName.Length > suffix.Length
@@ -463,10 +474,13 @@ public static class LanguageSpecs
     /// <item>class: only the first entry can be a superclass. It is INHERITS when it names a class
     /// declared in the file and IMPLEMENTS when it names a protocol declared in the file; otherwise
     /// it is IMPLEMENTS when it looks like a protocol (well-known protocol, or a Protocol/Delegate/
-    /// DataSource suffix) and INHERITS when not, marked <c>inheritance_inferred</c> so the pipeline
-    /// replaces the guess when the name resolves to a repository type. Later entries are IMPLEMENTS.</item>
+    /// DataSource suffix, except well-known classes such as UITableViewDiffableDataSource) and
+    /// INHERITS when not, marked <c>inheritance_inferred</c> so the pipeline replaces the guess
+    /// when the name resolves to a repository type. Later entries are IMPLEMENTS.</item>
     /// </list>
-    /// Targets not declared in the file are symbolic references the pipeline resolves.
+    /// Names resolve lexically: a type declared in the declaration's enclosing scope, then outward
+    /// to the file's top level. Targets not found in the file are symbolic references the pipeline
+    /// resolves against top-level repository types.
     /// </summary>
     private static void AddSwiftTypeRelations(TypeDeclarationContext context)
     {
@@ -516,18 +530,21 @@ public static class LanguageSpecs
                 edgeType = EdgeType.IMPLEMENTS;
             }
 
-            var properties = new Dictionary<string, object>(context.OwnerEdgeProperties)
+            var targetQN = local?.QualifiedName ?? SwiftTypeReference.Create(path);
+            var properties = new Dictionary<string, object>
             {
                 ["confidence"] = inferred ? "medium" : "high"
             };
             if (inferred)
                 properties[SwiftTypeReference.InheritanceInferredProperty] = true;
+            if (kind == "protocol")
+                properties[SwiftTypeReference.ProtocolTargetProperty] = true;
+            // An edge with a symbolic endpoint is owned by this file: the pipeline resolves it,
+            // and re-resolves it when this file or a type of that name changes.
+            if (SwiftTypeReference.TryParse(context.TypeQN, out _) || SwiftTypeReference.TryParse(targetQN, out _))
+                properties[SwiftTypeReference.OriginFileProperty] = context.OriginFile;
 
-            context.Edges.Add(new PendingEdge(
-                context.TypeQN,
-                local?.QualifiedName ?? SwiftTypeReference.Create(path),
-                edgeType,
-                properties));
+            context.Edges.Add(new PendingEdge(context.TypeQN, targetQN, edgeType, properties));
         }
     }
 

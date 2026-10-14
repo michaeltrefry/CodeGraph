@@ -170,10 +170,13 @@ public sealed class TypeDeclarationContext
     /// <summary>Properties of the emitted type node; null for a container-only definition.</summary>
     public required Dictionary<string, object>? TypeProperties { get; init; }
 
-    /// <summary>Edge properties that tie an edge to a cross-file container-only owner, else empty.</summary>
-    public required IReadOnlyDictionary<string, object> OwnerEdgeProperties { get; init; }
+    /// <summary>Repository-relative path of the file being extracted.</summary>
+    public required string OriginFile { get; init; }
 
-    /// <summary>Resolves a type name to a type declared in this file, when unambiguous.</summary>
+    /// <summary>
+    /// Resolves a dotted type path to a type declared in this file, looking in the declaration's
+    /// enclosing scope and then outward to the file's top level (lexical scoping).
+    /// </summary>
     public required Func<string, LocalType?> ResolveLocalType { get; init; }
 
     public required List<PendingEdge> Edges { get; init; }

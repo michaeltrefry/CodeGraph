@@ -57,6 +57,17 @@ public sealed class OverlayGraphView : IGraphReader
     /// </summary>
     public const string InferredRetargetProperty = "overlayRetarget";
 
+    /// <summary>
+    /// Marks an overlay slice entry that removes default-branch data at the overlay head instead
+    /// of adding to it: an edge so marked hides the default-branch edge with the same endpoints and
+    /// type, and a node so marked hides the file-less default-branch node (a stub) with its
+    /// qualified name. Branch overlays emit them when a Swift type reference binds differently at
+    /// the head than on the default branch.
+    /// </summary>
+    public const string RetractedProperty = "overlayRetracted";
+
+    private readonly HashSet<(long Source, long Target, EdgeType Type)> _retractedBaseEdges = [];
+
     private OverlayGraphView(
         IGraphReader baseGraph,
         BranchOverlayEntity overlay,
@@ -94,6 +105,19 @@ public sealed class OverlayGraphView : IGraphReader
 
         var hiddenPaths = changed.Concat(removed).ToHashSet(StringComparer.Ordinal);
         var hidden = new Dictionary<long, GraphNode>();
+        var retractedNodeQns = overlayNodes
+            .Where(node => IsRetracted(node.Properties) && string.IsNullOrEmpty(node.FilePath))
+            .Select(node => node.QualifiedName)
+            .ToHashSet(StringComparer.Ordinal);
+        if (retractedNodeQns.Count > 0)
+        {
+            foreach (var node in await baseGraph.FindNodesByQualifiedNamesAsync(overlay.Project, retractedNodeQns))
+            {
+                if (string.IsNullOrEmpty(node.FilePath))
+                    hidden[node.Id] = node;
+            }
+        }
+
         foreach (var path in hiddenPaths)
         {
             foreach (var variant in PathVariants(path))
@@ -116,8 +140,11 @@ public sealed class OverlayGraphView : IGraphReader
 
     private async Task BuildAsync(IReadOnlyList<GraphNode> overlayNodes, IReadOnlyList<PendingEdge> overlayEdges)
     {
+        // Nodes of changed files, plus file-less stubs their edges point at.
         var candidates = overlayNodes
-            .Where(node => _changedPaths.Contains(NormalizePath(node.FilePath)))
+            .Where(node => !IsRetracted(node.Properties)
+                           && (_changedPaths.Contains(NormalizePath(node.FilePath))
+                               || (string.IsNullOrEmpty(node.FilePath) && IsTrue(node.Properties, "stub"))))
             .GroupBy(node => node.QualifiedName, StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
@@ -179,6 +206,17 @@ public sealed class OverlayGraphView : IGraphReader
         var seen = new HashSet<(long, long, EdgeType)>();
         foreach (var edge in overlayEdges)
         {
+            if (IsRetracted(edge.Properties))
+            {
+                if (effectiveIdByQn.TryGetValue(edge.SourceQN, out var retractedSource)
+                    && effectiveIdByQn.TryGetValue(edge.TargetQN, out var retractedTarget))
+                {
+                    _retractedBaseEdges.Add((retractedSource, retractedTarget, edge.Type));
+                }
+
+                continue;
+            }
+
             if (!effectiveIdByQn.TryGetValue(edge.SourceQN, out var source)
                 || !effectiveIdByQn.TryGetValue(edge.TargetQN, out var target)
                 || !seen.Add((source, target, edge.Type)))
@@ -663,6 +701,18 @@ public sealed class OverlayGraphView : IGraphReader
     {
         if (_hiddenBaseNodes.ContainsKey(edge.SourceId))
             return null;
+        if (_retractedBaseEdges.Count > 0)
+        {
+            var target = Canonical(edge.TargetId);
+            if (target is { } mapped && _retractedBaseEdges.Contains((edge.SourceId, mapped, edge.Type)))
+                return null;
+        }
+
+        return MapVisibleBaseEdge(edge);
+    }
+
+    private GraphEdge? MapVisibleBaseEdge(GraphEdge edge)
+    {
         if (!_hiddenReplacement.TryGetValue(edge.TargetId, out var replacement))
             return edge;
         if (replacement is not { } target)
@@ -711,6 +761,18 @@ public sealed class OverlayGraphView : IGraphReader
             }
         }
     }
+
+    private static bool IsRetracted(IReadOnlyDictionary<string, object>? properties)
+        => IsTrue(properties, RetractedProperty);
+
+    private static bool IsTrue(IReadOnlyDictionary<string, object>? properties, string key)
+        => properties?.GetValueOrDefault(key) switch
+        {
+            bool value => value,
+            JsonElement { ValueKind: JsonValueKind.True } => true,
+            string text => bool.TryParse(text, out var parsed) && parsed,
+            _ => false
+        };
 
     internal static double? ReadConfidence(IReadOnlyDictionary<string, object>? properties)
     {

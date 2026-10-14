@@ -214,7 +214,7 @@ public partial class MySqlGraphStore(
                 parameters.Add($"Label{i}", node.Label.ToString());
                 parameters.Add($"Name{i}", Truncate(node.Name, 1000));
                 parameters.Add($"QualifiedName{i}", Truncate(node.QualifiedName, 1000));
-                parameters.Add($"FilePath{i}", node.FilePath);
+                parameters.Add($"FilePath{i}", node.FilePath ?? "");
                 parameters.Add($"StartLine{i}", node.StartLine);
                 parameters.Add($"EndLine{i}", node.EndLine);
                 parameters.Add($"Properties{i}", SerializeJson(node.Properties));
