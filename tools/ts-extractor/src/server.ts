@@ -28,7 +28,7 @@ app.get('/health', async () => ({ status: 'ok' }));
 app.post<{ Body: ExtractProjectRequest; Reply: ExtractProjectResponse }>(
   '/extract-project',
   async (request, reply) => {
-    const { projectName, rootPath, tsconfigPath } = request.body;
+    const { projectName, rootPath, tsconfigPath, includedFiles } = request.body;
     const logStream = openLogFile(projectName);
     const log = (msg: string) => {
       const line = `[${new Date().toISOString()}] ${msg}`;
@@ -36,11 +36,11 @@ app.post<{ Body: ExtractProjectRequest; Reply: ExtractProjectResponse }>(
       console.error(line);
     };
 
-    log(`Starting extraction: ${projectName} root=${rootPath} tsconfig=${tsconfigPath}`);
+    log(`Starting extraction: ${projectName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? "(disk walk)"}`);
 
     try {
       const t0 = Date.now();
-      const result = extractProject(projectName, rootPath, tsconfigPath, log);
+      const result = extractProject(projectName, rootPath, tsconfigPath, log, includedFiles);
       const elapsed = Date.now() - t0;
 
       // Log diagnostics

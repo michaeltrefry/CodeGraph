@@ -57,17 +57,17 @@ function openLogFile(projectName) {
 const app = (0, fastify_1.default)({ logger: false });
 app.get('/health', async () => ({ status: 'ok' }));
 app.post('/extract-project', async (request, reply) => {
-    const { projectName, rootPath, tsconfigPath } = request.body;
+    const { projectName, rootPath, tsconfigPath, includedFiles } = request.body;
     const logStream = openLogFile(projectName);
     const log = (msg) => {
         const line = `[${new Date().toISOString()}] ${msg}`;
         logStream.write(line + '\n');
         console.error(line);
     };
-    log(`Starting extraction: ${projectName} root=${rootPath} tsconfig=${tsconfigPath}`);
+    log(`Starting extraction: ${projectName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? "(disk walk)"}`);
     try {
         const t0 = Date.now();
-        const result = (0, extractor_1.extractProject)(projectName, rootPath, tsconfigPath, log);
+        const result = (0, extractor_1.extractProject)(projectName, rootPath, tsconfigPath, log, includedFiles);
         const elapsed = Date.now() - t0;
         // Log diagnostics
         const edgeTypes = {};

@@ -109,6 +109,9 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
     Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
         string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default);
 
+    /// <summary>Distinct non-empty file paths of the nodes of <paramref name="project"/>.</summary>
+    Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default);
+
     /// <summary>Nodes of <paramref name="project"/> whose name is one of <paramref name="names"/>.</summary>
     Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
         string project, IReadOnlyCollection<string> names, CancellationToken ct = default);

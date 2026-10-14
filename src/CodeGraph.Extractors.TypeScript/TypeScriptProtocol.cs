@@ -7,6 +7,9 @@ public record ExtractProjectRequest
     [JsonPropertyName("projectName")] public required string ProjectName { get; init; }
     [JsonPropertyName("rootPath")]    public required string RootPath { get; init; }
     [JsonPropertyName("tsconfigPath")] public required string TsconfigPath { get; init; }
+
+    /// <summary>Repo-relative files discovery admits; the sidecar reads no file outside them.</summary>
+    [JsonPropertyName("includedFiles")] public required List<string> IncludedFiles { get; init; }
 }
 
 public record ExtractProjectResponse

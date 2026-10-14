@@ -171,6 +171,98 @@ const extractor_1 = require("./extractor");
         fs.rmSync(rootPath, { recursive: true, force: true });
     }
 });
+(0, node_test_1.test)('extractProject analyzes only the files of the pipeline discovery scope', () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-scope-'));
+    try {
+        const writeCopy = (prefix) => {
+            writeJson(rootPath, `${prefix}package.json`, { name: '@demo/app' });
+            // An include glob and project references that would reach every copy below the root.
+            writeJson(rootPath, `${prefix}tsconfig.json`, {
+                compilerOptions: { target: 'ES2020' },
+                include: ['**/*.ts'],
+                references: [{ path: './.claude/worktrees/agent-1' }, { path: './web/node_modules/vendored' }],
+            });
+            writeFile(rootPath, `${prefix}src/app.ts`, 'export class App { run() { return 1; } }\n');
+        };
+        writeCopy('');
+        writeCopy('.claude/worktrees/agent-1/');
+        writeFile(rootPath, '.claude/worktrees/agent-1/src/worktree-only.ts', 'export class WorktreeOnly { go() {} }\n');
+        writeJson(rootPath, 'web/node_modules/vendored/package.json', { name: '@demo/app' });
+        writeJson(rootPath, 'web/node_modules/vendored/tsconfig.json', { compilerOptions: {} });
+        writeFile(rootPath, 'web/node_modules/vendored/index.ts', 'export class Vendored { go() {} }\n');
+        writeJson(rootPath, 'angular.json', {
+            projects: {
+                app: { root: '', projectType: 'application' },
+                copy: { root: '.claude/worktrees/agent-1', projectType: 'application' },
+            },
+        });
+        // Without a scope the sidecar walks the disk and picks the copies up (the fixture is effective).
+        const unscoped = (0, extractor_1.extractProject)('Demo', rootPath, path.join(rootPath, 'tsconfig.json'));
+        assert_1.strict.ok(unscoped.nodes.some(node => node.filePath.startsWith('.claude/')));
+        const result = (0, extractor_1.extractProject)('Demo', rootPath, path.join(rootPath, 'tsconfig.json'), () => { }, ['package.json', 'tsconfig.json', 'src/app.ts', 'angular.json']);
+        assert_1.strict.deepEqual(result.processedFiles, ['src/app.ts']);
+        assert_1.strict.deepEqual(result.nodes.filter(node => node.label !== 'Module' && node.label !== 'NuGetPackage')
+            .map(node => `${node.label}:${node.qualifiedName}:${node.filePath}`)
+            .sort(), ['Class:app.App:src/app.ts', 'Method:app.App.run:src/app.ts']);
+        assert_1.strict.deepEqual(result.workspacePackages.map(pkg => `${pkg.name}@${pkg.rootPath}`).sort(), ['@demo/app@']);
+        // Only the admitted tsconfig.json is read: no worktree/vendored config shapes module resolution.
+        assert_1.strict.ok(result.diagnostics?.includes('workspaceDiscovery: 1 packages, 1 tsconfig files'), JSON.stringify(result.diagnostics));
+        for (const node of result.nodes) {
+            assert_1.strict.ok(!node.filePath.includes('.claude/') && !node.filePath.includes('node_modules'), node.filePath);
+        }
+        for (const edge of result.edges) {
+            assert_1.strict.ok(!edge.sourceQN.includes('.claude/') && !edge.targetQN.includes('.claude/'), JSON.stringify(edge));
+        }
+    }
+    finally {
+        fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('type text rendered into qualified names and properties never embeds the checkout path', () => {
+    const first = writeTypeFixture();
+    const second = writeTypeFixture();
+    try {
+        const firstResult = (0, extractor_1.extractProject)('Demo', first, path.join(first, 'tsconfig.json'));
+        const secondResult = (0, extractor_1.extractProject)('Demo', second, path.join(second, 'tsconfig.json'));
+        const injects = firstResult.edges.filter(edge => edge.type === 'INJECTS').map(edge => edge.targetQN).sort();
+        assert_1.strict.deepEqual(injects, [
+            '(error: unknown) => import("src/errors").AppError',
+            'import("src/services/foo").FooService',
+        ]);
+        const fingerprint = (result) => JSON.stringify({
+            nodes: result.nodes.map(node => [node.qualifiedName, node.properties]),
+            edges: result.edges.map(edge => [edge.sourceQN, edge.targetQN, edge.type, edge.properties ?? {}]),
+        });
+        assert_1.strict.equal(fingerprint(firstResult), fingerprint(secondResult));
+        for (const [root, result] of [[first, firstResult], [second, secondResult]]) {
+            const text = fingerprint(result);
+            for (const absolute of [root, fs.realpathSync(root)]) {
+                assert_1.strict.ok(!text.includes(absolute), `${absolute} leaked into ${text}`);
+            }
+        }
+    }
+    finally {
+        fs.rmSync(first, { recursive: true, force: true });
+        fs.rmSync(second, { recursive: true, force: true });
+    }
+});
+function writeTypeFixture() {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-types-'));
+    writeJson(rootPath, 'tsconfig.json', { compilerOptions: { target: 'ES2020' } });
+    writeFile(rootPath, 'src/services/foo.ts', 'export class FooService { value = 1; }\n');
+    writeFile(rootPath, 'src/errors.ts', 'export class AppError { message = ""; }\n');
+    writeFile(rootPath, 'src/app/widget.ts', [
+        "import { FooService } from '../services/foo';",
+        "import { AppError } from '../errors';",
+        'export class Widget {',
+        '  constructor(private foo: FooService, private onError: (error: unknown) => AppError) {}',
+        '  current(): FooService { return this.foo; }',
+        '  fail() { return this.onError(null); }',
+        '}',
+        '',
+    ].join('\n'));
+    return rootPath;
+}
 function writeFile(rootPath, relativePath, content) {
     const filePath = path.join(rootPath, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

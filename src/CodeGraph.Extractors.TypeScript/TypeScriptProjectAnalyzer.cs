@@ -10,7 +10,12 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// Bump when extraction output (including the Node.js sidecar's) changes for unchanged input
     /// (see ExtractionVersionCatalog).
     /// </summary>
-    public string ExtractionVersion => "1";
+    /// <remarks>
+    /// 2 (sc-26145): the sidecar reads only the files discovery admits (no agent-worktree or
+    /// dependency-directory copies), and type text in INJECTS targets and node properties renders
+    /// <c>import("…")</c> paths repo-relative instead of with the absolute checkout path.
+    /// </remarks>
+    public string ExtractionVersion => "2";
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
@@ -24,7 +29,10 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     }
 
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
-        string tsconfigPath, ExtractorContext context, CancellationToken ct = default)
+        string tsconfigPath,
+        ExtractorContext context,
+        IReadOnlyList<string> includedFiles,
+        CancellationToken ct = default)
     {
         if (!await _server.EnsureStartedAsync(ct))
             return [];
@@ -37,6 +45,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
             ProjectName = context.ProjectName,
             RootPath = context.RootPath,
             TsconfigPath = tsconfigPath,
+            IncludedFiles = includedFiles.ToList(),
         }, ct);
 
         if (response is null) return [];

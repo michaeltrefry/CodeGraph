@@ -15,6 +15,16 @@ public interface ITypeScriptAnalyzer
     /// </summary>
     string ExtractionVersion => "1";
 
+    /// <summary>
+    /// Analyzes the project of <paramref name="tsconfigPath"/>, reading only
+    /// <paramref name="includedFiles"/>: the repo-relative TypeScript sources, tsconfig.json and
+    /// package.json files the pipeline's discovery admits. Nothing outside them (agent worktrees,
+    /// dependency directories, other skip patterns) may be analyzed or discovered as a workspace
+    /// package, whatever tsconfig <c>include</c>/<c>references</c> say.
+    /// </summary>
     Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
-        string tsconfigPath, ExtractorContext context, CancellationToken ct = default);
+        string tsconfigPath,
+        ExtractorContext context,
+        IReadOnlyList<string> includedFiles,
+        CancellationToken ct = default);
 }

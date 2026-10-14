@@ -60,6 +60,8 @@ public class GraphSliceRetractionContract
             .Select(node => node.QualifiedName).ShouldBe([type]);
         (await store.FindNodesByNamesAsync(project, ["S", "m"]))
             .Select(node => node.QualifiedName).ShouldBe(["swift-external:S", member], ignoreOrder: true);
+        // File-less nodes contribute no path; each path is listed once.
+        (await store.GetNodeFilePathsAsync(project)).ShouldBe(["a.swift", "b.swift"], ignoreOrder: true);
 
         var found = (await store.FindEdgesByPropertyAsync(
                 project, [EdgeType.DEFINES_METHOD, EdgeType.IMPLEMENTS], "swift_source_name", ["S", "Z"]))

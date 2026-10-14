@@ -279,39 +279,39 @@ public partial class IndexingPipeline
             }
         }
 
-        // TypeScript/Angular — Node.js sidecar analysis
+        // TypeScript/Angular — Node.js sidecar analysis. The sidecar discovers tsconfig files,
+        // workspace packages and sources itself, so it is handed exactly the files discovery
+        // admits (sc-26145): agent worktrees and dependency directories are never analyzed.
+        IReadOnlyList<GraphNode>? typeScriptNodes = null;
         if (_typeScriptAnalyzer is not null)
         {
-            // The sidecar now scans files from disk (ignoring tsconfig include/files)
-            // so we only need one tsconfig per repo — use the root one for compiler options.
-            var rootTsconfig = Path.Combine(rootPath, "tsconfig.json");
-            var tsconfigFiles = _fileSystem.FileExists(rootTsconfig)
-                ? new[] { rootTsconfig }
-                : _fileSystem.EnumerateFiles(rootPath, "tsconfig.json", SearchOption.AllDirectories)
-                    .Where(f => !f.Contains("node_modules", StringComparison.OrdinalIgnoreCase))
-                    .Take(1)
-                    .ToArray();
-
-            foreach (var tsconfig in tsconfigFiles)
+            var typeScriptScope = DiscoverTypeScriptScope(rootPath);
+            // The sidecar scans sources from the scope (ignoring tsconfig include/files), so one
+            // tsconfig per repo supplies the compiler options.
+            if (SelectTypeScriptConfig(typeScriptScope) is { } tsconfig)
             {
-                _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}",
-                    Path.GetRelativePath(rootPath, tsconfig));
+                _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}", tsconfig);
                 stepSw.Restart();
                 try
                 {
-                    var results = await _typeScriptAnalyzer.AnalyzeProjectAsync(
-                        tsconfig, context, ct);
+                    var results = (await _typeScriptAnalyzer.AnalyzeProjectAsync(
+                            Path.Combine(rootPath, tsconfig), context, typeScriptScope, ct))
+                        .Select(result => ClampToDiscovery(result, projectName, rootPath))
+                        .ToList();
                     _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
+                    typeScriptNodes = results.Where(result => result.Succeeded)
+                        .SelectMany(result => result.Nodes)
+                        .ToList();
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
                         "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
-                        Path.GetRelativePath(rootPath, tsconfig));
+                        tsconfig);
                 }
             }
         }
@@ -637,6 +637,31 @@ public partial class IndexingPipeline
         }
         swiftManifestsPresent |= deletedFiles.Any(IsSwiftManifest);
 
+        // TypeScript slices no hash-tracked file covers: slices an earlier sidecar wrote under
+        // excluded paths (agent worktrees, dependency directories) and workspace package modules
+        // keyed by their directory. A wholesale TypeScript rewrite also sweeps edge-less stubs.
+        var typeScriptReplacementPaths = new List<string>();
+        IReadOnlyList<string> typeScriptOrphanCandidates = [];
+        var typeScriptModulesChanged = false;
+        if (!replaceExistingGraph && existingHashes.Count > 0 && _typeScriptAnalyzer is not null)
+        {
+            var excludedSlices = await FindExcludedTypeScriptSlicesAsync(projectName, rootPath, ct);
+            typeScriptReplacementPaths.AddRange(excludedSlices);
+            if (typeScriptNodes is not null)
+            {
+                var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(projectName, typeScriptNodes);
+                typeScriptReplacementPaths.AddRange(moduleSlices);
+                typeScriptModulesChanged = moduleSlices.Count > 0;
+            }
+            var typeScriptVersionRefresh = changedRelativePaths.Any(path =>
+                IsTypeScriptPath(path)
+                && existingHashes.TryGetValue(path, out var record)
+                && buffer.AllFileHashes.TryGetValue(path, out var hash)
+                && record.ContentHash == hash);
+            if (excludedSlices.Count > 0 || typeScriptVersionRefresh)
+                typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(projectName);
+        }
+
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
             .Where(file => !successfullyProcessedFiles.Contains(
@@ -672,8 +697,9 @@ public partial class IndexingPipeline
             buffer.AllNodes.Count, buffer.AllPendingEdges.Count, buffer.AllUnresolvedCalls.Count);
         ResolveImports(buffer);
         var includePersistedNodes = !replaceExistingGraph && existingHashes.Count > 0;
-        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
-            StringComparer.OrdinalIgnoreCase);
+        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles)
+            .Concat(typeScriptReplacementPaths)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Manifests are re-extracted every run, so persisted imports are re-bound whenever the
         // repository has (or just lost) Swift package manifests.
         var swiftImportRebinding = await ResolveSwiftImportsAsync(
@@ -718,6 +744,7 @@ public partial class IndexingPipeline
             var replacementPaths = successfullyProcessedFiles
                 .Concat(deletedFiles)
                 .Concat(manifestReplacementPaths)
+                .Concat(typeScriptReplacementPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
@@ -725,6 +752,8 @@ public partial class IndexingPipeline
                 replacementPaths,
                 includeProjectStructure: existingHashes.Count == 0);
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
+            if (typeScriptModulesChanged)
+                AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
             var sourceHashes = buffer.AllFileHashes
                 .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
@@ -738,7 +767,7 @@ public partial class IndexingPipeline
                 replacementEdges,
                 replacementHashes,
                 replacementVersions,
-                swiftRebinding.Retractions.IsEmpty ? null : swiftRebinding.Retractions,
+                WithOrphanCandidates(swiftRebinding.Retractions, typeScriptOrphanCandidates),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",

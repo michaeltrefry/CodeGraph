@@ -29,6 +29,13 @@ public partial class MySqlGraphStore
         return result.DistinctBy(node => node.Id).ToList();
     }
 
+    public async Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default) =>
+        await db.Nodes.AsNoTracking()
+            .Where(n => n.Project == project && n.FilePath != null && n.FilePath != "")
+            .Select(n => n.FilePath!)
+            .Distinct()
+            .ToListAsync(ct);
+
     public async Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
         string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
     {

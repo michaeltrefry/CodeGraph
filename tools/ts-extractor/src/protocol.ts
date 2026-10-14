@@ -2,6 +2,11 @@ export interface ExtractProjectRequest {
   projectName: string;
   rootPath: string;
   tsconfigPath: string;
+  /**
+   * Repo-relative files CodeGraph's discovery admits (TypeScript sources, tsconfig.json,
+   * package.json). When present, the sidecar reads no file outside it; absent, it walks the disk.
+   */
+  includedFiles?: string[];
 }
 
 export interface GraphNodeDto {

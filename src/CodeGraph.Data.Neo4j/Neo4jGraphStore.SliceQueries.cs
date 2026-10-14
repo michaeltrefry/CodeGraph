@@ -29,6 +29,26 @@ public partial class Neo4jGraphStore
         });
     }
 
+    public async Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default)
+    {
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync(
+                "MATCH (n:CodeNode {project: $project}) WHERE n.filePath IS NOT NULL AND n.filePath <> '' " +
+                "RETURN DISTINCT n.filePath AS filePath",
+                new { project });
+            var paths = new List<string>();
+            await foreach (var record in cursor)
+            {
+                ct.ThrowIfCancellationRequested();
+                paths.Add(record["filePath"].As<string>());
+            }
+
+            return (IReadOnlyList<string>)paths;
+        });
+    }
+
     public async Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
         string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
     {
