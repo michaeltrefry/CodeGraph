@@ -57,14 +57,16 @@ public record PendingEdge(
     Dictionary<string, object>? Properties = null);
 
 /// <summary>
-/// Call site that needs cross-reference resolution.
+/// Call site that needs cross-reference resolution. <paramref name="ArgumentLabels"/>, when set,
+/// selects among same-named overloads by argument labels (see ArgumentLabels in the pipeline).
 /// </summary>
 public record UnresolvedCall(
     string CallerQN,
     string CalleeName,
     string? ReceiverType,
     double Confidence,
-    CallReceiverKind ReceiverKind = CallReceiverKind.Unknown);
+    CallReceiverKind ReceiverKind = CallReceiverKind.Unknown,
+    string? ArgumentLabels = null);
 
 public enum CallReceiverKind
 {
@@ -82,11 +84,13 @@ public enum CallReceiverKind
 }
 
 /// <summary>
-/// Import/using that needs module resolution.
+/// Import/using that needs module resolution. <paramref name="ImportedSymbol"/> is the single
+/// declaration a scoped import names (Swift <c>import struct Module.Symbol</c>), when it does.
 /// </summary>
 public record UnresolvedImport(
     string FileQN,
-    string ImportedNamespace);
+    string ImportedNamespace,
+    string? ImportedSymbol = null);
 
 public enum ConfidenceLevel
 {

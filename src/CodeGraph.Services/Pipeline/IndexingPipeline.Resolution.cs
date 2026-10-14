@@ -146,6 +146,9 @@ public partial class IndexingPipeline
                 candidates = owned;
             }
 
+            if (call.ArgumentLabels is not null)
+                candidates = ArgumentLabels.Select(candidates, call.ArgumentLabels);
+
             if (candidates.Count == 1)
             {
                 var edgeKey = $"{call.CallerQN}\u001f{candidates[0].QualifiedName}";

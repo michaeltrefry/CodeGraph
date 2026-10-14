@@ -346,6 +346,11 @@ public static class LanguageSpecs
         PropertyNodeTypes = ["property_declaration", "protocol_property_declaration"],
         PropertyExtractor = GetSwiftProperty,
         ParametersExtractor = GetSwiftParameters,
+        ArgumentLabelsExtractor = SwiftCallSites.DeclarationLabels,
+        CallNodeTypes = ["call_expression", "constructor_expression"],
+        CallSiteReader = SwiftCallSites.For,
+        ImportNodeTypes = ["import_declaration"],
+        ImportReader = SwiftCallSites.ReadImport,
         NameExtractor = GetSwiftCallableName,
         NameField = "name",
         ReturnTypeField = "return_type",
@@ -402,7 +407,7 @@ public static class LanguageSpecs
     /// Dotted path of a Swift type reference without generic arguments:
     /// <c>Outer.Inner&lt;T&gt;</c> → <c>Outer.Inner</c>. Null for non-nominal types.
     /// </summary>
-    private static string? GetSwiftTypePath(Node? type)
+    internal static string? GetSwiftTypePath(Node? type)
     {
         if (type is null)
             return null;
