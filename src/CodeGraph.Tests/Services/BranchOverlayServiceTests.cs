@@ -255,6 +255,52 @@ public sealed class BranchOverlayServiceTests : IDisposable
             ]);
     }
 
+    /// <summary>
+    /// Whether a Pods path is CocoaPods output depends on a sibling Podfile, so a deleted path
+    /// and a rename's previous path are judged against the base tree (where they existed), not the
+    /// head tree: a branch that deletes a Podfile together with its Pods files must not turn those
+    /// Pods files into indexable deletions.
+    /// </summary>
+    [Fact]
+    public async Task IndexOverlayAsync_DeletedAndRenamedFromPaths_AreJudgedAgainstTheBaseTree()
+    {
+        var (remote, cache, _) = CreateRemoteAndSingleBranchCache();
+        GitFixture.Write(remote, "ios/Podfile", "pod 'Alamofire'\n");
+        GitFixture.Write(remote, "ios/Pods/Alamofire/session.py", "def session\n");
+        GitFixture.Write(remote, "pkg/pods/handler.py", "def handler\n");
+        GitFixture.Write(remote, "app/Podfile", "pod 'Kit'\n");
+        GitFixture.Write(remote, "app/Pods/Kit/kit.py", "def kit\n");
+        GitFixture.Write(remote, "app/Pods/Kit/moved.py", "def moved\nline one\nline two\nline three\n");
+        GitFixture.Run(remote, "add", "-A");
+        GitFixture.Run(remote, "commit", "-q", "-m", "pods");
+        var baseSha = GitFixture.Run(remote, "rev-parse", "HEAD");
+        GitFixture.Run(cache, "pull", "-q");
+
+        GitFixture.Run(remote, "checkout", "-q", "-b", "factory/pods");
+        GitFixture.Run(remote, "rm", "-q", "ios/Pods/Alamofire/session.py");
+        GitFixture.Run(remote, "rm", "-q", "pkg/pods/handler.py");
+        // The Podfile goes away in the same diff: only the base tree says app/Pods was CocoaPods.
+        GitFixture.Run(remote, "rm", "-q", "app/Podfile", "app/Pods/Kit/kit.py");
+        GitFixture.Run(remote, "mv", "app/Pods/Kit/moved.py", "src/moved.py");
+        GitFixture.Run(remote, "commit", "-q", "-m", "drop pods");
+        GitFixture.Run(remote, "checkout", "-q", "-f", "main");
+        SeedDefaultBranchIndex(baseSha);
+        var service = CreateService(cache);
+
+        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/pods");
+        await service.IndexOverlayAsync(overlay.Id);
+
+        (await service.GetOverlayAsync(overlay.Id))!.Status.ShouldBe(BranchOverlayStatuses.Ready);
+        (await _overlays.GetOverlayFilesAsync(overlay.Id))
+            .Select(file => (file.FilePath, file.ChangeKind, file.PreviousPath))
+            .OrderBy(file => file.FilePath, StringComparer.Ordinal)
+            .ShouldBe(
+            [
+                ("pkg/pods/handler.py", BranchOverlayChangeKinds.Deleted, null),
+                ("src/moved.py", BranchOverlayChangeKinds.Added, null)
+            ]);
+    }
+
     [Fact]
     public async Task IndexOverlayAsync_FetchFailure_IsTransientAndDoesNotUseStaleLocalRef()
     {
