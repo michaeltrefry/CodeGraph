@@ -533,6 +533,22 @@ public class SwiftTypeSemanticsTests
         });
 
     [Fact]
+    public Task IndexProject_ExtensionRemovedFromItsFile_TakesItsEdgesAndOrphanedStubAlong() =>
+        WithRepoAsync(async repo =>
+        {
+            await repo.IndexAsync();
+
+            // The Array extension's edges join two nodes outside Extras.swift (a stub and Models'
+            // Describable); they still belong to Extras.swift and go when it stops declaring them.
+            var withoutArray = ExtrasSource[..ExtrasSource.IndexOf("extension Array", StringComparison.Ordinal)];
+            await repo.Write("Sources/Extras.swift", withoutArray).IndexAsync();
+
+            ShouldHaveExactly(repo.Store, BaselineEdges($"{MQ}#type:Square")
+                .Where(edge => edge.Source != "swift-external:Array"));
+            Stubs(repo.Store).ShouldNotContainKey("swift-external:Array");
+        });
+
+    [Fact]
     public Task IndexProject_TypeAddedLater_RebindsStubMembersAndRemovesTheStub() =>
         WithRepoAsync(async repo =>
         {
