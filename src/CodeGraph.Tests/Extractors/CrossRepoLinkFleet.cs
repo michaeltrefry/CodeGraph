@@ -52,7 +52,7 @@ internal static class CrossRepoLinkFleet
                 ["package_key"] = "swiftpm:scm:example.test/acme/provider-repo",
                 ["package_name"] = "provider-repo", ["identity"] = "provider-repo", ["version"] = "2.0.0",
                 ["source_kind"] = "remote", ["source"] = "example.test/acme/provider-repo",
-                ["location"] = "https://example.test/Acme/Provider-Repo.git"
+                ["location"] = "https://example.test/Acme/Provider-Repo.git", ["dependency_kind"] = "declared"
             }),
             Node(Consumer, NodeLabel.Repository, "Consumer", "Consumer"),
             Node(Consumer, NodeLabel.NuGetPackage, "Provider.Models", "nuget:Provider.Models", new() { ["version"] = "2.1.0" }),

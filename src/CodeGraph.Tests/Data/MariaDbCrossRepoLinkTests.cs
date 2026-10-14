@@ -58,6 +58,7 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         swift.Properties["matched_by"].ToString().ShouldBe("git_url");
         swift.Properties["identity"].ToString().ShouldBe("provider-repo");
         swift.Properties["version"].ToString().ShouldBe("2.0.0");
+        swift.Properties["dependency_kind"].ToString().ShouldBe("declared");
     }
 
     [Fact]

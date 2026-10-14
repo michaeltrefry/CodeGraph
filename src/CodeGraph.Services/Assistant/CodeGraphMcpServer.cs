@@ -154,7 +154,8 @@ public class CodeGraphMcpServer(
               external_path
             - REFERENCES_PACKAGE cross-repo edge (SwiftPM): package_key, package_name, identity, version,
               matched_by (git_url to the root Package.swift of the repository at that URL | path),
-              confidence_band
+              confidence_band, dependency_kind (declared | pinned: a Package.resolved pin with no
+              declared dependency on the same package, e.g. Xcode or transitive)
             - Rust nodes from SCIP: source (scip), scip_symbol
             - ExternalSymbol: source (scip), scip_symbol, scip_external
             - Tree-sitter fallback nodes: confidence (low), extractionSource, fallbackReason
@@ -1054,7 +1055,9 @@ public class CodeGraphMcpServer(
                  "depend on this one and outbound the repositories it depends on, each as {repo, edgeType, count, " +
                  "confidenceBand} (count is the number of links of that edge type; confidenceBand is the weakest of " +
                  "them, high|medium|low or null — a Cargo or Swift package path dependency matched by package name is medium; " +
-                 "Cargo and SwiftPM/Xcode package dependencies appear as REFERENCES_PACKAGE). rustSemantic is {status, manifest, groupCount, " +
+                 "Cargo and SwiftPM/Xcode package dependencies appear as REFERENCES_PACKAGE; a Swift package declared in " +
+                 "Package.swift and pinned in Package.resolved counts once, while a pin nothing declares (an Xcode project's " +
+                 "packages, or a transitive pin) is still a link, so a Swift REFERENCES_PACKAGE link may be indirect). rustSemantic is {status, manifest, groupCount, " +
                  "semanticGroups, fallbackGroups, skippedGroups, treeSitterGroups}: status is semantic (every crate " +
                  "group indexed by rust-analyzer), partial or fallback (some or all crate groups indexed by " +
                  "tree-sitter instead), or not_analyzed (no Rust semantic pass was recorded for the repository). " +
