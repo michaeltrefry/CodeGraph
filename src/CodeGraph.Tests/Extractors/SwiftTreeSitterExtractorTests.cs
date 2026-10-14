@@ -211,6 +211,31 @@ public class SwiftTreeSitterExtractorTests
     }
 
     [Fact]
+    public async Task ExtractAsync_SwiftGrammarFailingToLoadAfterProbe_ReportsFailureInsteadOfSkipping()
+    {
+        var loads = 0;
+        var flakySwift = new LanguageSpec
+        {
+            LanguageName = LanguageSpecs.Swift.LanguageName,
+            Framework = null,
+            // The availability probe succeeds; the load for the file itself fails.
+            GetLanguage = () => Interlocked.Increment(ref loads) == 1
+                ? new TreeSitter.Language("Swift")
+                : throw new DllNotFoundException("libtree-sitter-swift"),
+            SkipFileOnExtractionFailure = LanguageSpecs.Swift.SkipFileOnExtractionFailure
+        };
+        var extractor = new TreeSitterExtractor(
+            NullLogger<TreeSitterExtractor>.Instance,
+            extension => extension == ".swift" ? flakySwift : null);
+
+        var result = await extractor.ExtractAsync(
+            "/test/Sources/Shapes.swift", FixtureSource, TestContext);
+
+        loads.ShouldBe(2);
+        result.Succeeded.ShouldBeFalse();
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_SwiftGrammarUnavailable_FilesAreReExtractedOnceTheGrammarLoads()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-swift-nogrammar-{Guid.NewGuid():N}");
