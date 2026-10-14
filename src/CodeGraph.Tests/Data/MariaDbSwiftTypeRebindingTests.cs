@@ -117,7 +117,7 @@ public class MariaDbSwiftTypeRebindingTests
             await using var conn = new MySqlConnection(new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ConnectionString);
             await conn.OpenAsync();
             // Release this database's pooled connections so the suite stays under max_connections.
-            await MySqlConnection.ClearPoolAsync(new MySqlConnection(builder.ConnectionString));
+            await MySqlConnection.ClearAllPoolsAsync();
             await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
         }
     }
@@ -187,7 +187,7 @@ public class MariaDbSwiftTypeRebindingTests
                 Directory.Delete(root, recursive: true);
             await using var conn = new MySqlConnection(new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ConnectionString);
             await conn.OpenAsync();
-            await MySqlConnection.ClearPoolAsync(new MySqlConnection(builder.ConnectionString));
+            await MySqlConnection.ClearAllPoolsAsync();
             await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
         }
     }

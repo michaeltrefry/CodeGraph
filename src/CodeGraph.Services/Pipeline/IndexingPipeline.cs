@@ -150,7 +150,7 @@ public partial class IndexingPipeline
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
-        var deletedFiles = GetDeletedFiles(rootPath, changedFilesOnly);
+        var deletedFiles = GetDeletedFiles(projectName, rootPath, changedFilesOnly, files, existingHashes);
         var languageStats = ComputeLanguageStats(files);
         var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, out var outdatedVersionFiles);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
@@ -707,6 +707,10 @@ public partial class IndexingPipeline
                 .Where(_fileSystem.FileExists)
                 .ToList();
 
+        // A missing checkout must fail the run, never read as "every file was deleted".
+        if (!_fileSystem.DirectoryExists(rootPath))
+            throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
+
         var matcher = new Matcher();
         matcher.AddInclude("**/*");
         foreach (var skip in _options.SkipPatterns)
@@ -721,16 +725,55 @@ public partial class IndexingPipeline
             .ToList();
     }
 
-    private List<string> GetDeletedFiles(string rootPath, IReadOnlyList<string>? changedFilesOnly)
+    /// <summary>
+    /// Paths whose persisted graph slice must be removed. A change-list run reports listed paths
+    /// that no longer exist. A full-scan incremental run reports every stored hash record that
+    /// discovery no longer yields: the file was deleted, or it left the indexed universe (a skip
+    /// pattern now excludes it, or no extractor supports its extension any more). A full scan
+    /// fails closed: a missing checkout throws, and a scan that finds no files while hashes are
+    /// stored infers no deletions rather than wiping the project.
+    /// </summary>
+    private List<string> GetDeletedFiles(string projectName, string rootPath,
+        IReadOnlyList<string>? changedFilesOnly, List<string> discoveredFiles,
+        Dictionary<string, FileHashRecord> existingHashes)
     {
-        if (changedFilesOnly is null)
+        if (changedFilesOnly is not null)
+        {
+            return changedFilesOnly
+                .Where(path => !_fileSystem.FileExists(Path.Combine(rootPath, path)))
+                .Select(NormalizeRelativePath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        if (existingHashes.Count == 0)
             return [];
 
-        return changedFilesOnly
-            .Where(path => !_fileSystem.FileExists(Path.Combine(rootPath, path)))
+        if (discoveredFiles.Count == 0)
+        {
+            _logger.LogWarning(
+                "Full scan of {Project} at {Path} discovered no files while {Count} files are indexed; " +
+                "skipping deletion inference instead of removing the whole project",
+                projectName, rootPath, existingHashes.Count);
+            return [];
+        }
+
+        var discovered = discoveredFiles
+            .Select(file => NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var deleted = existingHashes.Keys
             .Select(NormalizeRelativePath)
+            .Where(path => !discovered.Contains(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        if (deleted.Count > 0)
+        {
+            _logger.LogInformation(
+                "Full scan of {Project} found {Count} indexed files no longer discovered; removing them",
+                projectName, deleted.Count);
+        }
+
+        return deleted;
     }
 
     /// <summary>
