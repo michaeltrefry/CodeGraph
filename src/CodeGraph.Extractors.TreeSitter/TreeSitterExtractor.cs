@@ -223,7 +223,8 @@ public class TreeSitterExtractor : ICodeExtractor
         var fileTypes = new FileTypes(
             knownTypeLabels,
             fileQN,
-            fileQN[(context.ProjectName.Length + 1)..]);
+            fileQN[(context.ProjectName.Length + 1)..],
+            spec.CallSiteReader?.Invoke(root));
         WalkForDefinitionsAndCalls(root, spec, context, content,
             nodes, edges, unresolvedCalls, makeNode, fileQN,
             enclosingClassQN: null, enclosingOwnerName: null, enclosingCallableQN: null,
@@ -406,6 +407,9 @@ public class TreeSitterExtractor : ICodeExtractor
                 if (callableContext.OwnerName is not null)
                     props["receiver_owner"] = callableContext.OwnerName;
 
+                if (spec.ArgumentLabelsExtractor?.Invoke(node) is { } argumentLabels)
+                    props[ArgumentLabels.Property] = argumentLabels;
+
                 var startLine = (int)node.StartPosition.Row + 1;
                 var endLine = (int)node.EndPosition.Row + 1;
 
@@ -436,7 +440,36 @@ public class TreeSitterExtractor : ICodeExtractor
             }
         }
 
-        if (enclosingCallableQN is not null && spec.CallNodeTypes.Contains(nodeType))
+        if (enclosingCallableQN is not null && spec.CallNodeTypes.Contains(nodeType)
+            && fileTypes.CallSites is { } readCallSite)
+        {
+            var site = readCallSite(new CallSiteContext
+            {
+                CallNode = node,
+                EnclosingTypeQN = enclosingClassQN,
+                EnclosingOwnerName = enclosingOwnerName,
+                // Lexical lookup from the calling member outward: it also covers members of a
+                // cross-file extension, whose scope is "#extension:{path}" with no type QN.
+                ResolveLocalType = typePath =>
+                    fileTypes.FindInScope(enclosingCallableQN, typePath)
+            });
+            if (site is not null)
+            {
+                unresolvedCalls.Add(new UnresolvedCall(
+                    enclosingCallableQN,
+                    site.CalleeName,
+                    site.ReceiverType,
+                    site.ReceiverKind switch
+                    {
+                        CallReceiverKind.Bare => 0.7,
+                        CallReceiverKind.Resolved => 0.65,
+                        _ => 0.45
+                    },
+                    site.ReceiverKind,
+                    site.ArgumentLabels));
+            }
+        }
+        else if (enclosingCallableQN is not null && spec.CallNodeTypes.Contains(nodeType))
         {
             var target = ExtractCallTarget(
                 node, spec, enclosingClassQN, enclosingOwnerName,
@@ -605,6 +638,13 @@ public class TreeSitterExtractor : ICodeExtractor
     private static void WalkForImports(Node node, LanguageSpec spec, string content,
         string fileQN, List<UnresolvedImport> unresolvedImports)
     {
+        if (spec.ImportNodeTypes.Contains(node.Type) && spec.ImportReader is not null)
+        {
+            if (spec.ImportReader(node) is { } declaration)
+                unresolvedImports.Add(new UnresolvedImport(fileQN, declaration.Module, declaration.Symbol));
+            return;
+        }
+
         if (spec.ImportNodeTypes.Contains(node.Type))
         {
             var modulePath = ExtractImportPath(node, content);
@@ -666,7 +706,7 @@ public class TreeSitterExtractor : ICodeExtractor
         foreach (var extension in extensions)
         {
             var path = spec.ContainerOwnerReference!(extension)!.Path;
-            var ownerQN = new FileTypes(labels, fileQN, "").Find(fileQN, path)
+            var ownerQN = new FileTypes(labels, fileQN, "", null).Find(fileQN, path)
                 ?? $"{fileQN}#extension:{path}";
             var body = spec.BodyField is null ? null : extension.GetChildForField(spec.BodyField);
             foreach (var child in (body ?? extension).Children)
@@ -846,10 +886,11 @@ public class TreeSitterExtractor : ICodeExtractor
 
     /// <summary>
     /// Types declared in the file being extracted (qualified name to label), the file's qualified
-    /// name and its repository-relative path.
+    /// name, its repository-relative path and the language's call-site reader for the file.
     /// </summary>
     private sealed record FileTypes(
-        IReadOnlyDictionary<string, NodeLabel> Labels, string FileQN, string RelativePath)
+        IReadOnlyDictionary<string, NodeLabel> Labels, string FileQN, string RelativePath,
+        Func<CallSiteContext, CallSite?>? CallSites)
     {
         /// <summary>The type at dotted <paramref name="typePath"/> directly under <paramref name="scopeQN"/>.</summary>
         public string? Find(string scopeQN, string typePath)

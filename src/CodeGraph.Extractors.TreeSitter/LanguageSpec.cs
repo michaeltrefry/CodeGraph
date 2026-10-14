@@ -40,8 +40,29 @@ public sealed class LanguageSpec
     public string[] CallReceiverFields { get; init; } =
         ["object", "receiver", "scope", "operand", "value", "path", "argument"];
 
+    /// <summary>
+    /// Optional language-specific call-site reader, replacing the field-driven
+    /// <see cref="CallTargetFields"/>/<see cref="CallReceiverFields"/> reading. Given a file's root
+    /// node it returns the reader for that file's calls, so the reader can index the file once.
+    /// The reader returns null for a call it cannot name.
+    /// </summary>
+    public Func<Node, Func<CallSiteContext, CallSite?>>? CallSiteReader { get; init; }
+
     /// <summary>AST node types that represent import/include statements.</summary>
     public string[] ImportNodeTypes { get; init; } = [];
+
+    /// <summary>
+    /// Optional language-specific reader for an <see cref="ImportNodeTypes"/> node, replacing the
+    /// generic field/child heuristics. Returns null for a node it cannot read.
+    /// </summary>
+    public Func<Node, ImportDeclaration?>? ImportReader { get; init; }
+
+    /// <summary>
+    /// Optional argument-label signature of a function-like definition, recorded as its
+    /// <c>argument_labels</c> property (format: CodeGraph.Services.Pipeline.ArgumentLabels) so calls
+    /// can pick the right overload. Null records nothing.
+    /// </summary>
+    public Func<Node, string?>? ArgumentLabelsExtractor { get; init; }
 
     /// <summary>AST node types for variable/constant declarations.</summary>
     public string[] VariableNodeTypes { get; init; } = [];
@@ -144,6 +165,38 @@ public sealed class LanguageSpec
     /// </summary>
     public Action<DomainExtractionContext>? DomainExtractor { get; init; }
 }
+
+/// <summary>A call read by <see cref="LanguageSpec.CallSiteReader"/>.</summary>
+public sealed class CallSiteContext
+{
+    public required Node CallNode { get; init; }
+
+    /// <summary>Qualified name of the enclosing type when it is declared in this file.</summary>
+    public required string? EnclosingTypeQN { get; init; }
+
+    /// <summary>Simple name of the enclosing type (or extended type), if any.</summary>
+    public required string? EnclosingOwnerName { get; init; }
+
+    /// <summary>
+    /// Resolves a dotted type path to a type declared in this file, looking in the calling
+    /// member's scope and then outward to the file's top level.
+    /// </summary>
+    public required Func<string, string?> ResolveLocalType { get; init; }
+}
+
+/// <summary>
+/// A call's target: the callee's simple name, the receiver (a type qualified name or name the
+/// pipeline resolves, when <paramref name="ReceiverKind"/> is Resolved) and the argument-label
+/// signature, if the language has one.
+/// </summary>
+public sealed record CallSite(
+    string CalleeName,
+    string? ReceiverType,
+    CallReceiverKind ReceiverKind,
+    string? ArgumentLabels = null);
+
+/// <summary>An import: the imported module and, for a scoped import, the declaration it names.</summary>
+public sealed record ImportDeclaration(string Module, string? Symbol = null);
 
 /// <summary>The type a container-only definition extends, when it is declared in another file.</summary>
 public sealed record ContainerOwner(string Path, string ReferenceQN);

@@ -16,7 +16,8 @@ namespace CodeGraph.Tests.Data;
 
 /// <summary>
 /// Swift cross-file re-binding against the MariaDB store: the edge-property lookups, the
-/// retraction of re-bound edges and the removal of orphaned stubs in the file-slice write.
+/// retraction of re-bound edges and the removal of orphaned stubs in the file-slice write; and
+/// Swift call overload selection against argument labels read back from the store.
 /// </summary>
 public class MariaDbSwiftTypeRebindingTests
 {
@@ -119,6 +120,84 @@ public class MariaDbSwiftTypeRebindingTests
             await MySqlConnection.ClearPoolAsync(new MySqlConnection(builder.ConnectionString));
             await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
         }
+    }
+
+    [Fact]
+    public async Task IncrementalRun_PicksSwiftOverloadsByPersistedArgumentLabels_WhenConnectionIsConfigured()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString)
+        {
+            Database = $"codegraph_swift_calls_{Guid.NewGuid():N}"
+        };
+        var storageOptions = Options.Create(new MariaDbStorageOptions
+        {
+            ConnectionString = builder.ConnectionString,
+            MigrationsPath = Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations")
+        });
+        var runner = new MariaDbMigrationRunner(storageOptions, NullLogger<MariaDbMigrationRunner>.Instance);
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-swift-calls-mariadb-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "Sources"));
+
+        try
+        {
+            await runner.ApplyConfiguredMigrationsAsync();
+
+            async Task IndexAsync()
+            {
+                var dbOptions = new DbContextOptionsBuilder<CodeGraphDbContext>()
+                    .UseMySql(builder.ConnectionString, ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
+                    .Options;
+                await using var context = new CodeGraphDbContext(dbOptions);
+                var store = new MySqlGraphStore(
+                    context, storageOptions, NullLogger<MySqlGraphStore>.Instance,
+                    new MySqlAnalysisStore(context), new MySqlMetricsStore(context),
+                    new MySqlReviewStore(context), runner);
+                await new IndexingPipeline(
+                        store,
+                        [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+                        Options.Create(new IndexingOptions { MaxParallelFiles = 2 }),
+                        new LocalFileSystem(),
+                        NullLogger<IndexingPipeline>.Instance)
+                    .IndexProjectAsync(Project, root, ct: CancellationToken.None);
+            }
+
+            void Write(string path, string source) => File.WriteAllText(Path.Combine(root, path), source);
+
+            const string circle = $"{Project}:Sources/Circle.swift#type:Circle";
+            const string caller = $"{Project}:Sources/Use.swift#function:use()";
+            Write("Sources/Circle.swift", "struct Circle {\n    init() {}\n    init(radius: Double) {}\n}\n");
+            Write("Sources/Use.swift", "func use() { _ = Circle(radius: 1) }\n");
+            await IndexAsync();
+            (await CallsAsync(builder.ConnectionString)).ShouldBe([(caller, $"{circle}#method:init(radius:Double)")]);
+
+            // Only the caller changes: the overloads come from the store, labels included.
+            Write("Sources/Use.swift", "func use() { _ = Circle() }\n");
+            await IndexAsync();
+            (await CallsAsync(builder.ConnectionString)).ShouldBe([(caller, $"{circle}#method:init()")]);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+            await using var conn = new MySqlConnection(new MySqlConnectionStringBuilder(connectionString) { Database = "" }.ConnectionString);
+            await conn.OpenAsync();
+            await MySqlConnection.ClearPoolAsync(new MySqlConnection(builder.ConnectionString));
+            await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
+        }
+    }
+
+    private static async Task<List<(string, string)>> CallsAsync(string connectionString)
+    {
+        await using var conn = new MySqlConnection(connectionString);
+        var rows = await conn.QueryAsync<(string Source, string Target)>("""
+            SELECT s.qualified_name AS Source, t.qualified_name AS Target
+            FROM edges e
+            JOIN nodes s ON s.id = e.source_id
+            JOIN nodes t ON t.id = e.target_id
+            WHERE e.project = @Project AND e.type = 'CALLS'
+            """, new { Project });
+        return rows.Select(row => (row.Source, row.Target)).ToList();
     }
 
     private static async Task<List<(string, string, string)>> RelationsAsync(string connectionString)
