@@ -127,9 +127,10 @@ public partial class Neo4jGraphStore
                 var sequenceCursor = await tx.RunAsync("""
                     MERGE (seq:Sequence {name: 'node_id'})
                     ON CREATE SET seq.value = 0
-                    WITH seq.value AS startId, seq
+                    // Increment before reading: SET takes the write lock, so the value read back
+                    // is this transaction's. Reading seq.value first loses updates under concurrency.
                     SET seq.value = seq.value + $count
-                    RETURN startId
+                    RETURN seq.value - $count AS startId
                     """, new { count = nodesToInsert.Count });
                 await sequenceCursor.FetchAsync();
                 startId = sequenceCursor.Current["startId"].As<long>();
@@ -304,9 +305,10 @@ public partial class Neo4jGraphStore
                 var sequenceCursor = await tx.RunAsync("""
                     MERGE (seq:Sequence {name: 'node_id'})
                     ON CREATE SET seq.value = 0
-                    WITH seq.value AS startId, seq
+                    // Increment before reading: SET takes the write lock, so the value read back
+                    // is this transaction's. Reading seq.value first loses updates under concurrency.
                     SET seq.value = seq.value + $count
-                    RETURN startId
+                    RETURN seq.value - $count AS startId
                     """, new { count = nodes.Count });
                 await sequenceCursor.FetchAsync();
                 var startId = sequenceCursor.Current["startId"].As<long>();
