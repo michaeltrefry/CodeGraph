@@ -184,6 +184,7 @@ public partial class IndexingPipeline
             .Select(file => NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var successfullyProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var oversizeFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Discover .csproj files once and reuse for structural nodes + NuGet extraction
         var csprojFiles = _fileSystem.EnumerateFiles(rootPath, "*.csproj", SearchOption.AllDirectories).ToArray();
@@ -620,6 +621,7 @@ public partial class IndexingPipeline
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
             detectedMetadataCandidates.AddRange(perFileResult.Metadata);
             successfullyProcessedFiles.UnionWith(perFileResult.ProcessedFiles);
+            oversizeFiles.UnionWith(perFileResult.OversizeFiles);
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
@@ -673,7 +675,7 @@ public partial class IndexingPipeline
                 BuildRepositorySnapshot(
                     repository, detectedMetadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes),
                 replacementSyncState,
-                ExtractionVersionsFor(buffer.AllFileHashes.Keys),
+                ExtractionVersionsFor(buffer.AllFileHashes.Keys, oversizeFiles),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic graph replacement ({NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -701,7 +703,7 @@ public partial class IndexingPipeline
                 replacementNodes,
                 replacementEdges,
                 replacementHashes,
-                ExtractionVersionsFor(replacementHashes.Keys),
+                ExtractionVersionsFor(replacementHashes.Keys, oversizeFiles),
                 swiftRebinding.Retractions.IsEmpty ? null : swiftRebinding.Retractions,
                 ct);
             _logger.LogInformation(
@@ -887,7 +889,8 @@ public partial class IndexingPipeline
                 changed.Add(file);
             }
             else if (!string.Equals(existing.ExtractionVersion, _extractionVersions.ForPath(relPath),
-                         StringComparison.Ordinal))
+                         StringComparison.Ordinal)
+                     && !string.Equals(existing.ExtractionVersion, OversizeVersion(relPath), StringComparison.Ordinal))
             {
                 changed.Add(file);
                 outdatedVersionFiles++;
@@ -896,11 +899,19 @@ public partial class IndexingPipeline
         return changed;
     }
 
-    private Dictionary<string, string> ExtractionVersionsFor(IEnumerable<string> relativePaths) =>
+    private Dictionary<string, string> ExtractionVersionsFor(
+        IEnumerable<string> relativePaths, IReadOnlySet<string> oversizeFiles) =>
         relativePaths.ToDictionary(
             path => path,
-            _extractionVersions.ForPath,
+            path => oversizeFiles.Contains(path) ? OversizeVersion(path) : _extractionVersions.ForPath(path),
             StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The version recorded for a file skipped as oversize: it names the limit, so the file is
+    /// extracted again once the limit (or its extractor) changes, but not while both stay.
+    /// </summary>
+    private string OversizeVersion(string relativePath) =>
+        $"{_extractionVersions.ForPath(relativePath)};oversize>{_options.MaxFileSizeKbFor(Path.GetExtension(relativePath))}KB";
 
     private string ComputeHash(string filePath)
     {
@@ -917,6 +928,7 @@ public partial class IndexingPipeline
     {
         var metadataSeen = new ConcurrentBag<ProjectMetadata>();
         var processedFiles = new ConcurrentBag<string>();
+        var oversizeFiles = new ConcurrentBag<string>();
         var failures = new ConcurrentQueue<Exception>();
 
         await Parallel.ForEachAsync(files,
@@ -936,8 +948,26 @@ public partial class IndexingPipeline
                 {
                     var content = await _fileSystem.ReadAllTextAsync(filePath, ct2);
 
-                    // Skip files over size limit
-                    if (content.Length > _options.MaxFileSizeKb * 1024) return;
+                    // A file over the size limit is not extracted, but it is processed: its File
+                    // node says why it has no symbols and its hash is recorded, so an unchanged
+                    // oversize file is not reported as changed again on the next run.
+                    var limitKb = _options.MaxFileSizeKbFor(ext);
+                    if (content.Length > limitKb * 1024)
+                    {
+                        var oversizePath = NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath));
+                        _logger.LogInformation(
+                            "Skipping extraction of {File} in {Project}: {SizeKb} KB exceeds the {LimitKb} KB limit",
+                            oversizePath, context.ProjectName, content.Length / 1024, limitKb);
+                        if (buffer.FindByQN($"{context.ProjectName}:{oversizePath}") is { Label: NodeLabel.File } fileNode)
+                        {
+                            fileNode.Properties["skipped_reason"] = "oversize";
+                            fileNode.Properties["size_kb"] = content.Length / 1024;
+                            fileNode.Properties["size_limit_kb"] = limitKb;
+                        }
+                        oversizeFiles.Add(oversizePath);
+                        processedFiles.Add(oversizePath);
+                        return;
+                    }
 
                     var result = await extractor.ExtractAsync(filePath, content,
                         context, ct2);
@@ -983,7 +1013,7 @@ public partial class IndexingPipeline
         if (!failures.IsEmpty)
             throw new AggregateException("One or more files failed during replacement indexing.", failures);
 
-        return new PerFileExtractionResult(metadataSeen.ToList(), processedFiles.ToList());
+        return new PerFileExtractionResult(metadataSeen.ToList(), processedFiles.ToList(), oversizeFiles.ToList());
     }
 
     private RepositoryEntity BuildRepositorySnapshot(
@@ -1413,7 +1443,7 @@ public partial class IndexingPipeline
                 continue;
             }
 
-            if (content.Length > _options.MaxFileSizeKb * 1024)
+            if (content.Length > _options.MaxFileSizeKbFor(Path.GetExtension(file)) * 1024)
                 continue;
 
             var stat = GetOrAddLanguageStat(result, language);
@@ -1514,7 +1544,8 @@ public partial class IndexingPipeline
 
     private sealed record PerFileExtractionResult(
         IReadOnlyList<ProjectMetadata> Metadata,
-        IReadOnlyList<string> ProcessedFiles);
+        IReadOnlyList<string> ProcessedFiles,
+        IReadOnlyList<string> OversizeFiles);
 
     private static int GetLanguagePriority(string language) =>
         language.ToLowerInvariant() switch

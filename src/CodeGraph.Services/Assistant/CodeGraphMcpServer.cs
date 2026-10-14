@@ -159,6 +159,11 @@ public class CodeGraphMcpServer(
             - Rust nodes from SCIP: source (scip), scip_symbol
             - ExternalSymbol: source (scip), scip_symbol, scip_external
             - Tree-sitter fallback nodes: confidence (low), extractionSource, fallbackReason
+            - Rust Function/Method (tree-sitter): abi (the foreign ABI of an `extern "C" fn`, e.g. C)
+            - File: skipped_reason (oversize: over the indexing size limit, no symbols extracted),
+              size_kb, size_limit_kb
+            - CALLS resolved by name stay within the caller's language family, plus Swift/Rust -> C and
+              Swift/C -> Rust functions exported with a foreign ABI
 
             ## Swift (tree-sitter)
             - Types: qualified name `{file}#type:Outer#type:Inner`. class/actor -> Class, struct -> Struct,
@@ -166,7 +171,8 @@ public class CodeGraphMcpServer(
               raw_type (an enum's raw-value type, e.g. String), class_bound (a protocol refining AnyObject)
             - Members of an extension live under `{file}#extension:{TypePath}`; when the extended type is
               declared in another file, their DEFINES/DEFINES_METHOD edge starts at that type
-            - Method/Function: argument_labels (external labels, `=` marks a default value, `...` a
+            - Method/Function: qualified name ends in `name(label:Type,...)` with external labels (`_` when
+              unlabeled), e.g. `thumbnail(of:CGImage)`; argument_labels (external labels, `=` marks a default value, `...` a
               variadic parameter, e.g. `width=:_:`), receiver_owner, return_type, parameters
             - Property nodes (`#property:{name}`): computed (computed property) or requirement (protocol
               requirement), type, is_static, accessors (get|set|modify, comma-separated); stored

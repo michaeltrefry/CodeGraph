@@ -16,7 +16,24 @@ public class IndexingOptions
     /// </summary>
     public bool DetectCommunitiesAfterIndexing { get; set; } = false;
 
+    /// <summary>
+    /// Files larger than this (in KB of text) are not extracted: their File node is kept, marked
+    /// <c>skipped_reason=oversize</c>, and their hash is recorded so they are not re-read as
+    /// changed on every run. <see cref="MaxFileSizeKbByExtension"/> overrides it per extension.
+    /// </summary>
     public int MaxFileSizeKb { get; set; } = 512;
+
+    /// <summary>
+    /// Per-extension size limits (KB) that replace <see cref="MaxFileSizeKb"/>. Swift defaults to
+    /// 2048: generated Swift (e.g. a 714 KB, ~240-type DTO file) is legitimate code, and
+    /// tree-sitter extracts a 2 MB Swift file in under a second.
+    /// </summary>
+    public Dictionary<string, int> MaxFileSizeKbByExtension { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase) { [".swift"] = 2048 };
+
+    /// <summary>The size limit (KB) for a file with <paramref name="extension"/>.</summary>
+    public int MaxFileSizeKbFor(string extension) =>
+        MaxFileSizeKbByExtension.TryGetValue(extension, out var limit) ? limit : MaxFileSizeKb;
 
     /// <summary>
     /// Consecutive failed indexing runs of the same repository commit after which routine
