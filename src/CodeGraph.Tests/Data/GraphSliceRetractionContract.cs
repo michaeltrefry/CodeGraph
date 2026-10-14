@@ -197,6 +197,7 @@ public class GraphSliceRetractionContract
             Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
             Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
         });
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var sessions = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
         var project = $"SliceContract_{Guid.NewGuid():N}";
