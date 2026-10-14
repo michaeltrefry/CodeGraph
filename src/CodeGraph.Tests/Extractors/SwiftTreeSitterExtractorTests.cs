@@ -183,17 +183,20 @@ public class SwiftTreeSitterExtractorTests
         circle.EndLine.ShouldBe(27);
     }
 
-    private static TreeSitterExtractor GrammarUnavailableExtractor() =>
-        new(NullLogger<TreeSitterExtractor>.Instance, extension => extension == ".swift"
-            ? new LanguageSpec
-            {
-                LanguageName = LanguageSpecs.Swift.LanguageName,
-                Framework = null,
-                GetLanguage = () => throw new DllNotFoundException("libtree-sitter-swift"),
-                ExtractionVersion = LanguageSpecs.Swift.ExtractionVersion,
-                SkipFileOnExtractionFailure = LanguageSpecs.Swift.SkipFileOnExtractionFailure
-            }
-            : null);
+    /// <summary>Every language as deployed, except that the Swift grammar cannot be loaded.</summary>
+    private static TreeSitterExtractor GrammarUnavailableExtractor()
+    {
+        var unavailableSwift = new LanguageSpec
+        {
+            LanguageName = LanguageSpecs.Swift.LanguageName,
+            Framework = null,
+            GetLanguage = () => throw new DllNotFoundException("libtree-sitter-swift"),
+            ExtractionVersion = LanguageSpecs.Swift.ExtractionVersion,
+            SkipFileOnExtractionFailure = LanguageSpecs.Swift.SkipFileOnExtractionFailure
+        };
+        return new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance, extension =>
+            extension == ".swift" ? unavailableSwift : LanguageSpecs.ForExtension(extension));
+    }
 
     [Fact]
     public async Task ExtractAsync_SwiftGrammarUnavailable_SkipsFileUnderADistinctExtractionVersion()
@@ -244,6 +247,9 @@ public class SwiftTreeSitterExtractorTests
         try
         {
             await File.WriteAllTextAsync(Path.Combine(rootPath, "Sources", "Shapes.swift"), FixtureSource);
+            // Another language keeps extraction nodes in the project, so the pipeline's
+            // "no extraction nodes at all" safety net does not mask the version check.
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "tools.py"), "def helper():\n    pass\n");
             var store = new InMemoryGraphStore();
 
             IndexingPipeline Pipeline(TreeSitterExtractor extractor) => new(
@@ -257,6 +263,7 @@ public class SwiftTreeSitterExtractorTests
             await Pipeline(GrammarUnavailableExtractor())
                 .IndexProjectAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
             store.Nodes.ShouldNotContain(node => node.Name == "ShapeStore");
+            store.Nodes.ShouldContain(node => node.Name == "helper");
 
             // Same unchanged file after the grammar is fixed: it must be extracted again.
             await Pipeline(new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance))
