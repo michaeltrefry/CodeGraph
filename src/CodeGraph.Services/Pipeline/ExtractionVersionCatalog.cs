@@ -30,6 +30,13 @@ namespace CodeGraph.Services.Pipeline;
 /// Cargo manifest and NuGet reference extraction are not versioned: they run over every manifest
 /// on every index.
 /// </para>
+/// <para>
+/// Swift package manifests also run on every index, but their output reaches unchanged repositories
+/// only through a versioned file: <c>Package.swift</c> files carry
+/// <see cref="ISwiftPackageManifestExtractor.ExtractionVersion"/> (so a bump re-extracts them and
+/// replaces their declared-dependency slice) and the version is part of the <see cref="Fingerprint"/>
+/// (so a bump triggers the refresh run that rewrites the <c>Package.resolved</c> pins).
+/// </para>
 /// </remarks>
 public sealed class ExtractionVersionCatalog
 {
@@ -44,17 +51,20 @@ public sealed class ExtractionVersionCatalog
     private readonly ISolutionAnalyzer? _solutionAnalyzer;
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
+    private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
 
     public ExtractionVersionCatalog(
         IEnumerable<ICodeExtractor> extractors,
         ISolutionAnalyzer? solutionAnalyzer = null,
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
-        IRustAnalyzer? rustAnalyzer = null)
+        IRustAnalyzer? rustAnalyzer = null,
+        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null)
     {
         _extractors = extractors.ToList();
         _solutionAnalyzer = solutionAnalyzer;
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
+        _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
         Fingerprint = ComputeFingerprint();
     }
 
@@ -64,8 +74,22 @@ public sealed class ExtractionVersionCatalog
     /// </summary>
     public string Fingerprint { get; }
 
-    /// <summary>The extraction version for a file, derived from its extension.</summary>
-    public string ForPath(string path) => ForExtension(Path.GetExtension(path));
+    /// <summary>
+    /// The extraction version for a file, derived from its extension (and, for a SwiftPM
+    /// <c>Package.swift</c>, the manifest extractor version).
+    /// </summary>
+    public string ForPath(string path)
+    {
+        var version = ForExtension(Path.GetExtension(path));
+        return IsSwiftPackageManifest(path)
+            ? $"{version};{_swiftPackageManifestExtractor!.GetType().Name}={_swiftPackageManifestExtractor.ExtractionVersion}"
+            : version;
+    }
+
+    private bool IsSwiftPackageManifest(string path) =>
+        _swiftPackageManifestExtractor is not null &&
+        string.Equals(Path.GetFileName(path), SwiftPackageManifestExtractor.PackageSwiftFileName,
+            StringComparison.Ordinal);
 
     public string ForExtension(string extension)
     {
@@ -96,7 +120,10 @@ public sealed class ExtractionVersionCatalog
             .Concat(_rustAnalyzer is null ? [] : RustAnalyzerExtensions)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
-            .Select(extension => $"{extension}={ForExtension(extension)}");
+            .Select(extension => $"{extension}={ForExtension(extension)}")
+            .Concat(_swiftPackageManifestExtractor is null
+                ? []
+                : [$"{SwiftPackageManifestExtractor.PackageSwiftFileName}={ForPath(SwiftPackageManifestExtractor.PackageSwiftFileName)}"]);
         var bytes = Encoding.UTF8.GetBytes(string.Join('\n', lines));
         return Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
     }

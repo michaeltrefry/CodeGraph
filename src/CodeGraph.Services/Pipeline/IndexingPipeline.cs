@@ -24,6 +24,7 @@ public partial class IndexingPipeline
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly ICargoManifestExtractor? _cargoManifestExtractor;
+    private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
     private readonly IndexingRunDiagnostics? _diagnostics;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
@@ -42,7 +43,8 @@ public partial class IndexingPipeline
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
         IRustAnalyzer? rustAnalyzer = null,
         ICargoManifestExtractor? cargoManifestExtractor = null,
-        IndexingRunDiagnostics? diagnostics = null)
+        IndexingRunDiagnostics? diagnostics = null,
+        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null)
     {
         _store = store;
         _extractors = extractors;
@@ -54,10 +56,11 @@ public partial class IndexingPipeline
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
         _cargoManifestExtractor = cargoManifestExtractor;
+        _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
         _diagnostics = diagnostics;
         _foundationalRepos = _options.FoundationalRepos ?? [];
         _extractionVersions = new ExtractionVersionCatalog(
-            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer);
+            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor);
     }
 
     /// <summary>
@@ -514,6 +517,11 @@ public partial class IndexingPipeline
             return outcomes;
         }
 
+        // Manifest files whose extracted package slice replaces the stored one on incremental runs.
+        // Manifests are re-extracted on every run, but a manifest that is not a discovered source
+        // file (or whose source extractor did not process it) never reaches successfullyProcessedFiles.
+        var manifestReplacementPaths = new List<string>();
+
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
         if (_cargoManifestExtractor is not null)
         {
@@ -536,12 +544,42 @@ public partial class IndexingPipeline
                     MergeResults([cargoResult], buffer);
                     if (cargoResult.Metadata is not null)
                         detectedMetadataCandidates.Add(cargoResult.Metadata);
+                    manifestReplacementPaths.AddRange(cargoManifestPaths.Select(path =>
+                        NormalizeRelativePath(Path.GetRelativePath(rootPath, path))));
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
                         "Cargo manifest extraction failed for {Project}", projectName);
                 }
+            }
+        }
+
+        // Swift Package Manager / Xcode — package definitions, declared dependencies, resolved
+        // pins and Swift/Xcode vs Swift/SwiftPM classification.
+        if (_swiftPackageManifestExtractor is not null)
+        {
+            try
+            {
+                var swiftResult = ExtractSwiftPackageManifests(rootPath, context);
+                if (swiftResult is not null)
+                {
+                    MergeResults([swiftResult], buffer);
+                    if (swiftResult.Metadata is not null)
+                        detectedMetadataCandidates.Add(swiftResult.Metadata);
+                    // Package.resolved is not a discovered source file, so its slice is always
+                    // replaced; a changed Package.swift is replaced even when its Swift source
+                    // extraction failed.
+                    manifestReplacementPaths.AddRange(swiftResult.ProcessedFiles.Where(path =>
+                        Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageResolvedFileName ||
+                        changedRelativePaths.Contains(path)));
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Swift package manifest extraction failed for {Project}", projectName);
             }
         }
 
@@ -612,6 +650,7 @@ public partial class IndexingPipeline
         {
             var replacementPaths = successfullyProcessedFiles
                 .Concat(deletedFiles)
+                .Concat(manifestReplacementPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
