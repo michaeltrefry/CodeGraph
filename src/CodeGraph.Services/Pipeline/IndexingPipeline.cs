@@ -558,8 +558,10 @@ public partial class IndexingPipeline
             }
         }
 
-        // Swift Package Manager / Xcode — package definitions, declared dependencies, resolved
-        // pins and Swift/Xcode vs Swift/SwiftPM classification.
+        // Swift Package Manager / Xcode — package definitions, targets, declared dependencies,
+        // resolved pins and Swift/Xcode vs Swift/SwiftPM classification.
+        var swiftManifestsExtracted = false;
+        var swiftManifestsPresent = false;
         if (_swiftPackageManifestExtractor is not null)
         {
             try
@@ -568,6 +570,8 @@ public partial class IndexingPipeline
                 discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageSwiftFileName);
                 discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageResolvedFileName);
                 discoveredManifestPaths.UnionWith(swiftManifestPaths);
+                swiftManifestsExtracted = true;
+                swiftManifestsPresent = swiftResult is not null;
                 if (swiftResult is not null)
                 {
                     MergeResults([swiftResult], buffer);
@@ -596,9 +600,12 @@ public partial class IndexingPipeline
         // project then rebuilds its links without them.
         if (!replaceExistingGraph && existingHashes.Count > 0 && discoveredManifestNames.Count > 0)
         {
-            manifestReplacementPaths.AddRange(await FindRemovedManifestPathsAsync(
-                projectName, discoveredManifestNames, discoveredManifestPaths));
+            var removedManifests = await FindRemovedManifestPathsAsync(
+                projectName, discoveredManifestNames, discoveredManifestPaths);
+            manifestReplacementPaths.AddRange(removedManifests);
+            swiftManifestsPresent |= removedManifests.Any(IsSwiftManifest);
         }
+        swiftManifestsPresent |= deletedFiles.Any(IsSwiftManifest);
 
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
@@ -636,10 +643,20 @@ public partial class IndexingPipeline
         var includePersistedNodes = !replaceExistingGraph && existingHashes.Count > 0;
         var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
             StringComparer.OrdinalIgnoreCase);
+        // Manifests are re-extracted every run, so persisted imports are re-bound whenever the
+        // repository has (or just lost) Swift package manifests.
+        var swiftImportRebinding = await ResolveSwiftImportsAsync(
+            projectName,
+            buffer,
+            manifestsExtracted: swiftManifestsExtracted,
+            incremental: includePersistedNodes,
+            rebindPersisted: includePersistedNodes && swiftManifestsExtracted && swiftManifestsPresent,
+            excludedPersistedFiles,
+            ct);
         await ResolveCallsAsync(
             projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
-        var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
-            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+        var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
         CreateStubNodesForExternalTargets(projectName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
@@ -734,6 +751,10 @@ public partial class IndexingPipeline
         _options.SkipPatterns.Concat(GeneratedDependencyDirectories.Select(directory => $"**/{directory}/**"));
 
     private const string CargoManifestFileName = "Cargo.toml";
+
+    private static bool IsSwiftManifest(string path) =>
+        Path.GetFileName(path) is SwiftPackageManifestExtractor.PackageSwiftFileName
+            or SwiftPackageManifestExtractor.PackageResolvedFileName;
 
     /// <summary>Whether discovery includes <paramref name="fullPath"/> (no exclusion matches it).</summary>
     private bool IsDiscoverable(string rootPath, string fullPath) =>

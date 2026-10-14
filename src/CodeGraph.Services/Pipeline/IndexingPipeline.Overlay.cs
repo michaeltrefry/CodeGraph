@@ -68,6 +68,10 @@ public partial class IndexingPipeline
         var excludedPersistedFiles = normalizedChanged
             .Concat(removedPaths.Select(NormalizeRelativePath))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Overlays do not extract manifests: imports resolve against the default branch's packages.
+        await ResolveSwiftImportsAsync(
+            projectName, buffer, manifestsExtracted: false, incremental: false, rebindPersisted: false,
+            excludedPersistedFiles, ct);
         await ResolveCallsAsync(
             projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
         var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
@@ -86,7 +90,7 @@ public partial class IndexingPipeline
         // Stub endpoints (no file) travel with the slice so its edges resolve in the overlay view.
         foreach (var qualifiedName in edges.SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN }))
         {
-            if (SwiftTypeReference.IsExternal(qualifiedName)
+            if ((SwiftTypeReference.IsExternal(qualifiedName) || IsExternalModuleStub(qualifiedName))
                 && buffer.FindByQN(qualifiedName) is { } stub
                 && nodeQns.Add(qualifiedName))
             {

@@ -142,12 +142,87 @@ public class SwiftPackageManifestExtractorTests
         new SwiftPackageManifestExtractor().Extract(manifests, hasXcodeProject, Context);
 
     private static GraphNode Dependency(ExtractionResult result, string identity, string kind) =>
-        result.Nodes.Where(node =>
+        Packages(result).Where(node =>
                 node.Label == NodeLabel.Package &&
                 (string)node.Properties["identity"] == identity &&
                 !(bool)node.Properties["is_definition"] &&
                 (string)node.Properties["dependency_kind"] == kind)
             .ShouldHaveSingleItem();
+
+    private static IEnumerable<GraphNode> Packages(ExtractionResult result) =>
+        result.Nodes.Where(node => node.Label == NodeLabel.Package);
+
+    [Fact]
+    public void Extract_PackageSwift_EmitsATargetModulePerTargetAndRecordsTheProductsTheyUse()
+    {
+        var result = Extract(new Dictionary<string, string>
+        {
+            [Full("Package.swift")] = """
+                // swift-tools-version:5.9
+                import PackageDescription
+
+                let package = Package(
+                    name: "ShapeKit",
+                    products: [.library(name: "ShapeKit", targets: ["ShapeKit"])],
+                    dependencies: [
+                        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+                        .package(name: "SparkleKit", url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+                        .package(url: "https://github.com/apple/swift-collections", from: "1.0.0"),
+                    ],
+                    targets: [
+                        .target(
+                            name: "ShapeKit",
+                            dependencies: [
+                                "Geometry",
+                                .target(name: "Geometry"),
+                                .product(name: "Logging", package: "swift-log"),
+                                .product(name: "Sparkle", package: "SparkleKit", condition: .when(platforms: [.macOS])),
+                            ]),
+                        .target(name: "Geometry", path: "Sources/Geo"),
+                        .executableTarget(name: "shapes", dependencies: [
+                            Target.Dependency.product(name: "OrderedCollections", package: "swift-collections"),
+                        ]),
+                        .testTarget(name: "ShapeKitTests", dependencies: ["ShapeKit"]),
+                        .plugin(name: "Lint", capability: .buildTool()),
+                        .binaryTarget(name: "Blob", path: "Blob.xcframework"),
+                        // .target(name: "CommentedOut"),
+                    ]
+                )
+                """,
+            [Full("Packages/Core/Package.swift")] = CorePackageSwift
+        });
+
+        var modules = result.Nodes.Where(node => node.Label == NodeLabel.Module).ToList();
+        modules.Select(node => (node.QualifiedName, node.FilePath, (string)node.Properties["target_kind"],
+                node.Properties.GetValueOrDefault("source_path") as string))
+            .ShouldBe(
+            [
+                ("SwiftRepo:Package.swift#target:ShapeKit", "Package.swift", "target", "Sources/ShapeKit"),
+                ("SwiftRepo:Package.swift#target:Geometry", "Package.swift", "target", "Sources/Geo"),
+                ("SwiftRepo:Package.swift#target:shapes", "Package.swift", "executableTarget", "Sources/shapes"),
+                ("SwiftRepo:Package.swift#target:ShapeKitTests", "Package.swift", "testTarget", "Tests/ShapeKitTests"),
+                ("SwiftRepo:Package.swift#target:Lint", "Package.swift", "plugin", "Plugins/Lint"),
+                ("SwiftRepo:Package.swift#target:Blob", "Package.swift", "binaryTarget", "Blob.xcframework"),
+                ("SwiftRepo:Packages/Core/Package.swift#target:Core", "Packages/Core/Package.swift", "target",
+                    "Packages/Core/Sources/Core")
+            ], ignoreOrder: true);
+        modules.ShouldAllBe(node => (string)node.Properties["ecosystem"] == "swiftpm"
+                                    && (string)node.Properties["module_name"] == node.Name);
+        result.Edges.ShouldContain(edge =>
+            edge.SourceQN == "package:swiftpm:local:swiftrepo:shapekit@*"
+            && edge.TargetQN == "SwiftRepo:Package.swift#target:Geometry"
+            && edge.Type == EdgeType.DEFINES);
+        result.Edges.ShouldContain(edge =>
+            edge.SourceQN == "package:swiftpm:local:swiftrepo:core@*"
+            && edge.TargetQN == "SwiftRepo:Packages/Core/Package.swift#target:Core"
+            && edge.Type == EdgeType.DEFINES);
+
+        // A product dependency names its package by identity or by declared name.
+        Dependency(result, "swift-log", "declared").Properties["swift_products"].ShouldBe("Logging");
+        Dependency(result, "sparkle", "declared").Properties["swift_products"].ShouldBe("Sparkle");
+        Dependency(result, "swift-collections", "declared").Properties["swift_products"]
+            .ShouldBe("OrderedCollections");
+    }
 
     [Fact]
     public void Extract_PackageSwift_EmitsDefinitionAndEveryDeclaredDependencyForm()
@@ -160,7 +235,7 @@ public class SwiftPackageManifestExtractorTests
         result.Metadata.ShouldBe(new ProjectMetadata("Swift", "SwiftPM"));
         result.ProcessedFiles.ShouldBe(["Package.swift"]);
 
-        var definition = result.Nodes.Single(node => (bool)node.Properties["is_definition"]);
+        var definition = Packages(result).Single(node => (bool)node.Properties["is_definition"]);
         definition.Name.ShouldBe("ShapeKit");
         definition.QualifiedName.ShouldBe("package:swiftpm:local:swiftrepo:shapekit@*");
         definition.FilePath.ShouldBe("Package.swift");
@@ -225,7 +300,7 @@ public class SwiftPackageManifestExtractorTests
         core.Properties.ContainsKey("external_path").ShouldBeFalse();
 
         result.Nodes.ShouldNotContain(node => node.Name.StartsWith("out-", StringComparison.Ordinal));
-        result.Nodes.Count(node => !(bool)node.Properties["is_definition"]).ShouldBe(12);
+        Packages(result).Count(node => !(bool)node.Properties["is_definition"]).ShouldBe(12);
         result.Edges.Count(edge =>
                 edge.Type == EdgeType.REFERENCES_PACKAGE && edge.SourceQN == definition.QualifiedName)
             .ShouldBe(12);
@@ -240,10 +315,10 @@ public class SwiftPackageManifestExtractorTests
             [Full("Packages/Core/Package.swift")] = CorePackageSwift
         });
 
-        var coreDefinition = result.Nodes.Single(node =>
+        var coreDefinition = Packages(result).Single(node =>
             node.Name == "Core" && (bool)node.Properties["is_definition"]);
         coreDefinition.FilePath.ShouldBe("Packages/Core/Package.swift");
-        result.Nodes.ShouldNotContain(node =>
+        Packages(result).ShouldNotContain(node =>
             !(bool)node.Properties["is_definition"] && (string)node.Properties["identity"] == "core");
         result.Edges.ShouldContain(edge =>
             edge.SourceQN == "package:swiftpm:local:swiftrepo:shapekit@*" &&
@@ -399,10 +474,10 @@ public class SwiftPackageManifestExtractorTests
                 """"
         });
 
-        var dependencies = result.Nodes.Where(node => !(bool)node.Properties["is_definition"]).ToList();
+        var dependencies = Packages(result).Where(node => !(bool)node.Properties["is_definition"]).ToList();
         dependencies.Select(node => node.QualifiedName)
             .ShouldBe(["package:swiftpm:scm:example.test/qualified@exact:3.1.4"]);
-        result.Nodes.Single(node => (bool)node.Properties["is_definition"]).Name.ShouldBe("Strings");
+        Packages(result).Single(node => (bool)node.Properties["is_definition"]).Name.ShouldBe("Strings");
     }
 
     [Fact]
@@ -414,7 +489,7 @@ public class SwiftPackageManifestExtractorTests
             [Full("Package.swift")] = PackageSwift
         });
 
-        var definition = result.Nodes.Where(node => (bool)node.Properties["is_definition"]).ShouldHaveSingleItem();
+        var definition = Packages(result).Where(node => (bool)node.Properties["is_definition"]).ShouldHaveSingleItem();
         definition.FilePath.ShouldBe("Package.swift");
         var log = result.Nodes.Single(node =>
             node.QualifiedName == "package:swiftpm:scm:github.com/apple/swift-log@exact:1.5.3");
@@ -446,8 +521,8 @@ public class SwiftPackageManifestExtractorTests
                 """
         }, hasXcodeProject: false, Context);
 
-        result.Nodes.Single(node => (bool)node.Properties["is_definition"]).Name.ShouldBe("Raw");
-        result.Nodes.Where(node => !(bool)node.Properties["is_definition"])
+        Packages(result).Single(node => (bool)node.Properties["is_definition"]).Name.ShouldBe("Raw");
+        Packages(result).Where(node => !(bool)node.Properties["is_definition"])
             .Select(node => node.QualifiedName)
             .ShouldBe([
                 "package:swiftpm:scm:example.test/interpolated@*",

@@ -20,13 +20,16 @@ public partial class IndexingPipeline
     ];
 
     /// <summary>
-    /// Resolve import statements to namespace/type nodes.
-    /// Phase 2 stub — full resolution happens when extractors populate UnresolvedImports.
+    /// Resolve import statements to namespace/type nodes by qualified name. Swift imports name
+    /// modules, not nodes, and are resolved by <see cref="ResolveSwiftImportsAsync"/>.
     /// </summary>
     private void ResolveImports(GraphBuffer buffer)
     {
         foreach (var import in buffer.AllUnresolvedImports)
         {
+            if (import.FileQN.EndsWith(".swift", StringComparison.OrdinalIgnoreCase))
+                continue;
+
             var target = buffer.FindByQN(import.ImportedNamespace);
             if (target != null)
             {

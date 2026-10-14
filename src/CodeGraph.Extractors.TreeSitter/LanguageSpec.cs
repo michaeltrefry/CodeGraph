@@ -195,8 +195,11 @@ public sealed record CallSite(
     CallReceiverKind ReceiverKind,
     string? ArgumentLabels = null);
 
-/// <summary>An import: the imported module and, for a scoped import, the declaration it names.</summary>
-public sealed record ImportDeclaration(string Module, string? Symbol = null);
+/// <summary>
+/// An import: the imported module and, for a scoped import, the declaration it names and that
+/// declaration's kind keyword.
+/// </summary>
+public sealed record ImportDeclaration(string Module, string? Symbol = null, string? SymbolKind = null);
 
 /// <summary>The type a container-only definition extends, when it is declared in another file.</summary>
 public sealed record ContainerOwner(string Path, string ReferenceQN);

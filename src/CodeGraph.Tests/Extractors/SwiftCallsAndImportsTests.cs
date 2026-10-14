@@ -45,9 +45,9 @@ public class SwiftCallsAndImportsTests
         [
             new UnresolvedImport(file, "Foundation"),
             new UnresolvedImport(file, "MyKit"),
-            new UnresolvedImport(file, "Foundation", "Date"),
-            new UnresolvedImport(file, "UIKit", "UIView"),
-            new UnresolvedImport(file, "Darwin", "sqrt"),
+            new UnresolvedImport(file, "Foundation", "Date", "struct"),
+            new UnresolvedImport(file, "UIKit", "UIView", "class"),
+            new UnresolvedImport(file, "Darwin", "sqrt", "func"),
             new UnresolvedImport(file, "Darwin.C")
         ]);
     }

@@ -673,9 +673,10 @@ internal sealed class SwiftCallSites
         if (parts.Count == 0)
             return null;
 
-        var isScoped = declaration.Children.Any(child => !child.IsNamed && ScopedImportKinds.Contains(child.Type));
-        return isScoped && parts.Count > 1
-            ? new ImportDeclaration(string.Join('.', parts.Take(parts.Count - 1)), parts[^1])
+        var kind = declaration.Children
+            .FirstOrDefault(child => !child.IsNamed && ScopedImportKinds.Contains(child.Type))?.Type;
+        return kind is not null && parts.Count > 1
+            ? new ImportDeclaration(string.Join('.', parts.Take(parts.Count - 1)), parts[^1], kind)
             : new ImportDeclaration(string.Join('.', parts));
     }
 }

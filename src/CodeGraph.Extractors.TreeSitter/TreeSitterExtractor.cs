@@ -641,7 +641,8 @@ public class TreeSitterExtractor : ICodeExtractor
         if (spec.ImportNodeTypes.Contains(node.Type) && spec.ImportReader is not null)
         {
             if (spec.ImportReader(node) is { } declaration)
-                unresolvedImports.Add(new UnresolvedImport(fileQN, declaration.Module, declaration.Symbol));
+                unresolvedImports.Add(new UnresolvedImport(
+                    fileQN, declaration.Module, declaration.Symbol, declaration.SymbolKind));
             return;
         }
 
