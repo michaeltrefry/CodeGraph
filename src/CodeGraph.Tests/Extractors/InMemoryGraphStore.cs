@@ -62,6 +62,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     /// <summary>Incremental file-slice writes made so far.</summary>
     public int ReplaceProjectFilesCallCount { get; private set; }
 
+    /// <summary>The replaced file paths of every non-empty <see cref="ReplaceProjectFilesAsync"/> call.</summary>
+    public List<IReadOnlyList<string>> ReplacedFileSlices { get; } = [];
+
+    /// <summary>Stored file hash records of a project (source files and tracked manifests).</summary>
+    public IReadOnlyDictionary<string, string> FileHashesOf(string project) =>
+        _fileHashes.TryGetValue(project, out var hashes) ? hashes : new Dictionary<string, string>();
+
     /// <summary>Calls of the batched lookups, by method name.</summary>
     public Dictionary<string, int> LookupCallCounts { get; } = new(StringComparer.Ordinal);
 
@@ -774,6 +781,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (IncrementalReplacementFailure is not null)
             throw IncrementalReplacementFailure;
         ReplaceProjectFilesCallCount++;
+        ReplacedFileSlices.Add(filePaths.ToList());
 
         var projectIdsByQn = _nodes
             .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))

@@ -15,8 +15,8 @@ public interface ISwiftPackageManifestExtractor
     /// </summary>
     string ExtractionVersion { get; }
 
-    /// <param name="manifests">Full path to content of every <c>Package.swift</c> and
-    /// <c>Package.resolved</c> in the repository.</param>
+    /// <param name="manifests">Full path to content of every <c>Package.swift</c>,
+    /// <c>Package.resolved</c> and <c>*.xcodeproj/project.pbxproj</c> in the repository.</param>
     /// <param name="hasXcodeProject">Whether the repository contains an <c>.xcodeproj</c> or
     /// <c>.xcworkspace</c>.</param>
     /// <param name="context">Extraction context; <see cref="ExtractorContext.RootPath"/> anchors

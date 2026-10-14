@@ -268,10 +268,21 @@ public class GraphQueryEngine
             supertypes);
     }
 
-    private static string PackageEcosystem(GraphNode node) =>
-        node.Label == NodeLabel.NuGetPackage
-            ? "nuget"
-            : PropertyText(node, "ecosystem") ?? "unknown";
+    /// <summary>
+    /// The package's ecosystem. The TypeScript sidecar emits npm packages with the
+    /// <see cref="NodeLabel.NuGetPackage"/> label (QN <c>npm:name</c>, <c>package_type</c> npm), so
+    /// the label alone only means NuGet when nothing on the node names another ecosystem.
+    /// </summary>
+    internal static string PackageEcosystem(GraphNode node)
+    {
+        if (PropertyText(node, "ecosystem") is { Length: > 0 } ecosystem)
+            return ecosystem;
+        if (PropertyText(node, "package_type") is { Length: > 0 } packageType)
+            return packageType;
+        if (node.QualifiedName.StartsWith("npm:", StringComparison.Ordinal))
+            return "npm";
+        return node.Label == NodeLabel.NuGetPackage ? "nuget" : "unknown";
+    }
 
     private static string? PackageVersion(GraphNode node) =>
         PropertyText(node, "version")

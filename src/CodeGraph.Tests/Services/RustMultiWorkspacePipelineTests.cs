@@ -101,6 +101,101 @@ public class RustMultiWorkspacePipelineTests
         }
     }
 
+    /// <summary>
+    /// sc-26145 (LensWorks re-run): standalone packages nested in another package's directory
+    /// (vendored path dependencies, a Tauri app) were listed under the enclosing package's
+    /// whole-workspace group and again under their own: 8 crates reported for 5.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_NestedStandalonePathDependencies_CountEachCrateOnce()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteFile(rootPath, "engines/catalog/Cargo.toml",
+                "[package]\nname = \"photocatalog\"\nversion = \"0.1.0\"\n\n[dependencies]\n" +
+                "xmp_toolkit = { version = \"=1.12.1\", path = \"vendor/xmp_toolkit\" }\n\n" +
+                "[patch.crates-io]\nlibsqlite3-sys = { path = \"vendor/libsqlite3-sys\" }\n");
+            WriteFile(rootPath, "engines/catalog/src/lib.rs", "pub fn catalog() {}\n");
+            WriteCrate(rootPath, "engines/catalog/vendor/xmp_toolkit", "xmp_toolkit");
+            WriteCrate(rootPath, "engines/catalog/vendor/libsqlite3-sys", "libsqlite3-sys");
+            WriteFile(rootPath, "engines/catalog/desktop/src-tauri/Cargo.toml",
+                "[package]\nname = \"photocatalog-desktop\"\nversion = \"0.1.0\"\n\n[dependencies]\n" +
+                "photocatalog = { path = \"../..\" }\n");
+            WriteFile(rootPath, "engines/catalog/desktop/src-tauri/src/main.rs", "fn main() {}\n");
+            WriteFile(rootPath, "adapters/catalog/Cargo.toml",
+                "[package]\nname = \"catalog-adapter\"\nversion = \"0.1.0\"\n\n[dependencies]\n" +
+                "photocatalog = { path = \"../../engines/catalog\" }\n");
+            WriteFile(rootPath, "adapters/catalog/src/lib.rs", "pub fn adapter() {}\n");
+
+            var analyzer = new UnavailableRustAnalyzer(rootPath);
+            var (_, diagnostics, _) = await IndexAsync(rootPath, analyzer: analyzer);
+
+            // Every package is its own root and is analyzed exactly once.
+            analyzer.Manifests.Order(StringComparer.Ordinal).ShouldBe([
+                "adapters/catalog/Cargo.toml",
+                "engines/catalog/Cargo.toml",
+                "engines/catalog/desktop/src-tauri/Cargo.toml",
+                "engines/catalog/vendor/libsqlite3-sys/Cargo.toml",
+                "engines/catalog/vendor/xmp_toolkit/Cargo.toml"
+            ]);
+
+            var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
+            outcomes.Groups.Select(group => (group.Manifest, string.Join("+", group.Crates)))
+                .OrderBy(group => group.Manifest, StringComparer.Ordinal)
+                .ShouldBe([
+                    ("adapters/catalog/Cargo.toml", "catalog-adapter"),
+                    ("engines/catalog/Cargo.toml", "photocatalog"),
+                    ("engines/catalog/desktop/src-tauri/Cargo.toml", "photocatalog-desktop"),
+                    ("engines/catalog/vendor/libsqlite3-sys/Cargo.toml", "libsqlite3-sys"),
+                    ("engines/catalog/vendor/xmp_toolkit/Cargo.toml", "xmp_toolkit")
+                ]);
+            outcomes.CrateCount.ShouldBe(5);
+            outcomes.Groups.SelectMany(group => group.Crates).ShouldBeUnique();
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A workspace member's path dependency outside the workspace directory is not a member: it is
+    /// its own root, analyzed (and counted) once, never folded into the workspace a second time.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_WorkspaceWithPathDependencyOutsideItsMembers_AnalyzesAndCountsTheCrateOnce()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteWorkspace(rootPath, "engine", "engine_core");
+            WriteFile(rootPath, "engine/crates/engine_core/Cargo.toml",
+                "[package]\nname = \"engine_core\"\nversion = \"0.1.0\"\n\n[dependencies]\n" +
+                "shared = { path = \"../../../shared\" }\n");
+            WriteCrate(rootPath, "shared", "shared");
+
+            var semantic = await IndexAsync(rootPath);
+            semantic.Analyzer.Manifests.Order(StringComparer.Ordinal)
+                .ShouldBe(["engine/Cargo.toml", "shared/Cargo.toml"]);
+            semantic.Diagnostics.RustSemanticOutcomes.ShouldNotBeNull().CrateCount.ShouldBe(2);
+
+            var unavailable = new UnavailableRustAnalyzer(rootPath);
+            var (_, fallback, _) = await IndexAsync(rootPath, analyzer: unavailable);
+            unavailable.Manifests.Order(StringComparer.Ordinal)
+                .ShouldBe(["engine/Cargo.toml", "shared/Cargo.toml"]);
+            var outcomes = fallback.RustSemanticOutcomes.ShouldNotBeNull();
+            outcomes.Groups.Select(group => (group.Manifest, string.Join("+", group.Crates)))
+                .OrderBy(group => group.Manifest, StringComparer.Ordinal)
+                .ShouldBe([("engine/Cargo.toml", "engine_core"), ("shared/Cargo.toml", "shared")]);
+            outcomes.CrateCount.ShouldBe(2);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     [Fact]
     public void CargoWorkspaceRoots_WorkspaceSubTableAloneDeclaresTheWorkspace()
     {
@@ -184,11 +279,15 @@ public class RustMultiWorkspacePipelineTests
     }
 
     private static async Task<(RecordingRustAnalyzer Analyzer, IndexingRunDiagnostics Diagnostics, InMemoryGraphStore Store)>
-        IndexAsync(string rootPath, InMemoryGraphStore? existingStore = null, string[]? skipPatterns = null)
+        IndexAsync(
+            string rootPath,
+            InMemoryGraphStore? existingStore = null,
+            string[]? skipPatterns = null,
+            IRustAnalyzer? analyzer = null)
     {
         var store = existingStore ?? new InMemoryGraphStore();
         var diagnostics = new IndexingRunDiagnostics();
-        var analyzer = new RecordingRustAnalyzer(rootPath);
+        var recording = new RecordingRustAnalyzer(rootPath);
         var options = new IndexingOptions { MaxParallelFiles = 1 };
         if (skipPatterns is not null)
             options.SkipPatterns = skipPatterns;
@@ -199,12 +298,12 @@ public class RustMultiWorkspacePipelineTests
             Options.Create(options),
             new LocalFileSystem(),
             NullLogger<IndexingPipeline>.Instance,
-            rustAnalyzer: analyzer,
+            rustAnalyzer: analyzer ?? recording,
             cargoManifestExtractor: new CargoManifestExtractor(),
             diagnostics: diagnostics);
 
         await pipeline.IndexProjectAsync("Multi", rootPath, ct: CancellationToken.None);
-        return (analyzer, diagnostics, store);
+        return (recording, diagnostics, store);
     }
 
     private static string CreateRepository()
@@ -235,6 +334,26 @@ public class RustMultiWorkspacePipelineTests
         var path = Path.Combine(rootPath, relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content);
+    }
+
+    /// <summary>Records each analyzed manifest and fails like a host without rust-analyzer/scip.</summary>
+    private sealed class UnavailableRustAnalyzer(string rootPath) : IRustAnalyzer
+    {
+        private readonly ConcurrentQueue<string> _manifests = new();
+
+        public IReadOnlyList<string> Manifests => _manifests.ToArray();
+
+        public Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
+            string cargoManifestPath, ExtractorContext context, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<RustWorkspaceAnalysis> AnalyzeWorkspaceAsync(
+            string cargoManifestPath, ExtractorContext context, CancellationToken ct = default)
+        {
+            _manifests.Enqueue(Path.GetRelativePath(rootPath, cargoManifestPath).Replace('\\', '/'));
+            throw new RustSemanticIndexingException(
+                "rust_semantic_tools_unavailable", "Rust semantic indexing tools are unavailable.");
+        }
     }
 
     /// <summary>

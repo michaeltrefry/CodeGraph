@@ -7,9 +7,10 @@ namespace CodeGraph.Services.Pipeline;
 public partial class IndexingPipeline
 {
     /// <summary>
-    /// Runs the SwiftPM manifest extractor over every <c>Package.swift</c> and
+    /// Runs the SwiftPM manifest extractor over every <c>Package.swift</c>,
     /// <c>Package.resolved</c> (root, <c>*.xcodeproj/project.xcworkspace</c> and
-    /// <c>*.xcworkspace</c>) that discovery includes, and reports every manifest it found in
+    /// <c>*.xcworkspace</c>) and <c>*.xcodeproj/project.pbxproj</c> (native targets as Swift
+    /// modules) that discovery includes, and reports every manifest it found in
     /// <paramref name="manifestRelativePaths"/>. Returns null for a repository with neither
     /// manifests nor an Xcode project. A manifest that cannot be read is logged and skipped.
     /// </summary>
@@ -30,9 +31,10 @@ public partial class IndexingPipeline
         {
             var fileName = Path.GetFileName(path);
             if (fileName is SwiftPackageManifestExtractor.PackageSwiftFileName
-                or SwiftPackageManifestExtractor.PackageResolvedFileName)
+                or SwiftPackageManifestExtractor.PackageResolvedFileName
+                or XcodeProjectReader.ProjectFileName)
                 manifestPaths.Add(path);
-            else if (fileName is "project.pbxproj" or "contents.xcworkspacedata")
+            if (fileName is XcodeProjectReader.ProjectFileName or "contents.xcworkspacedata")
                 hasXcodeProject = true;
         }
 
