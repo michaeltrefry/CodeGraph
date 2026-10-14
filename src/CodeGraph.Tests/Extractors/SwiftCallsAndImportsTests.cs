@@ -45,9 +45,9 @@ public class SwiftCallsAndImportsTests
         [
             new UnresolvedImport(file, "Foundation"),
             new UnresolvedImport(file, "MyKit"),
-            new UnresolvedImport(file, "Foundation", "Date"),
-            new UnresolvedImport(file, "UIKit", "UIView"),
-            new UnresolvedImport(file, "Darwin", "sqrt"),
+            new UnresolvedImport(file, "Foundation", "Date", "struct"),
+            new UnresolvedImport(file, "UIKit", "UIView", "class"),
+            new UnresolvedImport(file, "Darwin", "sqrt", "func"),
             new UnresolvedImport(file, "Darwin.C")
         ]);
     }
@@ -84,7 +84,7 @@ public class SwiftCallsAndImportsTests
             }
             """);
 
-        const string run = $"{P}#method:run(_other:Point?,items:[Point])";
+        const string run = $"{P}#method:run(_:Point?,items:[Point])";
         result.UnresolvedCalls.Where(call => call.CallerQN == run)
             .Select(call => (call.CalleeName, call.ReceiverType, call.ReceiverKind, call.ArgumentLabels))
             .ShouldBe(
@@ -163,6 +163,32 @@ public class SwiftCallsAndImportsTests
     }
 
     [Fact]
+    public async Task Declarations_AreIdentifiedByExternalLabelsAndTypes_NotInternalNames()
+    {
+        var result = await ExtractAsync("View.swift", """
+            final class Canvas {
+                func thumbnail(of image: CGImage) {}
+                func thumbnail(ofimage: CGImage) {}
+                func mouseEntered(with event: NSEvent) {}
+                func f(_ x: Int) {}
+                func g(x: Int, _ y: Int...) {}
+            }
+            """);
+
+        result.Nodes.Where(node => node.Label == NodeLabel.Method)
+            .Select(node => (node.QualifiedName[(node.QualifiedName.IndexOf("#method:", StringComparison.Ordinal) + 8)..],
+                node.Properties[ArgumentLabels.Property].ToString()))
+            .ShouldBe(
+            [
+                ("thumbnail(of:CGImage)", "of:"),
+                ("thumbnail(ofimage:CGImage)", "ofimage:"),
+                ("mouseEntered(with:NSEvent)", "with:"),
+                ("f(_:Int)", "_:"),
+                ("g(x:Int,_:Int...)", "x:_...:")
+            ], ignoreOrder: true);
+    }
+
+    [Fact]
     public async Task Declarations_RecordArgumentLabelSignatures()
     {
         var result = await ExtractAsync("Labels.swift", """
@@ -179,8 +205,8 @@ public class SwiftCallsAndImportsTests
                 .Properties.GetValueOrDefault(ArgumentLabels.Property)?.ToString() ?? "<none>";
 
         Labels("init", "()").ShouldBe("");
-        Labels("init", "(widthw:Double,_height:Double)").ShouldBe("width=:_:");
-        Labels("add", "(_values:Int...,totarget:Int)").ShouldBe("_...:to:");
+        Labels("init", "(width:Double,_:Double)").ShouldBe("width=:_:");
+        Labels("add", "(_:Int...,to:Int)").ShouldBe("_...:to:");
         Labels("subscript", "(index:Int)").ShouldBe("<none>");
     }
 
@@ -316,21 +342,21 @@ public class SwiftCallsAndImportsTests
         ($"{Circle}#method:init()", $"{Circle}#method:init(radius:Double)"),
         ($"{Circle}#method:unit()", $"{Circle}#method:init()"),
         ($"{Circle}#method:styled()", $"{Circle}#type:Style#method:bold()"),
-        ($"{X}#extension:Circle#method:scaled(byfactor:Double)", $"{Circle}#method:init(radius:Double)"),
+        ($"{X}#extension:Circle#method:scaled(by:Double)", $"{Circle}#method:init(radius:Double)"),
         (Render, $"{Circle}#method:init(radius:Double)"),
-        (Render, $"{Renderer}#method:draw(_circle:Circle)"),
-        (Render, $"{Renderer}#method:draw(_circle:Circle,scale:Double)"),
+        (Render, $"{Renderer}#method:draw(_:Circle)"),
+        (Render, $"{Renderer}#method:draw(_:Circle,scale:Double)"),
         (Render, $"{Circle}#method:area()"),
         (Render, $"{Circle}#method:unit()"),
-        (Render, $"{S}#function:log(_message:String)"),
+        (Render, $"{S}#function:log(_:String)"),
         (Render, $"{C}#type:Scene#method:reset()"),
         (Render, $"{Circle}#method:init()"),
-        (Render, $"{C}#function:helper(_c:Circle?)"),
-        (Render, $"{X}#extension:Circle#method:scaled(byfactor:Double)"),
-        (Render, $"{Renderer}#method:batch(_body:()->Void)"),
+        (Render, $"{C}#function:helper(_:Circle?)"),
+        (Render, $"{X}#extension:Circle#method:scaled(by:Double)"),
+        (Render, $"{Renderer}#method:batch(_:()->Void)"),
         (Render, $"{Renderer}#method:flush()"),
         (Render, $"{Renderer}#method:load(force:Bool,completion:()->Void)"),
-        ($"{C}#function:helper(_c:Circle?)", $"{Circle}#method:area()")
+        ($"{C}#function:helper(_:Circle?)", $"{Circle}#method:area()")
     ];
 
     private static List<(string Source, string Target)> Calls(InMemoryGraphStore store)
@@ -389,7 +415,52 @@ public class SwiftCallsAndImportsTests
             await IndexAsync(store, root);
 
             Calls(store).ShouldBe(
-                ExpectedCalls.Append(($"{C}#function:later()", $"{S}#function:log(_message:String)")),
+                ExpectedCalls.Append(($"{C}#function:later()", $"{S}#function:log(_:String)")),
                 ignoreOrder: true);
         });
+
+    [Fact]
+    public async Task IndexProject_ReceiverOnANestedTypeDeclaredInAnotherFile_ResolvesByItsFullPath()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-swift-nested-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "Outer.swift"),
+                "struct Outer {\n    struct Inner {\n        static func make() -> Int { 1 }\n    }\n}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "Outer+Build.swift"),
+                "extension Outer.Inner {\n    static func build() -> Int { 2 }\n}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "User.swift"), """
+                struct User {
+                    func run() {
+                        _ = Outer.Inner.make()
+                        _ = Outer.Inner.build()
+                        _ = Missing.Inner.make()
+                    }
+                }
+                """);
+            var store = new InMemoryGraphStore();
+            await IndexAsync(store, root);
+
+            const string run = $"{Project}:User.swift#type:User#method:run()";
+            const string make = $"{Project}:Outer.swift#type:Outer#type:Inner#method:make()";
+            const string build = $"{Project}:Outer+Build.swift#extension:Outer.Inner#method:build()";
+            // Missing.Inner is not the repository's Outer.Inner, although both are named Inner.
+            Calls(store).ShouldBe([(run, make), (run, build)], ignoreOrder: true);
+
+            // A second type named Inner (with same-named members) does not make Outer.Inner ambiguous.
+            await File.WriteAllTextAsync(Path.Combine(root, "Other.swift"),
+                "struct Other {\n    struct Inner {\n        static func make() -> Int { 3 }\n    }\n}\n" +
+                "extension Other.Inner {\n    static func build() -> Int { 4 }\n}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "User.swift"),
+                await File.ReadAllTextAsync(Path.Combine(root, "User.swift")) + "\n");
+            await IndexAsync(store, root);
+
+            Calls(store).ShouldBe([(run, make), (run, build)], ignoreOrder: true);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

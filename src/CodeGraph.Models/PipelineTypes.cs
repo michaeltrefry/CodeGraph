@@ -85,12 +85,15 @@ public enum CallReceiverKind
 
 /// <summary>
 /// Import/using that needs module resolution. <paramref name="ImportedSymbol"/> is the single
-/// declaration a scoped import names (Swift <c>import struct Module.Symbol</c>), when it does.
+/// declaration a scoped import names (Swift <c>import struct Module.Symbol</c>), when it does, and
+/// <paramref name="ImportedSymbolKind"/> the declaration kind it names (<c>struct</c>, <c>class</c>,
+/// <c>enum</c>, <c>protocol</c>, <c>typealias</c>, <c>func</c>, <c>let</c> or <c>var</c>).
 /// </summary>
 public record UnresolvedImport(
     string FileQN,
     string ImportedNamespace,
-    string? ImportedSymbol = null);
+    string? ImportedSymbol = null,
+    string? ImportedSymbolKind = null);
 
 public enum ConfidenceLevel
 {

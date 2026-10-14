@@ -188,6 +188,144 @@ public class SwiftPackagePipelineTests : IDisposable
             edge.Type == EdgeType.REFERENCES_PACKAGE);
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalRun_RemovesTheSliceOfADeletedPackageResolved()
+    {
+        Write(XcodeResolvedPath, Resolved("2.10.0", "eef1a539a373c1f1a320624b1130fc5de7b2e100"));
+        Write("native/Compositor.xcodeproj/project.pbxproj", "{}\n");
+        Write("native/Sources/App.swift", "struct App {}\n");
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        store.Nodes.Count(node => node.Label == NodeLabel.Package).ShouldBe(1);
+
+        File.Delete(Path.Combine(_rootPath, XcodeResolvedPath));
+        Write("native/Sources/App.swift", "struct App { let id = 1 }\n");
+        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+
+        store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package);
+        store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.REFERENCES_PACKAGE);
+        store.Nodes.ShouldContain(node => node.Name == "App" && node.FilePath == "native/Sources/App.swift");
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalRun_MovesTheSliceOfARenamedXcodeProject()
+    {
+        const string renamedResolvedPath =
+            "native/Renamed.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved";
+        Write(XcodeResolvedPath, Resolved("2.10.0", "eef1a539a373c1f1a320624b1130fc5de7b2e100"));
+        Write("native/Compositor.xcodeproj/project.pbxproj", "{}\n");
+        Write("native/Sources/App.swift", "struct App {}\n");
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+
+        Directory.Move(
+            Path.Combine(_rootPath, "native/Compositor.xcodeproj"),
+            Path.Combine(_rootPath, "native/Renamed.xcodeproj"));
+        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+
+        var sparkle = store.Nodes.Where(node => node.Label == NodeLabel.Package).ShouldHaveSingleItem();
+        sparkle.FilePath.ShouldBe(renamedResolvedPath);
+        sparkle.Properties["manifest_path"].ToString().ShouldBe(renamedResolvedPath);
+        store.Edges.Where(edge => edge.Type == EdgeType.REFERENCES_PACKAGE)
+            .ShouldHaveSingleItem().TargetId.ShouldBe(sparkle.Id);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalRun_RemovesTheSliceOfADeletedCargoManifest()
+    {
+        Write("Cargo.toml", "[package]\nname = \"engine\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1.0\"\n");
+        Write("src/lib.rs", "pub fn run() {}\n");
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store).IndexProjectAsync("Engine", _rootPath, ct: CancellationToken.None);
+        store.Nodes.Where(node => node.Label == NodeLabel.Package).Select(node => node.Name)
+            .ShouldBe(["engine", "serde"], ignoreOrder: true);
+
+        File.Delete(Path.Combine(_rootPath, "Cargo.toml"));
+        Write("src/lib.rs", "pub fn run() {}\npub fn stop() {}\n");
+        await CreatePipeline(store).IndexProjectAsync("Engine", _rootPath, ct: CancellationToken.None);
+
+        store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package);
+        store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.REFERENCES_PACKAGE);
+        store.Nodes.ShouldContain(node => node.Name == "stop");
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_DeletedPackageResolved_DropsItsCrossRepoLinkOnRelink()
+    {
+        var corePath = Path.Combine(_rootPath, "core");
+        var appPath = Path.Combine(_rootPath, "app");
+        Write("core/Package.swift", "let package = Package(name: \"SwiftCore\")\n");
+        Write("app/" + XcodeResolvedPath, Resolved("1.4.0", "eef1a539a373c1f1a320624b1130fc5de7b2e100",
+            identity: "swiftcore", location: "https://github.com/acme/swiftcore.git"));
+        Write("app/native/Compositor.xcodeproj/project.pbxproj", "{}\n");
+        Write("app/native/Sources/App.swift", "struct App {}\n");
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store).IndexProjectAsync("SwiftCore", corePath,
+            repoUrl: "https://github.com/acme/swiftcore", ct: CancellationToken.None);
+        await CreatePipeline(store).IndexProjectAsync("XcodeApp", appPath, ct: CancellationToken.None);
+        var linker = new CrossRepoLinker(store, NullLogger<CrossRepoLinker>.Instance);
+        await linker.LinkForProjectAsync("XcodeApp", CancellationToken.None);
+        store.CrossEdges.ShouldHaveSingleItem().TargetProject.ShouldBe("SwiftCore");
+
+        File.Delete(Path.Combine(appPath, XcodeResolvedPath));
+        Write("app/native/Sources/App.swift", "struct App { let id = 1 }\n");
+        await CreatePipeline(store).IndexProjectAsync("XcodeApp", appPath, ct: CancellationToken.None);
+        await linker.LinkForProjectAsync("XcodeApp", CancellationToken.None);
+
+        store.CrossEdges.ShouldBeEmpty();
+    }
+
+    // ── Discovery exclusions ─────────────────────────────────────────
+
+    [Fact]
+    public async Task IndexProjectAsync_SkipsDependencyCheckoutsAndAgentWorktrees()
+    {
+        Write("Package.swift", "let package = Package(name: \"ShapeKit\")\n");
+        Write("Sources/ShapeKit/Shape.swift", "public struct Shape {}\n");
+        Write(".build/checkouts/swift-log/Sources/Logging/Logger.swift", "public struct Logger {}\n");
+        Write("DerivedData/App/SourcePackages/checkouts/y/Sources/Y/Y.swift", "public struct Y {}\n");
+        Write("Pods/Alamofire/Source/Session.swift", "open class Session {}\n");
+        Write("Carthage/Checkouts/Kit/Kit.swift", "public struct Kit {}\n");
+        Write(".swiftpm/xcode/Generated.swift", "struct Generated {}\n");
+        Write(".claude/worktrees/agent-1/Sources/ShapeKit/Shape.swift", "public struct Shape {}\n");
+        Write(".claude/worktrees/agent-1/Package.swift", "let package = Package(name: \"ShapeKit\")\n");
+
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store).IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+
+        store.Nodes.Select(node => node.FilePath).OfType<string>().Where(path => path.Length > 0).Distinct()
+            .ShouldBe(["Package.swift", "Sources/ShapeKit/Shape.swift"],
+                ignoreOrder: true);
+        store.Nodes.Where(node => node.Label == NodeLabel.Package).ShouldHaveSingleItem().Name.ShouldBe("ShapeKit");
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_IndexedAgentWorktree_IsRemovedByTheRefreshRunOfTheNewDefaults()
+    {
+        Write("Sources/App.swift", "struct App {}\n");
+        Write(".claude/worktrees/agent-1/Sources/App.swift", "struct App {}\n");
+        Write(".claude/worktrees/agent-1/" + XcodeResolvedPath, Resolved("2.10.0", "eef1"));
+        var store = new InMemoryGraphStore();
+        // The repository was indexed before agent worktrees were excluded.
+        var previousDefaults = new IndexingOptions().SkipPatterns
+            .Where(pattern => pattern != "**/.claude/worktrees/**").ToArray();
+        var before = CreatePipeline(store, skipPatterns: previousDefaults);
+        await before.IndexProjectAsync("App", _rootPath, ct: CancellationToken.None);
+        store.Nodes.ShouldContain(node => node.FilePath == ".claude/worktrees/agent-1/Sources/App.swift");
+        store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package);
+
+        // The new defaults change the extraction fingerprint, so a routine sync re-runs at the
+        // unchanged commit; that run's full scan removes the worktree copy.
+        var after = CreatePipeline(store);
+        after.ExtractionFingerprint.ShouldNotBe(before.ExtractionFingerprint);
+        await after.IndexProjectAsync("App", _rootPath, ct: CancellationToken.None);
+
+        store.Nodes.ShouldNotContain(node => node.FilePath != null && node.FilePath.StartsWith(".claude/"));
+        store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package);
+        store.Nodes.ShouldContain(node => node.Name == "App" && node.FilePath == "Sources/App.swift");
+        (await store.GetFileHashesAsync("App")).Keys.ShouldBe(["Sources/App.swift"]);
+    }
+
     private sealed class FailingSwiftExtractor : ICodeExtractor
     {
         public IReadOnlySet<string> SupportedExtensions { get; } =
@@ -213,11 +351,14 @@ public class SwiftPackagePipelineTests : IDisposable
         with.ForPath("src/lib.rs").ShouldBe(without.ForPath("src/lib.rs"));
     }
 
-    private IndexingPipeline CreatePipeline(InMemoryGraphStore store, ICodeExtractor? extractor = null) =>
+    private IndexingPipeline CreatePipeline(
+        InMemoryGraphStore store, ICodeExtractor? extractor = null, string[]? skipPatterns = null) =>
         new(
             store,
             [extractor ?? new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
-            Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+            Options.Create(skipPatterns is null
+                ? new IndexingOptions { MaxParallelFiles = 1 }
+                : new IndexingOptions { MaxParallelFiles = 1, SkipPatterns = skipPatterns }),
             new LocalFileSystem(),
             NullLogger<IndexingPipeline>.Instance,
             cargoManifestExtractor: new CargoManifestExtractor(),

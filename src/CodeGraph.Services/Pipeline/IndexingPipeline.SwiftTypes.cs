@@ -72,15 +72,15 @@ public partial class IndexingPipeline
                     .Where(IsSwiftTypeNode)
                     .Select(node => node.Name));
                 originOwned = (await _store.FindEdgesByPropertyAsync(
-                    projectName, SwiftTypeReference.OriginFileProperty, excludedSwiftFiles, ct)).ToList();
+                    projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.OriginFileProperty, excludedSwiftFiles, ct)).ToList();
             }
 
             if (affectedNames.Count > 0)
             {
                 var bySource = await _store.FindEdgesByPropertyAsync(
-                    projectName, SwiftTypeReference.SourceNameProperty, affectedNames, ct);
+                    projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.SourceNameProperty, affectedNames, ct);
                 var byTarget = await _store.FindEdgesByPropertyAsync(
-                    projectName, SwiftTypeReference.TargetNameProperty, affectedNames, ct);
+                    projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.TargetNameProperty, affectedNames, ct);
                 persistedReferences = bySource.Concat(byTarget)
                     .DistinctBy(StoredEdgeKey)
                     .Where(edge => !excludedPersistedFiles.Contains(NormalizeRelativePath(
@@ -425,9 +425,9 @@ public partial class IndexingPipeline
             .Select(qualifiedName => SwiftTypeReference.SimpleName(qualifiedName[SwiftTypeReference.ExternalPrefix.Length..]))
             .ToHashSet(StringComparer.Ordinal);
         var baseEdges = (await _store.FindEdgesByPropertyAsync(
-                projectName, SwiftTypeReference.SourceNameProperty, names, ct))
+                projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.SourceNameProperty, names, ct))
             .Concat(await _store.FindEdgesByPropertyAsync(
-                projectName, SwiftTypeReference.TargetNameProperty, names, ct))
+                projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.TargetNameProperty, names, ct))
             .ToList();
         foreach (var candidate in candidates)
         {

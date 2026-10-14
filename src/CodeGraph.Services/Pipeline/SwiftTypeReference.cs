@@ -1,3 +1,5 @@
+using CodeGraph.Models;
+
 namespace CodeGraph.Services.Pipeline;
 
 /// <summary>
@@ -52,6 +54,16 @@ public static class SwiftTypeReference
 
     /// <summary>Simple name of <see cref="TargetRefProperty"/>, the lookup key on later runs.</summary>
     public const string TargetNameProperty = "swift_target_name";
+
+    /// <summary>
+    /// Every edge type whose endpoint can be a Swift type reference: members and nested types of
+    /// a cross-file extension, supertypes, and scoped imports (<c>import struct Module.Type</c>).
+    /// Lookups of persisted reference edges are narrowed to these types.
+    /// </summary>
+    public static readonly IReadOnlyCollection<EdgeType> EdgeTypes =
+    [
+        EdgeType.DEFINES, EdgeType.DEFINES_METHOD, EdgeType.INHERITS, EdgeType.IMPLEMENTS, EdgeType.IMPORTS
+    ];
 
     public static string Create(string typePath) => Prefix + typePath;
 

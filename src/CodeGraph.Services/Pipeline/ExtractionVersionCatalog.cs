@@ -37,11 +37,20 @@ namespace CodeGraph.Services.Pipeline;
 /// replaces their declared-dependency slice) and the version is part of the <see cref="Fingerprint"/>
 /// (so a bump triggers the refresh run that rewrites the <c>Package.resolved</c> pins).
 /// </para>
+/// <para>
+/// The discovery exclusions (skip patterns and generated dependency directories) are part of the
+/// <see cref="Fingerprint"/> but not of any file's version: changing them re-runs a routine sync at
+/// an unchanged commit, whose full scan removes the files that left the indexed universe without
+/// re-extracting the files that stayed.
+/// </para>
 /// </remarks>
 public sealed class ExtractionVersionCatalog
 {
-    /// <summary>Version of the pipeline's own merge/resolution logic; applies to every file.</summary>
-    public const int PipelineVersion = 1;
+    /// <summary>
+    /// Version of the pipeline's own merge/resolution logic; applies to every file.
+    /// 2: name-based call resolution is scoped by language family (<see cref="CallLanguages"/>).
+    /// </summary>
+    public const int PipelineVersion = 2;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];
@@ -52,19 +61,22 @@ public sealed class ExtractionVersionCatalog
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
+    private readonly IReadOnlyList<string>? _discoveryExcludePatterns;
 
     public ExtractionVersionCatalog(
         IEnumerable<ICodeExtractor> extractors,
         ISolutionAnalyzer? solutionAnalyzer = null,
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
         IRustAnalyzer? rustAnalyzer = null,
-        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null)
+        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null,
+        IEnumerable<string>? discoveryExcludePatterns = null)
     {
         _extractors = extractors.ToList();
         _solutionAnalyzer = solutionAnalyzer;
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
         _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
+        _discoveryExcludePatterns = discoveryExcludePatterns?.ToList();
         Fingerprint = ComputeFingerprint();
     }
 
@@ -123,7 +135,10 @@ public sealed class ExtractionVersionCatalog
             .Select(extension => $"{extension}={ForExtension(extension)}")
             .Concat(_swiftPackageManifestExtractor is null
                 ? []
-                : [$"{SwiftPackageManifestExtractor.PackageSwiftFileName}={ForPath(SwiftPackageManifestExtractor.PackageSwiftFileName)}"]);
+                : [$"{SwiftPackageManifestExtractor.PackageSwiftFileName}={ForPath(SwiftPackageManifestExtractor.PackageSwiftFileName)}"])
+            .Concat(_discoveryExcludePatterns is null
+                ? []
+                : [$"discovery-excludes={string.Join('|', _discoveryExcludePatterns)}"]);
         var bytes = Encoding.UTF8.GetBytes(string.Join('\n', lines));
         return Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
     }

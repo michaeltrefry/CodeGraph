@@ -13,12 +13,27 @@ namespace CodeGraph.Services.Extractors;
 /// and string literals are respected); <c>Package.resolved</c> is JSON in format v1, v2 or v3.
 /// Package keys follow SwiftPM's canonical location (lowercased, no scheme, user or <c>.git</c>),
 /// so a declared dependency and its resolved pin share a <c>package_key</c>.
+/// <para>
+/// Each target a <c>Package.swift</c> declares is a <see cref="NodeLabel.Module"/> node (a Swift
+/// module) defined by its package, and each <c>.product(name:package:)</c> a target depends on is
+/// recorded on the declared dependency it names (<see cref="ProductsProperty"/>), so the indexing
+/// pipeline can resolve <c>import</c> declarations to in-repo targets and to dependency packages.
+/// </para>
 /// </summary>
 public sealed partial class SwiftPackageManifestExtractor(
     ILogger<SwiftPackageManifestExtractor>? logger = null) : ISwiftPackageManifestExtractor
 {
     public const string PackageSwiftFileName = "Package.swift";
     public const string PackageResolvedFileName = "Package.resolved";
+
+    /// <summary>
+    /// On a declared dependency: comma-separated product names the manifest's targets use from it
+    /// (<c>.product(name: "Logging", package: "swift-log")</c>).
+    /// </summary>
+    public const string ProductsProperty = "swift_products";
+
+    /// <summary>On a target's Module node: the Swift module name (the target name).</summary>
+    public const string ModuleNameProperty = "module_name";
 
     private const string Ecosystem = "swiftpm";
     private readonly ILogger _logger = logger ?? NullLogger<SwiftPackageManifestExtractor>.Instance;
@@ -68,7 +83,10 @@ public sealed partial class SwiftPackageManifestExtractor(
             parsedManifests.Add(parsed with { FullPath = fullPath, RelativePath = relativePath });
             processed.Add(relativePath);
             if (parsed.Name is null)
+            {
+                AddTargets(nodes, edges, edgeKeys, parsed, relativePath, owner: null, context);
                 continue;
+            }
 
             var key = $"swiftpm:local:{context.ProjectName.ToLowerInvariant()}:{parsed.Name.ToLowerInvariant()}";
             var definition = new GraphNode
@@ -103,6 +121,8 @@ public sealed partial class SwiftPackageManifestExtractor(
                     EdgeType.CONTAINS_PROJECT,
                     new() { ["ecosystem"] = Ecosystem, ["source"] = PackageSwiftFileName }));
             }
+
+            AddTargets(nodes, edges, edgeKeys, parsed, relativePath, nodes[definition.QualifiedName], context);
         }
 
         // Pass 2: declared dependencies.
@@ -112,6 +132,7 @@ public sealed partial class SwiftPackageManifestExtractor(
                 ? null
                 : definitionByDirectory.GetValueOrDefault(Path.GetDirectoryName(manifest.FullPath) ?? rootPath);
             var sourceQN = owner?.QualifiedName ?? context.ProjectName;
+            var declaredNodes = new List<(PackageDeclaration Declaration, GraphNode Node)>();
             foreach (var declaration in manifest.Dependencies)
             {
                 var dependency = BuildDeclaredDependency(declaration, manifest, rootPath, context);
@@ -131,7 +152,10 @@ public sealed partial class SwiftPackageManifestExtractor(
                 }
 
                 AddDependency(nodes, edges, edgeKeys, sourceQN, dependency.Node);
+                declaredNodes.Add((declaration, nodes[dependency.Node.QualifiedName]));
             }
+
+            RecordProducts(manifest, declaredNodes);
         }
 
         // Pass 3: resolved pins from every Package.resolved (root, Xcode project and workspace).
@@ -196,7 +220,7 @@ public sealed partial class SwiftPackageManifestExtractor(
                     relativePath, project, code[call.Index..(close + 1)].Trim());
         }
 
-        return new ParsedPackageSwift(name, dependencies);
+        return new ParsedPackageSwift(name, dependencies, ParseTargets(code, masked));
     }
 
     private static PackageDeclaration? ParseDeclaration(string code, string masked, int start, int end)
@@ -511,6 +535,179 @@ public sealed partial class SwiftPackageManifestExtractor(
         };
     }
 
+    // ── Targets ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// One Module node per declared target, at <c>{project}:{manifest}#target:{name}</c>, defined by
+    /// the manifest's package (or the repository when the package name is not static).
+    /// </summary>
+    private static void AddTargets(
+        Dictionary<string, GraphNode> nodes,
+        List<PendingEdge> edges,
+        HashSet<string> edgeKeys,
+        ParsedPackageSwift manifest,
+        string relativePath,
+        GraphNode? owner,
+        ExtractorContext context)
+    {
+        var manifestDirectory = NormalizePath(Path.GetDirectoryName(relativePath) ?? "");
+        foreach (var target in manifest.Targets)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["ecosystem"] = Ecosystem,
+                ["language"] = "Swift",
+                [ModuleNameProperty] = target.Name,
+                ["target_kind"] = target.Kind,
+                ["manifest_path"] = relativePath,
+                ["confidence"] = "high"
+            };
+            if (owner is not null)
+                properties["package_name"] = owner.Name;
+            var sourceDirectory = target.Path ?? DefaultTargetDirectory(target);
+            if (sourceDirectory is not null)
+            {
+                properties["source_path"] = NormalizePath(
+                    manifestDirectory.Length == 0 ? sourceDirectory : $"{manifestDirectory}/{sourceDirectory}");
+            }
+
+            var module = new GraphNode
+            {
+                Project = context.ProjectName,
+                Label = NodeLabel.Module,
+                Name = target.Name,
+                QualifiedName = $"{context.ProjectName}:{relativePath}#target:{target.Name}",
+                FilePath = relativePath,
+                Properties = properties
+            };
+            if (!nodes.TryAdd(module.QualifiedName, module))
+                continue;
+
+            AddEdge(edges, edgeKeys, new PendingEdge(
+                owner?.QualifiedName ?? context.ProjectName,
+                module.QualifiedName,
+                EdgeType.DEFINES,
+                new() { ["ecosystem"] = Ecosystem, ["target_kind"] = target.Kind }));
+        }
+    }
+
+    // SwiftPM's default source directory of a target that does not set `path:`.
+    private static string? DefaultTargetDirectory(TargetDeclaration target) => target.Kind switch
+    {
+        "testTarget" => $"Tests/{target.Name}",
+        "plugin" => $"Plugins/{target.Name}",
+        "binaryTarget" => null,
+        _ => $"Sources/{target.Name}"
+    };
+
+    /// <summary>
+    /// Records on each declared dependency the products the manifest's targets use from it: the
+    /// <c>package:</c> argument names the dependency by its identity or its declared name.
+    /// </summary>
+    private static void RecordProducts(
+        ParsedPackageSwift manifest,
+        IReadOnlyList<(PackageDeclaration Declaration, GraphNode Node)> declared)
+    {
+        foreach (var (product, package) in manifest.Targets.SelectMany(target => target.Products))
+        {
+            var dependency = declared.FirstOrDefault(entry =>
+                string.Equals((string)entry.Node.Properties["identity"], package, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(entry.Declaration.Name, package, StringComparison.OrdinalIgnoreCase));
+            if (dependency.Node is null)
+                continue;
+
+            var products = dependency.Node.Properties.GetValueOrDefault(ProductsProperty) is string existing
+                ? existing.Split(',').ToHashSet(StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal);
+            products.Add(product);
+            dependency.Node.Properties[ProductsProperty] = string.Join(',', products.Order(StringComparer.Ordinal));
+        }
+    }
+
+    private static List<TargetDeclaration> ParseTargets(string code, string masked)
+    {
+        var targets = new List<TargetDeclaration>();
+        var consumedUntil = -1;
+        foreach (Match call in TargetCallRegex().Matches(masked))
+        {
+            // A `.target(name:)` dependency inside an already-read target is not a declaration.
+            if (call.Index < consumedUntil)
+                continue;
+            var open = call.Index + call.Length - 1;
+            var close = FindClosingParen(masked, open);
+            if (close < 0)
+                continue;
+            consumedUntil = close;
+
+            string? name = null, path = null;
+            var products = new List<(string Product, string Package)>();
+            foreach (var (argStart, argEnd) in SplitTopLevel(masked, open + 1, close, ','))
+            {
+                var labelMatch = LabelRegex().Match(masked[argStart..argEnd]);
+                if (!labelMatch.Success)
+                    continue;
+                var valueStart = argStart + labelMatch.Length;
+                var value = code[valueStart..argEnd];
+                switch (labelMatch.Groups["label"].Value)
+                {
+                    case "name":
+                        name = ReadStringLiteral(value);
+                        break;
+                    case "path":
+                        path = ReadStringLiteral(value);
+                        break;
+                    case "dependencies":
+                        products.AddRange(ParseProductDependencies(code, masked, valueStart, argEnd));
+                        break;
+                }
+            }
+
+            if (name is not null)
+                targets.Add(new TargetDeclaration(call.Groups["kind"].Value, name, path, products));
+        }
+
+        return targets;
+    }
+
+    /// <summary>The <c>.product(name:package:)</c> entries of a target's dependency array.</summary>
+    private static IEnumerable<(string Product, string Package)> ParseProductDependencies(
+        string code, string masked, int start, int end)
+    {
+        var open = masked.IndexOf('[', start);
+        if (open < 0 || open >= end)
+            yield break;
+        var close = FindClosingParen(masked, open);
+        if (close < 0)
+            yield break;
+
+        foreach (var (elementStart, elementEnd) in SplitTopLevel(masked, open + 1, close, ','))
+        {
+            var product = ProductCallRegex().Match(masked[elementStart..elementEnd]);
+            if (!product.Success)
+                continue;
+            var callOpen = elementStart + product.Length - 1;
+            var callClose = FindClosingParen(masked, callOpen);
+            if (callClose < 0)
+                continue;
+
+            string? name = null, package = null;
+            foreach (var (argStart, argEnd) in SplitTopLevel(masked, callOpen + 1, callClose, ','))
+            {
+                var labelMatch = LabelRegex().Match(masked[argStart..argEnd]);
+                if (!labelMatch.Success)
+                    continue;
+                var value = code[(argStart + labelMatch.Length)..argEnd];
+                if (labelMatch.Groups["label"].Value == "name")
+                    name = ReadStringLiteral(value);
+                else if (labelMatch.Groups["label"].Value == "package")
+                    package = ReadStringLiteral(value);
+            }
+
+            if (name is not null && package is not null)
+                yield return (name, package);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
     private static void AddDependency(
@@ -777,6 +974,13 @@ public sealed partial class SwiftPackageManifestExtractor(
     [GeneratedRegex(@"(?:(?<![\w\])])|(?<=\bDependency))\.package\s*\(")]
     private static partial Regex PackageCallRegex();
 
+    // A target declaration: `.target(`, `.executableTarget(`, ... (also `Target.target(`).
+    [GeneratedRegex(@"(?:(?<![\w\])])|(?<=\bTarget))\.(?<kind>target|executableTarget|testTarget|macro|plugin|binaryTarget|systemLibrary)\s*\(")]
+    private static partial Regex TargetCallRegex();
+
+    [GeneratedRegex(@"^\s*(?:Target\.Dependency)?\.product\s*\(")]
+    private static partial Regex ProductCallRegex();
+
     [GeneratedRegex(@"\bPackage\s*\(\s*name\s*:\s*(?<value>(?<hashes>#*)""_*""\k<hashes>)")]
     private static partial Regex PackageNameRegex();
 
@@ -801,7 +1005,10 @@ public sealed partial class SwiftPackageManifestExtractor(
     [GeneratedRegex(@"^(?:[^@/\s]+@)?(?<host>[^:/\s]{2,}):(?<path>[^/].*)$")]
     private static partial Regex ScpLocationRegex();
 
-    private sealed record ParsedPackageSwift(string? Name, IReadOnlyList<PackageDeclaration> Dependencies)
+    private sealed record ParsedPackageSwift(
+        string? Name,
+        IReadOnlyList<PackageDeclaration> Dependencies,
+        IReadOnlyList<TargetDeclaration> Targets)
     {
         public string FullPath { get; init; } = "";
         public string RelativePath { get; init; } = "";
@@ -815,6 +1022,12 @@ public sealed partial class SwiftPackageManifestExtractor(
         Requirement? Requirement);
 
     private sealed record Requirement(string Text, string? Version, string? GitReference);
+
+    private sealed record TargetDeclaration(
+        string Kind,
+        string Name,
+        string? Path,
+        IReadOnlyList<(string Product, string Package)> Products);
 
     private sealed record DeclaredDependency(GraphNode Node, string? ResolvedPath);
 }

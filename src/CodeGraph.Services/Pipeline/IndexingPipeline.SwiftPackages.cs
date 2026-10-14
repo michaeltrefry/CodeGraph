@@ -8,33 +8,21 @@ namespace CodeGraph.Services.Pipeline;
 public partial class IndexingPipeline
 {
     /// <summary>
-    /// Directories holding SwiftPM/Xcode build output, generated workspaces or third-party
-    /// checkouts. Manifests and project files under them are not the repository's own.
-    /// </summary>
-    private static readonly string[] SwiftGeneratedDirectories =
-        [".build", ".swiftpm", "DerivedData", "SourcePackages", "Carthage", "Pods"];
-
-    /// <summary>
     /// Runs the SwiftPM manifest extractor over every <c>Package.swift</c> and
     /// <c>Package.resolved</c> (root, <c>*.xcodeproj/project.xcworkspace</c> and
-    /// <c>*.xcworkspace</c>) that the indexing skip patterns allow. Returns null for a repository
-    /// with neither manifests nor an Xcode project. A manifest that cannot be read is logged and
-    /// skipped.
+    /// <c>*.xcworkspace</c>) that discovery includes, and reports every manifest it found in
+    /// <paramref name="manifestRelativePaths"/>. Returns null for a repository with neither
+    /// manifests nor an Xcode project. A manifest that cannot be read is logged and skipped.
     /// </summary>
-    private ExtractionResult? ExtractSwiftPackageManifests(string rootPath, ExtractorContext context)
+    private ExtractionResult? ExtractSwiftPackageManifests(
+        string rootPath, ExtractorContext context, out IReadOnlyList<string> manifestRelativePaths)
     {
-        // Same discovery as DiscoverFiles: the matcher prunes skipped directories while walking.
-        var matcher = new Matcher();
-        matcher.AddIncludePatterns([
+        // Same exclusions as DiscoverFiles: the matcher prunes excluded directories while walking.
+        var matcher = CreateDiscoveryMatcher(
             $"**/{SwiftPackageManifestExtractor.PackageSwiftFileName}",
             $"**/{SwiftPackageManifestExtractor.PackageResolvedFileName}",
             "**/*.xcodeproj/project.pbxproj",
-            "**/*.xcworkspace/contents.xcworkspacedata"
-        ]);
-        foreach (var pattern in _options.SkipPatterns)
-            matcher.AddExclude(pattern);
-        foreach (var directory in SwiftGeneratedDirectories)
-            matcher.AddExclude($"**/{directory}/**");
+            "**/*.xcworkspace/contents.xcworkspacedata");
 
         var manifestPaths = new List<string>();
         var hasXcodeProject = false;
@@ -48,6 +36,9 @@ public partial class IndexingPipeline
                 hasXcodeProject = true;
         }
 
+        manifestRelativePaths = manifestPaths
+            .Select(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)))
+            .ToList();
         if (manifestPaths.Count == 0 && !hasXcodeProject)
             return null;
 

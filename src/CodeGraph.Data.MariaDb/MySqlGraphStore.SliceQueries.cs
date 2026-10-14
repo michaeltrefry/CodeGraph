@@ -47,10 +47,19 @@ public partial class MySqlGraphStore
     }
 
     public async Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project, string propertyKey, IReadOnlyCollection<string> values, CancellationToken ct = default)
+        string project,
+        IReadOnlyCollection<EdgeType> types,
+        string propertyKey,
+        IReadOnlyCollection<string> values,
+        CancellationToken ct = default)
     {
         if (!PropertyKeyPattern.IsMatch(propertyKey))
             throw new ArgumentException($"Unsupported edge property key '{propertyKey}'.", nameof(propertyKey));
+        if (types.Count == 0)
+            return [];
+
+        // (project, type) narrows the scan through idx_edges_type before any JSON is inspected.
+        var typeNames = types.Distinct().Select(type => type.ToString()).ToArray();
 
         await using var conn = await GetOpenConnectionAsync();
         var result = new List<StoredEdge>();
@@ -67,8 +76,9 @@ public partial class MySqlGraphStore
                 INNER JOIN nodes source ON source.id = edge.source_id
                 INNER JOIN nodes target ON target.id = edge.target_id
                 WHERE edge.project = @Project
+                  AND edge.type IN @Types
                   AND JSON_UNQUOTE(JSON_EXTRACT(edge.properties, '$."{propertyKey}"')) IN @Values
-                """, new { Project = project, Values = batch }, cancellationToken: ct));
+                """, new { Project = project, Types = typeNames, Values = batch }, cancellationToken: ct));
             foreach (var row in rows)
             {
                 if (!Enum.TryParse<EdgeType>(row.Type, out var type))

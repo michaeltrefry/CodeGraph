@@ -410,6 +410,9 @@ public class TreeSitterExtractor : ICodeExtractor
                 if (spec.ArgumentLabelsExtractor?.Invoke(node) is { } argumentLabels)
                     props[ArgumentLabels.Property] = argumentLabels;
 
+                if (spec.CallableAbiExtractor?.Invoke(node) is { } abi)
+                    props[CallLanguages.AbiProperty] = abi;
+
                 var startLine = (int)node.StartPosition.Row + 1;
                 var endLine = (int)node.EndPosition.Row + 1;
 
@@ -641,7 +644,8 @@ public class TreeSitterExtractor : ICodeExtractor
         if (spec.ImportNodeTypes.Contains(node.Type) && spec.ImportReader is not null)
         {
             if (spec.ImportReader(node) is { } declaration)
-                unresolvedImports.Add(new UnresolvedImport(fileQN, declaration.Module, declaration.Symbol));
+                unresolvedImports.Add(new UnresolvedImport(
+                    fileQN, declaration.Module, declaration.Symbol, declaration.SymbolKind));
             return;
         }
 

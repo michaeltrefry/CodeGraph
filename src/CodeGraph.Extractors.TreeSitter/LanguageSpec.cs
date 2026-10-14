@@ -64,6 +64,13 @@ public sealed class LanguageSpec
     /// </summary>
     public Func<Node, string?>? ArgumentLabelsExtractor { get; init; }
 
+    /// <summary>
+    /// Optional calling convention of a function-like definition that is exported for foreign
+    /// callers (Rust <c>extern "C" fn</c> → <c>C</c>), recorded as its <c>abi</c> property so calls
+    /// from other languages may resolve to it. Null records nothing.
+    /// </summary>
+    public Func<Node, string?>? CallableAbiExtractor { get; init; }
+
     /// <summary>AST node types for variable/constant declarations.</summary>
     public string[] VariableNodeTypes { get; init; } = [];
 
@@ -195,8 +202,11 @@ public sealed record CallSite(
     CallReceiverKind ReceiverKind,
     string? ArgumentLabels = null);
 
-/// <summary>An import: the imported module and, for a scoped import, the declaration it names.</summary>
-public sealed record ImportDeclaration(string Module, string? Symbol = null);
+/// <summary>
+/// An import: the imported module and, for a scoped import, the declaration it names and that
+/// declaration's kind keyword.
+/// </summary>
+public sealed record ImportDeclaration(string Module, string? Symbol = null, string? SymbolKind = null);
 
 /// <summary>The type a container-only definition extends, when it is declared in another file.</summary>
 public sealed record ContainerOwner(string Path, string ReferenceQN);

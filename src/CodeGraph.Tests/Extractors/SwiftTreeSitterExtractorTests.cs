@@ -74,7 +74,7 @@ public class SwiftTreeSitterExtractorTests
         var result = await ExtractFixtureAsync();
 
         var totalArea = AssertCallable(result, "totalArea", NodeLabel.Function, FileQN);
-        totalArea.QualifiedName.ShouldBe($"{FileQN}#function:totalArea(ofshapes:[Shape])");
+        totalArea.QualifiedName.ShouldBe($"{FileQN}#function:totalArea(of:[Shape])");
 
         // Protocol requirements are members of the protocol.
         AssertCallable(result, "area", NodeLabel.Method, $"{FileQN}#type:Shape");
@@ -94,8 +94,8 @@ public class SwiftTreeSitterExtractorTests
             .ToList();
         adds.ShouldBe(
         [
-            $"{FileQN}#type:ShapeStore#method:add(_shape:Element)",
-            $"{FileQN}#type:ShapeStore#method:add(contentsOfmore:[Element])"
+            $"{FileQN}#type:ShapeStore#method:add(_:Element)",
+            $"{FileQN}#type:ShapeStore#method:add(contentsOf:[Element])"
         ], ignoreOrder: true);
         foreach (var add in adds)
             result.Edges.ShouldContain(edge =>

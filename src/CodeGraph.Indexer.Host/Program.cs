@@ -8,6 +8,8 @@ public class Program
     {
         if (RustSemanticIndexingValidator.IsRequested(args))
             return await RustSemanticIndexingValidator.RunAsync(args);
+        if (SwiftGrammarValidator.IsRequested(args))
+            return await SwiftGrammarValidator.RunAsync();
 
         var builder = WebApplication.CreateBuilder(args);
         Startup.ConfigureServices(builder.Services, builder.Configuration);

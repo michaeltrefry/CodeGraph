@@ -242,6 +242,31 @@ public sealed class RepoFileResolverTests : IDisposable
         (await query.GetNodeSourceAsync(nodeId)).ShouldBeNull();
     }
 
+    [Theory]
+    [InlineData("Sources/App/Shape.swift", "swift")]
+    [InlineData("src/lib.rs", "rust")]
+    [InlineData("tools/build.py", "python")]
+    [InlineData("Program.cs", "csharp")]
+    [InlineData("notes.unknown", "plaintext")]
+    public async Task NodeSourceSurface_NamesTheHighlightLanguageOfTheFile(string filePath, string language)
+    {
+        var repo = Path.Combine(tempRoot, "repo");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(repo, filePath))!);
+        await File.WriteAllTextAsync(Path.Combine(repo, filePath), "source");
+        var store = await CreateStoreAsync("Repo", repo);
+        var nodeId = store.AddNode(new GraphNode
+        {
+            Project = "Repo",
+            Label = NodeLabel.Class,
+            Name = "Shape",
+            QualifiedName = "Shape",
+            FilePath = filePath
+        });
+        var query = new NodeQueryService(store, Options.Create(new RepositorySourceOptions()));
+
+        (await query.GetNodeSourceAsync(nodeId)).ShouldNotBeNull().Language.ShouldBe(language);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(tempRoot))

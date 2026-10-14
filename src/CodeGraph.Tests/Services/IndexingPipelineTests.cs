@@ -1406,6 +1406,66 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_OversizeFile_IsLoggedMarkedAndNotReportedChangedAgain()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-oversize-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "big.py"), new string('x', 3 * 1024));
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "small.py"), "small");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor(".py");
+            var logger = new RecordingLogger<IndexingPipeline>();
+            IndexingPipeline Pipeline(int limitKb) => new(
+                store, [extractor],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1, MaxFileSizeKb = limitKb }),
+                new LocalFileSystem(), logger);
+            int SkipLogs() => logger.Messages.Count(message =>
+                message.StartsWith("Skipping extraction of big.py", StringComparison.Ordinal));
+
+            await Pipeline(1).IndexProjectAsync("Oversize", rootPath, ct: CancellationToken.None);
+
+            extractor.CallCount.ShouldBe(1);
+            SkipLogs().ShouldBe(1);
+            var skipLog = logger.Messages.IndexOf("Skipping extraction of big.py in Oversize: 3 KB exceeds the 1 KB limit");
+            skipLog.ShouldBeGreaterThanOrEqualTo(0);
+            logger.Entries[skipLog].Level.ShouldBe(LogLevel.Information);
+            var file = store.Nodes.Single(node => node.QualifiedName == "Oversize:big.py");
+            file.Properties["skipped_reason"].ShouldBe("oversize");
+            file.Properties["size_limit_kb"].ShouldBe(1);
+            var hashes = await store.GetFileHashRecordsAsync("Oversize");
+            hashes.Keys.ShouldBe(["big.py", "small.py"], ignoreOrder: true);
+            hashes["big.py"].ExtractionVersion.ShouldEndWith(";oversize>1KB");
+
+            // Unchanged: neither re-read as changed nor logged again.
+            await Pipeline(1).IndexProjectAsync("Oversize", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(1);
+            SkipLogs().ShouldBe(1);
+
+            // A higher limit extracts it.
+            await Pipeline(4).IndexProjectAsync("Oversize", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.Single(node => node.QualifiedName == "Oversize:big.py")
+                .Properties.ContainsKey("skipped_reason").ShouldBeFalse();
+            store.Nodes.ShouldContain(node => node.QualifiedName == "Oversize.big");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void IndexingOptions_SwiftHasItsOwnHigherSizeLimit()
+    {
+        var options = new IndexingOptions();
+        options.MaxFileSizeKbFor(".swift").ShouldBe(2048);
+        options.MaxFileSizeKbFor(".c").ShouldBe(512);
+        options.MaxFileSizeKbFor(".SWIFT").ShouldBe(2048);
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_ExtractionVersionBumpForOneFileType_KeepsCrossFileEdgesWithUnchangedFiles()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-extraction-crossfile-{Guid.NewGuid():N}");

@@ -85,10 +85,10 @@ internal sealed class SwiftCallSites
                     return new CallSite("init", ResolveType(name, context), CallReceiverKind.Resolved, labels);
 
                 // An unqualified call of a method the enclosing type declares is a call on self.
-                if (EnclosingTypePath(call) is { } enclosing && DeclaresFunction(enclosing, name)
-                    && (context.EnclosingTypeQN ?? context.EnclosingOwnerName) is { } owner)
+                if (EnclosingTypePath(call) is { } enclosing && DeclaresFunction(enclosing, name))
                 {
-                    return new CallSite(name, owner, CallReceiverKind.Resolved, labels);
+                    return new CallSite(name, context.EnclosingTypeQN ?? SwiftTypeReference.Create(enclosing),
+                        CallReceiverKind.Resolved, labels);
                 }
 
                 // Calling a closure held by a parameter, local or property (`completion(1)`) is
@@ -264,7 +264,7 @@ internal sealed class SwiftCallSites
 
     private TypeRef? EnclosingType(Node node, CallSiteContext context, bool isType) =>
         EnclosingTypePath(node) is { } path
-            ? new TypeRef(path, context.EnclosingTypeQN ?? context.EnclosingOwnerName ?? path, isType)
+            ? new TypeRef(path, context.EnclosingTypeQN ?? SwiftTypeReference.Create(path), isType)
             : null;
 
     /// <summary>The type an implicit member expression (<c>.init(...)</c>) is resolved against.</summary>
@@ -510,8 +510,13 @@ internal sealed class SwiftCallSites
             ? pattern.GetChildForField("bound_identifier")?.Text ?? pattern.Text
             : null;
 
+    /// <summary>
+    /// A receiver type: the qualified name of a type declared in this file, else a Swift type
+    /// reference carrying the full dotted path, which the pipeline resolves to the type at that
+    /// path (<see cref="SwiftTypeReference"/>).
+    /// </summary>
     private static string ResolveType(string path, CallSiteContext context) =>
-        context.ResolveLocalType(path) ?? path[(path.LastIndexOf('.') + 1)..];
+        context.ResolveLocalType(path) ?? SwiftTypeReference.Create(path);
 
     /// <summary>Swift types are UpperCamelCase; values and functions are lowerCamelCase.</summary>
     private static bool IsTypeName(string name) => name.Length > 0 && char.IsUpper(name[0]);
@@ -530,7 +535,7 @@ internal sealed class SwiftCallSites
 
             var isExtension = child.GetChildForField("declaration_kind")?.Text == "extension";
             var name = isExtension
-                ? LanguageSpecs.GetSwiftTypePath(child.GetChildForField("name"))
+                ? TypePath(child.GetChildForField("name"))
                 : child.GetChildForField("name")?.Text;
             if (string.IsNullOrWhiteSpace(name))
             {
@@ -582,7 +587,8 @@ internal sealed class SwiftCallSites
 
     /// <summary>
     /// Dotted path of a nominal type, without generic arguments; <c>T?</c> and <c>T!</c> unwrap to
-    /// <c>T</c>. Null for structural types (arrays, dictionaries, tuples, functions).
+    /// <c>T</c>. Null for structural types (arrays, dictionaries, tuples, functions). The single
+    /// Swift type-path reader: extension names, inheritance entries and receivers all use it.
     /// </summary>
     internal static string? TypePath(Node? type)
     {
@@ -602,6 +608,23 @@ internal sealed class SwiftCallSites
                 return null;
         }
     }
+
+    /// <summary>
+    /// A declaration's parameter list as <c>(label:Type,...)</c>: each parameter's external label
+    /// (else its name, <c>_</c> when unlabeled) and its written type, as in
+    /// <see cref="DeclarationLabels"/>.
+    /// </summary>
+    internal static string DeclarationParameters(Node declaration) =>
+        "(" + string.Join(",", declaration.NamedChildren
+            .Where(child => child.Type == "parameter")
+            .Select(parameter =>
+            {
+                var (external, internalName, _) = ParameterParts(parameter);
+                var text = parameter.Text;
+                var colon = text.IndexOf(':', StringComparison.Ordinal);
+                var type = colon < 0 ? "" : text[(colon + 1)..].Trim();
+                return $"{external ?? internalName ?? "_"}:{type}";
+            })) + ")";
 
     /// <summary>A parameter's external label (if written), internal name and type node.</summary>
     private static (string? External, string? Internal, Node? Type) ParameterParts(Node parameter)
@@ -667,9 +690,10 @@ internal sealed class SwiftCallSites
         if (parts.Count == 0)
             return null;
 
-        var isScoped = declaration.Children.Any(child => !child.IsNamed && ScopedImportKinds.Contains(child.Type));
-        return isScoped && parts.Count > 1
-            ? new ImportDeclaration(string.Join('.', parts.Take(parts.Count - 1)), parts[^1])
+        var kind = declaration.Children
+            .FirstOrDefault(child => !child.IsNamed && ScopedImportKinds.Contains(child.Type))?.Type;
+        return kind is not null && parts.Count > 1
+            ? new ImportDeclaration(string.Join('.', parts.Take(parts.Count - 1)), parts[^1], kind)
             : new ImportDeclaration(string.Join('.', parts));
     }
 }

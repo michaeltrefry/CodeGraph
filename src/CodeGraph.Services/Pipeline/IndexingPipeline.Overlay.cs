@@ -12,7 +12,7 @@ public partial class IndexingPipeline
 {
     /// <summary>
     /// True when <paramref name="relativePath"/> belongs to the file universe the default-branch
-    /// index covers (a supported extension that no skip pattern excludes).
+    /// index covers (a supported extension that no discovery exclusion excludes).
     /// </summary>
     public bool IsIndexablePath(string relativePath)
     {
@@ -21,11 +21,7 @@ public partial class IndexingPipeline
         if (!_extractors.Any(extractor => extractor.SupportedExtensions.Contains(extension)))
             return false;
 
-        var matcher = new Matcher();
-        matcher.AddInclude("**/*");
-        foreach (var skip in _options.SkipPatterns)
-            matcher.AddExclude(skip);
-        return matcher.Match(normalized).HasMatches;
+        return CreateDiscoveryMatcher("**/*").Match(normalized).HasMatches;
     }
 
     /// <summary>
@@ -72,6 +68,10 @@ public partial class IndexingPipeline
         var excludedPersistedFiles = normalizedChanged
             .Concat(removedPaths.Select(NormalizeRelativePath))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Overlays do not extract manifests: imports resolve against the default branch's packages.
+        await ResolveSwiftImportsAsync(
+            projectName, buffer, manifestsExtracted: false, incremental: false, rebindPersisted: false,
+            excludedPersistedFiles, ct);
         await ResolveCallsAsync(
             projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
         var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
@@ -90,7 +90,7 @@ public partial class IndexingPipeline
         // Stub endpoints (no file) travel with the slice so its edges resolve in the overlay view.
         foreach (var qualifiedName in edges.SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN }))
         {
-            if (SwiftTypeReference.IsExternal(qualifiedName)
+            if ((SwiftTypeReference.IsExternal(qualifiedName) || IsExternalModuleStub(qualifiedName))
                 && buffer.FindByQN(qualifiedName) is { } stub
                 && nodeQns.Add(qualifiedName))
             {

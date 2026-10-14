@@ -56,22 +56,27 @@ public partial class Neo4jGraphStore
     /// on the key and filtered exactly here.
     /// </summary>
     public async Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project, string propertyKey, IReadOnlyCollection<string> values, CancellationToken ct = default)
+        string project,
+        IReadOnlyCollection<EdgeType> types,
+        string propertyKey,
+        IReadOnlyCollection<string> values,
+        CancellationToken ct = default)
     {
         var wanted = values.ToHashSet(StringComparer.Ordinal);
-        if (wanted.Count == 0)
+        if (wanted.Count == 0 || types.Count == 0)
             return [];
+        var typeNames = types.Distinct().Select(type => type.ToString()).ToList();
 
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
                 MATCH (source:CodeNode {project: $project})-[edge]->(target:CodeNode)
-                WHERE edge.properties CONTAINS $key
+                WHERE type(edge) IN $types AND edge.properties CONTAINS $key
                 RETURN source.qualifiedName AS sourceQN, source.filePath AS sourceFile,
                        target.qualifiedName AS targetQN, target.filePath AS targetFile,
                        type(edge) AS type, edge.properties AS properties
-                """, new { project, key = $"\"{propertyKey}\"" });
+                """, new { project, types = typeNames, key = $"\"{propertyKey}\"" });
             var results = new List<StoredEdge>();
             await foreach (var record in cursor)
             {

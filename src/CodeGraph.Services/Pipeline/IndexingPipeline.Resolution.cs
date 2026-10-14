@@ -20,13 +20,16 @@ public partial class IndexingPipeline
     ];
 
     /// <summary>
-    /// Resolve import statements to namespace/type nodes.
-    /// Phase 2 stub — full resolution happens when extractors populate UnresolvedImports.
+    /// Resolve import statements to namespace/type nodes by qualified name. Swift imports name
+    /// modules, not nodes, and are resolved by <see cref="ResolveSwiftImportsAsync"/>.
     /// </summary>
     private void ResolveImports(GraphBuffer buffer)
     {
         foreach (var import in buffer.AllUnresolvedImports)
         {
+            if (import.FileQN.EndsWith(".swift", StringComparison.OrdinalIgnoreCase))
+                continue;
+
             var target = buffer.FindByQN(import.ImportedNamespace);
             if (target != null)
             {
@@ -92,6 +95,17 @@ public partial class IndexingPipeline
             if (receiversByType.TryGetValue(receiverType, out var cached))
                 return cached;
 
+            // A Swift receiver names a type by its dotted path: it owns the members declared in
+            // the type at that path and in extensions of that path, even when the type itself is
+            // declared outside the repository.
+            if (SwiftTypeReference.TryParse(receiverType, out var swiftPath))
+            {
+                cached = new ReceiverOwnership(
+                    await ResolveSwiftReceiverAsync(swiftPath, FindCandidatesAsync), false, swiftPath);
+                receiversByType[receiverType] = cached;
+                return cached;
+            }
+
             var receiver = await ResolveReceiverOwnerAsync(
                 projectName,
                 buffer,
@@ -137,14 +151,19 @@ public partial class IndexingPipeline
                 if (!ownedCandidates.TryGetValue(key, out var owned))
                 {
                     owned = candidates
-                        .Where(candidate => IsOwnedBy(
-                            candidate, ownership.Receiver, ownership.AllowSymbolicOwnership))
+                        .Where(candidate => ownership.SwiftPath is { } path
+                            ? IsOwnedBySwiftType(projectName, candidate, ownership.Receiver, path)
+                            : IsOwnedBy(candidate, ownership.Receiver!, ownership.AllowSymbolicOwnership))
                         .ToList();
                     ownedCandidates[key] = owned;
                 }
 
                 candidates = owned;
             }
+
+            // A name binds only within the caller's language family and across real FFI boundaries.
+            if (CallLanguages.FamilyOf(buffer.FindByQN(call.CallerQN)?.FilePath) is { } callerFamily)
+                candidates = candidates.Where(candidate => CallLanguages.CanCall(callerFamily, candidate)).ToList();
 
             if (call.ArgumentLabels is not null)
                 candidates = ArgumentLabels.Select(candidates, call.ArgumentLabels);
@@ -164,7 +183,45 @@ public partial class IndexingPipeline
         }
     }
 
-    private sealed record ReceiverOwnership(GraphNode Receiver, bool AllowSymbolicOwnership);
+    private sealed record ReceiverOwnership(
+        GraphNode? Receiver, bool AllowSymbolicOwnership, string? SwiftPath = null);
+
+    /// <summary>
+    /// The Swift type at <paramref name="typePath"/>: the single repository type at that path
+    /// (<see cref="SwiftTypeReference.TypePath"/>). An unqualified name that no top-level type
+    /// declares falls back to the single Swift type of that simple name (a nested type named from
+    /// inside its parent's scope). Null when it is ambiguous or not declared in the repository.
+    /// </summary>
+    private static async Task<GraphNode?> ResolveSwiftReceiverAsync(
+        string typePath,
+        Func<string, Task<IReadOnlyList<GraphNode>>> findCandidatesAsync)
+    {
+        var types = (await findCandidatesAsync(SwiftTypeReference.SimpleName(typePath)))
+            .Where(IsSwiftTypeNode)
+            .ToList();
+        var atPath = types
+            .Where(node => SwiftTypeReference.TypePath(node.Project, node.FilePath, node.QualifiedName) == typePath)
+            .ToList();
+        if (atPath.Count > 0)
+            return atPath.Count == 1 ? atPath[0] : null;
+
+        return !typePath.Contains('.', StringComparison.Ordinal) && types.Count == 1 ? types[0] : null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="candidate"/> is a member of the Swift type at <paramref name="typePath"/>:
+    /// declared in the type's body (<paramref name="owner"/>), or in an extension of that path in
+    /// any file (<c>{file}#extension:{path}#method:...</c>).
+    /// </summary>
+    private static bool IsOwnedBySwiftType(string projectName, GraphNode candidate, GraphNode? owner, string typePath)
+    {
+        if (owner is not null && IsOwnedBy(candidate, owner, allowSymbolicOwnership: false))
+            return true;
+
+        return !string.IsNullOrEmpty(candidate.FilePath)
+            && candidate.QualifiedName.StartsWith(
+                $"{projectName}:{candidate.FilePath}#extension:{typePath}#method:", StringComparison.Ordinal);
+    }
 
     private static bool IsReceiverOwnerLabel(NodeLabel label) =>
         label is NodeLabel.Namespace or NodeLabel.Class or NodeLabel.Interface

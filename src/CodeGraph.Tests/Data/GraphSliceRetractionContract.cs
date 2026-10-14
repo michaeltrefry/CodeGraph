@@ -50,7 +50,9 @@ public class GraphSliceRetractionContract
                     new() { ["swift_source_name"] = "S", ["origin_file"] = "b.swift" }),
                 new PendingEdge("swift-external:T", other, EdgeType.DEFINES_METHOD,
                     new() { ["swift_source_name"] = "T", ["origin_file"] = "b.swift" }),
-                new PendingEdge(type, member, EdgeType.IMPLEMENTS, new() { ["confidence"] = "high" })
+                new PendingEdge(type, member, EdgeType.IMPLEMENTS, new() { ["confidence"] = "high" }),
+                // Same property on an edge type the lookup does not ask for.
+                new PendingEdge(type, other, EdgeType.CALLS, new() { ["swift_source_name"] = "S" })
             ],
             new Dictionary<string, string> { ["a.swift"] = "1", ["b.swift"] = "1" });
 
@@ -59,8 +61,12 @@ public class GraphSliceRetractionContract
         (await store.FindNodesByNamesAsync(project, ["S", "m"]))
             .Select(node => node.QualifiedName).ShouldBe(["swift-external:S", member], ignoreOrder: true);
 
-        var found = (await store.FindEdgesByPropertyAsync(project, "swift_source_name", ["S", "Z"]))
+        var found = (await store.FindEdgesByPropertyAsync(
+                project, [EdgeType.DEFINES_METHOD, EdgeType.IMPLEMENTS], "swift_source_name", ["S", "Z"]))
             .ShouldHaveSingleItem();
+        (await store.FindEdgesByPropertyAsync(project, [EdgeType.CALLS], "swift_source_name", ["S"]))
+            .ShouldHaveSingleItem().TargetQN.ShouldBe(other);
+        (await store.FindEdgesByPropertyAsync(project, [], "swift_source_name", ["S"])).ShouldBeEmpty();
         found.SourceQN.ShouldBe("swift-external:S");
         found.SourceFilePath.ShouldBeNullOrEmpty();
         found.TargetQN.ShouldBe(member);
@@ -87,7 +93,8 @@ public class GraphSliceRetractionContract
         var ownerNodes = await store.FindNodesByIdBatchAsync(owners.Select(edge => edge.SourceId).ToList());
         owners.Select(edge => (ownerNodes[edge.SourceId].QualifiedName, edge.Type))
             .ShouldBe([(type, EdgeType.DEFINES_METHOD)]);
-        (await store.FindEdgesByPropertyAsync(project, "swift_source_name", ["S"])).ShouldBeEmpty();
+        (await store.FindEdgesByPropertyAsync(project, [EdgeType.DEFINES_METHOD], "swift_source_name", ["S"]))
+            .ShouldBeEmpty();
     }
 
     [Fact]
