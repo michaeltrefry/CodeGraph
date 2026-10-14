@@ -284,7 +284,9 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("Sources/ShapeKit/Shape.swift", "public struct Shape {}\n");
         Write(".build/checkouts/swift-log/Sources/Logging/Logger.swift", "public struct Logger {}\n");
         Write("DerivedData/App/SourcePackages/checkouts/y/Sources/Y/Y.swift", "public struct Y {}\n");
+        Write("Podfile", "pod 'Alamofire'\n");
         Write("Pods/Alamofire/Source/Session.swift", "open class Session {}\n");
+        Write("Cartfile", "github \"Kit/Kit\"\n");
         Write("Carthage/Checkouts/Kit/Kit.swift", "public struct Kit {}\n");
         Write(".swiftpm/xcode/Generated.swift", "struct Generated {}\n");
         Write(".claude/worktrees/agent-1/Sources/ShapeKit/Shape.swift", "public struct Shape {}\n");
@@ -297,6 +299,63 @@ public class SwiftPackagePipelineTests : IDisposable
             .ShouldBe(["Package.swift", "Sources/ShapeKit/Shape.swift"],
                 ignoreOrder: true);
         store.Nodes.Where(node => node.Label == NodeLabel.Package).ShouldHaveSingleItem().Name.ShouldBe("ShapeKit");
+    }
+
+    /// <summary>
+    /// Dependency directories are matched by exact name, and Pods/Carthage only beside their
+    /// package manager's manifest: an ordinary <c>pkg/pods</c> Go package, or a <c>Pods</c>
+    /// directory without a Podfile, is the repository's own code.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_DependencyDirectoryNamesWithoutTheirManager_StayIndexed()
+    {
+        Write("pkg/pods/handler.go", "package pods\n\nfunc Handle() {}\n");
+        Write("pkg/carthage/cart.go", "package carthage\n\nfunc Cart() {}\n");
+        Write("tools/derivedData/reader.go", "package deriveddata\n\nfunc Read() {}\n");
+        Write("tools/sourcepackages/list.go", "package sourcepackages\n\nfunc List() {}\n");
+        Write("Pods/Helpers/Helper.swift", "struct Helper {}\n");
+        Write("Carthage/Notes/Note.swift", "struct Note {}\n");
+        // Exact names only: a lowercase pods directory beside a Podfile is not a CocoaPods install.
+        Write("ios/Podfile", "pod 'Alamofire'\n");
+        Write("ios/pods/list.go", "package pods\n\nfunc List() {}\n");
+
+        var store = new InMemoryGraphStore();
+        await CreatePipeline(store).IndexProjectAsync("Pods", _rootPath, ct: CancellationToken.None);
+
+        (await store.GetFileHashesAsync("Pods")).Keys.ShouldBe([
+            "pkg/pods/handler.go", "pkg/carthage/cart.go", "tools/derivedData/reader.go",
+            "tools/sourcepackages/list.go", "Pods/Helpers/Helper.swift", "Carthage/Notes/Note.swift",
+            "ios/pods/list.go"
+        ], ignoreOrder: true);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_PodsAndCarthageBesideTheirManifests_AreExcludedAtAnyDepth()
+    {
+        Write("ios/Podfile", "pod 'Alamofire'\n");
+        Write("ios/Pods/Alamofire/Source/Session.swift", "open class Session {}\n");
+        Write("ios/App/App.swift", "struct App {}\n");
+        Write("Cartfile.resolved", "github \"Kit/Kit\" \"1.0.0\"\n");
+        Write("Carthage/Checkouts/Kit/Kit.swift", "public struct Kit {}\n");
+        // A Podfile elsewhere does not make an unrelated Pods directory a CocoaPods install.
+        Write("other/Pods/Mine.swift", "struct Mine {}\n");
+
+        var store = new InMemoryGraphStore();
+        var pipeline = CreatePipeline(store);
+        await pipeline.IndexProjectAsync("App", _rootPath, ct: CancellationToken.None);
+
+        (await store.GetFileHashesAsync("App")).Keys.ShouldBe(["ios/App/App.swift", "other/Pods/Mine.swift"],
+            ignoreOrder: true);
+
+        // Overlays apply the same rule against the tree the path belongs to.
+        var tree = new HashSet<string>(["ios/Podfile", "Cartfile.resolved"], StringComparer.Ordinal);
+        pipeline.IsIndexablePath("ios/Pods/Alamofire/Source/Session.swift", tree.Contains).ShouldBeFalse();
+        pipeline.IsIndexablePath("Carthage/Checkouts/Kit/Kit.swift", tree.Contains).ShouldBeFalse();
+        pipeline.IsIndexablePath("other/Pods/Mine.swift", tree.Contains).ShouldBeTrue();
+        pipeline.IsIndexablePath("pkg/pods/handler.go", tree.Contains).ShouldBeTrue();
+        pipeline.IsIndexablePath(".build/checkouts/x/X.swift", tree.Contains).ShouldBeFalse();
+        pipeline.IsIndexablePath("tools/.Build/X.swift", tree.Contains).ShouldBeTrue();
+        pipeline.IsIndexablePath("Pods/Mine.swift", _ => false).ShouldBeTrue();
     }
 
     [Fact]

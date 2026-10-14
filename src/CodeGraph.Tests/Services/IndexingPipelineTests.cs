@@ -1456,6 +1456,107 @@ public class IndexingPipelineTests
         }
     }
 
+    /// <summary>
+    /// The size limits are part of the extraction fingerprint, so changing one re-runs a routine
+    /// sync at an unchanged commit; that run empties an unchanged file that the lower limit makes
+    /// oversize and keeps it stable afterwards.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_LoweredSizeLimit_EmptiesUnchangedFileThatIsNowOversize()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-oversize-lower-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "big.py"), new string('x', 3 * 1024));
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "small.py"), "small");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor(".py");
+            IndexingPipeline Pipeline(int limitKb, Dictionary<string, int>? byExtension = null) => new(
+                store, [extractor],
+                Options.Create(new IndexingOptions
+                {
+                    MaxParallelFiles = 1,
+                    MaxFileSizeKb = limitKb,
+                    MaxFileSizeKbByExtension = byExtension ?? new(StringComparer.OrdinalIgnoreCase) { [".swift"] = 2048 }
+                }),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance);
+
+            await Pipeline(4).IndexProjectAsync("Lower", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.ShouldContain(node => node.QualifiedName == "Lower.big");
+
+            Pipeline(1).ExtractionFingerprint.ShouldNotBe(Pipeline(4).ExtractionFingerprint);
+            Pipeline(4, new(StringComparer.OrdinalIgnoreCase) { [".swift"] = 1024 }).ExtractionFingerprint
+                .ShouldNotBe(Pipeline(4).ExtractionFingerprint);
+            Pipeline(4).ExtractionFingerprint.ShouldBe(Pipeline(4).ExtractionFingerprint);
+
+            await Pipeline(1).IndexProjectAsync("Lower", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.ShouldNotContain(node => node.QualifiedName == "Lower.big");
+            store.Nodes.Single(node => node.QualifiedName == "Lower:big.py")
+                .Properties["skipped_reason"].ShouldBe("oversize");
+            store.Nodes.ShouldContain(node => node.QualifiedName == "Lower.small");
+            (await store.GetFileHashRecordsAsync("Lower"))["big.py"].ExtractionVersion.ShouldEndWith(";oversize>1KB");
+
+            // Stable under the lower limit: nothing is processed again.
+            await Pipeline(1).IndexProjectAsync("Lower", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.ShouldNotContain(node => node.QualifiedName == "Lower.big");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A file over the limit that a project analyzer (not per-file extraction) processed records
+    /// the oversize version too, so it is not re-processed on every later run.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_OversizeFileProcessedByProjectAnalyzer_IsNotReprocessedEveryRun()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-oversize-analyzer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "App.sln"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Big.cs"),
+                "public sealed class Big {}\n" + new string('/', 3 * 1024));
+            var solutionAnalyzer = new RecordingSolutionAnalyzer((_, context) => new SolutionAnalysisResult
+            {
+                Documents = [CreateSolutionDocument(context, "Big.cs", "Big")]
+            });
+            var store = new InMemoryGraphStore();
+            var logger = new RecordingLogger<IndexingPipeline>();
+            IndexingPipeline Pipeline() => new(
+                store,
+                [new TrackingCSharpExtractor()],
+                Options.Create(new IndexingOptions
+                {
+                    MaxParallelFiles = 1, MaxFileSizeKb = 1, TrustedDotnetRepositories = "folder:Big"
+                }),
+                new LocalFileSystem(),
+                logger,
+                solutionAnalyzer);
+
+            await Pipeline().IndexProjectAsync(
+                "Big", rootPath, repositoryToolingIdentity: "folder:Big", ct: CancellationToken.None);
+            logger.Messages.ShouldContain("Found 1 files, 1 changed");
+            (await store.GetFileHashRecordsAsync("Big"))["Big.cs"].ExtractionVersion.ShouldEndWith(";oversize>1KB");
+
+            logger.Messages.Clear();
+            await Pipeline().IndexProjectAsync(
+                "Big", rootPath, repositoryToolingIdentity: "folder:Big", ct: CancellationToken.None);
+            logger.Messages.ShouldContain("Found 1 files, 0 changed");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     [Fact]
     public void IndexingOptions_SwiftHasItsOwnHigherSizeLimit()
     {

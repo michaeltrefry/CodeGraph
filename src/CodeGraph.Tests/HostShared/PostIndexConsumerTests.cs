@@ -113,13 +113,16 @@ public class PostIndexConsumerTests
 
     /// <summary>
     /// Indexing with shouldAnalyze=false still computes vitals metrics and the security scan, but
-    /// never runs a model-backed step (health analysis or batch submission).
+    /// never runs a model-backed step (health analysis or batch submission). An explicit
+    /// re-analyze (ShouldAnalyzeHealth, the batch is submitted by the caller) runs health analysis
+    /// without submitting a second batch.
     /// </summary>
     [Theory]
-    [InlineData(false, new[] { "metrics" }, new string[0])]
-    [InlineData(true, new[] { "metrics", "health" }, new[] { Repo })]
+    [InlineData(false, false, new[] { "metrics" }, new string[0])]
+    [InlineData(true, false, new[] { "metrics", "health" }, new[] { Repo })]
+    [InlineData(false, true, new[] { "metrics", "health" }, new string[0])]
     public async Task RepositoryIndexingCompleted_ModelBackedStepsFollowShouldAnalyze(
-        bool shouldAnalyze, string[] expectedVitalsCalls, string[] expectedSubmissions)
+        bool shouldAnalyze, bool shouldAnalyzeHealth, string[] expectedVitalsCalls, string[] expectedSubmissions)
     {
         var vitalsCalls = new ConcurrentQueue<string>();
         var submitted = new ConcurrentQueue<string>();
@@ -148,7 +151,8 @@ public class PostIndexConsumerTests
         {
             await harness.Bus.Publish(new RepositoryIndexingCompleted
             {
-                Name = Repo, RepoPath = "/repos/codeflow-cli", ShouldComputeVitals = true, ShouldAnalyze = shouldAnalyze
+                Name = Repo, RepoPath = "/repos/codeflow-cli", ShouldComputeVitals = true, ShouldAnalyze = shouldAnalyze,
+                ShouldAnalyzeHealth = shouldAnalyzeHealth
             });
             (await harness.GetConsumerHarness<RepositoryIndexingCompletedConsumer>().Consumed
                 .Any<RepositoryIndexingCompleted>()).ShouldBeTrue();

@@ -13,16 +13,14 @@ internal static partial class CargoWorkspaceRoots
     /// Every workspace root manifest plus every package manifest that no workspace directory
     /// encloses, in ordinal path order. A manifest below a directory whose <c>Cargo.toml</c> declares
     /// <c>[workspace]</c> belongs to that workspace (cargo resolves a member to its workspace root),
-    /// so it is analyzed through the root rather than again on its own. Build output under
-    /// <c>target/</c> is ignored, as elsewhere in the pipeline.
+    /// so it is analyzed through the root rather than again on its own. <paramref name="discoveredManifests"/>
+    /// are the <c>Cargo.toml</c> files discovery includes (discovery exclusions and <c>target/</c>
+    /// build output already removed), so a copy under an agent worktree or dependency directory is
+    /// never analyzed.
     /// </summary>
-    public static IReadOnlyList<string> Find(IFileSystem fileSystem, string rootPath)
+    public static IReadOnlyList<string> Find(IFileSystem fileSystem, IEnumerable<string> discoveredManifests)
     {
-        var manifests = fileSystem
-            .EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
-            .Where(path => !path.Contains(
-                $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                StringComparison.OrdinalIgnoreCase))
+        var manifests = discoveredManifests
             .Select(Path.GetFullPath)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)

@@ -151,10 +151,11 @@ public class ProjectServiceTests
             await File.WriteAllTextAsync(Path.Combine(rootPath, "main.rs"), "pub fn axum_sidecar() {}\n");
 
             var analysis = new RecordingBatchAnalysisService(store);
+            var bus = new RecordingMessageBus();
             var service = new ProjectService(
                 store,
                 analysis,
-                new NoOpMessageBus(),
+                bus,
                 new FixedRepoProvider(rootPath),
                 pipeline,
                 options,
@@ -173,6 +174,13 @@ public class ProjectServiceTests
             (await store.GetFileHashesAsync("SceneWorks")).ShouldContainKey("main.rs");
             (await store.GetRepositoryByName("SceneWorks"))!.Language.ShouldBe("Rust");
             (await store.GetSyncStateAsync("SceneWorks"))!.Status.ShouldBe("idle");
+
+            // The batch was submitted above, so the post-index step must not submit another one,
+            // but it still runs vitals and the model-backed health analysis.
+            var completed = bus.Messages.OfType<RepositoryIndexingCompleted>().ShouldHaveSingleItem();
+            completed.ShouldAnalyze.ShouldBeFalse();
+            completed.ShouldComputeVitals.ShouldBeTrue();
+            completed.ShouldAnalyzeHealth.ShouldBeTrue();
         }
         finally
         {
@@ -296,6 +304,7 @@ public class ProjectServiceTests
             var first = bus.Messages.OfType<RepositoryIndexingCompleted>().ShouldHaveSingleItem();
             first.ShouldAnalyze.ShouldBeTrue();
             first.ShouldComputeVitals.ShouldBeTrue();
+            first.ShouldAnalyzeHealth.ShouldBeFalse();
 
             // Same HEAD, same extractor versions: the routine sync is skipped.
             await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus)
@@ -313,6 +322,7 @@ public class ProjectServiceTests
             bus.Messages.Count.ShouldBe(2);
             refresh.ShouldAnalyze.ShouldBeFalse();
             refresh.ShouldComputeVitals.ShouldBeFalse();
+            refresh.ShouldAnalyzeHealth.ShouldBeFalse();
             var state = (await store.GetSyncStateAsync("inference"))!;
             state.LastCommitSha.ShouldBe(GitHead(rootPath));
             state.ExtractionFingerprint.ShouldNotBeNull();
