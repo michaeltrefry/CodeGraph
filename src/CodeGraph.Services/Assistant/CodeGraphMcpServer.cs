@@ -527,53 +527,15 @@ public class CodeGraphMcpServer(
             .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }));
 
     [McpServerTool(Name = "get_architecture"),
-     Description("Get architecture overview for a project — hotspots, dependency analysis, complexity metrics.")]
+     Description("Get architecture overview for a project: node counts by label (exact, whole graph), hotspots " +
+                 "(top 10 methods/functions by call fan-in, minimum 3), key type relationships (top 10 types by " +
+                 "IMPLEMENTS/INHERITS in-degree, external stubs marked), external package dependencies (Package/" +
+                 "NuGetPackage nodes referenced via REFERENCES_PACKAGE across NuGet, Cargo and SwiftPM, with " +
+                 "ecosystem and version; total and per-ecosystem counts, top 25 listed), and cross-repo " +
+                 "dependencies summarized per repository and edge type. No model is called.")]
     public async Task<string> GetArchitecture(
         [Description("Project name")] string project)
-    {
-        var report = await query.GetArchitectureAsync(project);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"# Architecture: {report.Project}\n");
-
-        if (report.Summary is not null)
-        {
-            sb.AppendLine($"**Confidence:** {report.Confidence}");
-            sb.AppendLine();
-            sb.AppendLine(report.Summary);
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("### Node Counts\n");
-        foreach (var (label, count) in report.NodeCounts.OrderByDescending(kv => kv.Value))
-            sb.AppendLine($"- {label}: {count:N0}");
-        sb.AppendLine();
-
-        if (report.Hotspots.Count > 0)
-        {
-            sb.AppendLine("### Hotspots (high fan-in methods)\n");
-            foreach (var h in report.Hotspots)
-                sb.AppendLine($"- **{h.Name}** (fan-in: {h.FanIn}) — {h.Reason}");
-            sb.AppendLine();
-        }
-
-        if (report.InboundDependencies.Count > 0)
-        {
-            sb.AppendLine("### Inbound Dependencies (other repos depend on this)\n");
-            foreach (var edge in report.InboundDependencies)
-                sb.AppendLine($"- {edge.SourceProject} → this ({edge.Type})");
-            sb.AppendLine();
-        }
-
-        if (report.OutboundDependencies.Count > 0)
-        {
-            sb.AppendLine("### Outbound Dependencies (this depends on other repos)\n");
-            foreach (var edge in report.OutboundDependencies)
-                sb.AppendLine($"- this → {edge.TargetProject} ({edge.Type})");
-        }
-
-        return sb.ToString();
-    }
+        => ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(project));
 
     [McpServerTool(Name = "get_project_health"),
      Description("Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files (high churn + complexity), and per-project breakdowns.")]

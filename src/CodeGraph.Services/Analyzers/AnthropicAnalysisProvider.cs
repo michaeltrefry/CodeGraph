@@ -23,6 +23,9 @@ public class AnthropicAnalysisProvider(
     public AnalysisProviderCapabilities Capabilities { get; } =
         new(SupportsBatch: true, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: true);
 
+    public async Task<bool> IsConfiguredAsync(CancellationToken ct = default) =>
+        !string.IsNullOrWhiteSpace((await ResolveProviderConfigAsync(ct)).ApiKey);
+
     public async Task<AnalysisTextResponse> ExecuteAsync(
         AnalysisPrompt prompt,
         AnalysisRequestOptions request,

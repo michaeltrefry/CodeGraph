@@ -221,24 +221,46 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<Dictionary<long, int>> GetCallFanInAsync(string project, int minFanIn)
+    public async Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> edgeTypes,
+        IReadOnlyCollection<NodeLabel>? targetLabels,
+        int minInDegree,
+        int limit)
     {
+        if (edgeTypes.Count == 0 || limit <= 0)
+            return [];
+
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (:CodeNode)-[e:CALLS]->(n:CodeNode {project: $project})
-                WITH n.appId AS targetId, count(e) AS cnt
-                WHERE cnt >= $minFanIn
-                RETURN targetId, cnt
+                MATCH (s:CodeNode {project: $project})-[e]->(t:CodeNode)
+                WHERE type(e) IN $types
+                  AND coalesce(e.project, s.project) = $project
+                  AND ($labels IS NULL OR t.label IN $labels)
+                WITH t, count(e) AS cnt
+                WHERE cnt >= $minInDegree
+                RETURN t, cnt
+                ORDER BY cnt DESC, t.appId
+                LIMIT $limit
                 """,
-                new { project, minFanIn });
+                new
+                {
+                    project,
+                    types = edgeTypes.Select(type => type.ToString()).Distinct().ToList(),
+                    labels = targetLabels is { Count: > 0 }
+                        ? targetLabels.Select(label => label.ToString()).Distinct().ToList()
+                        : null,
+                    minInDegree,
+                    limit
+                });
 
-            var result = new Dictionary<long, int>();
+            var result = new List<NodeInDegree>();
             await foreach (var record in cursor)
-                result[record["targetId"].As<long>()] = record["cnt"].As<int>();
-            return result;
+                result.Add(new NodeInDegree(MapCodeNode(record["t"].As<INode>()), record["cnt"].As<int>()));
+            return (IReadOnlyList<NodeInDegree>)result;
         });
     }
 

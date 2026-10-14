@@ -1,6 +1,8 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Services.Pipeline;
 
 namespace CodeGraph.Services.Query;
 
@@ -174,30 +176,71 @@ public class GraphQueryEngine
         return results.DistinctBy(p => p.QualifiedName).ToList();
     }
 
+    /// <summary>Most hotspots (high fan-in methods) an architecture report lists.</summary>
+    public const int ArchitectureHotspotLimit = 10;
+
+    /// <summary>Most supertypes (by implementer/subtype count) an architecture report lists.</summary>
+    public const int ArchitectureSupertypeLimit = 10;
+
+    /// <summary>Most external package dependencies an architecture report lists.</summary>
+    public const int ArchitecturePackageLimit = 25;
+
+    private const int HotspotMinFanIn = 3;
+
+    private static readonly EdgeType[] CallEdges = [EdgeType.CALLS];
+    private static readonly NodeLabel[] CallableLabels = [NodeLabel.Method, NodeLabel.Function];
+    private static readonly EdgeType[] SupertypeEdges = [EdgeType.IMPLEMENTS, EdgeType.INHERITS];
+    private static readonly EdgeType[] PackageEdges = [EdgeType.REFERENCES_PACKAGE];
+    private static readonly NodeLabel[] PackageLabels = [NodeLabel.Package, NodeLabel.NuGetPackage];
+
     /// <summary>
-    /// Get architecture overview for a project.
+    /// Get architecture overview for a project. Every figure is aggregated by the store over the
+    /// whole graph; only the listed rows are bounded.
     /// </summary>
     public async Task<ArchitectureReport> GetArchitectureAsync(string project)
     {
-        var nodes = await _store.SearchNodesAsync(project, "%", limit: 10000);
+        var labelCounts = await _store.GetNodeCountsByLabelForProjectAsync(project);
         var summary = await _store.GetRepositorySummaryAsync(project);
         var crossRepoEdges = await _store.FindCrossRepoEdgesAsync(project);
 
-        var nodesByLabel = nodes.GroupBy(n => n.Label)
-            .ToDictionary(g => g.Key, g => g.Count());
+        var nodesByLabel = new Dictionary<NodeLabel, int>();
+        foreach (var (label, count) in labelCounts)
+        {
+            if (Enum.TryParse<NodeLabel>(label, ignoreCase: true, out var parsed))
+                nodesByLabel[parsed] = nodesByLabel.GetValueOrDefault(parsed) + count;
+        }
 
-        // Find hotspots: methods with high fan-in (single query, no N+1)
-        var fanInCounts = await _store.GetCallFanInAsync(project, minFanIn: 3);
-        var methodIndex = nodes
-            .Where(n => n.Label is NodeLabel.Method or NodeLabel.Function)
-            .ToDictionary(n => n.Id);
-        var hotspots = fanInCounts
-            .Where(kv => methodIndex.ContainsKey(kv.Key))
-            .Select(kv => new HotspotInfo(
-                methodIndex[kv.Key].Name,
-                methodIndex[kv.Key].QualifiedName,
-                kv.Value,
+        // Hotspots: methods/functions with high CALLS fan-in.
+        var hotspots = (await _store.GetTopInDegreeNodesAsync(
+                project, CallEdges, CallableLabels, HotspotMinFanIn, ArchitectureHotspotLimit))
+            .Select(entry => new HotspotInfo(
+                entry.Node.Name,
+                entry.Node.QualifiedName,
+                entry.InDegree,
                 "High fan-in method"))
+            .ToList();
+
+        // Key type relationships: the types most implemented/inherited, including external stubs.
+        var supertypes = (await _store.GetTopInDegreeNodesAsync(
+                project, SupertypeEdges, targetLabels: null, minInDegree: 1, ArchitectureSupertypeLimit))
+            .Select(entry => new SupertypeInfo(
+                entry.Node.Name,
+                entry.Node.QualifiedName,
+                entry.Node.Label,
+                entry.InDegree,
+                IsExternalType(entry.Node)))
+            .ToList();
+
+        // External package dependencies (every ecosystem); in-repo package definitions are not
+        // dependencies. All referenced packages are counted, only the top rows are listed.
+        var packages = (await _store.GetTopInDegreeNodesAsync(
+                project, PackageEdges, PackageLabels, minInDegree: 1, limit: int.MaxValue))
+            .Where(entry => !IsTrue(entry.Node.Properties.GetValueOrDefault("is_definition")))
+            .Select(entry => new PackageDependencyInfo(
+                entry.Node.Name,
+                PackageEcosystem(entry.Node),
+                PackageVersion(entry.Node),
+                entry.InDegree))
             .ToList();
 
         var inboundDeps = crossRepoEdges.Where(e => e.TargetProject == project).ToList();
@@ -208,10 +251,61 @@ public class GraphQueryEngine
             summary?.Summary,
             summary?.Confidence,
             nodesByLabel,
-            hotspots.OrderByDescending(h => h.FanIn).Take(10).ToList(),
+            hotspots,
             inboundDeps,
-            outboundDeps);
+            outboundDeps,
+            packages
+                .OrderByDescending(p => p.DependentCount)
+                .ThenBy(p => p.Ecosystem, StringComparer.Ordinal)
+                .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(p => p.Version, StringComparer.Ordinal)
+                .Take(ArchitecturePackageLimit)
+                .ToList(),
+            packages.Count,
+            packages
+                .GroupBy(p => p.Ecosystem, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal),
+            supertypes);
     }
+
+    private static string PackageEcosystem(GraphNode node) =>
+        node.Label == NodeLabel.NuGetPackage
+            ? "nuget"
+            : PropertyText(node, "ecosystem") ?? "unknown";
+
+    private static string? PackageVersion(GraphNode node) =>
+        PropertyText(node, "version")
+        ?? PropertyText(node, "version_requirement")
+        ?? PropertyText(node, "revision")
+        ?? PropertyText(node, "branch");
+
+    private static bool IsExternalType(GraphNode node) =>
+        node.Label == NodeLabel.ExternalSymbol
+        || SwiftTypeReference.IsExternal(node.QualifiedName)
+        || IsTrue(node.Properties.GetValueOrDefault("scip_external"));
+
+    private static string? PropertyText(GraphNode node, string key)
+    {
+        var text = node.Properties.GetValueOrDefault(key) switch
+        {
+            null => null,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+            JsonElement { ValueKind: JsonValueKind.Null or JsonValueKind.Undefined } => null,
+            JsonElement element => element.GetRawText(),
+            var value => value.ToString()
+        };
+        return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static bool IsTrue(object? value) => value switch
+    {
+        bool flag => flag,
+        JsonElement { ValueKind: JsonValueKind.True } => true,
+        JsonElement { ValueKind: JsonValueKind.String } element =>
+            bool.TryParse(element.GetString(), out var parsed) && parsed,
+        string text => bool.TryParse(text, out var parsed) && parsed,
+        _ => false
+    };
 
     /// <summary>
     /// Find repos with no inbound or outbound dependencies.
@@ -293,7 +387,26 @@ public record ArchitectureReport(
     Dictionary<NodeLabel, int> NodeCounts,
     IReadOnlyList<HotspotInfo> Hotspots,
     IReadOnlyList<CrossRepoEdge> InboundDependencies,
-    IReadOnlyList<CrossRepoEdge> OutboundDependencies);
+    IReadOnlyList<CrossRepoEdge> OutboundDependencies,
+    IReadOnlyList<PackageDependencyInfo> PackageDependencies,
+    int PackageDependencyCount,
+    IReadOnlyDictionary<string, int> PackageDependencyCountsByEcosystem,
+    IReadOnlyList<SupertypeInfo> TopSupertypes);
+
+/// <summary>An external package the project depends on, with how many of its manifests/projects reference it.</summary>
+public record PackageDependencyInfo(
+    string Name,
+    string Ecosystem,
+    string? Version,
+    int DependentCount);
+
+/// <summary>A type the project implements or inherits from, with how many of its types do.</summary>
+public record SupertypeInfo(
+    string Name,
+    string QualifiedName,
+    NodeLabel Label,
+    int SubtypeCount,
+    bool IsExternal);
 
 public record HotspotInfo(
     string Name,

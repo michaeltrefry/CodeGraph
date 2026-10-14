@@ -63,8 +63,19 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
     Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync();
     Task<IReadOnlyList<CrossRepoEdge>> GetAllCrossRepoEdgesAsync();
 
-    // Traversal
-    Task<Dictionary<long, int>> GetCallFanInAsync(string project, int minFanIn);
+    // Aggregates
+    /// <summary>
+    /// The nodes most pointed at by <paramref name="project"/>'s edges of <paramref name="edgeTypes"/>,
+    /// computed over the whole graph: each node with its number of such incoming edges (at least
+    /// <paramref name="minInDegree"/>), optionally restricted to <paramref name="targetLabels"/>,
+    /// ordered by count descending then node id, at most <paramref name="limit"/>.
+    /// </summary>
+    Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> edgeTypes,
+        IReadOnlyCollection<NodeLabel>? targetLabels,
+        int minInDegree,
+        int limit);
 
     // Bulk operations
     Task DeleteNodesByFileAsync(string project, string filePath);

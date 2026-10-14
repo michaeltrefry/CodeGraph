@@ -23,6 +23,16 @@ public class OpenAiAnalysisProvider(
     public AnalysisProviderCapabilities Capabilities { get; } =
         new(SupportsBatch: true, SupportsStructuredJson: true, SupportsStreaming: false, SupportsLargeContext: true);
 
+    /// <summary>The hosted OpenAI API needs a key; a custom OpenAI-compatible endpoint may not.</summary>
+    public async Task<bool> IsConfiguredAsync(CancellationToken ct = default)
+    {
+        var providerConfig = await ResolveProviderConfigAsync(ct);
+        if (!string.IsNullOrWhiteSpace(providerConfig.ApiKey))
+            return true;
+        return !Uri.TryCreate(BuildUrl(providerConfig, "/"), UriKind.Absolute, out var endpoint) ||
+               !endpoint.Host.Equals("api.openai.com", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<AnalysisTextResponse> ExecuteAsync(
         AnalysisPrompt prompt,
         AnalysisRequestOptions request,

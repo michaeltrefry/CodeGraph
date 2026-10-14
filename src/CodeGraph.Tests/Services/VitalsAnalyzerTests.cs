@@ -503,6 +503,94 @@ public class VitalsAnalyzerTests
             .ShouldBe(["(repo)", "Demo.Api", "Demo.Core", "Demo.Jobs"]);
     }
 
+    /// <summary>
+    /// With no API key the hosted provider is never called (it would answer 401 once per
+    /// project); the step logs and returns without storing an analysis.
+    /// </summary>
+    [Fact]
+    public async Task AnalyzeHealthAsync_ProviderWithoutApiKey_SkipsWithoutCallingTheModel()
+    {
+        var store = new InMemoryGraphStore();
+        foreach (var dotnetProject in new[] { "Demo.Api", null })
+        {
+            await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
+            {
+                Project = "Demo", DotnetProject = dotnetProject, OverallHealth = 6.0, TotalFiles = 1
+            });
+        }
+        await store.UpsertFileMetricsBatchAsync("Demo",
+            [new FileMetricsEntity { Project = "Demo", DotnetProject = "Demo.Api", FilePath = "Demo.Api/A.cs" }]);
+        var options = new AnalysisOptions { DefaultProvider = "anthropic" };
+        options.Anthropic.ApiKey = "";
+        var handler = new CountingHandler();
+        var anthropic = new AnthropicAnalysisProvider(
+            new SingleClientFactory(new HttpClient(handler)),
+            new AnthropicCircuitBreaker(NullLogger<AnthropicCircuitBreaker>.Instance),
+            Options.Create(options),
+            NullLogger<AnthropicAnalysisProvider>.Instance);
+
+        var analyzer = new VitalsAnalyzer(
+            store,
+            new FixedProviderRegistry(anthropic),
+            Options.Create(options),
+            new LocalFileSystem(),
+            new CompositeLintRunner(new LintResultCache(), new NoOpLintRunner(), NullLogger<CompositeLintRunner>.Instance),
+            new LintResultCache(),
+            new DiagnosticDetailCache(),
+            NullLogger<VitalsAnalyzer>.Instance);
+
+        await analyzer.AnalyzeHealthAsync("Demo");
+
+        handler.Requests.ShouldBe(0);
+        (await store.GetProjectHealthAnalysesAsync("Demo")).ShouldBeEmpty();
+
+        // With a key the same configuration calls the model.
+        options.Anthropic.ApiKey = "test-key";
+        await analyzer.AnalyzeHealthAsync("Demo");
+        handler.Requests.ShouldBeGreaterThan(0);
+    }
+
+    [Theory]
+    [InlineData("", "https://api.openai.com/v1", false)]
+    [InlineData("sk-test", "https://api.openai.com/v1", true)]
+    [InlineData("", "http://localhost:8000/v1", true)]
+    public async Task OpenAiProvider_IsConfiguredOnlyWithAKeyForTheHostedApi(string apiKey, string baseUrl, bool expected)
+    {
+        var options = new AnalysisOptions();
+        options.OpenAi.ApiKey = apiKey;
+        options.OpenAi.BaseUrl = baseUrl;
+        var provider = new OpenAiAnalysisProvider(
+            new SingleClientFactory(new HttpClient(new CountingHandler())),
+            Options.Create(options),
+            NullLogger<OpenAiAnalysisProvider>.Instance);
+
+        (await provider.IsConfiguredAsync()).ShouldBe(expected);
+    }
+
+    private sealed class FixedProviderRegistry(IAnalysisModelProvider provider) : IAnalysisProviderRegistry
+    {
+        public IAnalysisModelProvider GetProvider(string? providerName = null) => provider;
+    }
+
+    private sealed class SingleClientFactory(HttpClient client) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => client;
+    }
+
+    private sealed class CountingHandler : HttpMessageHandler
+    {
+        public int Requests;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Requests);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent("{\"error\":\"unauthorized\"}")
+            });
+        }
+    }
+
     private sealed class ConcurrencyDetectingGraphStore : InMemoryGraphStore
     {
         private int _activeOperations;
