@@ -78,6 +78,12 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         SyncStateEntity? syncState,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default);
+    /// <summary>
+    /// Atomically replaces the graph slice of <paramref name="filePaths"/>. When
+    /// <paramref name="retractions"/> is given, its edges (matched by source, target and type) are
+    /// deleted first and never preserved, and each of its orphan candidates without a file path is
+    /// deleted once the write leaves it without edges.
+    /// </summary>
     Task<int> ReplaceProjectFilesAsync(
         string project,
         IReadOnlyList<string> filePaths,
@@ -85,7 +91,23 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
+        GraphSliceRetractions? retractions = null,
         CancellationToken ct = default);
+
+    /// <summary>Nodes of <paramref name="project"/> in any of <paramref name="filePaths"/>.</summary>
+    Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
+        string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default);
+
+    /// <summary>Nodes of <paramref name="project"/> whose name is one of <paramref name="names"/>.</summary>
+    Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
+        string project, IReadOnlyCollection<string> names, CancellationToken ct = default);
+
+    /// <summary>
+    /// Edges of <paramref name="project"/> whose string property <paramref name="propertyKey"/>
+    /// equals one of <paramref name="values"/>, with their endpoints' qualified names and files.
+    /// </summary>
+    Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
+        string project, string propertyKey, IReadOnlyCollection<string> values, CancellationToken ct = default);
     Task DeleteFilesFromProjectGraphAsync(
         string project,
         IReadOnlyList<string> filePaths,

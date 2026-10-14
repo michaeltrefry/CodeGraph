@@ -141,7 +141,8 @@ public class MariaDbMigrationRunnerTests
             ["051_embedding_provenance_cutover.sql"] = 1,
             ["058_retire_shortcut_shim.sql"] = 2,
             ["059_durable_indexer_runs.sql"] = 3,
-            ["063_stop_resource_intensive_reanalysis_replays.sql"] = 1
+            ["063_stop_resource_intensive_reanalysis_replays.sql"] = 1,
+            ["070_nodes_file_path_not_null.sql"] = 1
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",

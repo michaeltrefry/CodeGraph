@@ -616,13 +616,13 @@ public partial class IndexingPipeline
         _logger.LogInformation("Pre-resolution: {Nodes} nodes, {PendingEdges} pending edges, {UnresolvedCalls} unresolved calls",
             buffer.AllNodes.Count, buffer.AllPendingEdges.Count, buffer.AllUnresolvedCalls.Count);
         ResolveImports(buffer);
+        var includePersistedNodes = !replaceExistingGraph && existingHashes.Count > 0;
+        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
         await ResolveCallsAsync(
-            projectName,
-            buffer,
-            includePersistedNodes: !replaceExistingGraph && existingHashes.Count > 0,
-            excludedPersistedFiles: successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
-                StringComparer.OrdinalIgnoreCase),
-            ct);
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+        var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
         CreateStubNodesForExternalTargets(projectName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
@@ -657,6 +657,7 @@ public partial class IndexingPipeline
                 buffer,
                 replacementPaths,
                 includeProjectStructure: existingHashes.Count == 0);
+            AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
             var replacementHashes = buffer.AllFileHashes
                 .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
@@ -668,6 +669,7 @@ public partial class IndexingPipeline
                 replacementEdges,
                 replacementHashes,
                 ExtractionVersionsFor(replacementHashes.Keys),
+                swiftRebinding.Retractions.IsEmpty ? null : swiftRebinding.Retractions,
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",

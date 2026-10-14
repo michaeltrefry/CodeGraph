@@ -1,4 +1,5 @@
 using CodeGraph.Models;
+using CodeGraph.Services.Pipeline;
 using TreeSitter;
 
 namespace CodeGraph.Extractors.TreeSitter;
@@ -334,6 +335,16 @@ public static class LanguageSpecs
         },
         // An extension adds members to a type declared elsewhere; it never emits a type node.
         IsContainerOnlyClass = node => GetSwiftDeclarationKind(node) == "extension",
+        // Members of an extension of a type declared in another file attach to that type once
+        // the pipeline resolves it (SwiftTypeReference).
+        ContainerOwnerReference = node =>
+            GetSwiftDeclarationKind(node) == "extension"
+            && GetSwiftTypePath(node.GetChildForField("name")) is { } extendedPath
+                ? new ContainerOwner(extendedPath, SwiftTypeReference.Create(extendedPath))
+                : null,
+        TypeRelationExtractor = AddSwiftTypeRelations,
+        PropertyNodeTypes = ["property_declaration", "protocol_property_declaration"],
+        PropertyExtractor = GetSwiftProperty,
         ParametersExtractor = GetSwiftParameters,
         NameExtractor = GetSwiftCallableName,
         NameField = "name",
@@ -387,4 +398,203 @@ public static class LanguageSpecs
             .Where(child => child.Type == "parameter")
             .Select(child => child.Text)) + ")";
 
+    /// <summary>
+    /// Dotted path of a Swift type reference without generic arguments:
+    /// <c>Outer.Inner&lt;T&gt;</c> → <c>Outer.Inner</c>. Null for non-nominal types.
+    /// </summary>
+    private static string? GetSwiftTypePath(Node? type)
+    {
+        if (type is null)
+            return null;
+        if (type.Type == "type_identifier")
+            return type.Text;
+        if (type.Type != "user_type")
+            return type.NamedChildren.Select(GetSwiftTypePath).FirstOrDefault(path => path is not null);
+
+        var parts = type.NamedChildren
+            .Where(child => child.Type == "type_identifier")
+            .Select(child => child.Text)
+            .ToList();
+        return parts.Count == 0 ? null : string.Join('.', parts);
+    }
+
+    // Standard-library and Apple-framework protocols that commonly come first in a class's
+    // inheritance clause. A first entry that is not declared in the repository is a protocol
+    // when it is listed here or carries a protocol naming convention, else a superclass.
+    private static readonly HashSet<string> WellKnownSwiftProtocols = new(StringComparer.Ordinal)
+    {
+        "Actor", "AnyActor", "App", "AsyncIteratorProtocol", "AsyncSequence", "BidirectionalCollection",
+        "CaseIterable", "Codable", "Collection", "Comparable", "CustomDebugStringConvertible",
+        "CustomStringConvertible", "Decodable", "Encodable", "Equatable", "Error",
+        "ExpressibleByArrayLiteral", "ExpressibleByDictionaryLiteral", "ExpressibleByIntegerLiteral",
+        "ExpressibleByStringLiteral", "Hashable", "Identifiable", "IteratorProtocol", "LocalizedError",
+        "MutableCollection", "NSCoding", "NSCopying", "NSSecureCoding", "ObservableObject",
+        "OptionSet", "PreviewProvider", "RandomAccessCollection", "RawRepresentable",
+        "RangeReplaceableCollection", "Scene", "Sendable", "Sequence", "SetAlgebra", "Strideable",
+        "View", "ViewModifier"
+    };
+
+    private static readonly string[] SwiftProtocolNameSuffixes = ["Protocol", "Delegate", "DataSource"];
+
+    // Raw-value types an enum's first inheritance entry may name; they are not protocols.
+    private static readonly HashSet<string> SwiftEnumRawValueTypes = new(StringComparer.Ordinal)
+    {
+        "String", "Character", "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16",
+        "UInt32", "UInt64", "Float", "Float16", "Float80", "Double", "CGFloat"
+    };
+
+    // Framework classes whose names carry a protocol naming convention.
+    private static readonly HashSet<string> WellKnownSwiftClasses = new(StringComparer.Ordinal)
+    {
+        "UITableViewDiffableDataSource", "UICollectionViewDiffableDataSource",
+        "NSTableViewDiffableDataSource", "NSCollectionViewDiffableDataSource",
+        "UITableViewDiffableDataSourceReference", "UICollectionViewDiffableDataSourceReference",
+        "NSCollectionViewDiffableDataSourceReference"
+    };
+
+    private static bool LooksLikeSwiftProtocol(string typePath)
+    {
+        var simpleName = SwiftTypeReference.SimpleName(typePath);
+        if (WellKnownSwiftClasses.Contains(simpleName))
+            return false;
+        return WellKnownSwiftProtocols.Contains(simpleName)
+            || SwiftProtocolNameSuffixes.Any(suffix =>
+                simpleName.Length > suffix.Length
+                && simpleName.EndsWith(suffix, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Inheritance and conformance edges from a Swift type's inheritance clause. Swift syntax does
+    /// not say which entry is a superclass, so:
+    /// <list type="bullet">
+    /// <item>struct, enum, actor and extension entries are protocols: IMPLEMENTS. An enum's first
+    /// entry naming a raw-value type (String, Int, ...) is recorded as <c>raw_type</c> instead.</item>
+    /// <item>protocol entries are inherited protocols: INHERITS, as for interface-extends-interface
+    /// in C#. <c>AnyObject</c> marks a class-bound protocol (<c>class_bound</c>), not an edge.</item>
+    /// <item>class: only the first entry can be a superclass. It is INHERITS when it names a class
+    /// declared in the file and IMPLEMENTS when it names a protocol declared in the file; otherwise
+    /// it is IMPLEMENTS when it looks like a protocol (well-known protocol, or a Protocol/Delegate/
+    /// DataSource suffix, except well-known classes such as UITableViewDiffableDataSource) and
+    /// INHERITS when not, marked <c>inheritance_inferred</c> so the pipeline replaces the guess
+    /// when the name resolves to a repository type. Later entries are IMPLEMENTS.</item>
+    /// </list>
+    /// Names resolve lexically: a type declared in the declaration's enclosing scope, then outward
+    /// to the file's top level. Targets not found in the file are symbolic references the pipeline
+    /// resolves against top-level repository types.
+    /// </summary>
+    private static void AddSwiftTypeRelations(TypeDeclarationContext context)
+    {
+        var kind = GetSwiftDeclarationKind(context.Node);
+        var entries = context.Node.NamedChildren
+            .Where(child => child.Type == "inheritance_specifier")
+            .Select(child => GetSwiftTypePath(
+                child.GetChildForField("inherits_from") ?? child.NamedChildren.FirstOrDefault()))
+            .ToList();
+
+        for (var index = 0; index < entries.Count; index++)
+        {
+            var path = entries[index];
+            if (path is null)
+                continue;
+
+            if (kind == "enum" && index == 0 && SwiftEnumRawValueTypes.Contains(path))
+            {
+                if (context.TypeProperties is not null)
+                    context.TypeProperties["raw_type"] = path;
+                continue;
+            }
+
+            if (kind == "protocol" && path == "AnyObject")
+            {
+                if (context.TypeProperties is not null)
+                    context.TypeProperties["class_bound"] = true;
+                continue;
+            }
+
+            var local = context.ResolveLocalType(path);
+            var inferred = false;
+            EdgeType edgeType;
+            if (kind == "protocol")
+            {
+                edgeType = EdgeType.INHERITS;
+            }
+            else if (kind == "class" && index == 0)
+            {
+                inferred = local is null;
+                edgeType = local is not null
+                    ? local.Label == NodeLabel.Interface ? EdgeType.IMPLEMENTS : EdgeType.INHERITS
+                    : LooksLikeSwiftProtocol(path) ? EdgeType.IMPLEMENTS : EdgeType.INHERITS;
+            }
+            else
+            {
+                edgeType = EdgeType.IMPLEMENTS;
+            }
+
+            var targetQN = local?.QualifiedName ?? SwiftTypeReference.Create(path);
+            var properties = new Dictionary<string, object>
+            {
+                ["confidence"] = inferred ? "medium" : "high"
+            };
+            if (inferred)
+                properties[SwiftTypeReference.InheritanceInferredProperty] = true;
+            if (kind == "protocol")
+                properties[SwiftTypeReference.ProtocolTargetProperty] = true;
+            // An edge with a symbolic endpoint is owned by this file: the pipeline resolves it,
+            // and re-resolves it when this file or a type of that name changes.
+            if (SwiftTypeReference.TryParse(context.TypeQN, out _) || SwiftTypeReference.TryParse(targetQN, out _))
+                properties[SwiftTypeReference.OriginFileProperty] = context.OriginFile;
+
+            context.Edges.Add(new PendingEdge(context.TypeQN, targetQN, edgeType, properties));
+        }
+    }
+
+    /// <summary>
+    /// A computed property (<c>var area: Double { ... }</c>, with or without get/set) or a protocol
+    /// property requirement becomes a Property node. Stored properties (with or without
+    /// willSet/didSet observers) do not: like fields in the other tree-sitter languages, they are
+    /// not graph nodes.
+    /// </summary>
+    private static PropertyDeclaration? GetSwiftProperty(Node node)
+    {
+        var isRequirement = node.Type == "protocol_property_declaration";
+        var computed = node.GetChildForField("computed_value");
+        if (!isRequirement && computed is null)
+            return null;
+
+        var pattern = node.GetChildForField("name");
+        var name = pattern?.GetChildForField("bound_identifier")?.Text ?? pattern?.Text;
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        var properties = new Dictionary<string, object>
+        {
+            [isRequirement ? "requirement" : "computed"] = true
+        };
+
+        var type = node.NamedChildren.FirstOrDefault(child => child.Type == "type_annotation");
+        if ((type?.GetChildForField("name") ?? type?.NamedChildren.LastOrDefault())?.Text is { Length: > 0 } typeText)
+            properties["type"] = typeText;
+
+        var modifiers = node.NamedChildren.FirstOrDefault(child => child.Type == "modifiers");
+        properties["is_static"] = modifiers is not null && modifiers.NamedChildren.Any(child =>
+            child.Type == "property_modifier" && child.Text is "static" or "class");
+
+        var accessorParent = isRequirement
+            ? node.NamedChildren.FirstOrDefault(child => child.Type == "protocol_property_requirements")
+            : computed;
+        var accessors = (accessorParent?.NamedChildren ?? [])
+            .Select(child => child.Type switch
+            {
+                "computed_getter" or "getter_specifier" => "get",
+                "computed_setter" or "setter_specifier" => "set",
+                "computed_modify" or "modify_specifier" => "modify",
+                _ => null
+            })
+            .OfType<string>()
+            .Distinct()
+            .ToList();
+        // A computed property with only a body is a read-only getter.
+        properties["accessors"] = accessors.Count == 0 ? "get" : string.Join(",", accessors);
+        return new PropertyDeclaration(name, properties);
+    }
 }

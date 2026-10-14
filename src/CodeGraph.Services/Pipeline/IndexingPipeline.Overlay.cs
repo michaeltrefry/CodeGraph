@@ -69,14 +69,13 @@ public partial class IndexingPipeline
                 files, rootPath, context, buffer, failOnExtractionError: false, OverlayRustSourceOwners, ct);
 
         ResolveImports(buffer);
+        var excludedPersistedFiles = normalizedChanged
+            .Concat(removedPaths.Select(NormalizeRelativePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         await ResolveCallsAsync(
-            projectName,
-            buffer,
-            includePersistedNodes: true,
-            excludedPersistedFiles: normalizedChanged
-                .Concat(removedPaths.Select(NormalizeRelativePath))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase),
-            ct);
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
+        var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
 
         var nodes = buffer.AllNodes
             .Where(node => !string.IsNullOrWhiteSpace(node.FilePath)
@@ -87,6 +86,20 @@ public partial class IndexingPipeline
             .Where(edge => nodeQns.Contains(edge.SourceQN) || nodeQns.Contains(edge.TargetQN))
             .Distinct()
             .ToList();
+
+        // Stub endpoints (no file) travel with the slice so its edges resolve in the overlay view.
+        foreach (var qualifiedName in edges.SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN }))
+        {
+            if (SwiftTypeReference.IsExternal(qualifiedName)
+                && buffer.FindByQN(qualifiedName) is { } stub
+                && nodeQns.Add(qualifiedName))
+            {
+                nodes.Add(stub);
+            }
+        }
+
+        AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, nodes, edges);
+        await AddOverlayRetractionsAsync(projectName, swiftRebinding, nodes, edges, ct);
 
         return new BranchOverlaySlice(nodes, edges);
     }

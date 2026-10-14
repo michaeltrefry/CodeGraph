@@ -15,6 +15,7 @@ public partial class MySqlGraphStore
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
+        GraphSliceRetractions? retractions = null,
         CancellationToken ct = default)
     {
         if (filePaths.Count == 0) return 0;
@@ -24,6 +25,10 @@ public partial class MySqlGraphStore
         try
         {
             var pathVariants = ExpandPathVariants(filePaths);
+            // Retracted edges go first, so they are never preserved below.
+            if (retractions is { Edges.Count: > 0 })
+                await DeleteRetractedEdgesAsync(conn, transaction, project, retractions.Edges, ct);
+
             var preservedIncoming = (await conn.QueryAsync<StoredPendingEdge>(new CommandDefinition("""
                 SELECT source.qualified_name AS SourceQN,
                        target.qualified_name AS TargetQN,
@@ -95,7 +100,7 @@ public partial class MySqlGraphStore
                     parameters.Add($"Label{i}", node.Label.ToString());
                     parameters.Add($"Name{i}", Truncate(node.Name, 1000));
                     parameters.Add($"QualifiedName{i}", Truncate(node.QualifiedName, 1000));
-                    parameters.Add($"FilePath{i}", node.FilePath);
+                    parameters.Add($"FilePath{i}", node.FilePath ?? "");
                     parameters.Add($"StartLine{i}", node.StartLine);
                     parameters.Add($"EndLine{i}", node.EndLine);
                     parameters.Add($"Properties{i}", SerializeJson(node.Properties));
@@ -158,6 +163,9 @@ public partial class MySqlGraphStore
                 await conn.ExecuteAsync(new CommandDefinition(
                     sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
+
+            if (retractions is { OrphanCandidateQNs.Count: > 0 })
+                await DeleteOrphanedNodesAsync(conn, transaction, project, retractions.OrphanCandidateQNs, ct);
 
             foreach (var batch in fileHashes.ToArray().Chunk(options.BatchSize))
             {
@@ -271,7 +279,7 @@ public partial class MySqlGraphStore
                     parameters.Add($"Label{i}", node.Label.ToString());
                     parameters.Add($"Name{i}", Truncate(node.Name, 1000));
                     parameters.Add($"QualifiedName{i}", Truncate(node.QualifiedName, 1000));
-                    parameters.Add($"FilePath{i}", node.FilePath);
+                    parameters.Add($"FilePath{i}", node.FilePath ?? "");
                     parameters.Add($"StartLine{i}", node.StartLine);
                     parameters.Add($"EndLine{i}", node.EndLine);
                     parameters.Add($"Properties{i}", SerializeJson(node.Properties));

@@ -150,4 +150,18 @@ public class GraphBufferTests
         resolved[0].SourceId.ShouldBe(20);
         resolved[0].TargetId.ShouldBe(21);
     }
+
+    [Fact]
+    public void RemoveEdges_RemovesOnlyMatchingEdges()
+    {
+        var buffer = new GraphBuffer();
+        var keep = new PendingEdge("A", "B", EdgeType.CALLS);
+        var remove = new PendingEdge("swift-type:X", "B", EdgeType.DEFINES_METHOD);
+        buffer.AddEdge(keep);
+        buffer.AddEdge(remove);
+
+        buffer.RemoveEdges(edge => edge.SourceQN.StartsWith("swift-type:"));
+
+        buffer.AllPendingEdges.ShouldBe([keep]);
+    }
 }
