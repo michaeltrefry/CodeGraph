@@ -148,6 +148,14 @@ public class CodeGraphMcpServer(
               dependency_scope, workspace_inherited, optional, target, git_reference, external_path
             - REFERENCES_PACKAGE cross-repo edge (Cargo): package_key, package_name, local_name,
               version, matched_by (package_key|git_url|path), confidence_band
+            - Package (SwiftPM, ecosystem swiftpm): package_name, identity, version, package_key,
+              source_kind (local|remote|path|registry), source, location, is_definition, manifest_path,
+              dependency_kind (declared|pinned), version_requirement, git_reference, revision, branch,
+              external_path
+            - REFERENCES_PACKAGE cross-repo edge (SwiftPM): package_key, package_name, identity, version,
+              matched_by (git_url to the root Package.swift of the repository at that URL | path),
+              confidence_band, dependency_kind (declared | pinned: a Package.resolved pin with no
+              declared dependency on the same package, e.g. Xcode or transitive)
             - Rust nodes from SCIP: source (scip), scip_symbol
             - ExternalSymbol: source (scip), scip_symbol, scip_external
             - Tree-sitter fallback nodes: confidence (low), extractionSource, fallbackReason
@@ -945,9 +953,9 @@ public class CodeGraphMcpServer(
                  "as structured counts. Answers {path, found, blastRadius, criticalCount, highCount, mediumCount, " +
                  "lowCount, totalAffected, crossRepoCount, crossRepoImpacts, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
                  "and source (overlay or default-branch). crossRepoImpacts lists {sourceRepo, targetRepo, edgeType, count} " +
-                 "per repository pair; for a Rust file it includes the repositories whose Cargo manifests depend on the " +
-                 "file's crate (edgeType REFERENCES_PACKAGE), which are crate-level dependents and not affected nodes; " +
-                 "they are read from the default-branch Cargo manifests even with sha, and a file with no nodes " +
+                 "per repository pair; for a Rust (or Swift) file it includes the repositories whose Cargo (or SwiftPM/Xcode) " +
+                 "manifests depend on the file's crate (or package) (edgeType REFERENCES_PACKAGE), which are package-level " +
+                 "dependents and not affected nodes; they are read from the default-branch manifests even with sha, and a file with no nodes " +
                  "(found: false) reports none. " +
                  "blastRadius is the worst risk level among the affected " +
                  "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
@@ -1046,7 +1054,10 @@ public class CodeGraphMcpServer(
                  "Answers {repo, inbound, outbound, rustSemantic} plus commitSha. inbound lists the repositories that " +
                  "depend on this one and outbound the repositories it depends on, each as {repo, edgeType, count, " +
                  "confidenceBand} (count is the number of links of that edge type; confidenceBand is the weakest of " +
-                 "them, high|medium|low or null — a Cargo path dependency matched by crate name is medium). rustSemantic is {status, manifest, groupCount, " +
+                 "them, high|medium|low or null — a Cargo or Swift package path dependency matched by package name is medium; " +
+                 "Cargo and SwiftPM/Xcode package dependencies appear as REFERENCES_PACKAGE; a Swift package declared in " +
+                 "Package.swift and pinned in Package.resolved counts once, while a pin nothing declares (an Xcode project's " +
+                 "packages, or a transitive pin) is still a link, so a Swift REFERENCES_PACKAGE link may be indirect). rustSemantic is {status, manifest, groupCount, " +
                  "semanticGroups, fallbackGroups, skippedGroups, treeSitterGroups}: status is semantic (every crate " +
                  "group indexed by rust-analyzer), partial or fallback (some or all crate groups indexed by " +
                  "tree-sitter instead), or not_analyzed (no Rust semantic pass was recorded for the repository). " +

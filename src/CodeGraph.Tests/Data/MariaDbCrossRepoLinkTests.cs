@@ -48,9 +48,17 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         cargo.Properties["local_name"].ToString().ShouldBe("provider_alias");
         cargo.Properties["version"].ToString().ShouldBe("1.5.0");
         // The git dependency resolves through Provider's repository URL, not a shared package key.
-        var git = edges.Single(edge => edge.Properties.GetValueOrDefault("matched_by")?.ToString() == "git_url");
+        var git = edges.Single(edge => edge.Properties.GetValueOrDefault("matched_by")?.ToString() == "git_url" &&
+                                       edge.Properties.GetValueOrDefault("ecosystem")?.ToString() == "cargo");
         qualifiedNames[git.TargetNodeId].ShouldBe("package:git-lib-definition");
         git.Properties["package_key"].ToString().ShouldStartWith("cargo:git:");
+        // The Swift package dependency resolves through the same URL to Provider's root package.
+        var swift = edges.Single(edge => edge.Properties.GetValueOrDefault("ecosystem")?.ToString() == "swiftpm");
+        qualifiedNames[swift.TargetNodeId].ShouldBe("package:swift-provider-definition");
+        swift.Properties["matched_by"].ToString().ShouldBe("git_url");
+        swift.Properties["identity"].ToString().ShouldBe("provider-repo");
+        swift.Properties["version"].ToString().ShouldBe("2.0.0");
+        swift.Properties["dependency_kind"].ToString().ShouldBe("declared");
     }
 
     [Fact]
