@@ -139,6 +139,7 @@ The LLM Configuration page owns:
 - MariaDB/MySQL 11.x-compatible server
 - RabbitMQ
 - [Node.js 18+](https://nodejs.org/)
+- A C compiler and `curl` on macOS/Linux (Xcode command line tools or gcc): the build compiles the tree-sitter Swift grammar from pinned, hash-verified sources (`src/CodeGraph.Extractors.TreeSitter/native/build-tree-sitter-swift.sh`)
 - A repository source configuration: `Folder`, `GitHub`, or `GitLab`
 - At least one configured analysis provider if you want AI analysis or reviews
 

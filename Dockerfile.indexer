@@ -1,5 +1,12 @@
 ARG RUST_VERSION=1.97.1
 
+# Swift tree-sitter grammar: TreeSitter.DotNet ships no Swift grammar, so compile it from pinned,
+# sha256-verified sources for the target architecture. Same base image as the runtime (glibc match).
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS tree-sitter-grammars
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+COPY src/CodeGraph.Extractors.TreeSitter/native/build-tree-sitter-swift.sh /tmp/build-tree-sitter-swift.sh
+RUN sh /tmp/build-tree-sitter-swift.sh /out/libtree-sitter-swift.so
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
@@ -26,7 +33,10 @@ RUN dotnet restore src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj
 
 # Copy everything and publish
 COPY src/ src/
-RUN dotnet publish src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj -c Release -o /app/publish --no-restore
+COPY --from=tree-sitter-grammars /out/libtree-sitter-swift.so /native/libtree-sitter-swift.so
+RUN dotnet publish src/CodeGraph.Indexer.Host/CodeGraph.Indexer.Host.csproj -c Release -o /app/publish --no-restore \
+    -p:TreeSitterSwiftLibrary=/native/libtree-sitter-swift.so && \
+    test -s /app/publish/libtree-sitter-swift.so
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS rust-toolchain
 RUN rustup component add rust-src

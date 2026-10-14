@@ -17,9 +17,18 @@ public class TreeSitterExtractor : ICodeExtractor
 {
     private readonly ILogger<TreeSitterExtractor> _logger;
 
+    private readonly Func<string, LanguageSpec?> _specForExtension;
+
     public TreeSitterExtractor(ILogger<TreeSitterExtractor> logger)
+        : this(logger, LanguageSpecs.ForExtension)
+    {
+    }
+
+    internal TreeSitterExtractor(ILogger<TreeSitterExtractor> logger,
+        Func<string, LanguageSpec?> specForExtension)
     {
         _logger = logger;
+        _specForExtension = specForExtension;
     }
 
     public IReadOnlySet<string> SupportedExtensions { get; } =
@@ -44,7 +53,7 @@ public class TreeSitterExtractor : ICodeExtractor
             return Task.FromResult(EmptyResult);
 
         var ext = Path.GetExtension(filePath);
-        var spec = LanguageSpecs.ForExtension(ext);
+        var spec = _specForExtension(ext);
         if (spec is null)
             return Task.FromResult(EmptyResult);
 
@@ -52,6 +61,12 @@ public class TreeSitterExtractor : ICodeExtractor
         {
             var result = ExtractWithSpec(spec, filePath, content, context);
             return Task.FromResult(result);
+        }
+        catch (Exception ex) when (spec.SkipFileOnExtractionFailure)
+        {
+            _logger.LogWarning(ex, "Tree-sitter extraction failed for {File} ({Lang}); skipping file",
+                filePath, spec.LanguageName);
+            return Task.FromResult(EmptyResult);
         }
         catch (Exception ex)
         {
@@ -68,8 +83,17 @@ public class TreeSitterExtractor : ICodeExtractor
         parser.Language = spec.GetLanguage();
 
         using var tree = parser.Parse(content);
-        if (tree is null) return EmptyResult;
+        if (tree is null)
+        {
+            _logger.LogWarning("Tree-sitter could not parse {File} ({Lang}); skipping file",
+                filePath, spec.LanguageName);
+            return EmptyResult;
+        }
+
         var root = tree.RootNode;
+        if (root.HasError)
+            _logger.LogDebug("Tree-sitter parsed {File} ({Lang}) with syntax errors; " +
+                "extracting the recovered definitions", filePath, spec.LanguageName);
 
         var nodes = new List<GraphNode>();
         var edges = new List<PendingEdge>();
@@ -168,10 +192,13 @@ public class TreeSitterExtractor : ICodeExtractor
             {
                 var container = enclosingClassQN ?? parentQN;
                 var props = new Dictionary<string, object> { ["confidence"] = "high" };
-                var isContainerOnly = spec.LanguageName == "Rust" && nodeType == "impl_item";
+                var isContainerOnly = spec.IsContainerOnlyClass?.Invoke(node) == true;
                 var ownerQN = isContainerOnly
                     ? ResolveKnownReceiverType(name, knownReceiverTypes)
                     : $"{container}#type:{name}";
+
+                if (spec.ClassKindExtractor?.Invoke(node) is { } declarationKind)
+                    props["declaration_kind"] = declarationKind;
 
                 if (spec.SuperclassField != null)
                 {
@@ -185,7 +212,8 @@ public class TreeSitterExtractor : ICodeExtractor
 
                 if (!isContainerOnly)
                 {
-                    var graphNode = makeNode(ownerQN!, name, spec.ClassLabel, props) with
+                    var label = spec.ClassLabelSelector?.Invoke(node) ?? spec.ClassLabel;
+                    var graphNode = makeNode(ownerQN!, name, label, props) with
                     {
                         StartLine = startLine,
                         EndLine = endLine
@@ -223,9 +251,11 @@ public class TreeSitterExtractor : ICodeExtractor
                     node, spec, enclosingClassQN, enclosingOwnerName, knownReceiverTypes);
                 var effectiveClassQN = callableContext.ContainerQN;
                 var container = effectiveClassQN ?? parentQN;
-                var parameters = spec.ParametersField is null
-                    ? null
-                    : GetFieldText(node, spec.ParametersField);
+                var parameters = spec.ParametersExtractor is not null
+                    ? spec.ParametersExtractor(node)
+                    : spec.ParametersField is null
+                        ? null
+                        : GetFieldText(node, spec.ParametersField);
                 var kind = callableContext.OwnerName is null ? "function" : "method";
                 var qn = $"{container}#{kind}:{name}{NormalizeSignature(parameters)}";
                 var label = callableContext.OwnerName is not null
@@ -241,11 +271,8 @@ public class TreeSitterExtractor : ICodeExtractor
                         props["return_type"] = returnType;
                 }
 
-                if (spec.ParametersField != null)
-                {
-                    if (parameters != null)
-                        props["parameters"] = parameters;
-                }
+                if (parameters != null)
+                    props["parameters"] = parameters;
 
                 if (callableContext.OwnerName is not null)
                     props["receiver_owner"] = callableContext.OwnerName;
@@ -514,7 +541,7 @@ public class TreeSitterExtractor : ICodeExtractor
         HashSet<string> ambiguousNames)
     {
         if (spec.ClassNodeTypes.Contains(node.Type)
-            && !(spec.LanguageName == "Rust" && node.Type == "impl_item"))
+            && spec.IsContainerOnlyClass?.Invoke(node) != true)
         {
             var name = GetClassName(node, spec);
             if (!string.IsNullOrWhiteSpace(name))

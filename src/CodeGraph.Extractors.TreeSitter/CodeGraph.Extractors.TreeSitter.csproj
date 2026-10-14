@@ -12,8 +12,53 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CodeGraph.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
     <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
   </ItemGroup>
+
+  <!--
+    Swift grammar (libtree-sitter-swift). TreeSitter.DotNet does not ship it, so it is compiled
+    from pinned, sha256-verified generated sources by native/build-tree-sitter-swift.sh and copied
+    next to the app, where `new Language("Swift")` loads it (AppContext.BaseDirectory is the
+    loader's first probe). The library flows to every referencing project's output and publish.
+    Docker images build it in a separate stage and pass it in via TreeSitterSwiftLibrary.
+    Supported hosts: Linux (x64/arm64) and macOS (arm64). Windows builds skip it; Swift files are
+    then logged and skipped by the extractor.
+  -->
+  <PropertyGroup>
+    <TreeSitterSwiftGrammarScript>$(MSBuildThisFileDirectory)native/build-tree-sitter-swift.sh</TreeSitterSwiftGrammarScript>
+    <TreeSitterSwiftLibraryFileName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libtree-sitter-swift.dylib</TreeSitterSwiftLibraryFileName>
+    <TreeSitterSwiftLibraryFileName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libtree-sitter-swift.so</TreeSitterSwiftLibraryFileName>
+    <BuildTreeSitterSwift Condition="'$(TreeSitterSwiftLibraryFileName)' != '' and '$(TreeSitterSwiftLibrary)' == ''">true</BuildTreeSitterSwift>
+    <TreeSitterSwiftLibrary Condition="'$(BuildTreeSitterSwift)' == 'true'">$(MSBuildThisFileDirectory)obj/native/$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())/$(TreeSitterSwiftLibraryFileName)</TreeSitterSwiftLibrary>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TreeSitterSwiftLibrary)' != ''">
+    <None Include="$(TreeSitterSwiftLibrary)"
+          Link="$(TreeSitterSwiftLibraryFileName)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+
+  <Target Name="BuildTreeSitterSwiftGrammar"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(BuildTreeSitterSwift)' == 'true'"
+          Inputs="$(TreeSitterSwiftGrammarScript)"
+          Outputs="$(TreeSitterSwiftLibrary)">
+    <Exec Command="sh &quot;$(TreeSitterSwiftGrammarScript)&quot; &quot;$(TreeSitterSwiftLibrary)&quot;" />
+  </Target>
+
+  <Target Name="VerifyTreeSitterSwiftLibrary"
+          BeforeTargets="BeforeBuild"
+          AfterTargets="BuildTreeSitterSwiftGrammar"
+          Condition="'$(TreeSitterSwiftLibrary)' != ''">
+    <Error Condition="!Exists('$(TreeSitterSwiftLibrary)')"
+           Text="tree-sitter Swift grammar not found at '$(TreeSitterSwiftLibrary)'." />
+  </Target>
 
 </Project>

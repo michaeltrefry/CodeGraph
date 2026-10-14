@@ -22,6 +22,7 @@ public static class LanguageSpecs
         Register(Rust, ".rs");
         Register(Php, ".php");
         Register(Bash, ".sh", ".bash", ".zsh");
+        Register(Swift, ".swift");
     }
 
     public static LanguageSpec? ForExtension(string extension) =>
@@ -219,6 +220,7 @@ public static class LanguageSpecs
         GetLanguage = () => new Language("Rust"),
         FunctionNodeTypes = ["function_item"],
         ClassNodeTypes = ["struct_item", "enum_item", "trait_item", "impl_item"],
+        IsContainerOnlyClass = node => node.Type == "impl_item",
         CallNodeTypes = ["call_expression"],
         ImportNodeTypes = ["use_declaration"],
         VariableNodeTypes = ["let_declaration", "const_item", "static_item"],
@@ -305,5 +307,69 @@ public static class LanguageSpecs
         BodyField = "body",
         FunctionLabel = NodeLabel.Function
     };
+
+    // ── Swift ───────────────────────────────────────────────────────
+
+    // Grammar: alex-pinkus/tree-sitter-swift, built by native/build-tree-sitter-swift.sh.
+    // class_declaration covers class/struct/enum/actor/extension (told apart by its
+    // declaration_kind field); protocols have their own protocol_declaration node.
+
+    public static readonly LanguageSpec Swift = new()
+    {
+        LanguageName = "Swift",
+        Framework = null,
+        GetLanguage = () => new Language("Swift"),
+        ExtractionVersion = 1,
+        FunctionNodeTypes = ["function_declaration", "protocol_function_declaration"],
+        ClassNodeTypes = ["class_declaration", "protocol_declaration"],
+        ClassNameExtractor = GetSwiftTypeName,
+        ClassKindExtractor = GetSwiftDeclarationKind,
+        ClassLabelSelector = node => GetSwiftDeclarationKind(node) switch
+        {
+            "protocol" => NodeLabel.Interface,
+            "struct" => NodeLabel.Struct,
+            "enum" => NodeLabel.Enum,
+            _ => NodeLabel.Class
+        },
+        // An extension adds members to a type declared elsewhere; it never emits a type node.
+        IsContainerOnlyClass = node => GetSwiftDeclarationKind(node) == "extension",
+        ParametersExtractor = GetSwiftParameters,
+        NameField = "name",
+        ReturnTypeField = "return_type",
+        BodyField = "body",
+        FunctionLabel = NodeLabel.Function,
+        ClassLabel = NodeLabel.Class,
+        SkipFileOnExtractionFailure = true
+    };
+
+    private static string? GetSwiftDeclarationKind(Node node) =>
+        node.GetChildForField("declaration_kind")?.Text;
+
+    /// <summary>
+    /// The declared type's name. An extension names an existing type, possibly qualified
+    /// (<c>Outer.Inner</c>) or specialized (<c>Array&lt;Int&gt;</c>); its owner is the last
+    /// simple type identifier.
+    /// </summary>
+    private static string? GetSwiftTypeName(Node node)
+    {
+        var name = node.GetChildForField("name");
+        if (name is null)
+            return null;
+
+        if (GetSwiftDeclarationKind(node) != "extension" || name.Type == "type_identifier")
+            return name.Text;
+
+        return name.Children.LastOrDefault(child => child.Type == "type_identifier")?.Text
+            ?? name.Text;
+    }
+
+    /// <summary>
+    /// Swift parameters are direct children of the declaration rather than a grouped list.
+    /// Argument labels are part of a Swift function's identity, so they stay in the signature.
+    /// </summary>
+    private static string GetSwiftParameters(Node node) =>
+        "(" + string.Join(",", node.NamedChildren
+            .Where(child => child.Type == "parameter")
+            .Select(child => child.Text)) + ")";
 
 }

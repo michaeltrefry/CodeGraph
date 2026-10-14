@@ -62,11 +62,44 @@ public sealed class LanguageSpec
     /// </summary>
     public Func<Node, string?>? ClassNameExtractor { get; init; }
 
+    /// <summary>
+    /// Optional per-node label for class-like definitions, for grammars where one AST node type
+    /// covers several kinds (e.g. Swift class_declaration covers class/struct/enum/actor).
+    /// Returning null falls back to <see cref="ClassLabel"/>.
+    /// </summary>
+    public Func<Node, NodeLabel?>? ClassLabelSelector { get; init; }
+
+    /// <summary>
+    /// Optional declaration keyword of a class-like definition (e.g. "struct", "protocol"),
+    /// recorded as the node's <c>declaration_kind</c> property.
+    /// </summary>
+    public Func<Node, string?>? ClassKindExtractor { get; init; }
+
+    /// <summary>
+    /// Identifies class-like nodes that only add members to a type declared elsewhere
+    /// (Rust impl blocks, Swift extensions). They emit no type node of their own; their members
+    /// attach to the owning type when it is declared in the same file.
+    /// </summary>
+    public Func<Node, bool>? IsContainerOnlyClass { get; init; }
+
     /// <summary>Field name for function return types (if applicable).</summary>
     public string? ReturnTypeField { get; init; }
 
     /// <summary>Field name for function parameters.</summary>
     public string? ParametersField { get; init; }
+
+    /// <summary>
+    /// Optional parameter-list extractor for grammars whose parameters are not grouped under
+    /// <see cref="ParametersField"/>. Takes precedence over <see cref="ParametersField"/>.
+    /// </summary>
+    public Func<Node, string?>? ParametersExtractor { get; init; }
+
+    /// <summary>
+    /// When true, a file whose extraction throws (grammar unavailable, parser failure) is logged
+    /// and skipped with an empty successful result instead of reporting an extraction failure,
+    /// so it can never fail an index run.
+    /// </summary>
+    public bool SkipFileOnExtractionFailure { get; init; }
 
     /// <summary>Field name for the body of a definition.</summary>
     public string? BodyField { get; init; }
