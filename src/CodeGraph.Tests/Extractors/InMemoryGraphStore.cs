@@ -176,12 +176,26 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<Dictionary<EdgeType, int>> GetEdgeCountsByTypeAsync() =>
         Task.FromResult(_edges.GroupBy(e => e.Type).ToDictionary(g => g.Key, g => g.Count()));
 
-    public Task<Dictionary<long, int>> GetCallFanInAsync(string project, int minFanIn) =>
-        Task.FromResult(
-            _edges.Where(e => e.Type == EdgeType.CALLS)
+    public Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> edgeTypes,
+        IReadOnlyCollection<NodeLabel>? targetLabels,
+        int minInDegree,
+        int limit)
+    {
+        var nodesById = _nodes.ToDictionary(node => node.Id);
+        return Task.FromResult<IReadOnlyList<NodeInDegree>>(
+            _edges.Where(e => e.Project == project && edgeTypes.Contains(e.Type))
+                .Where(e => nodesById.ContainsKey(e.TargetId))
+                .Where(e => targetLabels is not { Count: > 0 } || targetLabels.Contains(nodesById[e.TargetId].Label))
                 .GroupBy(e => e.TargetId)
-                .Where(g => g.Count() >= minFanIn)
-                .ToDictionary(g => g.Key, g => g.Count()));
+                .Where(g => g.Count() >= minInDegree)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key)
+                .Take(limit)
+                .Select(g => new NodeInDegree(nodesById[g.Key], g.Count()))
+                .ToList());
+    }
 
     public Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync()
     {

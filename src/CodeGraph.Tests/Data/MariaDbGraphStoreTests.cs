@@ -235,7 +235,10 @@ public class MariaDbGraphStoreTests
             (await store.FindEdgesByTargetBatchAsync([classId], [EdgeType.CALLS])).Single().SourceId.ShouldBe(methodId);
             (await store.FindAllEdgesByTypeAsync(EdgeType.CALLS)).Single().TargetId.ShouldBe(classId);
             (await store.GetEdgeCountsByTypeAsync())[EdgeType.CALLS].ShouldBe(1);
-            (await store.GetCallFanInAsync("CodeGraph", 1))[classId].ShouldBe(1);
+            (await store.GetTopInDegreeNodesAsync("CodeGraph", [EdgeType.CALLS], null, 1, 10))
+                .ShouldHaveSingleItem().ShouldSatisfyAllConditions(
+                    entry => entry.Node.Id.ShouldBe(classId),
+                    entry => entry.InDegree.ShouldBe(1));
             (await store.TraverseAsync(classId, TraceDirection.Outbound, 2))
                 .ShouldContain(entry => entry.Node.Id == methodId && entry.Depth == 1);
 

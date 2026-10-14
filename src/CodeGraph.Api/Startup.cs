@@ -315,6 +315,9 @@ public static class Startup
         services.AddSingleton<IIndexerRunBackgroundRunner>(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
         services.AddHostedService(provider => provider.GetRequiredService<IndexerRunBackgroundRunner>());
         services.AddTransient<IIndexerOperationsService, StandaloneIndexerOperationsService>();
+        // The scheduled jobs (CodeGraph.Jobs) queue through IIndexerClient; in-process it is the
+        // local operations service, so the job dispatcher resolves without a remote indexer host.
+        services.AddTransient<IIndexerClient, LocalIndexerClient>();
 
         var storageOptions = configuration
             .GetSection($"{CodeGraphOptionsServiceCollectionExtensions.SectionName}:{nameof(CodeGraphServiceSettings.StorageOptions)}")

@@ -2,7 +2,11 @@ using CodeGraph.Api;
 using CodeGraph.Api.Indexer;
 using CodeGraph.Services.Indexer;
 using Microsoft.Extensions.Configuration;
+using CodeGraph.Indexer.Client;
+using IJobCommandDispatcher = CodeGraph.Jobs.IJobCommandDispatcher;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Shouldly;
 
 namespace CodeGraph.Tests.Services;
@@ -33,6 +37,33 @@ public class ApiStartupIndexerDelegationTests
             d.ServiceType == typeof(IIndexerOperationsService) &&
             d.ImplementationType == typeof(StandaloneIndexerOperationsService));
         services.ShouldContain(d => d.ServiceType == typeof(IIndexerRunBackgroundRunner));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("http://localhost:5042")]
+    public async Task DevelopmentHost_PassesDependencyInjectionValidation(string indexerBaseUrl)
+    {
+        // Development turns on ValidateOnBuild/ValidateScopes, so every registration (including
+        // the CodeGraph.Jobs jobs and dispatcher that need an IIndexerClient) must resolve.
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            EnvironmentName = Environments.Development,
+            ApplicationName = typeof(Startup).Assembly.GetName().Name
+        });
+        builder.Configuration.Sources.Clear();
+        builder.Configuration.AddConfiguration(CreateConfiguration(indexerBaseUrl));
+        Startup.ConfigureServices(builder.Services, builder.Configuration);
+
+        await using var app = builder.Build();
+
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<IJobCommandDispatcher>().ShouldNotBeNull();
+        var indexerClient = scope.ServiceProvider.GetRequiredService<IIndexerClient>();
+        if (string.IsNullOrEmpty(indexerBaseUrl))
+            indexerClient.ShouldBeOfType<LocalIndexerClient>();
+        else
+            indexerClient.ShouldBeOfType<HttpIndexerClient>();
     }
 
     private static IConfiguration CreateConfiguration(string indexerBaseUrl) =>

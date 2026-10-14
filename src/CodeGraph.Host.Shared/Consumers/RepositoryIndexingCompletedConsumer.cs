@@ -64,6 +64,13 @@ public class RepositoryIndexingCompletedConsumer(
                 await vitalsAnalyzer.ComputeMetricsAsync(message.Name, message.RepoPath, ct);
                 logger.LogInformation("[Timing] Vitals metrics for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
 
+                // Health analysis calls the analysis model: only when analysis was requested.
+                if (!message.ShouldAnalyze)
+                {
+                    logger.LogInformation("Skipping health analysis for {Repo}: analysis not requested", message.Name);
+                    return;
+                }
+
                 sw.Restart();
                 logger.LogInformation("Analyzing health for {Repo}", message.Name);
                 await vitalsAnalyzer.AnalyzeHealthAsync(message.Name, ct);

@@ -5,6 +5,12 @@ public interface IAnalysisModelProvider
     string ProviderName { get; }
     AnalysisProviderCapabilities Capabilities { get; }
 
+    /// <summary>
+    /// False when the provider cannot be called as configured (a hosted API with no API key), so
+    /// optional model-backed steps can be skipped cleanly instead of failing with 401.
+    /// </summary>
+    Task<bool> IsConfiguredAsync(CancellationToken ct = default) => Task.FromResult(true);
+
     Task<AnalysisTextResponse> ExecuteAsync(
         AnalysisPrompt prompt,
         AnalysisRequestOptions request,

@@ -315,14 +315,8 @@ public partial class IndexingPipeline
         var rustSourceOwners = new List<RustSourceOwner>();
         if (_rustAnalyzer is not null)
         {
-            var rootCargoManifest = Path.Combine(rootPath, "Cargo.toml");
-            var cargoManifests = _fileSystem.FileExists(rootCargoManifest)
-                ? new[] { rootCargoManifest }
-                : _fileSystem.EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
-                    .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                        StringComparison.OrdinalIgnoreCase))
-                    .Take(1)
-                    .ToArray();
+            // Every independent Cargo workspace (sc-26145: only the first one found was analyzed).
+            var cargoManifests = CargoWorkspaceRoots.Find(_fileSystem, rootPath);
 
             foreach (var cargoManifest in cargoManifests)
             {
@@ -343,7 +337,7 @@ public partial class IndexingPipeline
                     var failedAfterMs = stepSw.ElapsedMilliseconds;
                     var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex, crateGroup: null);
                     RecordRustSemanticFallback(workspaceFallback, ex);
-                    rustSemanticOutcomes = RecordRustSemanticOutcomes(
+                    rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
                         projectName,
                         workspaceFallback.Manifest,
                         settings: null,
@@ -358,7 +352,7 @@ public partial class IndexingPipeline
                             Documents: null,
                             Nodes: null,
                             Edges: null)],
-                        failedAfterMs);
+                        failedAfterMs));
                     continue;
                 }
 
@@ -409,12 +403,12 @@ public partial class IndexingPipeline
                         analysis.Groups.Count == 1 ? analysisMs : 0));
                 }
 
-                rustSemanticOutcomes = RecordRustSemanticOutcomes(
+                rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
                     projectName,
                     NormalizeRelativePath(Path.GetRelativePath(rootPath, cargoManifest)),
                     analysis.Settings,
                     groupOutcomes,
-                    analysisMs);
+                    analysisMs));
                 _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                 if (succeeded.Count == 0)
                     continue;
