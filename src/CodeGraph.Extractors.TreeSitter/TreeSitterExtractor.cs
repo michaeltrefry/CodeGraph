@@ -410,6 +410,9 @@ public class TreeSitterExtractor : ICodeExtractor
                 if (spec.ArgumentLabelsExtractor?.Invoke(node) is { } argumentLabels)
                     props[ArgumentLabels.Property] = argumentLabels;
 
+                if (spec.CallableAbiExtractor?.Invoke(node) is { } abi)
+                    props[CallLanguages.AbiProperty] = abi;
+
                 var startLine = (int)node.StartPosition.Row + 1;
                 var endLine = (int)node.EndPosition.Row + 1;
 

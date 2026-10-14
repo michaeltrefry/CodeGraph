@@ -230,7 +230,7 @@ public class SwiftTypeSemanticsTests
         ShouldHaveEdge(result, square, $"{square}#method:init(side:Double)", EdgeType.DEFINES_METHOD);
         ShouldHaveEdge(result, square, $"{square}#property:description", EdgeType.DEFINES);
         ShouldHaveEdge(result, square, $"{square}#type:Kind", EdgeType.DEFINES);
-        ShouldHaveEdge(result, square, $"{square}#method:scaled(byfactor:Double)", EdgeType.DEFINES_METHOD);
+        ShouldHaveEdge(result, square, $"{square}#method:scaled(by:Double)", EdgeType.DEFINES_METHOD);
         ShouldHaveEdge(result, square, $"{square}#type:Corner", EdgeType.DEFINES);
         ShouldHaveEdge(result, square, "swift-type:CustomStringConvertible", EdgeType.IMPLEMENTS);
         ShouldHaveEdge(result, square, $"{M}#type:Shape", EdgeType.IMPLEMENTS);

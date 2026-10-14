@@ -609,6 +609,23 @@ internal sealed class SwiftCallSites
         }
     }
 
+    /// <summary>
+    /// A declaration's parameter list as <c>(label:Type,...)</c>: each parameter's external label
+    /// (else its name, <c>_</c> when unlabeled) and its written type, as in
+    /// <see cref="DeclarationLabels"/>.
+    /// </summary>
+    internal static string DeclarationParameters(Node declaration) =>
+        "(" + string.Join(",", declaration.NamedChildren
+            .Where(child => child.Type == "parameter")
+            .Select(parameter =>
+            {
+                var (external, internalName, _) = ParameterParts(parameter);
+                var text = parameter.Text;
+                var colon = text.IndexOf(':', StringComparison.Ordinal);
+                var type = colon < 0 ? "" : text[(colon + 1)..].Trim();
+                return $"{external ?? internalName ?? "_"}:{type}";
+            })) + ")";
+
     /// <summary>A parameter's external label (if written), internal name and type node.</summary>
     private static (string? External, string? Internal, Node? Type) ParameterParts(Node parameter)
     {

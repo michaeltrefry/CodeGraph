@@ -219,6 +219,9 @@ public static class LanguageSpecs
         LanguageName = "Rust",
         Framework = null,
         GetLanguage = () => new Language("Rust"),
+        // 2: functions record their foreign ABI (`extern "C" fn` → abi C).
+        ExtractionVersion = 2,
+        CallableAbiExtractor = GetRustAbi,
         FunctionNodeTypes = ["function_item"],
         ClassNodeTypes = ["struct_item", "enum_item", "trait_item", "impl_item"],
         IsContainerOnlyClass = node => node.Type == "impl_item",
@@ -235,6 +238,23 @@ public static class LanguageSpecs
         FunctionLabel = NodeLabel.Function,
         ClassLabel = NodeLabel.Class
     };
+
+    /// <summary>
+    /// The ABI of an <c>extern "abi" fn</c> (bare <c>extern fn</c> is C); null for a Rust-ABI function.
+    /// </summary>
+    private static string? GetRustAbi(Node node)
+    {
+        var externModifier = node.NamedChildren
+            .Where(child => child.Type == "function_modifiers")
+            .SelectMany(modifiers => modifiers.NamedChildren)
+            .FirstOrDefault(child => child.Type == "extern_modifier");
+        if (externModifier is null)
+            return null;
+
+        var abi = externModifier.NamedChildren.FirstOrDefault(child => child.Type == "string_literal")
+            ?.Text.Trim('"');
+        return string.IsNullOrEmpty(abi) ? "C" : abi == "Rust" ? null : abi;
+    }
 
     private static string? GetRustNominalTypeName(Node? node)
     {
@@ -395,13 +415,12 @@ public static class LanguageSpecs
     }
 
     /// <summary>
-    /// Swift parameters are direct children of the declaration rather than a grouped list.
-    /// Argument labels are part of a Swift function's identity, so they stay in the signature.
+    /// Swift parameters are direct children of the declaration rather than a grouped list. A
+    /// Swift function's identity is its argument labels and parameter types, not its internal
+    /// parameter names: <c>thumbnail(of image: CGImage)</c> → <c>(of:CGImage)</c>,
+    /// <c>f(_ x: Int)</c> → <c>(_:Int)</c>.
     /// </summary>
-    private static string GetSwiftParameters(Node node) =>
-        "(" + string.Join(",", node.NamedChildren
-            .Where(child => child.Type == "parameter")
-            .Select(child => child.Text)) + ")";
+    private static string GetSwiftParameters(Node node) => SwiftCallSites.DeclarationParameters(node);
 
     // Standard-library and Apple-framework protocols that commonly come first in a class's
     // inheritance clause. A first entry that is not declared in the repository is a protocol

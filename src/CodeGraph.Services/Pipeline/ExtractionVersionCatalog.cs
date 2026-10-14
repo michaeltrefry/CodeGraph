@@ -46,8 +46,11 @@ namespace CodeGraph.Services.Pipeline;
 /// </remarks>
 public sealed class ExtractionVersionCatalog
 {
-    /// <summary>Version of the pipeline's own merge/resolution logic; applies to every file.</summary>
-    public const int PipelineVersion = 1;
+    /// <summary>
+    /// Version of the pipeline's own merge/resolution logic; applies to every file.
+    /// 2: name-based call resolution is scoped by language family (<see cref="CallLanguages"/>).
+    /// </summary>
+    public const int PipelineVersion = 2;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];

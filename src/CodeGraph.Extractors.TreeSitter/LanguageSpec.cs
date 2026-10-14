@@ -64,6 +64,13 @@ public sealed class LanguageSpec
     /// </summary>
     public Func<Node, string?>? ArgumentLabelsExtractor { get; init; }
 
+    /// <summary>
+    /// Optional calling convention of a function-like definition that is exported for foreign
+    /// callers (Rust <c>extern "C" fn</c> → <c>C</c>), recorded as its <c>abi</c> property so calls
+    /// from other languages may resolve to it. Null records nothing.
+    /// </summary>
+    public Func<Node, string?>? CallableAbiExtractor { get; init; }
+
     /// <summary>AST node types for variable/constant declarations.</summary>
     public string[] VariableNodeTypes { get; init; } = [];
 
