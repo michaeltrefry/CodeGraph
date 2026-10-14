@@ -1307,6 +1307,7 @@ public partial class IndexingPipeline
             ".ts" or ".tsx" => "TypeScript",
             ".js" or ".jsx" => "JavaScript",
             ".rs" => "Rust",
+            ".swift" => "Swift",
             ".py" or ".pyw" => "Python",
             ".go" => "Go",
             ".java" => "Java",
