@@ -616,13 +616,13 @@ public partial class IndexingPipeline
         _logger.LogInformation("Pre-resolution: {Nodes} nodes, {PendingEdges} pending edges, {UnresolvedCalls} unresolved calls",
             buffer.AllNodes.Count, buffer.AllPendingEdges.Count, buffer.AllUnresolvedCalls.Count);
         ResolveImports(buffer);
+        var includePersistedNodes = !replaceExistingGraph && existingHashes.Count > 0;
+        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
         await ResolveCallsAsync(
-            projectName,
-            buffer,
-            includePersistedNodes: !replaceExistingGraph && existingHashes.Count > 0,
-            excludedPersistedFiles: successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
-                StringComparer.OrdinalIgnoreCase),
-            ct);
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+        await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
         CreateStubNodesForExternalTargets(projectName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 

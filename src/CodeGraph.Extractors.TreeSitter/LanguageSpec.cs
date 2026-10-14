@@ -82,6 +82,29 @@ public sealed class LanguageSpec
     /// </summary>
     public Func<Node, bool>? IsContainerOnlyClass { get; init; }
 
+    /// <summary>
+    /// For a container-only definition whose owning type is not declared in the same file: the
+    /// owner's dotted path and a symbolic reference to it, resolved across files by the pipeline.
+    /// Its members get qualified names under <c>#extension:{path}</c> and their definition edges
+    /// start at the reference. Null keeps the members under the file (Rust impl blocks).
+    /// </summary>
+    public Func<Node, ContainerOwner?>? ContainerOwnerReference { get; init; }
+
+    /// <summary>
+    /// Optional hook run for every class-like definition (container-only ones included) to emit
+    /// type-level relations such as inheritance and conformance edges.
+    /// </summary>
+    public Action<TypeDeclarationContext>? TypeRelationExtractor { get; init; }
+
+    /// <summary>AST node types that may declare a property of the enclosing type.</summary>
+    public string[] PropertyNodeTypes { get; init; } = [];
+
+    /// <summary>
+    /// Describes a <see cref="PropertyNodeTypes"/> declaration that becomes a Property node under
+    /// its enclosing type, or returns null when it does not (e.g. a stored property).
+    /// </summary>
+    public Func<Node, PropertyDeclaration?>? PropertyExtractor { get; init; }
+
     /// <summary>Field name for function return types (if applicable).</summary>
     public string? ReturnTypeField { get; init; }
 
@@ -120,6 +143,40 @@ public sealed class LanguageSpec
     /// Called after generic extraction, can add extra nodes/edges for the language.
     /// </summary>
     public Action<DomainExtractionContext>? DomainExtractor { get; init; }
+}
+
+/// <summary>The type a container-only definition extends, when it is declared in another file.</summary>
+public sealed record ContainerOwner(string Path, string ReferenceQN);
+
+/// <summary>A property declaration that becomes a Property node.</summary>
+public sealed record PropertyDeclaration(string Name, Dictionary<string, object> Properties);
+
+/// <summary>A type declared in the file being extracted.</summary>
+public sealed record LocalType(string QualifiedName, NodeLabel Label);
+
+/// <summary>Context passed to <see cref="LanguageSpec.TypeRelationExtractor"/>.</summary>
+public sealed class TypeDeclarationContext
+{
+    public required Node Node { get; init; }
+
+    /// <summary>
+    /// The declared type, or the extended type of a container-only definition: its qualified
+    /// name when declared in this file, else its <see cref="ContainerOwner.ReferenceQN"/>.
+    /// </summary>
+    public required string TypeQN { get; init; }
+
+    public required bool IsContainerOnly { get; init; }
+
+    /// <summary>Properties of the emitted type node; null for a container-only definition.</summary>
+    public required Dictionary<string, object>? TypeProperties { get; init; }
+
+    /// <summary>Edge properties that tie an edge to a cross-file container-only owner, else empty.</summary>
+    public required IReadOnlyDictionary<string, object> OwnerEdgeProperties { get; init; }
+
+    /// <summary>Resolves a type name to a type declared in this file, when unambiguous.</summary>
+    public required Func<string, LocalType?> ResolveLocalType { get; init; }
+
+    public required List<PendingEdge> Edges { get; init; }
 }
 
 /// <summary>

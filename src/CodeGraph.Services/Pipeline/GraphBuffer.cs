@@ -14,7 +14,7 @@ public class GraphBuffer
         new(StringComparer.Ordinal); // language identifiers are case-sensitive
     private readonly ConcurrentDictionary<string, ConcurrentBag<GraphNode>> _nodesByName =
         new(StringComparer.Ordinal);
-    private readonly ConcurrentBag<PendingEdge> _pendingEdges = new();
+    private ConcurrentBag<PendingEdge> _pendingEdges = new();
     private readonly ConcurrentBag<UnresolvedCall> _unresolvedCalls = new();
     private readonly ConcurrentBag<UnresolvedImport> _unresolvedImports = new();
     private readonly ConcurrentDictionary<string, string> _fileHashes = new();
@@ -26,6 +26,13 @@ public class GraphBuffer
         bag.Add(node);
     }
     public void AddEdge(PendingEdge edge) => _pendingEdges.Add(edge);
+
+    /// <summary>
+    /// Removes the pending edges matching <paramref name="predicate"/>. Resolution-phase only: not
+    /// safe to call while extraction is still adding edges concurrently.
+    /// </summary>
+    public void RemoveEdges(Func<PendingEdge, bool> predicate) =>
+        _pendingEdges = new ConcurrentBag<PendingEdge>(_pendingEdges.Where(edge => !predicate(edge)));
     public void AddUnresolvedCall(UnresolvedCall call) => _unresolvedCalls.Add(call);
     public void AddUnresolvedImport(UnresolvedImport import) => _unresolvedImports.Add(import);
     public void AddFileHash(string relPath, string hash) => _fileHashes[relPath] = hash;

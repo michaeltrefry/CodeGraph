@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Text.RegularExpressions;
 using CodeGraph.Models;
+using CodeGraph.Services.Pipeline;
 using TreeSitter;
 
 namespace CodeGraph.Extractors.TreeSitter;
@@ -151,7 +152,8 @@ public class TreeSitterExtractor : ICodeExtractor
         var unresolvedCalls = new List<UnresolvedCall>();
         var unresolvedImports = new List<UnresolvedImport>();
         var fileQN = GetFileQualifiedName(context, filePath);
-        var knownReceiverTypes = CollectKnownReceiverTypes(root, spec, fileQN);
+        var knownTypeLabels = new Dictionary<string, NodeLabel>(StringComparer.Ordinal);
+        var knownReceiverTypes = CollectKnownReceiverTypes(root, spec, fileQN, knownTypeLabels);
 
         GraphNode MakeNode(string qualifiedName, string name, NodeLabel label,
             Dictionary<string, object>? properties = null)
@@ -174,7 +176,7 @@ public class TreeSitterExtractor : ICodeExtractor
             || spec.CallNodeTypes.Length > 0)
         {
             ExtractDefinitionsAndCalls(root, spec, context, filePath, content,
-                nodes, edges, unresolvedCalls, MakeNode, knownReceiverTypes);
+                nodes, edges, unresolvedCalls, MakeNode, knownReceiverTypes, knownTypeLabels);
         }
 
         if (spec.ImportNodeTypes.Length > 0)
@@ -214,14 +216,18 @@ public class TreeSitterExtractor : ICodeExtractor
         ExtractorContext context, string filePath, string content,
         List<GraphNode> nodes, List<PendingEdge> edges, List<UnresolvedCall> unresolvedCalls,
         Func<string, string, NodeLabel, Dictionary<string, object>?, GraphNode> makeNode,
-        IReadOnlyDictionary<string, string> knownReceiverTypes)
+        IReadOnlyDictionary<string, string> knownReceiverTypes,
+        IReadOnlyDictionary<string, NodeLabel> knownTypeLabels)
     {
         var fileQN = GetFileQualifiedName(context, filePath);
+        var fileTypes = new FileTypes(
+            knownTypeLabels,
+            fileQN[(context.ProjectName.Length + 1)..]);
         WalkForDefinitionsAndCalls(root, spec, context, content,
             nodes, edges, unresolvedCalls, makeNode, fileQN,
             enclosingClassQN: null, enclosingOwnerName: null, enclosingCallableQN: null,
             receiverAliases: EmptyReceiverAliases,
-            knownReceiverTypes);
+            knownReceiverTypes, fileTypes, pendingOwner: null);
     }
 
     private static void WalkForDefinitionsAndCalls(Node node, LanguageSpec spec,
@@ -231,7 +237,9 @@ public class TreeSitterExtractor : ICodeExtractor
         string parentQN, string? enclosingClassQN, string? enclosingOwnerName,
         string? enclosingCallableQN,
         IReadOnlyDictionary<string, string> receiverAliases,
-        IReadOnlyDictionary<string, string> knownReceiverTypes)
+        IReadOnlyDictionary<string, string> knownReceiverTypes,
+        FileTypes fileTypes,
+        OwnerLink? pendingOwner)
     {
         var nodeType = node.Type;
 
@@ -261,6 +269,39 @@ public class TreeSitterExtractor : ICodeExtractor
                 var startLine = (int)node.StartPosition.Row + 1;
                 var endLine = (int)node.EndPosition.Row + 1;
 
+                // A container-only definition whose owner is declared in another file: its
+                // members live under "#extension:{path}" and their definition edges start at a
+                // symbolic owner reference that the pipeline resolves across files.
+                var crossFileOwner = isContainerOnly && ownerQN is null
+                    ? spec.ContainerOwnerReference?.Invoke(node)
+                    : null;
+                var ownerLink = crossFileOwner is null
+                    ? null
+                    : new OwnerLink(crossFileOwner.ReferenceQN, new Dictionary<string, object>
+                    {
+                        [SwiftTypeReference.OwnerReferenceProperty] = crossFileOwner.ReferenceQN,
+                        [SwiftTypeReference.ExtensionFileProperty] = fileTypes.RelativePath
+                    });
+
+                if (spec.TypeRelationExtractor is not null
+                    && (ownerQN ?? crossFileOwner?.ReferenceQN) is { } typeQN)
+                {
+                    spec.TypeRelationExtractor(new TypeDeclarationContext
+                    {
+                        Node = node,
+                        TypeQN = typeQN,
+                        IsContainerOnly = isContainerOnly,
+                        TypeProperties = isContainerOnly ? null : props,
+                        OwnerEdgeProperties = ownerLink?.EdgeProperties ?? EmptyEdgeProperties,
+                        ResolveLocalType = typeName =>
+                            ResolveKnownReceiverType(typeName, knownReceiverTypes) is { } localQN
+                            && fileTypes.Labels.TryGetValue(localQN, out var localLabel)
+                                ? new LocalType(localQN, localLabel)
+                                : null,
+                        Edges = edges
+                    });
+                }
+
                 if (!isContainerOnly)
                 {
                     var label = spec.ClassLabelSelector?.Invoke(node) ?? spec.ClassLabel;
@@ -271,25 +312,58 @@ public class TreeSitterExtractor : ICodeExtractor
                     };
 
                     nodes.Add(graphNode);
-                    edges.Add(new PendingEdge(parentQN, ownerQN!, EdgeType.DEFINES));
+                    edges.Add(DefinitionEdge(parentQN, ownerQN!, EdgeType.DEFINES, pendingOwner));
                 }
 
                 // Recurse into the class body with this class as the enclosing context
                 var bodyNode = spec.BodyField != null
                     ? node.GetChildForField(spec.BodyField) : null;
                 var walkTarget = bodyNode ?? node;
+                var memberParentQN = ownerQN
+                    ?? (crossFileOwner is null
+                        ? parentQN
+                        : $"{parentQN}#extension:{crossFileOwner.Path}");
 
                 foreach (var child in walkTarget.Children)
                 {
                     WalkForDefinitionsAndCalls(child, spec, context, content,
-                        nodes, edges, unresolvedCalls, makeNode, ownerQN ?? parentQN,
+                        nodes, edges, unresolvedCalls, makeNode, memberParentQN,
                         enclosingClassQN: ownerQN, enclosingOwnerName: name,
                         enclosingCallableQN: null,
                         receiverAliases: EmptyReceiverAliases,
-                        knownReceiverTypes);
+                        knownReceiverTypes, fileTypes, ownerLink);
                 }
                 return;
             }
+        }
+
+        // Check if this is a property of the enclosing type (not a local inside a body)
+        if (enclosingOwnerName is not null && enclosingCallableQN is null
+            && spec.PropertyNodeTypes.Contains(nodeType)
+            && spec.PropertyExtractor?.Invoke(node) is { } property)
+        {
+            var container = enclosingClassQN ?? parentQN;
+            var qn = $"{container}#property:{property.Name}";
+            var props = new Dictionary<string, object> { ["confidence"] = "high" };
+            foreach (var (key, value) in property.Properties)
+                props[key] = value;
+
+            nodes.Add(makeNode(qn, property.Name, NodeLabel.Property, props) with
+            {
+                StartLine = (int)node.StartPosition.Row + 1,
+                EndLine = (int)node.EndPosition.Row + 1
+            });
+            edges.Add(DefinitionEdge(container, qn, EdgeType.DEFINES, pendingOwner));
+
+            // Accessor bodies are owned by the property.
+            foreach (var child in node.Children)
+            {
+                WalkForDefinitionsAndCalls(child, spec, context, content,
+                    nodes, edges, unresolvedCalls, makeNode, qn,
+                    enclosingClassQN, enclosingOwnerName, enclosingCallableQN: qn,
+                    receiverAliases, knownReceiverTypes, fileTypes, pendingOwner: null);
+            }
+            return;
         }
 
         // Check if this is a function-like definition
@@ -338,7 +412,8 @@ public class TreeSitterExtractor : ICodeExtractor
                 };
 
                 nodes.Add(graphNode);
-                edges.Add(new PendingEdge(effectiveClassQN ?? parentQN, qn, EdgeType.DEFINES_METHOD));
+                edges.Add(DefinitionEdge(
+                    effectiveClassQN ?? parentQN, qn, EdgeType.DEFINES_METHOD, pendingOwner));
 
                 // Recurse into the body with this function as the call owner. A
                 // nested definition takes ownership of calls in its own body.
@@ -351,7 +426,7 @@ public class TreeSitterExtractor : ICodeExtractor
                         nodes, edges, unresolvedCalls, makeNode, qn,
                         effectiveClassQN, callableContext.OwnerName, enclosingCallableQN: qn,
                         receiverAliases: callableContext.ReceiverAliases,
-                        knownReceiverTypes);
+                        knownReceiverTypes, fileTypes, pendingOwner: null);
                 }
                 return;
             }
@@ -379,7 +454,7 @@ public class TreeSitterExtractor : ICodeExtractor
             WalkForDefinitionsAndCalls(child, spec, context, content,
                 nodes, edges, unresolvedCalls, makeNode, parentQN,
                 enclosingClassQN, enclosingOwnerName, enclosingCallableQN, receiverAliases,
-                knownReceiverTypes);
+                knownReceiverTypes, fileTypes, pendingOwner);
         }
     }
 
@@ -574,11 +649,12 @@ public class TreeSitterExtractor : ICodeExtractor
     private static IReadOnlyDictionary<string, string> CollectKnownReceiverTypes(
         Node root,
         LanguageSpec spec,
-        string fileQN)
+        string fileQN,
+        Dictionary<string, NodeLabel> labels)
     {
         var knownTypes = new Dictionary<string, string>(StringComparer.Ordinal);
         var ambiguousNames = new HashSet<string>(StringComparer.Ordinal);
-        CollectKnownReceiverTypes(root, spec, fileQN, knownTypes, ambiguousNames);
+        CollectKnownReceiverTypes(root, spec, fileQN, knownTypes, ambiguousNames, labels);
         foreach (var ambiguousName in ambiguousNames)
             knownTypes.Remove(ambiguousName);
         return knownTypes;
@@ -589,7 +665,8 @@ public class TreeSitterExtractor : ICodeExtractor
         LanguageSpec spec,
         string parentQN,
         Dictionary<string, string> knownTypes,
-        HashSet<string> ambiguousNames)
+        HashSet<string> ambiguousNames,
+        Dictionary<string, NodeLabel> labels)
     {
         if (spec.ClassNodeTypes.Contains(node.Type)
             && spec.IsContainerOnlyClass?.Invoke(node) != true)
@@ -603,6 +680,7 @@ public class TreeSitterExtractor : ICodeExtractor
                 if (ReceiverPathRegex.IsMatch(normalized))
                 {
                     var qualifiedName = $"{parentQN}#type:{name}";
+                    labels[qualifiedName] = spec.ClassLabelSelector?.Invoke(node) ?? spec.ClassLabel;
                     AddKnownReceiverType(normalized, qualifiedName, knownTypes, ambiguousNames);
                     AddKnownReceiverType(
                         normalized[(normalized.LastIndexOf('.') + 1)..],
@@ -616,7 +694,7 @@ public class TreeSitterExtractor : ICodeExtractor
                     foreach (var child in (body ?? node).Children)
                     {
                         CollectKnownReceiverTypes(
-                            child, spec, qualifiedName, knownTypes, ambiguousNames);
+                            child, spec, qualifiedName, knownTypes, ambiguousNames, labels);
                     }
                     return;
                 }
@@ -624,7 +702,7 @@ public class TreeSitterExtractor : ICodeExtractor
         }
 
         foreach (var child in node.Children)
-            CollectKnownReceiverTypes(child, spec, parentQN, knownTypes, ambiguousNames);
+            CollectKnownReceiverTypes(child, spec, parentQN, knownTypes, ambiguousNames, labels);
     }
 
     private static void AddKnownReceiverType(
@@ -738,6 +816,25 @@ public class TreeSitterExtractor : ICodeExtractor
 
     private static readonly IReadOnlyDictionary<string, string> EmptyReceiverAliases =
         new Dictionary<string, string>();
+
+    private static readonly IReadOnlyDictionary<string, object> EmptyEdgeProperties =
+        new Dictionary<string, object>();
+
+    /// <summary>Types declared in the file being extracted, and the file's repository-relative path.</summary>
+    private sealed record FileTypes(IReadOnlyDictionary<string, NodeLabel> Labels, string RelativePath);
+
+    /// <summary>
+    /// The cross-file owner a container-only definition's direct members attach to: their
+    /// definition edges start at <paramref name="SourceQN"/> and carry <paramref name="EdgeProperties"/>.
+    /// </summary>
+    private sealed record OwnerLink(string SourceQN, IReadOnlyDictionary<string, object> EdgeProperties);
+
+    private static PendingEdge DefinitionEdge(
+        string sourceQN, string targetQN, EdgeType type, OwnerLink? pendingOwner) =>
+        pendingOwner is null
+            ? new PendingEdge(sourceQN, targetQN, type)
+            : new PendingEdge(pendingOwner.SourceQN, targetQN, type,
+                new Dictionary<string, object>(pendingOwner.EdgeProperties));
 
     private static readonly Regex IdentifierRegex = new(
         @"\$?[A-Za-z_][A-Za-z0-9_!?]*",

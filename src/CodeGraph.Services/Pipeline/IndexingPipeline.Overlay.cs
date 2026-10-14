@@ -69,14 +69,13 @@ public partial class IndexingPipeline
                 files, rootPath, context, buffer, failOnExtractionError: false, OverlayRustSourceOwners, ct);
 
         ResolveImports(buffer);
+        var excludedPersistedFiles = normalizedChanged
+            .Concat(removedPaths.Select(NormalizeRelativePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         await ResolveCallsAsync(
-            projectName,
-            buffer,
-            includePersistedNodes: true,
-            excludedPersistedFiles: normalizedChanged
-                .Concat(removedPaths.Select(NormalizeRelativePath))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase),
-            ct);
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
+        await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
 
         var nodes = buffer.AllNodes
             .Where(node => !string.IsNullOrWhiteSpace(node.FilePath)
