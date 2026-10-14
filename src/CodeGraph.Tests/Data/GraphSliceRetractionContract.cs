@@ -25,10 +25,11 @@ public class GraphSliceRetractionContract
         Label = label,
         Name = name,
         QualifiedName = qualifiedName,
-        FilePath = file
+        // Null on purpose: bulk writes must store file-less nodes so they stay readable.
+        FilePath = file!
     };
 
-    public static async Task VerifyAsync(IGraphStore store, string project)
+    private static async Task VerifyAsync(IGraphStore store, string project)
     {
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
         var type = $"{project}:a.swift#type:A";

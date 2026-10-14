@@ -684,7 +684,7 @@ public class SwiftTypeSemanticsTests
                         func greet() {}
                         var tag: String { "" }
                     }
-                    extension Array: Describable where Element: Describable {
+                    extension Array: Describable where Element: Greeter {
                         func describeAll() {}
                     }
                     """)
@@ -779,6 +779,25 @@ public class SwiftTypeSemanticsTests
             ownerNodes.Values.Select(node => node.QualifiedName).ShouldBe([square]);
             (await view.FindNodeByQualifiedNameAsync(Project, "swift-external:Square")).ShouldBeNull();
         }, baseline: false);
+
+    [Fact]
+    public Task ExtractOverlay_SecondTypeOnBranch_HidesTheDefaultBranchOwnerEdge() =>
+        WithRepoAsync(async repo =>
+        {
+            await repo.IndexAsync();
+            const string member = $"{EQ}#extension:Square#method:doubled()";
+            var memberId = repo.Id(member);
+
+            // A second Square on the branch makes the extended type ambiguous: the member's
+            // default-branch owner edge (between two unchanged nodes) must disappear at the head.
+            repo.Write("Sources/Other.swift", "struct Square {}\n");
+            var slice = await repo.OverlayAsync(["Sources/Other.swift"], []);
+
+            var view = await ViewAsync(repo, slice, ("Sources/Other.swift", BranchOverlayChangeKinds.Added));
+            var owners = await view.FindEdgesByTargetAsync(memberId, EdgeType.DEFINES_METHOD);
+            var ownerNodes = await view.FindNodesByIdBatchAsync(owners.Select(edge => edge.SourceId).ToList());
+            ownerNodes.Values.Select(node => node.QualifiedName).ShouldBe([$"{Project}:Sources/Extras.swift"]);
+        });
 
     [Fact]
     public Task ExtractOverlay_NewExternalSupertype_StubTravelsWithTheSlice() =>
