@@ -67,9 +67,9 @@ public sealed class ExtractionVersionCatalog
     /// </summary>
     public const int PipelineVersion = 4;
 
-    internal static readonly string[] SolutionAnalyzerExtensions = [".cs"];
-    internal static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];
-    internal static readonly string[] RustAnalyzerExtensions = [".rs"];
+    private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
+    private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];
+    private static readonly string[] RustAnalyzerExtensions = [".rs"];
 
     private readonly IReadOnlyList<ICodeExtractor> _extractors;
     private readonly ISolutionAnalyzer? _solutionAnalyzer;

@@ -1,6 +1,14 @@
+using System.Text.RegularExpressions;
 using CodeGraph.Api;
+using CodeGraph.Models;
+using CodeGraph.Services;
 using CodeGraph.Services.Assistant;
+using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Extractors;
+using CodeGraph.Services.Pipeline;
+using CodeGraph.Tests.Extractors;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Shouldly;
@@ -8,8 +16,7 @@ using Shouldly;
 namespace CodeGraph.Tests.Services;
 
 /// <summary>
-/// Which file languages CodeGraph indexes, as the API host's registered extractors and analyzers
-/// say (sc-26137): the catalog the MCP file tools answer <c>languageIndexed</c>/<c>language</c> from.
+/// Which file languages CodeGraph indexes, as the API host's registered extractors say (sc-26137): the catalog the MCP file tools answer <c>languageIndexed</c>/<c>language</c> from.
 /// </summary>
 public class IndexedLanguageCatalogTests
 {
@@ -23,18 +30,21 @@ public class IndexedLanguageCatalogTests
     }
 
     [Theory]
-    // Indexed languages: tree-sitter specs, Roslyn, the TypeScript extractor and project analyzer, SQL, Terraform.
+    // Indexed languages: tree-sitter specs, Roslyn, the TypeScript extractor, SQL, Terraform.
     [InlineData("Sources/App/Model.swift", true, "Swift")]
     [InlineData("src/Orders/OrderService.cs", true, "C#")]
     [InlineData("src/app/app.component.ts", true, "TypeScript")]
-    [InlineData("src/app/View.tsx", true, "TypeScript")]
     [InlineData("crates/core/src/lib.rs", true, "Rust")]
     [InlineData("native/bridge.cpp", true, "C++")]
     [InlineData("tools/build.py", true, "Python")]
     [InlineData("db/schema.sql", true, "SQL")]
     [InlineData("infra/main.tf", true, "Terraform")]
-    [InlineData("SRC/UPPER.SWIFT", true, "Swift")]
+    // Discovery matches extensions case-sensitively: these are never indexed.
+    [InlineData("SRC/UPPER.SWIFT", false, "Swift")]
+    [InlineData("src/Legacy.CS", false, "C#")]
+    [InlineData("tools/x.PY", false, "Python")]
     // Source languages CodeGraph does not index.
+    [InlineData("src/app/View.tsx", false, "TypeScript")]
     [InlineData("Sources/Legacy/Bridge.m", false, "Objective-C")]
     [InlineData("Sources/Legacy/Bridge.mm", false, "Objective-C++")]
     [InlineData("app/src/main/Main.kt", false, "Kotlin")]
@@ -53,20 +63,110 @@ public class IndexedLanguageCatalogTests
     }
 
     [Fact]
-    public void IndexedExtensions_ComeFromTheRegisteredExtractorsAndAnalyzers()
+    public void WithoutExtractors_EverySourceLanguageIsUnindexed()
     {
-        // Without the TypeScript project analyzer nothing reads .tsx files.
-        var services = new ServiceCollection();
-        Startup.ConfigureServices(services, Configuration());
-        using var provider = services.BuildServiceProvider();
-        var extractorsOnly = new IndexedLanguageCatalog(provider.GetServices<ICodeExtractor>());
-        extractorsOnly.Describe("View.tsx").ShouldBe(new FileLanguage(false, "TypeScript"));
-        extractorsOnly.Describe("Model.swift").ShouldBe(new FileLanguage(true, "Swift"));
-
-        // No extractors registered: every source language is unindexed (fail closed).
         var none = new IndexedLanguageCatalog([]);
+
         none.Describe("Model.swift").ShouldBe(new FileLanguage(false, "Swift"));
         none.Describe("README.md").ShouldBe(new FileLanguage(true, null));
+    }
+
+    /// <summary>
+    /// The catalog's TypeScript extensions are the ones the Node.js sidecar actually extracts
+    /// (<c>isTsSourceFile</c> in tools/ts-extractor/src/extractor.ts), so a .tsx file is not
+    /// reported indexed while the sidecar ignores it.
+    /// </summary>
+    [Fact]
+    public void TypeScriptExtensions_MatchWhatTheSidecarExtracts()
+    {
+        var source = File.ReadAllText(Path.Combine(RepoRoot(), "tools", "ts-extractor", "src", "extractor.ts"));
+        var body = Regex.Match(source, @"function isTsSourceFile\(fileName: string\): boolean \{(?<body>.*?)\n\}",
+            RegexOptions.Singleline).Groups["body"].Value;
+        body.ShouldNotBeNullOrWhiteSpace("isTsSourceFile not found in extractor.ts");
+        var sidecar = Regex.Matches(body, @"(?<!!)fileName\.endsWith\('(?<ext>\.[A-Za-z0-9]+)'\)")
+            .Select(match => match.Groups["ext"].Value)
+            .ToHashSet();
+        sidecar.ShouldNotBeEmpty();
+
+        var catalog = ApiCatalog();
+        catalog.IndexedExtensions
+            .Where(extension => catalog.Describe($"file{extension}").Language == "TypeScript")
+            .ShouldBe(sidecar, ignoreOrder: true);
+    }
+
+    /// <summary>
+    /// Indexing a tree with mixed-case extensions through the API host's extractor extensions:
+    /// every source file the catalog calls indexed is discovered, and every one it calls
+    /// unindexed is not.
+    /// </summary>
+    [Fact]
+    public async Task IndexedSourceFiles_AreExactlyTheFilesDiscoveryIndexes()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-language-parity-{Guid.NewGuid():N}");
+        string[] files =
+        [
+            "Sources/A.swift", "Sources/B.SWIFT", "Sources/C.Swift", "src/a.py", "src/b.PY", "src/c.cs", "src/d.CS",
+            "src/e.ts", "src/f.tsx", "src/g.TS", "db/h.sql", "db/i.SQL", "infra/j.tf", "Sources/k.m", "Sources/l.mm",
+            "app/m.kt", "web/n.js", "native/o.h", "native/p.H", "native/q.cpp"
+        ];
+        try
+        {
+            foreach (var file in files)
+            {
+                var path = Path.Combine(root, file);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, "x\n");
+            }
+
+            var services = new ServiceCollection();
+            Startup.ConfigureServices(services, Configuration());
+            using var provider = services.BuildServiceProvider();
+            // The API host's extension sets, without running Roslyn or the sidecar.
+            ICodeExtractor[] extractors = provider.GetServices<ICodeExtractor>()
+                .Select(extractor => (ICodeExtractor)new ExtensionsOnlyExtractor(extractor.SupportedExtensions))
+                .ToArray();
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(store, extractors,
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+            await pipeline.IndexProjectAsync("Parity", root, ct: CancellationToken.None);
+            var discovered = (await store.GetFileHashesAsync("Parity")).Keys.ToHashSet(StringComparer.Ordinal);
+
+            var catalog = new IndexedLanguageCatalog(extractors);
+            foreach (var file in files)
+            {
+                var language = catalog.Describe(file);
+                language.Language.ShouldNotBeNull(file);
+                language.Indexed.ShouldBe(discovered.Contains(file), file);
+            }
+
+            discovered.ShouldContain("Sources/A.swift");
+            discovered.ShouldNotContain("Sources/B.SWIFT");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class ExtensionsOnlyExtractor(IReadOnlySet<string> extensions) : ICodeExtractor
+    {
+        public IReadOnlySet<string> SupportedExtensions { get; } = extensions;
+
+        public Task<ExtractionResult> ExtractAsync(string filePath, string content, ExtractorContext context,
+            CancellationToken ct = default) => Task.FromResult(new ExtractionResult());
+    }
+
+    private static string RepoRoot()
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "CodeGraph.sln")))
+                return dir.FullName;
+        }
+
+        throw new DirectoryNotFoundException("CodeGraph.sln not found above the test binaries.");
     }
 
     [Fact]

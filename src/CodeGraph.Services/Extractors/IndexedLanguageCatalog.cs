@@ -1,5 +1,3 @@
-using CodeGraph.Services.Pipeline;
-
 namespace CodeGraph.Services.Extractors;
 
 /// <summary>A file's source language and whether CodeGraph indexes it.</summary>
@@ -11,9 +9,13 @@ namespace CodeGraph.Services.Extractors;
 public sealed record FileLanguage(bool Indexed, string? Language);
 
 /// <summary>
-/// Says whether a file's language is indexed. "Indexed" is derived from the registered extractors
-/// and project analyzers (the extensions indexing discovers and extracts), so it follows what the
-/// indexer actually reads; <see cref="LanguageNames"/> only names languages.
+/// Says whether a file's language is indexed. "Indexed" is the set of extensions indexing discovers:
+/// the registered extractors' <see cref="ICodeExtractor.SupportedExtensions"/>, matched by ordinal
+/// (case-sensitive) comparison as discovery does, so <c>Foo.SWIFT</c> is not indexed. Project analyzers
+/// add none: they only read discovered files (the TypeScript sidecar reads <c>.ts</c> files only, not
+/// <c>.tsx</c>). <see cref="LanguageNames"/> only names languages. The answer is per language: a file
+/// of an indexed language that discovery excludes (dependency directories, skip patterns), that is
+/// over the size limit, or that an extractor skips (<c>.d.ts</c>, <c>.spec.ts</c>) is still indexed.
 /// </summary>
 public sealed class IndexedLanguageCatalog
 {
@@ -27,7 +29,7 @@ public sealed class IndexedLanguageCatalog
         {
             // Indexed by the registered extractors and analyzers.
             [".cs"] = "C#",
-            [".ts"] = "TypeScript", [".tsx"] = "TypeScript",
+            [".ts"] = "TypeScript",
             [".rs"] = "Rust",
             [".swift"] = "Swift",
             [".py"] = "Python", [".pyw"] = "Python",
@@ -36,6 +38,7 @@ public sealed class IndexedLanguageCatalog
             [".rb"] = "Ruby",
             [".php"] = "PHP",
             [".sh"] = "Bash", [".bash"] = "Bash", [".zsh"] = "Bash",
+            // By extension alone a .h header is C, so it is indexed even in an Objective-C codebase.
             [".c"] = "C", [".h"] = "C",
             [".cpp"] = "C++", [".cc"] = "C++", [".cxx"] = "C++", [".hpp"] = "C++", [".hxx"] = "C++", [".hh"] = "C++",
             [".sql"] = "SQL",
@@ -49,7 +52,7 @@ public sealed class IndexedLanguageCatalog
             [".scala"] = "Scala", [".sc"] = "Scala",
             [".dart"] = "Dart",
             [".js"] = "JavaScript", [".jsx"] = "JavaScript", [".mjs"] = "JavaScript", [".cjs"] = "JavaScript",
-            [".mts"] = "TypeScript", [".cts"] = "TypeScript",
+            [".tsx"] = "TypeScript", [".mts"] = "TypeScript", [".cts"] = "TypeScript",
             [".pyi"] = "Python",
             [".fs"] = "F#", [".fsx"] = "F#", [".fsi"] = "F#",
             [".vb"] = "Visual Basic",
@@ -79,21 +82,15 @@ public sealed class IndexedLanguageCatalog
 
     private readonly HashSet<string> _indexedExtensions;
 
-    public IndexedLanguageCatalog(
-        IEnumerable<ICodeExtractor> extractors,
-        ISolutionAnalyzer? solutionAnalyzer = null,
-        ITypeScriptAnalyzer? typeScriptAnalyzer = null,
-        IRustAnalyzer? rustAnalyzer = null)
+    public IndexedLanguageCatalog(IEnumerable<ICodeExtractor> extractors)
     {
+        // Same set and comparer as IndexingPipeline.DiscoverFiles.
         _indexedExtensions = extractors
             .SelectMany(extractor => extractor.SupportedExtensions)
-            .Concat(solutionAnalyzer is null ? [] : ExtractionVersionCatalog.SolutionAnalyzerExtensions)
-            .Concat(typeScriptAnalyzer is null ? [] : ExtractionVersionCatalog.TypeScriptAnalyzerExtensions)
-            .Concat(rustAnalyzer is null ? [] : ExtractionVersionCatalog.RustAnalyzerExtensions)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(StringComparer.Ordinal);
     }
 
-    /// <summary>Every extension indexing reads.</summary>
+    /// <summary>Every extension indexing discovers (case-sensitive).</summary>
     public IReadOnlySet<string> IndexedExtensions => _indexedExtensions;
 
     /// <summary>The language of the file at <paramref name="path"/> and whether it is indexed.</summary>

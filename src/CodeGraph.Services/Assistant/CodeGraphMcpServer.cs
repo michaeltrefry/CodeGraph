@@ -959,7 +959,11 @@ public class CodeGraphMcpServer(
         "only for a source file in a language CodeGraph does not index (e.g. Objective-C, Kotlin), so a " +
         "found: false answer with languageIndexed: true is a file of an indexed language with no data (a new " +
         "or deleted file); it is true for indexed languages and for non-code files. language is the " +
-        "capitalised language name (Swift, C#, C++, Objective-C, ...), or null for a non-code file.";
+        "capitalised language name (Swift, C#, C++, Objective-C, ...), or null for a non-code file. " +
+        "The flag is per language, by file extension (case-sensitive, as indexing discovers files): a file " +
+        "of an indexed language that indexing skips (dependency directories such as Pods/ or .build/, skip " +
+        "patterns, files over the size limit, .d.ts/.spec.ts) still answers languageIndexed: true with " +
+        "found: false; .h is reported as indexed C even in an Objective-C codebase.";
 
     [McpServerTool(Name = AnalyzeImpactFileTool, Title = "Analyze File Impact", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
      Description("Per-file blast radius: the union of the inbound dependents of every code element in one file, " +
