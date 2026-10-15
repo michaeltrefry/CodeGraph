@@ -1,6 +1,9 @@
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Services.Assistant;
+using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Query;
+using Microsoft.Extensions.Options;
 using CodeGraph.Tests.Extractors;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
@@ -19,6 +22,41 @@ public class ArchitectureReportTests
             .GetArchitectureAsync(ArchitectureGraphFixture.Project);
 
         ArchitectureGraphFixture.AssertReport(report, ArchitectureGraphFixture.LargeMethodCount);
+    }
+
+    /// <summary>sc-26138 (G3): get_architecture names the default-branch index commit it describes.</summary>
+    [Fact]
+    public async Task GetArchitectureTool_ReportsTheDefaultBranchIndexCommit()
+    {
+        const string sha = "0123456789abcdef0123456789abcdef01234567";
+        var store = new InMemoryGraphStore();
+        await ArchitectureGraphFixture.SeedAsync(store, fillerMethodCount: 10);
+        await store.UpsertSyncStateAsync(new SyncStateEntity
+        {
+            Project = ArchitectureGraphFixture.Project, LastCommitSha = sha, Status = "idle"
+        });
+        var mcp = new CodeGraphMcpServer(
+            new GraphQueryEngine(store, NullLogger<GraphQueryEngine>.Instance),
+            null!,
+            store,
+            null!,
+            Options.Create(new RepositorySourceOptions()),
+            null!,
+            null!);
+
+        var answer = await mcp.GetArchitecture(ArchitectureGraphFixture.Project);
+
+        answer.Text().ShouldStartWith($"Commit: {sha}");
+        answer.Text().ShouldContain("Arch");
+        var structured = answer.StructuredContent!.Value;
+        structured.GetProperty("commitSha").GetString().ShouldBe(sha);
+        structured.GetProperty("source").GetString().ShouldBe("default-branch");
+        structured.GetProperty("repo").GetString().ShouldBe(ArchitectureGraphFixture.Project);
+
+        // The consolidated project_report envelope carries the same commit.
+        var wrapped = await ConsolidatedMcpServer.ProjectReport(mcp, "architecture", ArchitectureGraphFixture.Project);
+        using var envelope = System.Text.Json.JsonDocument.Parse(wrapped.Text());
+        envelope.RootElement.GetProperty("commitSha").GetString().ShouldBe(sha);
     }
 
     [Theory]

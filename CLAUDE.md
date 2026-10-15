@@ -79,6 +79,8 @@ No references flow upward. Models has zero dependencies. Extractors depend only 
 
 Incremental indexing only re-extracts files whose content hash or stored extraction version changed. Any change that alters what an extractor/analyzer emits for unchanged source must bump that component's version (`ICodeExtractor.GetExtractionVersion`, `LanguageSpec.ExtractionVersion`, `CSharpExtractionVersion.Current`, the `ExtractionVersion` of the solution/TypeScript/Rust analyzers, or `ExtractionVersionCatalog.PipelineVersion` for resolution changes). Otherwise the improvement never reaches existing repos. See `ExtractionVersionCatalog`.
 
+Likewise, any change to what vitals emit for an unchanged checkout (`VitalsAnalyzer`'s source-extension set, complexity rules, scoring) must bump `VitalsAnalyzer.Version`: routine syncs recompute vitals only (no re-extraction, no LLM analysis) at an unchanged HEAD when `sync_state.vitals_version` differs.
+
 ## Legacy Codebase Conventions
 
 Many of the originally indexed repos followed a consistent C# structure:

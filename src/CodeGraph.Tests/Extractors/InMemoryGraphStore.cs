@@ -768,7 +768,11 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .ToDictionary(path => path, path => extractionVersions![path], StringComparer.OrdinalIgnoreCase);
         _ = UpsertRepositoryAsync(repository);
         if (syncState is not null)
+        {
+            if (_syncStates.TryGetValue(project, out var previous))
+                CopyVitalsRecord(previous, syncState);
             _syncStates[project] = syncState;
+        }
         _nextId = nextId;
 
         return Task.FromResult(replacementEdges.Count);
@@ -1055,13 +1059,54 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult<IReadOnlyDictionary<string, SyncStateEntity>>(result);
     }
 
+    public Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    {
+        if (_syncStates.TryGetValue(project, out var state))
+        {
+            state.VitalsVersion = vitalsVersion;
+            state.VitalsFailedCommitSha = null;
+            state.VitalsFailedVersion = null;
+            state.VitalsConsecutiveFailures = 0;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    {
+        if (!_syncStates.TryGetValue(project, out var state))
+            return Task.FromResult(0);
+
+        state.VitalsConsecutiveFailures =
+            state.VitalsFailedCommitSha == commitSha && state.VitalsFailedVersion == vitalsVersion
+                ? state.VitalsConsecutiveFailures + 1
+                : 1;
+        state.VitalsFailedCommitSha = commitSha;
+        state.VitalsFailedVersion = vitalsVersion;
+        return Task.FromResult(state.VitalsConsecutiveFailures);
+    }
+
+    /// <summary>Like the stores, sync-state writes never change the vitals record.</summary>
+    private static void CopyVitalsRecord(SyncStateEntity from, SyncStateEntity to)
+    {
+        to.VitalsVersion = from.VitalsVersion;
+        to.VitalsFailedCommitSha = from.VitalsFailedCommitSha;
+        to.VitalsFailedVersion = from.VitalsFailedVersion;
+        to.VitalsConsecutiveFailures = from.VitalsConsecutiveFailures;
+    }
+
     public Task UpsertSyncStateAsync(SyncStateEntity state)
     {
         // Mirrors the MariaDB store: a null fingerprint keeps the stored one.
-        if (state.ExtractionFingerprint is null &&
-            _syncStates.TryGetValue(state.Project, out var existing))
+        // Mirrors the stores: an upsert never changes the vitals version.
+        if (_syncStates.TryGetValue(state.Project, out var existing))
         {
-            state.ExtractionFingerprint = existing.ExtractionFingerprint;
+            state.ExtractionFingerprint ??= existing.ExtractionFingerprint;
+            CopyVitalsRecord(existing, state);
+        }
+        else
+        {
+            CopyVitalsRecord(new SyncStateEntity(), state);
         }
 
         _syncStates[state.Project] = state;

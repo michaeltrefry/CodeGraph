@@ -219,7 +219,7 @@ public class CodeGraphMcpServer(
     }
 
     [McpServerTool(Name = "search_projects"),
-     Description("Search indexed repositories by partial or wildcard name with metadata including git repository URL and the commit of the default-branch index. Returns the same markdown list shape as list_projects, with Repo and Last commit lines for each project.")]
+     Description("Search indexed repositories by partial or wildcard name with metadata including git repository URL and the commit of the default-branch index. Returns the same markdown list shape as list_projects, with Repo and Last commit lines for each project. Tags list the primary language, then any other language with at least 10% of the non-blank lines of code or at least 50 files, then the framework.")]
     public async Task<string> SearchProjects(
         [Description("Optional partial or wildcard repository name search. Supports plain substrings plus * and % wildcards.")] string? search = null,
         [Description("Optional source group filter")] string? group = null,
@@ -248,6 +248,7 @@ public class CodeGraphMcpServer(
             var flags = new List<string>();
             if (p.IsFoundational) flags.Add("foundational");
             if (!string.IsNullOrEmpty(p.Language)) flags.Add(p.Language);
+            flags.AddRange(SignificantOtherLanguages(p));
             if (!string.IsNullOrEmpty(p.Framework)) flags.Add(p.Framework);
 
             var flagStr = flags.Count > 0 ? $" [{string.Join(", ", flags)}]" : "";
@@ -261,6 +262,57 @@ public class CodeGraphMcpServer(
         }
 
         return string.Join('\n', lines);
+    }
+
+    /// <summary>Minimum share of non-blank LOC for a non-primary language to be tagged.</summary>
+    internal const double SignificantLanguageLocShare = 0.10;
+
+    /// <summary>Minimum file count for a non-primary language to be tagged regardless of its LOC share.</summary>
+    internal const int SignificantLanguageFiles = 50;
+
+    /// <summary>
+    /// Languages other than the primary one that make up a significant part of the repository
+    /// (indexing's <c>languageStats</c>): at least <see cref="SignificantLanguageLocShare"/> of the
+    /// non-blank LOC or at least <see cref="SignificantLanguageFiles"/> files, largest share first.
+    /// A mixed repository (Rust with a Swift app) is then tagged with both languages.
+    /// </summary>
+    internal static IReadOnlyList<string> SignificantOtherLanguages(ProjectInfo project)
+    {
+        if (project.Properties is null || !project.Properties.TryGetValue("languageStats", out var value) || value is null)
+            return [];
+
+        try
+        {
+            using var doc = value switch
+            {
+                JsonElement element => JsonDocument.Parse(element.GetRawText()),
+                string text => JsonDocument.Parse(text),
+                _ => JsonDocument.Parse(JsonSerializer.Serialize(value))
+            };
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return [];
+
+            return doc.RootElement.EnumerateObject()
+                .Where(language => language.Value.ValueKind == JsonValueKind.Object
+                                   && !string.Equals(language.Name, project.Language, StringComparison.OrdinalIgnoreCase))
+                .Select(language => (
+                    Name: language.Name,
+                    Share: language.Value.TryGetProperty("locShare", out var share) && share.ValueKind == JsonValueKind.Number
+                        ? share.GetDouble()
+                        : 0,
+                    Files: language.Value.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.Number
+                        ? files.GetInt32()
+                        : 0))
+                .Where(language => language.Share >= SignificantLanguageLocShare || language.Files >= SignificantLanguageFiles)
+                .OrderByDescending(language => language.Share)
+                .ThenBy(language => language.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(language => language.Name)
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     [McpServerTool(Name = "list_schemas", Title = "List Database Schemas", ReadOnly = true)]
@@ -576,10 +628,18 @@ public class CodeGraphMcpServer(
                  "IMPLEMENTS/INHERITS in-degree, external stubs marked), external package dependencies (Package/" +
                  "NuGetPackage nodes referenced via REFERENCES_PACKAGE across NuGet, Cargo and SwiftPM, with " +
                  "ecosystem and version; total and per-ecosystem counts, top 25 listed), and cross-repo " +
-                 "dependencies summarized per repository and edge type. No model is called.")]
-    public async Task<string> GetArchitecture(
+                 "dependencies summarized per repository and edge type. The first line and " +
+                 "structuredContent.commitSha name the default-branch index commit the report describes. " +
+                 "No model is called.")]
+    public async Task<CallToolResult> GetArchitecture(
         [Description("Project name")] string project)
-        => ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(project));
+    {
+        var scope = await commitScopes.ResolveAsync(project, null);
+        var canonical = scope.Project ?? project;
+        var text = ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(canonical));
+        var commit = await commitScopes.DescribeAsync(scope, []);
+        return CommitAnswer.Create(text, commit, scope, new JsonObject { ["repo"] = canonical });
+    }
 
     [McpServerTool(Name = "get_project_health"),
      Description("Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files (high churn + complexity), and per-project breakdowns.")]
