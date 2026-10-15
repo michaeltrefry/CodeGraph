@@ -39,8 +39,10 @@ public class TreeSitterExtractor : ICodeExtractor
     /// Version of the generic AST walk shared by every language. Bump it when the shared walk's
     /// output changes; bump <see cref="LanguageSpec.ExtractionVersion"/> for a single language
     /// (see ExtractionVersionCatalog).
+    /// 2: callable qualified names keep one space between words of a parameter list
+    /// (<c>any Encoder</c>, <c>*const u8</c>) instead of dropping every whitespace (sc-26145).
     /// </summary>
-    public const int WalkerVersion = 1;
+    public const int WalkerVersion = 2;
 
     /// <summary>
     /// Suffix on the extraction version of a language whose native grammar cannot be loaded.
@@ -630,13 +632,42 @@ public class TreeSitterExtractor : ICodeExtractor
         return $"{context.ProjectName}:{relativePath}";
     }
 
-    private static string NormalizeSignature(string? parameters)
+    /// <summary>
+    /// The parameter list as it appears in a callable's qualified name. Layout is not identity, so
+    /// whitespace next to punctuation (<c>x: Int</c>, <c>a, b</c>, <c>-&gt; T</c>, <c>char *p</c>)
+    /// is dropped, but whitespace between two words is meaningful (<c>any Encoder</c>,
+    /// <c>*const u8</c>, <c>&amp;mut T</c>, <c>inout T</c>, <c>int a</c>) and collapses to a single
+    /// space rather than gluing the words together (<c>anyEncoder</c>, <c>constu8</c>).
+    /// </summary>
+    internal static string NormalizeSignature(string? parameters)
     {
         if (string.IsNullOrWhiteSpace(parameters))
             return "()";
 
-        return string.Concat(parameters.Where(character => !char.IsWhiteSpace(character)));
+        var text = parameters.Trim();
+        var builder = new System.Text.StringBuilder(text.Length);
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (!char.IsWhiteSpace(text[index]))
+            {
+                builder.Append(text[index]);
+                continue;
+            }
+
+            var next = index;
+            while (next < text.Length && char.IsWhiteSpace(text[next]))
+                next++;
+            if (builder.Length > 0 && next < text.Length
+                && IsSignatureWordCharacter(builder[^1]) && IsSignatureWordCharacter(text[next]))
+                builder.Append(' ');
+            index = next - 1;
+        }
+
+        return builder.ToString();
     }
+
+    private static bool IsSignatureWordCharacter(char character) =>
+        char.IsLetterOrDigit(character) || character is '_' or '$' or '\'' or '`' or '@';
 
     private static void WalkForImports(Node node, LanguageSpec spec, string content,
         string fileQN, List<UnresolvedImport> unresolvedImports)

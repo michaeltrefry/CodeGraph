@@ -11,7 +11,9 @@ namespace CodeGraph.Services.Pipeline;
 /// <remarks>
 /// <para>
 /// <c>import M</c> becomes an IMPORTS edge from the importing file to, in order: the SwiftPM target
-/// named <c>M</c> declared in the repository (a Module node of a <c>Package.swift</c>); the declared
+/// named <c>M</c> declared in the repository (a Module node of a <c>Package.swift</c>) or the Xcode
+/// native target that builds module <c>M</c> (a Module node of a <c>project.pbxproj</c>, nearness
+/// measured from the directory holding the <c>.xcodeproj</c>); the declared
 /// dependency whose product <c>M</c> one of the repository's targets uses
 /// (<c>.product(name: "M", package: ...)</c>); a declared, else pinned, dependency whose identity or
 /// name is <c>M</c>. When several candidates remain, the one whose manifest is the nearest ancestor of
@@ -232,8 +234,10 @@ public partial class IndexingPipeline
     }
 
     private static bool IsSwiftModuleProvider(GraphNode node) =>
-        node.Label is NodeLabel.Module or NodeLabel.Package
-        && PlainString(node.Properties, "ecosystem") == SwiftPmEcosystem;
+        (node.Label is NodeLabel.Module or NodeLabel.Package
+         && PlainString(node.Properties, "ecosystem") == SwiftPmEcosystem)
+        || (node.Label is NodeLabel.Module
+            && PlainString(node.Properties, "ecosystem") == SwiftPackageManifestExtractor.XcodeEcosystem);
 
     /// <summary>Both re-bindings of one run, applied by the same write.</summary>
     private static SwiftRebinding Combine(SwiftRebinding first, SwiftRebinding second) =>
@@ -322,6 +326,11 @@ internal sealed class SwiftModuleResolver
             .Select(entry => entry.Node)
             .OrderBy(node => node.QualifiedName, StringComparer.Ordinal)
             .ToList();
+        // A package distributed both through SwiftPM and an Xcode project (Package.swift and
+        // Alamo.xcodeproj side by side) declares the same module twice: the SwiftPM target is
+        // the canonical provider, so an Xcode target only counts when no SwiftPM one is as near.
+        if (nearest.Any(node => !IsXcodeModule(node)))
+            nearest = nearest.Where(node => !IsXcodeModule(node)).ToList();
         var providers = nearest
             .GroupBy(node => Property(node, "package_key") ?? node.QualifiedName, StringComparer.Ordinal)
             .Select(group => group.First())
@@ -329,8 +338,15 @@ internal sealed class SwiftModuleResolver
         return new SwiftModuleResolution(providers, matchedBy, Ambiguous: providers.Count > 1);
     }
 
+    private static bool IsXcodeModule(GraphNode node) =>
+        Property(node, "ecosystem") == SwiftPackageManifestExtractor.XcodeEcosystem;
+
     private static string ManifestDirectory(GraphNode node)
     {
+        // An Xcode target's sources sit beside its .xcodeproj, not inside it.
+        if (Property(node, SwiftPackageManifestExtractor.ProjectDirectoryProperty) is { } projectDirectory)
+            return projectDirectory;
+
         var manifest = Property(node, "manifest_path") ?? node.FilePath ?? "";
         var slash = manifest.LastIndexOf('/');
         return slash < 0 ? "" : manifest[..slash];

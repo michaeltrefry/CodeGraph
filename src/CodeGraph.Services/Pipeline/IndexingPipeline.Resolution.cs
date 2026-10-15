@@ -161,9 +161,13 @@ public partial class IndexingPipeline
                 candidates = owned;
             }
 
-            // A name binds only within the caller's language family and across real FFI boundaries.
-            if (CallLanguages.FamilyOf(buffer.FindByQN(call.CallerQN)?.FilePath) is { } callerFamily)
-                candidates = candidates.Where(candidate => CallLanguages.CanCall(callerFamily, candidate)).ToList();
+            // A name binds only to a callable (or a same-family type it constructs), within the
+            // caller's language family and across real FFI boundaries. A caller missing from the
+            // buffer still has a language: the file its qualified name is declared in.
+            var callerFamily = buffer.FindByQN(call.CallerQN) is { } caller
+                ? CallLanguages.FamilyOf(caller.FilePath)
+                : CallLanguages.FamilyOfQualifiedName(projectName, call.CallerQN);
+            candidates = candidates.Where(candidate => CallLanguages.IsCallTarget(callerFamily, candidate)).ToList();
 
             if (call.ArgumentLabels is not null)
                 candidates = ArgumentLabels.Select(candidates, call.ArgumentLabels);

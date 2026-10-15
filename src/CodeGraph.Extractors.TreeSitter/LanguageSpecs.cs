@@ -8,7 +8,7 @@ namespace CodeGraph.Extractors.TreeSitter;
 /// Registry of all tree-sitter language specs, keyed by file extension.
 /// Add new languages by defining a spec and mapping its extensions.
 /// </summary>
-public static class LanguageSpecs
+public static partial class LanguageSpecs
 {
     private static readonly Dictionary<string, LanguageSpec> ByExtension = new(StringComparer.OrdinalIgnoreCase);
 
@@ -220,7 +220,8 @@ public static class LanguageSpecs
         Framework = null,
         GetLanguage = () => new Language("Rust"),
         // 2: functions record their foreign ABI (`extern "C" fn` → abi C).
-        ExtractionVersion = 2,
+        // 3: only when exported by symbol name (#[no_mangle] / #[export_name]) (sc-26145).
+        ExtractionVersion = 3,
         CallableAbiExtractor = GetRustAbi,
         FunctionNodeTypes = ["function_item"],
         ClassNodeTypes = ["struct_item", "enum_item", "trait_item", "impl_item"],
@@ -240,7 +241,11 @@ public static class LanguageSpecs
     };
 
     /// <summary>
-    /// The ABI of an <c>extern "abi" fn</c> (bare <c>extern fn</c> is C); null for a Rust-ABI function.
+    /// The ABI of an <c>extern "abi" fn</c> (bare <c>extern fn</c> is C) that is exported under its
+    /// own symbol name (<c>#[no_mangle]</c> or <c>#[export_name]</c>, also inside <c>unsafe(...)</c>),
+    /// so foreign code can link to it by name. Null for a Rust-ABI function and for an
+    /// <c>extern "C"</c> function whose symbol stays mangled (a callback passed by pointer, such as
+    /// a nested test helper): no C or Swift call reaches it by name.
     /// </summary>
     private static string? GetRustAbi(Node node)
     {
@@ -248,13 +253,39 @@ public static class LanguageSpecs
             .Where(child => child.Type == "function_modifiers")
             .SelectMany(modifiers => modifiers.NamedChildren)
             .FirstOrDefault(child => child.Type == "extern_modifier");
-        if (externModifier is null)
+        if (externModifier is null || !IsExportedBySymbolName(node))
             return null;
 
         var abi = externModifier.NamedChildren.FirstOrDefault(child => child.Type == "string_literal")
             ?.Text.Trim('"');
         return string.IsNullOrEmpty(abi) ? "C" : abi == "Rust" ? null : abi;
     }
+
+    /// <summary>Whether the attributes directly above a Rust item keep its symbol name unmangled.</summary>
+    private static bool IsExportedBySymbolName(Node item)
+    {
+        if (item.Parent is not { } parent)
+            return false;
+
+        var siblings = parent.Children.ToList();
+        var index = siblings.FindIndex(sibling =>
+            sibling.StartIndex == item.StartIndex && sibling.EndIndex == item.EndIndex && sibling.Type == item.Type);
+        for (var previous = index - 1; previous >= 0; previous--)
+        {
+            var sibling = siblings[previous];
+            if (sibling.Type is "line_comment" or "block_comment")
+                continue;
+            if (sibling.Type != "attribute_item")
+                break;
+            if (SymbolExportAttribute().IsMatch(sibling.Text))
+                return true;
+        }
+
+        return false;
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\b(no_mangle|export_name)\b")]
+    private static partial System.Text.RegularExpressions.Regex SymbolExportAttribute();
 
     private static string? GetRustNominalTypeName(Node? node)
     {

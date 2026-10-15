@@ -21,6 +21,32 @@ public class ArchitectureReportTests
         ArchitectureGraphFixture.AssertReport(report, ArchitectureGraphFixture.LargeMethodCount);
     }
 
+    [Theory]
+    [InlineData(NodeLabel.NuGetPackage, "npm:react", null, null, "npm")]
+    [InlineData(NodeLabel.NuGetPackage, "npm:@scope/pkg", "npm", null, "npm")]
+    [InlineData(NodeLabel.NuGetPackage, "nuget:Newtonsoft.Json", null, null, "nuget")]
+    [InlineData(NodeLabel.NuGetPackage, "Newtonsoft.Json", null, null, "nuget")]
+    [InlineData(NodeLabel.Package, "cargo:serde@1", null, "cargo", "cargo")]
+    [InlineData(NodeLabel.Package, "x", null, null, "unknown")]
+    public void PackageEcosystem_DerivesNpmForSidecarPackagesLabelledNuGet(
+        NodeLabel label, string qualifiedName, string? packageType, string? ecosystem, string expected)
+    {
+        var properties = new Dictionary<string, object>();
+        if (packageType is not null)
+            properties["package_type"] = packageType;
+        if (ecosystem is not null)
+            properties["ecosystem"] = ecosystem;
+
+        GraphQueryEngine.PackageEcosystem(new GraphNode
+        {
+            Project = "Arch",
+            Label = label,
+            Name = qualifiedName,
+            QualifiedName = qualifiedName,
+            Properties = properties
+        }).ShouldBe(expected);
+    }
+
     [Fact]
     public void Format_RendersEverySectionBounded()
     {
@@ -123,6 +149,9 @@ internal static class ArchitectureGraphFixture
                 new() { ["ecosystem"] = "swiftpm", ["version"] = "1.1.0", ["is_definition"] = false }),
             Node(NodeLabel.NuGetPackage, "Newtonsoft.Json", "nuget:Newtonsoft.Json",
                 new() { ["version"] = "13.0.1" }),
+            // The TypeScript sidecar labels npm packages NuGetPackage (sc-26145: reported as nuget).
+            Node(NodeLabel.NuGetPackage, "react", "npm:react",
+                new() { ["package_type"] = "npm" }),
             Node(NodeLabel.Method, "busy", "ArchOther:busy", other: true)
         ]);
         var ids = await store.UpsertNodeBatchAsync(nodes);
@@ -152,6 +181,7 @@ internal static class ArchitectureGraphFixture
         Add("cargo:arch-cli@0.1.0", "cargo:arch-core@0.1.0", EdgeType.REFERENCES_PACKAGE);
         Add("Arch:project:Arch.Api", "nuget:Newtonsoft.Json", EdgeType.REFERENCES_PACKAGE);
         Add("cargo:arch-cli@0.1.0", "swiftpm:swift-collections@1.1.0", EdgeType.REFERENCES_PACKAGE);
+        Add("Arch:Widget", "npm:react", EdgeType.REFERENCES_PACKAGE);
 
         // Another project's edges never count toward this project's figures.
         for (var i = 0; i < 9; i++)
@@ -172,7 +202,7 @@ internal static class ArchitectureGraphFixture
         report.NodeCounts[NodeLabel.Function].ShouldBe(1);
         report.NodeCounts[NodeLabel.Struct].ShouldBe(3);
         report.NodeCounts[NodeLabel.Package].ShouldBe(4);
-        report.NodeCounts[NodeLabel.NuGetPackage].ShouldBe(1);
+        report.NodeCounts[NodeLabel.NuGetPackage].ShouldBe(2);
 
         report.Hotspots.Select(h => (h.Name, h.FanIn)).ShouldBe([("hot", 5), ("warm", 3)]);
 
@@ -183,16 +213,18 @@ internal static class ArchitectureGraphFixture
             .OrderBy(t => t.Name)
             .ShouldBe([("Base", 1, false), ("Serialize", 1, true)]);
 
-        report.PackageDependencyCount.ShouldBe(3);
+        report.PackageDependencyCount.ShouldBe(4);
         report.PackageDependencyCountsByEcosystem.OrderBy(kv => kv.Key)
             .ShouldBe([
                 new KeyValuePair<string, int>("cargo", 1),
+                new KeyValuePair<string, int>("npm", 1),
                 new KeyValuePair<string, int>("nuget", 1),
                 new KeyValuePair<string, int>("swiftpm", 1)
             ]);
         report.PackageDependencies.Select(p => (p.Name, p.Ecosystem, p.Version, p.DependentCount))
             .ShouldBe([
                 ("serde", "cargo", "1.0", 2),
+                ("react", "npm", (string?)null, 1),
                 ("Newtonsoft.Json", "nuget", "13.0.1", 1),
                 ("swift-collections", "swiftpm", "1.1.0", 1)
             ]);

@@ -19,6 +19,11 @@ namespace CodeGraph.Services.Extractors;
 /// recorded on the declared dependency it names (<see cref="ProductsProperty"/>), so the indexing
 /// pipeline can resolve <c>import</c> declarations to in-repo targets and to dependency packages.
 /// </para>
+/// <para>
+/// Each native target of an Xcode project (<c>*.xcodeproj/project.pbxproj</c>) is a Module node
+/// too (ecosystem <see cref="XcodeEcosystem"/>), named by the Swift module it builds
+/// (<see cref="XcodeProjectReader"/>), so <c>@testable import App</c> binds to the app target.
+/// </para>
 /// </summary>
 public sealed partial class SwiftPackageManifestExtractor(
     ILogger<SwiftPackageManifestExtractor>? logger = null) : ISwiftPackageManifestExtractor
@@ -34,6 +39,15 @@ public sealed partial class SwiftPackageManifestExtractor(
 
     /// <summary>On a target's Module node: the Swift module name (the target name).</summary>
     public const string ModuleNameProperty = "module_name";
+
+    /// <summary>
+    /// On an Xcode target's Module node: the repository-relative directory holding its
+    /// <c>.xcodeproj</c> (empty at the root).
+    /// </summary>
+    public const string ProjectDirectoryProperty = "project_directory";
+
+    /// <summary>Ecosystem of the Module nodes of Xcode project targets.</summary>
+    public const string XcodeEcosystem = "xcode";
 
     private const string Ecosystem = "swiftpm";
     private readonly ILogger _logger = logger ?? NullLogger<SwiftPackageManifestExtractor>.Instance;
@@ -176,6 +190,25 @@ public sealed partial class SwiftPackageManifestExtractor(
             processed.Add(relativePath);
             foreach (var pin in pins)
                 AddDependency(nodes, edges, edgeKeys, context.ProjectName, pin);
+        }
+
+        // Pass 4: native targets of every Xcode project, as the Swift modules they build.
+        foreach (var (_, content, relativePath) in ordered.Where(m => IsFile(m.FullPath, XcodeProjectReader.ProjectFileName)))
+        {
+            IReadOnlyList<XcodeNativeTarget> targets;
+            try
+            {
+                targets = XcodeProjectReader.ReadNativeTargets(content);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Skipping unparseable Xcode project {Manifest} in {Project}",
+                    relativePath, context.ProjectName);
+                continue;
+            }
+
+            processed.Add(relativePath);
+            AddXcodeTargets(nodes, edges, edgeKeys, targets, relativePath, context);
         }
 
         var metadata = hasXcodeProject
@@ -541,6 +574,55 @@ public sealed partial class SwiftPackageManifestExtractor(
     /// One Module node per declared target, at <c>{project}:{manifest}#target:{name}</c>, defined by
     /// the manifest's package (or the repository when the package name is not static).
     /// </summary>
+    /// <summary>
+    /// One Module node per native target of an Xcode project (ecosystem <see cref="XcodeEcosystem"/>),
+    /// named by the Swift module it builds. Its <see cref="ProjectDirectoryProperty"/> is the
+    /// directory holding the <c>.xcodeproj</c>, the root the import resolution measures nearness from.
+    /// </summary>
+    private static void AddXcodeTargets(
+        Dictionary<string, GraphNode> nodes,
+        List<PendingEdge> edges,
+        HashSet<string> edgeKeys,
+        IReadOnlyList<XcodeNativeTarget> targets,
+        string relativePath,
+        ExtractorContext context)
+    {
+        var projectDirectory = NormalizePath(Path.GetDirectoryName(Path.GetDirectoryName(relativePath) ?? "") ?? "");
+        foreach (var target in targets)
+        {
+            var properties = new Dictionary<string, object>
+            {
+                ["ecosystem"] = XcodeEcosystem,
+                ["language"] = "Swift",
+                [ModuleNameProperty] = target.ModuleName,
+                ["target_name"] = target.Name,
+                ["manifest_path"] = relativePath,
+                [ProjectDirectoryProperty] = projectDirectory,
+                ["confidence"] = "high"
+            };
+            if (target.ProductType is { Length: > 0 } productType)
+                properties["target_kind"] = productType;
+
+            var module = new GraphNode
+            {
+                Project = context.ProjectName,
+                Label = NodeLabel.Module,
+                Name = target.ModuleName,
+                QualifiedName = $"{context.ProjectName}:{relativePath}#target:{target.Name}",
+                FilePath = relativePath,
+                Properties = properties
+            };
+            if (!nodes.TryAdd(module.QualifiedName, module))
+                continue;
+
+            AddEdge(edges, edgeKeys, new PendingEdge(
+                context.ProjectName,
+                module.QualifiedName,
+                EdgeType.DEFINES,
+                new() { ["ecosystem"] = XcodeEcosystem, ["source"] = XcodeProjectReader.ProjectFileName }));
+        }
+    }
+
     private static void AddTargets(
         Dictionary<string, GraphNode> nodes,
         List<PendingEdge> edges,

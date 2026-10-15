@@ -63,7 +63,8 @@ public partial class IndexingPipeline
         _extractionVersions = new ExtractionVersionCatalog(
             extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor,
             DiscoveryExcludePatterns,
-            FileSizeLimitsFingerprint);
+            FileSizeLimitsFingerprint,
+            cargoManifestExtractor);
     }
 
     /// <summary>
@@ -341,7 +342,7 @@ public partial class IndexingPipeline
                     // No group could be analyzed (for example the tools are missing): the
                     // whole workspace falls back.
                     var failedAfterMs = stepSw.ElapsedMilliseconds;
-                    var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex, crateGroup: null);
+                    var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, cargoManifests, ex, crateGroup: null);
                     RecordRustSemanticFallback(workspaceFallback, ex);
                     rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
                         projectName,
@@ -391,7 +392,7 @@ public partial class IndexingPipeline
                     RustSemanticFallback? groupFallback = null;
                     if (failure is not null)
                     {
-                        groupFallback = CreateRustSemanticFallback(rootPath, cargoManifest, failure, group);
+                        groupFallback = CreateRustSemanticFallback(rootPath, cargoManifest, cargoManifests, failure, group);
                         RecordRustSemanticFallback(groupFallback, failure);
                     }
                     else if (!group.IsWholeWorkspace)
@@ -403,6 +404,7 @@ public partial class IndexingPipeline
                     groupOutcomes.Add(CreateRustSemanticGroupOutcome(
                         rootPath,
                         cargoManifest,
+                        cargoManifests,
                         group,
                         groupFallback,
                         prepared,
@@ -525,6 +527,10 @@ public partial class IndexingPipeline
         // package slice of such a manifest that was not found again is emptied below.
         var discoveredManifestNames = new HashSet<string>(StringComparer.Ordinal);
         var discoveredManifestPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Content hash records of the tracked manifests (Cargo.toml, Package.resolved,
+        // project.pbxproj) whose slices this run writes. A manifest group whose manifests are all
+        // unchanged (content, extractor version, set of paths) keeps its stored slice untouched.
+        var manifestHashRecords = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
 
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
         if (_cargoManifestExtractor is not null)
@@ -546,8 +552,17 @@ public partial class IndexingPipeline
                     MergeResults([cargoResult], buffer);
                     if (cargoResult.Metadata is not null)
                         detectedMetadataCandidates.Add(cargoResult.Metadata);
-                    manifestReplacementPaths.AddRange(cargoManifestPaths.Select(path =>
-                        NormalizeRelativePath(Path.GetRelativePath(rootPath, path))));
+                    var cargoRelativePaths = cargoManifestPaths
+                        .Select(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)))
+                        .ToList();
+                    var cargoRecords = HashManifests(rootPath, cargoRelativePaths);
+                    if (replaceExistingGraph || ManifestGroupChanged(
+                            existingHashes, [CargoManifestFileName], cargoRecords, sourceManifestChanged: false))
+                    {
+                        manifestReplacementPaths.AddRange(cargoRelativePaths);
+                        foreach (var (path, record) in cargoRecords)
+                            manifestHashRecords[path] = record;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -568,6 +583,7 @@ public partial class IndexingPipeline
                 var swiftResult = ExtractSwiftPackageManifests(rootPath, context, out var swiftManifestPaths);
                 discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageSwiftFileName);
                 discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageResolvedFileName);
+                discoveredManifestNames.Add(XcodeProjectReader.ProjectFileName);
                 discoveredManifestPaths.UnionWith(swiftManifestPaths);
                 swiftManifestsExtracted = true;
                 swiftManifestsPresent = swiftResult is not null;
@@ -576,12 +592,27 @@ public partial class IndexingPipeline
                     MergeResults([swiftResult], buffer);
                     if (swiftResult.Metadata is not null)
                         detectedMetadataCandidates.Add(swiftResult.Metadata);
-                    // Package.resolved is not a discovered source file, so its slice is always
-                    // replaced; a changed Package.swift is replaced even when its Swift source
-                    // extraction failed.
+                    // Package.resolved and project.pbxproj are not discovered source files: their
+                    // slices are replaced whenever any Swift manifest changed (pins, declared
+                    // dependencies and targets refer to each other). A changed Package.swift is
+                    // replaced even when its Swift source extraction failed.
+                    var swiftRecords = HashManifests(rootPath, swiftManifestPaths
+                        .Where(path => ExtractionVersionCatalog.TrackedManifestNames.Contains(Path.GetFileName(path)))
+                        .ToList());
+                    var swiftGroupChanged = replaceExistingGraph || ManifestGroupChanged(
+                        existingHashes,
+                        [SwiftPackageManifestExtractor.PackageResolvedFileName, XcodeProjectReader.ProjectFileName],
+                        swiftRecords,
+                        sourceManifestChanged: changedRelativePaths.Concat(deletedFiles).Any(path =>
+                            Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageSwiftFileName));
                     manifestReplacementPaths.AddRange(swiftResult.ProcessedFiles.Where(path =>
-                        Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageResolvedFileName ||
-                        changedRelativePaths.Contains(path)));
+                        changedRelativePaths.Contains(path) ||
+                        (swiftGroupChanged && swiftRecords.ContainsKey(path))));
+                    if (swiftGroupChanged)
+                    {
+                        foreach (var (path, record) in swiftRecords)
+                            manifestHashRecords[path] = record;
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -600,7 +631,7 @@ public partial class IndexingPipeline
         if (!replaceExistingGraph && existingHashes.Count > 0 && discoveredManifestNames.Count > 0)
         {
             var removedManifests = await FindRemovedManifestPathsAsync(
-                projectName, discoveredManifestNames, discoveredManifestPaths);
+                projectName, discoveredManifestNames, discoveredManifestPaths, existingHashes.Keys);
             manifestReplacementPaths.AddRange(removedManifests);
             swiftManifestsPresent |= removedManifests.Any(IsSwiftManifest);
         }
@@ -666,15 +697,17 @@ public partial class IndexingPipeline
         int edgeCount;
         if (replaceExistingGraph)
         {
+            var (fileHashes, extractionVersions) = WithManifestRecords(
+                buffer.AllFileHashes, ExtractionVersionsFor(buffer.AllFileHashes.Keys, oversizeFiles), manifestHashRecords);
             edgeCount = await _store.ReplaceProjectGraphAsync(
                 projectName,
                 buffer.AllNodes.ToList(),
                 buffer.AllPendingEdges.ToList(),
-                buffer.AllFileHashes,
+                fileHashes,
                 BuildRepositorySnapshot(
                     repository, detectedMetadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes),
                 replacementSyncState,
-                ExtractionVersionsFor(buffer.AllFileHashes.Keys, oversizeFiles),
+                extractionVersions,
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic graph replacement ({NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -692,9 +725,11 @@ public partial class IndexingPipeline
                 replacementPaths,
                 includeProjectStructure: existingHashes.Count == 0);
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
-            var replacementHashes = buffer.AllFileHashes
+            var sourceHashes = buffer.AllFileHashes
                 .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
+            var (replacementHashes, replacementVersions) = WithManifestRecords(
+                sourceHashes, ExtractionVersionsFor(sourceHashes.Keys, oversizeFiles), manifestHashRecords);
 
             edgeCount = await _store.ReplaceProjectFilesAsync(
                 projectName,
@@ -702,7 +737,7 @@ public partial class IndexingPipeline
                 replacementNodes,
                 replacementEdges,
                 replacementHashes,
-                ExtractionVersionsFor(replacementHashes.Keys, oversizeFiles),
+                replacementVersions,
                 swiftRebinding.Retractions.IsEmpty ? null : swiftRebinding.Retractions,
                 ct);
             _logger.LogInformation(
@@ -784,20 +819,95 @@ public partial class IndexingPipeline
 
     private static bool IsSwiftManifest(string path) =>
         Path.GetFileName(path) is SwiftPackageManifestExtractor.PackageSwiftFileName
-            or SwiftPackageManifestExtractor.PackageResolvedFileName;
+            or SwiftPackageManifestExtractor.PackageResolvedFileName
+            or XcodeProjectReader.ProjectFileName;
+
+    /// <summary>The source file hashes and versions plus the manifest records of the slices this run writes.</summary>
+    private static (Dictionary<string, string> Hashes, Dictionary<string, string> Versions) WithManifestRecords(
+        IReadOnlyDictionary<string, string> sourceHashes,
+        IReadOnlyDictionary<string, string> sourceVersions,
+        IReadOnlyDictionary<string, FileHashRecord> manifestRecords)
+    {
+        var hashes = new Dictionary<string, string>(sourceHashes, StringComparer.OrdinalIgnoreCase);
+        var versions = new Dictionary<string, string>(sourceVersions, StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, record) in manifestRecords)
+        {
+            hashes[path] = record.ContentHash;
+            versions[path] = record.ExtractionVersion!;
+        }
+
+        return (hashes, versions);
+    }
+
+    /// <summary>Content hash and manifest version of each tracked manifest (repository-relative paths).</summary>
+    private Dictionary<string, FileHashRecord> HashManifests(string rootPath, IReadOnlyList<string> relativePaths)
+    {
+        var records = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in relativePaths)
+        {
+            if (_extractionVersions.ForManifest(path) is not { } version)
+                continue;
+            try
+            {
+                var bytes = _fileSystem.ReadAllBytes(Path.Combine(rootPath, path));
+                records[path] = new FileHashRecord(Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes)), version);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // No record: the next run sees the manifest as new and rewrites its group.
+                _logger.LogDebug(ex, "Could not hash manifest {Manifest}", path);
+            }
+        }
+
+        return records;
+    }
 
     /// <summary>
-    /// Manifests (named one of <paramref name="manifestNames"/>) that own stored Package nodes of
-    /// <paramref name="projectName"/> but were not discovered this run.
+    /// Whether a manifest group's stored slices are stale: a manifest is new, its content or
+    /// manifest version changed, a stored manifest of the group is gone, or a manifest the group
+    /// depends on (<paramref name="sourceManifestChanged"/>, e.g. a changed <c>Package.swift</c>)
+    /// changed. Manifests of a group refer to each other (pins, path dependencies, targets), so the
+    /// whole group is rewritten or none of it.
+    /// </summary>
+    private static bool ManifestGroupChanged(
+        IReadOnlyDictionary<string, FileHashRecord> existingHashes,
+        IReadOnlyCollection<string> manifestNames,
+        IReadOnlyDictionary<string, FileHashRecord> current,
+        bool sourceManifestChanged)
+    {
+        if (sourceManifestChanged)
+            return true;
+
+        foreach (var (path, record) in current)
+        {
+            if (!existingHashes.TryGetValue(path, out var stored)
+                || stored.ContentHash != record.ContentHash
+                || !string.Equals(stored.ExtractionVersion, record.ExtractionVersion, StringComparison.Ordinal))
+                return true;
+        }
+
+        return existingHashes.Keys.Any(path =>
+            manifestNames.Contains(Path.GetFileName(path)) && !current.ContainsKey(NormalizeRelativePath(path)));
+    }
+
+    /// <summary>
+    /// Manifests (named one of <paramref name="manifestNames"/>) that own stored Package or Module
+    /// nodes of <paramref name="projectName"/>, or a stored manifest hash record, but were not
+    /// discovered this run.
     /// </summary>
     private async Task<IReadOnlyList<string>> FindRemovedManifestPathsAsync(
         string projectName,
         IReadOnlySet<string> manifestNames,
-        IReadOnlySet<string> discoveredPaths)
+        IReadOnlySet<string> discoveredPaths,
+        IEnumerable<string> storedHashPaths)
     {
         var removed = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Package, int.MaxValue))
+            .Concat(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
             .Select(node => node.FilePath)
             .OfType<string>()
+            .Where(path => path.Length > 0)
+            .Concat(storedHashPaths.Where(path =>
+                ExtractionVersionCatalog.TrackedManifestNames.Contains(Path.GetFileName(path))))
             .Select(NormalizeRelativePath)
             .Where(path => manifestNames.Contains(Path.GetFileName(path)) && !discoveredPaths.Contains(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -936,9 +1046,12 @@ public partial class IndexingPipeline
         var discovered = discoveredFiles
             .Select(file => NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Tracked manifests (Cargo.toml, Package.resolved, project.pbxproj) are not source files:
+        // their records are reconciled with manifest discovery instead (FindRemovedManifestPathsAsync).
         var deleted = existingHashes.Keys
             .Select(NormalizeRelativePath)
-            .Where(path => !discovered.Contains(path))
+            .Where(path => !discovered.Contains(path)
+                           && !ExtractionVersionCatalog.TrackedManifestNames.Contains(Path.GetFileName(path)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         if (deleted.Count > 0)
@@ -1236,6 +1349,7 @@ public partial class IndexingPipeline
     private RustSemanticFallback CreateRustSemanticFallback(
         string rootPath,
         string cargoManifest,
+        IReadOnlyList<string> cargoRoots,
         Exception failure,
         RustCrateGroupAnalysis? crateGroup)
     {
@@ -1244,7 +1358,7 @@ public partial class IndexingPipeline
         return new RustSemanticFallback(
             manifest,
             wholeWorkspace
-                ? ReadCargoCrateNames(rootPath, cargoManifest)
+                ? ReadCargoCrateNames(rootPath, cargoManifest, cargoRoots)
                 : crateGroup!.Crates.Order(StringComparer.Ordinal).ToList(),
             RustSemanticFailureCategory.Classify(failure),
             (failure as RustSemanticIndexingException)?.FailureCode,
@@ -1256,15 +1370,25 @@ public partial class IndexingPipeline
         };
     }
 
-    private IReadOnlyList<string> ReadCargoCrateNames(string rootPath, string cargoManifest)
+    /// <summary>
+    /// The crates a whole-workspace analysis of <paramref name="cargoManifest"/> covers: every
+    /// discovered package manifest at or below its directory, except those owned by another
+    /// analysis root nested below it. A standalone package nested in another package's directory
+    /// (a vendored path dependency, a Tauri app) is analyzed through its own root, so it belongs
+    /// to that root's group only (sc-26145: LensWorks counted such crates twice).
+    /// </summary>
+    private IReadOnlyList<string> ReadCargoCrateNames(
+        string rootPath, string cargoManifest, IReadOnlyList<string> cargoRoots)
     {
-        var workspaceRoot = Path.GetDirectoryName(cargoManifest) ?? rootPath;
+        var workspaceRoot = Path.GetFullPath(Path.GetDirectoryName(cargoManifest) ?? rootPath);
+        var nestedRoots = cargoRoots
+            .Select(root => Path.GetFullPath(Path.GetDirectoryName(root) ?? rootPath))
+            .Where(directory => IsStrictlyBelow(directory, workspaceRoot))
+            .ToList();
         var crates = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var manifestPath in _fileSystem
-                     .EnumerateFiles(workspaceRoot, "Cargo.toml", SearchOption.AllDirectories)
-                     .Where(path => !path.Contains(
-                         $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                         StringComparison.OrdinalIgnoreCase)))
+        foreach (var manifestPath in DiscoverCargoManifests(rootPath)
+                     .Where(path => IsAtOrBelow(Path.GetDirectoryName(path) ?? "", workspaceRoot))
+                     .Where(path => !nestedRoots.Any(nested => IsAtOrBelow(Path.GetDirectoryName(path) ?? "", nested))))
         {
             try
             {
@@ -1289,6 +1413,14 @@ public partial class IndexingPipeline
         return crates.ToList();
     }
 
+    private static bool IsStrictlyBelow(string directory, string ancestor) =>
+        directory.Length > ancestor.Length &&
+        directory.StartsWith(ancestor, StringComparison.Ordinal) &&
+        directory[ancestor.Length] == Path.DirectorySeparatorChar;
+
+    private static bool IsAtOrBelow(string directory, string ancestor) =>
+        string.Equals(directory, ancestor, StringComparison.Ordinal) || IsStrictlyBelow(directory, ancestor);
+
     /// <summary>
     /// The crate directory owning a <c>.rs</c> file is the longest matching source directory
     /// across every analyzed group, so a file in a nested crate belongs to that crate's group
@@ -1300,13 +1432,14 @@ public partial class IndexingPipeline
     private RustSemanticGroupOutcome CreateRustSemanticGroupOutcome(
         string rootPath,
         string cargoManifest,
+        IReadOnlyList<string> cargoRoots,
         RustCrateGroupAnalysis group,
         RustSemanticFallback? fallback,
         IReadOnlyList<ExtractionResult>? semanticResults,
         long measuredWorkspaceMs)
     {
         var crates = fallback?.Crates ?? (group.IsWholeWorkspace
-            ? ReadCargoCrateNames(rootPath, cargoManifest)
+            ? ReadCargoCrateNames(rootPath, cargoManifest, cargoRoots)
             : group.Crates.Order(StringComparer.Ordinal).ToList());
         var outcome = fallback is null
             ? RustSemanticGroupOutcome.Semantic
