@@ -147,10 +147,17 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
     Task UpsertSyncStateAsync(SyncStateEntity state);
 
     /// <summary>
-    /// Records the vitals version a completed vitals computation used. No-op when the project has
-    /// no sync state.
+    /// Records the vitals version a completed vitals computation used and clears the vitals
+    /// failure record. No-op when the project has no sync state.
     /// </summary>
     Task SetVitalsVersionAsync(string project, int vitalsVersion);
+
+    /// <summary>
+    /// Counts a failed vitals computation of <paramref name="commitSha"/> at
+    /// <paramref name="vitalsVersion"/>: consecutive with the stored record when both match,
+    /// otherwise the first. Returns the consecutive count (0 when the project has no sync state).
+    /// </summary>
+    Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion);
     Task DeleteSyncStateAsync(string project);
 
     // Clusters (community detection)

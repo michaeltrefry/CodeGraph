@@ -60,17 +60,26 @@ public class RepositoryIndexingCompletedConsumer(
         // 2. Compute vitals metrics and health analysis
         if (message.ShouldComputeVitals)
         {
+            // Health summaries written by this run's vitals computation are the only ones the
+            // security score may be blended into: blending a summary again (a failed or skipped
+            // vitals run leaves the previous, already blended rows) would compound the blend.
+            var vitalsStartedAt = DateTime.UtcNow.AddSeconds(-1);
+            var metricsComputed = false;
+            var versionRecorded = false;
+            Exception? vitalsFailure = null;
             await RunStepAsync(async services =>
             {
                 var vitalsAnalyzer = services.GetRequiredService<IVitalsAnalyzer>();
                 var sw = Stopwatch.StartNew();
                 logger.LogInformation("Computing vitals metrics for {Repo}", message.Name);
                 await vitalsAnalyzer.ComputeMetricsAsync(message.Name, message.RepoPath, ct);
+                metricsComputed = true;
                 logger.LogInformation("[Timing] Vitals metrics for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
                 // Routine syncs recompute vitals at an unchanged HEAD while this differs from the
                 // running analyzer's version.
                 await services.GetRequiredService<IGraphStore>()
                     .SetVitalsVersionAsync(message.Name, VitalsAnalyzer.Version);
+                versionRecorded = true;
 
                 // Health analysis calls the analysis model: only when analysis or health analysis
                 // was requested (an explicit re-analyze submits its batch itself, so it asks for
@@ -85,30 +94,46 @@ public class RepositoryIndexingCompletedConsumer(
                 logger.LogInformation("Analyzing health for {Repo}", message.Name);
                 await vitalsAnalyzer.AnalyzeHealthAsync(message.Name, ct);
                 logger.LogInformation("[Timing] Health analysis for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
-            }, ex => logger.LogWarning(ex, "Vitals/health analysis failed for {Repo} — continuing", message.Name));
-
-            // 2.5 Security scan
-            await RunStepAsync(async services =>
+            }, ex =>
             {
-                var graphStore = services.GetRequiredService<IGraphStore>();
-                var sw = Stopwatch.StartNew();
-                logger.LogInformation("Running security scan for {Repo}", message.Name);
-                var secResult = await services.GetRequiredService<ISecurityAnalyzer>()
-                    .ScanAsync(message.Name, message.RepoPath, ct);
-                logger.LogInformation("[Timing] Security scan for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
+                vitalsFailure = ex;
+                logger.LogWarning(ex, "Vitals/health analysis failed for {Repo} — continuing", message.Name);
+            });
 
-                var summaries = await graphStore.GetProjectHealthSummariesAsync(message.Name);
-                foreach (var summary in summaries)
+            if (!versionRecorded && vitalsFailure is not null)
+                await RecordVitalsFailureAsync(message, vitalsFailure);
+
+            // 2.5 Security scan. A vitals-only refresh whose vitals failed has nothing to re-blend.
+            if (metricsComputed || !message.VitalsRefreshOnly)
+            {
+                await RunStepAsync(async services =>
                 {
-                    var blended = Math.Round(0.80 * summary.OverallHealth + 0.20 * secResult.SecurityScore, 1);
-                    summary.OverallHealth = blended;
-                    await graphStore.UpsertProjectHealthSummaryAsync(summary);
-                }
-            }, ex => logger.LogWarning(ex, "Security scan failed for {Repo} — continuing", message.Name));
+                    var graphStore = services.GetRequiredService<IGraphStore>();
+                    var sw = Stopwatch.StartNew();
+                    logger.LogInformation("Running security scan for {Repo}", message.Name);
+                    var secResult = await services.GetRequiredService<ISecurityAnalyzer>()
+                        .ScanAsync(message.Name, message.RepoPath, ct);
+                    logger.LogInformation("[Timing] Security scan for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
+
+                    if (!metricsComputed)
+                    {
+                        logger.LogWarning("Security score not blended into health for {Repo}: vitals were not computed", message.Name);
+                        return;
+                    }
+
+                    var summaries = await graphStore.GetProjectHealthSummariesAsync(message.Name);
+                    foreach (var summary in summaries.Where(summary => summary.ComputedAt >= vitalsStartedAt))
+                    {
+                        var blended = Math.Round(0.80 * summary.OverallHealth + 0.20 * secResult.SecurityScore, 1);
+                        summary.OverallHealth = blended;
+                        await graphStore.UpsertProjectHealthSummaryAsync(summary);
+                    }
+                }, ex => logger.LogWarning(ex, "Security scan failed for {Repo} — continuing", message.Name));
+            }
         }
 
         // 3. Submit analysis batch
-        if (message.ShouldAnalyze && !message.VitalsRefreshOnly)
+        if (message.ShouldAnalyze)
         {
             await RunStepAsync(async services =>
             {
@@ -130,6 +155,26 @@ public class RepositoryIndexingCompletedConsumer(
                 }
             }, ex => logger.LogWarning(ex, "Analysis submission failed for {Repo} — continuing", message.Name));
         }
+    }
+
+    /// <summary>
+    /// Counts the failed vitals computation so routine syncs stop retrying a vitals-only refresh of
+    /// the same commit and vitals version at the limit; logs the cause at Error once, on reaching it.
+    /// </summary>
+    private async Task RecordVitalsFailureAsync(RepositoryIndexingCompleted message, Exception failure)
+    {
+        await RunStepAsync(async services =>
+        {
+            var failures = await services.GetRequiredService<IGraphStore>()
+                .RecordVitalsFailureAsync(message.Name, message.CommitSha, VitalsAnalyzer.Version);
+            var limit = indexingOptions.MaxConsecutiveIndexFailures;
+            if (limit > 0 && failures == limit)
+            {
+                logger.LogError(failure,
+                    "Vitals for {Repo} at {Sha} (vitals version {Version}) have failed {Failures} consecutive times; routine syncs stop recomputing them until the commit or the vitals version changes",
+                    message.Name, message.CommitSha ?? "unknown", VitalsAnalyzer.Version, failures);
+            }
+        }, ex => logger.LogError(ex, "Could not record the vitals failure of {Repo}", message.Name));
     }
 
     private async Task RunStepAsync(Func<IServiceProvider, Task> step, Action<Exception> onFailure)

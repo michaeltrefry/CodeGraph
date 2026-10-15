@@ -162,6 +162,16 @@ public class ProjectService(
             {
                 var vitalsStale = message.ShouldIndex && message.ShouldComputeVitals
                                   && syncState.VitalsVersion != VitalsAnalyzer.Version;
+                if (vitalsStale && IsVitalsSuspended(syncState, commitSha))
+                {
+                    // The failure was logged at Error when the limit was reached; a new commit or
+                    // vitals version retries.
+                    logger.LogInformation(
+                        "Not recomputing vitals for {Repo} at {Sha}: they failed {Failures} consecutive times at vitals version {Version}",
+                        message.Name, commitSha, syncState.VitalsConsecutiveFailures, VitalsAnalyzer.Version);
+                    vitalsStale = false;
+                }
+
                 computeVitals = vitalsStale;
                 if (!message.ShouldIndex
                     || string.Equals(syncState.ExtractionFingerprint, pipeline.ExtractionFingerprint,
@@ -260,6 +270,12 @@ public class ProjectService(
     }
 
     private bool IsHostShuttingDown => hostLifetime?.ApplicationStopping.IsCancellationRequested == true;
+
+    private bool IsVitalsSuspended(SyncStateEntity syncState, string commitSha) =>
+        indexingOptions.MaxConsecutiveIndexFailures > 0
+        && string.Equals(syncState.VitalsFailedCommitSha, commitSha, StringComparison.OrdinalIgnoreCase)
+        && syncState.VitalsFailedVersion == VitalsAnalyzer.Version
+        && syncState.VitalsConsecutiveFailures >= indexingOptions.MaxConsecutiveIndexFailures;
 
     private bool IsIndexingSuspended(SyncStateEntity? syncState, string? commitSha) =>
         indexingOptions.MaxConsecutiveIndexFailures > 0

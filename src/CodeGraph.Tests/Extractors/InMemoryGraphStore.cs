@@ -770,7 +770,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (syncState is not null)
         {
             if (_syncStates.TryGetValue(project, out var previous))
-                syncState.VitalsVersion = previous.VitalsVersion;
+                CopyVitalsRecord(previous, syncState);
             _syncStates[project] = syncState;
         }
         _nextId = nextId;
@@ -1062,8 +1062,37 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task SetVitalsVersionAsync(string project, int vitalsVersion)
     {
         if (_syncStates.TryGetValue(project, out var state))
+        {
             state.VitalsVersion = vitalsVersion;
+            state.VitalsFailedCommitSha = null;
+            state.VitalsFailedVersion = null;
+            state.VitalsConsecutiveFailures = 0;
+        }
+
         return Task.CompletedTask;
+    }
+
+    public Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    {
+        if (!_syncStates.TryGetValue(project, out var state))
+            return Task.FromResult(0);
+
+        state.VitalsConsecutiveFailures =
+            state.VitalsFailedCommitSha == commitSha && state.VitalsFailedVersion == vitalsVersion
+                ? state.VitalsConsecutiveFailures + 1
+                : 1;
+        state.VitalsFailedCommitSha = commitSha;
+        state.VitalsFailedVersion = vitalsVersion;
+        return Task.FromResult(state.VitalsConsecutiveFailures);
+    }
+
+    /// <summary>Like the stores, sync-state writes never change the vitals record.</summary>
+    private static void CopyVitalsRecord(SyncStateEntity from, SyncStateEntity to)
+    {
+        to.VitalsVersion = from.VitalsVersion;
+        to.VitalsFailedCommitSha = from.VitalsFailedCommitSha;
+        to.VitalsFailedVersion = from.VitalsFailedVersion;
+        to.VitalsConsecutiveFailures = from.VitalsConsecutiveFailures;
     }
 
     public Task UpsertSyncStateAsync(SyncStateEntity state)
@@ -1073,11 +1102,11 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (_syncStates.TryGetValue(state.Project, out var existing))
         {
             state.ExtractionFingerprint ??= existing.ExtractionFingerprint;
-            state.VitalsVersion = existing.VitalsVersion;
+            CopyVitalsRecord(existing, state);
         }
         else
         {
-            state.VitalsVersion = null;
+            CopyVitalsRecord(new SyncStateEntity(), state);
         }
 
         _syncStates[state.Project] = state;

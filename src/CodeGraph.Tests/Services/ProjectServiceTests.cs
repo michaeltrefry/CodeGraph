@@ -407,46 +407,19 @@ public class ProjectServiceTests
             refresh.CommitSha.ShouldBe(GitHead(rootPath));
 
             // The post-index consumer computes vitals with the real analyzer and records the version,
-            // without linking, model-backed health analysis or a batch submission.
-            var linkerResolutions = 0;
-            await using (var provider = new ServiceCollection()
-                .AddLogging()
-                .Configure<IndexingOptions>(_ => { })
-                .AddSingleton<IGraphStore>(store)
-                .AddTransient<CrossRepoLinker>(_ =>
-                {
-                    Interlocked.Increment(ref linkerResolutions);
-                    throw new InvalidOperationException("linking must not run for a vitals-only refresh");
-                })
-                .AddScoped<IVitalsAnalyzer>(_ => new VitalsAnalyzer(
-                    store,
-                    new ThrowingAnalysisProviderRegistry(),
-                    Options.Create(new AnalysisOptions()),
-                    new LocalFileSystem(),
-                    new NoLintRunner(),
-                    new LintResultCache(),
-                    new DiagnosticDetailCache(),
-                    NullLogger<VitalsAnalyzer>.Instance))
-                .AddScoped<ISecurityAnalyzer, CleanSecurityAnalyzer>()
-                .AddSingleton<IBatchAnalysisService>(analysis)
-                .AddMassTransitTestHarness(cfg => cfg.AddConsumer<RepositoryIndexingCompletedConsumer>())
-                .BuildServiceProvider(true))
-            {
-                var harness = provider.GetRequiredService<ITestHarness>();
-                await harness.Start();
-                try
-                {
-                    await harness.Bus.Publish(refresh);
-                    (await harness.GetConsumerHarness<RepositoryIndexingCompletedConsumer>().Consumed
-                        .Any<RepositoryIndexingCompleted>()).ShouldBeTrue();
-                }
-                finally
-                {
-                    await harness.Stop();
-                }
-            }
+            // without linking, community detection, model-backed health analysis or a batch submission.
+            var counters = await RunPostIndexConsumerAsync(store, refresh, analysis, () => new VitalsAnalyzer(
+                store,
+                new ThrowingAnalysisProviderRegistry(),
+                Options.Create(new AnalysisOptions()),
+                new LocalFileSystem(),
+                new NoLintRunner(),
+                new LintResultCache(),
+                new DiagnosticDetailCache(),
+                NullLogger<VitalsAnalyzer>.Instance));
 
-            linkerResolutions.ShouldBe(0);
+            counters.LinkerResolutions.ShouldBe(0);
+            counters.CommunityDetections.ShouldBe(0);
             analysis.SubmissionCount.ShouldBe(0);
             (await store.GetFileMetricsAsync("inference")).Single(m => m.FilePath == "App.swift")
                 .FunctionCount.ShouldBeGreaterThan(0);
@@ -462,6 +435,258 @@ public class ProjectServiceTests
         {
             DeleteDirectory(rootPath);
         }
+    }
+
+    /// <summary>
+    /// sc-26138: a vitals computation that keeps failing must neither drift the stored health (the
+    /// security blend compounded over the previous, already blended summaries on every retry) nor
+    /// be retried by every routine sync: the vitals version is recorded only after success, and
+    /// vitals-only refreshes stop at the failure limit until HEAD changes.
+    /// </summary>
+    [Fact]
+    public async Task ProcessRepository_FailingVitalsRefreshKeepsHealthAndStopsAtTheFailureLimit()
+    {
+        var rootPath = CreateGitRepository();
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var bus = new RecordingMessageBus();
+            var extractor = new CountingExtractor();
+            var analysis = new RecordingBatchAnalysisService(store);
+            var routine = new ProcessRepository
+            {
+                Name = "inference", RepoUrl = rootPath, ShouldIndex = true, SkipIfUpToDate = true
+            };
+            ProjectService Service() => CreateService(store, extractor, rootPath, maxConsecutiveFailures: 2, bus, analysis: analysis);
+
+            await Service().ProcessRepository(routine);
+            await store.SetVitalsVersionAsync("inference", VitalsAnalyzer.Version - 1);
+            await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
+            {
+                Project = "inference", OverallHealth = 6.0, ComputedAt = DateTime.UtcNow.AddDays(-1)
+            });
+
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                await Service().ProcessRepository(routine);
+                var refresh = bus.Messages.Last().ShouldBeOfType<RepositoryIndexingCompleted>();
+                refresh.VitalsRefreshOnly.ShouldBeTrue();
+                await RunPostIndexConsumerAsync(store, refresh, analysis, () => new FailingVitalsAnalyzer(), maxConsecutiveFailures: 2);
+
+                var state = (await store.GetSyncStateAsync("inference"))!;
+                state.VitalsVersion.ShouldBe(VitalsAnalyzer.Version - 1);
+                state.VitalsConsecutiveFailures.ShouldBe(attempt);
+                (await store.GetProjectHealthSummariesAsync("inference")).ShouldHaveSingleItem()
+                    .OverallHealth.ShouldBe(6.0);
+            }
+
+            bus.Messages.Count.ShouldBe(3);
+            // Limit reached: routine syncs of the same commit stop publishing vitals-only refreshes.
+            await Service().ProcessRepository(routine);
+            bus.Messages.Count.ShouldBe(3);
+            extractor.Runs.ShouldBe(1);
+
+            // A new commit is indexed and computes vitals again.
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "second.py"), "class Second:\n    pass\n");
+            Git(rootPath, "add", ".");
+            Git(rootPath, "commit", "-q", "-m", "second");
+            await Service().ProcessRepository(routine);
+            bus.Messages.Count.ShouldBe(4);
+            var reindex = bus.Messages.Last().ShouldBeOfType<RepositoryIndexingCompleted>();
+            reindex.ShouldComputeVitals.ShouldBeTrue();
+            reindex.VitalsRefreshOnly.ShouldBeFalse();
+            reindex.CommitSha.ShouldBe(GitHead(rootPath));
+        }
+        finally
+        {
+            DeleteDirectory(rootPath);
+        }
+    }
+
+    /// <summary>
+    /// The security score is blended only into health summaries this run's vitals computation
+    /// wrote: a failed vitals run, or a summary vitals no longer write, keeps its stored health.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "fail")]
+    [InlineData(true, "fail")]
+    [InlineData(false, "partial")]
+    [InlineData(true, "partial")]
+    [InlineData(false, "succeed")]
+    [InlineData(true, "succeed")]
+    public async Task PostIndexConsumer_BlendsSecurityOnlyIntoSummariesWrittenByThisRun(bool vitalsRefreshOnly, string vitals)
+    {
+        var store = new InMemoryGraphStore();
+        await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "inference", LastCommitSha = "abc", Status = "idle" });
+        await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
+        {
+            Project = "inference", DotnetProject = "Old", OverallHealth = 6.0, ComputedAt = DateTime.UtcNow.AddDays(-1)
+        });
+        var message = new RepositoryIndexingCompleted
+        {
+            Name = "inference", RepoPath = "/repos/inference", CommitSha = "abc", ShouldComputeVitals = true,
+            VitalsRefreshOnly = vitalsRefreshOnly
+        };
+
+        var counters = await RunPostIndexConsumerAsync(store, message, new RecordingBatchAnalysisService(store),
+            () => vitals switch
+            {
+                "succeed" => new SummaryWritingVitalsAnalyzer(store, fail: false),
+                // Wrote a fresh summary, then failed (as a computation failing part-way through).
+                "partial" => new SummaryWritingVitalsAnalyzer(store, fail: true),
+                _ => new FailingVitalsAnalyzer()
+            });
+
+        var summaries = await store.GetProjectHealthSummariesAsync("inference");
+        summaries.Single(summary => summary.DotnetProject == "Old").OverallHealth.ShouldBe(6.0);
+        var state = (await store.GetSyncStateAsync("inference"))!;
+        if (vitals == "succeed")
+        {
+            // 0.8 * 4.0 + 0.2 * 10 (CountingSecurityAnalyzer) = 5.2, blended exactly once.
+            summaries.Single(summary => summary.DotnetProject is null).OverallHealth.ShouldBe(5.2);
+            state.VitalsVersion.ShouldBe(VitalsAnalyzer.Version);
+            state.VitalsConsecutiveFailures.ShouldBe(0);
+            counters.SecurityScans.ShouldBe(1);
+        }
+        else
+        {
+            if (vitals == "partial")
+                summaries.Single(summary => summary.DotnetProject is null).OverallHealth.ShouldBe(4.0);
+            else
+                summaries.Count.ShouldBe(1);
+            state.VitalsVersion.ShouldBeNull();
+            state.VitalsConsecutiveFailures.ShouldBe(1);
+            state.VitalsFailedCommitSha.ShouldBe("abc");
+            // A failed vitals-only refresh has nothing to re-blend; an index run still scans.
+            counters.SecurityScans.ShouldBe(vitalsRefreshOnly ? 0 : 1);
+        }
+    }
+
+    /// <summary>
+    /// The vitals failure limit applies only to the failing commit at the failing vitals version:
+    /// a record for another commit or an older vitals version does not stop a vitals refresh.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task ProcessRepository_VitalsFailureLimitIsPerCommitAndVitalsVersion(bool otherCommit, bool olderVersion)
+    {
+        var rootPath = CreateGitRepository();
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var bus = new RecordingMessageBus();
+            var extractor = new CountingExtractor();
+            var routine = new ProcessRepository
+            {
+                Name = "inference", RepoUrl = rootPath, ShouldIndex = true, SkipIfUpToDate = true
+            };
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 2, bus).ProcessRepository(routine);
+            var failedSha = otherCommit ? new string('0', 40) : GitHead(rootPath);
+            var failedVersion = olderVersion ? VitalsAnalyzer.Version - 1 : VitalsAnalyzer.Version;
+            for (var i = 0; i < 2; i++)
+                await store.RecordVitalsFailureAsync("inference", failedSha, failedVersion);
+
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 2, bus).ProcessRepository(routine);
+
+            bus.Messages.Count.ShouldBe(2);
+            bus.Messages[1].ShouldBeOfType<RepositoryIndexingCompleted>().VitalsRefreshOnly.ShouldBeTrue();
+        }
+        finally
+        {
+            DeleteDirectory(rootPath);
+        }
+    }
+
+    private sealed record PostIndexCounters(int LinkerResolutions, int CommunityDetections, int SecurityScans);
+
+    /// <summary>
+    /// Runs the post-index consumer on <paramref name="message"/> with community detection enabled,
+    /// counting cross-repo linker resolutions and community detections (both throw).
+    /// </summary>
+    private static async Task<PostIndexCounters> RunPostIndexConsumerAsync(
+        InMemoryGraphStore store,
+        RepositoryIndexingCompleted message,
+        IBatchAnalysisService analysis,
+        Func<IVitalsAnalyzer> vitals,
+        int maxConsecutiveFailures = 3)
+    {
+        var linkerResolutions = 0;
+        var communities = new CountingCommunityDetection();
+        var security = new CountingSecurityAnalyzer();
+        await using var provider = new ServiceCollection()
+            .AddLogging()
+            .Configure<IndexingOptions>(options =>
+            {
+                options.DetectCommunitiesAfterIndexing = true;
+                options.MaxConsecutiveIndexFailures = maxConsecutiveFailures;
+            })
+            .AddSingleton<IGraphStore>(store)
+            .AddTransient<CrossRepoLinker>(_ =>
+            {
+                Interlocked.Increment(ref linkerResolutions);
+                throw new InvalidOperationException("linking must not run for a vitals-only refresh");
+            })
+            .AddSingleton<ICommunityDetectionService>(communities)
+            .AddScoped(_ => vitals())
+            .AddSingleton<ISecurityAnalyzer>(security)
+            .AddSingleton(analysis)
+            .AddMassTransitTestHarness(cfg => cfg.AddConsumer<RepositoryIndexingCompletedConsumer>())
+            .BuildServiceProvider(true);
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(message);
+            (await harness.GetConsumerHarness<RepositoryIndexingCompletedConsumer>().Consumed
+                .Any<RepositoryIndexingCompleted>()).ShouldBeTrue();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+
+        return new PostIndexCounters(linkerResolutions, communities.Calls, security.Scans);
+    }
+
+    private sealed class CountingCommunityDetection : ICommunityDetectionService
+    {
+        private int _calls;
+        public int Calls => _calls;
+
+        public Task DetectCommunitiesAsync(CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _calls);
+            throw new InvalidOperationException("community detection must not run for a vitals-only refresh");
+        }
+
+        public Task<ClusterOverviewResponse> GetClusterOverviewAsync() => throw new NotSupportedException();
+        public Task<ClusterDetailResponse?> GetClusterDetailAsync(int clusterId) => throw new NotSupportedException();
+        public Task<ClusterGraphResponse> GetClusterGraphAsync() => throw new NotSupportedException();
+    }
+
+    private sealed class FailingVitalsAnalyzer : IVitalsAnalyzer
+    {
+        public Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default) =>
+            throw new IOException("simulated: git history could not be read");
+
+        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    /// <summary>Writes one fresh repository-level summary (health 4.0), like a real vitals run.</summary>
+    private sealed class SummaryWritingVitalsAnalyzer(IGraphStore store, bool fail) : IVitalsAnalyzer
+    {
+        public async Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
+        {
+            await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
+            {
+                Project = projectName, OverallHealth = 4.0, ComputedAt = DateTime.UtcNow
+            });
+            if (fail)
+                throw new IOException("simulated: failed after writing the repository summary");
+        }
+
+        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     /// <summary>A sync that does not want vitals never triggers a vitals-only refresh.</summary>
@@ -505,10 +730,16 @@ public class ProjectServiceTests
             Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
     }
 
-    private sealed class CleanSecurityAnalyzer : ISecurityAnalyzer
+    private sealed class CountingSecurityAnalyzer : ISecurityAnalyzer
     {
-        public Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default) =>
-            Task.FromResult(new SecurityScanResult(10, 0, 0, 0, 0, []));
+        private int _scans;
+        public int Scans => _scans;
+
+        public Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _scans);
+            return Task.FromResult(new SecurityScanResult(10, 0, 0, 0, 0, []));
+        }
     }
 
     [Fact]
