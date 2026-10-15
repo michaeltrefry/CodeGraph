@@ -640,6 +640,27 @@ public class MariaDbGraphStoreTests
             context.ChangeTracker.Clear();
             (await store.GetSyncStateAsync("Versioned"))!.ExtractionFingerprint.ShouldBe("FP2");
             (await store.GetSyncStatesAsync(["Versioned"]))["Versioned"].ExtractionFingerprint.ShouldBe("FP2");
+
+            // sc-26138: the vitals version (migration 071) is written only by SetVitalsVersionAsync;
+            // sync-state upserts and full replacements keep it.
+            (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBeNull();
+            await store.SetVitalsVersionAsync("Versioned", 7);
+            await store.SetVitalsVersionAsync("Unknown", 7);
+            context.ChangeTracker.Clear();
+            (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBe(7);
+            (await store.GetSyncStateAsync("Unknown")).ShouldBeNull();
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "Versioned", Status = "idle" });
+            await store.ReplaceProjectGraphAsync(
+                "Versioned",
+                [Node("Versioned.B", "b.cs")],
+                [],
+                new Dictionary<string, string> { ["b.cs"] = "h2" },
+                new RepositoryEntity { Name = "Versioned" },
+                new SyncStateEntity { Project = "Versioned", LastCommitSha = "def", Status = "idle" },
+                new Dictionary<string, string> { ["b.cs"] = "p1;RoslynExtractor=3" });
+            context.ChangeTracker.Clear();
+            (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBe(7);
+            (await store.GetSyncStatesAsync(["Versioned"]))["Versioned"].VitalsVersion.ShouldBe(7);
         }
         finally
         {

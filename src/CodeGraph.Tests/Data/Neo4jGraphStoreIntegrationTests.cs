@@ -201,6 +201,38 @@ public class Neo4jGraphStoreIntegrationTests
         }).ToList();
     }
 
+    /// <summary>sc-26138: the vitals version is written only by SetVitalsVersionAsync; upserts keep it.</summary>
+    [Fact]
+    public async Task Neo4jGraphStore_SyncStateKeepsVitalsVersionAcrossUpsertsWhenConnectionIsConfigured()
+    {
+        var options = Options.Create(new CodeGraphStorageOptions
+        {
+            Neo4jUri = Require("CODEGRAPH_NEO4J_TEST_URI"),
+            Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
+            Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
+        });
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
+        await using var sessions = new Neo4jSessionFactory(options);
+        var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
+        var project = $"Vitals_{Guid.NewGuid():N}";
+
+        try
+        {
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = project, LastCommitSha = "abc", Status = "idle" });
+            (await store.GetSyncStateAsync(project))!.VitalsVersion.ShouldBeNull();
+
+            await store.SetVitalsVersionAsync(project, 7);
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = project, LastCommitSha = "def", Status = "idle" });
+
+            (await store.GetSyncStateAsync(project))!.VitalsVersion.ShouldBe(7);
+            (await store.GetSyncStatesAsync([project]))[project].VitalsVersion.ShouldBe(7);
+        }
+        finally
+        {
+            await store.DeleteSyncStateAsync(project);
+        }
+    }
+
     private static string Require(string name) =>
         Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
             ? value

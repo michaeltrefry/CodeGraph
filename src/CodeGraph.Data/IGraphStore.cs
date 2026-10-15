@@ -145,6 +145,12 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
     Task<SyncStateEntity?> GetSyncStateAsync(string project);
     Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects);
     Task UpsertSyncStateAsync(SyncStateEntity state);
+
+    /// <summary>
+    /// Records the vitals version a completed vitals computation used. No-op when the project has
+    /// no sync state.
+    /// </summary>
+    Task SetVitalsVersionAsync(string project, int vitalsVersion);
     Task DeleteSyncStateAsync(string project);
 
     // Clusters (community detection)

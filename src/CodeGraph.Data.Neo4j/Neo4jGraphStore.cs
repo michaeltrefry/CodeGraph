@@ -302,7 +302,10 @@ public partial class Neo4jGraphStore(
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
                     ErrorMessage = GetStringOrNull(node, "errorMessage"),
-                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint")
+                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint"),
+                    VitalsVersion = node.Properties.TryGetValue("vitalsVersion", out var vitalsVersion) && vitalsVersion is not null
+                        ? vitalsVersion.As<int>()
+                        : null
                 };
             }
             return null;
@@ -336,7 +339,10 @@ public partial class Neo4jGraphStore(
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
                     ErrorMessage = GetStringOrNull(node, "errorMessage"),
-                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint")
+                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint"),
+                    VitalsVersion = node.Properties.TryGetValue("vitalsVersion", out var vitalsVersion) && vitalsVersion is not null
+                        ? vitalsVersion.As<int>()
+                        : null
                 };
                 results[entity.Project] = entity;
             }
@@ -367,6 +373,17 @@ public partial class Neo4jGraphStore(
                     status = state.Status,
                     errorMessage = state.ErrorMessage
                 });
+        });
+    }
+
+    public async Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    {
+        await using var session = sessionFactory.GetSession();
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync(
+                "MATCH (s:SyncState {project: $project}) SET s.vitalsVersion = $vitalsVersion",
+                new { project, vitalsVersion });
         });
     }
 

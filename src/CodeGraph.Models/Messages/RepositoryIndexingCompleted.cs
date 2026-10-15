@@ -35,4 +35,11 @@ public class RepositoryIndexingCompleted
     /// (published before it existed) keeps the ShouldAnalyze-only behavior.
     /// </summary>
     public bool ShouldAnalyzeHealth { get; set; }
+
+    /// <summary>
+    /// The graph did not change: a routine sync at an unchanged HEAD only needs vitals recomputed
+    /// because the vitals version moved on. Cross-repo linking, community detection and analysis
+    /// are skipped. Defaults to false.
+    /// </summary>
+    public bool VitalsRefreshOnly { get; set; }
 }

@@ -33,17 +33,21 @@ public class RepositoryIndexingCompletedConsumer(
         var message = context.Message;
         var ct = context.CancellationToken;
 
-        // 1. Incremental cross-repo linking for this repo
-        await RunStepAsync(async services =>
+        // 1. Incremental cross-repo linking for this repo. A vitals-only refresh did not change the
+        // graph, so linking and community detection are skipped.
+        if (!message.VitalsRefreshOnly)
         {
-            var sw = Stopwatch.StartNew();
-            logger.LogInformation("Running incremental cross-repo linking for {Repo}", message.Name);
-            await services.GetRequiredService<CrossRepoLinker>().LinkForProjectAsync(message.Name, ct);
-            logger.LogInformation("[Timing] Cross-repo linking for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
-        }, ex => logger.LogWarning(ex, "Cross-repo linking failed for {Repo} — continuing", message.Name));
+            await RunStepAsync(async services =>
+            {
+                var sw = Stopwatch.StartNew();
+                logger.LogInformation("Running incremental cross-repo linking for {Repo}", message.Name);
+                await services.GetRequiredService<CrossRepoLinker>().LinkForProjectAsync(message.Name, ct);
+                logger.LogInformation("[Timing] Cross-repo linking for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
+            }, ex => logger.LogWarning(ex, "Cross-repo linking failed for {Repo} — continuing", message.Name));
+        }
 
         // 1.5. Re-run community detection (Louvain clustering)
-        if (indexingOptions.DetectCommunitiesAfterIndexing)
+        if (indexingOptions.DetectCommunitiesAfterIndexing && !message.VitalsRefreshOnly)
         {
             await RunStepAsync(async services =>
             {
@@ -63,6 +67,10 @@ public class RepositoryIndexingCompletedConsumer(
                 logger.LogInformation("Computing vitals metrics for {Repo}", message.Name);
                 await vitalsAnalyzer.ComputeMetricsAsync(message.Name, message.RepoPath, ct);
                 logger.LogInformation("[Timing] Vitals metrics for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
+                // Routine syncs recompute vitals at an unchanged HEAD while this differs from the
+                // running analyzer's version.
+                await services.GetRequiredService<IGraphStore>()
+                    .SetVitalsVersionAsync(message.Name, VitalsAnalyzer.Version);
 
                 // Health analysis calls the analysis model: only when analysis or health analysis
                 // was requested (an explicit re-analyze submits its batch itself, so it asks for
@@ -100,7 +108,7 @@ public class RepositoryIndexingCompletedConsumer(
         }
 
         // 3. Submit analysis batch
-        if (message.ShouldAnalyze)
+        if (message.ShouldAnalyze && !message.VitalsRefreshOnly)
         {
             await RunStepAsync(async services =>
             {

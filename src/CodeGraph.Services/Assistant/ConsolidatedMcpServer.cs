@@ -126,7 +126,7 @@ public sealed class ConsolidatedMcpServer
 
     [McpServerTool(Name = "project_report", Title = "Project Intelligence", ReadOnly = true)]
     [Description("Project/repository intelligence. operation=search | summary | architecture | health | fleet_health | archival_candidates.")]
-    public static async Task<string> ProjectReport(
+    public static async Task<CallToolResult> ProjectReport(
         CodeGraphMcpServer codegraph,
         [Description("Operation: search (default) | summary | architecture | health | fleet_health | archival_candidates.")] string operation = "search",
         [Description("Project/repository name. Required for summary, architecture, and health.")] string? project = null,
@@ -141,17 +141,17 @@ public sealed class ConsolidatedMcpServer
         const string tool = "project_report";
         var op = Normalize(operation);
         if (op is "summary" or "architecture" or "health" && string.IsNullOrWhiteSpace(project))
-            return Error(tool, op, "missing_argument", $"operation={op} requires 'project'.");
+            return TextResult(Error(tool, op, "missing_argument", $"operation={op} requires 'project'."));
 
         return op switch
         {
-            "" or "search" => Wrap(tool, "search", await codegraph.SearchProjects(search, group, page, pageSize)),
-            "summary" => Wrap(tool, op, await codegraph.GetServiceSummary(project!)),
+            "" or "search" => TextResult(Wrap(tool, "search", await codegraph.SearchProjects(search, group, page, pageSize))),
+            "summary" => TextResult(Wrap(tool, op, await codegraph.GetServiceSummary(project!))),
             "architecture" => Wrap(tool, op, await codegraph.GetArchitecture(project!)),
-            "health" => Wrap(tool, op, await codegraph.GetProjectHealth(project!, topHotspots)),
-            "fleet_health" => Wrap(tool, op, await codegraph.GetFleetHealth(maxHealth, limit)),
-            "archival_candidates" => Wrap(tool, op, await codegraph.FindArchivalCandidates()),
-            _ => InvalidOperation(tool, operation, "search", "summary", "architecture", "health", "fleet_health", "archival_candidates"),
+            "health" => TextResult(Wrap(tool, op, await codegraph.GetProjectHealth(project!, topHotspots))),
+            "fleet_health" => TextResult(Wrap(tool, op, await codegraph.GetFleetHealth(maxHealth, limit))),
+            "archival_candidates" => TextResult(Wrap(tool, op, await codegraph.FindArchivalCandidates())),
+            _ => TextResult(InvalidOperation(tool, operation, "search", "summary", "architecture", "health", "fleet_health", "archival_candidates")),
         };
     }
 

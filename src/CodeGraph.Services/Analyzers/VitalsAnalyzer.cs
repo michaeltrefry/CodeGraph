@@ -23,6 +23,14 @@ public class VitalsAnalyzer(
     IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null,
     IOptions<IndexingOptions>? indexingOptionsAccessor = null) : IVitalsAnalyzer
 {
+    /// <summary>
+    /// Version of the vitals computation. Bump it with any change to what vitals emit for an
+    /// unchanged checkout (the source-extension set, complexity rules, scoring): a routine sync
+    /// recomputes vitals at an unchanged HEAD when the version stored in sync_state differs.
+    /// 2: Swift and Rust coverage (sc-26136).
+    /// </summary>
+    public const int Version = 2;
+
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
     private readonly IndexingOptions indexingOptions = indexingOptionsAccessor?.Value ?? new IndexingOptions();
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)

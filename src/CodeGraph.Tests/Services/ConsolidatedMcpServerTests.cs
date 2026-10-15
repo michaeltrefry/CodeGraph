@@ -69,7 +69,7 @@ public class ConsolidatedMcpServerTests
         });
         var codegraph = CreateCodeGraphServer(store);
 
-        var response = await ConsolidatedMcpServer.ProjectReport(codegraph, operation: "search", search: "Code");
+        var response = (await ConsolidatedMcpServer.ProjectReport(codegraph, operation: "search", search: "Code")).Text();
 
         Result(response).ShouldContain("CodeGraph");
         Result(response).ShouldContain("## Indexed Projects (1)");
@@ -224,7 +224,7 @@ public class ConsolidatedMcpServerTests
             "rag_search" => await ConsolidatedMcpServer.RagSearch(codegraph, operation),
             "graph_trace" => (await ConsolidatedMcpServer.GraphTrace(codegraph, operation)).Text(),
             "graph_source" => (await ConsolidatedMcpServer.GraphSource(codegraph, operation)).Text(),
-            "project_report" => await ConsolidatedMcpServer.ProjectReport(codegraph, operation),
+            "project_report" => (await ConsolidatedMcpServer.ProjectReport(codegraph, operation)).Text(),
             "graph_cluster" => await ConsolidatedMcpServer.GraphCluster(codegraph, operation),
             "storage_table" => await ConsolidatedMcpServer.StorageTable(codegraph, operation),
             "convention" => await ConsolidatedMcpServer.Convention(codegraph, operation),

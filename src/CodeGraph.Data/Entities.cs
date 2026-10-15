@@ -115,6 +115,14 @@ public class SyncStateEntity
     /// stored value on upsert.
     /// </summary>
     public string? ExtractionFingerprint { get; set; }
+
+    /// <summary>
+    /// <c>VitalsAnalyzer.Version</c> of the last completed vitals computation. A routine sync
+    /// recomputes vitals at an unchanged HEAD when it differs from the running analyzer's version.
+    /// Written only by <see cref="IGraphStore.SetVitalsVersionAsync"/>; sync-state upserts never
+    /// change it.
+    /// </summary>
+    public int? VitalsVersion { get; set; }
 }
 
 public class MigrationHistoryEntity

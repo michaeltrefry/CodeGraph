@@ -1,7 +1,9 @@
 using CodeGraph.Data;
 using CodeGraph.Extractors.CSharp;
+using CodeGraph.Host.Shared.Consumers;
 using CodeGraph.Models;
 using CodeGraph.Models.Messages;
+using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
@@ -9,6 +11,9 @@ using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Tests.Extractors;
+using MassTransit;
+using MassTransit.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Shouldly;
@@ -305,8 +310,10 @@ public class ProjectServiceTests
             first.ShouldAnalyze.ShouldBeTrue();
             first.ShouldComputeVitals.ShouldBeTrue();
             first.ShouldAnalyzeHealth.ShouldBeFalse();
+            // The post-index consumer records the vitals version it computed with.
+            await store.SetVitalsVersionAsync("inference", VitalsAnalyzer.Version);
 
-            // Same HEAD, same extractor versions: the routine sync is skipped.
+            // Same HEAD, same extractor and vitals versions: the routine sync is skipped.
             await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus)
                 .ProcessRepository(routine);
             extractor.Runs.ShouldBe(1);
@@ -331,11 +338,177 @@ public class ProjectServiceTests
             await upgraded.ProcessRepository(routine);
             extractor.Runs.ShouldBe(2);
             bus.Messages.Count.ShouldBe(2);
+
+            // An extractor upgrade lands together with a vitals upgrade: the extraction refresh
+            // also recomputes vitals (still without analysis or health analysis).
+            await store.SetVitalsVersionAsync("inference", VitalsAnalyzer.Version - 1);
+            extractor.Version = "3";
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus).ProcessRepository(routine);
+            extractor.Runs.ShouldBe(3);
+            var combined = bus.Messages.OfType<RepositoryIndexingCompleted>().Last();
+            bus.Messages.Count.ShouldBe(3);
+            combined.ShouldComputeVitals.ShouldBeTrue();
+            combined.VitalsRefreshOnly.ShouldBeFalse();
+            combined.ShouldAnalyze.ShouldBeFalse();
+            combined.ShouldAnalyzeHealth.ShouldBeFalse();
         }
         finally
         {
             DeleteDirectory(rootPath);
         }
+    }
+
+    /// <summary>
+    /// sc-26138: vitals coverage grew (Swift/Rust) but repositories whose HEAD did not move kept
+    /// their old vitals, because nothing recomputed vitals at an unchanged HEAD. A routine sync now
+    /// recomputes vitals only (no extraction, no analysis) when the stored vitals version is old;
+    /// through the post-index consumer the Swift file gets metrics and the version is recorded.
+    /// </summary>
+    [Fact]
+    public async Task ProcessRepository_RoutineSyncAtUnchangedHeadRecomputesOnlyVitalsAfterVitalsVersionBump()
+    {
+        var rootPath = CreateGitRepository();
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "App.swift"),
+                "struct App {\n    func run(_ x: Int) -> Int {\n        if x > 0 { return x }\n        return 0\n    }\n}\n");
+            Git(rootPath, "add", ".");
+            Git(rootPath, "commit", "-q", "-m", "swift");
+
+            var store = new InMemoryGraphStore();
+            var bus = new RecordingMessageBus();
+            var extractor = new CountingExtractor();
+            var analysis = new RecordingBatchAnalysisService(store);
+            var routine = new ProcessRepository
+            {
+                Name = "inference",
+                RepoUrl = rootPath,
+                ShouldIndex = true,
+                ShouldAnalyze = true,
+                SkipIfUpToDate = true
+            };
+
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus, analysis: analysis)
+                .ProcessRepository(routine);
+            extractor.Runs.ShouldBe(1);
+            // Vitals were last computed by an analyzer without Swift coverage.
+            await store.SetVitalsVersionAsync("inference", VitalsAnalyzer.Version - 1);
+
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus, analysis: analysis)
+                .ProcessRepository(routine);
+            extractor.Runs.ShouldBe(1);
+            analysis.SubmissionCount.ShouldBe(0);
+            bus.Messages.Count.ShouldBe(2);
+            var refresh = bus.Messages[1].ShouldBeOfType<RepositoryIndexingCompleted>();
+            refresh.VitalsRefreshOnly.ShouldBeTrue();
+            refresh.ShouldComputeVitals.ShouldBeTrue();
+            refresh.ShouldAnalyze.ShouldBeFalse();
+            refresh.ShouldAnalyzeHealth.ShouldBeFalse();
+            refresh.CommitSha.ShouldBe(GitHead(rootPath));
+
+            // The post-index consumer computes vitals with the real analyzer and records the version,
+            // without linking, model-backed health analysis or a batch submission.
+            var linkerResolutions = 0;
+            await using (var provider = new ServiceCollection()
+                .AddLogging()
+                .Configure<IndexingOptions>(_ => { })
+                .AddSingleton<IGraphStore>(store)
+                .AddTransient<CrossRepoLinker>(_ =>
+                {
+                    Interlocked.Increment(ref linkerResolutions);
+                    throw new InvalidOperationException("linking must not run for a vitals-only refresh");
+                })
+                .AddScoped<IVitalsAnalyzer>(_ => new VitalsAnalyzer(
+                    store,
+                    new ThrowingAnalysisProviderRegistry(),
+                    Options.Create(new AnalysisOptions()),
+                    new LocalFileSystem(),
+                    new NoLintRunner(),
+                    new LintResultCache(),
+                    new DiagnosticDetailCache(),
+                    NullLogger<VitalsAnalyzer>.Instance))
+                .AddScoped<ISecurityAnalyzer, CleanSecurityAnalyzer>()
+                .AddSingleton<IBatchAnalysisService>(analysis)
+                .AddMassTransitTestHarness(cfg => cfg.AddConsumer<RepositoryIndexingCompletedConsumer>())
+                .BuildServiceProvider(true))
+            {
+                var harness = provider.GetRequiredService<ITestHarness>();
+                await harness.Start();
+                try
+                {
+                    await harness.Bus.Publish(refresh);
+                    (await harness.GetConsumerHarness<RepositoryIndexingCompletedConsumer>().Consumed
+                        .Any<RepositoryIndexingCompleted>()).ShouldBeTrue();
+                }
+                finally
+                {
+                    await harness.Stop();
+                }
+            }
+
+            linkerResolutions.ShouldBe(0);
+            analysis.SubmissionCount.ShouldBe(0);
+            (await store.GetFileMetricsAsync("inference")).Single(m => m.FilePath == "App.swift")
+                .FunctionCount.ShouldBeGreaterThan(0);
+            (await store.GetSyncStateAsync("inference"))!.VitalsVersion.ShouldBe(VitalsAnalyzer.Version);
+
+            // Same vitals version: routine syncs skip again.
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus, analysis: analysis)
+                .ProcessRepository(routine);
+            extractor.Runs.ShouldBe(1);
+            bus.Messages.Count.ShouldBe(2);
+        }
+        finally
+        {
+            DeleteDirectory(rootPath);
+        }
+    }
+
+    /// <summary>A sync that does not want vitals never triggers a vitals-only refresh.</summary>
+    [Fact]
+    public async Task ProcessRepository_StaleVitalsVersionIsIgnoredWhenVitalsAreNotRequested()
+    {
+        var rootPath = CreateGitRepository();
+        try
+        {
+            var store = new InMemoryGraphStore();
+            var bus = new RecordingMessageBus();
+            var extractor = new CountingExtractor();
+            var routine = new ProcessRepository
+            {
+                Name = "inference", RepoUrl = rootPath, ShouldIndex = true, SkipIfUpToDate = true,
+                ShouldComputeVitals = false
+            };
+
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus).ProcessRepository(routine);
+            await CreateService(store, extractor, rootPath, maxConsecutiveFailures: 3, bus).ProcessRepository(routine);
+
+            extractor.Runs.ShouldBe(1);
+            bus.Messages.Count.ShouldBe(1);
+            (await store.GetSyncStateAsync("inference"))!.VitalsVersion.ShouldBeNull();
+        }
+        finally
+        {
+            DeleteDirectory(rootPath);
+        }
+    }
+
+    private sealed class ThrowingAnalysisProviderRegistry : IAnalysisProviderRegistry
+    {
+        public IAnalysisModelProvider GetProvider(string? providerName = null) =>
+            throw new InvalidOperationException("a vitals-only refresh must not call the analysis model");
+    }
+
+    private sealed class NoLintRunner : ILintRunner
+    {
+        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
+    }
+
+    private sealed class CleanSecurityAnalyzer : ISecurityAnalyzer
+    {
+        public Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default) =>
+            Task.FromResult(new SecurityScanResult(10, 0, 0, 0, 0, []));
     }
 
     [Fact]
@@ -419,7 +592,8 @@ public class ProjectServiceTests
 
     private static ProjectService CreateService(
         InMemoryGraphStore store, ICodeExtractor extractor, string rootPath, int maxConsecutiveFailures,
-        IMessageBus? messageBus = null, Microsoft.Extensions.Hosting.IHostApplicationLifetime? hostLifetime = null)
+        IMessageBus? messageBus = null, Microsoft.Extensions.Hosting.IHostApplicationLifetime? hostLifetime = null,
+        IBatchAnalysisService? analysis = null)
     {
         var options = Options.Create(new IndexingOptions
         {
@@ -429,7 +603,7 @@ public class ProjectServiceTests
         });
         return new ProjectService(
             store,
-            new RecordingBatchAnalysisService(store),
+            analysis ?? new RecordingBatchAnalysisService(store),
             messageBus ?? new NoOpMessageBus(),
             new FixedRepoProvider(rootPath),
             new IndexingPipeline(store, [extractor], options, new LocalFileSystem(),

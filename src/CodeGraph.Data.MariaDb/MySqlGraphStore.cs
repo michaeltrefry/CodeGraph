@@ -945,6 +945,12 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
+    public async Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    {
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE sync_state SET vitals_version = {vitalsVersion} WHERE project = {project}");
+    }
+
     public async Task DeleteSyncStateAsync(string project)
     {
         var state = await db.SyncStates.FindAsync(project);

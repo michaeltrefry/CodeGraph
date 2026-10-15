@@ -152,15 +152,39 @@ public class ProjectService(
         // True when HEAD is already indexed and only the extraction versions moved on: the run
         // re-extracts outdated files but must not repeat per-commit LLM work (analysis, health).
         var extractionRefreshOnly = false;
+        // Vitals are recomputed on every index; at an unchanged HEAD only when VitalsAnalyzer.Version
+        // moved on since the last computation.
+        var computeVitals = message.ShouldComputeVitals;
         if (message.SkipIfUpToDate)
         {
             var syncState = await graphStore.GetSyncStateAsync(message.Name);
             if (syncState is not null && syncState.LastCommitSha == commitSha && commitSha is not null)
             {
+                var vitalsStale = message.ShouldIndex && message.ShouldComputeVitals
+                                  && syncState.VitalsVersion != VitalsAnalyzer.Version;
+                computeVitals = vitalsStale;
                 if (!message.ShouldIndex
                     || string.Equals(syncState.ExtractionFingerprint, pipeline.ExtractionFingerprint,
                         StringComparison.Ordinal))
                 {
+                    if (vitalsStale)
+                    {
+                        setPhase("publish-completion");
+                        logger.LogInformation(
+                            "Recomputing vitals for {Repo} at unchanged HEAD {Sha}: vitals version changed ({StoredVersion} -> {CurrentVersion}); indexing and analysis are skipped",
+                            message.Name, commitSha, syncState.VitalsVersion?.ToString() ?? "none", VitalsAnalyzer.Version);
+                        await messageBus.PublishAsync(new RepositoryIndexingCompleted
+                        {
+                            Name = message.Name,
+                            RepoPath = repoPath,
+                            RepoUrl = repoUrl,
+                            CommitSha = commitSha,
+                            ShouldComputeVitals = true,
+                            VitalsRefreshOnly = true
+                        });
+                        return;
+                    }
+
                     logger.LogInformation("Skipping {Repo} — already at HEAD {Sha}", message.Name, commitSha);
                     return;
                 }
@@ -213,7 +237,7 @@ public class ProjectService(
                 CommitSha = commitSha,
                 ShouldAnalyze = message.ShouldAnalyze && !extractionRefreshOnly,
                 IncludeAllSource = message.IncludeAllSource,
-                ShouldComputeVitals = message.ShouldComputeVitals && !extractionRefreshOnly,
+                ShouldComputeVitals = computeVitals,
                 ShouldAnalyzeHealth = message.ShouldAnalyzeHealth && !extractionRefreshOnly
             });
 

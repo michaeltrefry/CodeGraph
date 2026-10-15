@@ -768,7 +768,11 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .ToDictionary(path => path, path => extractionVersions![path], StringComparer.OrdinalIgnoreCase);
         _ = UpsertRepositoryAsync(repository);
         if (syncState is not null)
+        {
+            if (_syncStates.TryGetValue(project, out var previous))
+                syncState.VitalsVersion = previous.VitalsVersion;
             _syncStates[project] = syncState;
+        }
         _nextId = nextId;
 
         return Task.FromResult(replacementEdges.Count);
@@ -1055,13 +1059,25 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult<IReadOnlyDictionary<string, SyncStateEntity>>(result);
     }
 
+    public Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    {
+        if (_syncStates.TryGetValue(project, out var state))
+            state.VitalsVersion = vitalsVersion;
+        return Task.CompletedTask;
+    }
+
     public Task UpsertSyncStateAsync(SyncStateEntity state)
     {
         // Mirrors the MariaDB store: a null fingerprint keeps the stored one.
-        if (state.ExtractionFingerprint is null &&
-            _syncStates.TryGetValue(state.Project, out var existing))
+        // Mirrors the stores: an upsert never changes the vitals version.
+        if (_syncStates.TryGetValue(state.Project, out var existing))
         {
-            state.ExtractionFingerprint = existing.ExtractionFingerprint;
+            state.ExtractionFingerprint ??= existing.ExtractionFingerprint;
+            state.VitalsVersion = existing.VitalsVersion;
+        }
+        else
+        {
+            state.VitalsVersion = null;
         }
 
         _syncStates[state.Project] = state;
