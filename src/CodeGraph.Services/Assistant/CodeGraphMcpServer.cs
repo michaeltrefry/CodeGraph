@@ -11,6 +11,7 @@ using CodeGraph.Models;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Extensions;
 using CodeGraph.Services.Overlays;
@@ -28,7 +29,8 @@ public class CodeGraphMcpServer(
     ICommunityDetectionService communityDetection,
     IImpactAnalysisService impactAnalysis,
     IConventionEmbeddingService? conventionEmbeddingService = null,
-    ICommitScopeResolver? commitScopes = null)
+    ICommitScopeResolver? commitScopes = null,
+    IndexedLanguageCatalog? indexedLanguages = null)
 {
     private const string ShaDescription =
         "Optional full 40-hex commit SHA. Answers from the ready branch overlay for that commit " +
@@ -44,6 +46,9 @@ public class CodeGraphMcpServer(
 
     private readonly ICommitScopeResolver commitScopes =
         commitScopes ?? new CommitScopeResolver(store, sourceOptionsAccessor);
+
+    // Without a registered catalog no language counts as indexed, so a misconfigured host fails closed.
+    private readonly IndexedLanguageCatalog indexedLanguages = indexedLanguages ?? new IndexedLanguageCatalog([]);
 
     /// <summary>
     /// Resolves the graph for <paramref name="sha"/> and runs <paramref name="answer"/> against it.
@@ -949,6 +954,13 @@ public class CodeGraphMcpServer(
     public const string RepoNotFoundCode = "repo_not_found";
     public const string InvalidPathCode = "invalid_path";
 
+    private const string LanguageFieldsDescription =
+        "Every answer (found: false included) carries languageIndexed and language: languageIndexed is false " +
+        "only for a source file in a language CodeGraph does not index (e.g. Objective-C, Kotlin), so a " +
+        "found: false answer with languageIndexed: true is a file of an indexed language with no data (a new " +
+        "or deleted file); it is true for indexed languages and for non-code files. language is the " +
+        "capitalised language name (Swift, C#, C++, Objective-C, ...), or null for a non-code file.";
+
     [McpServerTool(Name = AnalyzeImpactFileTool, Title = "Analyze File Impact", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
      Description("Per-file blast radius: the union of the inbound dependents of every code element in one file, " +
                  "as structured counts. Answers {path, found, blastRadius, criticalCount, highCount, mediumCount, " +
@@ -960,7 +972,8 @@ public class CodeGraphMcpServer(
                  "(found: false) reports none. " +
                  "blastRadius is the worst risk level among the affected " +
                  "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
-                 "nodes (found: false). path is matched case-sensitively. unmappedInboundEdges is null for default-branch answers. No model is called.")]
+                 "nodes (found: false). path is matched case-sensitively. unmappedInboundEdges is null for default-branch answers. " +
+                 LanguageFieldsDescription + " No model is called.")]
     public async Task<CallToolResult> AnalyzeImpactFile(
         [Description("Indexed repository name.")] string repo,
         [Description("Repo-relative file path, e.g. src/Orders/OrderService.cs.")] string path,
@@ -973,7 +986,7 @@ public class CodeGraphMcpServer(
 
         var scope = await commitScopes.ResolveAsync(repository!.Name, sha);
         if (scope.NotIndexed is { } notIndexed)
-            return CommitAnswer.NotIndexed(notIndexed);
+            return CommitAnswer.NotIndexed(notIndexed, LanguageFields(normalizedPath!));
 
         var effectiveDepth = Math.Clamp(depth, 1, 5);
         var report = await impactAnalysis.AnalyzeFileImpactAsync(repository.Name, normalizedPath!, effectiveDepth, scope.Graph);
@@ -1023,6 +1036,7 @@ public class CodeGraphMcpServer(
 
         var sb = new StringBuilder();
         sb.AppendLine($"# File Blast Radius: {repository.Name}/{normalizedPath}\n");
+        AddLanguageFields(extra, sb, normalizedPath!);
         if (summary is null)
         {
             sb.AppendLine("No graph nodes in this file (found: false); blast radius: none.");
@@ -1187,7 +1201,8 @@ public class CodeGraphMcpServer(
                  "complexityScore, computedAt, commitSha}. commitSha is the default-branch commit the metrics were " +
                  "computed at; it is null for metrics computed before the commit was recorded (concernScore is " +
                  "then null too, as it was not stored) until the next vitals run. indexCommitSha is the current " +
-                 "default-branch index commit. A file with no metrics answers found: false. No model is called.")]
+                 "default-branch index commit. A file with no metrics answers found: false. " +
+                 LanguageFieldsDescription + " No model is called.")]
     public async Task<CallToolResult> FileHotspot(
         [Description("Indexed repository name.")] string repo,
         [Description("Repo-relative file path, e.g. src/Orders/OrderService.cs.")] string path)
@@ -1220,6 +1235,7 @@ public class CodeGraphMcpServer(
 
         var sb = new StringBuilder();
         sb.AppendLine($"# File Hotspot: {repository.Name}/{normalizedPath}\n");
+        AddLanguageFields(extra, sb, normalizedPath!);
         if (metric is null)
         {
             sb.AppendLine("No vitals metrics for this file on the default branch (found: false).");
@@ -1239,6 +1255,23 @@ public class CodeGraphMcpServer(
 
         var commit = new CommitDescription(commitSha, new Dictionary<string, string?> { [repository.Name] = commitSha });
         return CommitAnswer.Create(sb.ToString(), commit, scope, extra);
+    }
+
+    /// <summary><c>languageIndexed</c> and <c>language</c> for a file answer (see <see cref="IndexedLanguageCatalog"/>).</summary>
+    private JsonObject LanguageFields(string path)
+    {
+        var language = indexedLanguages.Describe(path);
+        return new JsonObject { ["languageIndexed"] = language.Indexed, ["language"] = language.Language };
+    }
+
+    /// <summary>Adds the language fields to <paramref name="extra"/>, and says so in the text when the language is not indexed.</summary>
+    private void AddLanguageFields(JsonObject extra, StringBuilder text, string path)
+    {
+        foreach (var (key, value) in LanguageFields(path))
+            extra[key] = value?.DeepClone();
+        if (extra["languageIndexed"]!.GetValue<bool>() is false)
+            text.AppendLine($"Language: {extra["language"]}, which CodeGraph does not index (languageIndexed: false); " +
+                            "the absence of data here says nothing about this file's risk.\n");
     }
 
     /// <summary>The worst risk level among the affected nodes, or none.</summary>
