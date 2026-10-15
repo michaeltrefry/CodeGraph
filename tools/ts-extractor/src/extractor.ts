@@ -739,38 +739,44 @@ function checkoutRoots(rootPath: string): string[] {
   } catch {
     // A missing root fails later with a clearer error.
   }
-  return [...roots].map(root => root.replace(/\\/g, '/'));
+  return [...roots].map(normalizeAbsolutePath);
+}
+
+/** Forward slashes and a lower-case drive letter, so Windows paths compare reliably. */
+function normalizeAbsolutePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^([A-Za-z]):\//, (_match, drive: string) => `${drive.toLowerCase()}:/`);
 }
 
 /**
  * Type text as the checker renders it, with every `import("<absolute path>")` rewritten to a
- * checkout-independent module path: repo-relative inside the checkout, the package path after
- * `node_modules/` for dependencies, else the bare file name. The text becomes INJECTS targets
- * (stub qualified names) and node properties, which must be identical for every checkout.
+ * checkout-independent module path: the package path after the last `node_modules/` for
+ * dependencies (pnpm store paths included), else the path relative to the checkout root
+ * (`../shared/src/index` for a sibling outside it). The text becomes INJECTS targets (stub
+ * qualified names) and node properties, which must be identical for every checkout.
  */
 function renderTypeText(type: Type, roots: string[]): string {
   return relativizeImportPaths(type.getText(), roots);
 }
 
-function relativizeImportPaths(text: string, roots: string[]): string {
+export function relativizeImportPaths(text: string, roots: readonly string[]): string {
+  const normalizedRoots = roots.map(normalizeAbsolutePath);
   return text.replace(/import\("([^"]*)"\)/g, (_match, modulePath: string) =>
-    `import("${toCheckoutIndependentModulePath(modulePath, roots)}")`);
+    `import("${toCheckoutIndependentModulePath(modulePath, normalizedRoots)}")`);
 }
 
-function toCheckoutIndependentModulePath(modulePath: string, roots: string[]): string {
-  const normalized = modulePath.replace(/\\/g, '/');
-  if (!path.posix.isAbsolute(normalized) && !/^[A-Za-z]:\//.test(normalized)) return normalized;
+function toCheckoutIndependentModulePath(modulePath: string, roots: readonly string[]): string {
+  const normalized = normalizeAbsolutePath(modulePath);
+  if (!path.posix.isAbsolute(normalized) && !/^[a-z]:\//.test(normalized)) return normalized;
 
   const nodeModules = normalized.lastIndexOf('/node_modules/');
   if (nodeModules >= 0) return normalized.slice(nodeModules + '/node_modules/'.length);
 
-  for (const root of roots) {
-    const relative = path.posix.relative(root, normalized);
-    if (relative && relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative)) {
-      return relative;
-    }
-  }
-  return path.posix.basename(normalized);
+  // Relative to the root it is closest to (the given root or its realpath); a path outside
+  // the checkout keeps its directories, so unrelated `index`/`types` modules never collide.
+  const candidates = roots.map(root => path.posix.relative(root, normalized)).filter(relative => relative);
+  if (candidates.length === 0) return path.posix.basename(normalized);
+  return candidates.reduce((best, relative) =>
+    relative.split('/').length < best.split('/').length ? relative : best);
 }
 
 function findTsFiles(dir: string): string[] {

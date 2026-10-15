@@ -183,6 +183,86 @@ public class TypeScriptDiscoveryScopePipelineTests
         }
     }
 
+    /// <summary>
+    /// With no admitted tsconfig the sidecar never runs, yet stored workspace modules (one keyed
+    /// by an excluded directory, one root module) are stale and removed.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_NoAdmittedTsconfig_RemovesStoredWorkspaceModules()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteFile(rootPath, ".claude/worktrees/agent-1/tsconfig.json", "{}");
+            WriteFile(rootPath, "src/app.ts", "export class App {}\n");
+            var store = new InMemoryGraphStore();
+            var analyzer = new FakeTypeScriptAnalyzer(rootPath, honourScope: true);
+            await IndexAsync(rootPath, store, analyzer);
+            await SeedWorkspaceModulesAsync(store,
+                ($"typescript-package:{Project}:@lens/vendored", "web/node_modules/vendored"),
+                ($"typescript-package:{Project}:@lens/app", null));
+
+            await IndexAsync(rootPath, store, analyzer);
+
+            analyzer.Tsconfigs.ShouldBeEmpty();
+            store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Module);
+            store.Nodes.ShouldContain(node => node.QualifiedName == Project && node.Label == NodeLabel.Repository);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>An unavailable sidecar (no result) says nothing about the workspace packages.</summary>
+    [Fact]
+    public async Task IndexProjectAsync_SidecarUnavailable_KeepsTheWorkspaceModules()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteApp(rootPath);
+            var store = new InMemoryGraphStore();
+            await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: true));
+            File.AppendAllText(Path.Combine(rootPath, "src/app.ts"), "// changed\n");
+            // A module under an excluded directory is stale whether or not the sidecar runs.
+            await SeedWorkspaceModulesAsync(store,
+                ($"typescript-package:{Project}:@lens/vendored", "web/node_modules/vendored"));
+
+            await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: true, unavailable: true));
+
+            store.Nodes.Where(node => node.Label == NodeLabel.Module)
+                .Select(node => $"{node.QualifiedName}:{node.FilePath}")
+                .Order(StringComparer.Ordinal)
+                .ShouldBe([
+                    $"typescript-package:{Project}:@lens/app:",
+                    $"typescript-package:{Project}:@lens/web:apps/web"
+                ]);
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    private static async Task SeedWorkspaceModulesAsync(
+        InMemoryGraphStore store, params (string QualifiedName, string? FilePath)[] modules)
+    {
+        await store.UpsertNodeBatchAsync(modules.Select(module => Node(NodeLabel.Module, module.QualifiedName,
+            module.FilePath, new() { ["module_kind"] = "typescript_workspace_package" })).ToList());
+        var repository = store.Nodes.Single(node => node.QualifiedName == Project).Id;
+        foreach (var module in modules)
+        {
+            await store.InsertEdgeAsync(new GraphEdge
+            {
+                Project = Project,
+                SourceId = repository,
+                TargetId = store.Nodes.Single(node => node.QualifiedName == module.QualifiedName).Id,
+                Type = EdgeType.CONTAINS_PROJECT
+            });
+        }
+    }
+
     private const string LegacyStubQn = "import(\"/private/tmp/lens/.claude/worktrees/agent-1/src/app\").Cleanup";
 
     /// <summary>What the earlier sidecar left in the graph: no File node, no file hash row.</summary>
@@ -286,7 +366,8 @@ public class TypeScriptDiscoveryScopePipelineTests
     /// <c>honourScope: false</c> it behaves like the earlier sidecar and walks the whole disk.
     /// </summary>
     private sealed class FakeTypeScriptAnalyzer(
-        string rootPath, bool honourScope, string version = "2", string? injects = null) : ITypeScriptAnalyzer
+        string rootPath, bool honourScope, string version = "2", string? injects = null, bool unavailable = false)
+        : ITypeScriptAnalyzer
     {
         public List<string> Tsconfigs { get; } = [];
         public List<IReadOnlyList<string>> IncludedFiles { get; } = [];
@@ -298,6 +379,8 @@ public class TypeScriptDiscoveryScopePipelineTests
         {
             Tsconfigs.Add(Relative(tsconfigPath));
             IncludedFiles.Add(includedFiles);
+            if (unavailable)
+                return Task.FromResult<IReadOnlyList<ExtractionResult>>([]);
             var files = honourScope
                 ? includedFiles
                 : Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories).Select(Relative).ToList();

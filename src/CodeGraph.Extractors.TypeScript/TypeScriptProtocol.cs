@@ -9,7 +9,13 @@ public record ExtractProjectRequest
     [JsonPropertyName("tsconfigPath")] public required string TsconfigPath { get; init; }
 
     /// <summary>Repo-relative files discovery admits; the sidecar reads no file outside them.</summary>
-    [JsonPropertyName("includedFiles")] public required List<string> IncludedFiles { get; init; }
+    [JsonPropertyName("includedFiles")] public List<string>? IncludedFiles { get; init; }
+
+    /// <summary>
+    /// Path of a JSON file holding the <see cref="IncludedFiles"/> array (takes precedence), so a
+    /// large repository's scope never meets the sidecar's request body limit.
+    /// </summary>
+    [JsonPropertyName("includedFilesPath")] public string? IncludedFilesPath { get; init; }
 }
 
 public record ExtractProjectResponse

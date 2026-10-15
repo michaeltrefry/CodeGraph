@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
-import { extractProject } from './extractor';
+import { extractProject, relativizeImportPaths } from './extractor';
 
 test('extractProject resolves monorepo tsconfig aliases, workspaces, barrels, dynamic imports, and diagnostics', () => {
   const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-fixture-'));
@@ -245,6 +245,35 @@ test('type text rendered into qualified names and properties never embeds the ch
     fs.rmSync(first, { recursive: true, force: true });
     fs.rmSync(second, { recursive: true, force: true });
   }
+});
+
+test('import() paths outside the checkout keep their directories relative to the root', () => {
+  const roots = ['/work/repo'];
+  assert.equal(
+    relativizeImportPaths('import("/work/shared/src/index").Shared | import("/work/other/types").Other', roots),
+    'import("../shared/src/index").Shared | import("../other/types").Other');
+  // Two unrelated `index` modules outside the checkout stay distinct.
+  assert.notEqual(
+    relativizeImportPaths('import("/work/a/index").X', roots),
+    relativizeImportPaths('import("/work/b/index").X', roots));
+});
+
+test('import() paths compare Windows drive letters case-insensitively', () => {
+  assert.equal(
+    relativizeImportPaths('import("C:/Work/Repo/src/a").A | import("c:\\\\Work\\\\Repo\\\\src\\\\b").B', ['c:\\Work\\Repo']),
+    'import("src/a").A | import("src/b").B');
+  assert.equal(
+    relativizeImportPaths('import("c:/Work/Repo/src/a").A', ['C:/Work/Repo']),
+    'import("src/a").A');
+});
+
+test('import() paths into a pnpm store resolve to the package path', () => {
+  assert.equal(
+    relativizeImportPaths(
+      'import("/work/repo/node_modules/.pnpm/x@1.0.0/node_modules/x/dist/index").X | ' +
+      'import("/work/repo/node_modules/.pnpm/@scope+y@2.0.0/node_modules/@scope/y/types").Y',
+      ['/work/repo']),
+    'import("x/dist/index").X | import("@scope/y/types").Y');
 });
 
 function writeTypeFixture(): string {

@@ -7,6 +7,11 @@ export interface ExtractProjectRequest {
    * package.json). When present, the sidecar reads no file outside it; absent, it walks the disk.
    */
   includedFiles?: string[];
+  /**
+   * Path of a JSON file holding the `includedFiles` array; takes precedence over the inline list.
+   * CodeGraph uses it so a large repository's scope never meets a request body limit.
+   */
+  includedFilesPath?: string;
 }
 
 export interface GraphNodeDto {

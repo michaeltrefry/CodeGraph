@@ -302,9 +302,13 @@ public partial class IndexingPipeline
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
-                    typeScriptNodes = results.Where(result => result.Succeeded)
-                        .SelectMany(result => result.Nodes)
-                        .ToList();
+                    // No result (sidecar unavailable) says nothing about the workspace packages.
+                    if (results.Any(result => result.Succeeded))
+                    {
+                        typeScriptNodes = results.Where(result => result.Succeeded)
+                            .SelectMany(result => result.Nodes)
+                            .ToList();
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -313,6 +317,11 @@ public partial class IndexingPipeline
                         "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
                         tsconfig);
                 }
+            }
+            else
+            {
+                // No admitted tsconfig: the repository has no TypeScript workspace packages.
+                typeScriptNodes = [];
             }
         }
 

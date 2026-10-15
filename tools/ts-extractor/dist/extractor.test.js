@@ -246,6 +246,20 @@ const extractor_1 = require("./extractor");
         fs.rmSync(second, { recursive: true, force: true });
     }
 });
+(0, node_test_1.test)('import() paths outside the checkout keep their directories relative to the root', () => {
+    const roots = ['/work/repo'];
+    assert_1.strict.equal((0, extractor_1.relativizeImportPaths)('import("/work/shared/src/index").Shared | import("/work/other/types").Other', roots), 'import("../shared/src/index").Shared | import("../other/types").Other');
+    // Two unrelated `index` modules outside the checkout stay distinct.
+    assert_1.strict.notEqual((0, extractor_1.relativizeImportPaths)('import("/work/a/index").X', roots), (0, extractor_1.relativizeImportPaths)('import("/work/b/index").X', roots));
+});
+(0, node_test_1.test)('import() paths compare Windows drive letters case-insensitively', () => {
+    assert_1.strict.equal((0, extractor_1.relativizeImportPaths)('import("C:/Work/Repo/src/a").A | import("c:\\\\Work\\\\Repo\\\\src\\\\b").B', ['c:\\Work\\Repo']), 'import("src/a").A | import("src/b").B');
+    assert_1.strict.equal((0, extractor_1.relativizeImportPaths)('import("c:/Work/Repo/src/a").A', ['C:/Work/Repo']), 'import("src/a").A');
+});
+(0, node_test_1.test)('import() paths into a pnpm store resolve to the package path', () => {
+    assert_1.strict.equal((0, extractor_1.relativizeImportPaths)('import("/work/repo/node_modules/.pnpm/x@1.0.0/node_modules/x/dist/index").X | ' +
+        'import("/work/repo/node_modules/.pnpm/@scope+y@2.0.0/node_modules/@scope/y/types").Y', ['/work/repo']), 'import("x/dist/index").X | import("@scope/y/types").Y');
+});
 function writeTypeFixture() {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-types-'));
     writeJson(rootPath, 'tsconfig.json', { compilerOptions: { target: 'ES2020' } });

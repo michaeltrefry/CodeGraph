@@ -107,8 +107,21 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         try
         {
             TouchLastUsed();
-            var response = await _http.PostAsJsonAsync("/extract-project", request, ct);
-            response.EnsureSuccessStatusCode();
+            using var response = await _http.PostAsJsonAsync("/extract-project", request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                // A rejected request (413 body too large, 500 extraction error) must be visible:
+                // the caller falls back to per-file extraction.
+                var body = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning(
+                    "TypeScript extractor rejected the extraction of {Project}: HTTP {StatusCode} {Reason}: {Body}",
+                    request.ProjectName,
+                    (int)response.StatusCode,
+                    response.ReasonPhrase,
+                    body.Length > 500 ? body[..500] : body);
+                return null;
+            }
+
             return await response.Content.ReadFromJsonAsync<ExtractProjectResponse>(
                 cancellationToken: ct);
         }
@@ -123,7 +136,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "TypeScript extractor request failed");
+            _logger.LogWarning(ex, "TypeScript extractor request for {Project} failed", request.ProjectName);
             return null;
         }
         finally

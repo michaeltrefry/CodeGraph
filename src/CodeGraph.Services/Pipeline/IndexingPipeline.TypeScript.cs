@@ -100,14 +100,36 @@ public partial class IndexingPipeline
                 .Where(node => !string.IsNullOrWhiteSpace(node.FilePath))
                 .Select(node => (node.QualifiedName, NormalizeRelativePath(node.FilePath!)));
 
-        var current = Modules(analyzedNodes).ToHashSet();
-        var stored = Modules(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
-            .ToHashSet();
-        return current.Except(stored).Concat(stored.Except(current))
+        var analyzed = analyzedNodes.ToList();
+        var current = Modules(analyzed).ToHashSet();
+        var storedNodes = await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue);
+        var stored = Modules(storedNodes).ToHashSet();
+        var paths = current.Except(stored).Concat(stored.Except(current))
             .Select(module => module.FilePath)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        // A root module (no directory) the analysis no longer yields has no slice to replace: it is
+        // moved onto a reserved slice that this write then replaces with nothing.
+        var currentRoots = WorkspaceModules(analyzed)
+            .Where(node => string.IsNullOrWhiteSpace(node.FilePath))
+            .Select(node => node.QualifiedName)
+            .ToHashSet(StringComparer.Ordinal);
+        var staleRoots = WorkspaceModules(storedNodes)
+            .Where(node => string.IsNullOrWhiteSpace(node.FilePath) && !currentRoots.Contains(node.QualifiedName))
+            .ToList();
+        foreach (var staleRoot in staleRoots)
+            await _store.UpsertNodeAsync(staleRoot with { FilePath = StaleWorkspaceModuleSlice });
+        if (staleRoots.Count > 0)
+            paths.Add(StaleWorkspaceModuleSlice);
+
+        return paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
+
+    /// <summary>
+    /// Reserved slice for root workspace modules being removed; no file or package lives there.
+    /// A module left on it by an interrupted run is removed by the next one.
+    /// </summary>
+    internal const string StaleWorkspaceModuleSlice = ".codegraph/stale-typescript-workspace-module";
 
     /// <summary>
     /// Adds the root workspace package modules (no directory, so no slice of their own) and their
@@ -155,6 +177,11 @@ public partial class IndexingPipeline
         var excluded = (await _store.GetNodeFilePathsAsync(projectName, ct))
             .Select(NormalizeRelativePath)
             .Where(path => IsTypeScriptPath(path) && excludedPath(path))
+            // Workspace package modules keyed by an excluded directory go too, also when no
+            // analysis ran this time (no admitted tsconfig, or the sidecar was unavailable).
+            .Concat(WorkspaceModules(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
+                .Where(node => !string.IsNullOrWhiteSpace(node.FilePath) && excludedPath(node.FilePath!))
+                .Select(node => NormalizeRelativePath(node.FilePath!)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         if (excluded.Count > 0)
