@@ -1608,9 +1608,7 @@ public partial class IndexingPipeline
         var properties = node.Properties is null
             ? new Dictionary<string, object>()
             : new Dictionary<string, object>(node.Properties);
-        properties[GraphNodeConfidence.ConfidenceProperty] = GraphNodeConfidence.Low;
-        properties[GraphNodeConfidence.ExtractionSourceProperty] = GraphNodeConfidence.TreeSitterFallbackSource;
-        properties[GraphNodeConfidence.FallbackReasonProperty] = fallback.FailureCode;
+        GraphNodeConfidence.MarkTreeSitterFallback(properties, fallback.FailureCode);
         return node with { Properties = properties };
     }
 
