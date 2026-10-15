@@ -640,6 +640,48 @@ public class MariaDbGraphStoreTests
             context.ChangeTracker.Clear();
             (await store.GetSyncStateAsync("Versioned"))!.ExtractionFingerprint.ShouldBe("FP2");
             (await store.GetSyncStatesAsync(["Versioned"]))["Versioned"].ExtractionFingerprint.ShouldBe("FP2");
+
+            // sc-26138: the vitals version (migration 071) is written only by SetVitalsVersionAsync;
+            // sync-state upserts and full replacements keep it.
+            (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBeNull();
+            await store.SetVitalsVersionAsync("Versioned", 7);
+            await store.SetVitalsVersionAsync("Unknown", 7);
+            context.ChangeTracker.Clear();
+            (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBe(7);
+            (await store.GetSyncStateAsync("Unknown")).ShouldBeNull();
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "Versioned", Status = "idle" });
+            await store.ReplaceProjectGraphAsync(
+                "Versioned",
+                [Node("Versioned.B", "b.cs")],
+                [],
+                new Dictionary<string, string> { ["b.cs"] = "h2" },
+                new RepositoryEntity { Name = "Versioned" },
+                new SyncStateEntity { Project = "Versioned", LastCommitSha = "def", Status = "idle" },
+                new Dictionary<string, string> { ["b.cs"] = "p1;RoslynExtractor=3" });
+            context.ChangeTracker.Clear();
+            (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBe(7);
+            (await store.GetSyncStatesAsync(["Versioned"]))["Versioned"].VitalsVersion.ShouldBe(7);
+
+            // Migration 072: vitals failures count consecutively per commit and version, survive
+            // sync-state writes, and a success clears them.
+            (await store.RecordVitalsFailureAsync("Versioned", "def", 8)).ShouldBe(1);
+            (await store.RecordVitalsFailureAsync("Versioned", "def", 8)).ShouldBe(2);
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "Versioned", Status = "idle" });
+            context.ChangeTracker.Clear();
+            var failing = (await store.GetSyncStateAsync("Versioned"))!;
+            failing.VitalsFailedCommitSha.ShouldBe("def");
+            failing.VitalsFailedVersion.ShouldBe(8);
+            failing.VitalsConsecutiveFailures.ShouldBe(2);
+            (await store.RecordVitalsFailureAsync("Versioned", "def", 9)).ShouldBe(1);
+            (await store.RecordVitalsFailureAsync("Versioned", "xyz", 9)).ShouldBe(1);
+            (await store.RecordVitalsFailureAsync("Unknown", "xyz", 9)).ShouldBe(0);
+            await store.SetVitalsVersionAsync("Versioned", 9);
+            context.ChangeTracker.Clear();
+            var cleared = (await store.GetSyncStateAsync("Versioned"))!;
+            cleared.VitalsVersion.ShouldBe(9);
+            cleared.VitalsConsecutiveFailures.ShouldBe(0);
+            cleared.VitalsFailedCommitSha.ShouldBeNull();
+            cleared.VitalsFailedVersion.ShouldBeNull();
         }
         finally
         {

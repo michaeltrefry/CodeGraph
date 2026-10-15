@@ -201,6 +201,67 @@ public class Neo4jGraphStoreIntegrationTests
         }).ToList();
     }
 
+    /// <summary>sc-26138: the vitals version is written only by SetVitalsVersionAsync; upserts keep it.</summary>
+    [Fact]
+    public async Task Neo4jGraphStore_SyncStateKeepsVitalsVersionAcrossUpsertsWhenConnectionIsConfigured()
+    {
+        var options = Options.Create(new CodeGraphStorageOptions
+        {
+            Neo4jUri = Require("CODEGRAPH_NEO4J_TEST_URI"),
+            Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
+            Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
+        });
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
+        await using var sessions = new Neo4jSessionFactory(options);
+        var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
+        var project = $"Vitals_{Guid.NewGuid():N}";
+
+        try
+        {
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = project, LastCommitSha = "abc", Status = "idle" });
+            (await store.GetSyncStateAsync(project))!.VitalsVersion.ShouldBeNull();
+
+            await store.SetVitalsVersionAsync(project, 7);
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = project, LastCommitSha = "def", Status = "idle" });
+
+            (await store.GetSyncStateAsync(project))!.VitalsVersion.ShouldBe(7);
+            (await store.GetSyncStatesAsync([project]))[project].VitalsVersion.ShouldBe(7);
+
+            // A full graph replacement writes the sync state too and keeps the vitals record.
+            (await store.RecordVitalsFailureAsync(project, "def", 8)).ShouldBe(1);
+            await store.ReplaceProjectGraphAsync(
+                project,
+                [new GraphNode { Project = project, Label = NodeLabel.Class, Name = "B", QualifiedName = $"{project}.B", FilePath = "b.cs" }],
+                [],
+                new Dictionary<string, string> { ["b.cs"] = "h2" },
+                new RepositoryEntity { Name = project },
+                new SyncStateEntity { Project = project, LastCommitSha = "ghi", LastSyncAt = DateTime.UtcNow, Status = "idle" });
+            var replaced = (await store.GetSyncStateAsync(project))!;
+            replaced.LastCommitSha.ShouldBe("ghi");
+            replaced.VitalsVersion.ShouldBe(7);
+            replaced.VitalsFailedCommitSha.ShouldBe("def");
+            replaced.VitalsConsecutiveFailures.ShouldBe(1);
+
+            // Failures count consecutively per commit and version; a success clears them.
+            (await store.RecordVitalsFailureAsync(project, "def", 8)).ShouldBe(2);
+            (await store.RecordVitalsFailureAsync(project, "def", 9)).ShouldBe(1);
+            (await store.RecordVitalsFailureAsync(project, "xyz", 9)).ShouldBe(1);
+            (await store.RecordVitalsFailureAsync("Unknown_" + project, "xyz", 9)).ShouldBe(0);
+            await store.SetVitalsVersionAsync(project, 9);
+            var cleared = (await store.GetSyncStateAsync(project))!;
+            cleared.VitalsVersion.ShouldBe(9);
+            cleared.VitalsConsecutiveFailures.ShouldBe(0);
+            cleared.VitalsFailedCommitSha.ShouldBeNull();
+            cleared.VitalsFailedVersion.ShouldBeNull();
+        }
+        finally
+        {
+            await store.DeleteSyncStateAsync(project);
+            await store.DeleteNodesByProjectAsync(project);
+            await store.DeleteRepositoryAsync(project);
+        }
+    }
+
     private static string Require(string name) =>
         Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
             ? value

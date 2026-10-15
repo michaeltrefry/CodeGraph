@@ -139,6 +139,10 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(s => s.ConsecutiveFailures).HasColumnName("consecutive_failures");
             e.Property(s => s.LastFailureAt).HasColumnName("last_failure_at");
             e.Property(s => s.ExtractionFingerprint).HasColumnName("extraction_fingerprint");
+            e.Property(s => s.VitalsVersion).HasColumnName("vitals_version");
+            e.Property(s => s.VitalsFailedCommitSha).HasColumnName("vitals_failed_commit_sha");
+            e.Property(s => s.VitalsFailedVersion).HasColumnName("vitals_failed_version");
+            e.Property(s => s.VitalsConsecutiveFailures).HasColumnName("vitals_consecutive_failures");
         });
     }
 

@@ -302,7 +302,11 @@ public partial class Neo4jGraphStore(
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
                     ErrorMessage = GetStringOrNull(node, "errorMessage"),
-                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint")
+                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint"),
+                    VitalsVersion = GetIntOrNull(node, "vitalsVersion"),
+                    VitalsFailedCommitSha = GetStringOrNull(node, "vitalsFailedCommitSha"),
+                    VitalsFailedVersion = GetIntOrNull(node, "vitalsFailedVersion"),
+                    VitalsConsecutiveFailures = GetIntOrNull(node, "vitalsConsecutiveFailures") ?? 0
                 };
             }
             return null;
@@ -336,7 +340,11 @@ public partial class Neo4jGraphStore(
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
                     ErrorMessage = GetStringOrNull(node, "errorMessage"),
-                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint")
+                    ExtractionFingerprint = GetStringOrNull(node, "extractionFingerprint"),
+                    VitalsVersion = GetIntOrNull(node, "vitalsVersion"),
+                    VitalsFailedCommitSha = GetStringOrNull(node, "vitalsFailedCommitSha"),
+                    VitalsFailedVersion = GetIntOrNull(node, "vitalsFailedVersion"),
+                    VitalsConsecutiveFailures = GetIntOrNull(node, "vitalsConsecutiveFailures") ?? 0
                 };
                 results[entity.Project] = entity;
             }
@@ -367,6 +375,43 @@ public partial class Neo4jGraphStore(
                     status = state.Status,
                     errorMessage = state.ErrorMessage
                 });
+        });
+    }
+
+    public async Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    {
+        await using var session = sessionFactory.GetSession();
+        await session.ExecuteWriteAsync(async tx =>
+        {
+            await tx.RunAsync(
+                """
+                MATCH (s:SyncState {project: $project})
+                SET s.vitalsVersion = $vitalsVersion,
+                    s.vitalsFailedCommitSha = null,
+                    s.vitalsFailedVersion = null,
+                    s.vitalsConsecutiveFailures = 0
+                """,
+                new { project, vitalsVersion });
+        });
+    }
+
+    public async Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    {
+        await using var session = sessionFactory.GetSession();
+        return await session.ExecuteWriteAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH (s:SyncState {project: $project})
+                WITH s, coalesce(s.vitalsFailedCommitSha, '') = coalesce($commitSha, '')
+                        AND s.vitalsFailedVersion = $vitalsVersion AS same
+                SET s.vitalsConsecutiveFailures = CASE WHEN same
+                        THEN coalesce(s.vitalsConsecutiveFailures, 0) + 1 ELSE 1 END,
+                    s.vitalsFailedCommitSha = $commitSha,
+                    s.vitalsFailedVersion = $vitalsVersion
+                RETURN s.vitalsConsecutiveFailures AS failures
+                """,
+                new { project, commitSha, vitalsVersion });
+            return await cursor.FetchAsync() ? cursor.Current["failures"].As<int>() : 0;
         });
     }
 
@@ -514,6 +559,11 @@ public partial class Neo4jGraphStore(
     internal static string? GetStringOrNull(INode node, string key)
         => node.Properties.TryGetValue(key, out var val) && val is not null
             ? val.As<string>()
+            : null;
+
+    internal static int? GetIntOrNull(INode node, string key)
+        => node.Properties.TryGetValue(key, out var val) && val is not null
+            ? val.As<int>()
             : null;
 
     internal static DateTime? GetDateTimeOrNull(INode node, string key)

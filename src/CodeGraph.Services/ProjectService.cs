@@ -152,15 +152,49 @@ public class ProjectService(
         // True when HEAD is already indexed and only the extraction versions moved on: the run
         // re-extracts outdated files but must not repeat per-commit LLM work (analysis, health).
         var extractionRefreshOnly = false;
+        // Vitals are recomputed on every index; at an unchanged HEAD only when VitalsAnalyzer.Version
+        // moved on since the last computation.
+        var computeVitals = message.ShouldComputeVitals;
         if (message.SkipIfUpToDate)
         {
             var syncState = await graphStore.GetSyncStateAsync(message.Name);
             if (syncState is not null && syncState.LastCommitSha == commitSha && commitSha is not null)
             {
+                var vitalsStale = message.ShouldIndex && message.ShouldComputeVitals
+                                  && syncState.VitalsVersion != VitalsAnalyzer.Version;
+                if (vitalsStale && IsVitalsSuspended(syncState, commitSha))
+                {
+                    // The failure was logged at Error when the limit was reached; a new commit or
+                    // vitals version retries.
+                    logger.LogInformation(
+                        "Not recomputing vitals for {Repo} at {Sha}: they failed {Failures} consecutive times at vitals version {Version}",
+                        message.Name, commitSha, syncState.VitalsConsecutiveFailures, VitalsAnalyzer.Version);
+                    vitalsStale = false;
+                }
+
+                computeVitals = vitalsStale;
                 if (!message.ShouldIndex
                     || string.Equals(syncState.ExtractionFingerprint, pipeline.ExtractionFingerprint,
                         StringComparison.Ordinal))
                 {
+                    if (vitalsStale)
+                    {
+                        setPhase("publish-completion");
+                        logger.LogInformation(
+                            "Recomputing vitals for {Repo} at unchanged HEAD {Sha}: vitals version changed ({StoredVersion} -> {CurrentVersion}); indexing and analysis are skipped",
+                            message.Name, commitSha, syncState.VitalsVersion?.ToString() ?? "none", VitalsAnalyzer.Version);
+                        await messageBus.PublishAsync(new RepositoryIndexingCompleted
+                        {
+                            Name = message.Name,
+                            RepoPath = repoPath,
+                            RepoUrl = repoUrl,
+                            CommitSha = commitSha,
+                            ShouldComputeVitals = true,
+                            VitalsRefreshOnly = true
+                        });
+                        return;
+                    }
+
                     logger.LogInformation("Skipping {Repo} — already at HEAD {Sha}", message.Name, commitSha);
                     return;
                 }
@@ -213,7 +247,7 @@ public class ProjectService(
                 CommitSha = commitSha,
                 ShouldAnalyze = message.ShouldAnalyze && !extractionRefreshOnly,
                 IncludeAllSource = message.IncludeAllSource,
-                ShouldComputeVitals = message.ShouldComputeVitals && !extractionRefreshOnly,
+                ShouldComputeVitals = computeVitals,
                 ShouldAnalyzeHealth = message.ShouldAnalyzeHealth && !extractionRefreshOnly
             });
 
@@ -236,6 +270,12 @@ public class ProjectService(
     }
 
     private bool IsHostShuttingDown => hostLifetime?.ApplicationStopping.IsCancellationRequested == true;
+
+    private bool IsVitalsSuspended(SyncStateEntity syncState, string commitSha) =>
+        indexingOptions.MaxConsecutiveIndexFailures > 0
+        && string.Equals(syncState.VitalsFailedCommitSha, commitSha, StringComparison.OrdinalIgnoreCase)
+        && syncState.VitalsFailedVersion == VitalsAnalyzer.Version
+        && syncState.VitalsConsecutiveFailures >= indexingOptions.MaxConsecutiveIndexFailures;
 
     private bool IsIndexingSuspended(SyncStateEntity? syncState, string? commitSha) =>
         indexingOptions.MaxConsecutiveIndexFailures > 0

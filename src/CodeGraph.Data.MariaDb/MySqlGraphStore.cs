@@ -945,6 +945,38 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
+    public async Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    {
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE sync_state
+            SET vitals_version = {vitalsVersion},
+                vitals_failed_commit_sha = NULL,
+                vitals_failed_version = NULL,
+                vitals_consecutive_failures = 0
+            WHERE project = {project}
+            """);
+    }
+
+    public async Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    {
+        // One statement: the count is consecutive only while the commit and version stay the same.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE sync_state
+            SET vitals_consecutive_failures = CASE
+                    WHEN vitals_failed_commit_sha <=> {commitSha} AND vitals_failed_version <=> {vitalsVersion}
+                        THEN vitals_consecutive_failures + 1
+                    ELSE 1
+                END,
+                vitals_failed_commit_sha = {commitSha},
+                vitals_failed_version = {vitalsVersion}
+            WHERE project = {project}
+            """);
+        return await db.SyncStates.AsNoTracking()
+            .Where(s => s.Project == project)
+            .Select(s => s.VitalsConsecutiveFailures)
+            .FirstOrDefaultAsync();
+    }
+
     public async Task DeleteSyncStateAsync(string project)
     {
         var state = await db.SyncStates.FindAsync(project);

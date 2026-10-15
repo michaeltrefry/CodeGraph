@@ -115,6 +115,31 @@ public class SyncStateEntity
     /// stored value on upsert.
     /// </summary>
     public string? ExtractionFingerprint { get; set; }
+
+    /// <summary>
+    /// <c>VitalsAnalyzer.Version</c> of the last completed vitals computation. A routine sync
+    /// recomputes vitals at an unchanged HEAD when it differs from the running analyzer's version.
+    /// Written only by <see cref="IGraphStore.SetVitalsVersionAsync"/>; sync-state upserts never
+    /// change it.
+    /// </summary>
+    public int? VitalsVersion { get; set; }
+
+    /// <summary>
+    /// Commit whose vitals computation has been failing (with <see cref="VitalsFailedVersion"/>);
+    /// null after a success. Written only by <see cref="IGraphStore.RecordVitalsFailureAsync"/> and
+    /// cleared by <see cref="IGraphStore.SetVitalsVersionAsync"/>; sync-state upserts never change it.
+    /// </summary>
+    public string? VitalsFailedCommitSha { get; set; }
+
+    /// <summary>VitalsAnalyzer.Version of the failing vitals computations.</summary>
+    public int? VitalsFailedVersion { get; set; }
+
+    /// <summary>
+    /// Consecutive failed vitals computations of <see cref="VitalsFailedCommitSha"/> at
+    /// <see cref="VitalsFailedVersion"/>. Routine syncs stop vitals-only refreshes at the limit
+    /// until the commit or the vitals version changes.
+    /// </summary>
+    public int VitalsConsecutiveFailures { get; set; }
 }
 
 public class MigrationHistoryEntity
