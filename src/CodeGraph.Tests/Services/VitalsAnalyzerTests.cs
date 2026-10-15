@@ -6,6 +6,8 @@ using CodeGraph.Models;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Pipeline;
+using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Tests.Extractors;
 using System.Diagnostics;
 
@@ -427,11 +429,129 @@ public class VitalsAnalyzerTests
     }
 
     /// <summary>
-    /// sc-26136: Swift and Rust files get vitals, but not SwiftPM/Xcode dependency checkouts or a
-    /// Cargo target/ directory's generated sources.
+    /// sc-26136: braces, comment markers and quotes inside string/char literals and comments are
+    /// not code — the lexer runs left to right with state across lines.
+    /// </summary>
+    [Theory]
+    [InlineData("a.swift", """
+        func f() {
+            let p = dir + "/*"
+            if p.isEmpty {
+                print(p)
+            }
+        }
+        """, 2, 6)]
+    [InlineData("a.swift", """
+        func f() {
+            if let url = URL(string: "https://x") {
+                open(url)
+            }
+        }
+        """, 2, 5)]
+    [InlineData("a.swift", """"
+        func f() {
+            let s = """
+                {{{ "quoted" {
+                """
+            if s.isEmpty {
+                print(s)
+            }
+        }
+        """", 2, 8)]
+    [InlineData("a.swift", """
+        /* outer /* inner */ { { { */
+        func f() {
+            if true {
+                g()
+            }
+        }
+        """, 2, 5)]
+    [InlineData("a.swift", """
+        func f(x: Bool) {
+            let r = #"a "{" b"#
+            let t = "v: \(x ? "}" : "a") {"
+            if x {
+                print(r, t)
+            }
+        }
+        """, 2, 7)]
+    [InlineData("a.rs", """
+        fn f() {
+            let s = r#"{ "{" "#;
+            if s.is_empty() {
+                g();
+            }
+        }
+        """, 2, 6)]
+    [InlineData("a.rs", """
+        fn f<'a>(x: &'a str) -> &'a str {
+            let c = '{';
+            if x.is_empty() {
+                return x;
+            }
+            x
+        }
+        """, 2, 7)]
+    [InlineData("a.rs", """
+        fn f() {
+            let b = b"}";
+            let m = "line {
+        still {";
+            if true {
+                g(); // }
+            }
+        }
+        """, 2, 8)]
+    public void ComputeComplexityBatch_LiteralsAndComments_AreNotCode(
+        string relPath, string source, int maxDepth, int longestFunction)
+    {
+        var data = Complexity(relPath, source);
+
+        data.MaxNestingDepth.ShouldBe(maxDepth);
+        data.FunctionCount.ShouldBe(1);
+        data.LongestFunction.ShouldBe(longestFunction);
+    }
+
+    /// <summary>sc-26136: a Swift enum's case declarations are not branches; a switch's cases are.</summary>
+    [Fact]
+    public void ComputeComplexityBatch_SwiftEnumCases_AreNotBranches()
+    {
+        const string switchFunction = """
+            func f(k: Kind) -> Int {
+                switch k {
+                case .a: return 1
+                case .b: return 2
+                case .c: return 3
+                }
+            }
+            """;
+
+        Complexity("a.swift", switchFunction).BranchCount.ShouldBe(4);
+        Complexity("a.swift", "enum Kind {\n    case a\n    case b\n    case c\n}\n" + switchFunction)
+            .BranchCount.ShouldBe(4);
+    }
+
+    private static VitalsAnalyzer.ComplexityData Complexity(string relPath, string source)
+    {
+        var repoPath = CreateTempRepo("TestProject");
+        try
+        {
+            File.WriteAllText(Path.Combine(repoPath, relPath), source);
+            var analyzer = CreateAnalyzer(new InMemoryGraphStore(), new LintResultCache(), new DiagnosticDetailCache(), new StubLintRunner());
+            return analyzer.ComputeComplexityBatch(repoPath, [relPath])[relPath];
+        }
+        finally
+        {
+            Directory.Delete(repoPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// sc-26136: vitals cover exactly the files graph discovery indexes — Swift and Rust included;
+    /// skip patterns, SwiftPM/Xcode checkouts, CocoaPods and Cargo build output excluded.
     /// </summary>
     [Fact]
-    public async Task ComputeMetricsAsync_IncludesSwiftAndRust_ButNotDependencyCheckoutsOrCargoBuildOutput()
+    public async Task ComputeMetricsAsync_CoversTheFilesGraphDiscoveryIndexes()
     {
         var store = new InMemoryGraphStore();
         var repoPath = CreateTempRepo("TestProject");
@@ -447,31 +567,70 @@ public class VitalsAnalyzerTests
             Write("Sources/App/App.swift", "func run() {}\n");
             Write(".build/checkouts/Dep/Sources/Dep/Dep.swift", "func dep() {}\n");
             Write("DerivedData/App/SourcePackages/checkouts/Dep/Dep.swift", "func dep() {}\n");
+            Write("Podfile", "pod 'X'\n");
+            Write("Pods/X/X.swift", "func x() {}\n");
+            // Not beside a Podfile: the repository's own code.
+            Write("Vendor/Pods/Y.swift", "func y() {}\n");
+            Write(".claude/worktrees/a/Sources/App.swift", "func run() {}\n");
+            Write("build/gen/Gen.swift", "func gen() {}\n");
             Write("crates/core/Cargo.toml", "[package]\nname = \"core\"\n");
             Write("crates/core/src/lib.rs", "pub fn core() {}\n");
-            Write("crates/core/target/debug/build/core-1/out/generated.rs", "pub fn generated() {}\n");
-            // A target/ directory that is not Cargo's build output is ordinary source.
+            Write("crates/core/target/debug/generated.rs", "pub fn generated() {}\n");
+            // A target/ directory that is not beside a Cargo.toml is ordinary source.
             Write("tools/target/main.rs", "fn main() {}\n");
+            Write("scripts/tool.py", "def tool():\n    pass\n");
+            Write("web/node_modules/pkg/x.py", "def x():\n    pass\n");
+            string[] expected =
+            [
+                "Sources/App/App.swift", "Vendor/Pods/Y.swift", "crates/core/src/lib.rs",
+                "tools/target/main.rs", "scripts/tool.py"
+            ];
 
-            store.AddNode(new GraphNode
-            {
-                Project = "TestProject",
-                Label = NodeLabel.File,
-                Name = "App.swift",
-                QualifiedName = "Sources/App/App.swift",
-                FilePath = "Sources/App/App.swift"
-            });
+            var pipeline = new IndexingPipeline(
+                store,
+                [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+            await pipeline.IndexProjectAsync("TestProject", repoPath, ct: CancellationToken.None);
+            store.Nodes.Where(node => node.Label == NodeLabel.File).Select(node => node.FilePath)
+                .ShouldBe(expected, ignoreOrder: true);
 
             var analyzer = CreateAnalyzer(store, new LintResultCache(), new DiagnosticDetailCache(), new StubLintRunner());
             await analyzer.ComputeMetricsAsync("TestProject", repoPath);
 
             (await store.GetFileMetricsAsync("TestProject")).Select(metric => metric.FilePath)
-                .ShouldBe(["Sources/App/App.swift", "crates/core/src/lib.rs", "tools/target/main.rs"], ignoreOrder: true);
+                .ShouldBe(expected, ignoreOrder: true);
         }
         finally
         {
             Directory.Delete(repoPath, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// sc-26136: Cargo's target/ beside a Cargo.toml is a discovery exclusion everywhere (disk walk
+    /// and overlay trees), and part of the extraction fingerprint.
+    /// </summary>
+    [Fact]
+    public void Discovery_ExcludesCargoTargetBesideItsManifest_Only()
+    {
+        var pipeline = new IndexingPipeline(
+            new InMemoryGraphStore(),
+            [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+            Options.Create(new IndexingOptions()),
+            new LocalFileSystem(),
+            NullLogger<IndexingPipeline>.Instance);
+        var tree = RepositoryTree.FromFiles(
+        [
+            "crates/core/Cargo.toml", "crates/core/src/lib.rs",
+            "crates/core/target/debug/generated.rs", "tools/target/main.rs"
+        ]);
+
+        pipeline.IsIndexablePath("crates/core/target/debug/generated.rs", tree).ShouldBeFalse();
+        pipeline.IsIndexablePath("crates/core/src/lib.rs", tree).ShouldBeTrue();
+        pipeline.IsIndexablePath("tools/target/main.rs", tree).ShouldBeTrue();
+        pipeline.DiscoveryExcludePatterns.ShouldContain("dir:target?sibling=Cargo.toml");
     }
 
     private static VitalsAnalyzer CreateAnalyzer(

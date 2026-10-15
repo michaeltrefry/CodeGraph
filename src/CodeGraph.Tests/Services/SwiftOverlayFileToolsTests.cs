@@ -127,7 +127,7 @@ public sealed class SwiftOverlayFileToolsTests : IDisposable
         var mcp = Mcp();
 
         var defaultBranch = (await mcp.AnalyzeImpactFile(Repo, GreeterPath)).StructuredContent!.Value;
-        // (The in-memory store does not traverse, so only the overlay view's dependents are asserted.)
+        // The in-memory store does not traverse; MariaDbSwiftFileImpactTests asserts the default-branch callers.
         defaultBranch.GetProperty("found").GetBoolean().ShouldBeTrue();
 
         await BuildOverlayAsync();

@@ -20,9 +20,11 @@ public class VitalsAnalyzer(
     LintResultCache lintCache,
     DiagnosticDetailCache diagnosticDetailCache,
     ILogger<VitalsAnalyzer> logger,
-    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null) : IVitalsAnalyzer
+    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null,
+    IOptions<IndexingOptions>? indexingOptionsAccessor = null) : IVitalsAnalyzer
 {
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
+    private readonly IndexingOptions indexingOptions = indexingOptionsAccessor?.Value ?? new IndexingOptions();
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".cs", ".ts", ".tsx", ".js", ".jsx", ".cfm", ".cfc", ".sql", ".vue", ".py", ".java", ".swift", ".rs"
@@ -30,32 +32,23 @@ public class VitalsAnalyzer(
 
     /// <summary>
     /// Brace languages whose complexity is measured by <see cref="ComputeBraceComplexity"/>: block
-    /// depth from braces, functions from declaration keywords, branches from control-flow tokens.
+    /// depth from braces, functions from declaration keywords, branches from control-flow tokens
+    /// inside function bodies (so a Swift enum's <c>case</c> declarations are not branches).
     /// Other source extensions (C# aside) use the indentation heuristic.
     /// </summary>
     private static readonly Dictionary<string, BraceLanguage> BraceLanguages = new(StringComparer.OrdinalIgnoreCase)
     {
         [".swift"] = new(
+            Swift: true,
             new Regex(@"(^|[\s(])(func\s+[^\s(<]+|init[?!]?\s*[(<]|deinit\b)", RegexOptions.Compiled | RegexOptions.CultureInvariant),
             new Regex(@"\b(if|guard|switch|case|for|while|repeat|catch)\b|&&|\|\||\?\?|\s\?\s", RegexOptions.Compiled | RegexOptions.CultureInvariant)),
         [".rs"] = new(
+            Swift: false,
             new Regex(@"\bfn\s+[A-Za-z_]", RegexOptions.Compiled | RegexOptions.CultureInvariant),
             new Regex(@"\b(if|match|for|while|loop)\b|=>|&&|\|\||\?(?=[\s;.)?,]|$)", RegexOptions.Compiled | RegexOptions.CultureInvariant))
     };
 
-    private sealed record BraceLanguage(Regex FunctionDeclaration, Regex Branch);
-
-    // String literals (escapes included) and single-character literals, blanked before braces are
-    // counted so a "{" in text is not a block; a Rust lifetime ('a) is not a character literal.
-    private static readonly Regex StringOrCharLiteral = new(
-        @"""(?:[^""\\]|\\.)*""|'(?:[^'\\]|\\.)'", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    /// <summary>
-    /// SwiftPM/Xcode dependency checkouts and build output (the indexing pipeline's own
-    /// discovery exclusion): their sources are dependencies, not the repository's code.
-    /// </summary>
-    private static readonly HashSet<string> GeneratedDependencyDirectories =
-        new(IndexingPipeline.GeneratedDependencyDirectories, StringComparer.Ordinal);
+    private sealed record BraceLanguage(bool Swift, Regex FunctionDeclaration, Regex Branch);
 
     private static readonly HashSet<string> TestPathSegments = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1062,8 +1055,9 @@ public class VitalsAnalyzer(
     }
 
     /// <summary>
-    /// Swift/Rust complexity: nesting from braces (comments and literals ignored), a function from
-    /// its declaration to the line its body closes, branches from the language's control-flow tokens.
+    /// Swift/Rust complexity: nesting from braces (comments and literals ignored, per
+    /// <see cref="BraceSourceLexer"/>), a function from its declaration to the line its body
+    /// closes, branches from the language's control-flow tokens within functions.
     /// </summary>
     private static ComplexityData ComputeBraceComplexity(string source, BraceLanguage language)
     {
@@ -1076,11 +1070,11 @@ public class VitalsAnalyzer(
         int braceDepth = 0;
         int? functionDepth = null;
         int functionStart = 0;
-        bool inBlockComment = false;
+        var lexer = new BraceSourceLexer(language.Swift);
 
         for (var index = 0; index < lines.Length; index++)
         {
-            var code = StringOrCharLiteral.Replace(StripComments(lines[index], ref inBlockComment), "\"\"").Trim();
+            var code = lexer.StripLine(lines[index]).Trim();
             if (code.Length == 0) continue;
 
             // A declaration at the depth of a still-open body-less one (a protocol requirement)
@@ -1098,7 +1092,8 @@ public class VitalsAnalyzer(
                 functionStart = index;
             }
 
-            branchCount += language.Branch.Matches(code).Count;
+            if (functionDepth is not null)
+                branchCount += language.Branch.Matches(code).Count;
 
             var lineDepth = braceDepth;
             foreach (var c in code)
@@ -1132,40 +1127,9 @@ public class VitalsAnalyzer(
             MaxNestingDepth = maxDepth,
             DeepNestingLines = deepLines,
             FunctionCount = functionCount,
-            LongestFunction = longestFunction
+            LongestFunction = longestFunction,
+            BranchCount = branchCount
         };
-    }
-
-    /// <summary>The line without its // and /* */ comments; tracks a block comment across lines.</summary>
-    private static string StripComments(string line, ref bool inBlockComment)
-    {
-        var sb = new StringBuilder(line.Length);
-        for (var i = 0; i < line.Length; i++)
-        {
-            var next = i + 1 < line.Length ? line[i + 1] : '\0';
-            if (inBlockComment)
-            {
-                if (line[i] == '*' && next == '/')
-                {
-                    inBlockComment = false;
-                    i++;
-                }
-                continue;
-            }
-
-            if (line[i] == '/' && next == '/')
-                break;
-            if (line[i] == '/' && next == '*')
-            {
-                inBlockComment = true;
-                i++;
-                continue;
-            }
-
-            sb.Append(line[i]);
-        }
-
-        return sb.ToString();
     }
 
     private static ComplexityData ComputeIndentationComplexity(string source)
@@ -1641,53 +1605,24 @@ public class VitalsAnalyzer(
     // --- Helpers ---
 
     /// <summary>
-    /// A Swift dependency checkout or build directory (<see cref="GeneratedDependencyDirectories"/>),
-    /// or a Cargo <c>target/</c> directory next to its <c>Cargo.toml</c> (generated build-script
-    /// sources). Only the source extensions these toolchains emit are worth checking.
+    /// The source files on disk, discovered exactly as graph indexing discovers files (the
+    /// configured skip patterns and the dependency/build-output directory rules), so vitals never
+    /// cover a dependency checkout or generated file the graph leaves out.
     /// </summary>
-    private bool IsDependencyOrBuildOutput(string repoPath, string relPath)
-    {
-        var ext = Path.GetExtension(relPath);
-        var isSwift = ext.Equals(".swift", StringComparison.OrdinalIgnoreCase);
-        var isRust = ext.Equals(".rs", StringComparison.OrdinalIgnoreCase);
-        if (!isSwift && !isRust)
-            return false;
-
-        var segments = relPath.Replace('\\', '/').Split('/');
-        for (var i = 0; i < segments.Length - 1; i++)
-        {
-            if (isSwift && GeneratedDependencyDirectories.Contains(segments[i]))
-                return true;
-            if (isRust && segments[i] == "target"
-                && fileSystem.FileExists(Path.Combine([repoPath, .. segments[..i], "Cargo.toml"])))
-                return true;
-        }
-
-        return false;
-    }
-
     private List<string> GetSourceFiles(string repoPath)
     {
-        var result = new List<string>();
         try
         {
-            foreach (var file in fileSystem.EnumerateFiles(repoPath, "*", SearchOption.AllDirectories))
-            {
-                var rel = fileSystem.GetRelativePath(repoPath, file);
-                if (rel.Contains("/bin/") || rel.Contains("/obj/") ||
-                    rel.Contains("/node_modules/") || rel.StartsWith(".git/") ||
-                    IsDependencyOrBuildOutput(repoPath, rel))
-                    continue;
-
-                if (SourceExtensions.Contains(Path.GetExtension(rel)))
-                    result.Add(rel);
-            }
+            return IndexingPipeline.DiscoverPaths(repoPath, fileSystem, indexingOptions.SkipPatterns, "**/*")
+                .Where(file => SourceExtensions.Contains(Path.GetExtension(file)))
+                .Select(file => Path.GetRelativePath(Path.GetFullPath(repoPath), file).Replace('\\', '/'))
+                .ToList();
         }
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Failed to enumerate source files in {RepoPath}", repoPath);
+            return [];
         }
-        return result;
     }
 
     /// <summary>
@@ -1778,6 +1713,8 @@ public class VitalsAnalyzer(
         public int DeepNestingLines { get; set; }
         public int FunctionCount { get; set; }
         public int LongestFunction { get; set; }
+        /// <summary>Branch tokens counted (brace languages only; not persisted).</summary>
+        public int BranchCount { get; set; }
     }
 
     internal sealed class FileHistoryData
