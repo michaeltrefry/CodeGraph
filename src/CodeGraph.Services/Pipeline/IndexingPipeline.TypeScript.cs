@@ -215,17 +215,21 @@ public partial class IndexingPipeline
     }
 
     /// <summary>
-    /// True for a repo-relative path discovery never yields: a configured skip pattern matches it
-    /// or one of its directories is a skipped dependency directory.
+    /// True for a repo-relative path discovery never yields: a configured skip pattern matches it,
+    /// one of its directories is a skipped dependency directory, or, in a git working copy, git
+    /// lists neither the file nor anything under the directory (ignored, or inside a submodule).
     /// </summary>
     private Func<string, bool> CreateDiscoveryExclusion(string rootPath)
     {
         var matcher = CreateDiscoveryMatcher("**/*");
-        var tree = RepositoryTree.FromFileSystem(Path.GetFullPath(rootPath), _fileSystem);
+        var root = Path.GetFullPath(rootPath);
+        var gitFiles = GitWorkingTreeFiles.TryList(root);
+        var tree = RepositoryTree.FromFileSystem(root, _fileSystem, gitFiles);
         return path =>
         {
             var relative = NormalizeRelativePath(path);
             return !matcher.Match(relative).HasMatches
+                   || (gitFiles is not null && !gitFiles.Contains(relative))
                    || IsDependencyPath(relative, tree);
         };
     }

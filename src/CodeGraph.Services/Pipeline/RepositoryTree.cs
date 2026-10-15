@@ -53,11 +53,20 @@ public sealed class RepositoryTree
     }
 
     /// <summary>The checkout at <paramref name="rootPath"/>.</summary>
-    public static RepositoryTree FromFileSystem(string rootPath, IFileSystem fileSystem)
+    public static RepositoryTree FromFileSystem(string rootPath, IFileSystem fileSystem) =>
+        FromFileSystem(rootPath, fileSystem, gitFiles: null);
+
+    /// <summary>
+    /// The checkout at <paramref name="rootPath"/>, limited to what <paramref name="gitFiles"/>
+    /// lists when it is a git working copy (sc-26199): ignored files and submodule contents are
+    /// absent, as in a clean clone.
+    /// </summary>
+    internal static RepositoryTree FromFileSystem(string rootPath, IFileSystem fileSystem, GitWorkingTreeFiles? gitFiles)
     {
         string Full(string relative) => relative.Length == 0 ? rootPath : Path.Combine(rootPath, relative);
+        string Child(string directory, string name) => directory.Length == 0 ? name : $"{directory}/{name}";
         return new RepositoryTree(
-            relative => fileSystem.FileExists(Full(relative)),
+            relative => (gitFiles is null || gitFiles.ContainsFile(relative)) && fileSystem.FileExists(Full(relative)),
             relative =>
             {
                 var directory = Full(relative);
@@ -67,6 +76,7 @@ public sealed class RepositoryTree
                     .Concat(fileSystem.EnumerateDirectories(directory))
                     .Select(Path.GetFileName)
                     .OfType<string>()
+                    .Where(name => gitFiles is null || gitFiles.Contains(Child(relative, name)))
                     .ToList();
             });
     }

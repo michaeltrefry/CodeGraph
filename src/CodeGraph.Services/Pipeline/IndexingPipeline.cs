@@ -864,7 +864,14 @@ public partial class IndexingPipeline
                     $"&child={NuGetRepositoriesConfig}" +
                     $"&solution-sibling=*.sln,*.slnx,nuget.config,{string.Join(',', SolutionNuGetFiles)}" +
                     "&unless-children=package.json-without-nupkg" +
-                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg");
+                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg")
+            .Append(GitWorkingCopyRule);
+
+    /// <summary>
+    /// The git working-copy rule as fingerprint text (sc-26199): inside a git work tree only what
+    /// <c>git ls-files --cached --others --exclude-standard</c> lists is discovered.
+    /// </summary>
+    internal const string GitWorkingCopyRule = "git:ls-files --stage --cached --others --exclude-standard;no-gitlinks;no-nested-repos";
 
     /// <summary>
     /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
@@ -1004,7 +1011,10 @@ public partial class IndexingPipeline
     /// <summary>
     /// Full paths of the files under <paramref name="rootPath"/> that match
     /// <paramref name="includePatterns"/> and no discovery exclusion. The walk never descends into
-    /// a skipped dependency directory.
+    /// a skipped dependency directory. Inside a git working copy only the files git lists are
+    /// discovered (<see cref="GitWorkingTreeFiles"/>, sc-26199): gitignored paths and submodule
+    /// working trees are left out, so a folder source sees what a clone of it holds plus its
+    /// untracked, unignored files.
     /// </summary>
     private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns) =>
         DiscoverPaths(rootPath, _fileSystem, _options.SkipPatterns, includePatterns);
@@ -1018,11 +1028,18 @@ public partial class IndexingPipeline
         string rootPath, IFileSystem fileSystem, IEnumerable<string> skipPatterns, params string[] includePatterns)
     {
         var root = Path.GetFullPath(rootPath);
-        var tree = RepositoryTree.FromFileSystem(root, fileSystem);
+        var gitFiles = GitWorkingTreeFiles.TryList(root);
+        var tree = RepositoryTree.FromFileSystem(root, fileSystem, gitFiles);
         var directory = new DiscoveryDirectory(
             new DirectoryInfoWrapper(new DirectoryInfo(root)),
-            fullPath => IsDependencyDirectory(NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), tree));
+            fullPath =>
+            {
+                var relative = NormalizeRelativePath(Path.GetRelativePath(root, fullPath));
+                return (gitFiles is not null && !gitFiles.ContainsDirectory(relative))
+                       || IsDependencyDirectory(relative, tree);
+            });
         return CreateDiscoveryMatcher(skipPatterns, includePatterns).Execute(directory).Files
+            .Where(match => gitFiles is null || gitFiles.ContainsFile(match.Path))
             .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
     }
 

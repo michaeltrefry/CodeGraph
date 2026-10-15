@@ -49,6 +49,54 @@ public class TypeScriptDiscoveryScopePipelineTests
         }
     }
 
+    /// <summary>
+    /// sc-26199: in a git working copy the sidecar scope and the clamp leave out a gitignored
+    /// vendored package and a submodule's working tree.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_GitWorkingCopy_LeavesIgnoredPathsAndSubmodulesOutOfTheScope()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteApp(rootPath);
+            WriteFile(rootPath, ".gitignore", "vendor/\n");
+            WriteFile(rootPath, "vendor/web/package.json", """{ "name": "@lens/web" }""");
+            WriteFile(rootPath, "vendor/web/src/widget.ts", "export class Widget {}\n");
+            var submodule = Path.Combine(rootPath, "modules", "compositor");
+            WriteFile(submodule, "package.json", """{ "name": "@lens/compositor" }""");
+            WriteFile(submodule, "src/compose.ts", "export class Compose {}\n");
+            GitWorkingCopyDiscoveryTests.Git(submodule, "init", "-q");
+            GitWorkingCopyDiscoveryTests.Git(submodule, "add", ".");
+            GitWorkingCopyDiscoveryTests.Commit(submodule);
+            GitWorkingCopyDiscoveryTests.Git(rootPath, "init", "-q");
+            GitWorkingCopyDiscoveryTests.Git(rootPath, "add", ".");
+            GitWorkingCopyDiscoveryTests.Commit(rootPath);
+
+            var analyzer = new FakeTypeScriptAnalyzer(rootPath, honourScope: true);
+            await IndexAsync(rootPath, new InMemoryGraphStore(), analyzer);
+            analyzer.IncludedFiles.ShouldHaveSingleItem().ShouldBe([
+                "apps/web/package.json",
+                "apps/web/src/widget.ts",
+                "package.json",
+                "src/app.ts",
+                "tsconfig.json"
+            ]);
+
+            var store = new InMemoryGraphStore();
+            await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: false));
+            store.Nodes.ShouldNotContain(node => node.FilePath != null
+                && (node.FilePath.StartsWith("vendor") || node.FilePath.StartsWith("modules")));
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Module && node.FilePath == "apps/web");
+        }
+        finally
+        {
+            foreach (var file in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories))
+                File.SetAttributes(file, FileAttributes.Normal);
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     /// <summary>A pnpm monorepo's packages/* is the repository's own code, not a NuGet restore folder.</summary>
     [Fact]
     public async Task IndexProjectAsync_PnpmWorkspacePackages_AreIndexedWithTheirModules()
