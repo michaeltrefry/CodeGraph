@@ -1613,7 +1613,7 @@ public class VitalsAnalyzer(
     {
         try
         {
-            return IndexingPipeline.DiscoverPaths(repoPath, fileSystem, indexingOptions.SkipPatterns, "**/*")
+            return IndexingPipeline.DiscoverPaths(repoPath, fileSystem, indexingOptions.SkipPatterns, logger, "**/*")
                 .Where(file => SourceExtensions.Contains(Path.GetExtension(file)))
                 .Select(file => Path.GetRelativePath(Path.GetFullPath(repoPath), file).Replace('\\', '/'))
                 .ToList();

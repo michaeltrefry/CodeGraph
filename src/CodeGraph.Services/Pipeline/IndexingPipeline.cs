@@ -73,6 +73,9 @@ public partial class IndexingPipeline
     /// </summary>
     public string ExtractionFingerprint => _extractionVersions.Fingerprint;
 
+    /// <summary>Runs the per-run working-copy listing (sc-26199); a seam for tests.</summary>
+    internal IGitProcessRunner GitRunner { get; init; } = GitProcessRunner.Instance;
+
     public async Task IndexProjectAsync(string projectName, string rootPath,
         FoundationalKnowledge? knowledge = null,
         IReadOnlyList<string>? changedFilesOnly = null,
@@ -86,6 +89,8 @@ public partial class IndexingPipeline
         var projectLock = ProjectLocks.GetOrAdd(projectName, _ => new SemaphoreSlim(1, 1));
         await projectLock.WaitAsync(ct);
         var phase = new StrongBox<string>("discovery");
+        // Every discovery of this run shares one git listing per root.
+        using var gitListings = GitListingScope.Begin(GitRunner, _logger);
         try
         {
             await IndexProjectCoreAsync(projectName, rootPath, knowledge, changedFilesOnly,
@@ -192,7 +197,8 @@ public partial class IndexingPipeline
         var successfullyProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Discover .csproj files once and reuse for structural nodes + NuGet extraction
-        var csprojFiles = _fileSystem.EnumerateFiles(rootPath, "*.csproj", SearchOption.AllDirectories).ToArray();
+        // Same exclusions as source discovery (skip patterns, dependency directories, git rule).
+        var csprojFiles = DiscoverPaths(rootPath, "**/*.csproj").ToArray();
 
         // Pass 1: Structural nodes (Project, Folder, File)
         phase.Value = "extraction";
@@ -671,6 +677,17 @@ public partial class IndexingPipeline
                 typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(projectName);
         }
 
+        // DotnetProject nodes have no file slice: retire the ones no discovered .csproj yields.
+        if (!replaceExistingGraph && existingHashes.Count > 0)
+        {
+            var (retired, packageCandidates) = await RetireStaleDotnetProjectsAsync(projectName, csprojFiles);
+            if (retired)
+            {
+                typeScriptReplacementPaths.Add(StaleDotnetProjectSlice);
+                typeScriptOrphanCandidates = typeScriptOrphanCandidates.Concat(packageCandidates).ToList();
+            }
+        }
+
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
             .Where(file => !successfullyProcessedFiles.Contains(
@@ -864,7 +881,14 @@ public partial class IndexingPipeline
                     $"&child={NuGetRepositoriesConfig}" +
                     $"&solution-sibling=*.sln,*.slnx,nuget.config,{string.Join(',', SolutionNuGetFiles)}" +
                     "&unless-children=package.json-without-nupkg" +
-                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg");
+                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg")
+            .Append(GitWorkingCopyRule);
+
+    /// <summary>
+    /// The git working-copy rule as fingerprint text (sc-26199): inside a git work tree only what
+    /// <c>git ls-files --cached --others --exclude-standard</c> lists is discovered.
+    /// </summary>
+    internal const string GitWorkingCopyRule = "git:ls-files --stage --cached --others --exclude-standard;no-gitlinks;no-nested-repos";
 
     /// <summary>
     /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
@@ -1004,10 +1028,13 @@ public partial class IndexingPipeline
     /// <summary>
     /// Full paths of the files under <paramref name="rootPath"/> that match
     /// <paramref name="includePatterns"/> and no discovery exclusion. The walk never descends into
-    /// a skipped dependency directory.
+    /// a skipped dependency directory. Inside a git working copy only the files git lists are
+    /// discovered (<see cref="GitWorkingTreeFiles"/>, sc-26199): gitignored paths and submodule
+    /// working trees are left out, so a folder source sees what a clone of it holds plus its
+    /// untracked, unignored files.
     /// </summary>
     private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns) =>
-        DiscoverPaths(rootPath, _fileSystem, _options.SkipPatterns, includePatterns);
+        DiscoverPaths(rootPath, _fileSystem, _options.SkipPatterns, _logger, includePatterns);
 
     /// <summary>
     /// The discovery walk for callers outside the pipeline (vitals), with the given skip patterns
@@ -1015,14 +1042,22 @@ public partial class IndexingPipeline
     /// they and graph discovery see the same file universe.
     /// </summary>
     internal static IEnumerable<string> DiscoverPaths(
-        string rootPath, IFileSystem fileSystem, IEnumerable<string> skipPatterns, params string[] includePatterns)
+        string rootPath, IFileSystem fileSystem, IEnumerable<string> skipPatterns, ILogger? logger,
+        params string[] includePatterns)
     {
         var root = Path.GetFullPath(rootPath);
-        var tree = RepositoryTree.FromFileSystem(root, fileSystem);
+        var gitFiles = GitWorkingTreeFiles.TryList(root, logger);
+        var tree = RepositoryTree.FromFileSystem(root, fileSystem, gitFiles);
         var directory = new DiscoveryDirectory(
             new DirectoryInfoWrapper(new DirectoryInfo(root)),
-            fullPath => IsDependencyDirectory(NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), tree));
+            fullPath =>
+            {
+                var relative = NormalizeRelativePath(Path.GetRelativePath(root, fullPath));
+                return (gitFiles is not null && !gitFiles.ContainsDirectory(relative))
+                       || IsDependencyDirectory(relative, tree);
+            });
         return CreateDiscoveryMatcher(skipPatterns, includePatterns).Execute(directory).Files
+            .Where(match => gitFiles is null || gitFiles.ContainsFile(match.Path))
             .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
     }
 

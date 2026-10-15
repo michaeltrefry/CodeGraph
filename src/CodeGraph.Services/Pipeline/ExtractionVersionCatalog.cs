@@ -42,7 +42,8 @@ namespace CodeGraph.Services.Pipeline;
 /// <see cref="Fingerprint"/>, so a bump triggers the refresh run that rewrites the slices.
 /// </para>
 /// <para>
-/// The discovery exclusions (skip patterns and dependency directory rules) are part of the
+/// The discovery exclusions (skip patterns, dependency directory rules and the git working-copy
+/// rule, <see cref="IndexingPipeline.GitWorkingCopyRule"/>) are part of the
 /// <see cref="Fingerprint"/> but not of any file's version: changing them re-runs a routine sync at
 /// an unchanged commit, whose full scan removes the files that left the indexed universe and
 /// extracts the files that entered it, without re-extracting the files that stayed.

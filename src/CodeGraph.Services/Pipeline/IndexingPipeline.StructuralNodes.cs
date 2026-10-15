@@ -137,6 +137,42 @@ public partial class IndexingPipeline
     private static string NormalizeRelativePath(string path)
         => path.Replace('\\', '/').Trim('/');
 
+    /// <summary>
+    /// Reserved slice for DotnetProject nodes being removed; no file lives there. A node left on it
+    /// by an interrupted run is removed by the next one.
+    /// </summary>
+    internal const string StaleDotnetProjectSlice = ".codegraph/stale-dotnet-project";
+
+    /// <summary>
+    /// Stored DotnetProject nodes whose .csproj discovery no longer yields (deleted, or now
+    /// excluded: gitignored, inside a submodule, a dependency directory). They have no file slice,
+    /// so they are moved onto <see cref="StaleDotnetProjectSlice"/>, which the incremental write
+    /// replaces with nothing. Returns whether there were any, and the project's NuGet package nodes
+    /// as orphan candidates (deleted when the removal leaves them without references).
+    /// </summary>
+    private async Task<(bool Retired, IReadOnlyList<string> OrphanCandidates)> RetireStaleDotnetProjectsAsync(
+        string projectName, IEnumerable<string> csprojFiles)
+    {
+        var current = csprojFiles
+            .Select(csproj => $"{projectName}:project:{Path.GetFileNameWithoutExtension(csproj)}")
+            .ToHashSet(StringComparer.Ordinal);
+        var stale = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.DotnetProject, int.MaxValue))
+            .Where(node => !current.Contains(node.QualifiedName))
+            .ToList();
+        if (stale.Count == 0)
+            return (false, []);
+
+        _logger.LogInformation(
+            "Removing {Count} DotnetProject node(s) of {Project} whose .csproj discovery no longer yields: {Projects}",
+            stale.Count, projectName, string.Join(", ", stale.Select(node => node.Name)));
+        foreach (var node in stale)
+            await _store.UpsertNodeAsync(node with { FilePath = StaleDotnetProjectSlice });
+        var packages = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.NuGetPackage, int.MaxValue))
+            .Select(node => node.QualifiedName)
+            .ToList();
+        return (true, packages);
+    }
+
     private void ExtractNuGetReferences(string projectName, string[] csprojFiles,
         GraphBuffer buffer, bool failOnExtractionError)
     {
