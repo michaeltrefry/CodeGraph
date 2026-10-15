@@ -280,6 +280,36 @@ public sealed class XcodeProjectImportTests : IDisposable
             .ShouldContain((RendererTests, "swift-external-module:Compositor", "external", "high"));
     }
 
+    /// <summary>
+    /// Dual distribution: a root Package.swift and a root Alamo.xcodeproj both build module Alamo.
+    /// The SwiftPM target is the canonical provider: one high-confidence edge, never an ambiguous pair.
+    /// </summary>
+    [Fact]
+    public async Task IndexProject_SwiftPmAndXcodeTargetOfTheSameModule_BindsOnlyTheSwiftPmTarget()
+    {
+        Write("Package.swift", """
+            // swift-tools-version:5.9
+            import PackageDescription
+            let package = Package(
+                name: "Alamo",
+                targets: [
+                    .target(name: "Alamo"),
+                    .testTarget(name: "AlamoTests", dependencies: ["Alamo"], path: "Tests"),
+                ]
+            )
+            """);
+        Write("Alamo.xcodeproj/project.pbxproj", ProjectFile(
+            ("Alamo", "com.apple.product-type.framework", ["PRODUCT_NAME = Alamo;"], ["PRODUCT_NAME = Alamo;"])));
+        Write("Sources/Alamo/Session.swift", "public struct Session {}\n");
+        Write("Tests/T.swift", "@testable import Alamo\n");
+
+        await IndexAsync();
+
+        _store.Nodes.ShouldContain(node => node.QualifiedName == $"{Project}:Alamo.xcodeproj/project.pbxproj#target:Alamo");
+        Imports().Where(import => import.Source == $"{Project}:Tests/T.swift").ShouldBe(
+            [($"{Project}:Tests/T.swift", $"{Project}:Package.swift#target:Alamo", "target", "high")]);
+    }
+
     [Fact]
     public void ReadNativeTargets_DerivesTheSwiftModuleNameFromBuildSettings()
     {

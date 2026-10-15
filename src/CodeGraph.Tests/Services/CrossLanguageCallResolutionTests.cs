@@ -211,25 +211,38 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
         LanguageSpecs.Rust.ExtractionVersion.ShouldBe(3);
     }
 
-    [Fact]
-    public void ExportsCAbi_ScipLocalSymbolIsNeverLinkedByName()
+    /// <summary>
+    /// The extern signature alone never makes a function linkable: only the recorded abi does,
+    /// which both extractors set to a foreign ABI only for <c>#[no_mangle]</c> / <c>#[export_name]</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("Rust", false)]
+    [InlineData("C", true)]
+    [InlineData("C-unwind", true)]
+    public void ExportsCAbi_FollowsTheRecordedAbiNotTheSignature(string? abi, bool expected)
     {
-        var nested = new GraphNode
+        var properties = new Dictionary<string, object>
+        {
+            ["signature"] = "unsafe extern \"C\" fn count(ctx: *mut c_void, _: u64, _: u64)",
+            ["scip_local_symbol"] = "local 12"
+        };
+        if (abi is not null)
+            properties[CallLanguages.AbiProperty] = abi;
+        var node = new GraphNode
         {
             Project = Project,
             Label = NodeLabel.Function,
             Name = "count",
             QualifiedName = $"{Project}:scip-local:src/managed.rs:local 12",
             FilePath = "src/managed.rs",
-            Properties = new()
-            {
-                ["signature"] = "unsafe extern \"C\" fn count(ctx: *mut c_void, _: u64, _: u64)",
-                ["scip_local_symbol"] = "local 12"
-            }
+            Properties = properties
         };
 
-        CallLanguages.ExportsCAbi(nested).ShouldBeFalse();
-        CallLanguages.IsCallTarget("c", nested).ShouldBeFalse();
+        CallLanguages.ExportsCAbi(node).ShouldBe(expected);
+        CallLanguages.IsCallTarget("c", node).ShouldBe(expected);
+        CallLanguages.CanCall("swift", node).ShouldBe(expected);
+        CallLanguages.CanCall("python", node).ShouldBeFalse();
     }
 
     [Fact]
@@ -242,26 +255,14 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     }
 
     [Theory]
-    [InlineData("pub extern \"C\" fn lw_open() -> u32", true)]
-    [InlineData("pub unsafe extern \"C-unwind\" fn lw_open()", true)]
-    [InlineData("extern fn lw_open()", true)]
-    [InlineData("pub extern \"Rust\" fn lw_open()", false)]
-    [InlineData("pub fn lw_open() -> u32", false)]
-    public void ExportsCAbi_ReadsTheScipSignatureOfASemanticRustNode(string signature, bool expected)
+    [InlineData("pub extern \"C\" fn lw_open() -> u32", "C")]
+    [InlineData("pub unsafe extern \"C-unwind\" fn lw_open()", "C-unwind")]
+    [InlineData("extern fn lw_open()", "C")]
+    [InlineData("pub extern \"Rust\" fn lw_open()", "Rust")]
+    [InlineData("pub fn lw_open() -> u32", null)]
+    public void ParseExternAbi_ReadsTheAbiOfAScipSignature(string signature, string? expected)
     {
-        var node = new GraphNode
-        {
-            Project = Project,
-            Label = NodeLabel.Function,
-            Name = "lw_open",
-            QualifiedName = "rust-analyzer cargo engine lw_open().",
-            FilePath = "engine/src/lib.rs",
-            Properties = new() { ["signature"] = signature }
-        };
-
-        CallLanguages.ExportsCAbi(node).ShouldBe(expected);
-        CallLanguages.CanCall("swift", node).ShouldBe(expected);
-        CallLanguages.CanCall("python", node).ShouldBeFalse();
+        CallLanguages.ParseExternAbi(signature).ShouldBe(expected);
     }
 
     [Fact]

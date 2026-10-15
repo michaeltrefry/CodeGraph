@@ -115,21 +115,24 @@ public static partial class CallLanguages
     }
 
     /// <summary>
-    /// Whether a Rust function is exported with a foreign (non-Rust) ABI: the tree-sitter
-    /// extractor's <see cref="AbiProperty"/>, or an <c>extern "abi"</c> in a SCIP signature.
+    /// Whether a Rust function is exported for foreign callers by name: its <see cref="AbiProperty"/>
+    /// (recorded by the tree-sitter extractor and the SCIP importer only for an <c>extern "abi" fn</c>
+    /// whose symbol is not mangled, <c>#[no_mangle]</c> / <c>#[export_name]</c>) names a non-Rust ABI.
     /// </summary>
-    public static bool ExportsCAbi(GraphNode node)
+    public static bool ExportsCAbi(GraphNode node) =>
+        Text(node.Properties.GetValueOrDefault(AbiProperty)) is { Length: > 0 } abi && abi != "Rust";
+
+    /// <summary>
+    /// The ABI of an <c>extern "abi" fn</c> signature (<c>C</c> for a bare <c>extern fn</c>), or null
+    /// when the signature declares no extern function.
+    /// </summary>
+    public static string? ParseExternAbi(string? signature)
     {
-        if (Text(node.Properties.GetValueOrDefault(AbiProperty)) is { Length: > 0 } abi)
-            return abi != "Rust";
-
-        // A SCIP document-local symbol (a function nested in another one) is never linked by name.
-        if (node.Properties.ContainsKey("scip_local_symbol"))
-            return false;
-
-        return Text(node.Properties.GetValueOrDefault("signature")) is { } signature
-               && ExternRegex().Match(signature) is { Success: true } match
-               && match.Groups["abi"].Value != "Rust";
+        if (signature is null || ExternRegex().Match(signature) is not { Success: true } match)
+            return null;
+        return match.Groups["abi"].Success && match.Groups["abi"].Value.Length > 0
+            ? match.Groups["abi"].Value
+            : "C";
     }
 
     private static string? Text(object? value) => value switch

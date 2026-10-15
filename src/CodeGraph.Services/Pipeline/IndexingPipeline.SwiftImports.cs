@@ -326,12 +326,20 @@ internal sealed class SwiftModuleResolver
             .Select(entry => entry.Node)
             .OrderBy(node => node.QualifiedName, StringComparer.Ordinal)
             .ToList();
+        // A package distributed both through SwiftPM and an Xcode project (Package.swift and
+        // Alamo.xcodeproj side by side) declares the same module twice: the SwiftPM target is
+        // the canonical provider, so an Xcode target only counts when no SwiftPM one is as near.
+        if (nearest.Any(node => !IsXcodeModule(node)))
+            nearest = nearest.Where(node => !IsXcodeModule(node)).ToList();
         var providers = nearest
             .GroupBy(node => Property(node, "package_key") ?? node.QualifiedName, StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
         return new SwiftModuleResolution(providers, matchedBy, Ambiguous: providers.Count > 1);
     }
+
+    private static bool IsXcodeModule(GraphNode node) =>
+        Property(node, "ecosystem") == SwiftPackageManifestExtractor.XcodeEcosystem;
 
     private static string ManifestDirectory(GraphNode node)
     {
