@@ -49,6 +49,37 @@ public class TypeScriptDiscoveryScopePipelineTests
         }
     }
 
+    /// <summary>A pnpm monorepo's packages/* is the repository's own code, not a NuGet restore folder.</summary>
+    [Fact]
+    public async Task IndexProjectAsync_PnpmWorkspacePackages_AreIndexedWithTheirModules()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteFile(rootPath, "package.json", """{ "name": "mono", "workspaces": ["packages/*"] }""");
+            WriteFile(rootPath, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n");
+            WriteFile(rootPath, "tsconfig.json", "{}");
+            WriteFile(rootPath, "packages/a/package.json", """{ "name": "@mono/a" }""");
+            WriteFile(rootPath, "packages/a/src/index.ts", "export class Index {}\n");
+            var store = new InMemoryGraphStore();
+            var analyzer = new FakeTypeScriptAnalyzer(rootPath, honourScope: true);
+
+            await IndexAsync(rootPath, store, analyzer);
+
+            analyzer.IncludedFiles.ShouldHaveSingleItem()
+                .ShouldBe(["package.json", "packages/a/package.json", "packages/a/src/index.ts", "tsconfig.json"]);
+            (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("packages/a/src/index.ts");
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Module
+                && node.QualifiedName == $"typescript-package:{Project}:@mono/a" && node.FilePath == "packages/a");
+            store.Nodes.ShouldContain(node => node.QualifiedName == "packages.a.src.index.Index"
+                && node.FilePath == "packages/a/src/index.ts");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task IndexProjectAsync_WithoutARootTsconfig_NeverPicksAnExcludedOne()
     {

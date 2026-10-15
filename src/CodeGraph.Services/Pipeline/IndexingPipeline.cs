@@ -830,17 +830,33 @@ public partial class IndexingPipeline
         };
 
     /// <summary>
+    /// The legacy NuGet (packages.config) restore folder. NuGet restores each package into
+    /// <c>packages/&lt;Id&gt;.&lt;Version&gt;/</c> holding <c>&lt;Id&gt;.&lt;Version&gt;.nupkg</c>,
+    /// and older clients also write <c>packages/repositories.config</c>. Matched by exact (ordinal)
+    /// name, it is skipped as a whole when a <c>packages.config</c> sits beside it or it holds
+    /// <c>repositories.config</c>; otherwise only its package directories (those holding their own
+    /// <c>.nupkg</c>) are skipped. A JS/TS monorepo <c>packages/*</c> or a SwiftPM
+    /// <c>Packages/</c> directory has neither signal and stays indexed.
+    /// </summary>
+    internal const string NuGetPackagesDirectory = "packages";
+
+    private const string NuGetPackagesConfig = "packages.config";
+    private const string NuGetRepositoriesConfig = "repositories.config";
+
+    /// <summary>
     /// Every discovery exclusion as fingerprint text: the configured skip patterns and the
-    /// generated and managed dependency directory rules. Part of the extraction fingerprint, so a
-    /// change re-runs indexing at an unchanged commit and the full scan adds or removes the files
-    /// that entered or left the indexed universe.
+    /// generated, managed and NuGet dependency directory rules. Part of the extraction fingerprint,
+    /// so a change re-runs indexing at an unchanged commit and the full scan adds or removes the
+    /// files that entered or left the indexed universe.
     /// </summary>
     internal IEnumerable<string> DiscoveryExcludePatterns =>
         _options.SkipPatterns
             .Concat(GeneratedDependencyDirectories.Select(directory => $"dir:{directory}"))
             .Concat(ManagedDependencyDirectories
                 .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-                .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"));
+                .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"))
+            .Append($"dir:{NuGetPackagesDirectory}?sibling={NuGetPackagesConfig}&child={NuGetRepositoriesConfig}" +
+                    $"&package-dir=<name>/<name>.nupkg");
 
     /// <summary>
     /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
@@ -982,20 +998,43 @@ public partial class IndexingPipeline
     private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns)
     {
         var root = Path.GetFullPath(rootPath);
+        bool RepositoryFileExists(string relative) => _fileSystem.FileExists(Path.Combine(root, relative));
         var directory = new DiscoveryDirectory(
-            new DirectoryInfoWrapper(new DirectoryInfo(root)), IsDependencyDirectory);
+            new DirectoryInfoWrapper(new DirectoryInfo(root)),
+            fullPath => IsDependencyDirectory(
+                NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), RepositoryFileExists));
         return CreateDiscoveryMatcher(includePatterns).Execute(directory).Files
             .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
     }
 
-    /// <summary>True when the directory at <paramref name="fullPath"/> is a skipped dependency directory.</summary>
-    private bool IsDependencyDirectory(string fullPath) =>
-        IsDependencyDirectory(Path.GetFileName(fullPath),
-            manifest => _fileSystem.FileExists(Path.Combine(Path.GetDirectoryName(fullPath) ?? "", manifest)));
+    /// <summary>
+    /// True when the repository directory <paramref name="directoryPath"/> (repo-relative) is a
+    /// skipped dependency directory; <paramref name="repositoryFileExists"/> answers for
+    /// repository-relative file paths. Only files beside or directly inside the directory are
+    /// probed, so the disk walk and the overlay's tree lookups decide identically.
+    /// </summary>
+    private static bool IsDependencyDirectory(string directoryPath, Func<string, bool> repositoryFileExists)
+    {
+        var normalized = NormalizeRelativePath(directoryPath);
+        if (normalized.Length == 0)
+            return false;
+        var separator = normalized.LastIndexOf('/');
+        var name = separator < 0 ? normalized : normalized[(separator + 1)..];
+        var parent = separator < 0 ? "" : normalized[..separator];
+        string InParent(string file) => parent.Length == 0 ? file : $"{parent}/{file}";
+        var parentName = parent[(parent.LastIndexOf('/') + 1)..];
 
-    private static bool IsDependencyDirectory(string name, Func<string, bool> siblingExists) =>
-        GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal) ||
-        (ManagedDependencyDirectories.TryGetValue(name, out var manifests) && manifests.Any(siblingExists));
+        return GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal)
+               || (ManagedDependencyDirectories.TryGetValue(name, out var manifests)
+                   && manifests.Any(manifest => repositoryFileExists(InParent(manifest))))
+               // The NuGet restore folder as a whole ...
+               || (name == NuGetPackagesDirectory
+                   && (repositoryFileExists(InParent(NuGetPackagesConfig))
+                       || repositoryFileExists($"{normalized}/{NuGetRepositoriesConfig}")))
+               // ... or one restored package directory: packages/<Id>.<Version>/<Id>.<Version>.nupkg.
+               || (parentName == NuGetPackagesDirectory
+                   && repositoryFileExists($"{normalized}/{name}.nupkg"));
+    }
 
     /// <summary>
     /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory;
@@ -1004,11 +1043,9 @@ public partial class IndexingPipeline
     private static bool IsDependencyPath(string relativePath, Func<string, bool> repositoryFileExists)
     {
         var segments = NormalizeRelativePath(relativePath).Split('/');
-        for (var index = 0; index < segments.Length - 1; index++)
+        for (var index = 1; index < segments.Length; index++)
         {
-            var parent = string.Join('/', segments.Take(index));
-            if (IsDependencyDirectory(segments[index], manifest =>
-                    repositoryFileExists(parent.Length == 0 ? manifest : $"{parent}/{manifest}")))
+            if (IsDependencyDirectory(string.Join('/', segments.Take(index)), repositoryFileExists))
                 return true;
         }
 

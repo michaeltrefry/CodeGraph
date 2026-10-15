@@ -218,6 +218,23 @@ const extractor_1 = require("./extractor");
         fs.rmSync(rootPath, { recursive: true, force: true });
     }
 });
+(0, node_test_1.test)('a pnpm workspace under packages/ in the discovery scope yields its workspace package', () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-pnpm-'));
+    try {
+        writeJson(rootPath, 'package.json', { name: 'mono', workspaces: ['packages/*'] });
+        writeFile(rootPath, 'pnpm-workspace.yaml', "packages:\n  - 'packages/*'\n");
+        writeJson(rootPath, 'tsconfig.json', { compilerOptions: { target: 'ES2020' } });
+        writeJson(rootPath, 'packages/a/package.json', { name: '@mono/a' });
+        writeFile(rootPath, 'packages/a/src/index.ts', 'export class Index {}\n');
+        const result = (0, extractor_1.extractProject)('Mono', rootPath, path.join(rootPath, 'tsconfig.json'), () => { }, ['package.json', 'tsconfig.json', 'packages/a/package.json', 'packages/a/src/index.ts']);
+        assert_1.strict.deepEqual(result.processedFiles, ['packages/a/src/index.ts']);
+        assert_1.strict.ok(result.workspacePackages.some(pkg => pkg.name === '@mono/a' && pkg.rootPath === 'packages/a' && pkg.kind.includes('workspace_package')), JSON.stringify(result.workspacePackages));
+        assert_1.strict.ok(result.nodes.some(node => node.label === 'Module' && node.name === '@mono/a'));
+    }
+    finally {
+        fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+});
 (0, node_test_1.test)('type text rendered into qualified names and properties never embeds the checkout path', () => {
     const first = writeTypeFixture();
     const second = writeTypeFixture();
