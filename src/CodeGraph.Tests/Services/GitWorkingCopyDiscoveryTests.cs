@@ -154,8 +154,11 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
         Write(Repo, "vendor/PhotoCatalog/catalog.py", "def catalog(): pass\n");
         Write(Repo, "vendor/Compositor/compositor.py", "def compose(): pass\n");
         Write(Repo, "ignored.py", "def ignored(): pass\n");
+        Write(Repo, "vendor/PhotoCatalog/Catalog.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Vendored.Catalog\" Version=\"1.0.0\" /></ItemGroup></Project>");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        await CreatePipeline(store, withNuGet: true).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        store.Nodes.ShouldContain(node => node.Label == NodeLabel.DotnetProject && node.Name == "Catalog");
+        store.Nodes.ShouldContain(node => node.Label == NodeLabel.NuGetPackage && node.Name == "Vendored.Catalog");
         (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("vendor/PhotoCatalog/catalog.py");
         (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("vendor/Compositor/compositor.py");
         (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("ignored.py");
@@ -168,11 +171,134 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
         Git(Repo, "add", ".");
         Commit(Repo);
 
-        await CreatePipeline(store).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        await CreatePipeline(store, withNuGet: true).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
 
         (await store.GetFileHashesAsync(Project)).Keys.ShouldBe(["src/app.py"]);
+        store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.DotnetProject || node.Label == NodeLabel.NuGetPackage);
         store.Nodes.ShouldNotContain(node => node.FilePath != null
                                              && (node.FilePath.StartsWith("vendor/") || node.FilePath == "ignored.py"));
+    }
+
+    /// <summary>
+    /// .csproj discovery goes through the shared discovery: an ignored or submodule project makes
+    /// no DotnetProject node and no NuGet reference, also when an earlier walk indexed them.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_GitWorkingCopy_IgnoredAndSubmoduleProjectsMakeNoProjectOrNuGetNodes()
+    {
+        CreateWorkingCopy();
+        AddDotnetProjects();
+        var store = new InMemoryGraphStore();
+
+        await CreatePipeline(store, withNuGet: true).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+
+        store.Nodes.Where(node => node.Label == NodeLabel.DotnetProject).Select(node => node.Name)
+            .ShouldBe(["App"]);
+        store.Nodes.Where(node => node.Label == NodeLabel.NuGetPackage).Select(node => node.Name)
+            .ShouldBe(["Serilog"]);
+    }
+
+    [Fact]
+    public void DotnetSupportInspector_GitWorkingCopy_IgnoresIgnoredAndSubmoduleProjects()
+    {
+        CreateWorkingCopy();
+        AddDotnetProjects();
+
+        CodeGraph.Services.Metadata.DotnetSupportInspector.InspectRepository(Repo).ShouldNotBeNull()
+            .TargetFrameworks.Select(framework => framework.Moniker).ShouldBe(["net8.0"]);
+    }
+
+    [Fact]
+    public void TryList_PassesSafeDirectoryAndDisablesFsmonitor()
+    {
+        Directory.CreateDirectory(Repo);
+        var runner = new FakeRunner(new GitProcessResult(0, "100644 " + new string('a', 40) + " 0\tsrc/app.py\0", ""));
+
+        GitWorkingTreeFiles.TryList(Repo, NullLogger.Instance, runner).ShouldNotBeNull()
+            .ContainsFile("src/app.py").ShouldBeTrue();
+
+        var arguments = runner.Calls.ShouldHaveSingleItem();
+        string.Join(' ', arguments).ShouldStartWith("-c safe.directory=* -c core.fsmonitor=false ls-files -z --stage");
+    }
+
+    [Fact]
+    public void GitListingScope_ListsEachRootOnceUntilDisposed()
+    {
+        Directory.CreateDirectory(Repo);
+        var runner = new FakeRunner(new GitProcessResult(0, "src/app.py\0", ""));
+
+        using (GitListingScope.Begin(runner, NullLogger.Instance))
+        {
+            using (GitListingScope.Begin(runner, NullLogger.Instance))
+                GitWorkingTreeFiles.TryList(Repo).ShouldNotBeNull();
+            // A nested scope joins the outer one and leaves it active.
+            GitWorkingTreeFiles.TryList(Path.Combine(Repo, ".")).ShouldNotBeNull();
+            runner.Calls.Count.ShouldBe(1);
+        }
+
+        GitListingScope.Current.ShouldBeNull();
+        GitWorkingTreeFiles.TryList(Repo, runner: runner).ShouldNotBeNull();
+        runner.Calls.Count.ShouldBe(2);
+    }
+
+    /// <summary>A folder that is no git repository falls back quietly; every other fallback warns.</summary>
+    [Fact]
+    public void TryList_NotAGitRepository_FallsBackWithoutAWarning()
+    {
+        Directory.CreateDirectory(Repo);
+        var logger = new RecordingLogger();
+
+        GitWorkingTreeFiles.TryList(Repo, logger, new FakeRunner(new GitProcessResult(128, "",
+            "fatal: not a git repository (or any of the parent directories): .git\n"))).ShouldBeNull();
+
+        logger.Warnings.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(128, "fatal: detected dubious ownership in repository at '/repo'", "dubious ownership")]
+    [InlineData(129, "error: unknown option", "unknown option")]
+    [InlineData(0, "", "lists no files")]
+    public void TryList_GitFails_FallsBackWithAWarning(int exitCode, string stderr, string expected)
+    {
+        Directory.CreateDirectory(Repo);
+        var logger = new RecordingLogger();
+
+        GitWorkingTreeFiles.TryList(Repo, logger, new FakeRunner(new GitProcessResult(exitCode, "", stderr)))
+            .ShouldBeNull();
+
+        logger.Warnings.ShouldHaveSingleItem().ShouldContain(expected);
+    }
+
+    [Fact]
+    public void TryList_GitMissingOrTimedOut_FallsBackWithAWarning()
+    {
+        Directory.CreateDirectory(Repo);
+        var logger = new RecordingLogger();
+
+        GitWorkingTreeFiles.TryList(Repo, logger,
+            new FakeRunner(new System.ComponentModel.Win32Exception(2, "No such file"))).ShouldBeNull();
+        GitWorkingTreeFiles.TryList(Repo, logger, new FakeRunner(new TimeoutException("slow"))).ShouldBeNull();
+
+        logger.Warnings.Count.ShouldBe(2);
+    }
+
+    /// <summary>
+    /// An indexer running as root over a bind mount owned by the host user: git reports dubious
+    /// ownership (simulated with git's GIT_TEST_ASSUME_DIFFERENT_OWNER), and the listing still works.
+    /// </summary>
+    [Fact]
+    public void TryList_RepositoryOwnedByAnotherUser_IsStillListed()
+    {
+        CreateWorkingCopy();
+        var differentOwner = new Dictionary<string, string> { ["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1" };
+        var runner = new GitProcessRunner(differentOwner);
+        var plain = runner.Run(Repo, ["ls-files"], TimeSpan.FromMinutes(1));
+        if (plain.ExitCode == 0 || !plain.StandardError.Contains("dubious ownership"))
+            return; // This git build does not simulate ownership; nothing to observe.
+
+        var logger = new RecordingLogger();
+        GitWorkingTreeFiles.TryList(Repo, logger, runner).ShouldNotBeNull().ContainsFile("src/app.py").ShouldBeTrue();
+        logger.Warnings.ShouldBeEmpty();
     }
 
     [Fact]
@@ -184,7 +310,7 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
     }
 
     private static IReadOnlyList<string> Discover(string root) =>
-        IndexingPipeline.DiscoverPaths(root, new LocalFileSystem(), new IndexingOptions().SkipPatterns, "**/*")
+        IndexingPipeline.DiscoverPaths(root, new LocalFileSystem(), new IndexingOptions().SkipPatterns, null, "**/*")
             .Select(path => Path.GetRelativePath(Path.GetFullPath(root), path).Replace('\\', '/'))
             .Order(StringComparer.Ordinal)
             .ToList();
@@ -239,15 +365,79 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
         Write(Repo, "Package.swift", "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"Lens\")\n");
     }
 
-    private static IndexingPipeline CreatePipeline(InMemoryGraphStore store) =>
+    private void AddDotnetProjects()
+    {
+        const string app = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup><PackageReference Include="Serilog" Version="3.1.1" /></ItemGroup>
+            </Project>
+            """;
+        Write(Repo, "App/App.csproj", app);
+        Write(Repo, "vendor/PhotoCatalog/Catalog/Catalog.csproj",
+            app.Replace("net8.0", "net472").Replace("Serilog", "Vendored.Catalog"));
+        Write(Repo, "vendor/Compositor/Compositor.csproj",
+            app.Replace("net8.0", "netcoreapp2.1").Replace("Serilog", "Vendored.Compositor"));
+    }
+
+    private static IndexingPipeline CreatePipeline(InMemoryGraphStore store, bool withNuGet = false) =>
         new(
             store,
             [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
             Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
             new LocalFileSystem(),
             NullLogger<IndexingPipeline>.Instance,
+            nugetExtractor: withNuGet ? new CodeGraph.Extractors.CSharp.NuGetReferenceExtractor() : null,
             cargoManifestExtractor: new CargoManifestExtractor(),
             swiftPackageManifestExtractor: new SwiftPackageManifestExtractor());
+
+    internal sealed class FakeRunner : IGitProcessRunner
+    {
+        private readonly GitProcessResult? _result;
+        private readonly Exception? _failure;
+
+        public FakeRunner(GitProcessResult result) => _result = result;
+
+        public FakeRunner(Exception failure) => _failure = failure;
+
+        public List<IReadOnlyList<string>> Calls { get; } = [];
+
+        public GitProcessResult Run(string workingDirectory, IReadOnlyList<string> arguments, TimeSpan timeout)
+        {
+            Calls.Add(arguments);
+            return _failure is null ? _result! : throw _failure;
+        }
+    }
+
+    /// <summary>Counts listings and runs the real git.</summary>
+    internal sealed class CountingRunner : IGitProcessRunner
+    {
+        public int Listings { get; private set; }
+
+        public GitProcessResult Run(string workingDirectory, IReadOnlyList<string> arguments, TimeSpan timeout)
+        {
+            if (arguments.Contains("ls-files"))
+                Listings++;
+            return GitProcessRunner.Instance.Run(workingDirectory, arguments, timeout);
+        }
+    }
+
+    private sealed class RecordingLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
+    }
 
     internal static void Commit(string repository) =>
         Git(repository, "-c", "user.name=CodeGraph Tests", "-c", "user.email=codegraph-tests@example.com",

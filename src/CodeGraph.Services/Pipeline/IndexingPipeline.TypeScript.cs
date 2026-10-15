@@ -223,7 +223,7 @@ public partial class IndexingPipeline
     {
         var matcher = CreateDiscoveryMatcher("**/*");
         var root = Path.GetFullPath(rootPath);
-        var gitFiles = GitWorkingTreeFiles.TryList(root);
+        var gitFiles = GitWorkingTreeFiles.TryList(root, _logger);
         var tree = RepositoryTree.FromFileSystem(root, _fileSystem, gitFiles);
         return path =>
         {

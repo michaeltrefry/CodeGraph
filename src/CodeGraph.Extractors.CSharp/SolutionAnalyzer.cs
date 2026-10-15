@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Services;
+using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Metadata;
 
@@ -206,7 +207,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         var solutionDir = Path.GetDirectoryName(solutionPath)!;
 
         // Check if any project uses packages.config (old-style NuGet)
-        var hasPackagesConfig = Directory.GetFiles(solutionDir, "packages.config", SearchOption.AllDirectories).Length > 0;
+        var hasPackagesConfig = RepositoryFileDiscovery.DiscoverFiles(solutionDir, _logger, "**/packages.config").Count > 0;
 
         if (hasPackagesConfig)
         {
@@ -269,13 +270,13 @@ public class SolutionAnalyzer : ISolutionAnalyzer
 
     private static ProjectMetadata DetectMetadata(string solutionDir)
     {
-        var csprojFiles = Directory.GetFiles(solutionDir, "*.csproj", SearchOption.AllDirectories);
+        var csprojFiles = RepositoryFileDiscovery.DiscoverFiles(solutionDir, null, "**/*.csproj");
         var framework = DetectFrameworkFromCsproj(csprojFiles);
         var dotnetSupport = DotnetSupportInspector.InspectRepository(solutionDir);
         return new ProjectMetadata("C#", framework, dotnetSupport);
     }
 
-    private static string? DetectFrameworkFromCsproj(string[] csprojFiles)
+    private static string? DetectFrameworkFromCsproj(IReadOnlyList<string> csprojFiles)
     {
         foreach (var csproj in csprojFiles)
         {

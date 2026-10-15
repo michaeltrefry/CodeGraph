@@ -1,6 +1,6 @@
 using System.ComponentModel;
-using System.Diagnostics;
-using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.RegularExpressions;
 
 namespace CodeGraph.Services.Pipeline;
@@ -60,63 +60,78 @@ internal sealed class GitWorkingTreeFiles
     }
 
     /// <summary>
-    /// The listing for <paramref name="rootPath"/>, or null when discovery must walk the disk as it
-    /// always did: the root is not inside a git work tree, git is not installed, git refuses the
-    /// repository (for example one owned by another user) or fails, or it lists nothing (a root
-    /// inside an ignored directory of an enclosing repository).
+    /// The arguments of the listing. <c>safe.directory=*</c> lets a root-run indexer list a bind
+    /// mount owned by another user (git otherwise stops with "detected dubious ownership"); git only
+    /// honours it from protected (command-line, global, system) config. Trusting the repository's
+    /// config is safe for this command: <c>core.fsmonitor</c>, the one setting through which
+    /// <c>ls-files</c> could run a program, is overridden on the command line (which takes
+    /// precedence over repository config); <c>ls-files</c> runs no hooks, filters or external diff
+    /// drivers and never writes the index.
     /// </summary>
-    public static GitWorkingTreeFiles? TryList(string rootPath)
+    internal static readonly IReadOnlyList<string> ListArguments =
+    [
+        "-c", "safe.directory=*",
+        "-c", "core.fsmonitor=false",
+        "ls-files", "-z", "--stage", "--cached", "--others", "--exclude-standard"
+    ];
+
+    /// <summary>
+    /// The listing for <paramref name="rootPath"/>, or null when discovery must walk the disk as it
+    /// always did. Inside a <see cref="GitListingScope"/> (one indexing run) a root is listed once.
+    /// Every fallback except "not a git repository" is logged as a warning: git is not installed,
+    /// git fails or times out, or it lists nothing (a root inside an ignored directory of an
+    /// enclosing repository).
+    /// </summary>
+    public static GitWorkingTreeFiles? TryList(string rootPath, ILogger? logger = null, IGitProcessRunner? runner = null)
     {
-        if (!Directory.Exists(rootPath))
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
+        return GitListingScope.Current is { } scope
+            ? scope.GetOrAdd(root, () => List(root, logger ?? scope.Logger, runner ?? scope.Runner))
+            : List(root, logger ?? NullLogger.Instance, runner ?? GitProcessRunner.Instance);
+    }
+
+    private static GitWorkingTreeFiles? List(string root, ILogger logger, IGitProcessRunner runner)
+    {
+        if (!Directory.Exists(root))
             return null;
 
-        var psi = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = rootPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = new UTF8Encoding(false)
-        };
-        // Repository config must not run commands for a read-only listing.
-        foreach (var argument in new[]
-                 {
-                     "-c", "core.fsmonitor=false",
-                     "ls-files", "-z", "--stage", "--cached", "--others", "--exclude-standard"
-                 })
-            psi.ArgumentList.Add(argument);
-        // Discover the repository from the root, never from an inherited hook environment.
-        foreach (var variable in new[] { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX" })
-            psi.Environment.Remove(variable);
-
+        GitProcessResult result;
         try
         {
-            using var process = Process.Start(psi);
-            if (process is null)
-                return null;
+            result = runner.Run(root, ListArguments, ListTimeout);
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or TimeoutException)
+        {
+            logger.LogWarning(ex,
+                "Could not list the git working copy at {Root}; discovery walks the disk and does not apply .gitignore or skip submodules",
+                root);
+            return null;
+        }
 
-            var stderr = process.StandardError.ReadToEndAsync();
-            var stdout = process.StandardOutput.ReadToEndAsync();
-            if (!process.WaitForExit(ListTimeout))
+        if (result.ExitCode != 0)
+        {
+            if (result.StandardError.Contains("not a git repository", StringComparison.OrdinalIgnoreCase))
             {
-                process.Kill(entireProcessTree: true);
+                logger.LogDebug("{Root} is not inside a git work tree; discovery walks the disk", root);
                 return null;
             }
 
-            process.WaitForExit();
-            if (process.ExitCode != 0)
-                return null;
-
-            var listing = FromListing(ParseStagedListing(stdout.GetAwaiter().GetResult()));
-            _ = stderr.GetAwaiter().GetResult();
-            return listing._files.Count == 0 ? null : listing;
-        }
-        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
-        {
+            logger.LogWarning(
+                "git ls-files exited with {ExitCode} at {Root}; discovery walks the disk and does not apply .gitignore or skip submodules: {Error}",
+                result.ExitCode, root, result.StandardError.Trim());
             return null;
         }
+
+        var listing = FromListing(ParseStagedListing(result.StandardOutput));
+        if (listing._files.Count > 0)
+            return listing;
+
+        logger.LogWarning(
+            "git lists no files at {Root} (an ignored directory or an empty repository); discovery walks the disk",
+            root);
+        return null;
     }
+
 
     /// <summary>
     /// The paths of a <c>ls-files -z --stage --cached --others</c> listing without its gitlinks and

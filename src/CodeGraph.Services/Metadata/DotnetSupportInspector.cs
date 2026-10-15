@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using CodeGraph.Models;
+using CodeGraph.Services.Pipeline;
 
 namespace CodeGraph.Services.Metadata;
 
@@ -121,7 +122,8 @@ public static class DotnetSupportInspector
     {
         var results = new List<DotnetTargetFrameworkSupportInfo>();
 
-        foreach (var csproj in Directory.EnumerateFiles(repoPath, "*.csproj", SearchOption.AllDirectories))
+        // Indexing discovery: skip patterns, dependency directories and the git working-copy rule.
+        foreach (var csproj in RepositoryFileDiscovery.DiscoverFiles(repoPath, null, "**/*.csproj"))
         {
             if (IsIgnoredProjectPath(csproj))
                 continue;

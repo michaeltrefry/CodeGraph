@@ -97,6 +97,53 @@ public class TypeScriptDiscoveryScopePipelineTests
         }
     }
 
+    /// <summary>
+    /// sc-26199: one run discovers many times (sources, .csproj, Cargo and Swift manifests, the
+    /// TypeScript scope, clamp and excluded slices) but lists the working copy once.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_GitWorkingCopy_IsListedOncePerRun()
+    {
+        var rootPath = CreateRepository();
+        try
+        {
+            WriteApp(rootPath);
+            WriteFile(rootPath, "Cargo.toml", "[package]\nname = \"lens\"\nversion = \"0.1.0\"\n");
+            WriteFile(rootPath, "Package.swift", "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"Lens\")\n");
+            WriteFile(rootPath, "App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            GitWorkingCopyDiscoveryTests.Git(rootPath, "init", "-q");
+            GitWorkingCopyDiscoveryTests.Git(rootPath, "add", ".");
+            GitWorkingCopyDiscoveryTests.Commit(rootPath);
+            var store = new InMemoryGraphStore();
+
+            foreach (var run in new[] { 1, 2 })
+            {
+                var runner = new GitWorkingCopyDiscoveryTests.CountingRunner();
+                var pipeline = new IndexingPipeline(
+                    store,
+                    [new NoOpTypeScriptExtractor()],
+                    Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+                    new LocalFileSystem(),
+                    NullLogger<IndexingPipeline>.Instance,
+                    typeScriptAnalyzer: new FakeTypeScriptAnalyzer(rootPath, honourScope: false),
+                    cargoManifestExtractor: new CargoManifestExtractor(),
+                    swiftPackageManifestExtractor: new SwiftPackageManifestExtractor()) { GitRunner = runner };
+
+                await pipeline.IndexProjectAsync(Project, rootPath, ct: CancellationToken.None);
+
+                runner.Listings.ShouldBe(1, $"run {run}");
+            }
+
+            GitListingScope.Current.ShouldBeNull();
+        }
+        finally
+        {
+            foreach (var file in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories))
+                File.SetAttributes(file, FileAttributes.Normal);
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     /// <summary>A pnpm monorepo's packages/* is the repository's own code, not a NuGet restore folder.</summary>
     [Fact]
     public async Task IndexProjectAsync_PnpmWorkspacePackages_AreIndexedWithTheirModules()
