@@ -238,6 +238,81 @@ test('a pnpm workspace under packages/ in the discovery scope yields its workspa
   }
 });
 
+test('same-named workspace packages get distinct qualified names and imports bind the nearest one', () => {
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-samename-'));
+  try {
+    writeJson(rootPath, 'tsconfig.json', { compilerOptions: { target: 'ES2020' } });
+    // The app and a vendored copy of it publish the same package name.
+    for (const root of ['engines/catalog', 'vendor/PhotoCatalog']) {
+      writeJson(rootPath, `${root}/desktop/package.json`, { name: 'photocatalog-desktop' });
+      writeFile(rootPath, `${root}/desktop/src/main.ts`, "import React from 'react';\nexport const main = React;\n");
+      writeFile(rootPath, `${root}/web/src/app.ts`, "import { main } from 'photocatalog-desktop';\nexport const app = main;\n");
+    }
+    writeJson(rootPath, 'tools/package.json', { name: 'catalog-tools' });
+    const files = [
+      'tsconfig.json', 'tools/package.json',
+      ...['engines/catalog', 'vendor/PhotoCatalog'].flatMap(root =>
+        [`${root}/desktop/package.json`, `${root}/desktop/src/main.ts`, `${root}/web/src/app.ts`]),
+    ];
+
+    const result = extractProject('LensWorks', rootPath, path.join(rootPath, 'tsconfig.json'), () => {}, files);
+
+    const app = 'typescript-package:LensWorks:photocatalog-desktop#engines/catalog/desktop';
+    const vendored = 'typescript-package:LensWorks:photocatalog-desktop#vendor/PhotoCatalog/desktop';
+    assert.deepEqual(
+      result.nodes.filter(node => node.label === 'Module').map(node => `${node.qualifiedName}@${node.filePath}`).sort(),
+      [
+        `${app}@engines/catalog/desktop`,
+        // A unique name keeps its name-only qualified name.
+        'typescript-package:LensWorks:catalog-tools@tools',
+        `${vendored}@vendor/PhotoCatalog/desktop`,
+      ].sort());
+    assert.deepEqual(
+      result.edges.filter(edge => edge.type === 'REFERENCES_PACKAGE' && edge.sourceQN.startsWith('typescript-package:'))
+        .map(edge => `${edge.sourceQN}->${edge.targetQN}`).sort(),
+      [`${app}->npm:react`, `${vendored}->npm:react`]);
+    assert.deepEqual(
+      result.edges.filter(edge => edge.type === 'IMPORTS' && edge.targetQN.startsWith('typescript-package:'))
+        .map(edge => `${edge.sourceQN}->${edge.targetQN}`).sort(),
+      [
+        `LensWorks:engines/catalog/web/src/app.ts->${app}`,
+        `LensWorks:vendor/PhotoCatalog/web/src/app.ts->${vendored}`,
+      ]);
+  } finally {
+    fs.rmSync(rootPath, { recursive: true, force: true });
+  }
+});
+
+test('a scoped tsconfig whose include globs match admitted files reports no "No inputs" error', () => {
+  const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-ts-inputs-'));
+  try {
+    writeJson(rootPath, 'tsconfig.json', { compilerOptions: { target: 'ES2020' } });
+    writeJson(rootPath, 'engines/catalog/desktop/tsconfig.json', { include: ['src/**/*.ts'] });
+    writeFile(rootPath, 'engines/catalog/desktop/src/main.ts', 'export class Main {}\n');
+    // A config whose include matches none of the admitted files still reports it.
+    writeJson(rootPath, 'empty/tsconfig.json', { include: ['lib/**/*.ts'] });
+    writeFile(rootPath, 'empty/src/other.ts', 'export class Other {}\n');
+    const files = [
+      'tsconfig.json', 'engines/catalog/desktop/tsconfig.json', 'engines/catalog/desktop/src/main.ts',
+      'empty/tsconfig.json', 'empty/src/other.ts',
+    ];
+
+    const scoped = extractProject('Demo', rootPath, path.join(rootPath, 'tsconfig.json'), () => {}, files);
+    const noInputs = (diagnostics: string[] | undefined) =>
+      (diagnostics ?? []).filter(diagnostic => diagnostic.includes('No inputs were found'));
+
+    assert.ok(scoped.processedFiles.includes('engines/catalog/desktop/src/main.ts'));
+    assert.deepEqual(noInputs(scoped.diagnostics).map(diagnostic => diagnostic.split(':')[0]),
+      ['tsconfig empty/tsconfig.json'], JSON.stringify(scoped.diagnostics));
+
+    // Unscoped, the sidecar never walks a config's file list, so the error would always be false.
+    const unscoped = extractProject('Demo', rootPath, path.join(rootPath, 'tsconfig.json'));
+    assert.deepEqual(noInputs(unscoped.diagnostics), []);
+  } finally {
+    fs.rmSync(rootPath, { recursive: true, force: true });
+  }
+});
+
 test('type text rendered into qualified names and properties never embeds the checkout path', () => {
   const first = writeTypeFixture();
   const second = writeTypeFixture();

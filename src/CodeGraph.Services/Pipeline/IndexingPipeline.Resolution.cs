@@ -50,8 +50,12 @@ public partial class IndexingPipeline
         GraphBuffer buffer,
         bool includePersistedNodes,
         IReadOnlySet<string> excludedPersistedFiles,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool swiftManifestsExtracted = true)
     {
+        // Swift calls bind within the caller's module and the modules its file imports; the
+        // scopes are loaded only when a Swift caller has candidates to filter.
+        SwiftModuleScopes? swiftScopes = null;
         var emittedCallEdges = buffer.AllPendingEdges
             .Where(edge => edge.Type == EdgeType.CALLS)
             .Select(edge => $"{edge.SourceQN}\u001f{edge.TargetQN}")
@@ -100,8 +104,8 @@ public partial class IndexingPipeline
             // declared outside the repository.
             if (SwiftTypeReference.TryParse(receiverType, out var swiftPath))
             {
-                cached = new ReceiverOwnership(
-                    await ResolveSwiftReceiverAsync(swiftPath, FindCandidatesAsync), false, swiftPath);
+                var (type, ambiguous) = await ResolveSwiftReceiverAsync(swiftPath, FindCandidatesAsync);
+                cached = new ReceiverOwnership(type, false, swiftPath, ambiguous);
                 receiversByType[receiverType] = cached;
                 return cached;
             }
@@ -137,6 +141,30 @@ public partial class IndexingPipeline
             if (call.ReceiverKind is CallReceiverKind.Unknown or CallReceiverKind.Unresolved)
                 continue;
 
+            // A caller missing from the buffer still has a file: the one its qualified name is
+            // declared in.
+            var callerFile = buffer.FindByQN(call.CallerQN) is { FilePath: { Length: > 0 } callerPath }
+                ? NormalizeRelativePath(callerPath)
+                : CallLanguages.FileOfQualifiedName(projectName, call.CallerQN);
+            var callerFamily = CallLanguages.FamilyOf(callerFile);
+
+            // A Swift call sees the Swift code of its own module and of the modules its file
+            // imports, never another module (a vendored copy of a target, its original).
+            Func<GraphNode, bool>? isVisibleToSwiftCaller = null;
+            if (callerFamily == "swift" && callerFile is not null)
+            {
+                swiftScopes ??= await LoadSwiftModuleScopesAsync(
+                    projectName, buffer, swiftManifestsExtracted, excludedPersistedFiles);
+                if (!swiftScopes.IsEmpty)
+                {
+                    var scopes = swiftScopes;
+                    var callerScope = scopes.ScopeOf(callerFile);
+                    var callerFileQN = $"{projectName}:{callerFile}";
+                    isVisibleToSwiftCaller = candidate => CallLanguages.FamilyOf(candidate.FilePath) != "swift"
+                                                          || scopes.IsVisible(callerScope, callerFileQN, candidate.FilePath);
+                }
+            }
+
             var candidates = await FindCandidatesAsync(call.CalleeName);
             if (call.ReceiverKind == CallReceiverKind.Resolved)
             {
@@ -148,6 +176,16 @@ public partial class IndexingPipeline
                     continue;
 
                 var key = (call.CalleeName, call.ReceiverType);
+                // A Swift type path several modules declare (a vendored copy) names the one the
+                // caller can see.
+                if (ownership is { SwiftPath: { } ambiguousPath, Ambiguous: true } && isVisibleToSwiftCaller is not null)
+                {
+                    var (visibleType, _) = await ResolveSwiftReceiverAsync(
+                        ambiguousPath, FindCandidatesAsync, isVisibleToSwiftCaller);
+                    ownership = ownership with { Receiver = visibleType };
+                    key = (call.CalleeName, $"{call.ReceiverType}\u001f{visibleType?.QualifiedName}");
+                }
+
                 if (!ownedCandidates.TryGetValue(key, out var owned))
                 {
                     owned = candidates
@@ -162,12 +200,14 @@ public partial class IndexingPipeline
             }
 
             // A name binds only to a callable (or a same-family type it constructs), within the
-            // caller's language family and across real FFI boundaries. A caller missing from the
-            // buffer still has a language: the file its qualified name is declared in.
-            var callerFamily = buffer.FindByQN(call.CallerQN) is { } caller
-                ? CallLanguages.FamilyOf(caller.FilePath)
-                : CallLanguages.FamilyOfQualifiedName(projectName, call.CallerQN);
-            candidates = candidates.Where(candidate => CallLanguages.IsCallTarget(callerFamily, candidate)).ToList();
+            // caller's language family, and across real FFI boundaries only from a bare call to a
+            // free function the boundary exposes.
+            candidates = candidates
+                .Where(candidate => CallLanguages.IsCallTarget(
+                    callerFamily, candidate, isBareCall: call.ReceiverKind == CallReceiverKind.Bare))
+                .ToList();
+            if (isVisibleToSwiftCaller is not null)
+                candidates = candidates.Where(isVisibleToSwiftCaller).ToList();
 
             if (call.ArgumentLabels is not null)
                 candidates = ArgumentLabels.Select(candidates, call.ArgumentLabels);
@@ -188,28 +228,33 @@ public partial class IndexingPipeline
     }
 
     private sealed record ReceiverOwnership(
-        GraphNode? Receiver, bool AllowSymbolicOwnership, string? SwiftPath = null);
+        GraphNode? Receiver, bool AllowSymbolicOwnership, string? SwiftPath = null, bool Ambiguous = false);
 
     /// <summary>
     /// The Swift type at <paramref name="typePath"/>: the single repository type at that path
-    /// (<see cref="SwiftTypeReference.TypePath"/>). An unqualified name that no top-level type
-    /// declares falls back to the single Swift type of that simple name (a nested type named from
-    /// inside its parent's scope). Null when it is ambiguous or not declared in the repository.
+    /// (<see cref="SwiftTypeReference.TypePath"/>) among those <paramref name="isVisible"/> accepts
+    /// (all when null). An unqualified name that no top-level type declares falls back to the
+    /// single Swift type of that simple name (a nested type named from inside its parent's scope).
+    /// Null when it is ambiguous (<c>Ambiguous</c>) or not declared in the repository.
     /// </summary>
-    private static async Task<GraphNode?> ResolveSwiftReceiverAsync(
+    private static async Task<(GraphNode? Type, bool Ambiguous)> ResolveSwiftReceiverAsync(
         string typePath,
-        Func<string, Task<IReadOnlyList<GraphNode>>> findCandidatesAsync)
+        Func<string, Task<IReadOnlyList<GraphNode>>> findCandidatesAsync,
+        Func<GraphNode, bool>? isVisible = null)
     {
         var types = (await findCandidatesAsync(SwiftTypeReference.SimpleName(typePath)))
             .Where(IsSwiftTypeNode)
+            .Where(node => isVisible?.Invoke(node) != false)
             .ToList();
         var atPath = types
             .Where(node => SwiftTypeReference.TypePath(node.Project, node.FilePath, node.QualifiedName) == typePath)
             .ToList();
         if (atPath.Count > 0)
-            return atPath.Count == 1 ? atPath[0] : null;
+            return atPath.Count == 1 ? (atPath[0], false) : (null, true);
 
-        return !typePath.Contains('.', StringComparison.Ordinal) && types.Count == 1 ? types[0] : null;
+        if (typePath.Contains('.', StringComparison.Ordinal))
+            return (null, false);
+        return types.Count == 1 ? (types[0], false) : (null, types.Count > 1);
     }
 
     /// <summary>

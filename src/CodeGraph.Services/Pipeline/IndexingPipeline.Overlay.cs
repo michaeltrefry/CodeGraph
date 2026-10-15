@@ -77,7 +77,8 @@ public partial class IndexingPipeline
             projectName, buffer, manifestsExtracted: false, incremental: false, rebindPersisted: false,
             excludedPersistedFiles, ct);
         await ResolveCallsAsync(
-            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct,
+            swiftManifestsExtracted: false);
         var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
             projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
 

@@ -11,6 +11,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CodeGraph.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CodeGraph.Models\CodeGraph.Models.csproj" />
     <ProjectReference Include="..\CodeGraph.Services\CodeGraph.Services.csproj" />
   </ItemGroup>

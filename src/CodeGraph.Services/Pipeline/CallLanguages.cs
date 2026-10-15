@@ -8,7 +8,8 @@ namespace CodeGraph.Services.Pipeline;
 /// Which languages a call can cross when it is resolved by name. A call binds to a definition of
 /// its own language family, plus the foreign-function boundaries that really link by symbol name:
 /// Swift and Rust call C/C++/Objective-C functions, and Swift and C call Rust functions exported
-/// with a C ABI under their own symbol name (<c>#[no_mangle] extern "C" fn</c>). A definition or
+/// with a C ABI under their own symbol name (<c>#[no_mangle] extern "C" fn</c>). Such a boundary is
+/// crossed only by a bare call to a free function, never by a method or receiver call. A definition or
 /// caller whose language is unknown (a stub, a file of an unmapped extension, a node without a
 /// file) is not filtered by language, but only callables (and, within a family, the types a call
 /// constructs) are ever call targets (<see cref="IsCallTarget"/>).
@@ -64,14 +65,21 @@ public static partial class CallLanguages
     /// The language family of the file a qualified name of <paramref name="project"/> is declared
     /// in (<c>{project}:{file}</c> or <c>{project}:{file}#...</c>); null for any other shape.
     /// </summary>
-    public static string? FamilyOfQualifiedName(string project, string qualifiedName)
+    public static string? FamilyOfQualifiedName(string project, string qualifiedName) =>
+        FamilyOf(FileOfQualifiedName(project, qualifiedName));
+
+    /// <summary>
+    /// The file a qualified name of <paramref name="project"/> is declared in (<c>{project}:{file}</c>
+    /// or <c>{project}:{file}#...</c>); null for any other shape.
+    /// </summary>
+    public static string? FileOfQualifiedName(string project, string qualifiedName)
     {
         var prefix = project + ":";
         if (!qualifiedName.StartsWith(prefix, StringComparison.Ordinal))
             return null;
         var rest = qualifiedName[prefix.Length..];
         var hash = rest.IndexOf('#', StringComparison.Ordinal);
-        return FamilyOf(hash < 0 ? rest : rest[..hash]);
+        return hash < 0 ? rest : rest[..hash];
     }
 
     /// <summary>
@@ -86,20 +94,30 @@ public static partial class CallLanguages
     /// Whether a call from a file of <paramref name="callerFamily"/> may bind to
     /// <paramref name="candidate"/> by name. Only callables are call targets (a package, module,
     /// file or namespace of the same name never is); a type is one only as a constructor call
-    /// within its own language family, since no FFI boundary links a call to a foreign type.
+    /// within its own language family. Across a language-family boundary a call links by symbol
+    /// name only, so it binds only as a bare call (<paramref name="isBareCall"/>: <c>f(x)</c>, never
+    /// <c>x.f()</c> or <c>T::f()</c>) to a free function (never a method, constructor or type)
+    /// that the FFI boundary exposes (<see cref="CanCall"/>).
     /// </summary>
-    public static bool IsCallTarget(string? callerFamily, GraphNode candidate)
+    public static bool IsCallTarget(string? callerFamily, GraphNode candidate, bool isBareCall = true)
     {
-        if (CallableLabels.Contains(candidate.Label))
-            return CanCall(callerFamily, candidate);
-        if (!ConstructibleTypeLabels.Contains(candidate.Label))
+        var callable = CallableLabels.Contains(candidate.Label);
+        if (!callable && !ConstructibleTypeLabels.Contains(candidate.Label))
             return false;
 
         var candidateFamily = FamilyOf(candidate);
-        return callerFamily is null || candidateFamily is null || callerFamily == candidateFamily;
+        if (callerFamily is null || candidateFamily is null || callerFamily == candidateFamily)
+            return true;
+
+        return isBareCall && candidate.Label == NodeLabel.Function && CanCall(callerFamily, candidate);
     }
 
-    /// <summary>Whether a call from a file of <paramref name="callerFamily"/> may bind to <paramref name="candidate"/>.</summary>
+    /// <summary>
+    /// Whether a call from a file of <paramref name="callerFamily"/> may cross into the language of
+    /// <paramref name="candidate"/>: Swift and Rust call C and Objective-C functions; Rust links to
+    /// a C++ function by name only when it has C linkage (<c>extern "C"</c>), while Swift's C++
+    /// interop calls any C++ function; Swift and C call a Rust function only when it exports a C ABI.
+    /// </summary>
     public static bool CanCall(string? callerFamily, GraphNode candidate)
     {
         var candidateFamily = FamilyOf(candidate);
@@ -108,11 +126,15 @@ public static partial class CallLanguages
 
         return candidateFamily switch
         {
-            CFamily => callerFamily is Swift or Rust,
+            CFamily => callerFamily is Swift
+                       || callerFamily is Rust && (!IsCppFile(candidate.FilePath) || ExportsCAbi(candidate)),
             Rust => callerFamily is Swift or CFamily && ExportsCAbi(candidate),
             _ => false
         };
     }
+
+    private static bool IsCppFile(string? filePath) =>
+        Path.GetExtension(filePath ?? "").ToLowerInvariant() is ".cc" or ".cpp" or ".cxx" or ".hpp" or ".hxx" or ".hh" or ".mm";
 
     /// <summary>
     /// Whether a Rust function is exported for foreign callers by name: its <see cref="AbiProperty"/>

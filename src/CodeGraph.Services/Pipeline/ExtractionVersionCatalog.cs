@@ -61,8 +61,11 @@ public sealed class ExtractionVersionCatalog
     /// 2: name-based call resolution is scoped by language family (<see cref="CallLanguages"/>).
     /// 3: calls bind only to callables, or to types of the caller's own family; a caller's family
     /// falls back to its qualified name's file (<see cref="CallLanguages.IsCallTarget"/>, sc-26145).
+    /// 4: a call crosses a language-family boundary only as a bare call to a free function (never a
+    /// method, never a receiver call; Rust → C++ only with C linkage), and a Swift call binds only
+    /// within the caller's own module and the modules its file imports (sc-26145).
     /// </summary>
-    public const int PipelineVersion = 3;
+    public const int PipelineVersion = 4;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];

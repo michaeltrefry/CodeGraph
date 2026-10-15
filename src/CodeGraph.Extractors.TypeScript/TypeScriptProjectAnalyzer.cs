@@ -15,8 +15,10 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// 2 (sc-26145): the sidecar reads only the files discovery admits (no agent-worktree or
     /// dependency-directory copies), and type text in INJECTS targets and node properties renders
     /// <c>import("…")</c> paths repo-relative instead of with the absolute checkout path.
+    /// 3 (sc-26145): same-named workspace packages get directory-qualified Module qualified names
+    /// and an import of such a name binds the importer's nearest package.
     /// </remarks>
-    public string ExtractionVersion => "2";
+    public string ExtractionVersion => "3";
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
