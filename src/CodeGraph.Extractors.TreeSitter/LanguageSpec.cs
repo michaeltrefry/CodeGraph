@@ -21,6 +21,16 @@ public sealed class LanguageSpec
     /// </summary>
     public int ExtractionVersion { get; init; } = 1;
 
+    /// <summary>
+    /// Set for a language with no semantic extraction tier: tree-sitter is its fallback tier, so
+    /// every node extracted for it is marked as a tree-sitter fallback node
+    /// (<see cref="GraphNodeConfidence.MarkTreeSitterFallback"/>) with this fallback reason —
+    /// on the default branch and in branch overlays alike. Null for a language whose tree-sitter
+    /// output is its primary tier, or (Rust) whose fallback marking depends on the semantic pass
+    /// and is applied by the pipeline.
+    /// </summary>
+    public string? TreeSitterFallbackReason { get; init; }
+
     /// <summary>AST node types that represent function/method definitions.</summary>
     public string[] FunctionNodeTypes { get; init; } = [];
 
