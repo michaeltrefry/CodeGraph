@@ -850,8 +850,36 @@ public sealed class OverlayQueryTests : IDisposable
             if (languageIndexed)
                 answer.Text().ShouldNotContain("does not index");
             else
-                answer.Text().ShouldContain($"Language: {language}, which CodeGraph does not index");
+                answer.Text().ShouldContain($"Language: {language}, which CodeGraph does not index in the graph");
         }
+    }
+
+    /// <summary>
+    /// Vitals cover languages the graph does not index (.tsx, .js, .jsx, .vue). languageIndexed
+    /// still says graph indexing (false), but a hotspot answer with data must not claim that the
+    /// absence of data says nothing: it says the metrics exist and graph answers have none.
+    /// </summary>
+    [Fact]
+    public async Task FileHotspot_ForALanguageTheGraphDoesNotIndex_ReportsItsVitalsWithoutDisclaimingThem()
+    {
+        await _store.UpsertFileMetricsBatchAsync(Repo,
+            [new FileMetricsEntity { Project = Repo, FilePath = "web/View.tsx", RiskScore = 7, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+        var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
+
+        var withData = await mcp.FileHotspot(Repo, "web/View.tsx");
+        var s = withData.StructuredContent!.Value;
+        s.GetProperty("found").GetBoolean().ShouldBeTrue();
+        s.GetProperty("riskScore").GetDouble().ShouldBe(7);
+        AssertLanguage(s, false, "TypeScript");
+        withData.Text().ShouldNotContain("absence of data");
+        withData.Text().ShouldContain("Hotspot metrics exist for this file, but graph-based answers such as analyze_impact_file have no data for it");
+
+        var noData = await mcp.FileHotspot(Repo, "app/src/main/Main.kt");
+        var n = noData.StructuredContent!.Value;
+        n.GetProperty("found").GetBoolean().ShouldBeFalse();
+        AssertLanguage(n, false, "Kotlin");
+        noData.Text().ShouldContain("the absence of data here says nothing about this file's risk");
+        noData.Text().ShouldNotContain("Hotspot metrics exist");
     }
 
     public static TheoryData<string, bool, bool, string?> OverlayFiles => new()

@@ -18,6 +18,7 @@ public partial class IndexingPipeline
 {
     private readonly IGraphStore _store;
     private readonly IEnumerable<ICodeExtractor> _extractors;
+    private readonly ExtractorExtensions _extensions;
     private readonly IndexingOptions _options;
     private readonly ILogger<IndexingPipeline> _logger;
     private readonly ISolutionAnalyzer? _solutionAnalyzer;
@@ -49,6 +50,7 @@ public partial class IndexingPipeline
     {
         _store = store;
         _extractors = extractors;
+        _extensions = new ExtractorExtensions(extractors);
         _options = optionsAccessor.Value;
         _fileSystem = fileSystem;
         _logger = logger;
@@ -1140,12 +1142,8 @@ public partial class IndexingPipeline
         if (!_fileSystem.DirectoryExists(rootPath))
             throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
 
-        var supportedExtensions = _extractors
-            .SelectMany(e => e.SupportedExtensions)
-            .ToHashSet();
-
         return DiscoverPaths(rootPath, "**/*")
-            .Where(f => supportedExtensions.Contains(Path.GetExtension(f)))
+            .Where(f => _extensions.IsSupportedExtension(Path.GetExtension(f)))
             .ToList();
     }
 
@@ -1288,8 +1286,7 @@ public partial class IndexingPipeline
             async (filePath, ct2) =>
             {
                 var ext = Path.GetExtension(filePath);
-                var extractor = _extractors.FirstOrDefault(e =>
-                    e.SupportedExtensions.Contains(ext));
+                var extractor = _extensions.ExtractorFor(ext);
                 if (extractor is null) return;
 
                 try

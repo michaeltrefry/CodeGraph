@@ -21,7 +21,7 @@ public partial class IndexingPipeline
     {
         var normalized = NormalizeRelativePath(relativePath);
         var extension = Path.GetExtension(normalized);
-        if (!_extractors.Any(extractor => extractor.SupportedExtensions.Contains(extension)))
+        if (!_extensions.IsSupportedExtension(extension))
             return false;
 
         return CreateDiscoveryMatcher("**/*").Match(normalized).HasMatches
