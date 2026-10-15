@@ -109,14 +109,16 @@ public class IndexingOptions
     /// <summary>
     /// Globs (relative to the repository root) that discovery never indexes. The default also
     /// excludes Claude Code agent worktrees (<c>.claude/worktrees</c>): each is a full copy of the
-    /// repository, never its own code.
+    /// repository, never its own code. A <c>packages/</c> directory is not a pattern: discovery skips
+    /// it only as a legacy NuGet restore folder (see <c>IndexingPipeline.NuGetPackagesDirectory</c>),
+    /// so JS/TS monorepo <c>packages/*</c> and SwiftPM <c>Packages/</c> are indexed.
     /// </summary>
     public string[] SkipPatterns { get; set; } =
     [
         "**/bin/**", "**/obj/**", "**/node_modules/**",
         "**/build/**", "**/managed_components/**", "**/.cache/**",
         "**/wwwroot/lib/**", "**/*.min.js", "**/.git/**",
-        "**/packages/**", "**/TestResults/**", "**/.claude/worktrees/**"
+        "**/TestResults/**", "**/.claude/worktrees/**"
     ];
 
     public string[] FoundationalRepos { get; set; } = [];

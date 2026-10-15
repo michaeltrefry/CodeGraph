@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Models;
 using CodeGraph.Services;
@@ -10,7 +11,12 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// Bump when extraction output (including the Node.js sidecar's) changes for unchanged input
     /// (see ExtractionVersionCatalog).
     /// </summary>
-    public string ExtractionVersion => "1";
+    /// <remarks>
+    /// 2 (sc-26145): the sidecar reads only the files discovery admits (no agent-worktree or
+    /// dependency-directory copies), and type text in INJECTS targets and node properties renders
+    /// <c>import("…")</c> paths repo-relative instead of with the absolute checkout path.
+    /// </remarks>
+    public string ExtractionVersion => "2";
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
@@ -24,7 +30,10 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     }
 
     public async Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(
-        string tsconfigPath, ExtractorContext context, CancellationToken ct = default)
+        string tsconfigPath,
+        ExtractorContext context,
+        IReadOnlyList<string> includedFiles,
+        CancellationToken ct = default)
     {
         if (!await _server.EnsureStartedAsync(ct))
             return [];
@@ -32,14 +41,32 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
         _logger.LogInformation(
             "Extracting TypeScript project {Project} via Node.js sidecar", context.ProjectName);
 
-        var response = await _server.ExtractProjectAsync(new ExtractProjectRequest
+        // The scope of a large repository (tens of thousands of paths) goes through a temp file,
+        // so it never meets the sidecar's request body limit.
+        var scopePath = Path.Combine(Path.GetTempPath(), $"codegraph-ts-scope-{Guid.NewGuid():N}.json");
+        ExtractProjectResponse? response;
+        try
         {
-            ProjectName = context.ProjectName,
-            RootPath = context.RootPath,
-            TsconfigPath = tsconfigPath,
-        }, ct);
+            await File.WriteAllTextAsync(scopePath, JsonSerializer.Serialize(includedFiles), ct);
+            response = await _server.ExtractProjectAsync(new ExtractProjectRequest
+            {
+                ProjectName = context.ProjectName,
+                RootPath = context.RootPath,
+                TsconfigPath = tsconfigPath,
+                IncludedFilesPath = scopePath,
+            }, ct);
+        }
+        finally
+        {
+            try { File.Delete(scopePath); } catch (IOException) { /* best effort */ }
+        }
 
-        if (response is null) return [];
+        // A failed request is not an empty project: the pipeline logs it and falls back.
+        if (response is null)
+        {
+            throw new InvalidOperationException(
+                $"The TypeScript sidecar returned no extraction result for {context.ProjectName} (see the preceding warning for the cause).");
+        }
 
         // Detect Angular vs plain Node.js from angular.json in root
         var hasAngular = File.Exists(Path.Combine(context.RootPath, "angular.json"));

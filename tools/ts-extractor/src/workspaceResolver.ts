@@ -10,6 +10,10 @@ import type {
   UnresolvedImportDto,
   WorkspacePackageDto,
 } from './protocol';
+import type { DiscoveryScope } from './discoveryScope';
+
+/** Absolute paths of the files named `fileName` below `dir`, at most `limit` of them. */
+type ManifestFinder = (dir: string, fileName: string, limit: number) => string[];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.angular']);
 const MAX_TSCONFIGS = 200;
@@ -66,6 +70,7 @@ export function analyzeWorkspaceImports(
   requestedTsconfigPath: string,
   sourceFiles: SourceFile[],
   log: (msg: string) => void = () => {},
+  scope?: DiscoveryScope,
 ): WorkspaceResolutionResult {
   const diagnostics: string[] = [];
   const diag = (msg: string) => {
@@ -74,14 +79,24 @@ export function analyzeWorkspaceImports(
   };
 
   const normalizedRoot = normalizeAbsolute(rootPath);
-  const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag);
+  // With a discovery scope, manifests come from the admitted files only, never a disk walk.
+  const findManifests: ManifestFinder = (dir, fileName, limit) => scope
+    ? scope.absoluteFiles(file =>
+        path.posix.basename(file) === fileName &&
+        !file.split('/').some(segment => SKIP_DIRS.has(segment)))
+      .map(normalizeAbsolute)
+      .filter(file => isInside(dir, file))
+      .slice(0, limit)
+    : findFilesByName(dir, fileName, limit);
+  const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests);
   const fallbackConfig = pickFallbackConfig(tsconfigs, requestedTsconfigPath);
   const workspacePackages = discoverWorkspacePackages(
     projectName,
     normalizedRoot,
     tsconfigs,
     diag,
-  );
+    findManifests,
+  ).filter(pkg => !scope || scope.includesDirectory(pkg.relativeRoot));
 
   const sourceFilesByPath = new Map<string, SourceFile>();
   for (const sourceFile of sourceFiles) {
@@ -154,8 +169,9 @@ function discoverTsConfigs(
   rootPath: string,
   requestedTsconfigPath: string,
   diag: (msg: string) => void,
+  findManifests: ManifestFinder,
 ): TsConfigInfo[] {
-  const discovered = findFilesByName(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1);
+  const discovered = findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1);
   const normalizedRequested = normalizeAbsolute(requestedTsconfigPath);
   if (!discovered.includes(normalizedRequested) && fs.existsSync(normalizedRequested)) {
     discovered.unshift(normalizedRequested);
@@ -249,9 +265,10 @@ function discoverWorkspacePackages(
   rootPath: string,
   tsconfigs: TsConfigInfo[],
   diag: (msg: string) => void,
+  findManifests: ManifestFinder,
 ): WorkspacePackageInfo[] {
   const packagesByRoot = new Map<string, WorkspacePackageInfo>();
-  const packageJsonPaths = findFilesByName(rootPath, 'package.json', MAX_WORKSPACE_PACKAGES + 1);
+  const packageJsonPaths = findManifests(rootPath, 'package.json', MAX_WORKSPACE_PACKAGES + 1);
   if (packageJsonPaths.length > MAX_WORKSPACE_PACKAGES) {
     diag(`workspaceDiscovery: limited package.json scan from ${packageJsonPaths.length} to ${MAX_WORKSPACE_PACKAGES}`);
   }
@@ -261,7 +278,7 @@ function discoverWorkspacePackages(
     ...readPackageJsonWorkspacePatterns(rootPackageJson),
     ...readPnpmWorkspacePatterns(path.join(rootPath, 'pnpm-workspace.yaml')),
   ];
-  const workspaceRoots = expandWorkspacePatterns(rootPath, workspacePatterns);
+  const workspaceRoots = expandWorkspacePatterns(rootPath, workspacePatterns, findManifests);
 
   for (const packageJsonPath of packageJsonPaths.slice(0, MAX_WORKSPACE_PACKAGES)) {
     const pkg = readJsonFile(packageJsonPath);
@@ -828,13 +845,13 @@ function readPnpmWorkspacePatterns(workspacePath: string): string[] {
   return patterns;
 }
 
-function expandWorkspacePatterns(rootPath: string, patterns: string[]): string[] {
+function expandWorkspacePatterns(rootPath: string, patterns: string[], findManifests: ManifestFinder): string[] {
   const roots = new Set<string>();
   for (const pattern of patterns) {
     const normalized = pattern.replace(/\\/g, '/').replace(/\/package\.json$/, '');
     if (normalized.includes('**')) {
       const prefix = normalized.slice(0, normalized.indexOf('**')).replace(/\/$/, '');
-      for (const packageJson of findFilesByName(path.join(rootPath, prefix), 'package.json', MAX_WORKSPACE_PACKAGES)) {
+      for (const packageJson of findManifests(path.join(rootPath, prefix), 'package.json', MAX_WORKSPACE_PACKAGES)) {
         roots.add(normalizeAbsolute(path.dirname(packageJson)));
       }
       continue;

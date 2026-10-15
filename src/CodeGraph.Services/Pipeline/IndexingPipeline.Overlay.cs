@@ -13,11 +13,11 @@ public partial class IndexingPipeline
     /// <summary>
     /// True when <paramref name="relativePath"/> belongs to the file universe the default-branch
     /// index covers (a supported extension that no discovery exclusion excludes).
-    /// <paramref name="repositoryFileExists"/> answers whether a repository-relative path exists in
-    /// the same tree; it decides whether a <c>Pods</c>/<c>Carthage</c> directory is a package
-    /// manager's dependency directory (its <c>Podfile</c>/<c>Cartfile</c> is a sibling).
+    /// <paramref name="tree"/> is the commit tree the path belongs to; its files and directory
+    /// listings decide whether a directory is a package manager's dependency directory (a
+    /// <c>Podfile</c> beside <c>Pods/</c>, a solution beside a NuGet <c>packages/</c>, ...).
     /// </summary>
-    public bool IsIndexablePath(string relativePath, Func<string, bool> repositoryFileExists)
+    public bool IsIndexablePath(string relativePath, RepositoryTree tree)
     {
         var normalized = NormalizeRelativePath(relativePath);
         var extension = Path.GetExtension(normalized);
@@ -25,7 +25,7 @@ public partial class IndexingPipeline
             return false;
 
         return CreateDiscoveryMatcher("**/*").Match(normalized).HasMatches
-            && !IsDependencyPath(normalized, repositoryFileExists);
+            && !IsDependencyPath(normalized, tree);
     }
 
     /// <summary>

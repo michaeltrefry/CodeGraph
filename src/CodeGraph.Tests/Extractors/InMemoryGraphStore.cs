@@ -87,6 +87,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .ToList());
     }
 
+    public Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<string>>(_nodes
+            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                           && !string.IsNullOrEmpty(node.FilePath))
+            .Select(node => node.FilePath!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList());
+
     public Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
         string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
     {

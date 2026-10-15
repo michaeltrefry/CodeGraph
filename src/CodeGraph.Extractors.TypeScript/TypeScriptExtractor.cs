@@ -26,7 +26,11 @@ public class TypeScriptExtractor : ICodeExtractor
     /// Bump when extraction output (including the Node.js sidecar's) changes for unchanged input
     /// (see ExtractionVersionCatalog).
     /// </summary>
-    public string GetExtractionVersion(string extension) => "1";
+    /// <remarks>
+    /// 2 (sc-26145): type text renders <c>import("…")</c> paths relative to the extraction
+    /// directory instead of with the (random, per-run) absolute temp path.
+    /// </remarks>
+    public string GetExtractionVersion(string extension) => "2";
 
     public async Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
@@ -57,6 +61,7 @@ public class TypeScriptExtractor : ICodeExtractor
                 ProjectName = context.ProjectName,
                 RootPath = tempDir,
                 TsconfigPath = tempTsconfig,
+                IncludedFiles = [Path.GetFileName(tempTs), Path.GetFileName(tempTsconfig)],
             }, ct);
 
             if (response is null)

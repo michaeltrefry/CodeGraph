@@ -46,7 +46,9 @@ public partial class Neo4jGraphStore
             var incomingCursor = await tx.RunAsync("""
                 MATCH (source:CodeNode)-[edge]->(target:CodeNode {project: $project})
                 WHERE target.filePath IN $filePaths
-                  AND NOT (source.project = $project AND source.filePath IN $filePaths)
+                  // coalesce: a file-less source (null filePath) would make the predicate null and
+                  // silently drop its edge instead of preserving it.
+                  AND NOT (source.project = $project AND coalesce(source.filePath, '') IN $filePaths)
                 RETURN source.qualifiedName AS sourceQN,
                        target.qualifiedName AS targetQN,
                        type(edge) AS type,

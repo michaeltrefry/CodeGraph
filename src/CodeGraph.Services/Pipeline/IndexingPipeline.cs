@@ -279,40 +279,49 @@ public partial class IndexingPipeline
             }
         }
 
-        // TypeScript/Angular — Node.js sidecar analysis
+        // TypeScript/Angular — Node.js sidecar analysis. The sidecar discovers tsconfig files,
+        // workspace packages and sources itself, so it is handed exactly the files discovery
+        // admits (sc-26145): agent worktrees and dependency directories are never analyzed.
+        IReadOnlyList<GraphNode>? typeScriptNodes = null;
         if (_typeScriptAnalyzer is not null)
         {
-            // The sidecar now scans files from disk (ignoring tsconfig include/files)
-            // so we only need one tsconfig per repo — use the root one for compiler options.
-            var rootTsconfig = Path.Combine(rootPath, "tsconfig.json");
-            var tsconfigFiles = _fileSystem.FileExists(rootTsconfig)
-                ? new[] { rootTsconfig }
-                : _fileSystem.EnumerateFiles(rootPath, "tsconfig.json", SearchOption.AllDirectories)
-                    .Where(f => !f.Contains("node_modules", StringComparison.OrdinalIgnoreCase))
-                    .Take(1)
-                    .ToArray();
-
-            foreach (var tsconfig in tsconfigFiles)
+            var typeScriptScope = DiscoverTypeScriptScope(rootPath);
+            // The sidecar scans sources from the scope (ignoring tsconfig include/files), so one
+            // tsconfig per repo supplies the compiler options.
+            if (SelectTypeScriptConfig(typeScriptScope) is { } tsconfig)
             {
-                _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}",
-                    Path.GetRelativePath(rootPath, tsconfig));
+                _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}", tsconfig);
                 stepSw.Restart();
                 try
                 {
-                    var results = await _typeScriptAnalyzer.AnalyzeProjectAsync(
-                        tsconfig, context, ct);
+                    var results = (await _typeScriptAnalyzer.AnalyzeProjectAsync(
+                            Path.Combine(rootPath, tsconfig), context, typeScriptScope, ct))
+                        .Select(result => ClampToDiscovery(result, projectName, rootPath))
+                        .ToList();
                     _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
+                    // No result (sidecar unavailable) says nothing about the workspace packages.
+                    if (results.Any(result => result.Succeeded))
+                    {
+                        typeScriptNodes = results.Where(result => result.Succeeded)
+                            .SelectMany(result => result.Nodes)
+                            .ToList();
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
                         "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
-                        Path.GetRelativePath(rootPath, tsconfig));
+                        tsconfig);
                 }
+            }
+            else
+            {
+                // No admitted tsconfig: the repository has no TypeScript workspace packages.
+                typeScriptNodes = [];
             }
         }
 
@@ -637,6 +646,31 @@ public partial class IndexingPipeline
         }
         swiftManifestsPresent |= deletedFiles.Any(IsSwiftManifest);
 
+        // TypeScript slices no hash-tracked file covers: slices an earlier sidecar wrote under
+        // excluded paths (agent worktrees, dependency directories) and workspace package modules
+        // keyed by their directory. A wholesale TypeScript rewrite also sweeps edge-less stubs.
+        var typeScriptReplacementPaths = new List<string>();
+        IReadOnlyList<string> typeScriptOrphanCandidates = [];
+        var typeScriptModulesChanged = false;
+        if (!replaceExistingGraph && existingHashes.Count > 0 && _typeScriptAnalyzer is not null)
+        {
+            var excludedSlices = await FindExcludedTypeScriptSlicesAsync(projectName, rootPath, ct);
+            typeScriptReplacementPaths.AddRange(excludedSlices);
+            if (typeScriptNodes is not null)
+            {
+                var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(projectName, typeScriptNodes);
+                typeScriptReplacementPaths.AddRange(moduleSlices);
+                typeScriptModulesChanged = moduleSlices.Count > 0;
+            }
+            var typeScriptVersionRefresh = changedRelativePaths.Any(path =>
+                IsTypeScriptPath(path)
+                && existingHashes.TryGetValue(path, out var record)
+                && buffer.AllFileHashes.TryGetValue(path, out var hash)
+                && record.ContentHash == hash);
+            if (excludedSlices.Count > 0 || typeScriptVersionRefresh)
+                typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(projectName);
+        }
+
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
             .Where(file => !successfullyProcessedFiles.Contains(
@@ -672,8 +706,9 @@ public partial class IndexingPipeline
             buffer.AllNodes.Count, buffer.AllPendingEdges.Count, buffer.AllUnresolvedCalls.Count);
         ResolveImports(buffer);
         var includePersistedNodes = !replaceExistingGraph && existingHashes.Count > 0;
-        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
-            StringComparer.OrdinalIgnoreCase);
+        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles)
+            .Concat(typeScriptReplacementPaths)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Manifests are re-extracted every run, so persisted imports are re-bound whenever the
         // repository has (or just lost) Swift package manifests.
         var swiftImportRebinding = await ResolveSwiftImportsAsync(
@@ -718,6 +753,7 @@ public partial class IndexingPipeline
             var replacementPaths = successfullyProcessedFiles
                 .Concat(deletedFiles)
                 .Concat(manifestReplacementPaths)
+                .Concat(typeScriptReplacementPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
@@ -725,6 +761,8 @@ public partial class IndexingPipeline
                 replacementPaths,
                 includeProjectStructure: existingHashes.Count == 0);
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
+            if (typeScriptModulesChanged)
+                AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
             var sourceHashes = buffer.AllFileHashes
                 .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
@@ -738,7 +776,7 @@ public partial class IndexingPipeline
                 replacementEdges,
                 replacementHashes,
                 replacementVersions,
-                swiftRebinding.Retractions.IsEmpty ? null : swiftRebinding.Retractions,
+                WithOrphanCandidates(swiftRebinding.Retractions, typeScriptOrphanCandidates),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -792,17 +830,37 @@ public partial class IndexingPipeline
         };
 
     /// <summary>
+    /// The legacy NuGet (packages.config) and Paket restore folder. NuGet restores each package into
+    /// <c>packages/&lt;Id&gt;.&lt;Version&gt;/</c> holding <c>&lt;Id&gt;.&lt;Version&gt;.nupkg</c>,
+    /// Paket into <c>packages/&lt;Id&gt;/</c>. A directory named exactly <c>packages</c> is skipped
+    /// as a whole per <see cref="IsNuGetRestoreFolder"/> (restore markers, or .NET solution evidence
+    /// unless it holds JS workspace packages). Independently, any directory directly under a
+    /// <c>packages</c>/<c>Packages</c> folder (any case) that holds its own <c>&lt;name&gt;.nupkg</c>
+    /// is skipped. A JS/TS monorepo <c>packages/*</c> or a SwiftPM <c>Packages/</c> directory
+    /// without these .NET signals stays indexed.
+    /// </summary>
+    internal const string NuGetPackagesDirectory = "packages";
+
+    private const string NuGetPackagesConfig = "packages.config";
+    private const string NuGetRepositoriesConfig = "repositories.config";
+
+    /// <summary>
     /// Every discovery exclusion as fingerprint text: the configured skip patterns and the
-    /// generated and managed dependency directory rules. Part of the extraction fingerprint, so a
-    /// change re-runs indexing at an unchanged commit and the full scan adds or removes the files
-    /// that entered or left the indexed universe.
+    /// generated, managed and NuGet dependency directory rules. Part of the extraction fingerprint,
+    /// so a change re-runs indexing at an unchanged commit and the full scan adds or removes the
+    /// files that entered or left the indexed universe.
     /// </summary>
     internal IEnumerable<string> DiscoveryExcludePatterns =>
         _options.SkipPatterns
             .Concat(GeneratedDependencyDirectories.Select(directory => $"dir:{directory}"))
             .Concat(ManagedDependencyDirectories
                 .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-                .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"));
+                .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"))
+            .Append($"dir:{NuGetPackagesDirectory}?sibling={NuGetPackagesConfig},{string.Join(',', PaketManifests)}" +
+                    $"&child={NuGetRepositoriesConfig}" +
+                    $"&solution-sibling=*.sln,*.slnx,nuget.config,{string.Join(',', SolutionNuGetFiles)}" +
+                    "&unless-children=package.json-without-nupkg" +
+                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg");
 
     /// <summary>
     /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
@@ -944,33 +1002,98 @@ public partial class IndexingPipeline
     private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns)
     {
         var root = Path.GetFullPath(rootPath);
+        var tree = RepositoryTree.FromFileSystem(root, _fileSystem);
         var directory = new DiscoveryDirectory(
-            new DirectoryInfoWrapper(new DirectoryInfo(root)), IsDependencyDirectory);
+            new DirectoryInfoWrapper(new DirectoryInfo(root)),
+            fullPath => IsDependencyDirectory(NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), tree));
         return CreateDiscoveryMatcher(includePatterns).Execute(directory).Files
             .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
     }
 
-    /// <summary>True when the directory at <paramref name="fullPath"/> is a skipped dependency directory.</summary>
-    private bool IsDependencyDirectory(string fullPath) =>
-        IsDependencyDirectory(Path.GetFileName(fullPath),
-            manifest => _fileSystem.FileExists(Path.Combine(Path.GetDirectoryName(fullPath) ?? "", manifest)));
+    /// <summary>
+    /// True when the repository directory <paramref name="directoryPath"/> (repo-relative) is a
+    /// skipped dependency directory; <paramref name="repositoryFileExists"/> answers for
+    /// repository-relative file paths. Only files beside or directly inside the directory are
+    /// probed, so the disk walk and the overlay's tree lookups decide identically.
+    /// </summary>
+    private static bool IsDependencyDirectory(string directoryPath, RepositoryTree tree)
+    {
+        var normalized = NormalizeRelativePath(directoryPath);
+        if (normalized.Length == 0)
+            return false;
+        var separator = normalized.LastIndexOf('/');
+        var name = separator < 0 ? normalized : normalized[(separator + 1)..];
+        var parent = separator < 0 ? "" : normalized[..separator];
+        string InParent(string file) => parent.Length == 0 ? file : $"{parent}/{file}";
+        var parentName = parent[(parent.LastIndexOf('/') + 1)..];
 
-    private static bool IsDependencyDirectory(string name, Func<string, bool> siblingExists) =>
-        GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal) ||
-        (ManagedDependencyDirectories.TryGetValue(name, out var manifests) && manifests.Any(siblingExists));
+        return GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal)
+               || (ManagedDependencyDirectories.TryGetValue(name, out var manifests)
+                   && manifests.Any(manifest => tree.FileExists(InParent(manifest))))
+               || (name == NuGetPackagesDirectory && IsNuGetRestoreFolder(normalized, parent, tree))
+               // One restored package directory: packages/<Id>.<Version>/<Id>.<Version>.nupkg. The
+               // folder name is matched case-insensitively here (VS restores into Packages/ too);
+               // the .nupkg probe keeps a SwiftPM Packages/<Name>/ indexed.
+               || (string.Equals(parentName, NuGetPackagesDirectory, StringComparison.OrdinalIgnoreCase)
+                   && tree.FileExists($"{normalized}/{name}.nupkg"));
+    }
+
+    /// <summary>Paket's lock/dependency files: Paket restores into packages/&lt;Id&gt;/.</summary>
+    private static readonly string[] PaketManifests = ["paket.dependencies", "paket.lock"];
+
+    /// <summary>NuGet configuration inside a sibling <c>.nuget/</c> directory (NuGet 2 solution restore).</summary>
+    private static readonly string[] SolutionNuGetFiles =
+        [".nuget/NuGet.Config", ".nuget/NuGet.config", ".nuget/nuget.config", ".nuget/packages.config"];
 
     /// <summary>
-    /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory;
-    /// <paramref name="repositoryFileExists"/> answers for repository-relative paths.
+    /// True when the directory <paramref name="packagesDirectory"/> (named exactly <c>packages</c>,
+    /// beside <paramref name="parent"/>'s other entries) is a NuGet/Paket restore folder as a whole.
+    /// Precedence: a restore marker (a sibling <c>packages.config</c>, <c>paket.dependencies</c> or
+    /// <c>paket.lock</c>, or <c>repositories.config</c> inside) always decides. Otherwise .NET
+    /// solution evidence beside it (a <c>*.sln</c>/<c>*.slnx</c>, a <c>NuGet.Config</c>, or
+    /// <c>.nuget/NuGet.Config</c>/<c>.nuget/packages.config</c>) makes it a restore folder unless its
+    /// direct children look like JS workspace packages: some child holds a <c>package.json</c> and
+    /// none holds a <c>.nupkg</c>.
     /// </summary>
-    private static bool IsDependencyPath(string relativePath, Func<string, bool> repositoryFileExists)
+    private static bool IsNuGetRestoreFolder(string packagesDirectory, string parent, RepositoryTree tree)
+    {
+        string InParent(string file) => parent.Length == 0 ? file : $"{parent}/{file}";
+        if (tree.FileExists(InParent(NuGetPackagesConfig))
+            || tree.FileExists($"{packagesDirectory}/{NuGetRepositoriesConfig}")
+            || PaketManifests.Any(manifest => tree.FileExists(InParent(manifest))))
+            return true;
+
+        var siblings = tree.ListDirectory(parent);
+        var solutionEvidence =
+            siblings.Any(entry => entry.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+                                  || entry.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                                  || entry.Equals("nuget.config", StringComparison.OrdinalIgnoreCase))
+            || SolutionNuGetFiles.Any(file => tree.FileExists(InParent(file)));
+        if (!solutionEvidence)
+            return false;
+
+        var hasWorkspacePackage = false;
+        foreach (var child in tree.ListDirectory(packagesDirectory))
+        {
+            var entries = tree.ListDirectory($"{packagesDirectory}/{child}");
+            if (entries.Any(entry => entry.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase)))
+                return true;
+            hasWorkspacePackage |= entries.Contains("package.json");
+        }
+
+        return !hasWorkspacePackage;
+    }
+
+    /// <summary>
+    /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory
+    /// of <paramref name="tree"/>.
+    /// </summary>
+    private static bool IsDependencyPath(string relativePath, RepositoryTree tree)
     {
         var segments = NormalizeRelativePath(relativePath).Split('/');
-        for (var index = 0; index < segments.Length - 1; index++)
+        for (var index = 1; index < segments.Length; index++)
         {
-            var parent = string.Join('/', segments.Take(index));
-            if (IsDependencyDirectory(segments[index], manifest =>
-                    repositoryFileExists(parent.Length == 0 ? manifest : $"{parent}/{manifest}")))
+            if (IsDependencyDirectory(string.Join('/', segments.Take(index)), tree))
                 return true;
         }
 

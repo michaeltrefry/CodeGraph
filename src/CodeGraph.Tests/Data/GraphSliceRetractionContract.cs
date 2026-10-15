@@ -60,6 +60,8 @@ public class GraphSliceRetractionContract
             .Select(node => node.QualifiedName).ShouldBe([type]);
         (await store.FindNodesByNamesAsync(project, ["S", "m"]))
             .Select(node => node.QualifiedName).ShouldBe(["swift-external:S", member], ignoreOrder: true);
+        // File-less nodes contribute no path; each path is listed once.
+        (await store.GetNodeFilePathsAsync(project)).ShouldBe(["a.swift", "b.swift"], ignoreOrder: true);
 
         var found = (await store.FindEdgesByPropertyAsync(
                 project, [EdgeType.DEFINES_METHOD, EdgeType.IMPLEMENTS], "swift_source_name", ["S", "Z"]))
@@ -95,6 +97,61 @@ public class GraphSliceRetractionContract
             .ShouldBe([(type, EdgeType.DEFINES_METHOD)]);
         (await store.FindEdgesByPropertyAsync(project, [EdgeType.DEFINES_METHOD], "swift_source_name", ["S"]))
             .ShouldBeEmpty();
+
+        await VerifyStaleModuleReplacementAsync(store, project);
+    }
+
+    /// <summary>
+    /// A stale node deleted with its slice is re-inserted under the same qualified name in the same
+    /// write (a workspace package Module that a vendored copy took over, moving back to its own
+    /// directory or to no directory at all), and keeps the incoming edges of nodes outside the
+    /// replaced slices.
+    /// </summary>
+    private static async Task VerifyStaleModuleReplacementAsync(IGraphStore store, string project)
+    {
+        const string module = "typescript-package:SliceContract:@demo/web";
+        const string importer = "app.App";
+        await store.ReplaceProjectFilesAsync(
+            project,
+            ["src/app.ts", "web/node_modules/vendored"],
+            [
+                Node(project, importer, "App", "src/app.ts", NodeLabel.Class),
+                Node(project, module, "@demo/web", "web/node_modules/vendored", NodeLabel.Module)
+            ],
+            [
+                new PendingEdge(importer, module, EdgeType.IMPORTS),
+                new PendingEdge("swift-external:T", module, EdgeType.CONTAINS_PROJECT)
+            ],
+            new Dictionary<string, string> { ["src/app.ts"] = "1" });
+
+        async Task ShouldBeRestoredAtAsync(string? filePath)
+        {
+            var restored = (await store.FindNodeByQualifiedNameAsync(project, module)).ShouldNotBeNull();
+            (restored.FilePath ?? "").ShouldBe(filePath ?? "");
+            var incoming = await store.FindEdgesByTargetAsync(restored.Id);
+            var sources = await store.FindNodesByIdBatchAsync(incoming.Select(edge => edge.SourceId).ToList());
+            incoming.Select(edge => (sources[edge.SourceId].QualifiedName, edge.Type))
+                .ShouldBe([(importer, EdgeType.IMPORTS), ("swift-external:T", EdgeType.CONTAINS_PROJECT)],
+                    ignoreOrder: true);
+        }
+
+        // Back to its own directory: both slices in one write.
+        await store.ReplaceProjectFilesAsync(
+            project,
+            ["web/node_modules/vendored", "apps/web"],
+            [Node(project, module, "@demo/web", "apps/web", NodeLabel.Module)],
+            [],
+            new Dictionary<string, string>());
+        await ShouldBeRestoredAtAsync("apps/web");
+
+        // To no directory (a root package), written back with the slice that removes the copy.
+        await store.ReplaceProjectFilesAsync(
+            project,
+            ["apps/web"],
+            [Node(project, module, "@demo/web", null, NodeLabel.Module)],
+            [],
+            new Dictionary<string, string>());
+        await ShouldBeRestoredAtAsync(null);
     }
 
     [Fact]
