@@ -820,14 +820,17 @@ public partial class IndexingPipeline
     /// <summary>
     /// Dependency directories a package manager creates next to its manifest: CocoaPods installs
     /// <c>Pods/</c> beside the <c>Podfile</c>, Carthage checks out into <c>Carthage/</c> beside the
-    /// <c>Cartfile</c> (or <c>Cartfile.resolved</c>). They are skipped only with that sibling
-    /// manifest present and by exact name, so an ordinary <c>pkg/pods</c> package stays indexed.
+    /// <c>Cartfile</c> (or <c>Cartfile.resolved</c>), and Cargo writes its build output (generated
+    /// build-script sources included) into <c>target/</c> beside the <c>Cargo.toml</c>. They are
+    /// skipped only with that sibling manifest present and by exact name, so an ordinary
+    /// <c>pkg/pods</c> package or a <c>target/</c> directory of the repository's own code stays indexed.
     /// </summary>
     internal static readonly IReadOnlyDictionary<string, string[]> ManagedDependencyDirectories =
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
             ["Pods"] = ["Podfile"],
-            ["Carthage"] = ["Cartfile", "Cartfile.resolved"]
+            ["Carthage"] = ["Cartfile", "Cartfile.resolved"],
+            ["target"] = [CargoManifestFileName]
         };
 
     /// <summary>
@@ -986,11 +989,14 @@ public partial class IndexingPipeline
     /// (case-insensitive globs). Dependency directories are excluded by <see cref="DiscoverPaths"/>
     /// and <see cref="IsDependencyPath"/>, not by this matcher.
     /// </summary>
-    private Matcher CreateDiscoveryMatcher(params string[] includePatterns)
+    private Matcher CreateDiscoveryMatcher(params string[] includePatterns) =>
+        CreateDiscoveryMatcher(_options.SkipPatterns, includePatterns);
+
+    private static Matcher CreateDiscoveryMatcher(IEnumerable<string> skipPatterns, string[] includePatterns)
     {
         var matcher = new Matcher();
         matcher.AddIncludePatterns(includePatterns);
-        foreach (var pattern in _options.SkipPatterns)
+        foreach (var pattern in skipPatterns)
             matcher.AddExclude(pattern);
         return matcher;
     }
@@ -1000,14 +1006,23 @@ public partial class IndexingPipeline
     /// <paramref name="includePatterns"/> and no discovery exclusion. The walk never descends into
     /// a skipped dependency directory.
     /// </summary>
-    private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns)
+    private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns) =>
+        DiscoverPaths(rootPath, _fileSystem, _options.SkipPatterns, includePatterns);
+
+    /// <summary>
+    /// The discovery walk for callers outside the pipeline (vitals), with the given skip patterns
+    /// (<see cref="IndexingOptions.SkipPatterns"/>) and the same dependency-directory rules, so
+    /// they and graph discovery see the same file universe.
+    /// </summary>
+    internal static IEnumerable<string> DiscoverPaths(
+        string rootPath, IFileSystem fileSystem, IEnumerable<string> skipPatterns, params string[] includePatterns)
     {
         var root = Path.GetFullPath(rootPath);
-        var tree = RepositoryTree.FromFileSystem(root, _fileSystem);
+        var tree = RepositoryTree.FromFileSystem(root, fileSystem);
         var directory = new DiscoveryDirectory(
             new DirectoryInfoWrapper(new DirectoryInfo(root)),
             fullPath => IsDependencyDirectory(NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), tree));
-        return CreateDiscoveryMatcher(includePatterns).Execute(directory).Files
+        return CreateDiscoveryMatcher(skipPatterns, includePatterns).Execute(directory).Files
             .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
     }
 
