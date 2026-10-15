@@ -288,17 +288,19 @@ public class ImpactAnalysisService(
             var crossRepoSeeds = new List<(long nodeId, int baseDepth, EdgeType edgeType, string sourceProject)>();
             foreach (var edge in waveEdges)
             {
-                // If a visited node is referenced as a target (someone depends on it),
-                // the source node in another project is affected
-                if (visited.ContainsKey(edge.TargetNodeId) && !visited.ContainsKey(edge.SourceNodeId))
+                // Cross-repo edges written by CrossRepoLinker point from the dependent to what it
+                // depends on (HTTP_CALLS, REFERENCES_PACKAGE, CALLS/USES_TYPE/IMPLEMENTS) except
+                // PUBLISHES, which runs publisher → consumer. Only the depended-upon end's
+                // changes affect the other end.
+                if (edge.Type != EdgeType.PUBLISHES &&
+                    visited.ContainsKey(edge.TargetNodeId) && !visited.ContainsKey(edge.SourceNodeId))
                 {
                     var baseDepth = visited[edge.TargetNodeId].Depth + 1;
                     if (baseDepth <= maxDepth)
                         crossRepoSeeds.Add((edge.SourceNodeId, baseDepth, edge.Type, edge.TargetProject));
                 }
-                // Also: if a visited node is the source (it depends on something),
-                // the target node's dependents in other projects are affected
-                if (visited.ContainsKey(edge.SourceNodeId) && !visited.ContainsKey(edge.TargetNodeId))
+                if (edge.Type == EdgeType.PUBLISHES &&
+                    visited.ContainsKey(edge.SourceNodeId) && !visited.ContainsKey(edge.TargetNodeId))
                 {
                     var baseDepth = visited[edge.SourceNodeId].Depth + 1;
                     if (baseDepth <= maxDepth)
@@ -390,9 +392,9 @@ public class ImpactAnalysisService(
                 depth, edgeType.ToString(), risk, factors, lowConfidence));
         }
 
-        // Build cross-repo impact summary
+        // Build cross-repo impact summary from edges whose depended-upon end is a start node
         var crossRepoImpacts = crossRepoEdges
-            .Where(e => startNodeIds.Contains(e.SourceNodeId) || startNodeIds.Contains(e.TargetNodeId))
+            .Where(e => startNodeIds.Contains(e.Type == EdgeType.PUBLISHES ? e.SourceNodeId : e.TargetNodeId))
             .GroupBy(e => new { e.SourceProject, e.TargetProject, e.Type })
             .Select(g => new CrossRepoImpact(
                 g.Key.SourceProject, g.Key.TargetProject,
