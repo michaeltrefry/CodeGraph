@@ -159,6 +159,8 @@ public static class Startup
         services.AddTransient<ICodeExtractor, TerraformExtractor>();
         services.AddTransient<ICodeExtractor, TypeScriptExtractor>();
         services.AddTransient<ICodeExtractor, TreeSitterExtractor>();
+        // Which file languages are indexed, read from the extractors and analyzers above.
+        services.AddSingleton<IndexedLanguageCatalog>();
 
         // File system
         services.AddSingleton<IFileSystem, LocalFileSystem>();
