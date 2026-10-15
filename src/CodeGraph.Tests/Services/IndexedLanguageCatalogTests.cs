@@ -96,8 +96,10 @@ public class IndexedLanguageCatalogTests
 
     /// <summary>
     /// Indexing a tree with mixed-case extensions through the API host's extractor extensions:
-    /// every source file the catalog calls indexed is discovered, and every one it calls
-    /// unindexed is not.
+    /// every source file the catalog calls indexed is discovered by the default branch, accepted
+    /// by the overlay (<see cref="IndexingPipeline.IsIndexablePath"/>), extracted when a change
+    /// list names it, and versioned with its extractor; every one it calls unindexed is none of
+    /// these (sc-26138: the extractors' own sets ignore case, discovery does not).
     /// </summary>
     [Fact]
     public async Task IndexedSourceFiles_AreExactlyTheFilesDiscoveryIndexes()
@@ -131,13 +133,41 @@ public class IndexedLanguageCatalogTests
                 NullLogger<IndexingPipeline>.Instance);
             await pipeline.IndexProjectAsync("Parity", root, ct: CancellationToken.None);
             var discovered = (await store.GetFileHashesAsync("Parity")).Keys.ToHashSet(StringComparer.Ordinal);
+            // A replacing run records the hash of every discovered file, extracted or not, so it
+            // shows discovery itself rather than discovery filtered by extraction dispatch.
+            var replaceStore = new InMemoryGraphStore();
+            await new IndexingPipeline(replaceStore, extractors,
+                    Options.Create(new IndexingOptions { MaxParallelFiles = 1 }), new LocalFileSystem(),
+                    NullLogger<IndexingPipeline>.Instance)
+                .IndexProjectAsync("Replace", root, replaceExistingGraph: true, ct: CancellationToken.None);
+            var discoveredByReplace = (await replaceStore.GetFileHashesAsync("Replace")).Keys.ToHashSet(StringComparer.Ordinal);
 
+            // A change list (incremental and overlay runs) names files without discovery's filter:
+            // extraction dispatch decides which of them an extractor reads.
+            var extracted = new System.Collections.Concurrent.ConcurrentBag<string>();
+            ICodeExtractor[] recording = extractors
+                .Select(extractor => (ICodeExtractor)new ExtensionsOnlyExtractor(extractor.SupportedExtensions, extracted))
+                .ToArray();
+            var changeListPipeline = new IndexingPipeline(new InMemoryGraphStore(), recording,
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+            await changeListPipeline.IndexProjectAsync("ChangeList", root, changedFilesOnly: files, ct: CancellationToken.None);
+            var extractedFiles = extracted
+                .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
+                .ToHashSet(StringComparer.Ordinal);
+
+            var tree = RepositoryTree.FromFiles(files);
+            var versions = new ExtractionVersionCatalog(extractors);
             var catalog = new IndexedLanguageCatalog(extractors);
             foreach (var file in files)
             {
                 var language = catalog.Describe(file);
                 language.Language.ShouldNotBeNull(file);
                 language.Indexed.ShouldBe(discovered.Contains(file), file);
+                discoveredByReplace.Contains(file).ShouldBe(language.Indexed, file);
+                pipeline.IsIndexablePath(file, tree).ShouldBe(language.Indexed, file);
+                extractedFiles.Contains(file).ShouldBe(language.Indexed, file);
+                versions.ForPath(file).Contains(nameof(ExtensionsOnlyExtractor)).ShouldBe(language.Indexed, file);
             }
 
             discovered.ShouldContain("Sources/A.swift");
@@ -150,12 +180,18 @@ public class IndexedLanguageCatalogTests
         }
     }
 
-    private sealed class ExtensionsOnlyExtractor(IReadOnlySet<string> extensions) : ICodeExtractor
+    private sealed class ExtensionsOnlyExtractor(
+        IReadOnlySet<string> extensions,
+        System.Collections.Concurrent.ConcurrentBag<string>? extracted = null) : ICodeExtractor
     {
         public IReadOnlySet<string> SupportedExtensions { get; } = extensions;
 
         public Task<ExtractionResult> ExtractAsync(string filePath, string content, ExtractorContext context,
-            CancellationToken ct = default) => Task.FromResult(new ExtractionResult());
+            CancellationToken ct = default)
+        {
+            extracted?.Add(filePath);
+            return Task.FromResult(new ExtractionResult());
+        }
     }
 
     private static string RepoRoot()

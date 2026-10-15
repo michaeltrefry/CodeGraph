@@ -1405,6 +1405,20 @@ public class IndexingPipelineTests
         new ExtractionVersionCatalog(extractors, new RecordingSolutionAnalyzer()).Fingerprint.ShouldBe(v1.Fingerprint);
     }
 
+    /// <summary>
+    /// Extensions match by ordinal comparison, as discovery matches them (sc-26138): a file indexing
+    /// never reads (<c>App.CS</c>) is versioned by no extractor and no analyzer.
+    /// </summary>
+    [Fact]
+    public void ExtractionVersionCatalog_MatchesExtensionsCaseSensitively()
+    {
+        var catalog = new ExtractionVersionCatalog([new RoslynExtractor()], new RecordingSolutionAnalyzer());
+
+        catalog.ForPath("src/App.CS").ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion}");
+        catalog.ForPath("src/App.cs").ShouldBe(
+            $"p{ExtractionVersionCatalog.PipelineVersion};RoslynExtractor=2;RecordingSolutionAnalyzer=1");
+    }
+
     [Fact]
     public async Task IndexProjectAsync_OversizeFile_IsLoggedMarkedAndNotReportedChangedAgain()
     {

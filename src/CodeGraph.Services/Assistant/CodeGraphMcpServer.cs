@@ -955,8 +955,9 @@ public class CodeGraphMcpServer(
     public const string InvalidPathCode = "invalid_path";
 
     private const string LanguageFieldsDescription =
-        "Every answer (found: false included) carries languageIndexed and language: languageIndexed is false " +
-        "only for a source file in a language CodeGraph does not index (e.g. Objective-C, Kotlin), so a " +
+        "Every answer (found: false included) carries languageIndexed and language: languageIndexed is about " +
+        "graph indexing and is false only for a source file in a language CodeGraph does not index into the " +
+        "graph (e.g. Objective-C, Kotlin, JavaScript, .tsx), so a " +
         "found: false answer with languageIndexed: true is a file of an indexed language with no data (a new " +
         "or deleted file); it is true for indexed languages and for non-code files. language is the " +
         "capitalised language name (Swift, C#, C++, Objective-C, ...), or null for a non-code file. " +
@@ -1206,6 +1207,9 @@ public class CodeGraphMcpServer(
                  "computed at; it is null for metrics computed before the commit was recorded (concernScore is " +
                  "then null too, as it was not stored) until the next vitals run. indexCommitSha is the current " +
                  "default-branch index commit. A file with no metrics answers found: false. " +
+                 "Vitals cover some languages the graph does not index (.tsx, .js, .jsx, .vue), so a file with " +
+                 "languageIndexed: false may still answer found: true with metrics; graph-based tools such as " +
+                 "analyze_impact_file have no data for it. " +
                  LanguageFieldsDescription + " No model is called.")]
     public async Task<CallToolResult> FileHotspot(
         [Description("Indexed repository name.")] string repo,
@@ -1268,14 +1272,21 @@ public class CodeGraphMcpServer(
         return new JsonObject { ["languageIndexed"] = language.Indexed, ["language"] = language.Language };
     }
 
-    /// <summary>Adds the language fields to <paramref name="extra"/>, and says so in the text when the language is not indexed.</summary>
+    /// <summary>
+    /// Adds the language fields to <paramref name="extra"/>, and says so in the text when the language
+    /// is not indexed in the graph: with no data (found: false) the absence of data says nothing; with
+    /// data (file_hotspot vitals cover some such languages) the data stands, but graph answers have none.
+    /// </summary>
     private void AddLanguageFields(JsonObject extra, StringBuilder text, string path)
     {
         foreach (var (key, value) in LanguageFields(path))
             extra[key] = value?.DeepClone();
-        if (extra["languageIndexed"]!.GetValue<bool>() is false)
-            text.AppendLine($"Language: {extra["language"]}, which CodeGraph does not index (languageIndexed: false); " +
-                            "the absence of data here says nothing about this file's risk.\n");
+        if (extra["languageIndexed"]!.GetValue<bool>() is not false)
+            return;
+        var unindexed = $"Language: {extra["language"]}, which CodeGraph does not index in the graph (languageIndexed: false)";
+        text.AppendLine(extra["found"]!.GetValue<bool>()
+            ? $"{unindexed}. Hotspot metrics exist for this file, but graph-based answers such as analyze_impact_file have no data for it.\n"
+            : $"{unindexed}; the absence of data here says nothing about this file's risk.\n");
     }
 
     /// <summary>The worst risk level among the affected nodes, or none.</summary>

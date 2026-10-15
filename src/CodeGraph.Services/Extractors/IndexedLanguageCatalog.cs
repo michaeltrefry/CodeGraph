@@ -11,7 +11,8 @@ public sealed record FileLanguage(bool Indexed, string? Language);
 /// <summary>
 /// Says whether a file's language is indexed. "Indexed" is the set of extensions indexing discovers:
 /// the registered extractors' <see cref="ICodeExtractor.SupportedExtensions"/>, matched by ordinal
-/// (case-sensitive) comparison as discovery does, so <c>Foo.SWIFT</c> is not indexed. Project analyzers
+/// (case-sensitive) comparison through <see cref="ExtractorExtensions"/>, the predicate default-branch
+/// discovery, overlay filtering and extraction dispatch share, so <c>Foo.SWIFT</c> is not indexed. Project analyzers
 /// add none: they only read discovered files (the TypeScript sidecar reads <c>.ts</c> files only, not
 /// <c>.tsx</c>). <see cref="LanguageNames"/> only names languages. The answer is per language: a file
 /// of an indexed language that discovery excludes (dependency directories, skip patterns), that is
@@ -80,25 +81,23 @@ public sealed class IndexedLanguageCatalog
             [".hcl"] = "HCL"
         };
 
-    private readonly HashSet<string> _indexedExtensions;
+    private readonly ExtractorExtensions _indexedExtensions;
 
     public IndexedLanguageCatalog(IEnumerable<ICodeExtractor> extractors)
     {
-        // Same set and comparer as IndexingPipeline.DiscoverFiles.
-        _indexedExtensions = extractors
-            .SelectMany(extractor => extractor.SupportedExtensions)
-            .ToHashSet(StringComparer.Ordinal);
+        // The same predicate as discovery, overlay filtering and extraction dispatch.
+        _indexedExtensions = new ExtractorExtensions(extractors);
     }
 
     /// <summary>Every extension indexing discovers (case-sensitive).</summary>
-    public IReadOnlySet<string> IndexedExtensions => _indexedExtensions;
+    public IReadOnlySet<string> IndexedExtensions => _indexedExtensions.Extensions;
 
     /// <summary>The language of the file at <paramref name="path"/> and whether it is indexed.</summary>
     public FileLanguage Describe(string path)
     {
         var extension = Path.GetExtension(path);
         var language = LanguageNames.GetValueOrDefault(extension);
-        if (_indexedExtensions.Contains(extension))
+        if (_indexedExtensions.IsSupportedExtension(extension))
             return new FileLanguage(true, language);
         // An unindexed extension is a source file of an unindexed language when the language is
         // known; anything else (docs, config, data, images, no extension) is not code.

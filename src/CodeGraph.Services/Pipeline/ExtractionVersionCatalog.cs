@@ -72,6 +72,7 @@ public sealed class ExtractionVersionCatalog
     private static readonly string[] RustAnalyzerExtensions = [".rs"];
 
     private readonly IReadOnlyList<ICodeExtractor> _extractors;
+    private readonly ExtractorExtensions _extensions;
     private readonly ISolutionAnalyzer? _solutionAnalyzer;
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
@@ -92,6 +93,7 @@ public sealed class ExtractionVersionCatalog
     {
         _cargoManifestExtractor = cargoManifestExtractor;
         _extractors = extractors.ToList();
+        _extensions = new ExtractorExtensions(_extractors);
         _solutionAnalyzer = solutionAnalyzer;
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
@@ -155,8 +157,8 @@ public sealed class ExtractionVersionCatalog
         var version = new StringBuilder($"p{PipelineVersion}");
 
         // Same selection as per-file extraction in IndexingPipeline: the first registered
-        // extractor that supports the extension.
-        var extractor = _extractors.FirstOrDefault(e => e.SupportedExtensions.Contains(extension));
+        // extractor that supports the extension, matched by ordinal comparison.
+        var extractor = _extensions.ExtractorFor(extension);
         if (extractor is not null)
             Append(version, extractor.GetType().Name, extractor.GetExtractionVersion(extension));
 
@@ -196,7 +198,7 @@ public sealed class ExtractionVersionCatalog
     }
 
     private static bool Covers(string[] extensions, string extension) =>
-        extensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+        extensions.Contains(extension, StringComparer.Ordinal);
 
     private static void Append(StringBuilder version, string component, string componentVersion) =>
         version.Append(';').Append(component).Append('=').Append(componentVersion);
