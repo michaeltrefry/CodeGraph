@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Pipeline;
 
 namespace CodeGraph.Services.Analyzers;
 
@@ -19,13 +20,35 @@ public class VitalsAnalyzer(
     LintResultCache lintCache,
     DiagnosticDetailCache diagnosticDetailCache,
     ILogger<VitalsAnalyzer> logger,
-    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null) : IVitalsAnalyzer
+    IDbBackedAnalysisSettingsResolver? analysisSettingsResolver = null,
+    IOptions<IndexingOptions>? indexingOptionsAccessor = null) : IVitalsAnalyzer
 {
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
+    private readonly IndexingOptions indexingOptions = indexingOptionsAccessor?.Value ?? new IndexingOptions();
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".cs", ".ts", ".tsx", ".js", ".jsx", ".cfm", ".cfc", ".sql", ".vue", ".py", ".java"
+        ".cs", ".ts", ".tsx", ".js", ".jsx", ".cfm", ".cfc", ".sql", ".vue", ".py", ".java", ".swift", ".rs"
     };
+
+    /// <summary>
+    /// Brace languages whose complexity is measured by <see cref="ComputeBraceComplexity"/>: block
+    /// depth from braces, functions from declaration keywords, branches from control-flow tokens
+    /// inside function bodies (so a Swift enum's <c>case</c> declarations are not branches).
+    /// Other source extensions (C# aside) use the indentation heuristic.
+    /// </summary>
+    private static readonly Dictionary<string, BraceLanguage> BraceLanguages = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".swift"] = new(
+            Swift: true,
+            new Regex(@"(^|[\s(])(func\s+[^\s(<]+|init[?!]?\s*[(<]|deinit\b)", RegexOptions.Compiled | RegexOptions.CultureInvariant),
+            new Regex(@"\b(if|guard|switch|case|for|while|repeat|catch)\b|&&|\|\||\?\?|\s\?\s", RegexOptions.Compiled | RegexOptions.CultureInvariant)),
+        [".rs"] = new(
+            Swift: false,
+            new Regex(@"\bfn\s+[A-Za-z_]", RegexOptions.Compiled | RegexOptions.CultureInvariant),
+            new Regex(@"\b(if|match|for|while|loop)\b|=>|&&|\|\||\?(?=[\s;.)?,]|$)", RegexOptions.Compiled | RegexOptions.CultureInvariant))
+    };
+
+    private sealed record BraceLanguage(bool Swift, Regex FunctionDeclaration, Regex Branch);
 
     private static readonly HashSet<string> TestPathSegments = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -940,7 +963,9 @@ public class VitalsAnalyzer(
 
                 var data = ext.Equals(".cs", StringComparison.OrdinalIgnoreCase)
                     ? ComputeCSharpComplexity(content)
-                    : ComputeIndentationComplexity(content);
+                    : BraceLanguages.TryGetValue(ext, out var braceLanguage)
+                        ? ComputeBraceComplexity(content, braceLanguage)
+                        : ComputeIndentationComplexity(content);
 
                 if (data.MaxNestingDepth >= 2)
                     result[relPath] = data;
@@ -1026,6 +1051,84 @@ public class VitalsAnalyzer(
             DeepNestingLines = deepLines,
             FunctionCount = functionCount,
             LongestFunction = longestFunction
+        };
+    }
+
+    /// <summary>
+    /// Swift/Rust complexity: nesting from braces (comments and literals ignored, per
+    /// <see cref="BraceSourceLexer"/>), a function from its declaration to the line its body
+    /// closes, branches from the language's control-flow tokens within functions.
+    /// </summary>
+    private static ComplexityData ComputeBraceComplexity(string source, BraceLanguage language)
+    {
+        var lines = source.Split('\n');
+        int maxDepth = 0;
+        int deepLines = 0;
+        int functionCount = 0;
+        int longestFunction = 0;
+        int branchCount = 0;
+        int braceDepth = 0;
+        int? functionDepth = null;
+        int functionStart = 0;
+        var lexer = new BraceSourceLexer(language.Swift);
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var code = lexer.StripLine(lines[index]).Trim();
+            if (code.Length == 0) continue;
+
+            // A declaration at the depth of a still-open body-less one (a protocol requirement)
+            // ends that one; a declaration inside a function body is part of it.
+            if (functionDepth is { } open && braceDepth <= open && language.FunctionDeclaration.IsMatch(code))
+            {
+                longestFunction = Math.Max(longestFunction, index - functionStart);
+                functionDepth = null;
+            }
+
+            if (functionDepth is null && language.FunctionDeclaration.IsMatch(code))
+            {
+                functionCount++;
+                functionDepth = braceDepth;
+                functionStart = index;
+            }
+
+            if (functionDepth is not null)
+                branchCount += language.Branch.Matches(code).Count;
+
+            var lineDepth = braceDepth;
+            foreach (var c in code)
+            {
+                if (c == '{') lineDepth = Math.Max(lineDepth, ++braceDepth);
+                else if (c == '}') braceDepth = Math.Max(0, braceDepth - 1);
+            }
+
+            if (lineDepth > maxDepth) maxDepth = lineDepth;
+            if (lineDepth >= 3) deepLines++;
+
+            // The function ends on the line its body closes, or a body-less declaration (a trait
+            // method, an extern fn) on the line ending it with ';' or closing its enclosing scope.
+            if (functionDepth is { } depth
+                && (braceDepth < depth || (braceDepth == depth && (lineDepth > depth || code.EndsWith(';')))))
+            {
+                longestFunction = Math.Max(longestFunction, index - functionStart + 1);
+                functionDepth = null;
+            }
+        }
+
+        if (functionDepth is not null)
+            longestFunction = Math.Max(longestFunction, lines.Length - functionStart);
+
+        var score = ComputeComplexityScore(maxDepth, deepLines, longestFunction,
+            lines.Length, branchCount, functionCount);
+
+        return new ComplexityData
+        {
+            Score = score,
+            MaxNestingDepth = maxDepth,
+            DeepNestingLines = deepLines,
+            FunctionCount = functionCount,
+            LongestFunction = longestFunction,
+            BranchCount = branchCount
         };
     }
 
@@ -1501,27 +1604,25 @@ public class VitalsAnalyzer(
 
     // --- Helpers ---
 
+    /// <summary>
+    /// The source files on disk, discovered exactly as graph indexing discovers files (the
+    /// configured skip patterns and the dependency/build-output directory rules), so vitals never
+    /// cover a dependency checkout or generated file the graph leaves out.
+    /// </summary>
     private List<string> GetSourceFiles(string repoPath)
     {
-        var result = new List<string>();
         try
         {
-            foreach (var file in fileSystem.EnumerateFiles(repoPath, "*", SearchOption.AllDirectories))
-            {
-                var rel = fileSystem.GetRelativePath(repoPath, file);
-                if (rel.Contains("/bin/") || rel.Contains("/obj/") ||
-                    rel.Contains("/node_modules/") || rel.StartsWith(".git/"))
-                    continue;
-
-                if (SourceExtensions.Contains(Path.GetExtension(rel)))
-                    result.Add(rel);
-            }
+            return IndexingPipeline.DiscoverPaths(repoPath, fileSystem, indexingOptions.SkipPatterns, "**/*")
+                .Where(file => SourceExtensions.Contains(Path.GetExtension(file)))
+                .Select(file => Path.GetRelativePath(Path.GetFullPath(repoPath), file).Replace('\\', '/'))
+                .ToList();
         }
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Failed to enumerate source files in {RepoPath}", repoPath);
+            return [];
         }
-        return result;
     }
 
     /// <summary>
@@ -1612,6 +1713,8 @@ public class VitalsAnalyzer(
         public int DeepNestingLines { get; set; }
         public int FunctionCount { get; set; }
         public int LongestFunction { get; set; }
+        /// <summary>Branch tokens counted (brace languages only; not persisted).</summary>
+        public int BranchCount { get; set; }
     }
 
     internal sealed class FileHistoryData

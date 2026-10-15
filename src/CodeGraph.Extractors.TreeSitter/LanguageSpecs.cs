@@ -394,7 +394,10 @@ public static partial class LanguageSpecs
         Framework = null,
         GetLanguage = () => new Language("Swift"),
         // 2: @_exported imports are marked as re-exports (sc-26145).
-        ExtractionVersion = 2,
+        // 3: every node is marked as a tree-sitter fallback node (sc-26135).
+        ExtractionVersion = 3,
+        // No Swift semantic tier exists: tree-sitter output is fallback output.
+        TreeSitterFallbackReason = GraphNodeConfidence.SwiftSemanticUnavailableReason,
         FunctionNodeTypes = ["function_declaration", "protocol_function_declaration",
                              "init_declaration", "deinit_declaration", "subscript_declaration"],
         ClassNodeTypes = ["class_declaration", "protocol_declaration"],

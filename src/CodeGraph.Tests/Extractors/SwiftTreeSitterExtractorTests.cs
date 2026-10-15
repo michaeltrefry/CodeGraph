@@ -45,9 +45,9 @@ public class SwiftTreeSitterExtractorTests
         extractor.SupportedExtensions.ShouldContain(".swift");
         LanguageSpecs.ForExtension(".swift").ShouldBeSameAs(LanguageSpecs.Swift);
         LanguageSpecs.Swift.LanguageName.ShouldBe("Swift");
-        LanguageSpecs.Swift.ExtractionVersion.ShouldBe(2);
+        LanguageSpecs.Swift.ExtractionVersion.ShouldBe(3);
         extractor.GetExtractionVersion(".swift")
-            .ShouldBe($"{TreeSitterExtractor.WalkerVersion}.2");
+            .ShouldBe($"{TreeSitterExtractor.WalkerVersion}.3");
     }
 
     [Fact]

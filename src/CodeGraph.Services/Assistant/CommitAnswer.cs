@@ -48,7 +48,8 @@ public static class CommitAnswer
     }
 
     /// <summary>A commit-pinned request that cannot be answered for its SHA; it carries no default-branch data.</summary>
-    public static CallToolResult NotIndexed(CommitNotIndexedResponse notIndexed)
+    /// <param name="extra">Additional structuredContent fields that do not depend on the commit.</param>
+    public static CallToolResult NotIndexed(CommitNotIndexedResponse notIndexed, JsonObject? extra = null)
     {
         var isSha = notIndexed.Code != CommitScopeResolver.InvalidShaCode;
         var text = $"Commit: {(isSha ? notIndexed.Sha : "unknown")}\n\n" +
@@ -58,6 +59,12 @@ public static class CommitAnswer
             ["commitSha"] = isSha ? notIndexed.Sha : null,
             ["notIndexed"] = JsonSerializer.SerializeToNode(notIndexed, JsonOptions)
         };
+        if (extra is not null)
+        {
+            foreach (var (key, value) in extra)
+                structured[key] = value?.DeepClone();
+        }
+
         return Result(text, structured, isError: notIndexed.Code != CommitScopeResolver.NotIndexedCode);
     }
 

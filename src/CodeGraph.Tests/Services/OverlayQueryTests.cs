@@ -6,6 +6,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Overlays;
 using CodeGraph.Services.Query;
 using CodeGraph.Tests.Extractors;
@@ -815,6 +816,131 @@ public sealed class OverlayQueryTests : IDisposable
         missing.GetProperty("commitSha").ValueKind.ShouldBe(JsonValueKind.Null);
     }
 
+    // ── languageIndexed / language on file answers (sc-26137) ─────────
+
+    /// <summary>
+    /// The four kinds of file the contract tells apart: an indexed file with no data (new), an
+    /// indexed file with data, a source file of an unindexed language, and a non-code file.
+    /// </summary>
+    public static TheoryData<string, bool, bool, string?> DefaultBranchFiles => new()
+    {
+        { "src/new.py", false, true, "Python" },
+        { "Sources/App/New.swift", false, true, "Swift" },
+        { "src/a.py", true, true, "Python" },
+        { "Sources/Legacy/Bridge.m", false, false, "Objective-C" },
+        { "app/src/main/Main.kt", false, false, "Kotlin" },
+        { "docs/README.md", false, true, null }
+    };
+
+    [Theory]
+    [MemberData(nameof(DefaultBranchFiles))]
+    public async Task PerFileTools_DefaultBranch_SayWhetherTheFilesLanguageIsIndexed(
+        string path, bool found, bool languageIndexed, string? language)
+    {
+        await _store.UpsertFileMetricsBatchAsync(Repo,
+            [new FileMetricsEntity { Project = Repo, FilePath = "src/a.py", RiskScore = 5, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+        var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
+
+        foreach (var answer in new[] { await mcp.AnalyzeImpactFile(Repo, path), await mcp.FileHotspot(Repo, path) })
+        {
+            answer.IsError.ShouldNotBe(true);
+            var s = answer.StructuredContent!.Value;
+            s.GetProperty("found").GetBoolean().ShouldBe(found);
+            AssertLanguage(s, languageIndexed, language);
+            if (languageIndexed)
+                answer.Text().ShouldNotContain("does not index");
+            else
+                answer.Text().ShouldContain($"Language: {language}, which CodeGraph does not index in the graph");
+        }
+    }
+
+    /// <summary>
+    /// Vitals cover languages the graph does not index (.tsx, .js, .jsx, .vue). languageIndexed
+    /// still says graph indexing (false), but a hotspot answer with data must not claim that the
+    /// absence of data says nothing: it says the metrics exist and graph answers have none.
+    /// </summary>
+    [Fact]
+    public async Task FileHotspot_ForALanguageTheGraphDoesNotIndex_ReportsItsVitalsWithoutDisclaimingThem()
+    {
+        await _store.UpsertFileMetricsBatchAsync(Repo,
+            [new FileMetricsEntity { Project = Repo, FilePath = "web/View.tsx", RiskScore = 7, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+        var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
+
+        var withData = await mcp.FileHotspot(Repo, "web/View.tsx");
+        var s = withData.StructuredContent!.Value;
+        s.GetProperty("found").GetBoolean().ShouldBeTrue();
+        s.GetProperty("riskScore").GetDouble().ShouldBe(7);
+        AssertLanguage(s, false, "TypeScript");
+        withData.Text().ShouldNotContain("absence of data");
+        withData.Text().ShouldContain("Hotspot metrics exist for this file, but graph-based answers such as analyze_impact_file have no data for it");
+
+        var noData = await mcp.FileHotspot(Repo, "app/src/main/Main.kt");
+        var n = noData.StructuredContent!.Value;
+        n.GetProperty("found").GetBoolean().ShouldBeFalse();
+        AssertLanguage(n, false, "Kotlin");
+        noData.Text().ShouldContain("the absence of data here says nothing about this file's risk");
+        noData.Text().ShouldNotContain("Hotspot metrics exist");
+    }
+
+    public static TheoryData<string, bool, bool, string?> OverlayFiles => new()
+    {
+        // Added on the branch, and deleted at the head (no nodes there).
+        { "src/n.py", true, true, "Python" },
+        { "src/d.py", false, true, "Python" },
+        { "Sources/App/New.swift", false, true, "Swift" },
+        { "Sources/Legacy/Bridge.mm", false, false, "Objective-C++" },
+        { "lib/main.dart", false, false, "Dart" },
+        { "Package.resolved", false, true, null }
+    };
+
+    [Theory]
+    [MemberData(nameof(OverlayFiles))]
+    public async Task AnalyzeImpactFile_WithOverlaySha_SaysWhetherTheFilesLanguageIsIndexed(
+        string path, bool found, bool languageIndexed, string? language)
+    {
+        await CreateReadyOverlayAsync(_headSha, _baseSha);
+
+        var answer = await Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog()).AnalyzeImpactFile(Repo, path, sha: _headSha);
+
+        answer.IsError.ShouldNotBe(true);
+        var s = answer.StructuredContent!.Value;
+        s.GetProperty("source").GetString().ShouldBe("overlay");
+        s.GetProperty("found").GetBoolean().ShouldBe(found);
+        AssertLanguage(s, languageIndexed, language);
+    }
+
+    [Fact]
+    public async Task AnalyzeImpactFile_WithShaWithoutReadyOverlay_StillSaysWhetherTheLanguageIsIndexed()
+    {
+        var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
+
+        var unindexed = await mcp.AnalyzeImpactFile(Repo, "Sources/Bridge.m", sha: new string('c', 40));
+        var indexed = await mcp.AnalyzeImpactFile(Repo, "Sources/New.swift", sha: new string('c', 40));
+
+        AssertNotIndexed(unindexed, new string('c', 40), "unknown");
+        AssertLanguage(unindexed.StructuredContent!.Value, false, "Objective-C");
+        AssertLanguage(indexed.StructuredContent!.Value, true, "Swift");
+    }
+
+    [Fact]
+    public async Task PerFileTools_WithoutARegisteredCatalog_FailClosed()
+    {
+        var mcp = Mcp();
+
+        AssertLanguage((await mcp.AnalyzeImpactFile(Repo, "src/a.py")).StructuredContent!.Value, false, "Python");
+        AssertLanguage((await mcp.FileHotspot(Repo, "docs/README.md")).StructuredContent!.Value, true, null);
+    }
+
+    private static void AssertLanguage(JsonElement structured, bool languageIndexed, string? language)
+    {
+        structured.GetProperty("languageIndexed").GetBoolean().ShouldBe(languageIndexed);
+        var name = structured.GetProperty("language");
+        if (language is null)
+            name.ValueKind.ShouldBe(JsonValueKind.Null);
+        else
+            name.GetString().ShouldBe(language);
+    }
+
     public void Dispose()
     {
         try
@@ -871,7 +997,7 @@ public sealed class OverlayQueryTests : IDisposable
         Options.Create(new BranchOverlayOptions()),
         _time);
 
-    private CodeGraphMcpServer Mcp(IImpactAnalysisService? impact = null) => new(
+    private CodeGraphMcpServer Mcp(IImpactAnalysisService? impact = null, IndexedLanguageCatalog? languages = null) => new(
         new GraphQueryEngine(_store, NullLogger<GraphQueryEngine>.Instance),
         null!,
         _store,
@@ -879,7 +1005,8 @@ public sealed class OverlayQueryTests : IDisposable
         Options.Create(new RepositorySourceOptions()),
         null!,
         impact ?? new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance),
-        commitScopes: Resolver());
+        commitScopes: Resolver(),
+        indexedLanguages: languages);
 
     private sealed class StubImpactAnalysis(ImpactReport report) : IImpactAnalysisService
     {

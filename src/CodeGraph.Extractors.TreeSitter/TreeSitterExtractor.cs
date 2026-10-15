@@ -204,6 +204,12 @@ public class TreeSitterExtractor : ICodeExtractor
             unresolvedCalls.Count == 0 && unresolvedImports.Count == 0)
             return EmptyResult;
 
+        if (spec.TreeSitterFallbackReason is { } fallbackReason)
+        {
+            foreach (var node in nodes)
+                GraphNodeConfidence.MarkTreeSitterFallback(node.Properties, fallbackReason);
+        }
+
         return new ExtractionResult
         {
             Nodes = nodes,
