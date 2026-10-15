@@ -397,7 +397,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<TraversalEntry>> TraverseAsync(long startNodeId,
+    public virtual Task<IReadOnlyList<TraversalEntry>> TraverseAsync(long startNodeId,
         TraceDirection direction, int maxDepth,
         EdgeType[]? edgeFilter = null, double minConfidence = 0)
     {

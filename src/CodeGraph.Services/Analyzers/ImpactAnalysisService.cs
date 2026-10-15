@@ -97,7 +97,7 @@ public class ImpactAnalysisService(
         return report with
         {
             CrossRepoImpacts = crossRepoImpacts,
-            Summary = report.Summary with { CrossRepoCount = crossRepoImpacts.Count }
+            Summary = report.Summary with { CrossRepoCount = CountCrossRepoProjects(crossRepoImpacts, new HashSet<string> { project }) }
         };
     }
 
@@ -230,6 +230,7 @@ public class ImpactAnalysisService(
     {
         // BFS results: nodeId → (depth, edgeType, sourceProject)
         var visited = new Dictionary<long, (int Depth, EdgeType EdgeType, string SourceProject)>();
+        var reachedProjects = new HashSet<string>(startNodes.Select(n => n.Project));
         foreach (var node in startNodes)
             visited[node.Id] = (0, default, node.Project);
 
@@ -244,80 +245,64 @@ public class ImpactAnalysisService(
                 if (visited.TryGetValue(entry.Node.Id, out var existing) && existing.Depth <= entry.Depth)
                     continue;
                 visited[entry.Node.Id] = (entry.Depth, entry.EdgeType, startNode.Project);
+                reachedProjects.Add(entry.Node.Project);
             }
         }
 
-        // Phase 2: Follow cross-repo edges and continue BFS into other projects
-        // We iterate in waves — each wave finds cross-repo edges from visited nodes,
-        // then traverses inbound within the target projects.
-        var checkedProjects = new HashSet<string>(startNodes.Select(n => n.Project));
+        // Phase 2: Follow cross-repo edges and continue BFS into other projects.
+        // Each wave fetches cross-repo edges for every project reached so far that has not
+        // been fetched yet, seeds the dependents across those edges and traverses inbound
+        // from them; the projects those dependents live in are fetched in the next wave.
+        var fetchedProjects = new HashSet<string>();
         var crossRepoEdges = new List<CrossRepoEdge>();
-        var frontier = new HashSet<long>(visited.Keys);
+        var seenEdges = new HashSet<(long, long, EdgeType)>();
 
         for (int wave = 0; wave < maxDepth; wave++)
         {
-            // Find cross-repo edges touching any visited node
-            var newProjects = new HashSet<string>();
-            foreach (var project in checkedProjects.ToList())
+            foreach (var project in reachedProjects.Where(fetchedProjects.Add).ToList())
             {
-                // Only fetch cross-repo edges for projects we haven't checked yet
+                // An edge between two fetched projects is returned for both of them.
+                foreach (var edge in await graph.FindCrossRepoEdgesAsync(project))
+                {
+                    if (seenEdges.Add((edge.SourceNodeId, edge.TargetNodeId, edge.Type)))
+                        crossRepoEdges.Add(edge);
+                }
             }
 
-            // Fetch cross-repo edges for all projects that have visited nodes
-            var projectsToCheck = visited.Values
-                .Select(v => v.SourceProject)
-                .Concat(startNodes.Select(n => n.Project))
-                .Distinct()
-                .Where(p => checkedProjects.Add(p) || wave == 0)
-                .ToList();
-
-            // On first wave, re-check start projects; on later waves only new ones
-            if (wave == 0)
-                projectsToCheck = checkedProjects.ToList();
-
-            var waveEdges = new List<CrossRepoEdge>();
-            foreach (var project in projectsToCheck)
-            {
-                var edges = await graph.FindCrossRepoEdgesAsync(project);
-                crossRepoEdges.AddRange(edges);
-                waveEdges.AddRange(edges);
-            }
-
-            // Find cross-repo edges where one end is a visited node (inbound direction:
-            // the visited node is the target, so dependents are in the source project)
-            var crossRepoSeeds = new List<(long nodeId, int baseDepth, EdgeType edgeType, string sourceProject)>();
-            foreach (var edge in waveEdges)
+            // Seed the dependent end of every fetched edge whose depended-upon end is visited.
+            // Every fetched edge is checked each wave: a node visited in the last wave may sit
+            // at the depended-upon end of an edge fetched earlier, and a later wave may find a
+            // shorter path to a node that is already visited.
+            var crossRepoSeeds = new List<(long nodeId, string nodeProject, int baseDepth, EdgeType edgeType, string sourceProject)>();
+            foreach (var edge in crossRepoEdges)
             {
                 // Cross-repo edges written by CrossRepoLinker point from the dependent to what it
                 // depends on (HTTP_CALLS, REFERENCES_PACKAGE, CALLS/USES_TYPE/IMPLEMENTS) except
                 // PUBLISHES, which runs publisher → consumer. Only the depended-upon end's
                 // changes affect the other end.
-                if (edge.Type != EdgeType.PUBLISHES &&
-                    visited.ContainsKey(edge.TargetNodeId) && !visited.ContainsKey(edge.SourceNodeId))
-                {
-                    var baseDepth = visited[edge.TargetNodeId].Depth + 1;
-                    if (baseDepth <= maxDepth)
-                        crossRepoSeeds.Add((edge.SourceNodeId, baseDepth, edge.Type, edge.TargetProject));
-                }
-                if (edge.Type == EdgeType.PUBLISHES &&
-                    visited.ContainsKey(edge.SourceNodeId) && !visited.ContainsKey(edge.TargetNodeId))
-                {
-                    var baseDepth = visited[edge.SourceNodeId].Depth + 1;
-                    if (baseDepth <= maxDepth)
-                        crossRepoSeeds.Add((edge.TargetNodeId, baseDepth, edge.Type, edge.SourceProject));
-                }
+                var (dependency, dependencyProject, dependent, dependentProject) = edge.Type == EdgeType.PUBLISHES
+                    ? (edge.SourceNodeId, edge.SourceProject, edge.TargetNodeId, edge.TargetProject)
+                    : (edge.TargetNodeId, edge.TargetProject, edge.SourceNodeId, edge.SourceProject);
+                if (!visited.TryGetValue(dependency, out var reached))
+                    continue;
+
+                var baseDepth = reached.Depth + 1;
+                if (baseDepth <= maxDepth &&
+                    (!visited.TryGetValue(dependent, out var current) || current.Depth > baseDepth))
+                    crossRepoSeeds.Add((dependent, dependentProject, baseDepth, edge.Type, dependencyProject));
             }
 
             if (crossRepoSeeds.Count == 0)
                 break;
 
             var addedAny = false;
-            foreach (var (nodeId, baseDepth, edgeType, sourceProject) in crossRepoSeeds)
+            foreach (var (nodeId, nodeProject, baseDepth, edgeType, sourceProject) in crossRepoSeeds)
             {
                 if (visited.TryGetValue(nodeId, out var existing) && existing.Depth <= baseDepth)
                     continue;
 
                 visited[nodeId] = (baseDepth, edgeType, sourceProject);
+                reachedProjects.Add(nodeProject);
                 addedAny = true;
 
                 // Continue BFS inbound from this cross-repo node
@@ -334,16 +319,13 @@ public class ImpactAnalysisService(
                         if (visited.TryGetValue(entry.Node.Id, out var ex) && ex.Depth <= adjustedDepth)
                             continue;
                         visited[entry.Node.Id] = (adjustedDepth, entry.EdgeType, sourceProject);
+                        reachedProjects.Add(entry.Node.Project);
                     }
                 }
             }
 
             if (!addedAny)
                 break;
-
-            // Update checked projects for the next wave
-            foreach (var (_, (_, _, proj)) in visited)
-                checkedProjects.Add(proj);
         }
 
         var startNodeIds = new HashSet<long>(startNodes.Select(n => n.Id));
@@ -401,9 +383,13 @@ public class ImpactAnalysisService(
                 g.Key.Type.ToString(), g.Count()))
             .ToList();
 
-        // Also count cross-repo from traversal results
+        // Projects reached only through traversal get a TRANSITIVE row; a project with a
+        // direct edge to a start node is already counted above.
+        var directDependentProjects = crossRepoImpacts
+            .Select(c => c.EdgeType == nameof(EdgeType.PUBLISHES) ? c.TargetProject : c.SourceProject)
+            .ToHashSet();
         var traversalCrossRepo = affectedNodes
-            .Where(n => !startNodes.Any(s => s.Project == n.Project))
+            .Where(n => !startNodes.Any(s => s.Project == n.Project) && !directDependentProjects.Contains(n.Project))
             .GroupBy(n => n.Project)
             .Select(g =>
             {
@@ -421,7 +407,7 @@ public class ImpactAnalysisService(
 
         var summary = new ImpactSummary(
             TotalAffected: affectedNodes.Count,
-            CrossRepoCount: allCrossRepo.Count,
+            CrossRepoCount: CountCrossRepoProjects(allCrossRepo, startNodes.Select(n => n.Project).ToHashSet()),
             CriticalCount: affectedNodes.Count(n => n.Risk == RiskLevel.Critical),
             HighCount: affectedNodes.Count(n => n.Risk == RiskLevel.High),
             MediumCount: affectedNodes.Count(n => n.Risk == RiskLevel.Medium),
@@ -432,10 +418,17 @@ public class ImpactAnalysisService(
 
         logger.LogInformation(
             "Impact analysis for {NodeCount} nodes: {Affected} affected, {CrossRepo} cross-repo",
-            startNodes.Count, affectedNodes.Count, allCrossRepo.Count);
+            startNodes.Count, affectedNodes.Count, summary.CrossRepoCount);
 
         return new ImpactReport(changedNodes, affectedNodes, allCrossRepo, summary);
     }
+
+    // One dependent project can have several rows (e.g. it calls the change and consumes its events).
+    private static int CountCrossRepoProjects(IEnumerable<CrossRepoImpact> impacts, IReadOnlySet<string> startProjects) =>
+        impacts.SelectMany(c => new[] { c.SourceProject, c.TargetProject })
+            .Where(p => !startProjects.Contains(p))
+            .Distinct()
+            .Count();
 
     private static (RiskLevel Risk, IReadOnlyList<string> Factors) ClassifyRisk(
         GraphNode node, int depth, EdgeType edgeType, string sourceProject)
