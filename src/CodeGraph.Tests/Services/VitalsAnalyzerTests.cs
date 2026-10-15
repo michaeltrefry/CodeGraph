@@ -364,6 +364,116 @@ public class VitalsAnalyzerTests
         }
     }
 
+    /// <summary>sc-26136: Swift and Rust are measured by braces, ignoring braces in comments and literals.</summary>
+    [Theory]
+    [InlineData("Sources/App/Shapes.swift", """
+        /* { { { */
+        protocol Shape {
+            func area() -> Double
+            func name() -> String
+        }
+        struct Box: Shape {
+            func area() -> Double {
+                let label = "{{{{"
+                if true {
+                    for _ in 0..<2 {
+                        guard true else { return 0 }
+                    }
+                }
+                return 1 // }}}
+            }
+            func name() -> String { "box" }
+        }
+        """, 5, 4, 9)]
+    [InlineData("crates/core/src/lib.rs", """
+        pub trait Shape {
+            fn area(&self) -> f64;
+        }
+        impl Shape for Unit {
+            fn area(&self) -> f64 {
+                let open = '{';
+                match self.kind {
+                    Kind::A => {
+                        if self.flag { 1.0 } else { 2.0 }
+                    }
+                    _ => 0.0,
+                }
+            }
+        }
+        fn helper<'a>(value: &'a str) -> &'a str { value }
+        """, 5, 3, 9)]
+    public void ComputeComplexityBatch_SwiftAndRust_CountBraceDepthAndFunctionBodies(
+        string relPath, string source, int maxDepth, int functions, int longestFunction)
+    {
+        var repoPath = CreateTempRepo("TestProject");
+        try
+        {
+            var fullPath = Path.Combine(repoPath, relPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, source);
+
+            var analyzer = CreateAnalyzer(new InMemoryGraphStore(), new LintResultCache(), new DiagnosticDetailCache(), new StubLintRunner());
+            var data = analyzer.ComputeComplexityBatch(repoPath, [relPath])[relPath];
+
+            data.MaxNestingDepth.ShouldBe(maxDepth);
+            data.FunctionCount.ShouldBe(functions);
+            data.LongestFunction.ShouldBe(longestFunction);
+            data.Score.ShouldBeGreaterThan(0);
+        }
+        finally
+        {
+            Directory.Delete(repoPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// sc-26136: Swift and Rust files get vitals, but not SwiftPM/Xcode dependency checkouts or a
+    /// Cargo target/ directory's generated sources.
+    /// </summary>
+    [Fact]
+    public async Task ComputeMetricsAsync_IncludesSwiftAndRust_ButNotDependencyCheckoutsOrCargoBuildOutput()
+    {
+        var store = new InMemoryGraphStore();
+        var repoPath = CreateTempRepo("TestProject");
+        try
+        {
+            void Write(string relPath, string content)
+            {
+                var fullPath = Path.Combine(repoPath, relPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+                File.WriteAllText(fullPath, content);
+            }
+
+            Write("Sources/App/App.swift", "func run() {}\n");
+            Write(".build/checkouts/Dep/Sources/Dep/Dep.swift", "func dep() {}\n");
+            Write("DerivedData/App/SourcePackages/checkouts/Dep/Dep.swift", "func dep() {}\n");
+            Write("crates/core/Cargo.toml", "[package]\nname = \"core\"\n");
+            Write("crates/core/src/lib.rs", "pub fn core() {}\n");
+            Write("crates/core/target/debug/build/core-1/out/generated.rs", "pub fn generated() {}\n");
+            // A target/ directory that is not Cargo's build output is ordinary source.
+            Write("tools/target/main.rs", "fn main() {}\n");
+
+            store.AddNode(new GraphNode
+            {
+                Project = "TestProject",
+                Label = NodeLabel.File,
+                Name = "App.swift",
+                QualifiedName = "Sources/App/App.swift",
+                FilePath = "Sources/App/App.swift"
+            });
+
+            var analyzer = CreateAnalyzer(store, new LintResultCache(), new DiagnosticDetailCache(), new StubLintRunner());
+            await analyzer.ComputeMetricsAsync("TestProject", repoPath);
+
+            (await store.GetFileMetricsAsync("TestProject")).Select(metric => metric.FilePath)
+                .ShouldBe(["Sources/App/App.swift", "crates/core/src/lib.rs", "tools/target/main.rs"], ignoreOrder: true);
+        }
+        finally
+        {
+            Directory.Delete(repoPath, recursive: true);
+        }
+    }
+
     private static VitalsAnalyzer CreateAnalyzer(
         InMemoryGraphStore store,
         LintResultCache lintCache,
