@@ -720,7 +720,8 @@ public partial class IndexingPipeline
             excludedPersistedFiles,
             ct);
         await ResolveCallsAsync(
-            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct, swiftManifestsExtracted,
+            swiftImportRebinding);
         var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
             projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
         CreateStubNodesForExternalTargets(projectName, buffer);

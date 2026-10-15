@@ -204,9 +204,10 @@ public sealed record CallSite(
 
 /// <summary>
 /// An import: the imported module and, for a scoped import, the declaration it names and that
-/// declaration's kind keyword.
+/// declaration's kind keyword. <paramref name="Exported"/> marks a re-export (<c>@_exported import</c>).
 /// </summary>
-public sealed record ImportDeclaration(string Module, string? Symbol = null, string? SymbolKind = null);
+public sealed record ImportDeclaration(
+    string Module, string? Symbol = null, string? SymbolKind = null, bool Exported = false);
 
 /// <summary>The type a container-only definition extends, when it is declared in another file.</summary>
 public sealed record ContainerOwner(string Path, string ReferenceQN);

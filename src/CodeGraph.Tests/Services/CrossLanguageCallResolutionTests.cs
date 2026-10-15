@@ -151,8 +151,17 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     [Theory]
     // Callables bind within their family and across FFI boundaries.
     [InlineData("rust", NodeLabel.Function, "native/a.c", true)]
-    [InlineData("swift", NodeLabel.Method, "native/a.m", true)]
+    [InlineData("swift", NodeLabel.Function, "native/a.m", true)]
+    [InlineData("swift", NodeLabel.Function, "native/a.cpp", true)]
     [InlineData("python", NodeLabel.Function, "a.py", true)]
+    [InlineData("swift", NodeLabel.Method, "App/A.swift", true)]
+    // Across a family boundary only a free function binds: never a method or constructor.
+    [InlineData("swift", NodeLabel.Method, "native/a.m", false)]
+    [InlineData("rust", NodeLabel.Method, "native/a.cpp", false)]
+    [InlineData("rust", NodeLabel.Constructor, "native/a.cpp", false)]
+    [InlineData("c", NodeLabel.Delegate, "src/lib.rs", false)]
+    // Rust links to a C++ function by name only with C linkage (abi recorded by the extractor).
+    [InlineData("rust", NodeLabel.Function, "native/a.cpp", false)]
     // A type is a constructor call target within its own family only.
     [InlineData("python", NodeLabel.Class, "a.py", true)]
     [InlineData("swift", NodeLabel.Struct, "App/A.swift", true)]
@@ -207,8 +216,141 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     public void Versions_AreBumpedForTheResolutionAndRustAbiChanges()
     {
         // Resolution of unchanged sources changed (pipeline) and Rust abi properties changed (spec).
-        ExtractionVersionCatalog.PipelineVersion.ShouldBe(3);
+        ExtractionVersionCatalog.PipelineVersion.ShouldBe(4);
         LanguageSpecs.Rust.ExtractionVersion.ShouldBe(3);
+        // C++ functions with C linkage record abi C (sc-26145).
+        LanguageSpecs.Cpp.ExtractionVersion.ShouldBe(2);
+    }
+
+    /// <summary>
+    /// sc-26145 (LensWorks final check): a bare Rust call of a local closure <c>find</c> bound to the
+    /// only C++ member named <c>find</c>. Across a language-family boundary a call binds only as a
+    /// bare call to a free function: never to a method, never through a receiver (<c>T::f()</c>),
+    /// and Rust reaches a C++ function only when it has C linkage.
+    /// </summary>
+    [Fact]
+    public async Task IndexProject_FfiCallsBindOnlyBareCallsToExposedFreeFunctions()
+    {
+        Write("engine/src/catalog.rs", """
+            pub fn migrate(rows: &[u32]) -> u32 {
+                let find = |id: u32| rows.iter().position(|r| *r == id);
+                let _ = find(1);
+                let _ = rows.iter().find(|r| **r == 2);
+                c_open();
+                plain_cpp();
+                cpp_linked();
+                cpp_block_linked();
+                Codec::encode(1);
+                0
+            }
+            """);
+        Write("native/IUTF8String.cpp", """
+            namespace AdobeXMPCommon {
+            class IUTF8StringProxy {
+            public:
+                unsigned long find(const char* s) const { return 0; }
+            };
+            }
+            class Codec {
+            public:
+                static int encode(int x) { return x; }
+            };
+            int plain_cpp(void) { return 1; }
+            extern "C" int cpp_linked(void) { return 2; }
+            extern "C" {
+            int cpp_block_linked(void) { return 3; }
+            }
+            """);
+        Write("native/open.c", "int c_open(void) { return 0; }\n");
+        Write("App/View.swift", """
+            final class View {
+                func draw() {
+                    find(1)
+                    plain_cpp()
+                    c_open()
+                    Codec.encode(2)
+                }
+            }
+            """);
+
+        var store = new InMemoryGraphStore();
+        await new IndexingPipeline(
+                store,
+                [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance)
+            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+
+        // The fixture really has each tempting target, and the linkage the extractor recorded.
+        store.Nodes.ShouldContain(node => node.Name == "find" && node.Label == NodeLabel.Method);
+        store.Nodes.ShouldContain(node => node.Name == "encode" && node.Label == NodeLabel.Method);
+        store.Nodes.Single(node => node.Name == "cpp_linked").Properties[CallLanguages.AbiProperty].ShouldBe("C");
+        store.Nodes.Single(node => node.Name == "cpp_block_linked").Properties[CallLanguages.AbiProperty].ShouldBe("C");
+        store.Nodes.Single(node => node.Name == "plain_cpp").Properties.ContainsKey(CallLanguages.AbiProperty).ShouldBeFalse();
+
+        var byId = store.Nodes.ToDictionary(node => node.Id);
+        store.Edges.Where(edge => edge.Type == EdgeType.CALLS)
+            .Select(edge => (byId[edge.SourceId].Name, byId[edge.TargetId].Name, byId[edge.TargetId].FilePath))
+            .ToList()
+            .ShouldBe(
+            [
+                ("migrate", "c_open", "native/open.c"),
+                ("migrate", "cpp_linked", "native/IUTF8String.cpp"),
+                ("migrate", "cpp_block_linked", "native/IUTF8String.cpp"),
+                // Swift's C++ interop calls a C++ free function of any linkage.
+                ("draw", "plain_cpp", "native/IUTF8String.cpp"),
+                ("draw", "c_open", "native/open.c")
+            ], ignoreOrder: true);
+    }
+
+    /// <summary>
+    /// A receiver call whose owner is proven (here symbolically, through <c>receiver_owner</c>)
+    /// still never resolves across a language-family boundary; the same function called bare does.
+    /// </summary>
+    [Fact]
+    public async Task ResolveCalls_AResolvedReceiverCallDoesNotCrossIntoAnotherLanguageFamily()
+    {
+        var buffer = new GraphBuffer();
+        GraphNode Node(NodeLabel label, string name, string qualifiedName, string filePath,
+            Dictionary<string, object>? properties = null) => new()
+        {
+            Project = Project, Label = label, Name = name, QualifiedName = qualifiedName, FilePath = filePath,
+            Properties = properties ?? []
+        };
+        buffer.AddNode(Node(NodeLabel.Struct, "Bridge", $"{Project}:native/bridge.h#type:Bridge", "native/bridge.h"));
+        buffer.AddNode(Node(NodeLabel.Function, "open_bridge", $"{Project}:native/bridge.c#function:open_bridge()",
+            "native/bridge.c", new() { ["receiver_owner"] = "Bridge" }));
+        const string receiverCaller = $"{Project}:App/A.swift#type:A#method:viaReceiver()";
+        const string bareCaller = $"{Project}:App/A.swift#type:A#method:bare()";
+        buffer.AddNode(Node(NodeLabel.Method, "viaReceiver", receiverCaller, "App/A.swift"));
+        buffer.AddNode(Node(NodeLabel.Method, "bare", bareCaller, "App/A.swift"));
+        buffer.AddUnresolvedCall(new UnresolvedCall(receiverCaller, "open_bridge", "Bridge", 0.65, CallReceiverKind.Resolved));
+        buffer.AddUnresolvedCall(new UnresolvedCall(bareCaller, "open_bridge", null, 0.7, CallReceiverKind.Bare));
+
+        await new IndexingPipeline(
+                new InMemoryGraphStore(), [], Options.Create(new IndexingOptions()), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance)
+            .ResolveCallsAsync(Project, buffer, includePersistedNodes: false, new HashSet<string>(), CancellationToken.None);
+
+        buffer.AllPendingEdges.Where(edge => edge.Type == EdgeType.CALLS)
+            .Select(edge => (edge.SourceQN, edge.TargetQN))
+            .ShouldBe([(bareCaller, $"{Project}:native/bridge.c#function:open_bridge()")]);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void IsCallTarget_AReceiverCallNeverCrossesALanguageFamily(bool isBareCall, bool expected)
+    {
+        var cFunction = new GraphNode
+        {
+            Project = Project, Label = NodeLabel.Function, Name = "f", QualifiedName = "f", FilePath = "native/a.c"
+        };
+        CallLanguages.IsCallTarget("swift", cFunction, isBareCall).ShouldBe(expected);
+        CallLanguages.IsCallTarget("rust", cFunction, isBareCall).ShouldBe(expected);
+        // Within a family a receiver call binds as before.
+        CallLanguages.IsCallTarget("c", cFunction, isBareCall).ShouldBeTrue();
     }
 
     /// <summary>

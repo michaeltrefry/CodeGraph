@@ -109,6 +109,9 @@ public static partial class LanguageSpecs
         LanguageName = "C++",
         Framework = null,
         GetLanguage = () => new Language("Cpp"),
+        // 2: functions with C language linkage (extern "C") record abi C (sc-26145).
+        ExtractionVersion = 2,
+        CallableAbiExtractor = GetCppLinkage,
         FunctionNodeTypes = ["function_definition"],
         ClassNodeTypes = ["class_specifier", "struct_specifier", "enum_specifier",
                           "type_definition", "namespace_definition"],
@@ -261,6 +264,25 @@ public static partial class LanguageSpecs
         return string.IsNullOrEmpty(abi) ? "C" : abi == "Rust" ? null : abi;
     }
 
+    /// <summary>
+    /// <c>C</c> for a C++ function with C language linkage (<c>extern "C" int f()</c> or a
+    /// definition inside an <c>extern "C" { ... }</c> block), whose symbol name is not mangled, so
+    /// Rust can link to it by name; null for C++ linkage.
+    /// </summary>
+    private static string? GetCppLinkage(Node node)
+    {
+        var parent = node.Parent;
+        if (parent?.Type == "declaration_list")
+            parent = parent.Parent;
+        if (parent?.Type != "linkage_specification")
+            return null;
+
+        var linkage = (parent.GetChildForField("value")
+                ?? parent.NamedChildren.FirstOrDefault(child => child.Type == "string_literal"))
+            ?.Text.Trim('"');
+        return linkage == "C" ? "C" : null;
+    }
+
     /// <summary>Whether the attributes directly above a Rust item keep its symbol name unmangled.</summary>
     private static bool IsExportedBySymbolName(Node item)
     {
@@ -371,7 +393,8 @@ public static partial class LanguageSpecs
         LanguageName = "Swift",
         Framework = null,
         GetLanguage = () => new Language("Swift"),
-        ExtractionVersion = 1,
+        // 2: @_exported imports are marked as re-exports (sc-26145).
+        ExtractionVersion = 2,
         FunctionNodeTypes = ["function_declaration", "protocol_function_declaration",
                              "init_declaration", "deinit_declaration", "subscript_declaration"],
         ClassNodeTypes = ["class_declaration", "protocol_declaration"],

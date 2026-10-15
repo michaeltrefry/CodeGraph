@@ -231,9 +231,9 @@ public sealed class ManifestSliceTrackingTests : IDisposable
         catalog.ForManifest("crates/core/Cargo.toml")
             .ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion};CargoManifestExtractor=1");
         catalog.ForManifest("app/Package.resolved")
-            .ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion};SwiftPackageManifestExtractor=1");
+            .ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion};SwiftPackageManifestExtractor=2");
         catalog.ForManifest("app/App.xcodeproj/project.pbxproj")
-            .ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion};SwiftPackageManifestExtractor=1");
+            .ShouldBe($"p{ExtractionVersionCatalog.PipelineVersion};SwiftPackageManifestExtractor=2");
         catalog.ForManifest("src/lib.rs").ShouldBeNull();
         new ExtractionVersionCatalog(extractors, swiftPackageManifestExtractor: new SwiftPackageManifestExtractor())
             .Fingerprint.ShouldNotBe(catalog.Fingerprint);

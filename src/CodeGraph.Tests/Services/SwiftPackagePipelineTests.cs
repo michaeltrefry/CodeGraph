@@ -405,7 +405,7 @@ public class SwiftPackagePipelineTests : IDisposable
 
         with.ForPath("Sources/App.swift").ShouldBe(without.ForPath("Sources/App.swift"));
         with.ForPath("Packages/Core/Package.swift")
-            .ShouldBe(without.ForPath("Package.swift") + ";SwiftPackageManifestExtractor=1");
+            .ShouldBe(without.ForPath("Package.swift") + ";SwiftPackageManifestExtractor=2");
         with.Fingerprint.ShouldNotBe(without.Fingerprint);
         with.ForPath("src/lib.rs").ShouldBe(without.ForPath("src/lib.rs"));
     }

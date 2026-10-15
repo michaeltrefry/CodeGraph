@@ -52,7 +52,14 @@ public sealed partial class SwiftPackageManifestExtractor(
     private const string Ecosystem = "swiftpm";
     private readonly ILogger _logger = logger ?? NullLogger<SwiftPackageManifestExtractor>.Instance;
 
-    public string ExtractionVersion => "1";
+    /// <remarks>2 (sc-26145): a target's <c>sources:</c> subpaths are recorded (<see cref="SourcePathsProperty"/>).</remarks>
+    public string ExtractionVersion => "2";
+
+    /// <summary>
+    /// On a SwiftPM target's Module node: comma-separated repository-relative paths its
+    /// <c>sources:</c> argument limits it to, when present (several targets can share one <c>path:</c>).
+    /// </summary>
+    public const string SourcePathsProperty = "source_paths";
 
     public ExtractionResult Extract(
         IReadOnlyDictionary<string, string> manifests,
@@ -649,8 +656,15 @@ public sealed partial class SwiftPackageManifestExtractor(
             var sourceDirectory = target.Path ?? DefaultTargetDirectory(target);
             if (sourceDirectory is not null)
             {
-                properties["source_path"] = NormalizePath(
+                var sourcePath = NormalizePath(
                     manifestDirectory.Length == 0 ? sourceDirectory : $"{manifestDirectory}/{sourceDirectory}");
+                properties["source_path"] = sourcePath;
+                if (target.Sources is { Count: > 0 } sources)
+                {
+                    properties[SourcePathsProperty] = string.Join(',', sources
+                        .Select(source => NormalizePath(sourcePath.Length == 0 ? source : $"{sourcePath}/{source}"))
+                        .Distinct(StringComparer.Ordinal));
+                }
             }
 
             var module = new GraphNode
@@ -722,6 +736,7 @@ public sealed partial class SwiftPackageManifestExtractor(
             consumedUntil = close;
 
             string? name = null, path = null;
+            List<string>? sources = null;
             var products = new List<(string Product, string Package)>();
             foreach (var (argStart, argEnd) in SplitTopLevel(masked, open + 1, close, ','))
             {
@@ -741,14 +756,40 @@ public sealed partial class SwiftPackageManifestExtractor(
                     case "dependencies":
                         products.AddRange(ParseProductDependencies(code, masked, valueStart, argEnd));
                         break;
+                    case "sources":
+                        sources = ParseStringArray(code, masked, valueStart, argEnd);
+                        break;
                 }
             }
 
             if (name is not null)
-                targets.Add(new TargetDeclaration(call.Groups["kind"].Value, name, path, products));
+                targets.Add(new TargetDeclaration(call.Groups["kind"].Value, name, path, products, sources));
         }
 
         return targets;
+    }
+
+    /// <summary>The string literals of an array argument (<c>sources: ["A", "B/File.swift"]</c>); null when it is not literal.</summary>
+    private static List<string>? ParseStringArray(string code, string masked, int start, int end)
+    {
+        var open = masked.IndexOf('[', start);
+        if (open < 0 || open >= end)
+            return null;
+        var close = FindClosingParen(masked, open);
+        if (close < 0)
+            return null;
+
+        var values = new List<string>();
+        foreach (var (elementStart, elementEnd) in SplitTopLevel(masked, open + 1, close, ','))
+        {
+            if (code[elementStart..elementEnd].Trim().Length == 0)
+                continue;
+            if (ReadStringLiteral(code[elementStart..elementEnd]) is not { } value)
+                return null;
+            values.Add(value.Trim('/'));
+        }
+
+        return values;
     }
 
     /// <summary>The <c>.product(name:package:)</c> entries of a target's dependency array.</summary>
@@ -1109,7 +1150,8 @@ public sealed partial class SwiftPackageManifestExtractor(
         string Kind,
         string Name,
         string? Path,
-        IReadOnlyList<(string Product, string Package)> Products);
+        IReadOnlyList<(string Product, string Package)> Products,
+        IReadOnlyList<string>? Sources = null);
 
     private sealed record DeclaredDependency(GraphNode Node, string? ResolvedPath);
 }
