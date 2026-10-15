@@ -830,13 +830,14 @@ public partial class IndexingPipeline
         };
 
     /// <summary>
-    /// The legacy NuGet (packages.config) restore folder. NuGet restores each package into
+    /// The legacy NuGet (packages.config) and Paket restore folder. NuGet restores each package into
     /// <c>packages/&lt;Id&gt;.&lt;Version&gt;/</c> holding <c>&lt;Id&gt;.&lt;Version&gt;.nupkg</c>,
-    /// and older clients also write <c>packages/repositories.config</c>. Matched by exact (ordinal)
-    /// name, it is skipped as a whole when a <c>packages.config</c> sits beside it or it holds
-    /// <c>repositories.config</c>; otherwise only its package directories (those holding their own
-    /// <c>.nupkg</c>) are skipped. A JS/TS monorepo <c>packages/*</c> or a SwiftPM
-    /// <c>Packages/</c> directory has neither signal and stays indexed.
+    /// Paket into <c>packages/&lt;Id&gt;/</c>. A directory named exactly <c>packages</c> is skipped
+    /// as a whole per <see cref="IsNuGetRestoreFolder"/> (restore markers, or .NET solution evidence
+    /// unless it holds JS workspace packages). Independently, any directory directly under a
+    /// <c>packages</c>/<c>Packages</c> folder (any case) that holds its own <c>&lt;name&gt;.nupkg</c>
+    /// is skipped. A JS/TS monorepo <c>packages/*</c> or a SwiftPM <c>Packages/</c> directory
+    /// without these .NET signals stays indexed.
     /// </summary>
     internal const string NuGetPackagesDirectory = "packages";
 
@@ -855,8 +856,11 @@ public partial class IndexingPipeline
             .Concat(ManagedDependencyDirectories
                 .OrderBy(entry => entry.Key, StringComparer.Ordinal)
                 .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"))
-            .Append($"dir:{NuGetPackagesDirectory}?sibling={NuGetPackagesConfig}&child={NuGetRepositoriesConfig}" +
-                    $"&package-dir=<name>/<name>.nupkg");
+            .Append($"dir:{NuGetPackagesDirectory}?sibling={NuGetPackagesConfig},{string.Join(',', PaketManifests)}" +
+                    $"&child={NuGetRepositoriesConfig}" +
+                    $"&solution-sibling=*.sln,*.slnx,nuget.config,{string.Join(',', SolutionNuGetFiles)}" +
+                    "&unless-children=package.json-without-nupkg" +
+                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg");
 
     /// <summary>
     /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
@@ -998,11 +1002,10 @@ public partial class IndexingPipeline
     private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns)
     {
         var root = Path.GetFullPath(rootPath);
-        bool RepositoryFileExists(string relative) => _fileSystem.FileExists(Path.Combine(root, relative));
+        var tree = RepositoryTree.FromFileSystem(root, _fileSystem);
         var directory = new DiscoveryDirectory(
             new DirectoryInfoWrapper(new DirectoryInfo(root)),
-            fullPath => IsDependencyDirectory(
-                NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), RepositoryFileExists));
+            fullPath => IsDependencyDirectory(NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), tree));
         return CreateDiscoveryMatcher(includePatterns).Execute(directory).Files
             .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
     }
@@ -1013,7 +1016,7 @@ public partial class IndexingPipeline
     /// repository-relative file paths. Only files beside or directly inside the directory are
     /// probed, so the disk walk and the overlay's tree lookups decide identically.
     /// </summary>
-    private static bool IsDependencyDirectory(string directoryPath, Func<string, bool> repositoryFileExists)
+    private static bool IsDependencyDirectory(string directoryPath, RepositoryTree tree)
     {
         var normalized = NormalizeRelativePath(directoryPath);
         if (normalized.Length == 0)
@@ -1026,26 +1029,71 @@ public partial class IndexingPipeline
 
         return GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal)
                || (ManagedDependencyDirectories.TryGetValue(name, out var manifests)
-                   && manifests.Any(manifest => repositoryFileExists(InParent(manifest))))
-               // The NuGet restore folder as a whole ...
-               || (name == NuGetPackagesDirectory
-                   && (repositoryFileExists(InParent(NuGetPackagesConfig))
-                       || repositoryFileExists($"{normalized}/{NuGetRepositoriesConfig}")))
-               // ... or one restored package directory: packages/<Id>.<Version>/<Id>.<Version>.nupkg.
-               || (parentName == NuGetPackagesDirectory
-                   && repositoryFileExists($"{normalized}/{name}.nupkg"));
+                   && manifests.Any(manifest => tree.FileExists(InParent(manifest))))
+               || (name == NuGetPackagesDirectory && IsNuGetRestoreFolder(normalized, parent, tree))
+               // One restored package directory: packages/<Id>.<Version>/<Id>.<Version>.nupkg. The
+               // folder name is matched case-insensitively here (VS restores into Packages/ too);
+               // the .nupkg probe keeps a SwiftPM Packages/<Name>/ indexed.
+               || (string.Equals(parentName, NuGetPackagesDirectory, StringComparison.OrdinalIgnoreCase)
+                   && tree.FileExists($"{normalized}/{name}.nupkg"));
+    }
+
+    /// <summary>Paket's lock/dependency files: Paket restores into packages/&lt;Id&gt;/.</summary>
+    private static readonly string[] PaketManifests = ["paket.dependencies", "paket.lock"];
+
+    /// <summary>NuGet configuration inside a sibling <c>.nuget/</c> directory (NuGet 2 solution restore).</summary>
+    private static readonly string[] SolutionNuGetFiles =
+        [".nuget/NuGet.Config", ".nuget/NuGet.config", ".nuget/nuget.config", ".nuget/packages.config"];
+
+    /// <summary>
+    /// True when the directory <paramref name="packagesDirectory"/> (named exactly <c>packages</c>,
+    /// beside <paramref name="parent"/>'s other entries) is a NuGet/Paket restore folder as a whole.
+    /// Precedence: a restore marker (a sibling <c>packages.config</c>, <c>paket.dependencies</c> or
+    /// <c>paket.lock</c>, or <c>repositories.config</c> inside) always decides. Otherwise .NET
+    /// solution evidence beside it (a <c>*.sln</c>/<c>*.slnx</c>, a <c>NuGet.Config</c>, or
+    /// <c>.nuget/NuGet.Config</c>/<c>.nuget/packages.config</c>) makes it a restore folder unless its
+    /// direct children look like JS workspace packages: some child holds a <c>package.json</c> and
+    /// none holds a <c>.nupkg</c>.
+    /// </summary>
+    private static bool IsNuGetRestoreFolder(string packagesDirectory, string parent, RepositoryTree tree)
+    {
+        string InParent(string file) => parent.Length == 0 ? file : $"{parent}/{file}";
+        if (tree.FileExists(InParent(NuGetPackagesConfig))
+            || tree.FileExists($"{packagesDirectory}/{NuGetRepositoriesConfig}")
+            || PaketManifests.Any(manifest => tree.FileExists(InParent(manifest))))
+            return true;
+
+        var siblings = tree.ListDirectory(parent);
+        var solutionEvidence =
+            siblings.Any(entry => entry.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+                                  || entry.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                                  || entry.Equals("nuget.config", StringComparison.OrdinalIgnoreCase))
+            || SolutionNuGetFiles.Any(file => tree.FileExists(InParent(file)));
+        if (!solutionEvidence)
+            return false;
+
+        var hasWorkspacePackage = false;
+        foreach (var child in tree.ListDirectory(packagesDirectory))
+        {
+            var entries = tree.ListDirectory($"{packagesDirectory}/{child}");
+            if (entries.Any(entry => entry.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase)))
+                return true;
+            hasWorkspacePackage |= entries.Contains("package.json");
+        }
+
+        return !hasWorkspacePackage;
     }
 
     /// <summary>
-    /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory;
-    /// <paramref name="repositoryFileExists"/> answers for repository-relative paths.
+    /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory
+    /// of <paramref name="tree"/>.
     /// </summary>
-    private static bool IsDependencyPath(string relativePath, Func<string, bool> repositoryFileExists)
+    private static bool IsDependencyPath(string relativePath, RepositoryTree tree)
     {
         var segments = NormalizeRelativePath(relativePath).Split('/');
         for (var index = 1; index < segments.Length; index++)
         {
-            if (IsDependencyDirectory(string.Join('/', segments.Take(index)), repositoryFileExists))
+            if (IsDependencyDirectory(string.Join('/', segments.Take(index)), tree))
                 return true;
         }
 

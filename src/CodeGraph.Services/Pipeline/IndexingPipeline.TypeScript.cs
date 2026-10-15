@@ -221,11 +221,12 @@ public partial class IndexingPipeline
     private Func<string, bool> CreateDiscoveryExclusion(string rootPath)
     {
         var matcher = CreateDiscoveryMatcher("**/*");
+        var tree = RepositoryTree.FromFileSystem(Path.GetFullPath(rootPath), _fileSystem);
         return path =>
         {
             var relative = NormalizeRelativePath(path);
             return !matcher.Match(relative).HasMatches
-                   || IsDependencyPath(relative, file => _fileSystem.FileExists(Path.Combine(rootPath, file)));
+                   || IsDependencyPath(relative, tree);
         };
     }
 

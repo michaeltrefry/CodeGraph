@@ -349,13 +349,13 @@ public class SwiftPackagePipelineTests : IDisposable
 
         // Overlays apply the same rule against the tree the path belongs to.
         var tree = new HashSet<string>(["ios/Podfile", "Cartfile.resolved"], StringComparer.Ordinal);
-        pipeline.IsIndexablePath("ios/Pods/Alamofire/Source/Session.swift", tree.Contains).ShouldBeFalse();
-        pipeline.IsIndexablePath("Carthage/Checkouts/Kit/Kit.swift", tree.Contains).ShouldBeFalse();
-        pipeline.IsIndexablePath("other/Pods/Mine.swift", tree.Contains).ShouldBeTrue();
-        pipeline.IsIndexablePath("pkg/pods/handler.go", tree.Contains).ShouldBeTrue();
-        pipeline.IsIndexablePath(".build/checkouts/x/X.swift", tree.Contains).ShouldBeFalse();
-        pipeline.IsIndexablePath("tools/.Build/X.swift", tree.Contains).ShouldBeTrue();
-        pipeline.IsIndexablePath("Pods/Mine.swift", _ => false).ShouldBeTrue();
+        pipeline.IsIndexablePath("ios/Pods/Alamofire/Source/Session.swift", RepositoryTree.FromFiles(tree)).ShouldBeFalse();
+        pipeline.IsIndexablePath("Carthage/Checkouts/Kit/Kit.swift", RepositoryTree.FromFiles(tree)).ShouldBeFalse();
+        pipeline.IsIndexablePath("other/Pods/Mine.swift", RepositoryTree.FromFiles(tree)).ShouldBeTrue();
+        pipeline.IsIndexablePath("pkg/pods/handler.go", RepositoryTree.FromFiles(tree)).ShouldBeTrue();
+        pipeline.IsIndexablePath(".build/checkouts/x/X.swift", RepositoryTree.FromFiles(tree)).ShouldBeFalse();
+        pipeline.IsIndexablePath("tools/.Build/X.swift", RepositoryTree.FromFiles(tree)).ShouldBeTrue();
+        pipeline.IsIndexablePath("Pods/Mine.swift", RepositoryTree.FromFiles([])).ShouldBeTrue();
     }
 
     [Fact]

@@ -14,6 +14,10 @@ public interface IFileSystem
     /// </summary>
     IEnumerable<string> EnumerateFiles(string rootPath, string pattern, SearchOption searchOption);
 
+    /// <summary>Full paths of the direct subdirectories of <paramref name="path"/>.</summary>
+    IEnumerable<string> EnumerateDirectories(string path) =>
+        Directory.Exists(path) ? Directory.EnumerateDirectories(path) : [];
+
     string ReadAllText(string path);
 
     Task<string> ReadAllTextAsync(string path, CancellationToken ct = default);

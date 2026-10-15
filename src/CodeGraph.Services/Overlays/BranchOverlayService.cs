@@ -289,11 +289,10 @@ public sealed class BranchOverlayService(
                 // Indexability of a path can depend on its siblings (a Podfile next to Pods/), so
                 // new paths are judged against the head tree and old paths against the base tree.
                 var headFiles = await git.ListFilesAsync(resolved.LocalPath, headSha, ct);
-                var headFileSet = headFiles.ToHashSet(StringComparer.Ordinal);
-                var baseFileSet = (await git.ListFilesAsync(resolved.LocalPath, baseSha, ct))
-                    .ToHashSet(StringComparer.Ordinal);
+                var headTree = RepositoryTree.FromFiles(headFiles);
+                var baseTree = RepositoryTree.FromFiles(await git.ListFilesAsync(resolved.LocalPath, baseSha, ct));
                 changes = (await git.DiffAsync(resolved.LocalPath, baseSha, headSha, ct))
-                    .Select(change => FilterIndexable(change, headFileSet.Contains, baseFileSet.Contains))
+                    .Select(change => FilterIndexable(change, headTree, baseTree))
                     .OfType<OverlayGitChange>()
                     .ToList();
                 extractPaths = changes
@@ -413,16 +412,16 @@ public sealed class BranchOverlayService(
     /// against the head tree.
     /// </summary>
     private OverlayGitChange? FilterIndexable(
-        OverlayGitChange change, Func<string, bool> headFileExists, Func<string, bool> baseFileExists)
+        OverlayGitChange change, RepositoryTree headTree, RepositoryTree baseTree)
     {
         if (change.Kind != OverlayGitChangeKind.Renamed)
         {
-            var tree = change.Kind == OverlayGitChangeKind.Deleted ? baseFileExists : headFileExists;
+            var tree = change.Kind == OverlayGitChangeKind.Deleted ? baseTree : headTree;
             return pipeline.IsIndexablePath(change.Path, tree) ? change : null;
         }
 
-        var newIndexable = pipeline.IsIndexablePath(change.Path, headFileExists);
-        var oldIndexable = change.PreviousPath is not null && pipeline.IsIndexablePath(change.PreviousPath, baseFileExists);
+        var newIndexable = pipeline.IsIndexablePath(change.Path, headTree);
+        var oldIndexable = change.PreviousPath is not null && pipeline.IsIndexablePath(change.PreviousPath, baseTree);
         return (newIndexable, oldIndexable) switch
         {
             (true, true) => change,
