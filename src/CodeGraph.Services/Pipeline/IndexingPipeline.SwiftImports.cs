@@ -44,6 +44,9 @@ public partial class IndexingPipeline
     /// <summary>The imported top-level module (<c>Darwin</c> for <c>import Darwin.C</c>).</summary>
     internal const string ModuleProperty = "swift_module";
 
+    /// <summary>Marks a module import edge of an <c>@_exported import</c> (a re-export; value <c>true</c>).</summary>
+    internal const string ExportedProperty = "swift_exported";
+
     private const string SwiftPmEcosystem = "swiftpm";
 
     private static readonly HashSet<string> ScopedTypeImportKinds = new(StringComparer.Ordinal)
@@ -95,7 +98,7 @@ public partial class IndexingPipeline
         var resolver = new SwiftModuleResolver(providers);
         var stubs = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        List<PendingEdge> ResolveModule(string fileQN, string filePath, string module, string? symbols)
+        List<PendingEdge> ResolveModule(string fileQN, string filePath, string module, string? symbols, bool exported)
         {
             var resolution = resolver.Resolve(module, filePath);
             var edges = new List<PendingEdge>();
@@ -118,6 +121,8 @@ public partial class IndexingPipeline
                 };
                 if (symbols is not null)
                     properties["imported_symbols"] = symbols;
+                if (exported)
+                    properties[ExportedProperty] = true;
                 edges.Add(new PendingEdge(fileQN, target, EdgeType.IMPORTS, properties));
             }
 
@@ -135,7 +140,8 @@ public partial class IndexingPipeline
             var filePath = fileQN[filePrefixLength..];
             var symbols = group.Select(import => import.ImportedSymbol).OfType<string>()
                 .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
-            var moduleEdges = ResolveModule(fileQN, filePath, module, symbols.Count == 0 ? null : string.Join(',', symbols));
+            var moduleEdges = ResolveModule(fileQN, filePath, module, symbols.Count == 0 ? null : string.Join(',', symbols),
+                group.Any(import => import.Exported));
             foreach (var edge in moduleEdges)
                 buffer.AddEdge(edge);
             if (!moduleEdges.Any(edge => PlainString(edge.Properties, "matched_by") == SwiftModuleResolver.MatchedByTarget))
@@ -177,7 +183,8 @@ public partial class IndexingPipeline
                     first.SourceQN,
                     NormalizeRelativePath(first.SourceFilePath ?? ""),
                     group.Key.Module!,
-                    PlainString(first.Properties, "imported_symbols"));
+                    PlainString(first.Properties, "imported_symbols"),
+                    PlainBool(first.Properties, ExportedProperty));
                 var storedBindings = group
                     .Select(edge => $"{edge.TargetQN}\u001f{PlainString(edge.Properties, "matched_by")}\u001f{PlainString(edge.Properties, "confidence")}")
                     .ToHashSet(StringComparer.Ordinal);

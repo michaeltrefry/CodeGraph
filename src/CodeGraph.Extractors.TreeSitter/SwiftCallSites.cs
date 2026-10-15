@@ -21,7 +21,7 @@ namespace CodeGraph.Extractors.TreeSitter;
 /// argument labels so the pipeline can pick the overload they select.
 /// </para>
 /// </summary>
-internal sealed class SwiftCallSites
+internal sealed partial class SwiftCallSites
 {
     // Guards receiver inference against cyclic declarations in malformed source.
     private const int MaxInferenceDepth = 8;
@@ -692,8 +692,15 @@ internal sealed class SwiftCallSites
 
         var kind = declaration.Children
             .FirstOrDefault(child => !child.IsNamed && ScopedImportKinds.Contains(child.Type))?.Type;
+        // `@_exported import M` re-exports M to the importers of this file's module.
+        var exported = declaration.Children
+            .TakeWhile(child => child.Type != "import")
+            .Any(child => ExportedAttribute().IsMatch(child.Text));
         return kind is not null && parts.Count > 1
-            ? new ImportDeclaration(string.Join('.', parts.Take(parts.Count - 1)), parts[^1], kind)
-            : new ImportDeclaration(string.Join('.', parts));
+            ? new ImportDeclaration(string.Join('.', parts.Take(parts.Count - 1)), parts[^1], kind, exported)
+            : new ImportDeclaration(string.Join('.', parts), Exported: exported);
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"@_exported\b")]
+    private static partial System.Text.RegularExpressions.Regex ExportedAttribute();
 }

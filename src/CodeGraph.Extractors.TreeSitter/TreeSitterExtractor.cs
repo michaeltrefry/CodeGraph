@@ -676,7 +676,7 @@ public class TreeSitterExtractor : ICodeExtractor
         {
             if (spec.ImportReader(node) is { } declaration)
                 unresolvedImports.Add(new UnresolvedImport(
-                    fileQN, declaration.Module, declaration.Symbol, declaration.SymbolKind));
+                    fileQN, declaration.Module, declaration.Symbol, declaration.SymbolKind, declaration.Exported));
             return;
         }
 

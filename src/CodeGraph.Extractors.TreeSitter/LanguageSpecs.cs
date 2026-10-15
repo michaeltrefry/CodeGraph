@@ -393,7 +393,8 @@ public static partial class LanguageSpecs
         LanguageName = "Swift",
         Framework = null,
         GetLanguage = () => new Language("Swift"),
-        ExtractionVersion = 1,
+        // 2: @_exported imports are marked as re-exports (sc-26145).
+        ExtractionVersion = 2,
         FunctionNodeTypes = ["function_declaration", "protocol_function_declaration",
                              "init_declaration", "deinit_declaration", "subscript_declaration"],
         ClassNodeTypes = ["class_declaration", "protocol_declaration"],

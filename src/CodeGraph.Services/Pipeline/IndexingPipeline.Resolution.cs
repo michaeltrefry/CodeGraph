@@ -51,7 +51,8 @@ public partial class IndexingPipeline
         bool includePersistedNodes,
         IReadOnlySet<string> excludedPersistedFiles,
         CancellationToken ct,
-        bool swiftManifestsExtracted = true)
+        bool swiftManifestsExtracted = true,
+        SwiftRebinding? swiftImportRebinding = null)
     {
         // Swift calls bind within the caller's module and the modules its file imports; the
         // scopes are loaded only when a Swift caller has candidates to filter.
@@ -148,21 +149,16 @@ public partial class IndexingPipeline
                 : CallLanguages.FileOfQualifiedName(projectName, call.CallerQN);
             var callerFamily = CallLanguages.FamilyOf(callerFile);
 
-            // A Swift call sees the Swift code of its own module and of the modules its file
-            // imports, never another module (a vendored copy of a target, its original).
-            Func<GraphNode, bool>? isVisibleToSwiftCaller = null;
-            if (callerFamily == "swift" && callerFile is not null)
+            // Module visibility only breaks ties for a Swift caller (several candidates, or a
+            // receiver type several modules declare); the scopes are loaded on first need.
+            var isSwiftCaller = callerFamily == "swift" && callerFile is not null;
+            var callerFileQN = $"{projectName}:{callerFile}";
+            async Task<SwiftModuleScopes?> ScopesAsync()
             {
                 swiftScopes ??= await LoadSwiftModuleScopesAsync(
-                    projectName, buffer, swiftManifestsExtracted, excludedPersistedFiles);
-                if (!swiftScopes.IsEmpty)
-                {
-                    var scopes = swiftScopes;
-                    var callerScope = scopes.ScopeOf(callerFile);
-                    var callerFileQN = $"{projectName}:{callerFile}";
-                    isVisibleToSwiftCaller = candidate => CallLanguages.FamilyOf(candidate.FilePath) != "swift"
-                                                          || scopes.IsVisible(callerScope, callerFileQN, candidate.FilePath);
-                }
+                    projectName, buffer, swiftManifestsExtracted, includePersistedNodes, excludedPersistedFiles,
+                    swiftImportRebinding ?? SwiftRebinding.None, ct);
+                return swiftScopes.IsEmpty ? null : swiftScopes;
             }
 
             var candidates = await FindCandidatesAsync(call.CalleeName);
@@ -178,10 +174,13 @@ public partial class IndexingPipeline
                 var key = (call.CalleeName, call.ReceiverType);
                 // A Swift type path several modules declare (a vendored copy) names the one the
                 // caller can see.
-                if (ownership is { SwiftPath: { } ambiguousPath, Ambiguous: true } && isVisibleToSwiftCaller is not null)
+                if (ownership is { SwiftPath: { } ambiguousPath, Ambiguous: true } && isSwiftCaller
+                    && await ScopesAsync() is { } scopes)
                 {
+                    var callerScope = scopes.ScopeOf(callerFile);
                     var (visibleType, _) = await ResolveSwiftReceiverAsync(
-                        ambiguousPath, FindCandidatesAsync, isVisibleToSwiftCaller);
+                        ambiguousPath, FindCandidatesAsync,
+                        type => scopes.IsVisible(callerScope, callerFileQN, type.FilePath));
                     ownership = ownership with { Receiver = visibleType };
                     key = (call.CalleeName, $"{call.ReceiverType}\u001f{visibleType?.QualifiedName}");
                 }
@@ -206,11 +205,16 @@ public partial class IndexingPipeline
                 .Where(candidate => CallLanguages.IsCallTarget(
                     callerFamily, candidate, isBareCall: call.ReceiverKind == CallReceiverKind.Bare))
                 .ToList();
-            if (isVisibleToSwiftCaller is not null)
-                candidates = candidates.Where(isVisibleToSwiftCaller).ToList();
 
             if (call.ArgumentLabels is not null)
                 candidates = ArgumentLabels.Select(candidates, call.ArgumentLabels);
+
+            // A Swift name several definitions share binds to the one the caller can see: the
+            // single candidate of its own module, else the single one of the modules it imports
+            // (re-exports included). A single candidate binds as it is; a remaining tie stays
+            // unbound.
+            if (isSwiftCaller && candidates.Count > 1 && await ScopesAsync() is { } swiftScopesForTie)
+                candidates = PreferVisibleSwiftCandidates(swiftScopesForTie, callerFile!, callerFileQN, candidates);
 
             if (candidates.Count == 1)
             {
@@ -225,6 +229,32 @@ public partial class IndexingPipeline
                     new Dictionary<string, object> { ["confidence"] = call.Confidence }));
             }
         }
+    }
+
+    /// <summary>
+    /// The tie-break of several Swift call candidates: the single Swift candidate of the caller's
+    /// own module, else the single Swift candidate of the modules the caller's file sees through its
+    /// imports; otherwise the candidates unchanged (still ambiguous).
+    /// </summary>
+    private static IReadOnlyList<GraphNode> PreferVisibleSwiftCandidates(
+        SwiftModuleScopes scopes, string callerFile, string callerFileQN, IReadOnlyList<GraphNode> candidates)
+    {
+        if (scopes.ScopeOf(callerFile) is not { } callerScope)
+            return candidates;
+
+        var swift = candidates
+            .Where(candidate => CallLanguages.FamilyOf(candidate.FilePath) == "swift")
+            .Select(candidate => (Candidate: candidate, Scope: scopes.ScopeOf(candidate.FilePath)))
+            .ToList();
+        var own = swift.Where(entry => entry.Scope == callerScope).ToList();
+        if (own.Count == 1)
+            return [own[0].Candidate];
+        if (own.Count > 1)
+            return candidates;
+
+        var imported = scopes.ImportedScopesOf(callerFileQN);
+        var visible = swift.Where(entry => entry.Scope is { } scope && imported.Contains(scope)).ToList();
+        return visible.Count == 1 ? [visible[0].Candidate] : candidates;
     }
 
     private sealed record ReceiverOwnership(
