@@ -25,6 +25,7 @@ public class Neo4jGraphStoreSchemaTests
         });
         var counter = new BoltSchemaStatementCounter();
 
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var factory = new Neo4jSessionFactory(options, counter);
         var store = new Neo4jGraphStore(factory, options, NullLogger<Neo4jGraphStore>.Instance);
 
@@ -77,6 +78,7 @@ public class Neo4jGraphStoreSchemaTests
             Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
         });
 
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var factory = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(factory, options, NullLogger<Neo4jGraphStore>.Instance);
 

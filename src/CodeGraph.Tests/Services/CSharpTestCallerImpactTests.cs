@@ -119,6 +119,8 @@ public sealed class CSharpTestCallerImpactTests
             var drop = new MySqlConnectionStringBuilder(builder.ConnectionString) { Database = "" };
             await using var conn = new MySqlConnection(drop.ConnectionString);
             await conn.OpenAsync();
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             await conn.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
         }
     }

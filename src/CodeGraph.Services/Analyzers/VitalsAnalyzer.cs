@@ -237,6 +237,20 @@ public class VitalsAnalyzer(
             return;
         }
 
+        // Optional model-backed step: skip cleanly (no 401 per project) when the configured
+        // provider has no credentials.
+        var analysisSettings = analysisSettingsResolver is null
+            ? LlmAnalysisRuntimeConfig.FromOptions(analysisOptions)
+            : await analysisSettingsResolver.GetAnalysisAsync(ct);
+        var provider = providerRegistry.GetProvider(analysisSettings.DefaultProvider);
+        if (!await provider.IsConfiguredAsync(ct))
+        {
+            logger.LogInformation(
+                "Skipping health analysis for {Project}: analysis provider {Provider} has no API key configured",
+                projectName, provider.ProviderName);
+            return;
+        }
+
         var now = DateTime.UtcNow;
 
         // Load security summary for inclusion in health prompts
@@ -264,7 +278,7 @@ public class VitalsAnalyzer(
         {
             try
             {
-                return (item.Summary, Response: await CallAnalysisAsync(item.Prompt, ct));
+                return (item.Summary, Response: await CallAnalysisAsync(provider, analysisSettings.DefaultModel, item.Prompt, ct));
             }
             catch (Exception ex)
             {
@@ -309,7 +323,7 @@ public class VitalsAnalyzer(
 
             try
             {
-                var response = await CallAnalysisAsync(prompt, ct);
+                var response = await CallAnalysisAsync(provider, analysisSettings.DefaultModel, prompt, ct);
                 if (response is not null && !string.IsNullOrWhiteSpace(response.Text))
                 {
                     await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
@@ -465,19 +479,16 @@ public class VitalsAnalyzer(
         }
     }
 
-    private async Task<AnalysisTextResponse?> CallAnalysisAsync(string prompt, CancellationToken ct)
+    private static async Task<AnalysisTextResponse?> CallAnalysisAsync(
+        IAnalysisModelProvider provider, string model, string prompt, CancellationToken ct)
     {
-        var analysisSettings = analysisSettingsResolver is null
-            ? LlmAnalysisRuntimeConfig.FromOptions(analysisOptions)
-            : await analysisSettingsResolver.GetAnalysisAsync(ct);
-        var provider = providerRegistry.GetProvider(analysisSettings.DefaultProvider);
         var response = await provider.ExecuteAsync(
             new AnalysisPrompt(
                 SystemPrompt: "You are a software architecture and code health analyst. " +
                               "Return concise, practical prose grounded in the provided metrics.",
                 UserPrompt: prompt),
             new AnalysisRequestOptions(
-                Model: analysisSettings.DefaultModel,
+                Model: model,
                 MaxTokens: 1024),
             ct);
 

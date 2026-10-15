@@ -10,6 +10,10 @@ import type {
   UnresolvedImportDto,
   WorkspacePackageDto,
 } from './protocol';
+import type { DiscoveryScope } from './discoveryScope';
+
+/** Absolute paths of the files named `fileName` below `dir`, at most `limit` of them. */
+type ManifestFinder = (dir: string, fileName: string, limit: number) => string[];
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.angular']);
 const MAX_TSCONFIGS = 200;
@@ -45,7 +49,8 @@ interface ResolverContext {
   tsconfigs: TsConfigInfo[];
   fallbackConfig: TsConfigInfo;
   workspacePackages: WorkspacePackageInfo[];
-  packageByName: Map<string, WorkspacePackageInfo>;
+  /** Workspace packages by name; several when same-named packages live in different directories. */
+  packagesByName: Map<string, WorkspacePackageInfo[]>;
   sourceFilesByPath: Map<string, SourceFile>;
   moduleHost: ts.ModuleResolutionHost;
   diagnostics: string[];
@@ -66,6 +71,7 @@ export function analyzeWorkspaceImports(
   requestedTsconfigPath: string,
   sourceFiles: SourceFile[],
   log: (msg: string) => void = () => {},
+  scope?: DiscoveryScope,
 ): WorkspaceResolutionResult {
   const diagnostics: string[] = [];
   const diag = (msg: string) => {
@@ -74,14 +80,25 @@ export function analyzeWorkspaceImports(
   };
 
   const normalizedRoot = normalizeAbsolute(rootPath);
-  const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag);
+  // With a discovery scope, manifests come from the admitted files only, never a disk walk.
+  const findManifests: ManifestFinder = (dir, fileName, limit) => scope
+    ? scope.absoluteFiles(file =>
+        path.posix.basename(file) === fileName &&
+        !file.split('/').some(segment => SKIP_DIRS.has(segment)))
+      .map(normalizeAbsolute)
+      .filter(file => isInside(dir, file))
+      .slice(0, limit)
+    : findFilesByName(dir, fileName, limit);
+  const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests, scope);
   const fallbackConfig = pickFallbackConfig(tsconfigs, requestedTsconfigPath);
   const workspacePackages = discoverWorkspacePackages(
     projectName,
     normalizedRoot,
     tsconfigs,
     diag,
-  );
+    findManifests,
+  ).filter(pkg => !scope || scope.includesDirectory(pkg.relativeRoot));
+  qualifyCollidingPackages(projectName, workspacePackages);
 
   const sourceFilesByPath = new Map<string, SourceFile>();
   for (const sourceFile of sourceFiles) {
@@ -94,7 +111,7 @@ export function analyzeWorkspaceImports(
     tsconfigs,
     fallbackConfig,
     workspacePackages,
-    packageByName: new Map(workspacePackages.map(pkg => [pkg.name, pkg])),
+    packagesByName: groupPackagesByName(workspacePackages),
     sourceFilesByPath,
     moduleHost: ts.sys,
     diagnostics,
@@ -154,8 +171,10 @@ function discoverTsConfigs(
   rootPath: string,
   requestedTsconfigPath: string,
   diag: (msg: string) => void,
+  findManifests: ManifestFinder,
+  scope?: DiscoveryScope,
 ): TsConfigInfo[] {
-  const discovered = findFilesByName(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1);
+  const discovered = findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1);
   const normalizedRequested = normalizeAbsolute(requestedTsconfigPath);
   if (!discovered.includes(normalizedRequested) && fs.existsSync(normalizedRequested)) {
     discovered.unshift(normalizedRequested);
@@ -167,7 +186,7 @@ function discoverTsConfigs(
 
   const configs: TsConfigInfo[] = [];
   for (const configPath of discovered.slice(0, MAX_TSCONFIGS)) {
-    const parsed = parseTsConfig(configPath, rootPath, diag);
+    const parsed = parseTsConfig(configPath, rootPath, diag, scope);
     if (parsed) configs.push(parsed);
   }
 
@@ -195,13 +214,16 @@ function parseTsConfig(
   configPath: string,
   rootPath: string,
   diag: (msg: string) => void,
+  scope?: DiscoveryScope,
 ): TsConfigInfo | null {
   const host: ts.ParseConfigFileHost = {
     useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
     getCurrentDirectory: ts.sys.getCurrentDirectory,
     fileExists: ts.sys.fileExists,
     readFile: ts.sys.readFile,
-    readDirectory: () => [],
+    // With a discovery scope, include/exclude globs see the admitted files; without one the
+    // config's file list is never walked (sources are discovered separately).
+    readDirectory: scope ? scopedReadDirectory(scope) : () => [],
     onUnRecoverableConfigFileDiagnostic: diagnostic =>
       diag(`tsconfig ${toRelative(rootPath, configPath)}: ${flattenDiagnostic(diagnostic)}`),
   };
@@ -219,6 +241,8 @@ function parseTsConfig(
 
   if (!parsed) return null;
   for (const error of parsed.errors) {
+    // Without a scope no directory is read, so "No inputs were found" would always be false.
+    if (!scope && error.code === NO_INPUTS_FOUND_DIAGNOSTIC) continue;
     diag(`tsconfig ${toRelative(rootPath, configPath)}: ${flattenDiagnostic(error)}`);
   }
 
@@ -239,6 +263,42 @@ function parseTsConfig(
   };
 }
 
+/** TS18003: "No inputs were found in config file ...". */
+const NO_INPUTS_FOUND_DIAGNOSTIC = 18003;
+
+type MatchFiles = (
+  path: string,
+  extensions: readonly string[] | undefined,
+  excludes: readonly string[] | undefined,
+  includes: readonly string[] | undefined,
+  useCaseSensitiveFileNames: boolean,
+  currentDirectory: string,
+  depth: number | undefined,
+  getFileSystemEntries: (path: string) => { files: readonly string[]; directories: readonly string[] },
+  realpath: (path: string) => string,
+) => string[];
+
+/**
+ * A `readDirectory` that lists only the files of the discovery scope, matched against a
+ * tsconfig's include/exclude globs with TypeScript's own matcher (as `ts.sys.readDirectory` does
+ * against the disk), so a config whose sources are admitted is not reported as having no inputs.
+ */
+function scopedReadDirectory(scope: DiscoveryScope): ts.ParseConfigFileHost['readDirectory'] {
+  const matchFiles = (ts as unknown as { matchFiles?: MatchFiles }).matchFiles;
+  return (rootDir, extensions, excludes, includes, depth) => {
+    if (typeof matchFiles === 'function') {
+      return matchFiles(
+        rootDir, extensions, excludes, includes, ts.sys.useCaseSensitiveFileNames,
+        ts.sys.getCurrentDirectory(), depth, dir => scope.fileSystemEntries(dir), p => p);
+    }
+    // Fallback should the internal matcher disappear: admitted files below rootDir by extension.
+    const root = normalizeAbsolute(rootDir);
+    return scope.absoluteFiles()
+      .map(normalizeAbsolute)
+      .filter(file => isInside(root, file) && extensions.some(extension => file.endsWith(extension)));
+  };
+}
+
 function pickFallbackConfig(configs: TsConfigInfo[], requestedTsconfigPath: string): TsConfigInfo {
   const requested = normalizeAbsolute(requestedTsconfigPath);
   return configs.find(config => config.path === requested) ?? configs[0];
@@ -249,9 +309,10 @@ function discoverWorkspacePackages(
   rootPath: string,
   tsconfigs: TsConfigInfo[],
   diag: (msg: string) => void,
+  findManifests: ManifestFinder,
 ): WorkspacePackageInfo[] {
   const packagesByRoot = new Map<string, WorkspacePackageInfo>();
-  const packageJsonPaths = findFilesByName(rootPath, 'package.json', MAX_WORKSPACE_PACKAGES + 1);
+  const packageJsonPaths = findManifests(rootPath, 'package.json', MAX_WORKSPACE_PACKAGES + 1);
   if (packageJsonPaths.length > MAX_WORKSPACE_PACKAGES) {
     diag(`workspaceDiscovery: limited package.json scan from ${packageJsonPaths.length} to ${MAX_WORKSPACE_PACKAGES}`);
   }
@@ -261,7 +322,7 @@ function discoverWorkspacePackages(
     ...readPackageJsonWorkspacePatterns(rootPackageJson),
     ...readPnpmWorkspacePatterns(path.join(rootPath, 'pnpm-workspace.yaml')),
   ];
-  const workspaceRoots = expandWorkspacePatterns(rootPath, workspacePatterns);
+  const workspaceRoots = expandWorkspacePatterns(rootPath, workspacePatterns, findManifests);
 
   for (const packageJsonPath of packageJsonPaths.slice(0, MAX_WORKSPACE_PACKAGES)) {
     const pkg = readJsonFile(packageJsonPath);
@@ -474,7 +535,7 @@ function resolveImportSpec(
     ctx.moduleHost,
   ).resolvedModule;
 
-  const localPackage = findWorkspacePackageBySpecifier(ctx.packageByName, spec.specifier);
+  const localPackage = findWorkspacePackageBySpecifier(ctx.packagesByName, spec.specifier, importerPath);
   if (!resolved && localPackage) {
     const exportedPath = resolveWorkspacePackageExport(localPackage, spec.specifier);
     const exportedFilePath = exportedPath && isInside(ctx.rootPath, exportedPath)
@@ -708,16 +769,73 @@ function findOwningPackage(
 }
 
 function findWorkspacePackageBySpecifier(
-  packageByName: Map<string, WorkspacePackageInfo>,
+  packagesByName: Map<string, WorkspacePackageInfo[]>,
   specifier: string,
+  importerPath: string,
 ): WorkspacePackageInfo | undefined {
-  const exact = packageByName.get(specifier);
-  if (exact) return exact;
+  const exact = packagesByName.get(specifier);
+  if (exact) return nearestPackage(exact, importerPath);
 
-  for (const [name, pkg] of packageByName) {
-    if (specifier.startsWith(`${name}/`)) return pkg;
+  for (const [name, packages] of packagesByName) {
+    if (specifier.startsWith(`${name}/`)) return nearestPackage(packages, importerPath);
   }
   return undefined;
+}
+
+/**
+ * The same-named workspace package an importer means: the one containing it (a self import),
+ * else the one sharing the longest directory prefix with it, else the first by directory.
+ */
+function nearestPackage(
+  packages: WorkspacePackageInfo[],
+  importerPath: string,
+): WorkspacePackageInfo | undefined {
+  if (packages.length <= 1) return packages[0];
+  const importer = normalizeAbsolute(importerPath);
+  let best: WorkspacePackageInfo | undefined;
+  let bestScore = -1;
+  for (const pkg of packages) {
+    const score = isInside(pkg.rootPath, importer)
+      ? Number.MAX_SAFE_INTEGER - (importer.length - pkg.rootPath.length)
+      : sharedDirectoryDepth(pkg.rootPath, path.dirname(importer));
+    if (score > bestScore) {
+      best = pkg;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function sharedDirectoryDepth(left: string, right: string): number {
+  const a = left.split('/');
+  const b = right.split('/');
+  let depth = 0;
+  while (depth < a.length && depth < b.length && a[depth] === b[depth]) depth++;
+  return depth;
+}
+
+function groupPackagesByName(packages: WorkspacePackageInfo[]): Map<string, WorkspacePackageInfo[]> {
+  const byName = new Map<string, WorkspacePackageInfo[]>();
+  for (const pkg of packages) {
+    const group = byName.get(pkg.name);
+    if (group) group.push(pkg);
+    else byName.set(pkg.name, [pkg]);
+  }
+  return byName;
+}
+
+/**
+ * Gives same-named workspace packages (a vendored copy of an app beside the original) distinct
+ * qualified names that include their repo-relative directory; a package whose name is unique keeps
+ * the name-only qualified name, so existing graphs are unaffected.
+ */
+function qualifyCollidingPackages(projectName: string, packages: WorkspacePackageInfo[]): void {
+  for (const group of groupPackagesByName(packages).values()) {
+    if (group.length < 2) continue;
+    for (const pkg of group) {
+      pkg.qualifiedName = buildWorkspacePackageQN(projectName, pkg.name, pkg.relativeRoot);
+    }
+  }
 }
 
 function resolveWorkspacePackageExport(
@@ -828,13 +946,13 @@ function readPnpmWorkspacePatterns(workspacePath: string): string[] {
   return patterns;
 }
 
-function expandWorkspacePatterns(rootPath: string, patterns: string[]): string[] {
+function expandWorkspacePatterns(rootPath: string, patterns: string[], findManifests: ManifestFinder): string[] {
   const roots = new Set<string>();
   for (const pattern of patterns) {
     const normalized = pattern.replace(/\\/g, '/').replace(/\/package\.json$/, '');
     if (normalized.includes('**')) {
       const prefix = normalized.slice(0, normalized.indexOf('**')).replace(/\/$/, '');
-      for (const packageJson of findFilesByName(path.join(rootPath, prefix), 'package.json', MAX_WORKSPACE_PACKAGES)) {
+      for (const packageJson of findManifests(path.join(rootPath, prefix), 'package.json', MAX_WORKSPACE_PACKAGES)) {
         roots.add(normalizeAbsolute(path.dirname(packageJson)));
       }
       continue;
@@ -902,8 +1020,9 @@ function getPackageNameFromSpecifier(specifier: string): string {
   return specifier.split('/')[0] || specifier;
 }
 
-function buildWorkspacePackageQN(projectName: string, packageName: string): string {
-  return `typescript-package:${projectName}:${packageName}`;
+function buildWorkspacePackageQN(projectName: string, packageName: string, relativeRoot?: string): string {
+  const qualifiedName = `typescript-package:${projectName}:${packageName}`;
+  return relativeRoot === undefined ? qualifiedName : `${qualifiedName}#${relativeRoot || '.'}`;
 }
 
 function buildNpmPackageQN(packageName: string): string {

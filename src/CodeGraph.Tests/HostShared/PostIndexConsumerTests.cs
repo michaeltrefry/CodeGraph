@@ -111,6 +111,76 @@ public class PostIndexConsumerTests
         (await store.GetPendingBatchesAsync(Repo)).ShouldHaveSingleItem().ProviderBatchId.ShouldBe("batch-1");
     }
 
+    /// <summary>
+    /// Indexing with shouldAnalyze=false still computes vitals metrics and the security scan, but
+    /// never runs a model-backed step (health analysis or batch submission). An explicit
+    /// re-analyze (ShouldAnalyzeHealth, the batch is submitted by the caller) runs health analysis
+    /// without submitting a second batch.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, new[] { "metrics" }, new string[0])]
+    [InlineData(true, false, new[] { "metrics", "health" }, new[] { Repo })]
+    [InlineData(false, true, new[] { "metrics", "health" }, new string[0])]
+    public async Task RepositoryIndexingCompleted_ModelBackedStepsFollowShouldAnalyze(
+        bool shouldAnalyze, bool shouldAnalyzeHealth, string[] expectedVitalsCalls, string[] expectedSubmissions)
+    {
+        var vitalsCalls = new ConcurrentQueue<string>();
+        var submitted = new ConcurrentQueue<string>();
+        await using var provider = new ServiceCollection()
+            .AddLogging()
+            .Configure<IndexingOptions>(_ => { })
+            .AddScoped<IGraphStore>(_ =>
+            {
+                var store = new InMemoryGraphStore();
+                store.AddNode(new GraphNode
+                {
+                    Project = Repo, Label = NodeLabel.Class, Name = "Cli", QualifiedName = "Cli"
+                });
+                return store;
+            })
+            .AddTransient<CrossRepoLinker>()
+            .AddScoped<IVitalsAnalyzer>(_ => new RecordingVitalsAnalyzer(vitalsCalls))
+            .AddScoped<ISecurityAnalyzer, CleanSecurityAnalyzer>()
+            .AddSingleton(submitted)
+            .AddScoped<IBatchAnalysisService, RecordingBatchService>()
+            .AddMassTransitTestHarness(cfg => cfg.AddConsumer<RepositoryIndexingCompletedConsumer>())
+            .BuildServiceProvider(true);
+        var harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(new RepositoryIndexingCompleted
+            {
+                Name = Repo, RepoPath = "/repos/codeflow-cli", ShouldComputeVitals = true, ShouldAnalyze = shouldAnalyze,
+                ShouldAnalyzeHealth = shouldAnalyzeHealth
+            });
+            (await harness.GetConsumerHarness<RepositoryIndexingCompletedConsumer>().Consumed
+                .Any<RepositoryIndexingCompleted>()).ShouldBeTrue();
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+
+        vitalsCalls.ShouldBe(expectedVitalsCalls);
+        submitted.ShouldBe(expectedSubmissions);
+    }
+
+    private sealed class RecordingVitalsAnalyzer(ConcurrentQueue<string> calls) : IVitalsAnalyzer
+    {
+        public Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
+        {
+            calls.Enqueue("metrics");
+            return Task.CompletedTask;
+        }
+
+        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default)
+        {
+            calls.Enqueue("health");
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class PoisonableGraphStore(ConcurrentQueue<string> failures) : InMemoryGraphStore
     {
         public bool Poisoned { get; set; }

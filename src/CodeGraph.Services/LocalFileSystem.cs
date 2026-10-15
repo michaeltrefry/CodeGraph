@@ -18,6 +18,11 @@ public class LocalFileSystem : IFileSystem
         });
     }
 
+    public IEnumerable<string> EnumerateDirectories(string path) =>
+        Directory.Exists(path)
+            ? Directory.EnumerateDirectories(path, "*", new EnumerationOptions { IgnoreInaccessible = true })
+            : [];
+
     public string ReadAllText(string path) => File.ReadAllText(path);
 
     public Task<string> ReadAllTextAsync(string path, CancellationToken ct = default)

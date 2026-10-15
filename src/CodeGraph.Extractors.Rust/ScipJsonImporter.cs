@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CodeGraph.Models;
+using CodeGraph.Services.Pipeline;
 
 namespace CodeGraph.Extractors.Rust;
 
@@ -15,7 +17,7 @@ namespace CodeGraph.Extractors.Rust;
 /// <c>scip_local_symbol</c> instead of <c>scip_symbol</c>, so the cross-group and cross-repo
 /// linkers, which join on <c>scip_symbol</c>, never match one document's local to another's.
 /// </remarks>
-public static class ScipJsonImporter
+public static partial class ScipJsonImporter
 {
     private const int DefinitionRole = 0x1;
     private const string LocalSymbolPrefix = "local ";
@@ -54,6 +56,7 @@ public static class ScipJsonImporter
             var relativePath = rustDocument.RelativePath;
             var fileQN = $"{context.ProjectName}:{relativePath}";
             var definitions = new List<DefinitionNode>();
+            string[]? documentLines = null;
             definitionsByDocument[relativePath] = definitions;
 
             if (!TryGetProperty(document, "occurrences", out var occurrences) ||
@@ -112,6 +115,14 @@ public static class ScipJsonImporter
                     node.Properties["documentation"] = info.Documentation;
                 if (!string.IsNullOrWhiteSpace(info?.Signature))
                     node.Properties["signature"] = info.Signature;
+                if (label.Value is NodeLabel.Function or NodeLabel.Method or NodeLabel.Constructor
+                    && CallLanguages.ParseExternAbi(info?.Signature) is { } externAbi)
+                {
+                    // Foreign code links to it by name only when its symbol is not mangled.
+                    documentLines ??= ReadDocumentLines(context.RootPath, relativePath);
+                    node.Properties[CallLanguages.AbiProperty] =
+                        externAbi != "Rust" && IsExportedBySymbolName(documentLines, symbolRange) ? externAbi : "Rust";
+                }
 
                 nodes.Add(node);
 
@@ -272,6 +283,98 @@ public static class ScipJsonImporter
             }
         }
     }
+
+    /// <summary>
+    /// The lines of a repository document, or none when it cannot be read or lies outside the
+    /// repository (an unreadable source counts as not exported).
+    /// </summary>
+    private static string[] ReadDocumentLines(string rootPath, string relativePath)
+    {
+        try
+        {
+            var root = Path.GetFullPath(rootPath);
+            var path = Path.GetFullPath(Path.Combine(root, relativePath));
+            var rootPrefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+            if (!path.StartsWith(rootPrefix, StringComparison.Ordinal) || !File.Exists(path))
+                return [];
+            return File.ReadAllLines(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+                                       or NotSupportedException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Whether the item whose name is at <paramref name="name"/> keeps its symbol name unmangled:
+    /// a <c>#[no_mangle]</c> / <c>#[export_name]</c> attribute (also inside <c>unsafe(...)</c>) on
+    /// the same line before the name, or above it, past blank lines, comments, other (possibly
+    /// multi-line) attributes and lines holding only item modifiers (<c>pub unsafe extern "C"</c>).
+    /// </summary>
+    private static bool IsExportedBySymbolName(string[] lines, SourceRange name)
+    {
+        if (name.StartLine < 0 || name.StartLine >= lines.Length)
+            return false;
+
+        var nameLine = lines[name.StartLine];
+        if (SymbolExportAttribute().IsMatch(nameLine[..Math.Clamp(name.StartCharacter, 0, nameLine.Length)]))
+            return true;
+
+        var inBlockComment = false;
+        for (var index = name.StartLine - 1; index >= 0; index--)
+        {
+            var line = lines[index].Trim();
+            if (inBlockComment)
+            {
+                if (line.Contains("/*", StringComparison.Ordinal))
+                    inBlockComment = false;
+                continue;
+            }
+
+            if (line.Length == 0 || line.StartsWith("//", StringComparison.Ordinal))
+                continue;
+            if (line.EndsWith("*/", StringComparison.Ordinal))
+            {
+                inBlockComment = !line.Contains("/*", StringComparison.Ordinal);
+                continue;
+            }
+
+            if (ItemModifiers().IsMatch(line))
+                continue;
+            if (line.StartsWith("#[", StringComparison.Ordinal))
+            {
+                if (SymbolExportAttribute().IsMatch(line))
+                    return true;
+                continue;
+            }
+
+            // The last line of a multi-line attribute: find its `#[` line above.
+            if (line.EndsWith(']'))
+            {
+                var start = index;
+                while (start >= 0 && !lines[start].TrimStart().StartsWith("#[", StringComparison.Ordinal))
+                    start--;
+                if (start < 0)
+                    return false;
+                if (SymbolExportAttribute().IsMatch(string.Join('\n', lines[start..(index + 1)])))
+                    return true;
+                index = start;
+                continue;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    [GeneratedRegex(@"\b(no_mangle|export_name)\b")]
+    private static partial Regex SymbolExportAttribute();
+
+    // A line holding only item modifiers of a signature split over lines: `pub(crate) unsafe extern "C"`.
+    [GeneratedRegex("""^(?:(?:pub(?:\s*\([^)]*\))?|unsafe|extern|const|async|default|"[^"]*")\s*)+$""")]
+    private static partial Regex ItemModifiers();
 
     private static GraphNode GetOrCreateExternalNode(
         ExtractorContext context,

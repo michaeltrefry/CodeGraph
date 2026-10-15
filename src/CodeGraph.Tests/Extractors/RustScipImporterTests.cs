@@ -255,6 +255,165 @@ public class RustScipImporterTests
             edge.Properties!["scip_symbol"].ToString() == externalSymbol);
     }
 
+    /// <summary>
+    /// sc-26145: an <c>extern "C" fn</c> is linkable from C/Swift by name only when its symbol is
+    /// not mangled. SCIP signatures carry no attributes, so the importer reads the source above
+    /// the definition, for global and document-local (nested) functions alike.
+    /// </summary>
+    [Fact]
+    public void Import_ExternFunctions_RecordAForeignAbiOnlyWhenExportedBySymbolName()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-scip-abi-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "src"));
+        try
+        {
+            string[] source =
+            [
+                "pub extern \"C\" fn cb() {}",
+                "",
+                "#[no_mangle]",
+                "/// Opens the catalog.",
+                "pub extern \"C\" fn open() {}",
+                "",
+                "#[unsafe(no_mangle)]",
+                "pub unsafe extern \"C-unwind\" fn close() {}",
+                "",
+                "#[export_name = \"lw_flush\"]",
+                "#[cfg_attr(",
+                "    feature = \"x\",",
+                "    inline",
+                ")]",
+                "pub unsafe extern fn flush() {}",
+                "fn outer() {",
+                "    #[no_mangle]",
+                "    extern \"C\" fn nested_exported() {}",
+                "    unsafe extern \"C\" fn nested() {}",
+                "}",
+                "#[no_mangle]",
+                "pub fn plain() {}",
+                "#[no_mangle] pub extern \"C\" fn inline_attr() {}",
+                "#[no_mangle]",
+                "fn other() {}",
+                "pub extern \"C\" fn after_other() {}",
+                "#[no_mangle]",
+                "pub unsafe extern \"C\"",
+                "fn split() {}"
+            ];
+            File.WriteAllLines(Path.Combine(root, "src", "ffi.rs"), source);
+
+            var definitions = new[]
+            {
+                ("cb", "pub extern \"C\" fn cb()", false),
+                ("open", "pub extern \"C\" fn open()", false),
+                ("close", "pub unsafe extern \"C-unwind\" fn close()", false),
+                ("flush", "pub unsafe extern fn flush()", false),
+                ("nested_exported", "extern \"C\" fn nested_exported()", true),
+                ("nested", "unsafe extern \"C\" fn nested()", true),
+                ("plain", "pub fn plain()", false),
+                ("inline_attr", "pub extern \"C\" fn inline_attr()", false),
+                ("after_other", "pub extern \"C\" fn after_other()", false),
+                ("split", "pub unsafe extern \"C\" fn split()", false)
+            };
+            string Symbol(string name, bool local) =>
+                local ? $"local {Array.FindIndex(definitions, d => d.Item1 == name)}" : $"rust-analyzer cargo demo 0.1.0 demo/{name}().";
+            string Occurrence(string name, bool local)
+            {
+                var line = Array.FindIndex(source, text => text.Contains($"fn {name}(", StringComparison.Ordinal));
+                var column = source[line].IndexOf($"fn {name}(", StringComparison.Ordinal) + 3;
+                return $$"""{ "symbol": "{{Symbol(name, local)}}", "symbolRoles": 1, "range": [{{line}}, {{column}}, {{column + name.Length}}] }""";
+            }
+            string SymbolInfo(string name, string signature, bool local) =>
+                $$"""{ "symbol": "{{Symbol(name, local)}}", "kind": "Function", "displayName": "{{name}}", "signatureDocumentation": { "language": "rust", "text": "{{signature.Replace("\"", "\\\"")}}" } }""";
+
+            var json = $$"""
+                {
+                  "documents": [
+                    {
+                      "language": "rust",
+                      "relativePath": "src/ffi.rs",
+                      "symbols": [{{string.Join(",", definitions.Select(d => SymbolInfo(d.Item1, d.Item2, d.Item3)))}}],
+                      "occurrences": [{{string.Join(",", definitions.Select(d => Occurrence(d.Item1, d.Item3)))}}]
+                    }
+                  ]
+                }
+                """;
+
+            var result = ScipJsonImporter.Import(json, new ExtractorContext { ProjectName = "DemoRust", RootPath = root });
+
+            string? Abi(string name) => result.Nodes.Single(node => node.Name == name)
+                .Properties.GetValueOrDefault(CodeGraph.Services.Pipeline.CallLanguages.AbiProperty)?.ToString();
+            definitions.Select(d => (d.Item1, Abi(d.Item1))).ShouldBe(
+            [
+                ("cb", "Rust"),
+                ("open", "C"),
+                ("close", "C-unwind"),
+                ("flush", "C"),
+                ("nested_exported", "C"),
+                ("nested", "Rust"),
+                ("plain", null),
+                ("inline_attr", "C"),
+                ("after_other", "Rust"),
+                ("split", "C")
+            ]);
+            result.Nodes.Single(node => node.Name == "nested").Properties.ShouldContainKey("scip_local_symbol");
+            bool CanCallFromC(string name) =>
+                CodeGraph.Services.Pipeline.CallLanguages.CanCall("c", result.Nodes.Single(node => node.Name == name));
+            CanCallFromC("cb").ShouldBeFalse();
+            CanCallFromC("open").ShouldBeTrue();
+            CanCallFromC("close").ShouldBeTrue();
+            CanCallFromC("nested_exported").ShouldBeTrue();
+            CanCallFromC("nested").ShouldBeFalse();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("../outside/src/ffi.rs")]
+    [InlineData("src/missing.rs")]
+    public void Import_ExternFunctionWhoseSourceCannotBeRead_IsNotExported(string relativePath)
+    {
+        var sandbox = Path.Combine(Path.GetTempPath(), $"codegraph-scip-abi-{Guid.NewGuid():N}");
+        var root = Path.Combine(sandbox, "repo");
+        var outside = Path.Combine(sandbox, "outside", "src");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "ffi.rs"), "#[no_mangle]\npub extern \"C\" fn open() {}\n");
+        try
+        {
+            var json = $$"""
+                {
+                  "documents": [
+                    {
+                      "language": "rust",
+                      "relativePath": "{{relativePath}}",
+                      "symbols": [{ "symbol": "rust-analyzer cargo demo 0.1.0 demo/open().", "kind": "Function",
+                        "displayName": "open", "signatureDocumentation": { "text": "pub extern \"C\" fn open()" } }],
+                      "occurrences": [{ "symbol": "rust-analyzer cargo demo 0.1.0 demo/open().", "symbolRoles": 1, "range": [1, 18, 22] }]
+                    }
+                  ]
+                }
+                """;
+
+            var node = ScipJsonImporter.Import(json, new ExtractorContext { ProjectName = "DemoRust", RootPath = root })
+                .Nodes.Single(node => node.Name == "open");
+
+            node.Properties[CodeGraph.Services.Pipeline.CallLanguages.AbiProperty].ShouldBe("Rust");
+            CodeGraph.Services.Pipeline.CallLanguages.CanCall("swift", node).ShouldBeFalse();
+        }
+        finally
+        {
+            Directory.Delete(sandbox, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RustProjectAnalyzer_VersionIsBumpedForTheAbiProperty() =>
+        new RustProjectAnalyzer(Microsoft.Extensions.Logging.Abstractions.NullLogger<RustProjectAnalyzer>.Instance)
+            .ExtractionVersion.ShouldBe("4");
+
     [Fact]
     public void Import_AcceptsCanonicalScipPrintSnakeCaseAndPackedEnclosingRanges()
     {

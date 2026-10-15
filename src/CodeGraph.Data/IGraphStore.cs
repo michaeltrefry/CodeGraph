@@ -63,8 +63,19 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
     Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync();
     Task<IReadOnlyList<CrossRepoEdge>> GetAllCrossRepoEdgesAsync();
 
-    // Traversal
-    Task<Dictionary<long, int>> GetCallFanInAsync(string project, int minFanIn);
+    // Aggregates
+    /// <summary>
+    /// The nodes most pointed at by <paramref name="project"/>'s edges of <paramref name="edgeTypes"/>,
+    /// computed over the whole graph: each node with its number of such incoming edges (at least
+    /// <paramref name="minInDegree"/>), optionally restricted to <paramref name="targetLabels"/>,
+    /// ordered by count descending then node id, at most <paramref name="limit"/>.
+    /// </summary>
+    Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> edgeTypes,
+        IReadOnlyCollection<NodeLabel>? targetLabels,
+        int minInDegree,
+        int limit);
 
     // Bulk operations
     Task DeleteNodesByFileAsync(string project, string filePath);
@@ -78,6 +89,12 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         SyncStateEntity? syncState,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default);
+    /// <summary>
+    /// Atomically replaces the graph slice of <paramref name="filePaths"/>. When
+    /// <paramref name="retractions"/> is given, its edges (matched by source, target and type) are
+    /// deleted first and never preserved, and each of its orphan candidates without a file path is
+    /// deleted once the write leaves it without edges.
+    /// </summary>
     Task<int> ReplaceProjectFilesAsync(
         string project,
         IReadOnlyList<string> filePaths,
@@ -85,6 +102,31 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
+        GraphSliceRetractions? retractions = null,
+        CancellationToken ct = default);
+
+    /// <summary>Nodes of <paramref name="project"/> in any of <paramref name="filePaths"/>.</summary>
+    Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
+        string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default);
+
+    /// <summary>Distinct non-empty file paths of the nodes of <paramref name="project"/>.</summary>
+    Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default);
+
+    /// <summary>Nodes of <paramref name="project"/> whose name is one of <paramref name="names"/>.</summary>
+    Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
+        string project, IReadOnlyCollection<string> names, CancellationToken ct = default);
+
+    /// <summary>
+    /// Edges of <paramref name="project"/> of one of <paramref name="types"/> whose string property
+    /// <paramref name="propertyKey"/> equals one of <paramref name="values"/>, with their endpoints'
+    /// qualified names and files. The type predicate lets the store narrow the scan by edge type
+    /// before it inspects edge properties.
+    /// </summary>
+    Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> types,
+        string propertyKey,
+        IReadOnlyCollection<string> values,
         CancellationToken ct = default);
     Task DeleteFilesFromProjectGraphAsync(
         string project,

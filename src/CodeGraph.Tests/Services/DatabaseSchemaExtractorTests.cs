@@ -127,6 +127,8 @@ public class DatabaseSchemaExtractorTests
         {
             await using var admin = new MySqlConnection(adminBuilder.ConnectionString);
             await admin.OpenAsync();
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             await new MySqlCommand($"DROP DATABASE IF EXISTS `{databaseName}`", admin).ExecuteNonQueryAsync();
         }
     }

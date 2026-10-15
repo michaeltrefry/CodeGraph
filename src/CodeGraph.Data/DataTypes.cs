@@ -11,6 +11,9 @@ public record TraversalEntry(
     long? ParentNodeId,
     Dictionary<string, object>? EdgeProperties);
 
+/// <summary>A node and the number of incoming edges of the requested types.</summary>
+public record NodeInDegree(GraphNode Node, int InDegree);
+
 public record RepositorySearchResult(
     IReadOnlyList<ProjectInfo> Items,
     int TotalCount);

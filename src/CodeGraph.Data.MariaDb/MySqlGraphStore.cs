@@ -214,7 +214,7 @@ public partial class MySqlGraphStore(
                 parameters.Add($"Label{i}", node.Label.ToString());
                 parameters.Add($"Name{i}", Truncate(node.Name, 1000));
                 parameters.Add($"QualifiedName{i}", Truncate(node.QualifiedName, 1000));
-                parameters.Add($"FilePath{i}", node.FilePath);
+                parameters.Add($"FilePath{i}", node.FilePath ?? "");
                 parameters.Add($"StartLine{i}", node.StartLine);
                 parameters.Add($"EndLine{i}", node.EndLine);
                 parameters.Add($"Properties{i}", SerializeJson(node.Properties));
@@ -786,16 +786,39 @@ public partial class MySqlGraphStore(
             DeserializeJson(r.EdgeProperties))).ToList();
     }
 
-    public async Task<Dictionary<long, int>> GetCallFanInAsync(string project, int minFanIn)
+    public async Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> edgeTypes,
+        IReadOnlyCollection<NodeLabel>? targetLabels,
+        int minInDegree,
+        int limit)
     {
-        var rows = await db.Edges.AsNoTracking()
-            .Where(e => e.Type == EdgeType.CALLS.ToString() && e.Project == project)
+        if (edgeTypes.Count == 0 || limit <= 0)
+            return [];
+
+        var types = edgeTypes.Select(type => type.ToString()).Distinct().ToList();
+        var edges = db.Edges.AsNoTracking().Where(e => e.Project == project && types.Contains(e.Type));
+        if (targetLabels is { Count: > 0 })
+        {
+            var labels = targetLabels.Select(label => label.ToString()).Distinct().ToList();
+            edges = edges.Where(e => db.Nodes.Any(n => n.Id == e.TargetId && labels.Contains(n.Label)));
+        }
+
+        // One GROUP BY over the (project, type) index; only the top rows' nodes are loaded.
+        var rows = await edges
             .GroupBy(e => e.TargetId)
-            .Where(g => g.Count() >= minFanIn)
             .Select(g => new { TargetId = g.Key, Count = g.Count() })
+            .Where(r => r.Count >= minInDegree)
+            .OrderByDescending(r => r.Count)
+            .ThenBy(r => r.TargetId)
+            .Take(limit)
             .ToListAsync();
 
-        return rows.ToDictionary(r => r.TargetId, r => r.Count);
+        var nodes = await FindNodesByIdBatchAsync(rows.Select(r => r.TargetId).ToList());
+        return rows
+            .Where(r => nodes.ContainsKey(r.TargetId))
+            .Select(r => new NodeInDegree(nodes[r.TargetId], r.Count))
+            .ToList();
     }
 
     public async Task DeleteNodesByFileAsync(string project, string filePath)

@@ -89,7 +89,7 @@ public partial class GraphAssistant
 
         new(
             "get_architecture",
-            "Get architecture overview for a project — hotspots, node counts, cross-repo dependencies.",
+            "Get architecture overview for a project — node counts, hotspots, most implemented/inherited types, external package dependencies (NuGet/Cargo/SwiftPM), cross-repo dependencies.",
             new Dictionary<string, JsonElement>
             {
                 ["project"] = Prop("string", "Project name")

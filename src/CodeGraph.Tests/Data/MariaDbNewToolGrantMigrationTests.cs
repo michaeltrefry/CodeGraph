@@ -97,6 +97,8 @@ public sealed class MariaDbNewToolGrantMigrationTests
             var adminBuilder = new MySqlConnectionStringBuilder(connectionString) { Database = "" };
             await using var adminConn = new MySqlConnection(adminBuilder.ConnectionString);
             await adminConn.OpenAsync();
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             await adminConn.ExecuteAsync($"DROP DATABASE IF EXISTS `{builder.Database}`");
         }
     }

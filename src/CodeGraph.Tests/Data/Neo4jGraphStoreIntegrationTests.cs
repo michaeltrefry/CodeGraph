@@ -22,6 +22,7 @@ public class Neo4jGraphStoreIntegrationTests
             Neo4jUsername = username,
             Neo4jPassword = password
         });
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var sessions = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
 
@@ -153,6 +154,51 @@ public class Neo4jGraphStoreIntegrationTests
             TargetId = targetId,
             Type = type
         };
+    }
+
+    [Fact]
+    public async Task Neo4jGraphStore_ConcurrentNodeWritesNeverShareAnAppIdWhenConnectionIsConfigured()
+    {
+        var options = Options.Create(new CodeGraphStorageOptions
+        {
+            Neo4jUri = Require("CODEGRAPH_NEO4J_TEST_URI"),
+            Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
+            Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
+        });
+        await Neo4jTestSchema.EnsureAppliedAsync(options);
+        await using var sessions = new Neo4jSessionFactory(options);
+        var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
+        var projects = Enumerable.Range(0, 16).Select(i => $"IdRace{i}_{Guid.NewGuid():N}").ToList();
+
+        try
+        {
+            // Both bulk id-allocation paths (batch upsert and file-slice replace) race each other.
+            await Task.WhenAll(projects.Select((project, i) => i % 2 == 0
+                ? (Task)store.UpsertNodeBatchAsync(Nodes(project))
+                : store.ReplaceProjectFilesAsync(
+                    project, ["f.cs"], Nodes(project), [], new Dictionary<string, string> { ["f.cs"] = "1" })));
+
+            var ids = new List<long>();
+            foreach (var project in projects)
+                foreach (var node in Nodes(project))
+                    ids.Add((await store.FindNodeByQualifiedNameAsync(project, node.QualifiedName))!.Id);
+            ids.Count.ShouldBe(projects.Count * 5);
+            ids.Distinct().Count().ShouldBe(ids.Count, "concurrent writers were handed overlapping appId ranges");
+        }
+        finally
+        {
+            foreach (var project in projects)
+                await store.DeleteNodesByProjectAsync(project);
+        }
+
+        static List<GraphNode> Nodes(string project) => Enumerable.Range(0, 5).Select(i => new GraphNode
+        {
+            Project = project,
+            Label = NodeLabel.Method,
+            Name = $"M{i}",
+            QualifiedName = $"{project}.M{i}",
+            FilePath = "f.cs"
+        }).ToList();
     }
 
     private static string Require(string name) =>

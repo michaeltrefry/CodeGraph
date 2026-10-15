@@ -8,7 +8,7 @@ namespace CodeGraph.Services.Pipeline;
 /// run that analyzed a Cargo workspace (in repositories.properties.rustSemanticOutcomes and,
 /// for durable runs, summarized in the run message).
 /// </summary>
-/// <param name="Manifest">Repository-relative path of the analyzed Cargo manifest.</param>
+/// <param name="Manifest">Repository-relative path of the analyzed Cargo manifest (comma-separated when the repository has several workspaces).</param>
 /// <param name="CrateCount">Crates covered by all groups.</param>
 /// <param name="GroupCount">Number of groups (one for a whole-workspace analysis or failure).</param>
 /// <param name="GroupSize">Configured maximum crates per group.</param>
@@ -30,6 +30,37 @@ public sealed record RustSemanticOutcomes(
     RustSemanticSettingsSnapshot Settings,
     IReadOnlyList<RustSemanticGroupOutcome> Groups)
 {
+    /// <summary>
+    /// The outcomes of a repository's independent Cargo workspaces as one record: the manifests
+    /// are listed comma-separated, the counts and durations add up, and the groups keep their
+    /// order, are renumbered repository-wide and name the workspace manifest they belong to.
+    /// </summary>
+    public static RustSemanticOutcomes Combine(RustSemanticOutcomes? existing, RustSemanticOutcomes next)
+    {
+        if (existing is null)
+            return next;
+
+        var groups = existing.Groups
+            .Select(group => group with { Manifest = group.Manifest ?? existing.Manifest })
+            .Concat(next.Groups.Select((group, index) => group with
+            {
+                Index = existing.Groups.Count + index,
+                Manifest = group.Manifest ?? next.Manifest
+            }))
+            .ToList();
+        return new RustSemanticOutcomes(
+            $"{existing.Manifest}, {next.Manifest}",
+            existing.CrateCount + next.CrateCount,
+            groups.Count,
+            next.GroupSize,
+            existing.SemanticGroups + next.SemanticGroups,
+            existing.FallbackGroups + next.FallbackGroups,
+            existing.SkippedGroups + next.SkippedGroups,
+            existing.TotalDurationMs + next.TotalDurationMs,
+            next.Settings,
+            groups);
+    }
+
     /// <summary>One-line human summary, e.g. for an indexer run message.</summary>
     public string Summary() => string.Create(
         CultureInfo.InvariantCulture,
@@ -48,6 +79,7 @@ public sealed record RustSemanticOutcomes(
 /// <param name="Documents">Source documents imported (semantic groups only).</param>
 /// <param name="Nodes">Graph nodes imported before cross-group linking (semantic groups only).</param>
 /// <param name="Edges">Graph edges imported before cross-group linking (semantic groups only).</param>
+/// <param name="Manifest">The group's workspace manifest; set when the repository has several Cargo workspaces.</param>
 public sealed record RustSemanticGroupOutcome(
     int Index,
     IReadOnlyList<string> Crates,
@@ -58,7 +90,8 @@ public sealed record RustSemanticGroupOutcome(
     long? PeakRssMb,
     int? Documents,
     int? Nodes,
-    int? Edges)
+    int? Edges,
+    string? Manifest = null)
 {
     public const string Semantic = "semantic";
     public const string Fallback = "fallback";

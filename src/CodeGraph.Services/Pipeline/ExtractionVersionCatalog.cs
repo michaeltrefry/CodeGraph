@@ -27,14 +27,45 @@ namespace CodeGraph.Services.Pipeline;
 /// file types whose version changed are re-extracted; no LLM work is triggered by such a run.
 /// </para>
 /// <para>
-/// Cargo manifest and NuGet reference extraction are not versioned: they run over every manifest
-/// on every index.
+/// NuGet reference extraction is not versioned: it runs over every project on every index.
+/// </para>
+/// <para>
+/// Cargo and Swift package manifests are extracted on every index, but their slices are written
+/// only when they changed. <c>Package.swift</c> files are source files and carry
+/// <see cref="ISwiftPackageManifestExtractor.ExtractionVersion"/> in their version. The manifests
+/// that are not source files (<see cref="TrackedManifestNames"/>: <c>Cargo.toml</c>,
+/// <c>Package.resolved</c>, <c>project.pbxproj</c>) record their content hash with
+/// <see cref="ForManifest"/> (pipeline version and <see cref="ICargoManifestExtractor.ExtractionVersion"/>
+/// or <see cref="ISwiftPackageManifestExtractor.ExtractionVersion"/>) in <c>file_hashes</c>; a group
+/// of them (Cargo, or Swift together with <c>Package.swift</c>) is rewritten when any of its
+/// manifests is new, changed, outdated or gone. Those versions are part of the
+/// <see cref="Fingerprint"/>, so a bump triggers the refresh run that rewrites the slices.
+/// </para>
+/// <para>
+/// The discovery exclusions (skip patterns and dependency directory rules) are part of the
+/// <see cref="Fingerprint"/> but not of any file's version: changing them re-runs a routine sync at
+/// an unchanged commit, whose full scan removes the files that left the indexed universe and
+/// extracts the files that entered it, without re-extracting the files that stayed.
+/// </para>
+/// <para>
+/// The effective file size limits are part of the <see cref="Fingerprint"/> too. A file skipped as
+/// oversize records a version naming its limit, and the pipeline expects that version for every
+/// file over the current limit, so the refresh run after a limit change extracts a file that is no
+/// longer oversize and empties the slice of a file that now is.
 /// </para>
 /// </remarks>
 public sealed class ExtractionVersionCatalog
 {
-    /// <summary>Version of the pipeline's own merge/resolution logic; applies to every file.</summary>
-    public const int PipelineVersion = 1;
+    /// <summary>
+    /// Version of the pipeline's own merge/resolution logic; applies to every file.
+    /// 2: name-based call resolution is scoped by language family (<see cref="CallLanguages"/>).
+    /// 3: calls bind only to callables, or to types of the caller's own family; a caller's family
+    /// falls back to its qualified name's file (<see cref="CallLanguages.IsCallTarget"/>, sc-26145).
+    /// 4: a call crosses a language-family boundary only as a bare call to a free function (never a
+    /// method, never a receiver call; Rust → C++ only with C linkage), and a Swift call binds only
+    /// within the caller's own module and the modules its file imports (sc-26145).
+    /// </summary>
+    public const int PipelineVersion = 4;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];
@@ -44,17 +75,29 @@ public sealed class ExtractionVersionCatalog
     private readonly ISolutionAnalyzer? _solutionAnalyzer;
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
+    private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
+    private readonly ICargoManifestExtractor? _cargoManifestExtractor;
+    private readonly IReadOnlyList<string>? _discoveryExcludePatterns;
+    private readonly string? _fileSizeLimits;
 
     public ExtractionVersionCatalog(
         IEnumerable<ICodeExtractor> extractors,
         ISolutionAnalyzer? solutionAnalyzer = null,
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
-        IRustAnalyzer? rustAnalyzer = null)
+        IRustAnalyzer? rustAnalyzer = null,
+        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null,
+        IEnumerable<string>? discoveryExcludePatterns = null,
+        string? fileSizeLimits = null,
+        ICargoManifestExtractor? cargoManifestExtractor = null)
     {
+        _cargoManifestExtractor = cargoManifestExtractor;
         _extractors = extractors.ToList();
         _solutionAnalyzer = solutionAnalyzer;
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
+        _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
+        _discoveryExcludePatterns = discoveryExcludePatterns?.ToList();
+        _fileSizeLimits = fileSizeLimits;
         Fingerprint = ComputeFingerprint();
     }
 
@@ -64,8 +107,48 @@ public sealed class ExtractionVersionCatalog
     /// </summary>
     public string Fingerprint { get; }
 
-    /// <summary>The extraction version for a file, derived from its extension.</summary>
-    public string ForPath(string path) => ForExtension(Path.GetExtension(path));
+    /// <summary>
+    /// The extraction version for a file, derived from its extension (and, for a SwiftPM
+    /// <c>Package.swift</c>, the manifest extractor version).
+    /// </summary>
+    public string ForPath(string path)
+    {
+        var version = ForExtension(Path.GetExtension(path));
+        return IsSwiftPackageManifest(path)
+            ? $"{version};{_swiftPackageManifestExtractor!.GetType().Name}={_swiftPackageManifestExtractor.ExtractionVersion}"
+            : version;
+    }
+
+    /// <summary>
+    /// Manifests whose package slice is not a source file's: they are tracked by content hash and
+    /// version (<see cref="ForManifest"/>) so an unchanged one is not rewritten on every run.
+    /// </summary>
+    public static readonly IReadOnlySet<string> TrackedManifestNames = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "Cargo.toml",
+        SwiftPackageManifestExtractor.PackageResolvedFileName,
+        XcodeProjectReader.ProjectFileName
+    };
+
+    /// <summary>
+    /// The version recorded with a tracked manifest's content hash (<see cref="TrackedManifestNames"/>):
+    /// the pipeline version and the version of the extractor that reads it. Null for any other file,
+    /// or when that extractor is not registered.
+    /// </summary>
+    public string? ForManifest(string path) => Path.GetFileName(path) switch
+    {
+        "Cargo.toml" when _cargoManifestExtractor is not null =>
+            $"p{PipelineVersion};{_cargoManifestExtractor.GetType().Name}={_cargoManifestExtractor.ExtractionVersion}",
+        SwiftPackageManifestExtractor.PackageResolvedFileName or XcodeProjectReader.ProjectFileName
+            when _swiftPackageManifestExtractor is not null =>
+            $"p{PipelineVersion};{_swiftPackageManifestExtractor.GetType().Name}={_swiftPackageManifestExtractor.ExtractionVersion}",
+        _ => null
+    };
+
+    private bool IsSwiftPackageManifest(string path) =>
+        _swiftPackageManifestExtractor is not null &&
+        string.Equals(Path.GetFileName(path), SwiftPackageManifestExtractor.PackageSwiftFileName,
+            StringComparison.Ordinal);
 
     public string ForExtension(string extension)
     {
@@ -96,7 +179,18 @@ public sealed class ExtractionVersionCatalog
             .Concat(_rustAnalyzer is null ? [] : RustAnalyzerExtensions)
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
-            .Select(extension => $"{extension}={ForExtension(extension)}");
+            .Select(extension => $"{extension}={ForExtension(extension)}")
+            .Concat(_swiftPackageManifestExtractor is null
+                ? []
+                : [$"{SwiftPackageManifestExtractor.PackageSwiftFileName}={ForPath(SwiftPackageManifestExtractor.PackageSwiftFileName)}"])
+            .Concat(TrackedManifestNames.Order(StringComparer.Ordinal)
+                .Select(name => (Name: name, Version: ForManifest(name)))
+                .Where(manifest => manifest.Version is not null)
+                .Select(manifest => $"manifest:{manifest.Name}={manifest.Version}"))
+            .Concat(_discoveryExcludePatterns is null
+                ? []
+                : [$"discovery-excludes={string.Join('|', _discoveryExcludePatterns)}"])
+            .Concat(_fileSizeLimits is null ? [] : [$"max-file-size-kb={_fileSizeLimits}"]);
         var bytes = Encoding.UTF8.GetBytes(string.Join('\n', lines));
         return Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
     }

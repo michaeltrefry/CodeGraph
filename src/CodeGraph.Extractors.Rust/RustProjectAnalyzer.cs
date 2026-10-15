@@ -28,7 +28,10 @@ namespace CodeGraph.Extractors.Rust;
 public class RustProjectAnalyzer : IRustAnalyzer
 {
     /// <summary>Bump when extraction output changes for unchanged input (see ExtractionVersionCatalog).</summary>
-    public string ExtractionVersion => "2";
+    /// <remarks>3: every independent Cargo workspace in a repository is analyzed (sc-26145), not only the first.
+    /// 4: extern functions record their <c>abi</c>, foreign only when exported by symbol name
+    /// (<c>#[no_mangle]</c> / <c>#[export_name]</c>) (sc-26145).</remarks>
+    public string ExtractionVersion => "4";
 
     private static readonly TimeSpan DefaultScipGenerationTimeout = TimeSpan.FromMinutes(10);
     private const int DefaultStderrTailCharacters = 4096;

@@ -26,4 +26,13 @@ public class RepositoryIndexingCompleted
 
     /// <summary>Whether vitals metrics should be computed.</summary>
     public bool ShouldComputeVitals { get; set; } = true;
+
+    /// <summary>
+    /// Run the model-backed health analysis (with <see cref="ShouldComputeVitals"/>) although
+    /// <see cref="ShouldAnalyze"/> is false: an explicit re-analyze submits its analysis batch
+    /// itself but still wants health analysis. Health analysis also runs whenever
+    /// <see cref="ShouldAnalyze"/> is set. Defaults to false, so a message without the field
+    /// (published before it existed) keeps the ShouldAnalyze-only behavior.
+    /// </summary>
+    public bool ShouldAnalyzeHealth { get; set; }
 }

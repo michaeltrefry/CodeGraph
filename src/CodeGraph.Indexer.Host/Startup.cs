@@ -127,6 +127,7 @@ public static class Startup
         services.AddTransient<INuGetReferenceExtractor, NuGetReferenceExtractor>();
         services.AddTransient<IRustAnalyzer, RustProjectAnalyzer>();
         services.AddTransient<ICargoManifestExtractor, CargoManifestExtractor>();
+        services.AddTransient<ISwiftPackageManifestExtractor, SwiftPackageManifestExtractor>();
         services.AddTransient<ICodeExtractor, RoslynExtractor>();
         services.AddTransient<ICodeExtractor, SqlExtractor>();
         services.AddTransient<ICodeExtractor, AnsibleExtractor>();

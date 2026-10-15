@@ -411,6 +411,56 @@ public class IndexingPipelineTests
         }
     }
 
+    [Fact]
+    public async Task IndexProjectAsync_IncrementalRun_ReplacesChangedCargoDependencies()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-cargo-incremental-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(rootPath, "src"));
+
+        try
+        {
+            static string Manifest(string dependency) => $"""
+                [package]
+                name = "consumer"
+                version = "0.1.0"
+
+                [dependencies]
+                {dependency} = "1"
+                """;
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"), Manifest("serde"));
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "src", "lib.rs"), "pub fn run() {}\n");
+
+            var store = new InMemoryGraphStore();
+            IndexingPipeline CreatePipeline() => new(
+                store,
+                [new MixedRustPythonMetadataExtractor()],
+                Options.Create(new IndexingOptions()),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance,
+                cargoManifestExtractor: new CargoManifestExtractor());
+
+            await CreatePipeline().IndexProjectAsync("Consumer", rootPath, ct: CancellationToken.None);
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package && node.Name == "serde");
+
+            // Only Cargo.toml changes; lib.rs is unchanged, so nothing is re-extracted per file.
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Cargo.toml"), Manifest("tokio"));
+            await CreatePipeline().IndexProjectAsync("Consumer", rootPath, ct: CancellationToken.None);
+
+            var packages = store.Nodes.Where(node => node.Label == NodeLabel.Package).ToList();
+            packages.Select(node => node.Name).ShouldBe(["consumer", "tokio"], ignoreOrder: true);
+            var consumer = packages.Single(node => node.Name == "consumer");
+            var tokio = packages.Single(node => node.Name == "tokio");
+            store.Edges.ShouldContain(edge =>
+                edge.SourceId == consumer.Id && edge.TargetId == tokio.Id &&
+                edge.Type == EdgeType.REFERENCES_PACKAGE);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("rust_semantic_command_timeout",
         "Rust semantic command 'rust-analyzer' exceeded the 600-second timeout.",
@@ -1094,6 +1144,133 @@ public class IndexingPipelineTests
     }
 
     [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_RemovesFilesDeletedFromDisk()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-delete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "keep.py"), "class Keep:\n    pass\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "gone.py"), "class Gone:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("FullScanRepo", rootPath, ct: CancellationToken.None);
+            var goneIds = (await store.FindNodesByFileAsync("FullScanRepo", "gone.py"))
+                .Select(node => node.Id).ToHashSet();
+            goneIds.ShouldNotBeEmpty();
+            store.Edges.ShouldContain(edge => goneIds.Contains(edge.SourceId) || goneIds.Contains(edge.TargetId));
+
+            File.Delete(Path.Combine(rootPath, "gone.py"));
+            await pipeline.IndexProjectAsync("FullScanRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("FullScanRepo", "gone.py")).ShouldBeEmpty();
+            store.Edges.ShouldNotContain(edge => goneIds.Contains(edge.SourceId) || goneIds.Contains(edge.TargetId));
+            var hashes = await store.GetFileHashesAsync("FullScanRepo");
+            hashes.ShouldNotContainKey("gone.py");
+            hashes.ShouldContainKey("keep.py");
+            (await store.FindNodesByFileAsync("FullScanRepo", "keep.py"))
+                .ShouldContain(node => node.Label == NodeLabel.Class);
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_RemovesFilesANewSkipPatternExcludes()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-skip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(rootPath, "vendor"));
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class App:\n    pass\n");
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "vendor", "lib.py"), "class Lib:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            await CreatePipeline(store, new NodeProducingExtractor())
+                .IndexProjectAsync("SkipRepo", rootPath, ct: CancellationToken.None);
+            (await store.FindNodesByFileAsync("SkipRepo", "vendor/lib.py")).ShouldNotBeEmpty();
+
+            var skipping = new IndexingPipeline(
+                store,
+                [new NodeProducingExtractor()],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1, SkipPatterns = ["vendor/**"] }),
+                new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance);
+            await skipping.IndexProjectAsync("SkipRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("SkipRepo", "vendor/lib.py")).ShouldBeEmpty();
+            (await store.GetFileHashesAsync("SkipRepo")).ShouldNotContainKey("vendor/lib.py");
+            (await store.FindNodesByFileAsync("SkipRepo", "app.py")).ShouldNotBeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_MissingCheckoutFailsWithoutDeleting()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-missing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class App:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("MissingRepo", rootPath, ct: CancellationToken.None);
+            var nodeCount = store.Nodes.Count;
+
+            Directory.Delete(rootPath, recursive: true);
+            // Fails up front, naming the missing checkout, before any deletion is inferred.
+            var error = await Should.ThrowAsync<DirectoryNotFoundException>(() =>
+                pipeline.IndexProjectAsync("MissingRepo", rootPath, ct: CancellationToken.None));
+            error.Message.ShouldContain("checkout not found");
+
+            store.Nodes.Count.ShouldBe(nodeCount);
+            (await store.GetFileHashesAsync("MissingRepo")).ShouldContainKey("app.py");
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_FullScanIncremental_EmptyDiscoveryKeepsTheIndexedGraph()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-fullscan-empty-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "app.py"), "class App:\n    pass\n");
+            var store = new InMemoryGraphStore();
+            var pipeline = CreatePipeline(store, new NodeProducingExtractor());
+            await pipeline.IndexProjectAsync("EmptyRepo", rootPath, ct: CancellationToken.None);
+
+            // The checkout exists but yields nothing (e.g. an interrupted materialization).
+            File.Delete(Path.Combine(rootPath, "app.py"));
+            await pipeline.IndexProjectAsync("EmptyRepo", rootPath, ct: CancellationToken.None);
+
+            (await store.FindNodesByFileAsync("EmptyRepo", "app.py")).ShouldNotBeEmpty();
+            (await store.GetFileHashesAsync("EmptyRepo")).ShouldContainKey("app.py");
+        }
+        finally
+        {
+            if (Directory.Exists(rootPath))
+                Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task IndexProjectAsync_SerializesReplacementForSameRepository()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-replacement-lock-{Guid.NewGuid():N}");
@@ -1226,6 +1403,167 @@ public class IndexingPipelineTests
         v1.ForPath("app.py").ShouldBe(v2.ForPath("app.py"));
         v1.Fingerprint.ShouldNotBe(v2.Fingerprint);
         new ExtractionVersionCatalog(extractors, new RecordingSolutionAnalyzer()).Fingerprint.ShouldBe(v1.Fingerprint);
+    }
+
+    [Fact]
+    public async Task IndexProjectAsync_OversizeFile_IsLoggedMarkedAndNotReportedChangedAgain()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-oversize-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "big.py"), new string('x', 3 * 1024));
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "small.py"), "small");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor(".py");
+            var logger = new RecordingLogger<IndexingPipeline>();
+            IndexingPipeline Pipeline(int limitKb) => new(
+                store, [extractor],
+                Options.Create(new IndexingOptions { MaxParallelFiles = 1, MaxFileSizeKb = limitKb }),
+                new LocalFileSystem(), logger);
+            int SkipLogs() => logger.Messages.Count(message =>
+                message.StartsWith("Skipping extraction of big.py", StringComparison.Ordinal));
+
+            await Pipeline(1).IndexProjectAsync("Oversize", rootPath, ct: CancellationToken.None);
+
+            extractor.CallCount.ShouldBe(1);
+            SkipLogs().ShouldBe(1);
+            var skipLog = logger.Messages.IndexOf("Skipping extraction of big.py in Oversize: 3 KB exceeds the 1 KB limit");
+            skipLog.ShouldBeGreaterThanOrEqualTo(0);
+            logger.Entries[skipLog].Level.ShouldBe(LogLevel.Information);
+            var file = store.Nodes.Single(node => node.QualifiedName == "Oversize:big.py");
+            file.Properties["skipped_reason"].ShouldBe("oversize");
+            file.Properties["size_limit_kb"].ShouldBe(1);
+            var hashes = await store.GetFileHashRecordsAsync("Oversize");
+            hashes.Keys.ShouldBe(["big.py", "small.py"], ignoreOrder: true);
+            hashes["big.py"].ExtractionVersion.ShouldEndWith(";oversize>1KB");
+
+            // Unchanged: neither re-read as changed nor logged again.
+            await Pipeline(1).IndexProjectAsync("Oversize", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(1);
+            SkipLogs().ShouldBe(1);
+
+            // A higher limit extracts it.
+            await Pipeline(4).IndexProjectAsync("Oversize", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.Single(node => node.QualifiedName == "Oversize:big.py")
+                .Properties.ContainsKey("skipped_reason").ShouldBeFalse();
+            store.Nodes.ShouldContain(node => node.QualifiedName == "Oversize.big");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The size limits are part of the extraction fingerprint, so changing one re-runs a routine
+    /// sync at an unchanged commit; that run empties an unchanged file that the lower limit makes
+    /// oversize and keeps it stable afterwards.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_LoweredSizeLimit_EmptiesUnchangedFileThatIsNowOversize()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-oversize-lower-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "big.py"), new string('x', 3 * 1024));
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "small.py"), "small");
+            var store = new InMemoryGraphStore();
+            var extractor = new VersionedExtractor(".py");
+            IndexingPipeline Pipeline(int limitKb, Dictionary<string, int>? byExtension = null) => new(
+                store, [extractor],
+                Options.Create(new IndexingOptions
+                {
+                    MaxParallelFiles = 1,
+                    MaxFileSizeKb = limitKb,
+                    MaxFileSizeKbByExtension = byExtension ?? new(StringComparer.OrdinalIgnoreCase) { [".swift"] = 2048 }
+                }),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance);
+
+            await Pipeline(4).IndexProjectAsync("Lower", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.ShouldContain(node => node.QualifiedName == "Lower.big");
+
+            Pipeline(1).ExtractionFingerprint.ShouldNotBe(Pipeline(4).ExtractionFingerprint);
+            Pipeline(4, new(StringComparer.OrdinalIgnoreCase) { [".swift"] = 1024 }).ExtractionFingerprint
+                .ShouldNotBe(Pipeline(4).ExtractionFingerprint);
+            Pipeline(4).ExtractionFingerprint.ShouldBe(Pipeline(4).ExtractionFingerprint);
+
+            await Pipeline(1).IndexProjectAsync("Lower", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.ShouldNotContain(node => node.QualifiedName == "Lower.big");
+            store.Nodes.Single(node => node.QualifiedName == "Lower:big.py")
+                .Properties["skipped_reason"].ShouldBe("oversize");
+            store.Nodes.ShouldContain(node => node.QualifiedName == "Lower.small");
+            (await store.GetFileHashRecordsAsync("Lower"))["big.py"].ExtractionVersion.ShouldEndWith(";oversize>1KB");
+
+            // Stable under the lower limit: nothing is processed again.
+            await Pipeline(1).IndexProjectAsync("Lower", rootPath, ct: CancellationToken.None);
+            extractor.CallCount.ShouldBe(2);
+            store.Nodes.ShouldNotContain(node => node.QualifiedName == "Lower.big");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// A file over the limit that a project analyzer (not per-file extraction) processed records
+    /// the oversize version too, so it is not re-processed on every later run.
+    /// </summary>
+    [Fact]
+    public async Task IndexProjectAsync_OversizeFileProcessedByProjectAnalyzer_IsNotReprocessedEveryRun()
+    {
+        var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-oversize-analyzer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "App.sln"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(rootPath, "Big.cs"),
+                "public sealed class Big {}\n" + new string('/', 3 * 1024));
+            var solutionAnalyzer = new RecordingSolutionAnalyzer((_, context) => new SolutionAnalysisResult
+            {
+                Documents = [CreateSolutionDocument(context, "Big.cs", "Big")]
+            });
+            var store = new InMemoryGraphStore();
+            var logger = new RecordingLogger<IndexingPipeline>();
+            IndexingPipeline Pipeline() => new(
+                store,
+                [new TrackingCSharpExtractor()],
+                Options.Create(new IndexingOptions
+                {
+                    MaxParallelFiles = 1, MaxFileSizeKb = 1, TrustedDotnetRepositories = "folder:Big"
+                }),
+                new LocalFileSystem(),
+                logger,
+                solutionAnalyzer);
+
+            await Pipeline().IndexProjectAsync(
+                "Big", rootPath, repositoryToolingIdentity: "folder:Big", ct: CancellationToken.None);
+            logger.Messages.ShouldContain("Found 1 files, 1 changed");
+            (await store.GetFileHashRecordsAsync("Big"))["Big.cs"].ExtractionVersion.ShouldEndWith(";oversize>1KB");
+
+            logger.Messages.Clear();
+            await Pipeline().IndexProjectAsync(
+                "Big", rootPath, repositoryToolingIdentity: "folder:Big", ct: CancellationToken.None);
+            logger.Messages.ShouldContain("Found 1 files, 0 changed");
+        }
+        finally
+        {
+            Directory.Delete(rootPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void IndexingOptions_SwiftHasItsOwnHigherSizeLimit()
+    {
+        var options = new IndexingOptions();
+        options.MaxFileSizeKbFor(".swift").ShouldBe(2048);
+        options.MaxFileSizeKbFor(".c").ShouldBe(512);
+        options.MaxFileSizeKbFor(".SWIFT").ShouldBe(2048);
     }
 
     [Fact]

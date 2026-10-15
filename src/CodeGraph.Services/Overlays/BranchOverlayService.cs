@@ -286,8 +286,13 @@ public sealed class BranchOverlayService(
                     : await git.ResolveCommitAsync(resolved.LocalPath, overlay.RequestedRef, ct);
                 await git.EnsureCommitAsync(resolved.LocalPath, baseSha, ct);
 
+                // Indexability of a path can depend on its siblings (a Podfile next to Pods/), so
+                // new paths are judged against the head tree and old paths against the base tree.
+                var headFiles = await git.ListFilesAsync(resolved.LocalPath, headSha, ct);
+                var headTree = RepositoryTree.FromFiles(headFiles);
+                var baseTree = RepositoryTree.FromFiles(await git.ListFilesAsync(resolved.LocalPath, baseSha, ct));
                 changes = (await git.DiffAsync(resolved.LocalPath, baseSha, headSha, ct))
-                    .Select(change => FilterIndexable(change))
+                    .Select(change => FilterIndexable(change, headTree, baseTree))
                     .OfType<OverlayGitChange>()
                     .ToList();
                 extractPaths = changes
@@ -301,7 +306,7 @@ public sealed class BranchOverlayService(
                         .Where(change => change.Kind == OverlayGitChangeKind.Renamed && change.PreviousPath is not null)
                         .Select(change => change.PreviousPath!))
                     .ToList();
-                csprojPaths = (await git.ListFilesAsync(resolved.LocalPath, headSha, ct))
+                csprojPaths = headFiles
                     .Where(path => path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
@@ -402,15 +407,21 @@ public sealed class BranchOverlayService(
 
     /// <summary>
     /// Restricts a change to the default index's file universe. A rename whose new path is not
-    /// indexable degrades to a deletion of the old path, and vice versa to an addition.
+    /// indexable degrades to a deletion of the old path, and vice versa to an addition. A deleted
+    /// path and a rename's previous path are judged against the base tree, every other path
+    /// against the head tree.
     /// </summary>
-    private OverlayGitChange? FilterIndexable(OverlayGitChange change)
+    private OverlayGitChange? FilterIndexable(
+        OverlayGitChange change, RepositoryTree headTree, RepositoryTree baseTree)
     {
         if (change.Kind != OverlayGitChangeKind.Renamed)
-            return pipeline.IsIndexablePath(change.Path) ? change : null;
+        {
+            var tree = change.Kind == OverlayGitChangeKind.Deleted ? baseTree : headTree;
+            return pipeline.IsIndexablePath(change.Path, tree) ? change : null;
+        }
 
-        var newIndexable = pipeline.IsIndexablePath(change.Path);
-        var oldIndexable = change.PreviousPath is not null && pipeline.IsIndexablePath(change.PreviousPath);
+        var newIndexable = pipeline.IsIndexablePath(change.Path, headTree);
+        var oldIndexable = change.PreviousPath is not null && pipeline.IsIndexablePath(change.PreviousPath, baseTree);
         return (newIndexable, oldIndexable) switch
         {
             (true, true) => change,

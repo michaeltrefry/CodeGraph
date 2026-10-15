@@ -12,20 +12,20 @@ public partial class IndexingPipeline
 {
     /// <summary>
     /// True when <paramref name="relativePath"/> belongs to the file universe the default-branch
-    /// index covers (a supported extension that no skip pattern excludes).
+    /// index covers (a supported extension that no discovery exclusion excludes).
+    /// <paramref name="tree"/> is the commit tree the path belongs to; its files and directory
+    /// listings decide whether a directory is a package manager's dependency directory (a
+    /// <c>Podfile</c> beside <c>Pods/</c>, a solution beside a NuGet <c>packages/</c>, ...).
     /// </summary>
-    public bool IsIndexablePath(string relativePath)
+    public bool IsIndexablePath(string relativePath, RepositoryTree tree)
     {
         var normalized = NormalizeRelativePath(relativePath);
         var extension = Path.GetExtension(normalized);
         if (!_extractors.Any(extractor => extractor.SupportedExtensions.Contains(extension)))
             return false;
 
-        var matcher = new Matcher();
-        matcher.AddInclude("**/*");
-        foreach (var skip in _options.SkipPatterns)
-            matcher.AddExclude(skip);
-        return matcher.Match(normalized).HasMatches;
+        return CreateDiscoveryMatcher("**/*").Match(normalized).HasMatches
+            && !IsDependencyPath(normalized, tree);
     }
 
     /// <summary>
@@ -69,14 +69,18 @@ public partial class IndexingPipeline
                 files, rootPath, context, buffer, failOnExtractionError: false, OverlayRustSourceOwners, ct);
 
         ResolveImports(buffer);
+        var excludedPersistedFiles = normalizedChanged
+            .Concat(removedPaths.Select(NormalizeRelativePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Overlays do not extract manifests: imports resolve against the default branch's packages.
+        await ResolveSwiftImportsAsync(
+            projectName, buffer, manifestsExtracted: false, incremental: false, rebindPersisted: false,
+            excludedPersistedFiles, ct);
         await ResolveCallsAsync(
-            projectName,
-            buffer,
-            includePersistedNodes: true,
-            excludedPersistedFiles: normalizedChanged
-                .Concat(removedPaths.Select(NormalizeRelativePath))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase),
-            ct);
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct,
+            swiftManifestsExtracted: false);
+        var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
 
         var nodes = buffer.AllNodes
             .Where(node => !string.IsNullOrWhiteSpace(node.FilePath)
@@ -87,6 +91,20 @@ public partial class IndexingPipeline
             .Where(edge => nodeQns.Contains(edge.SourceQN) || nodeQns.Contains(edge.TargetQN))
             .Distinct()
             .ToList();
+
+        // Stub endpoints (no file) travel with the slice so its edges resolve in the overlay view.
+        foreach (var qualifiedName in edges.SelectMany(edge => new[] { edge.SourceQN, edge.TargetQN }))
+        {
+            if ((SwiftTypeReference.IsExternal(qualifiedName) || IsExternalModuleStub(qualifiedName))
+                && buffer.FindByQN(qualifiedName) is { } stub
+                && nodeQns.Add(qualifiedName))
+            {
+                nodes.Add(stub);
+            }
+        }
+
+        AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, nodes, edges);
+        await AddOverlayRetractionsAsync(projectName, swiftRebinding, nodes, edges, ct);
 
         return new BranchOverlaySlice(nodes, edges);
     }

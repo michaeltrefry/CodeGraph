@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test dist/extractor.test.js",
+    "test": "npm run build && node --test dist/extractor.test.js dist/app.test.js",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts"
   },

@@ -296,6 +296,8 @@ public sealed class RustCrateGroupPipelineTests
             await using var connection = new MySqlConnection(connectionString);
             await connection.OpenAsync();
             await using var drop = connection.CreateCommand();
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             drop.CommandText = $"DROP DATABASE IF EXISTS `{builder.Database}`";
             await drop.ExecuteNonQueryAsync();
         }
@@ -461,6 +463,8 @@ public sealed class RustCrateGroupPipelineTests
             await using var connection = new MySqlConnection(_serverConnectionString);
             await connection.OpenAsync();
             await using var drop = connection.CreateCommand();
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             drop.CommandText = $"DROP DATABASE IF EXISTS `{_builder.Database}`";
             await drop.ExecuteNonQueryAsync();
         }

@@ -148,9 +148,56 @@ public class CodeGraphMcpServer(
               dependency_scope, workspace_inherited, optional, target, git_reference, external_path
             - REFERENCES_PACKAGE cross-repo edge (Cargo): package_key, package_name, local_name,
               version, matched_by (package_key|git_url|path), confidence_band
+            - Package (SwiftPM, ecosystem swiftpm): package_name, identity, version, package_key,
+              source_kind (local|remote|path|registry), source, location, is_definition, manifest_path,
+              dependency_kind (declared|pinned), version_requirement, git_reference, revision, branch,
+              external_path
+            - REFERENCES_PACKAGE cross-repo edge (SwiftPM): package_key, package_name, identity, version,
+              matched_by (git_url to the root Package.swift of the repository at that URL | path),
+              confidence_band, dependency_kind (declared | pinned: a Package.resolved pin with no
+              declared dependency on the same package, e.g. Xcode or transitive)
             - Rust nodes from SCIP: source (scip), scip_symbol
             - ExternalSymbol: source (scip), scip_symbol, scip_external
             - Tree-sitter fallback nodes: confidence (low), extractionSource, fallbackReason
+            - Rust Function/Method (tree-sitter): abi (the foreign ABI of an `extern "C" fn`, e.g. C)
+            - File: skipped_reason (oversize: over the indexing size limit, no symbols extracted),
+              size_kb, size_limit_kb
+            - CALLS resolved by name stay within the caller's language family, plus Swift/Rust -> C and
+              Swift/C -> Rust functions exported with a foreign ABI
+
+            ## Swift (tree-sitter)
+            - Types: qualified name `{file}#type:Outer#type:Inner`. class/actor -> Class, struct -> Struct,
+              enum -> Enum, protocol -> Interface; declaration_kind (class|struct|enum|actor|protocol),
+              raw_type (an enum's raw-value type, e.g. String), class_bound (a protocol refining AnyObject)
+            - Members of an extension live under `{file}#extension:{TypePath}`; when the extended type is
+              declared in another file, their DEFINES/DEFINES_METHOD edge starts at that type
+            - Method/Function: qualified name ends in `name(label:Type,...)` with external labels (`_` when
+              unlabeled), e.g. `thumbnail(of:CGImage)`; argument_labels (external labels, `=` marks a default value, `...` a
+              variadic parameter, e.g. `width=:_:`), receiver_owner, return_type, parameters
+            - Property nodes (`#property:{name}`): computed (computed property) or requirement (protocol
+              requirement), type, is_static, accessors (get|set|modify, comma-separated); stored
+              properties are not nodes
+            - INHERITS/IMPLEMENTS/DEFINES/DEFINES_METHOD edges resolved across files: origin_file (file that
+              emitted the edge), swift_source_ref / swift_target_ref (the type reference it was resolved
+              from) and swift_source_name / swift_target_name (their simple names); inheritance_inferred
+              with swift_inferred_kind (a class's first supertype whose superclass-vs-protocol kind is a
+              name-based guess while it is external), swift_protocol_target (a protocol refinement),
+              swift_ambiguous (bound to every type of an ambiguous name, confidence low)
+            - `swift-external:{TypePath}` stub nodes (Class, or Interface when conformed to): a type
+              declared outside the repository; properties stub, language (Swift), type_path
+            - SwiftPM targets: Module nodes `{project}:{manifest}#target:{name}` (DEFINES from their
+              Package definition) with module_name, target_kind (target|executableTarget|testTarget|
+              macro|plugin|binaryTarget|systemLibrary), source_path, package_name, manifest_path;
+              a declared Package lists the products its targets use in swift_products
+            - IMPORTS edges (file -> provider) for `import M`: swift_import (module), swift_module (top-level
+              module), matched_by (target: an in-repo SwiftPM target | product: the declared dependency
+              providing product M | identity: a declared, else pinned, package named M | external),
+              imported_symbols (symbols of scoped imports such as `import struct M.T`), confidence (low
+              when several packages provide M); a scoped type import of an in-repo module also links the
+              file to the type (IMPORTS with imported_symbols, origin_file)
+            - `swift-external-module:{M}` stub nodes (Module): a module nothing in the repository
+              provides (Foundation, SwiftUI, UIKit, AppKit, Combine, ...); properties stub, external,
+              language (Swift), module_name
             """;
     }
 
@@ -519,53 +566,15 @@ public class CodeGraphMcpServer(
             .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }));
 
     [McpServerTool(Name = "get_architecture"),
-     Description("Get architecture overview for a project — hotspots, dependency analysis, complexity metrics.")]
+     Description("Get architecture overview for a project: node counts by label (exact, whole graph), hotspots " +
+                 "(top 10 methods/functions by call fan-in, minimum 3), key type relationships (top 10 types by " +
+                 "IMPLEMENTS/INHERITS in-degree, external stubs marked), external package dependencies (Package/" +
+                 "NuGetPackage nodes referenced via REFERENCES_PACKAGE across NuGet, Cargo and SwiftPM, with " +
+                 "ecosystem and version; total and per-ecosystem counts, top 25 listed), and cross-repo " +
+                 "dependencies summarized per repository and edge type. No model is called.")]
     public async Task<string> GetArchitecture(
         [Description("Project name")] string project)
-    {
-        var report = await query.GetArchitectureAsync(project);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"# Architecture: {report.Project}\n");
-
-        if (report.Summary is not null)
-        {
-            sb.AppendLine($"**Confidence:** {report.Confidence}");
-            sb.AppendLine();
-            sb.AppendLine(report.Summary);
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("### Node Counts\n");
-        foreach (var (label, count) in report.NodeCounts.OrderByDescending(kv => kv.Value))
-            sb.AppendLine($"- {label}: {count:N0}");
-        sb.AppendLine();
-
-        if (report.Hotspots.Count > 0)
-        {
-            sb.AppendLine("### Hotspots (high fan-in methods)\n");
-            foreach (var h in report.Hotspots)
-                sb.AppendLine($"- **{h.Name}** (fan-in: {h.FanIn}) — {h.Reason}");
-            sb.AppendLine();
-        }
-
-        if (report.InboundDependencies.Count > 0)
-        {
-            sb.AppendLine("### Inbound Dependencies (other repos depend on this)\n");
-            foreach (var edge in report.InboundDependencies)
-                sb.AppendLine($"- {edge.SourceProject} → this ({edge.Type})");
-            sb.AppendLine();
-        }
-
-        if (report.OutboundDependencies.Count > 0)
-        {
-            sb.AppendLine("### Outbound Dependencies (this depends on other repos)\n");
-            foreach (var edge in report.OutboundDependencies)
-                sb.AppendLine($"- this → {edge.TargetProject} ({edge.Type})");
-        }
-
-        return sb.ToString();
-    }
+        => ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(project));
 
     [McpServerTool(Name = "get_project_health"),
      Description("Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files (high churn + complexity), and per-project breakdowns.")]
@@ -945,9 +954,9 @@ public class CodeGraphMcpServer(
                  "as structured counts. Answers {path, found, blastRadius, criticalCount, highCount, mediumCount, " +
                  "lowCount, totalAffected, crossRepoCount, crossRepoImpacts, lowConfidenceCount, unmappedInboundEdges} plus commitSha " +
                  "and source (overlay or default-branch). crossRepoImpacts lists {sourceRepo, targetRepo, edgeType, count} " +
-                 "per repository pair; for a Rust file it includes the repositories whose Cargo manifests depend on the " +
-                 "file's crate (edgeType REFERENCES_PACKAGE), which are crate-level dependents and not affected nodes; " +
-                 "they are read from the default-branch Cargo manifests even with sha, and a file with no nodes " +
+                 "per repository pair; for a Rust (or Swift) file it includes the repositories whose Cargo (or SwiftPM/Xcode) " +
+                 "manifests depend on the file's crate (or package) (edgeType REFERENCES_PACKAGE), which are package-level " +
+                 "dependents and not affected nodes; they are read from the default-branch manifests even with sha, and a file with no nodes " +
                  "(found: false) reports none. " +
                  "blastRadius is the worst risk level among the affected " +
                  "nodes (critical|high|medium|low), or none when nothing depends on the file or the file has no " +
@@ -1046,7 +1055,10 @@ public class CodeGraphMcpServer(
                  "Answers {repo, inbound, outbound, rustSemantic} plus commitSha. inbound lists the repositories that " +
                  "depend on this one and outbound the repositories it depends on, each as {repo, edgeType, count, " +
                  "confidenceBand} (count is the number of links of that edge type; confidenceBand is the weakest of " +
-                 "them, high|medium|low or null — a Cargo path dependency matched by crate name is medium). rustSemantic is {status, manifest, groupCount, " +
+                 "them, high|medium|low or null — a Cargo or Swift package path dependency matched by package name is medium; " +
+                 "Cargo and SwiftPM/Xcode package dependencies appear as REFERENCES_PACKAGE; a Swift package declared in " +
+                 "Package.swift and pinned in Package.resolved counts once, while a pin nothing declares (an Xcode project's " +
+                 "packages, or a transitive pin) is still a link, so a Swift REFERENCES_PACKAGE link may be indirect). rustSemantic is {status, manifest, groupCount, " +
                  "semanticGroups, fallbackGroups, skippedGroups, treeSitterGroups}: status is semantic (every crate " +
                  "group indexed by rust-analyzer), partial or fallback (some or all crate groups indexed by " +
                  "tree-sitter instead), or not_analyzed (no Rust semantic pass was recorded for the repository). " +

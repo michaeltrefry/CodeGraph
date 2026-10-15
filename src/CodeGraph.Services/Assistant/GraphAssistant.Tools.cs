@@ -218,35 +218,7 @@ public partial class GraphAssistant
     private async Task<string> GetArchitectureAsync(JsonElement input)
     {
         var project = GetString(input, "project") ?? "";
-        var report = await query.GetArchitectureAsync(project);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"# Architecture: {report.Project}\n");
-        if (report.Summary is not null)
-        {
-            sb.AppendLine($"**Confidence:** {report.Confidence}");
-            sb.AppendLine();
-            sb.AppendLine(report.Summary);
-            sb.AppendLine();
-        }
-        sb.AppendLine("### Node Counts");
-        foreach (var (label, count) in report.NodeCounts.OrderByDescending(kv => kv.Value))
-            sb.AppendLine($"- {label}: {count}");
-        if (report.Hotspots.Count > 0)
-        {
-            sb.AppendLine("\n### Hotspots (high fan-in)");
-            foreach (var h in report.Hotspots)
-                sb.AppendLine($"- **{h.Name}** — {h.FanIn} callers");
-        }
-        if (report.InboundDependencies.Count > 0)
-        {
-            sb.AppendLine($"\n### Inbound from {report.InboundDependencies.Select(e => e.SourceProject).Distinct().Count()} projects");
-        }
-        if (report.OutboundDependencies.Count > 0)
-        {
-            sb.AppendLine($"\n### Outbound to {report.OutboundDependencies.Select(e => e.TargetProject).Distinct().Count()} projects");
-        }
-        return sb.ToString();
+        return ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(project));
     }
 
     private async Task<string> FindArchivalCandidatesAsync()

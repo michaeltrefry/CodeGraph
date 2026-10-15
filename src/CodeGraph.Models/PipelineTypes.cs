@@ -57,14 +57,16 @@ public record PendingEdge(
     Dictionary<string, object>? Properties = null);
 
 /// <summary>
-/// Call site that needs cross-reference resolution.
+/// Call site that needs cross-reference resolution. <paramref name="ArgumentLabels"/>, when set,
+/// selects among same-named overloads by argument labels (see ArgumentLabels in the pipeline).
 /// </summary>
 public record UnresolvedCall(
     string CallerQN,
     string CalleeName,
     string? ReceiverType,
     double Confidence,
-    CallReceiverKind ReceiverKind = CallReceiverKind.Unknown);
+    CallReceiverKind ReceiverKind = CallReceiverKind.Unknown,
+    string? ArgumentLabels = null);
 
 public enum CallReceiverKind
 {
@@ -82,11 +84,19 @@ public enum CallReceiverKind
 }
 
 /// <summary>
-/// Import/using that needs module resolution.
+/// Import/using that needs module resolution. <paramref name="ImportedSymbol"/> is the single
+/// declaration a scoped import names (Swift <c>import struct Module.Symbol</c>), when it does, and
+/// <paramref name="ImportedSymbolKind"/> the declaration kind it names (<c>struct</c>, <c>class</c>,
+/// <c>enum</c>, <c>protocol</c>, <c>typealias</c>, <c>func</c>, <c>let</c> or <c>var</c>).
+/// <paramref name="Exported"/> marks a re-export (Swift <c>@_exported import</c>): importers of
+/// the importing module see the imported module too.
 /// </summary>
 public record UnresolvedImport(
     string FileQN,
-    string ImportedNamespace);
+    string ImportedNamespace,
+    string? ImportedSymbol = null,
+    string? ImportedSymbolKind = null,
+    bool Exported = false);
 
 public enum ConfidenceLevel
 {

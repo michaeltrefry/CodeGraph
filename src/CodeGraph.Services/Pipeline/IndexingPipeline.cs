@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.FileSystemGlobbing;
+using Microsoft.Extensions.FileSystemGlobbing.Abstractions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using CodeGraph.Data;
@@ -24,6 +25,7 @@ public partial class IndexingPipeline
     private readonly ITypeScriptAnalyzer? _typeScriptAnalyzer;
     private readonly IRustAnalyzer? _rustAnalyzer;
     private readonly ICargoManifestExtractor? _cargoManifestExtractor;
+    private readonly ISwiftPackageManifestExtractor? _swiftPackageManifestExtractor;
     private readonly IndexingRunDiagnostics? _diagnostics;
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
@@ -42,7 +44,8 @@ public partial class IndexingPipeline
         ITypeScriptAnalyzer? typeScriptAnalyzer = null,
         IRustAnalyzer? rustAnalyzer = null,
         ICargoManifestExtractor? cargoManifestExtractor = null,
-        IndexingRunDiagnostics? diagnostics = null)
+        IndexingRunDiagnostics? diagnostics = null,
+        ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null)
     {
         _store = store;
         _extractors = extractors;
@@ -54,10 +57,14 @@ public partial class IndexingPipeline
         _typeScriptAnalyzer = typeScriptAnalyzer;
         _rustAnalyzer = rustAnalyzer;
         _cargoManifestExtractor = cargoManifestExtractor;
+        _swiftPackageManifestExtractor = swiftPackageManifestExtractor;
         _diagnostics = diagnostics;
         _foundationalRepos = _options.FoundationalRepos ?? [];
         _extractionVersions = new ExtractionVersionCatalog(
-            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer);
+            extractors, solutionAnalyzer, typeScriptAnalyzer, rustAnalyzer, swiftPackageManifestExtractor,
+            DiscoveryExcludePatterns,
+            FileSizeLimitsFingerprint,
+            cargoManifestExtractor);
     }
 
     /// <summary>
@@ -147,9 +154,12 @@ public partial class IndexingPipeline
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
-        var deletedFiles = GetDeletedFiles(rootPath, changedFilesOnly);
+        var deletedFiles = GetDeletedFiles(projectName, rootPath, changedFilesOnly, files, existingHashes);
         var languageStats = ComputeLanguageStats(files);
-        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, out var outdatedVersionFiles);
+        // Files over their size limit record their oversize version whichever component
+        // processes them, so the stored version always matches what FilterByHash expects.
+        var oversizeFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, oversizeFiles, out var outdatedVersionFiles);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
         if (outdatedVersionFiles > 0)
         {
@@ -269,40 +279,49 @@ public partial class IndexingPipeline
             }
         }
 
-        // TypeScript/Angular — Node.js sidecar analysis
+        // TypeScript/Angular — Node.js sidecar analysis. The sidecar discovers tsconfig files,
+        // workspace packages and sources itself, so it is handed exactly the files discovery
+        // admits (sc-26145): agent worktrees and dependency directories are never analyzed.
+        IReadOnlyList<GraphNode>? typeScriptNodes = null;
         if (_typeScriptAnalyzer is not null)
         {
-            // The sidecar now scans files from disk (ignoring tsconfig include/files)
-            // so we only need one tsconfig per repo — use the root one for compiler options.
-            var rootTsconfig = Path.Combine(rootPath, "tsconfig.json");
-            var tsconfigFiles = _fileSystem.FileExists(rootTsconfig)
-                ? new[] { rootTsconfig }
-                : _fileSystem.EnumerateFiles(rootPath, "tsconfig.json", SearchOption.AllDirectories)
-                    .Where(f => !f.Contains("node_modules", StringComparison.OrdinalIgnoreCase))
-                    .Take(1)
-                    .ToArray();
-
-            foreach (var tsconfig in tsconfigFiles)
+            var typeScriptScope = DiscoverTypeScriptScope(rootPath);
+            // The sidecar scans sources from the scope (ignoring tsconfig include/files), so one
+            // tsconfig per repo supplies the compiler options.
+            if (SelectTypeScriptConfig(typeScriptScope) is { } tsconfig)
             {
-                _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}",
-                    Path.GetRelativePath(rootPath, tsconfig));
+                _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}", tsconfig);
                 stepSw.Restart();
                 try
                 {
-                    var results = await _typeScriptAnalyzer.AnalyzeProjectAsync(
-                        tsconfig, context, ct);
+                    var results = (await _typeScriptAnalyzer.AnalyzeProjectAsync(
+                            Path.Combine(rootPath, tsconfig), context, typeScriptScope, ct))
+                        .Select(result => ClampToDiscovery(result, projectName, rootPath))
+                        .ToList();
                     _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
+                    // No result (sidecar unavailable) says nothing about the workspace packages.
+                    if (results.Any(result => result.Succeeded))
+                    {
+                        typeScriptNodes = results.Where(result => result.Succeeded)
+                            .SelectMany(result => result.Nodes)
+                            .ToList();
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
                         "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
-                        Path.GetRelativePath(rootPath, tsconfig));
+                        tsconfig);
                 }
+            }
+            else
+            {
+                // No admitted tsconfig: the repository has no TypeScript workspace packages.
+                typeScriptNodes = [];
             }
         }
 
@@ -312,14 +331,8 @@ public partial class IndexingPipeline
         var rustSourceOwners = new List<RustSourceOwner>();
         if (_rustAnalyzer is not null)
         {
-            var rootCargoManifest = Path.Combine(rootPath, "Cargo.toml");
-            var cargoManifests = _fileSystem.FileExists(rootCargoManifest)
-                ? new[] { rootCargoManifest }
-                : _fileSystem.EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
-                    .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                        StringComparison.OrdinalIgnoreCase))
-                    .Take(1)
-                    .ToArray();
+            // Every independent Cargo workspace (sc-26145: only the first one found was analyzed).
+            var cargoManifests = CargoWorkspaceRoots.Find(_fileSystem, DiscoverCargoManifests(rootPath));
 
             foreach (var cargoManifest in cargoManifests)
             {
@@ -338,9 +351,9 @@ public partial class IndexingPipeline
                     // No group could be analyzed (for example the tools are missing): the
                     // whole workspace falls back.
                     var failedAfterMs = stepSw.ElapsedMilliseconds;
-                    var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, ex, crateGroup: null);
+                    var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, cargoManifests, ex, crateGroup: null);
                     RecordRustSemanticFallback(workspaceFallback, ex);
-                    rustSemanticOutcomes = RecordRustSemanticOutcomes(
+                    rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
                         projectName,
                         workspaceFallback.Manifest,
                         settings: null,
@@ -355,7 +368,7 @@ public partial class IndexingPipeline
                             Documents: null,
                             Nodes: null,
                             Edges: null)],
-                        failedAfterMs);
+                        failedAfterMs));
                     continue;
                 }
 
@@ -388,7 +401,7 @@ public partial class IndexingPipeline
                     RustSemanticFallback? groupFallback = null;
                     if (failure is not null)
                     {
-                        groupFallback = CreateRustSemanticFallback(rootPath, cargoManifest, failure, group);
+                        groupFallback = CreateRustSemanticFallback(rootPath, cargoManifest, cargoManifests, failure, group);
                         RecordRustSemanticFallback(groupFallback, failure);
                     }
                     else if (!group.IsWholeWorkspace)
@@ -400,18 +413,19 @@ public partial class IndexingPipeline
                     groupOutcomes.Add(CreateRustSemanticGroupOutcome(
                         rootPath,
                         cargoManifest,
+                        cargoManifests,
                         group,
                         groupFallback,
                         prepared,
                         analysis.Groups.Count == 1 ? analysisMs : 0));
                 }
 
-                rustSemanticOutcomes = RecordRustSemanticOutcomes(
+                rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
                     projectName,
                     NormalizeRelativePath(Path.GetRelativePath(rootPath, cargoManifest)),
                     analysis.Settings,
                     groupOutcomes,
-                    analysisMs);
+                    analysisMs));
                 _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                 if (succeeded.Count == 0)
                     continue;
@@ -514,15 +528,26 @@ public partial class IndexingPipeline
             return outcomes;
         }
 
+        // Manifest files whose extracted package slice replaces the stored one on incremental runs.
+        // Manifests are re-extracted on every run, but a manifest that is not a discovered source
+        // file (or whose source extractor did not process it) never reaches successfullyProcessedFiles.
+        var manifestReplacementPaths = new List<string>();
+        // Manifest file names discovered this run, and the manifests found under them. A stored
+        // package slice of such a manifest that was not found again is emptied below.
+        var discoveredManifestNames = new HashSet<string>(StringComparer.Ordinal);
+        var discoveredManifestPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Content hash records of the tracked manifests (Cargo.toml, Package.resolved,
+        // project.pbxproj) whose slices this run writes. A manifest group whose manifests are all
+        // unchanged (content, extractor version, set of paths) keeps its stored slice untouched.
+        var manifestHashRecords = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
+
         // Cargo manifests — package definitions and dependency references for every crate/workspace member.
         if (_cargoManifestExtractor is not null)
         {
-            var cargoManifestPaths = _fileSystem
-                .EnumerateFiles(rootPath, "Cargo.toml", SearchOption.AllDirectories)
-                .Where(path => !path.Contains(
-                    $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                    StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+            var cargoManifestPaths = DiscoverCargoManifests(rootPath).ToArray();
+            discoveredManifestNames.Add(CargoManifestFileName);
+            discoveredManifestPaths.UnionWith(cargoManifestPaths.Select(path =>
+                NormalizeRelativePath(Path.GetRelativePath(rootPath, path))));
 
             if (cargoManifestPaths.Length > 0)
             {
@@ -536,6 +561,17 @@ public partial class IndexingPipeline
                     MergeResults([cargoResult], buffer);
                     if (cargoResult.Metadata is not null)
                         detectedMetadataCandidates.Add(cargoResult.Metadata);
+                    var cargoRelativePaths = cargoManifestPaths
+                        .Select(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)))
+                        .ToList();
+                    var cargoRecords = HashManifests(rootPath, cargoRelativePaths);
+                    if (replaceExistingGraph || ManifestGroupChanged(
+                            existingHashes, [CargoManifestFileName], cargoRecords, sourceManifestChanged: false))
+                    {
+                        manifestReplacementPaths.AddRange(cargoRelativePaths);
+                        foreach (var (path, record) in cargoRecords)
+                            manifestHashRecords[path] = record;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -543,6 +579,96 @@ public partial class IndexingPipeline
                         "Cargo manifest extraction failed for {Project}", projectName);
                 }
             }
+        }
+
+        // Swift Package Manager / Xcode — package definitions, targets, declared dependencies,
+        // resolved pins and Swift/Xcode vs Swift/SwiftPM classification.
+        var swiftManifestsExtracted = false;
+        var swiftManifestsPresent = false;
+        if (_swiftPackageManifestExtractor is not null)
+        {
+            try
+            {
+                var swiftResult = ExtractSwiftPackageManifests(rootPath, context, out var swiftManifestPaths);
+                discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageSwiftFileName);
+                discoveredManifestNames.Add(SwiftPackageManifestExtractor.PackageResolvedFileName);
+                discoveredManifestNames.Add(XcodeProjectReader.ProjectFileName);
+                discoveredManifestPaths.UnionWith(swiftManifestPaths);
+                swiftManifestsExtracted = true;
+                swiftManifestsPresent = swiftResult is not null;
+                if (swiftResult is not null)
+                {
+                    MergeResults([swiftResult], buffer);
+                    if (swiftResult.Metadata is not null)
+                        detectedMetadataCandidates.Add(swiftResult.Metadata);
+                    // Package.resolved and project.pbxproj are not discovered source files: their
+                    // slices are replaced whenever any Swift manifest changed (pins, declared
+                    // dependencies and targets refer to each other). A changed Package.swift is
+                    // replaced even when its Swift source extraction failed.
+                    var swiftRecords = HashManifests(rootPath, swiftManifestPaths
+                        .Where(path => ExtractionVersionCatalog.TrackedManifestNames.Contains(Path.GetFileName(path)))
+                        .ToList());
+                    var swiftGroupChanged = replaceExistingGraph || ManifestGroupChanged(
+                        existingHashes,
+                        [SwiftPackageManifestExtractor.PackageResolvedFileName, XcodeProjectReader.ProjectFileName],
+                        swiftRecords,
+                        sourceManifestChanged: changedRelativePaths.Concat(deletedFiles).Any(path =>
+                            Path.GetFileName(path) == SwiftPackageManifestExtractor.PackageSwiftFileName));
+                    manifestReplacementPaths.AddRange(swiftResult.ProcessedFiles.Where(path =>
+                        changedRelativePaths.Contains(path) ||
+                        (swiftGroupChanged && swiftRecords.ContainsKey(path))));
+                    if (swiftGroupChanged)
+                    {
+                        foreach (var (path, record) in swiftRecords)
+                            manifestHashRecords[path] = record;
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Swift package manifest extraction failed for {Project}", projectName);
+            }
+        }
+
+        // A manifest that is gone (deleted, moved, or now excluded from discovery) leaves its package
+        // slice behind: Package.resolved and Cargo.toml are not hash-tracked source files, so the
+        // full scan never reports them deleted. Replacing their paths with nothing removes their
+        // Package nodes and REFERENCES_PACKAGE edges; the post-index cross-repo linking of this
+        // project then rebuilds its links without them.
+        if (!replaceExistingGraph && existingHashes.Count > 0 && discoveredManifestNames.Count > 0)
+        {
+            var removedManifests = await FindRemovedManifestPathsAsync(
+                projectName, discoveredManifestNames, discoveredManifestPaths, existingHashes.Keys);
+            manifestReplacementPaths.AddRange(removedManifests);
+            swiftManifestsPresent |= removedManifests.Any(IsSwiftManifest);
+        }
+        swiftManifestsPresent |= deletedFiles.Any(IsSwiftManifest);
+
+        // TypeScript slices no hash-tracked file covers: slices an earlier sidecar wrote under
+        // excluded paths (agent worktrees, dependency directories) and workspace package modules
+        // keyed by their directory. A wholesale TypeScript rewrite also sweeps edge-less stubs.
+        var typeScriptReplacementPaths = new List<string>();
+        IReadOnlyList<string> typeScriptOrphanCandidates = [];
+        var typeScriptModulesChanged = false;
+        if (!replaceExistingGraph && existingHashes.Count > 0 && _typeScriptAnalyzer is not null)
+        {
+            var excludedSlices = await FindExcludedTypeScriptSlicesAsync(projectName, rootPath, ct);
+            typeScriptReplacementPaths.AddRange(excludedSlices);
+            if (typeScriptNodes is not null)
+            {
+                var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(projectName, typeScriptNodes);
+                typeScriptReplacementPaths.AddRange(moduleSlices);
+                typeScriptModulesChanged = moduleSlices.Count > 0;
+            }
+            var typeScriptVersionRefresh = changedRelativePaths.Any(path =>
+                IsTypeScriptPath(path)
+                && existingHashes.TryGetValue(path, out var record)
+                && buffer.AllFileHashes.TryGetValue(path, out var hash)
+                && record.ContentHash == hash);
+            if (excludedSlices.Count > 0 || typeScriptVersionRefresh)
+                typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(projectName);
         }
 
         // Per-file extraction for everything not successfully handled by a specialized analyzer
@@ -559,6 +685,7 @@ public partial class IndexingPipeline
             _logger.LogInformation("[Timing] Per-file extraction ({FileCount} files): {ElapsedMs}ms", remainingFiles.Count, stepSw.ElapsedMilliseconds);
             detectedMetadataCandidates.AddRange(perFileResult.Metadata);
             successfullyProcessedFiles.UnionWith(perFileResult.ProcessedFiles);
+            oversizeFiles.UnionWith(perFileResult.OversizeFiles);
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
@@ -578,13 +705,25 @@ public partial class IndexingPipeline
         _logger.LogInformation("Pre-resolution: {Nodes} nodes, {PendingEdges} pending edges, {UnresolvedCalls} unresolved calls",
             buffer.AllNodes.Count, buffer.AllPendingEdges.Count, buffer.AllUnresolvedCalls.Count);
         ResolveImports(buffer);
-        await ResolveCallsAsync(
+        var includePersistedNodes = !replaceExistingGraph && existingHashes.Count > 0;
+        var excludedPersistedFiles = successfullyProcessedFiles.Concat(deletedFiles)
+            .Concat(typeScriptReplacementPaths)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Manifests are re-extracted every run, so persisted imports are re-bound whenever the
+        // repository has (or just lost) Swift package manifests.
+        var swiftImportRebinding = await ResolveSwiftImportsAsync(
             projectName,
             buffer,
-            includePersistedNodes: !replaceExistingGraph && existingHashes.Count > 0,
-            excludedPersistedFiles: successfullyProcessedFiles.Concat(deletedFiles).ToHashSet(
-                StringComparer.OrdinalIgnoreCase),
+            manifestsExtracted: swiftManifestsExtracted,
+            incremental: includePersistedNodes,
+            rebindPersisted: includePersistedNodes && swiftManifestsExtracted && swiftManifestsPresent,
+            excludedPersistedFiles,
             ct);
+        await ResolveCallsAsync(
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct, swiftManifestsExtracted,
+            swiftImportRebinding);
+        var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
+            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
         CreateStubNodesForExternalTargets(projectName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
@@ -594,15 +733,17 @@ public partial class IndexingPipeline
         int edgeCount;
         if (replaceExistingGraph)
         {
+            var (fileHashes, extractionVersions) = WithManifestRecords(
+                buffer.AllFileHashes, ExtractionVersionsFor(buffer.AllFileHashes.Keys, oversizeFiles), manifestHashRecords);
             edgeCount = await _store.ReplaceProjectGraphAsync(
                 projectName,
                 buffer.AllNodes.ToList(),
                 buffer.AllPendingEdges.ToList(),
-                buffer.AllFileHashes,
+                fileHashes,
                 BuildRepositorySnapshot(
                     repository, detectedMetadata, languageStats, rustSemanticFallbacks, rustSemanticOutcomes),
                 replacementSyncState,
-                ExtractionVersionsFor(buffer.AllFileHashes.Keys),
+                extractionVersions,
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic graph replacement ({NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -612,15 +753,22 @@ public partial class IndexingPipeline
         {
             var replacementPaths = successfullyProcessedFiles
                 .Concat(deletedFiles)
+                .Concat(manifestReplacementPaths)
+                .Concat(typeScriptReplacementPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
                 buffer,
                 replacementPaths,
                 includeProjectStructure: existingHashes.Count == 0);
-            var replacementHashes = buffer.AllFileHashes
+            AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
+            if (typeScriptModulesChanged)
+                AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
+            var sourceHashes = buffer.AllFileHashes
                 .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
+            var (replacementHashes, replacementVersions) = WithManifestRecords(
+                sourceHashes, ExtractionVersionsFor(sourceHashes.Keys, oversizeFiles), manifestHashRecords);
 
             edgeCount = await _store.ReplaceProjectFilesAsync(
                 projectName,
@@ -628,7 +776,8 @@ public partial class IndexingPipeline
                 replacementNodes,
                 replacementEdges,
                 replacementHashes,
-                ExtractionVersionsFor(replacementHashes.Keys),
+                replacementVersions,
+                WithOrphanCandidates(swiftRebinding.Retractions, typeScriptOrphanCandidates),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -657,6 +806,312 @@ public partial class IndexingPipeline
 
     // ── File Discovery & Hashing ─────────────────────────────────────────
 
+    /// <summary>
+    /// Directories holding SwiftPM/Xcode build output or third-party checkouts
+    /// (<c>.build/checkouts</c>, <c>.swiftpm</c>, <c>DerivedData/.../SourcePackages</c>). Their
+    /// sources and manifests are dependencies, never the repository's own code, so every discovery
+    /// walk (source files, Swift and Cargo manifests, overlays) skips them in addition to the
+    /// configured <see cref="IndexingOptions.SkipPatterns"/>. Matched by exact (ordinal) name:
+    /// these tools only ever create them with this spelling.
+    /// </summary>
+    internal static readonly IReadOnlyList<string> GeneratedDependencyDirectories =
+        [".build", ".swiftpm", "DerivedData", "SourcePackages"];
+
+    /// <summary>
+    /// Dependency directories a package manager creates next to its manifest: CocoaPods installs
+    /// <c>Pods/</c> beside the <c>Podfile</c>, Carthage checks out into <c>Carthage/</c> beside the
+    /// <c>Cartfile</c> (or <c>Cartfile.resolved</c>). They are skipped only with that sibling
+    /// manifest present and by exact name, so an ordinary <c>pkg/pods</c> package stays indexed.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string[]> ManagedDependencyDirectories =
+        new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["Pods"] = ["Podfile"],
+            ["Carthage"] = ["Cartfile", "Cartfile.resolved"]
+        };
+
+    /// <summary>
+    /// The legacy NuGet (packages.config) and Paket restore folder. NuGet restores each package into
+    /// <c>packages/&lt;Id&gt;.&lt;Version&gt;/</c> holding <c>&lt;Id&gt;.&lt;Version&gt;.nupkg</c>,
+    /// Paket into <c>packages/&lt;Id&gt;/</c>. A directory named exactly <c>packages</c> is skipped
+    /// as a whole per <see cref="IsNuGetRestoreFolder"/> (restore markers, or .NET solution evidence
+    /// unless it holds JS workspace packages). Independently, any directory directly under a
+    /// <c>packages</c>/<c>Packages</c> folder (any case) that holds its own <c>&lt;name&gt;.nupkg</c>
+    /// is skipped. A JS/TS monorepo <c>packages/*</c> or a SwiftPM <c>Packages/</c> directory
+    /// without these .NET signals stays indexed.
+    /// </summary>
+    internal const string NuGetPackagesDirectory = "packages";
+
+    private const string NuGetPackagesConfig = "packages.config";
+    private const string NuGetRepositoriesConfig = "repositories.config";
+
+    /// <summary>
+    /// Every discovery exclusion as fingerprint text: the configured skip patterns and the
+    /// generated, managed and NuGet dependency directory rules. Part of the extraction fingerprint,
+    /// so a change re-runs indexing at an unchanged commit and the full scan adds or removes the
+    /// files that entered or left the indexed universe.
+    /// </summary>
+    internal IEnumerable<string> DiscoveryExcludePatterns =>
+        _options.SkipPatterns
+            .Concat(GeneratedDependencyDirectories.Select(directory => $"dir:{directory}"))
+            .Concat(ManagedDependencyDirectories
+                .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                .Select(entry => $"dir:{entry.Key}?sibling={string.Join(',', entry.Value)}"))
+            .Append($"dir:{NuGetPackagesDirectory}?sibling={NuGetPackagesConfig},{string.Join(',', PaketManifests)}" +
+                    $"&child={NuGetRepositoriesConfig}" +
+                    $"&solution-sibling=*.sln,*.slnx,nuget.config,{string.Join(',', SolutionNuGetFiles)}" +
+                    "&unless-children=package.json-without-nupkg" +
+                    "&package-dir(ignore-case-parent)=<name>/<name>.nupkg");
+
+    /// <summary>
+    /// The effective file size limits as fingerprint text, so a limit change re-runs indexing at an
+    /// unchanged commit and that run's full scan re-evaluates which files are oversize.
+    /// </summary>
+    private string FileSizeLimitsFingerprint =>
+        string.Join(';', _options.MaxFileSizeKbByExtension
+            .Select(entry => (Extension: entry.Key.ToLowerInvariant(), Limit: entry.Value))
+            .OrderBy(entry => entry.Extension, StringComparer.Ordinal)
+            .Select(entry => $"{entry.Extension}={entry.Limit}")
+            .Prepend($"*={_options.MaxFileSizeKb}"));
+
+    private const string CargoManifestFileName = "Cargo.toml";
+
+    private static bool IsSwiftManifest(string path) =>
+        Path.GetFileName(path) is SwiftPackageManifestExtractor.PackageSwiftFileName
+            or SwiftPackageManifestExtractor.PackageResolvedFileName
+            or XcodeProjectReader.ProjectFileName;
+
+    /// <summary>The source file hashes and versions plus the manifest records of the slices this run writes.</summary>
+    private static (Dictionary<string, string> Hashes, Dictionary<string, string> Versions) WithManifestRecords(
+        IReadOnlyDictionary<string, string> sourceHashes,
+        IReadOnlyDictionary<string, string> sourceVersions,
+        IReadOnlyDictionary<string, FileHashRecord> manifestRecords)
+    {
+        var hashes = new Dictionary<string, string>(sourceHashes, StringComparer.OrdinalIgnoreCase);
+        var versions = new Dictionary<string, string>(sourceVersions, StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, record) in manifestRecords)
+        {
+            hashes[path] = record.ContentHash;
+            versions[path] = record.ExtractionVersion!;
+        }
+
+        return (hashes, versions);
+    }
+
+    /// <summary>Content hash and manifest version of each tracked manifest (repository-relative paths).</summary>
+    private Dictionary<string, FileHashRecord> HashManifests(string rootPath, IReadOnlyList<string> relativePaths)
+    {
+        var records = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in relativePaths)
+        {
+            if (_extractionVersions.ForManifest(path) is not { } version)
+                continue;
+            try
+            {
+                var bytes = _fileSystem.ReadAllBytes(Path.Combine(rootPath, path));
+                records[path] = new FileHashRecord(Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes)), version);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // No record: the next run sees the manifest as new and rewrites its group.
+                _logger.LogDebug(ex, "Could not hash manifest {Manifest}", path);
+            }
+        }
+
+        return records;
+    }
+
+    /// <summary>
+    /// Whether a manifest group's stored slices are stale: a manifest is new, its content or
+    /// manifest version changed, a stored manifest of the group is gone, or a manifest the group
+    /// depends on (<paramref name="sourceManifestChanged"/>, e.g. a changed <c>Package.swift</c>)
+    /// changed. Manifests of a group refer to each other (pins, path dependencies, targets), so the
+    /// whole group is rewritten or none of it.
+    /// </summary>
+    private static bool ManifestGroupChanged(
+        IReadOnlyDictionary<string, FileHashRecord> existingHashes,
+        IReadOnlyCollection<string> manifestNames,
+        IReadOnlyDictionary<string, FileHashRecord> current,
+        bool sourceManifestChanged)
+    {
+        if (sourceManifestChanged)
+            return true;
+
+        foreach (var (path, record) in current)
+        {
+            if (!existingHashes.TryGetValue(path, out var stored)
+                || stored.ContentHash != record.ContentHash
+                || !string.Equals(stored.ExtractionVersion, record.ExtractionVersion, StringComparison.Ordinal))
+                return true;
+        }
+
+        return existingHashes.Keys.Any(path =>
+            manifestNames.Contains(Path.GetFileName(path)) && !current.ContainsKey(NormalizeRelativePath(path)));
+    }
+
+    /// <summary>
+    /// Manifests (named one of <paramref name="manifestNames"/>) that own stored Package or Module
+    /// nodes of <paramref name="projectName"/>, or a stored manifest hash record, but were not
+    /// discovered this run.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> FindRemovedManifestPathsAsync(
+        string projectName,
+        IReadOnlySet<string> manifestNames,
+        IReadOnlySet<string> discoveredPaths,
+        IEnumerable<string> storedHashPaths)
+    {
+        var removed = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Package, int.MaxValue))
+            .Concat(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
+            .Select(node => node.FilePath)
+            .OfType<string>()
+            .Where(path => path.Length > 0)
+            .Concat(storedHashPaths.Where(path =>
+                ExtractionVersionCatalog.TrackedManifestNames.Contains(Path.GetFileName(path))))
+            .Select(NormalizeRelativePath)
+            .Where(path => manifestNames.Contains(Path.GetFileName(path)) && !discoveredPaths.Contains(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (removed.Count > 0)
+        {
+            _logger.LogInformation(
+                "Removing the package slices of {Count} manifest(s) of {Project} that are no longer present: {Manifests}",
+                removed.Count, projectName, string.Join(", ", removed));
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    /// A matcher for <paramref name="includePatterns"/> minus the configured skip patterns
+    /// (case-insensitive globs). Dependency directories are excluded by <see cref="DiscoverPaths"/>
+    /// and <see cref="IsDependencyPath"/>, not by this matcher.
+    /// </summary>
+    private Matcher CreateDiscoveryMatcher(params string[] includePatterns)
+    {
+        var matcher = new Matcher();
+        matcher.AddIncludePatterns(includePatterns);
+        foreach (var pattern in _options.SkipPatterns)
+            matcher.AddExclude(pattern);
+        return matcher;
+    }
+
+    /// <summary>
+    /// Full paths of the files under <paramref name="rootPath"/> that match
+    /// <paramref name="includePatterns"/> and no discovery exclusion. The walk never descends into
+    /// a skipped dependency directory.
+    /// </summary>
+    private IEnumerable<string> DiscoverPaths(string rootPath, params string[] includePatterns)
+    {
+        var root = Path.GetFullPath(rootPath);
+        var tree = RepositoryTree.FromFileSystem(root, _fileSystem);
+        var directory = new DiscoveryDirectory(
+            new DirectoryInfoWrapper(new DirectoryInfo(root)),
+            fullPath => IsDependencyDirectory(NormalizeRelativePath(Path.GetRelativePath(root, fullPath)), tree));
+        return CreateDiscoveryMatcher(includePatterns).Execute(directory).Files
+            .Select(match => Path.GetFullPath(Path.Combine(root, match.Path)));
+    }
+
+    /// <summary>
+    /// True when the repository directory <paramref name="directoryPath"/> (repo-relative) is a
+    /// skipped dependency directory; <paramref name="repositoryFileExists"/> answers for
+    /// repository-relative file paths. Only files beside or directly inside the directory are
+    /// probed, so the disk walk and the overlay's tree lookups decide identically.
+    /// </summary>
+    private static bool IsDependencyDirectory(string directoryPath, RepositoryTree tree)
+    {
+        var normalized = NormalizeRelativePath(directoryPath);
+        if (normalized.Length == 0)
+            return false;
+        var separator = normalized.LastIndexOf('/');
+        var name = separator < 0 ? normalized : normalized[(separator + 1)..];
+        var parent = separator < 0 ? "" : normalized[..separator];
+        string InParent(string file) => parent.Length == 0 ? file : $"{parent}/{file}";
+        var parentName = parent[(parent.LastIndexOf('/') + 1)..];
+
+        return GeneratedDependencyDirectories.Contains(name, StringComparer.Ordinal)
+               || (ManagedDependencyDirectories.TryGetValue(name, out var manifests)
+                   && manifests.Any(manifest => tree.FileExists(InParent(manifest))))
+               || (name == NuGetPackagesDirectory && IsNuGetRestoreFolder(normalized, parent, tree))
+               // One restored package directory: packages/<Id>.<Version>/<Id>.<Version>.nupkg. The
+               // folder name is matched case-insensitively here (VS restores into Packages/ too);
+               // the .nupkg probe keeps a SwiftPM Packages/<Name>/ indexed.
+               || (string.Equals(parentName, NuGetPackagesDirectory, StringComparison.OrdinalIgnoreCase)
+                   && tree.FileExists($"{normalized}/{name}.nupkg"));
+    }
+
+    /// <summary>Paket's lock/dependency files: Paket restores into packages/&lt;Id&gt;/.</summary>
+    private static readonly string[] PaketManifests = ["paket.dependencies", "paket.lock"];
+
+    /// <summary>NuGet configuration inside a sibling <c>.nuget/</c> directory (NuGet 2 solution restore).</summary>
+    private static readonly string[] SolutionNuGetFiles =
+        [".nuget/NuGet.Config", ".nuget/NuGet.config", ".nuget/nuget.config", ".nuget/packages.config"];
+
+    /// <summary>
+    /// True when the directory <paramref name="packagesDirectory"/> (named exactly <c>packages</c>,
+    /// beside <paramref name="parent"/>'s other entries) is a NuGet/Paket restore folder as a whole.
+    /// Precedence: a restore marker (a sibling <c>packages.config</c>, <c>paket.dependencies</c> or
+    /// <c>paket.lock</c>, or <c>repositories.config</c> inside) always decides. Otherwise .NET
+    /// solution evidence beside it (a <c>*.sln</c>/<c>*.slnx</c>, a <c>NuGet.Config</c>, or
+    /// <c>.nuget/NuGet.Config</c>/<c>.nuget/packages.config</c>) makes it a restore folder unless its
+    /// direct children look like JS workspace packages: some child holds a <c>package.json</c> and
+    /// none holds a <c>.nupkg</c>.
+    /// </summary>
+    private static bool IsNuGetRestoreFolder(string packagesDirectory, string parent, RepositoryTree tree)
+    {
+        string InParent(string file) => parent.Length == 0 ? file : $"{parent}/{file}";
+        if (tree.FileExists(InParent(NuGetPackagesConfig))
+            || tree.FileExists($"{packagesDirectory}/{NuGetRepositoriesConfig}")
+            || PaketManifests.Any(manifest => tree.FileExists(InParent(manifest))))
+            return true;
+
+        var siblings = tree.ListDirectory(parent);
+        var solutionEvidence =
+            siblings.Any(entry => entry.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+                                  || entry.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                                  || entry.Equals("nuget.config", StringComparison.OrdinalIgnoreCase))
+            || SolutionNuGetFiles.Any(file => tree.FileExists(InParent(file)));
+        if (!solutionEvidence)
+            return false;
+
+        var hasWorkspacePackage = false;
+        foreach (var child in tree.ListDirectory(packagesDirectory))
+        {
+            var entries = tree.ListDirectory($"{packagesDirectory}/{child}");
+            if (entries.Any(entry => entry.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase)))
+                return true;
+            hasWorkspacePackage |= entries.Contains("package.json");
+        }
+
+        return !hasWorkspacePackage;
+    }
+
+    /// <summary>
+    /// True when a directory of <paramref name="relativePath"/> is a skipped dependency directory
+    /// of <paramref name="tree"/>.
+    /// </summary>
+    private static bool IsDependencyPath(string relativePath, RepositoryTree tree)
+    {
+        var segments = NormalizeRelativePath(relativePath).Split('/');
+        for (var index = 1; index < segments.Length; index++)
+        {
+            if (IsDependencyDirectory(string.Join('/', segments.Take(index)), tree))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Every <c>Cargo.toml</c> discovery includes, minus Cargo build output under <c>target/</c>.
+    /// </summary>
+    private IReadOnlyList<string> DiscoverCargoManifests(string rootPath) =>
+        DiscoverPaths(rootPath, $"**/{CargoManifestFileName}")
+            .Where(path => Path.GetFileName(path) == CargoManifestFileName)
+            .Where(path => !path.Contains(
+                $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
     private List<string> DiscoverFiles(string rootPath,
         IReadOnlyList<string>? changedFilesOnly)
     {
@@ -666,53 +1121,103 @@ public partial class IndexingPipeline
                 .Where(_fileSystem.FileExists)
                 .ToList();
 
-        var matcher = new Matcher();
-        matcher.AddInclude("**/*");
-        foreach (var skip in _options.SkipPatterns)
-            matcher.AddExclude(skip);
+        // A missing checkout must fail the run, never read as "every file was deleted".
+        if (!_fileSystem.DirectoryExists(rootPath))
+            throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
 
         var supportedExtensions = _extractors
             .SelectMany(e => e.SupportedExtensions)
             .ToHashSet();
 
-        return matcher.GetResultsInFullPath(rootPath)
+        return DiscoverPaths(rootPath, "**/*")
             .Where(f => supportedExtensions.Contains(Path.GetExtension(f)))
             .ToList();
     }
 
-    private List<string> GetDeletedFiles(string rootPath, IReadOnlyList<string>? changedFilesOnly)
+    /// <summary>
+    /// Paths whose persisted graph slice must be removed. A change-list run reports listed paths
+    /// that no longer exist. A full-scan incremental run reports every stored hash record that
+    /// discovery no longer yields: the file was deleted, or it left the indexed universe (a skip
+    /// pattern now excludes it, or no extractor supports its extension any more). A full scan
+    /// fails closed: a missing checkout throws, and a scan that finds no files while hashes are
+    /// stored infers no deletions rather than wiping the project.
+    /// </summary>
+    private List<string> GetDeletedFiles(string projectName, string rootPath,
+        IReadOnlyList<string>? changedFilesOnly, List<string> discoveredFiles,
+        Dictionary<string, FileHashRecord> existingHashes)
     {
-        if (changedFilesOnly is null)
+        if (changedFilesOnly is not null)
+        {
+            return changedFilesOnly
+                .Where(path => !_fileSystem.FileExists(Path.Combine(rootPath, path)))
+                .Select(NormalizeRelativePath)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        if (existingHashes.Count == 0)
             return [];
 
-        return changedFilesOnly
-            .Where(path => !_fileSystem.FileExists(Path.Combine(rootPath, path)))
+        if (discoveredFiles.Count == 0)
+        {
+            _logger.LogWarning(
+                "Full scan of {Project} at {Path} discovered no files while {Count} files are indexed; " +
+                "skipping deletion inference instead of removing the whole project",
+                projectName, rootPath, existingHashes.Count);
+            return [];
+        }
+
+        var discovered = discoveredFiles
+            .Select(file => NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Tracked manifests (Cargo.toml, Package.resolved, project.pbxproj) are not source files:
+        // their records are reconciled with manifest discovery instead (FindRemovedManifestPathsAsync).
+        var deleted = existingHashes.Keys
             .Select(NormalizeRelativePath)
+            .Where(path => !discovered.Contains(path)
+                           && !ExtractionVersionCatalog.TrackedManifestNames.Contains(Path.GetFileName(path)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        if (deleted.Count > 0)
+        {
+            _logger.LogInformation(
+                "Full scan of {Project} found {Count} indexed files no longer discovered; removing them",
+                projectName, deleted.Count);
+        }
+
+        return deleted;
     }
 
     /// <summary>
     /// Files to extract: new files, files whose content changed, and unchanged files whose stored
     /// extraction version differs from the current one (a missing version counts as different).
+    /// The current version of a file over its size limit is its <see cref="OversizeVersion"/>, so
+    /// lowering a limit re-processes (and empties) an unchanged file that is now oversize, and
+    /// raising it extracts a previously skipped one.
     /// </summary>
     private List<string> FilterByHash(List<string> files, string rootPath,
-        Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, out int outdatedVersionFiles)
+        Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, ISet<string> oversizeFiles,
+        out int outdatedVersionFiles)
     {
         var changed = new List<string>();
         outdatedVersionFiles = 0;
         foreach (var file in files)
         {
             var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
-            var hash = ComputeHash(file);
+            var bytes = _fileSystem.ReadAllBytes(file);
+            var hash = Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
             buffer.AddFileHash(relPath, hash);
+            var oversize = IsOversize(file, relPath, bytes.Length);
+            if (oversize)
+                oversizeFiles.Add(relPath);
 
             if (!existingHashes.TryGetValue(relPath, out var existing) ||
                 existing.ContentHash != hash)
             {
                 changed.Add(file);
             }
-            else if (!string.Equals(existing.ExtractionVersion, _extractionVersions.ForPath(relPath),
+            else if (!string.Equals(existing.ExtractionVersion,
+                         oversize ? OversizeVersion(relPath) : _extractionVersions.ForPath(relPath),
                          StringComparison.Ordinal))
             {
                 changed.Add(file);
@@ -722,17 +1227,30 @@ public partial class IndexingPipeline
         return changed;
     }
 
-    private Dictionary<string, string> ExtractionVersionsFor(IEnumerable<string> relativePaths) =>
+    private Dictionary<string, string> ExtractionVersionsFor(
+        IEnumerable<string> relativePaths, IReadOnlySet<string> oversizeFiles) =>
         relativePaths.ToDictionary(
             path => path,
-            _extractionVersions.ForPath,
+            path => oversizeFiles.Contains(path) ? OversizeVersion(path) : _extractionVersions.ForPath(path),
             StringComparer.OrdinalIgnoreCase);
 
-    private string ComputeHash(string filePath)
+    /// <summary>
+    /// The version recorded for a file skipped as oversize: it names the limit, so the file is
+    /// processed again once the limit (or its extractor) changes, but not while both stay. The
+    /// limits are part of the extraction fingerprint, so a limit change triggers that run.
+    /// </summary>
+    private string OversizeVersion(string relativePath) =>
+        $"{_extractionVersions.ForPath(relativePath)};oversize>{_options.MaxFileSizeKbFor(Path.GetExtension(relativePath))}KB";
+
+    /// <summary>
+    /// True when the file exceeds its size limit, by the same text-length test per-file extraction
+    /// applies. Text is decoded only when the byte length exceeds the limit, since a file never
+    /// holds more characters than bytes.
+    /// </summary>
+    private bool IsOversize(string file, string relativePath, int byteLength)
     {
-        var bytes = _fileSystem.ReadAllBytes(filePath);
-        var hash = System.IO.Hashing.XxHash3.Hash(bytes);
-        return Convert.ToHexString(hash);
+        var limit = _options.MaxFileSizeKbFor(Path.GetExtension(relativePath)) * 1024;
+        return byteLength > limit && _fileSystem.ReadAllText(file).Length > limit;
     }
 
     // ── Per-File Extraction ──────────────────────────────────────────────
@@ -743,6 +1261,7 @@ public partial class IndexingPipeline
     {
         var metadataSeen = new ConcurrentBag<ProjectMetadata>();
         var processedFiles = new ConcurrentBag<string>();
+        var oversizeFiles = new ConcurrentBag<string>();
         var failures = new ConcurrentQueue<Exception>();
 
         await Parallel.ForEachAsync(files,
@@ -762,8 +1281,26 @@ public partial class IndexingPipeline
                 {
                     var content = await _fileSystem.ReadAllTextAsync(filePath, ct2);
 
-                    // Skip files over size limit
-                    if (content.Length > _options.MaxFileSizeKb * 1024) return;
+                    // A file over the size limit is not extracted, but it is processed: its File
+                    // node says why it has no symbols and its hash is recorded, so an unchanged
+                    // oversize file is not reported as changed again on the next run.
+                    var limitKb = _options.MaxFileSizeKbFor(ext);
+                    if (content.Length > limitKb * 1024)
+                    {
+                        var oversizePath = NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath));
+                        _logger.LogInformation(
+                            "Skipping extraction of {File} in {Project}: {SizeKb} KB exceeds the {LimitKb} KB limit",
+                            oversizePath, context.ProjectName, content.Length / 1024, limitKb);
+                        if (buffer.FindByQN($"{context.ProjectName}:{oversizePath}") is { Label: NodeLabel.File } fileNode)
+                        {
+                            fileNode.Properties["skipped_reason"] = "oversize";
+                            fileNode.Properties["size_kb"] = content.Length / 1024;
+                            fileNode.Properties["size_limit_kb"] = limitKb;
+                        }
+                        oversizeFiles.Add(oversizePath);
+                        processedFiles.Add(oversizePath);
+                        return;
+                    }
 
                     var result = await extractor.ExtractAsync(filePath, content,
                         context, ct2);
@@ -809,7 +1346,7 @@ public partial class IndexingPipeline
         if (!failures.IsEmpty)
             throw new AggregateException("One or more files failed during replacement indexing.", failures);
 
-        return new PerFileExtractionResult(metadataSeen.ToList(), processedFiles.ToList());
+        return new PerFileExtractionResult(metadataSeen.ToList(), processedFiles.ToList(), oversizeFiles.ToList());
     }
 
     private RepositoryEntity BuildRepositorySnapshot(
@@ -936,6 +1473,7 @@ public partial class IndexingPipeline
     private RustSemanticFallback CreateRustSemanticFallback(
         string rootPath,
         string cargoManifest,
+        IReadOnlyList<string> cargoRoots,
         Exception failure,
         RustCrateGroupAnalysis? crateGroup)
     {
@@ -944,7 +1482,7 @@ public partial class IndexingPipeline
         return new RustSemanticFallback(
             manifest,
             wholeWorkspace
-                ? ReadCargoCrateNames(rootPath, cargoManifest)
+                ? ReadCargoCrateNames(rootPath, cargoManifest, cargoRoots)
                 : crateGroup!.Crates.Order(StringComparer.Ordinal).ToList(),
             RustSemanticFailureCategory.Classify(failure),
             (failure as RustSemanticIndexingException)?.FailureCode,
@@ -956,15 +1494,25 @@ public partial class IndexingPipeline
         };
     }
 
-    private IReadOnlyList<string> ReadCargoCrateNames(string rootPath, string cargoManifest)
+    /// <summary>
+    /// The crates a whole-workspace analysis of <paramref name="cargoManifest"/> covers: every
+    /// discovered package manifest at or below its directory, except those owned by another
+    /// analysis root nested below it. A standalone package nested in another package's directory
+    /// (a vendored path dependency, a Tauri app) is analyzed through its own root, so it belongs
+    /// to that root's group only (sc-26145: LensWorks counted such crates twice).
+    /// </summary>
+    private IReadOnlyList<string> ReadCargoCrateNames(
+        string rootPath, string cargoManifest, IReadOnlyList<string> cargoRoots)
     {
-        var workspaceRoot = Path.GetDirectoryName(cargoManifest) ?? rootPath;
+        var workspaceRoot = Path.GetFullPath(Path.GetDirectoryName(cargoManifest) ?? rootPath);
+        var nestedRoots = cargoRoots
+            .Select(root => Path.GetFullPath(Path.GetDirectoryName(root) ?? rootPath))
+            .Where(directory => IsStrictlyBelow(directory, workspaceRoot))
+            .ToList();
         var crates = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var manifestPath in _fileSystem
-                     .EnumerateFiles(workspaceRoot, "Cargo.toml", SearchOption.AllDirectories)
-                     .Where(path => !path.Contains(
-                         $"{Path.DirectorySeparatorChar}target{Path.DirectorySeparatorChar}",
-                         StringComparison.OrdinalIgnoreCase)))
+        foreach (var manifestPath in DiscoverCargoManifests(rootPath)
+                     .Where(path => IsAtOrBelow(Path.GetDirectoryName(path) ?? "", workspaceRoot))
+                     .Where(path => !nestedRoots.Any(nested => IsAtOrBelow(Path.GetDirectoryName(path) ?? "", nested))))
         {
             try
             {
@@ -989,6 +1537,14 @@ public partial class IndexingPipeline
         return crates.ToList();
     }
 
+    private static bool IsStrictlyBelow(string directory, string ancestor) =>
+        directory.Length > ancestor.Length &&
+        directory.StartsWith(ancestor, StringComparison.Ordinal) &&
+        directory[ancestor.Length] == Path.DirectorySeparatorChar;
+
+    private static bool IsAtOrBelow(string directory, string ancestor) =>
+        string.Equals(directory, ancestor, StringComparison.Ordinal) || IsStrictlyBelow(directory, ancestor);
+
     /// <summary>
     /// The crate directory owning a <c>.rs</c> file is the longest matching source directory
     /// across every analyzed group, so a file in a nested crate belongs to that crate's group
@@ -1000,13 +1556,14 @@ public partial class IndexingPipeline
     private RustSemanticGroupOutcome CreateRustSemanticGroupOutcome(
         string rootPath,
         string cargoManifest,
+        IReadOnlyList<string> cargoRoots,
         RustCrateGroupAnalysis group,
         RustSemanticFallback? fallback,
         IReadOnlyList<ExtractionResult>? semanticResults,
         long measuredWorkspaceMs)
     {
         var crates = fallback?.Crates ?? (group.IsWholeWorkspace
-            ? ReadCargoCrateNames(rootPath, cargoManifest)
+            ? ReadCargoCrateNames(rootPath, cargoManifest, cargoRoots)
             : group.Crates.Order(StringComparer.Ordinal).ToList());
         var outcome = fallback is null
             ? RustSemanticGroupOutcome.Semantic
@@ -1239,7 +1796,7 @@ public partial class IndexingPipeline
                 continue;
             }
 
-            if (content.Length > _options.MaxFileSizeKb * 1024)
+            if (content.Length > _options.MaxFileSizeKbFor(Path.GetExtension(file)) * 1024)
                 continue;
 
             var stat = GetOrAddLanguageStat(result, language);
@@ -1307,6 +1864,7 @@ public partial class IndexingPipeline
             ".ts" or ".tsx" => "TypeScript",
             ".js" or ".jsx" => "JavaScript",
             ".rs" => "Rust",
+            ".swift" => "Swift",
             ".py" or ".pyw" => "Python",
             ".go" => "Go",
             ".java" => "Java",
@@ -1339,7 +1897,8 @@ public partial class IndexingPipeline
 
     private sealed record PerFileExtractionResult(
         IReadOnlyList<ProjectMetadata> Metadata,
-        IReadOnlyList<string> ProcessedFiles);
+        IReadOnlyList<string> ProcessedFiles,
+        IReadOnlyList<string> OversizeFiles);
 
     private static int GetLanguagePriority(string language) =>
         language.ToLowerInvariant() switch

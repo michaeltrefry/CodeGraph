@@ -84,6 +84,8 @@ public class ProjectQueryServiceMariaDbTests
             builder.Database = "";
             await using var connection = new MySqlConnection(builder.ConnectionString);
             await connection.OpenAsync();
+            // Release pooled sessions (idle ones linger ~180s per database) before dropping.
+            await MySqlConnection.ClearAllPoolsAsync();
             await connection.ExecuteAsync($"DROP DATABASE IF EXISTS `{databaseName}`");
         }
     }

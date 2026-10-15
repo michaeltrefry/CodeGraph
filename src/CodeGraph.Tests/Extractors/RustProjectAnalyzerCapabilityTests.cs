@@ -321,9 +321,15 @@ public sealed class RustProjectAnalyzerCapabilityTests
 
     private static async Task<int> ReadPidAsync(string path)
     {
+        // The script's redirect creates the file before writing the PID, so an existing file can
+        // still be empty: poll until it holds a complete PID.
         var deadline = DateTime.UtcNow.Add(ProcessWaitLimit);
-        while (!File.Exists(path) && DateTime.UtcNow < deadline)
+        while (DateTime.UtcNow < deadline)
+        {
+            if (File.Exists(path) && int.TryParse(await File.ReadAllTextAsync(path), out var pid))
+                return pid;
             await Task.Delay(20);
+        }
 
         File.Exists(path).ShouldBeTrue($"Expected child PID file '{path}'.");
         return int.Parse(await File.ReadAllTextAsync(path));

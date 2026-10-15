@@ -107,8 +107,21 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         try
         {
             TouchLastUsed();
-            var response = await _http.PostAsJsonAsync("/extract-project", request, ct);
-            response.EnsureSuccessStatusCode();
+            using var response = await _http.PostAsJsonAsync("/extract-project", request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                // A rejected request (413 body too large, 500 extraction error) must be visible:
+                // the caller falls back to per-file extraction.
+                var body = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning(
+                    "TypeScript extractor rejected the extraction of {Project}: HTTP {StatusCode} {Reason}: {Body}",
+                    request.ProjectName,
+                    (int)response.StatusCode,
+                    response.ReasonPhrase,
+                    body.Length > 500 ? body[..500] : body);
+                return null;
+            }
+
             return await response.Content.ReadFromJsonAsync<ExtractProjectResponse>(
                 cancellationToken: ct);
         }
@@ -123,7 +136,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "TypeScript extractor request failed");
+            _logger.LogWarning(ex, "TypeScript extractor request for {Project} failed", request.ProjectName);
             return null;
         }
         finally
@@ -397,21 +410,33 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
     private static string? FindNodeExecutable()
         => FindExecutable("node") ?? FindExecutable("nodejs");
 
-    private static string? FindServerScript()
+    private static string? FindServerScript() => FindServerScript(AppContext.BaseDirectory);
+
+    /// <summary>
+    /// The sidecar's <c>dist/server.js</c>: next to the binary first (Docker / published layout),
+    /// else in the repository the binary was built in. The repository root is the nearest ancestor
+    /// holding a <c>.git</c> entry, a directory in a main checkout and a file in a git worktree, so
+    /// a worktree build runs its own sidecar rather than the main checkout's.
+    /// </summary>
+    internal static string? FindServerScript(string baseDirectory)
     {
-        // Check relative to the app base directory first (Docker / published layout)
-        var baseScript = Path.Combine(AppContext.BaseDirectory, "tools", "ts-extractor", "dist", "server.js");
+        var baseScript = Path.Combine(baseDirectory, "tools", "ts-extractor", "dist", "server.js");
         if (File.Exists(baseScript)) return baseScript;
 
-        // Walk up from the running assembly to find the repo root (.git marker)
-        var dir = AppContext.BaseDirectory;
-        while (dir is not null && !Directory.Exists(Path.Combine(dir, ".git")))
+        var dir = baseDirectory;
+        while (dir is not null && !IsRepositoryRoot(dir))
             dir = Directory.GetParent(dir)?.FullName;
 
         if (dir is null) return null;
 
         var script = Path.Combine(dir, "tools", "ts-extractor", "dist", "server.js");
         return File.Exists(script) ? script : null;
+    }
+
+    private static bool IsRepositoryRoot(string directory)
+    {
+        var marker = Path.Combine(directory, ".git");
+        return Directory.Exists(marker) || File.Exists(marker);
     }
 
     public void Dispose()

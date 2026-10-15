@@ -12,6 +12,7 @@ public partial class Neo4jGraphStore
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
+        GraphSliceRetractions? retractions = null,
         CancellationToken ct = default)
     {
         if (filePaths.Count == 0) return 0;
@@ -22,10 +23,32 @@ public partial class Neo4jGraphStore
             ct.ThrowIfCancellationRequested();
             var pathVariants = ExpandPathVariants(filePaths);
 
+            // Retracted edges go first, so they are never preserved below.
+            if (retractions is { Edges.Count: > 0 })
+            {
+                var retracted = retractions.Edges.Select(edge => new Dictionary<string, object?>
+                {
+                    ["source"] = edge.SourceQN,
+                    ["target"] = edge.TargetQN,
+                    ["type"] = edge.Type.ToString()
+                }).ToList();
+                foreach (var batch in Chunk(retracted, 500))
+                {
+                    await tx.RunAsync("""
+                        UNWIND $edges AS e
+                        MATCH (source:CodeNode {project: $project, qualifiedName: e.source})-[edge]->(target:CodeNode {project: $project, qualifiedName: e.target})
+                        WHERE type(edge) = e.type
+                        DELETE edge
+                        """, new { project, edges = batch });
+                }
+            }
+
             var incomingCursor = await tx.RunAsync("""
                 MATCH (source:CodeNode)-[edge]->(target:CodeNode {project: $project})
                 WHERE target.filePath IN $filePaths
-                  AND NOT (source.project = $project AND source.filePath IN $filePaths)
+                  // coalesce: a file-less source (null filePath) would make the predicate null and
+                  // silently drop its edge instead of preserving it.
+                  AND NOT (source.project = $project AND coalesce(source.filePath, '') IN $filePaths)
                 RETURN source.qualifiedName AS sourceQN,
                        target.qualifiedName AS targetQN,
                        type(edge) AS type,
@@ -106,9 +129,10 @@ public partial class Neo4jGraphStore
                 var sequenceCursor = await tx.RunAsync("""
                     MERGE (seq:Sequence {name: 'node_id'})
                     ON CREATE SET seq.value = 0
-                    WITH seq.value AS startId, seq
+                    // Increment before reading: SET takes the write lock, so the value read back
+                    // is this transaction's. Reading seq.value first loses updates under concurrency.
                     SET seq.value = seq.value + $count
-                    RETURN startId
+                    RETURN seq.value - $count AS startId
                     """, new { count = nodesToInsert.Count });
                 await sequenceCursor.FetchAsync();
                 startId = sequenceCursor.Current["startId"].As<long>();
@@ -180,6 +204,16 @@ public partial class Neo4jGraphStore
                 ct.ThrowIfCancellationRequested();
                 foreach (var group in batch.GroupBy(edge => edge.Type))
                     await UpsertRelationshipAsync(tx, group.Key, group.Select(BuildEdgeParams).ToList());
+            }
+
+            if (retractions is { OrphanCandidateQNs.Count: > 0 })
+            {
+                await tx.RunAsync("""
+                    UNWIND $qualifiedNames AS qn
+                    MATCH (n:CodeNode {project: $project, qualifiedName: qn})
+                    WHERE (n.filePath IS NULL OR n.filePath = '') AND NOT (n)-[]-(:CodeNode)
+                    DETACH DELETE n
+                    """, new { project, qualifiedNames = retractions.OrphanCandidateQNs.Distinct().ToList() });
             }
 
             foreach (var batch in Chunk(fileHashes.Select(hash => new Dictionary<string, object?>
@@ -273,9 +307,10 @@ public partial class Neo4jGraphStore
                 var sequenceCursor = await tx.RunAsync("""
                     MERGE (seq:Sequence {name: 'node_id'})
                     ON CREATE SET seq.value = 0
-                    WITH seq.value AS startId, seq
+                    // Increment before reading: SET takes the write lock, so the value read back
+                    // is this transaction's. Reading seq.value first loses updates under concurrency.
                     SET seq.value = seq.value + $count
-                    RETURN startId
+                    RETURN seq.value - $count AS startId
                     """, new { count = nodes.Count });
                 await sequenceCursor.FetchAsync();
                 var startId = sequenceCursor.Current["startId"].As<long>();

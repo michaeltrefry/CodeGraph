@@ -65,6 +65,15 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # Service containers cannot take server args, so raise the connection ceiling at runtime.
+      # Headroom only: the suite releases its per-database pools and peaks well below 151.
+      - name: Raise MariaDB max_connections
+        run: |
+          docker exec ${{ job.services.mariadb.id }} mariadb -uroot -p'codegraph_test!' \
+            -e "SET GLOBAL max_connections = 500"
+          docker exec ${{ job.services.mariadb.id }} mariadb -uroot -p'codegraph_test!' -N \
+            -e "SELECT @@GLOBAL.max_connections" | grep -qx 500
+
       - name: Restore
         run: dotnet restore CodeGraph.sln
 
@@ -221,6 +230,10 @@ jobs:
         if: matrix.image == 'indexer'
         run: docker run --rm "$IMAGE:$GITHUB_SHA" --validate-rust-semantic-indexing
 
+      - name: Validate Swift grammar in final image
+        if: matrix.image == 'indexer'
+        run: docker run --rm "$IMAGE:$GITHUB_SHA" --validate-swift-grammar
+
       # Same inputs as "Build image" in the same builder, so this is a full cache hit that only pushes.
       - name: Push image tagged with the tested commit
         if: github.event_name == 'push'
@@ -231,7 +244,9 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}:${{ github.sha }}
 
-  # Native ARM64 runner (free for public repositories) instead of QEMU emulation.
+  # Native ARM64 runner (free for public repositories) instead of QEMU emulation. Building the
+  # final indexer image for linux/arm64 also compiles the arm64 Swift tree-sitter grammar (the
+  # tree-sitter-grammars stage), and the image is validated to load it.
   rust-semantic-arm64:
     name: Rust Semantic (ARM64)
     runs-on: ubuntu-24.04-arm
@@ -270,3 +285,6 @@ jobs:
 
       - name: Validate Rust semantic indexing in ARM64 final image
         run: docker run --rm --platform linux/arm64 codegraph-indexer:ci-arm64 --validate-rust-semantic-indexing
+
+      - name: Validate Swift grammar in ARM64 final image
+        run: docker run --rm --platform linux/arm64 codegraph-indexer:ci-arm64 --validate-swift-grammar

@@ -44,4 +44,11 @@ public class ProcessRepository
     /// Defaults to true — set to false to skip.
     /// </summary>
     public bool ShouldComputeVitals { get; set; } = true;
+
+    /// <summary>
+    /// Run the model-backed health analysis after indexing although <see cref="ShouldAnalyze"/> is
+    /// false (explicit re-analyze submits its analysis batch itself). Health analysis also runs
+    /// whenever <see cref="ShouldAnalyze"/> is set. Defaults to false.
+    /// </summary>
+    public bool ShouldAnalyzeHealth { get; set; }
 }

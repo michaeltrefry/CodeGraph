@@ -5,10 +5,12 @@ import {
   Node,
   SyntaxKind,
   ObjectLiteralExpression,
+  Type,
 } from 'ts-morph';
 import * as path from 'path';
 import * as fs from 'fs';
 import { analyzeWorkspaceImports } from './workspaceResolver';
+import { DiscoveryScope } from './discoveryScope';
 import type {
   GraphNodeDto,
   PendingEdgeDto,
@@ -44,6 +46,7 @@ export function extractProject(
   rootPath: string,
   tsconfigPath: string,
   log: (msg: string) => void = () => {},
+  includedFiles?: readonly string[],
 ): ExtractProjectResponse {
   const nodes: GraphNodeDto[] = [];
   const edges: PendingEdgeDto[] = [];
@@ -71,8 +74,14 @@ export function extractProject(
   });
   const diag = (msg: string) => { log(msg); diagnostics.push(msg); };
 
+  // CodeGraph passes the files its discovery admits; the sidecar then never reads outside them.
+  const scope = includedFiles ? new DiscoveryScope(rootPath, includedFiles) : undefined;
+  const typeRoots = checkoutRoots(rootPath);
+
   let t0 = Date.now();
-  const tsFiles = findTsFiles(rootPath);
+  const tsFiles = scope
+    ? scope.absoluteFiles(file => isTsSourceFile(file) && !file.split('/').some(segment => SKIP_DIRS.has(segment)))
+    : findTsFiles(rootPath);
   diag(`findTsFiles: ${tsFiles.length} files in ${Date.now() - t0}ms`);
 
   t0 = Date.now();
@@ -113,7 +122,7 @@ export function extractProject(
     const fileQN = `${projectName}:${filePath}`;
 
     extractImports(sourceFile, fileQN, unresolvedImports);
-    extractClasses(sourceFile, projectName, filePath, nodes, edges, contractMap, serviceName);
+    extractClasses(sourceFile, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
     extractInterfaces(sourceFile, filePath, nodes);
     extractEnums(sourceFile, filePath, nodes);
     extractAngularRoutes(sourceFile, projectName, filePath, nodes, edges);
@@ -132,6 +141,7 @@ export function extractProject(
     tsconfigPath,
     sourceFiles,
     log,
+    scope,
   );
   nodes.push(...workspaceResolution.nodes);
   edges.push(...workspaceResolution.edges);
@@ -174,9 +184,10 @@ function extractClasses(
   edges: PendingEdgeDto[],
   contractMap: Map<string, ApiContractInfo>,
   serviceName: string | null,
+  typeRoots: string[],
 ): void {
   for (const cls of sourceFile.getClasses()) {
-    extractClass(cls, projectName, filePath, nodes, edges, contractMap, serviceName);
+    extractClass(cls, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
   }
 }
 
@@ -188,6 +199,7 @@ function extractClass(
   edges: PendingEdgeDto[],
   contractMap: Map<string, ApiContractInfo>,
   serviceName: string | null,
+  typeRoots: string[],
 ): void {
   const name = cls.getName();
   if (!name) return;
@@ -249,7 +261,7 @@ function extractClass(
   // Constructor INJECTS
   for (const ctor of cls.getConstructors()) {
     for (const param of ctor.getParameters()) {
-      const typeName = param.getType().getText();
+      const typeName = renderTypeText(param.getType(), typeRoots);
       if (isFrameworkType(typeName) || PRIMITIVE_TYPES.has(typeName)) continue;
       edges.push({
         sourceQN: qn,
@@ -291,7 +303,7 @@ function extractClass(
       endLine: method.getEndLineNumber(),
       properties: {
         is_async: method.isAsync(),
-        return_type: method.getReturnType().getText(),
+        return_type: renderTypeText(method.getReturnType(), typeRoots),
         parameter_count: method.getParameters().length,
         is_static: method.isStatic(),
       },
@@ -355,7 +367,7 @@ function extractClass(
       properties: {
         is_input: hasInput,
         is_output: hasOutput,
-        type: prop.getType().getText(),
+        type: renderTypeText(prop.getType(), typeRoots),
       },
     });
   }
@@ -713,17 +725,67 @@ function isFrameworkType(typeName: string): boolean {
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'cypress', 'e2e', '.git', '.angular']);
 
+function isTsSourceFile(fileName: string): boolean {
+  return fileName.endsWith('.ts') && !fileName.endsWith('.d.ts') && !fileName.endsWith('.spec.ts');
+}
+
+// ── Type text ─────────────────────────────────────────────────────────────────
+
+/** The checkout root as given and as resolved through symlinks (e.g. /tmp vs /private/tmp). */
+function checkoutRoots(rootPath: string): string[] {
+  const roots = new Set<string>([path.resolve(rootPath)]);
+  try {
+    roots.add(fs.realpathSync(rootPath));
+  } catch {
+    // A missing root fails later with a clearer error.
+  }
+  return [...roots].map(normalizeAbsolutePath);
+}
+
+/** Forward slashes and a lower-case drive letter, so Windows paths compare reliably. */
+function normalizeAbsolutePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^([A-Za-z]):\//, (_match, drive: string) => `${drive.toLowerCase()}:/`);
+}
+
+/**
+ * Type text as the checker renders it, with every `import("<absolute path>")` rewritten to a
+ * checkout-independent module path: the package path after the last `node_modules/` for
+ * dependencies (pnpm store paths included), else the path relative to the checkout root
+ * (`../shared/src/index` for a sibling outside it). The text becomes INJECTS targets (stub
+ * qualified names) and node properties, which must be identical for every checkout.
+ */
+function renderTypeText(type: Type, roots: string[]): string {
+  return relativizeImportPaths(type.getText(), roots);
+}
+
+export function relativizeImportPaths(text: string, roots: readonly string[]): string {
+  const normalizedRoots = roots.map(normalizeAbsolutePath);
+  return text.replace(/import\("([^"]*)"\)/g, (_match, modulePath: string) =>
+    `import("${toCheckoutIndependentModulePath(modulePath, normalizedRoots)}")`);
+}
+
+function toCheckoutIndependentModulePath(modulePath: string, roots: readonly string[]): string {
+  const normalized = normalizeAbsolutePath(modulePath);
+  if (!path.posix.isAbsolute(normalized) && !/^[a-z]:\//.test(normalized)) return normalized;
+
+  const nodeModules = normalized.lastIndexOf('/node_modules/');
+  if (nodeModules >= 0) return normalized.slice(nodeModules + '/node_modules/'.length);
+
+  // Relative to the root it is closest to (the given root or its realpath); a path outside
+  // the checkout keeps its directories, so unrelated `index`/`types` modules never collide.
+  const candidates = roots.map(root => path.posix.relative(root, normalized)).filter(relative => relative);
+  if (candidates.length === 0) return path.posix.basename(normalized);
+  return candidates.reduce((best, relative) =>
+    relative.split('/').length < best.split('/').length ? relative : best);
+}
+
 function findTsFiles(dir: string): string[] {
   const results: string[] = [];
   const walk = (d: string) => {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) walk(path.join(d, entry.name));
-      } else if (
-        entry.name.endsWith('.ts') &&
-        !entry.name.endsWith('.d.ts') &&
-        !entry.name.endsWith('.spec.ts')
-      ) {
+      } else if (isTsSourceFile(entry.name)) {
         results.push(path.join(d, entry.name));
       }
     }

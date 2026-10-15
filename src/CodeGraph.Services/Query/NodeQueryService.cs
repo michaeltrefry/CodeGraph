@@ -30,6 +30,9 @@ public class NodeQueryService(
         [".yml"] = "yaml",
         [".cfm"] = "xml",
         [".cfc"] = "xml",
+        [".swift"] = "swift",
+        [".rs"] = "rust",
+        [".py"] = "python",
     };
     public async Task<NodeDetailResponse?> GetDetailAsync(long id, CommitScope? scope = null)
     {

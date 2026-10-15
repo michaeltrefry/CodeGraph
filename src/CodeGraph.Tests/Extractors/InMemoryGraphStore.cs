@@ -58,6 +58,74 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public IReadOnlyList<GraphNode> Nodes => _nodes;
     public IReadOnlyList<GraphEdge> Edges => _edges;
+
+    /// <summary>Incremental file-slice writes made so far.</summary>
+    public int ReplaceProjectFilesCallCount { get; private set; }
+
+    /// <summary>The replaced file paths of every non-empty <see cref="ReplaceProjectFilesAsync"/> call.</summary>
+    public List<IReadOnlyList<string>> ReplacedFileSlices { get; } = [];
+
+    /// <summary>Stored file hash records of a project (source files and tracked manifests).</summary>
+    public IReadOnlyDictionary<string, string> FileHashesOf(string project) =>
+        _fileHashes.TryGetValue(project, out var hashes) ? hashes : new Dictionary<string, string>();
+
+    /// <summary>Calls of the batched lookups, by method name.</summary>
+    public Dictionary<string, int> LookupCallCounts { get; } = new(StringComparer.Ordinal);
+
+    private void CountLookup(string method) =>
+        LookupCallCounts[method] = LookupCallCounts.GetValueOrDefault(method) + 1;
+
+    public Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
+        string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+    {
+        CountLookup(nameof(FindNodesByFilesAsync));
+        var paths = filePaths.Select(path => path.Replace('\\', '/')).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return Task.FromResult<IReadOnlyList<GraphNode>>(_nodes.Where(node =>
+                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                && node.FilePath is not null
+                && paths.Contains(node.FilePath.Replace('\\', '/')))
+            .ToList());
+    }
+
+    public Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<string>>(_nodes
+            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                           && !string.IsNullOrEmpty(node.FilePath))
+            .Select(node => node.FilePath!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList());
+
+    public Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
+        string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
+    {
+        CountLookup(nameof(FindNodesByNamesAsync));
+        var wanted = names.ToHashSet(StringComparer.Ordinal);
+        return Task.FromResult<IReadOnlyList<GraphNode>>(_nodes.Where(node =>
+                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) && wanted.Contains(node.Name))
+            .ToList());
+    }
+
+    public Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> types,
+        string propertyKey,
+        IReadOnlyCollection<string> values,
+        CancellationToken ct = default)
+    {
+        CountLookup(nameof(FindEdgesByPropertyAsync));
+        var wanted = values.ToHashSet(StringComparer.Ordinal);
+        var nodeById = _nodes.ToDictionary(node => node.Id);
+        return Task.FromResult<IReadOnlyList<StoredEdge>>(_edges
+            .Where(edge => edge.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                           && types.Contains(edge.Type)
+                           && edge.Properties?.GetValueOrDefault(propertyKey)?.ToString() is { } value
+                           && wanted.Contains(value))
+            .Select(edge => new StoredEdge(
+                nodeById[edge.SourceId].QualifiedName, nodeById[edge.SourceId].FilePath,
+                nodeById[edge.TargetId].QualifiedName, nodeById[edge.TargetId].FilePath,
+                edge.Type, new Dictionary<string, object>(edge.Properties!)))
+            .ToList());
+    }
     public IReadOnlyList<CrossRepoEdge> CrossEdges => _crossEdges;
     public IReadOnlyDictionary<string, ProjectSummary> Summaries => _summaries;
     public int SchemaSearchQueryCount { get; private set; }
@@ -128,12 +196,26 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<Dictionary<EdgeType, int>> GetEdgeCountsByTypeAsync() =>
         Task.FromResult(_edges.GroupBy(e => e.Type).ToDictionary(g => g.Key, g => g.Count()));
 
-    public Task<Dictionary<long, int>> GetCallFanInAsync(string project, int minFanIn) =>
-        Task.FromResult(
-            _edges.Where(e => e.Type == EdgeType.CALLS)
+    public Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
+        string project,
+        IReadOnlyCollection<EdgeType> edgeTypes,
+        IReadOnlyCollection<NodeLabel>? targetLabels,
+        int minInDegree,
+        int limit)
+    {
+        var nodesById = _nodes.ToDictionary(node => node.Id);
+        return Task.FromResult<IReadOnlyList<NodeInDegree>>(
+            _edges.Where(e => e.Project == project && edgeTypes.Contains(e.Type))
+                .Where(e => nodesById.ContainsKey(e.TargetId))
+                .Where(e => targetLabels is not { Count: > 0 } || targetLabels.Contains(nodesById[e.TargetId].Label))
                 .GroupBy(e => e.TargetId)
-                .Where(g => g.Count() >= minFanIn)
-                .ToDictionary(g => g.Key, g => g.Count()));
+                .Where(g => g.Count() >= minInDegree)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key)
+                .Take(limit)
+                .Select(g => new NodeInDegree(nodesById[g.Key], g.Count()))
+                .ToList());
+    }
 
     public Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync()
     {
@@ -699,12 +781,25 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
+        GraphSliceRetractions? retractions = null,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         if (filePaths.Count == 0) return Task.FromResult(0);
         if (IncrementalReplacementFailure is not null)
             throw IncrementalReplacementFailure;
+        ReplaceProjectFilesCallCount++;
+        ReplacedFileSlices.Add(filePaths.ToList());
+
+        var projectIdsByQn = _nodes
+            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(node => node.QualifiedName, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal);
+        var retractedKeys = (retractions?.Edges ?? [])
+            .Where(edge => projectIdsByQn.ContainsKey(edge.SourceQN) && projectIdsByQn.ContainsKey(edge.TargetQN))
+            .Select(edge => (projectIdsByQn[edge.SourceQN], projectIdsByQn[edge.TargetQN], edge.Type))
+            .ToHashSet();
+        bool IsRetracted(GraphEdge edge) => retractedKeys.Contains((edge.SourceId, edge.TargetId, edge.Type));
 
         var paths = filePaths
             .SelectMany(path => new[] { path.Replace('\\', '/'), path.Replace('/', '\\') })
@@ -716,7 +811,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var oldIds = oldNodes.Select(node => node.Id).ToHashSet();
         var nodeById = _nodes.ToDictionary(node => node.Id);
         var preservedIncoming = _edges
-            .Where(edge => oldIds.Contains(edge.TargetId) && !oldIds.Contains(edge.SourceId))
+            .Where(edge => oldIds.Contains(edge.TargetId) && !oldIds.Contains(edge.SourceId) && !IsRetracted(edge))
             .Select(edge => new PendingEdge(
                 nodeById[edge.SourceId].QualifiedName,
                 nodeById[edge.TargetId].QualifiedName,
@@ -726,7 +821,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
         var stagedNodes = _nodes.Where(node => !oldIds.Contains(node.Id)).ToList();
         var stagedEdges = _edges
-            .Where(edge => !oldIds.Contains(edge.SourceId) && !oldIds.Contains(edge.TargetId))
+            .Where(edge => !oldIds.Contains(edge.SourceId) && !oldIds.Contains(edge.TargetId) && !IsRetracted(edge))
             .ToList();
         var stagedCrossEdges = _crossEdges
             .Where(edge => !oldIds.Contains(edge.SourceNodeId) && !oldIds.Contains(edge.TargetNodeId))
@@ -783,6 +878,18 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                                                existing.Type == edge.Type);
             stagedEdges.Add(edge);
         }
+
+        if (retractions is { OrphanCandidateQNs.Count: > 0 })
+        {
+            var candidates = retractions.OrphanCandidateQNs.ToHashSet(StringComparer.Ordinal);
+            var connected = stagedEdges.SelectMany(edge => new[] { edge.SourceId, edge.TargetId }).ToHashSet();
+            stagedNodes.RemoveAll(node =>
+                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                && candidates.Contains(node.QualifiedName)
+                && string.IsNullOrEmpty(node.FilePath)
+                && !connected.Contains(node.Id));
+        }
+
         foreach (var hash in fileHashes)
         {
             stagedHashes[hash.Key] = hash.Value;
