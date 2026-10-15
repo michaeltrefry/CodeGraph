@@ -28,8 +28,9 @@ public class VitalsAnalyzer(
     /// unchanged checkout (the source-extension set, complexity rules, scoring): a routine sync
     /// recomputes vitals at an unchanged HEAD when the version stored in sync_state differs.
     /// 2: Swift and Rust coverage (sc-26136).
+    /// 3: C/C++, Go, Ruby, PHP and shell coverage (sc-26200).
     /// </summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     private readonly AnalysisOptions analysisOptions = analysisOptionsAccessor.Value;
     private readonly IndexingOptions indexingOptions = indexingOptionsAccessor?.Value ?? new IndexingOptions();

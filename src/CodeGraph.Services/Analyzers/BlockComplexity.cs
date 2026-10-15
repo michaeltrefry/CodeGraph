@@ -150,13 +150,21 @@ internal sealed class BraceBlockScanner : IBlockScanner
     /// <summary>A named function or method; not a closure, nor a <c>use function</c> import.</summary>
     private static readonly Regex PhpFunction = new(@"(?<!\buse\s+)\bfunction\s+&?\s*[A-Za-z_\u0080-\uffff]", Options | RegexOptions.IgnoreCase);
     private static readonly Regex PhpBranch = new(
-        @"(?<!->|::)\b(if|elseif|for|foreach|while|switch|case|catch|match|and|or)\b|&&|\|\||\?\?|\s\?\s",
+        @"(?<!->|::|\$)\b(if|elseif|for|foreach|while|switch|case|catch|match|and|or)\b|&&|\|\||\?\?|\s\?\s",
         Options | RegexOptions.IgnoreCase);
 
     // C/C++ declarators.
     private static readonly Regex TrailingReturnType = new(@"\s*->[^()]*$", Options);
     private static readonly Regex TrailingQualifier = new(@"\s*(\b(const|volatile|noexcept|override|final|mutable|try)\b|&&|&)\s*$", Options);
     private static readonly Regex DeclaratorName = new(@"(~?[A-Za-z_]\w*|\boperator\s*[^\s\w(]+)\s*$", Options);
+    /// <summary>A K&amp;R definition's head at its first parameter declaration: <c>int add(a, b) int a</c>.</summary>
+    private static readonly Regex KrDefinition = new(
+        @"^(?<declarator>.*?\b[A-Za-z_]\w*\s*\(\s*[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\s*\))\s+[A-Za-z_][\w\s*,\[\]]*$", Options);
+    /// <summary>A K&amp;R parameter declaration: <c>char *s</c>, <c>int a, b</c>.</summary>
+    private static readonly Regex KrParameter = new(@"^[A-Za-z_][\w\s*,\[\]]*$", Options);
+    /// <summary>The colon opening a constructor's member initializer list: <c>Widget() : a_{1}</c>.</summary>
+    private static readonly Regex InitializerList = new(@"\)\s*(?:noexcept\s*)?:(?!:)", Options);
+    private static readonly Regex EndsWithName = new(@"[A-Za-z_][\w:<>]*\s*$", Options);
     private static readonly Regex AccessSpecifier = new(@"^(public|private|protected)(\s+(slots|Q_SLOTS))?$|^(signals|Q_SIGNALS)$", Options);
     private static readonly HashSet<string> NotDeclarators = new(StringComparer.Ordinal)
     {
@@ -170,6 +178,10 @@ internal sealed class BraceBlockScanner : IBlockScanner
     private readonly bool _cDeclarators;
     private readonly StringBuilder _head = new();
     private int _headStart;
+    /// <summary>The start line of a K&amp;R definition whose parameter declarations are being read.</summary>
+    private int? _krStart;
+    /// <summary>The brace depth of a member brace-initializer (<c>a_{1}</c>) in a constructor's head.</summary>
+    private int _initializerBraces;
 
     private BraceBlockScanner(BraceDialect dialect, Regex? function, Regex branch)
     {
@@ -194,21 +206,54 @@ internal sealed class BraceBlockScanner : IBlockScanner
         var events = new List<BlockEvent>();
         foreach (var c in code)
         {
+            if (_initializerBraces > 0)
+            {
+                if (c == '{')
+                    _initializerBraces++;
+                else if (c == '}' && --_initializerBraces == 0)
+                    _head.Append("()");
+                continue;
+            }
+
             if (c == '{')
             {
-                events.Add(new BlockEvent(1, _cDeclarators && IsFunctionDeclarator(_head.ToString()) ? _headStart : null));
-                _head.Clear();
+                int? functionStart = null;
+                if (_cDeclarators)
+                {
+                    var head = _head.ToString();
+                    if (IsMemberInitializer(head))
+                    {
+                        _initializerBraces = 1;
+                        continue;
+                    }
+
+                    functionStart = IsFunctionDeclarator(head) ? _headStart
+                        : _krStart is { } krStart && head.Trim().Length == 0 ? krStart
+                        : null;
+                }
+
+                events.Add(new BlockEvent(1, functionStart));
+                ResetHead();
+                _krStart = null;
             }
             else if (c == '}')
             {
                 events.Add(new BlockEvent(-1));
-                _head.Clear();
+                ResetHead();
+                _krStart = null;
             }
             else if (_cDeclarators)
             {
-                if (c == ';' || (c == ':' && AccessSpecifier.IsMatch(_head.ToString().Trim())))
+                if (c == ';')
                 {
-                    _head.Clear();
+                    TrackKrDefinition(_head.ToString().Trim());
+                    ResetHead();
+                    continue;
+                }
+
+                if (c == ':' && _head.Length <= 32 && AccessSpecifier.IsMatch(_head.ToString().Trim()))
+                {
+                    ResetHead();
                     continue;
                 }
 
@@ -227,6 +272,37 @@ internal sealed class BraceBlockScanner : IBlockScanner
             _head.Append(' ');
 
         return new BlockLine(true, events, _function?.IsMatch(code) == true, _branch.Matches(code).Count, code.EndsWith(';'));
+    }
+
+    private void ResetHead()
+    {
+        _head.Clear();
+    }
+
+    /// <summary>
+    /// A K&amp;R definition (<c>int add(a, b)</c>, then <c>int a;</c> … before its body) keeps its start
+    /// across its parameter declarations; anything else ends it.
+    /// </summary>
+    private void TrackKrDefinition(string statement)
+    {
+        if (_krStart is not null)
+        {
+            if (!KrParameter.IsMatch(statement))
+                _krStart = null;
+        }
+        else if (KrDefinition.Match(statement) is { Success: true } definition
+                 && IsFunctionDeclarator(definition.Groups["declarator"].Value))
+        {
+            _krStart = _headStart;
+        }
+    }
+
+    /// <summary>Whether a brace opens a member brace-initializer in a constructor's initializer list.</summary>
+    private static bool IsMemberInitializer(string head)
+    {
+        var colon = InitializerList.Match(head);
+        return colon.Success && EndsWithName.IsMatch(head[(colon.Index + colon.Length)..])
+               && IsFunctionDeclarator(head[..(colon.Index + 1)]);
     }
 
     /// <summary>

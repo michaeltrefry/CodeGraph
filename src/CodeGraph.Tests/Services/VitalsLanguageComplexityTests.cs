@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CodeGraph.Data;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Models;
@@ -228,6 +229,49 @@ public class VitalsLanguageComplexityTests
             }
         }
         """, 7, 1)]
+    // Only the first branch of a conditional group is code; #if 0 / #elif 0 bodies (nested groups too) are not.
+    [InlineData(".c", """
+        int f(int a, int b) {
+        #ifdef _WIN32
+            if (a) {
+        #else
+            if (b) {
+        #endif
+                g();
+            }
+        #if 0
+        #ifdef A
+            { { {
+        #else
+            { {
+        #endif
+        #elif 0
+            { { {
+        #else
+            h();
+        #endif
+        }
+        """, 20, 1)]
+    // A K&R definition: its parameter declarations come between the declarator and the body.
+    [InlineData(".c", """
+        int add(a, b)
+        int a;
+        int b;
+        {
+            if (a) {
+                return a + b;
+            }
+            return b;
+        }
+        """, 9, 1)]
+    // Member brace-initializers in a constructor's initializer list are not blocks.
+    [InlineData(".cpp", """
+        Widget::Widget(int x) : a_{{{x}}}, b_{2}, c_(3) {
+            if (x) {
+                g();
+            }
+        }
+        """, 5, 1)]
     // Go block comments do not nest.
     [InlineData(".go", """
         func f() {
@@ -325,6 +369,31 @@ public class VitalsLanguageComplexityTests
           g(x) or h(x)
         end
         """, 8, 5)]
+    // A backslash-continued line continues its statement (a modifier unless); a loop's do may follow a continued condition.
+    [InlineData(".rb", """
+        def f(a, b)
+          raise ArgumentError, "x" \
+            unless a
+          until a ||
+              b do
+            a = g
+          end
+        end
+        """, 8, 3)]
+    // Interpolation starts a statement; setter and operator symbols are values; a quoted heredoc id may be any text.
+    [InlineData(".rb", """
+        def f(x)
+          puts "a#{unless x; ' b'; end}"
+          remove_method :x= if x
+          ops << :* if x
+          g(<<-'end;')
+            if y
+          end;
+          if x
+            h
+          end
+        end
+        """, 11, 4)]
     // Two heredocs started on one line; their bodies are not code.
     [InlineData(".rb", """
         def f
@@ -416,6 +485,116 @@ public class VitalsLanguageComplexityTests
         data.LongestFunction.ShouldBe(longestFunction);
         data.BranchCount.ShouldBe(branches);
     }
+
+    /// <summary>A method name after def is a name: keywords, operators and setters open nothing; endless defs are one-line functions.</summary>
+    [Fact]
+    public void ComputeFileComplexity_RubyMethodNamesAreNotKeywordsOrLiterals()
+    {
+        var data = VitalsAnalyzer.ComputeFileComplexity(".rb", """
+            class Ops
+              def class = 1
+              def for(x)
+              end
+              def /(o)
+                o
+              end
+              def self.end; end
+              def ==(o) = true
+              def x=(v)
+                @x = v
+              end
+            end
+            """);
+
+        data.MaxNestingDepth.ShouldBe(2);
+        data.FunctionCount.ShouldBe(6);
+        data.LongestFunction.ShouldBe(3);
+    }
+
+    /// <summary>Operator symbols (:/ :` :% :&lt; :?) are not literal starts; a ternary's ": /re/" is a regex.</summary>
+    [Fact]
+    public void ComputeFileComplexity_RubyOperatorSymbolsAreNotLiterals()
+    {
+        var data = VitalsAnalyzer.ComputeFileComplexity(".rb", """
+            OPS = [:/, :`, :%, :<, :!, :?]
+            def f(a)
+              if a
+                a ? b : /if|{/
+              end
+            end
+            """);
+
+        data.MaxNestingDepth.ShouldBe(2);
+        data.FunctionCount.ShouldBe(1);
+        data.LongestFunction.ShouldBe(5);
+        data.BranchCount.ShouldBe(2);
+    }
+
+    /// <summary>A method call named like a keyword (x.begin, x.then) does not make the next if a statement.</summary>
+    [Fact]
+    public void ComputeFileComplexity_RubyMethodCallsBeforeAModifierDoNotOpenBlocks()
+    {
+        var data = VitalsAnalyzer.ComputeFileComplexity(".rb", """
+            def f(x, y)
+              x.begin if y
+              x.then if y
+              if y
+                x
+              end
+            end
+            """);
+
+        data.MaxNestingDepth.ShouldBe(2);
+        data.FunctionCount.ShouldBe(1);
+        data.LongestFunction.ShouldBe(7);
+        data.BranchCount.ShouldBe(3);
+    }
+
+    /// <summary>PHP variables named like keywords are not branches.</summary>
+    [Fact]
+    public void ComputeFileComplexity_PhpVariablesNamedLikeKeywordsAreNotBranches()
+    {
+        var data = VitalsAnalyzer.ComputeFileComplexity(".php", """
+            <?php
+            function f($match) {
+                $case = $match;
+                $for = $and . $or;
+                if ($case) {
+                    g();
+                }
+            }
+            """);
+
+        data.FunctionCount.ShouldBe(1);
+        data.BranchCount.ShouldBe(1);
+    }
+
+    /// <summary>Very long lines (a 200,000-character identifier, a 200,000-space run) are scanned in linear time.</summary>
+    [Theory]
+    [InlineData(".c")]
+    [InlineData(".go")]
+    [InlineData(".php")]
+    [InlineData(".rb")]
+    [InlineData(".sh")]
+    [InlineData(".swift")]
+    [InlineData(".rs")]
+    public void ComputeFileComplexity_LongLines_AreLinear(string extension)
+    {
+        var source = (extension == ".php" ? "<?php\n" : "")
+                     + "x = " + new string('a', 200_000) + " / 2 ? b : c\n"
+                     + "y" + new string(' ', 200_000) + "% z ? w : v\n"
+                     + "z" + new string('a', 200_000) + string.Concat(Enumerable.Repeat(" :", 20_000)) + "\n";
+
+        var watch = Stopwatch.StartNew();
+        VitalsAnalyzer.ComputeFileComplexity(extension, source);
+
+        watch.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(2));
+    }
+
+    /// <summary>sc-26200 changes what vitals emit for an unchanged checkout, so routine syncs must recompute them.</summary>
+    [Fact]
+    public void VitalsVersion_IsBumpedForTheNewLanguages()
+        => VitalsAnalyzer.Version.ShouldBe(3);
 
     [Theory]
     [InlineData("int main(int argc, char **argv)", true)]

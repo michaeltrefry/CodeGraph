@@ -29,7 +29,7 @@ internal sealed class RubySourceLexer
         public bool Indented { get; init; }
     }
 
-    private static readonly Regex HeredocStart = new(@"\G<<([~-]?)([""'`]?)([A-Za-z_]\w*)\2", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex HeredocStart = new(@"\G<<([~-]?)(?:([""'`])(?<id>[^""'`]+)\2|(?<id>[A-Za-z_]\w*))", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex PercentLiteral = new(@"\G%([qQwWiIrsx]?)([^\w\s=])", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly HashSet<string> ExpressionKeywords = new(StringComparer.Ordinal)
@@ -89,7 +89,7 @@ internal sealed class RubySourceLexer
             var c = line[i];
             if (top.IsString)
             {
-                i = ScanString(line, i, top);
+                i = ScanString(line, i, top, code);
                 continue;
             }
 
@@ -104,6 +104,7 @@ internal sealed class RubySourceLexer
                     if (top.Nesting == 0)
                     {
                         _frames.Pop();
+                        code.Append(')');
                         i++;
                         continue;
                     }
@@ -141,14 +142,16 @@ internal sealed class RubySourceLexer
 
     private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
-    private int ScanString(string line, int i, Frame frame)
+    private int ScanString(string line, int i, Frame frame, StringBuilder code)
     {
         var c = line[i];
         if (c == '\\')
             return i + 2;
         if (frame.Interpolates && c == '#' && At(line, i + 1) == '{')
         {
+            // #{ … } is code where a statement starts: set off as ( … ).
             _frames.Push(new Frame { Interpolation = true });
+            code.Append('(');
             return i + 2;
         }
 
@@ -181,7 +184,15 @@ internal sealed class RubySourceLexer
     {
         next = i;
         var c = line[i];
-        var prev = LastSignificant(code, out var prevWord);
+        if (c is not ('"' or '`' or '\'' or '$' or '/' or '?' or '%' or '<'))
+            return false;
+        // :/ :% :` :< :? are operator symbols (not ::/ … nor the ": /re/" of a ternary).
+        if (c is '/' or '%' or '`' or '<' or '?' && At(line, i - 1) == ':' && At(line, i - 2) != ':')
+            return false;
+        var prev = LastSignificant(code, out var prevWord, out var afterDef);
+        // def /(other), def `(cmd), def %(x): an operator method's name.
+        if (afterDef)
+            return false;
         var spaceBefore = i > 0 && char.IsWhiteSpace(line[i - 1]);
         var nextChar = At(line, i + 1);
         // Where a value starts: after an operator, an opening bracket, a keyword, or nothing.
@@ -243,12 +254,12 @@ internal sealed class RubySourceLexer
                 if (!heredoc.Success)
                     return false;
                 var bare = heredoc.Groups[1].Length == 0 && heredoc.Groups[2].Length == 0;
-                if (bare && !(Regex.IsMatch(heredoc.Groups[3].Value, "^[A-Z_][A-Z0-9_]*$") && (valueStart || spaceBefore)))
+                if (bare && !(Regex.IsMatch(heredoc.Groups["id"].Value, "^[A-Z_][A-Z0-9_]*$") && (valueStart || spaceBefore)))
                     return false;
                 _pendingHeredocs.Add(new Frame
                 {
                     IsString = true,
-                    Heredoc = heredoc.Groups[3].Value,
+                    Heredoc = heredoc.Groups["id"].Value,
                     Indented = heredoc.Groups[1].Length > 0,
                     Interpolates = heredoc.Groups[2].Value != "'"
                 });
@@ -260,13 +271,15 @@ internal sealed class RubySourceLexer
         }
     }
 
-    /// <summary>The last non-blank character of the code so far, and the word it ends, if any.</summary>
-    private static char LastSignificant(StringBuilder code, out string? word)
+    /// <summary>
+    /// The last non-blank character of the code so far, the word it ends, if any, and whether a
+    /// method name is next (the code ends with <c>def</c> or <c>def receiver.</c>).
+    /// </summary>
+    private static char LastSignificant(StringBuilder code, out string? word, out bool afterDef)
     {
         word = null;
-        var end = code.Length;
-        while (end > 0 && char.IsWhiteSpace(code[end - 1]))
-            end--;
+        afterDef = false;
+        var end = SkipWhiteSpaceBack(code, code.Length);
         if (end == 0)
             return '\0';
         var last = code[end - 1];
@@ -275,7 +288,29 @@ internal sealed class RubySourceLexer
             start--;
         if (start < end && (char.IsLetter(code[start]) || code[start] == '_'))
             word = code.ToString(start, end - start);
+
+        if (word == "def")
+        {
+            afterDef = end < code.Length;
+        }
+        else if (last == '.')
+        {
+            var receiverStart = end - 1;
+            while (receiverStart > 0 && IsIdentifierChar(code[receiverStart - 1]))
+                receiverStart--;
+            var defEnd = SkipWhiteSpaceBack(code, receiverStart);
+            afterDef = receiverStart < end - 1 && defEnd < receiverStart && defEnd >= 3
+                       && code.ToString(defEnd - 3, 3) == "def" && (defEnd == 3 || !IsIdentifierChar(code[defEnd - 4]));
+        }
+
         return last;
+    }
+
+    private static int SkipWhiteSpaceBack(StringBuilder code, int end)
+    {
+        while (end > 0 && char.IsWhiteSpace(code[end - 1]))
+            end--;
+        return end;
     }
 }
 
@@ -289,9 +324,16 @@ internal sealed class RubySourceLexer
 /// </summary>
 internal sealed class RubyBlockScanner : IBlockScanner
 {
-    private static readonly Regex EndlessDef = new(
-        @"^\s+(?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*[?!]?(?:\s*\([^)]*\)\s*|\s+)=(?![=~>])",
+    /// <summary>
+    /// The method name after <c>def</c>, with an optional receiver (<c>self.</c>, <c>Const.</c>): an
+    /// identifier (also <c>name?</c>, <c>name!</c>, setter <c>name=</c>) or an operator.
+    /// </summary>
+    private static readonly Regex DefName = new(
+        @"\G\s+(?:[A-Za-z_]\w*\.)?(?:[A-Za-z_]\w*[?!]?=?(?=[\s(;]|$)|\[\]=?|\*\*|<=>|===?|=~|!=|!~|<<|>>|<=|>=|[+\-]@|[+\-*/%`~!<>&|^])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>An endless definition's remaining signature: <c>= expr</c> or <c>(params) = expr</c>.</summary>
+    private static readonly Regex EndlessDef = new(@"^(?:\s*\([^)]*\))?\s*=(?![=~>])", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly HashSet<string> StatementWords = new(StringComparer.Ordinal)
     {
@@ -304,6 +346,10 @@ internal sealed class RubyBlockScanner : IBlockScanner
     };
 
     private readonly RubySourceLexer _lexer = new();
+    /// <summary>The previous line ended with a backslash: this line continues its statement.</summary>
+    private bool _continued;
+    /// <summary>A while/until/for condition is open: its optional do (possibly on a continuation line) opens nothing.</summary>
+    private bool _loopAwaitsDo;
 
     public BlockLine Scan(string line, int index)
     {
@@ -313,8 +359,10 @@ internal sealed class RubyBlockScanner : IBlockScanner
 
         var events = new List<BlockEvent>();
         var branches = 0;
-        var loopAwaitsDo = false;
-        string? previous = null;
+        var loopAwaitsDo = _loopAwaitsDo;
+        // On a continued line ("raise x \" then "unless y") no statement starts.
+        string? previous = _continued ? "_" : null;
+        _continued = code.TrimEnd().EndsWith('\\');
         for (var i = 0; i < code.Length;)
         {
             var c = code[i];
@@ -333,6 +381,10 @@ internal sealed class RubyBlockScanner : IBlockScanner
                     i++;
                 if (i < code.Length && code[i] is '?' or '!' && At(code, i + 1) != '=')
                     i++;
+                // A setter symbol, :name=
+                else if (At(code, start - 1) == ':' && At(code, start - 2) != ':' && At(code, i) == '='
+                         && At(code, i + 1) is not ('=' or '~' or '>'))
+                    i++;
                 token = code[start..i];
             }
             else if (char.IsDigit(c))
@@ -340,6 +392,14 @@ internal sealed class RubyBlockScanner : IBlockScanner
                 while (i < code.Length && (char.IsLetterOrDigit(code[i]) || code[i] == '_'))
                     i++;
                 token = "0";
+            }
+            else if (c == ':' && At(code, i - 1) != ':' && At(code, i + 1) != ':' && IsOperatorChar(At(code, i + 1)))
+            {
+                // An operator symbol (:*, :<=>, :[]=) is a value.
+                i++;
+                while (i < code.Length && IsOperatorChar(code[i]))
+                    i++;
+                token = "_";
             }
             else if ((c == '&' && At(code, i + 1) == '&') || (c == '|' && At(code, i + 1) == '|'))
             {
@@ -361,9 +421,12 @@ internal sealed class RubyBlockScanner : IBlockScanner
             switch (keyword)
             {
                 case "def":
+                    if (DefName.Match(code, i) is { Success: true } name)
+                        i += name.Length;
                     events.Add(EndlessDef.IsMatch(code[i..])
                         ? new BlockEvent(0, InlineFunction: true)
                         : new BlockEvent(1, FunctionStart: index));
+                    token = "_";
                     break;
                 case "class" or "module" or "begin" or "case":
                     events.Add(new BlockEvent(1));
@@ -392,13 +455,19 @@ internal sealed class RubyBlockScanner : IBlockScanner
 
             if (keyword is not null && BranchWords.Contains(keyword))
                 branches++;
-            previous = token;
+            // A method call (x.begin) or other non-keyword word is a value, not a statement keyword.
+            previous = keyword is null && (char.IsLetter(c) || c == '_') ? "_" : token;
         }
 
+        // A condition continued onto the next line ("until a ||") may still end with its do.
+        var last = code.TrimEnd() is { Length: > 0 } trimmed ? trimmed[^1] : '\0';
+        _loopAwaitsDo = loopAwaitsDo && (_continued || "|&,(+-*/<>=".Contains(last));
         return new BlockLine(true, events, false, branches, false);
     }
 
     private static char At(string code, int index) => index >= 0 && index < code.Length ? code[index] : '\0';
+
+    private static bool IsOperatorChar(char c) => c != '\0' && "+-*/%<>=!~^&|[]`@".Contains(c);
 
     /// <summary>A word that is not a method call (<c>x.class</c>, <c>A::end</c>), a symbol, a variable or a label.</summary>
     private static bool IsKeywordPosition(string code, int start, int end)

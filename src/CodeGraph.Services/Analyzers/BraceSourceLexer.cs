@@ -60,7 +60,26 @@ internal sealed class BraceSourceLexer(BraceDialect dialect)
         @"\G<<<[ \t]*([""']?)([A-Za-z_\u0080-\uffff][\w\u0080-\uffff]*)\1",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex ConditionalDirective = new(
+        @"^\s*(ifdef|ifndef|if|elifdef|elifndef|elif|else|endif)\b(.*)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex DirectiveComment = new(@"/\*.*?\*/|//.*$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>A C <c>#if</c> group: whether its current branch is skipped, and whether a branch was taken.</summary>
+    private sealed class Conditional
+    {
+        public bool Skipping { get; set; }
+        public bool Taken { get; set; }
+    }
+
     private readonly Stack<Frame> _frames = new([new Frame()]);
+    /// <summary>
+    /// C: open <c>#if</c>/<c>#ifdef</c> groups. The first branch is code unless it is <c>#if 0</c>;
+    /// once a branch is taken, every later <c>#elif</c>/<c>#else</c> branch is not, so the braces of
+    /// alternative branches are not counted twice.
+    /// </summary>
+    private readonly Stack<Conditional> _conditionals = new();
     private readonly List<Frame> _pendingHeredocs = [];
     private int _commentDepth;
     /// <summary>C: a <c>//</c> comment ending in a backslash continues onto the next line.</summary>
@@ -88,9 +107,15 @@ internal sealed class BraceSourceLexer(BraceDialect dialect)
                 return "";
             }
 
-            directive = _directiveContinues
-                || (_commentDepth == 0 && _frames.Count == 1 && line.TrimStart().StartsWith('#'));
+            var startsDirective = !_directiveContinues && _commentDepth == 0 && _frames.Count == 1
+                && line.TrimStart().StartsWith('#');
+            if (startsDirective)
+                ApplyConditional(line.TrimStart()[1..]);
+            directive = _directiveContinues || startsDirective;
         }
+
+        // A line in a skipped conditional branch is lexed (comments still span it) but is not code.
+        var skipped = !directive && _conditionals.Any(conditional => conditional.Skipping);
 
         // A PHP heredoc/nowdoc ends at a line starting (after indentation) with its identifier.
         if (_frames.Peek().Heredoc is { } heredoc)
@@ -242,7 +267,40 @@ internal sealed class BraceSourceLexer(BraceDialect dialect)
             return "";
         }
 
-        return code.ToString();
+        return skipped ? "" : code.ToString();
+    }
+
+    private void ApplyConditional(string directive)
+    {
+        var match = ConditionalDirective.Match(directive);
+        if (!match.Success)
+            return;
+        var never = DirectiveComment.Replace(match.Groups[2].Value, "").Trim() is "0" or "(0)";
+        switch (match.Groups[1].Value)
+        {
+            case "if" or "ifdef" or "ifndef":
+                // Inside a skipped branch every line stays skipped whatever this group's branches are.
+                var opensSkipped = match.Groups[1].Value == "if" && never;
+                _conditionals.Push(new Conditional { Skipping = opensSkipped, Taken = !opensSkipped });
+                break;
+            case "elif" or "elifdef" or "elifndef" when _conditionals.Count > 0:
+            {
+                var group = _conditionals.Peek();
+                group.Skipping = group.Taken || (match.Groups[1].Value == "elif" && never);
+                group.Taken |= !group.Skipping;
+                break;
+            }
+            case "else" when _conditionals.Count > 0:
+            {
+                var group = _conditionals.Peek();
+                group.Skipping = group.Taken;
+                group.Taken = true;
+                break;
+            }
+            case "endif" when _conditionals.Count > 0:
+                _conditionals.Pop();
+                break;
+        }
     }
 
     private static bool Skip(int to, out int i)
@@ -450,13 +508,16 @@ internal sealed class BraceSourceLexer(BraceDialect dialect)
 
     private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
-    /// <summary>The identifier (or number) immediately before <paramref name="i"/>.</summary>
+    /// <summary>
+    /// The encoding/raw prefix (at most three characters, <c>u8R</c>) immediately before
+    /// <paramref name="i"/>, or "" when a longer identifier or number precedes it.
+    /// </summary>
     private static string PrecedingIdentifier(string line, int i)
     {
         var start = i;
-        while (start > 0 && IsIdentifierChar(line[start - 1]))
+        while (start > 0 && i - start < 4 && IsIdentifierChar(line[start - 1]))
             start--;
-        return line[start..i];
+        return start > 0 && IsIdentifierChar(line[start - 1]) || i - start > 3 ? "" : line[start..i];
     }
 
     /// <summary>A Rust char literal (<c>'x'</c>, <c>'\n'</c>, <c>'\u{1F600}'</c>); a lifetime or label is not one.</summary>
