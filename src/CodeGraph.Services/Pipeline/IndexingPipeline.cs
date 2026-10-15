@@ -17,7 +17,6 @@ namespace CodeGraph.Services.Pipeline;
 public partial class IndexingPipeline
 {
     private readonly IGraphStore _store;
-    private readonly IEnumerable<ICodeExtractor> _extractors;
     private readonly ExtractorExtensions _extensions;
     private readonly IndexingOptions _options;
     private readonly ILogger<IndexingPipeline> _logger;
@@ -49,7 +48,6 @@ public partial class IndexingPipeline
         ISwiftPackageManifestExtractor? swiftPackageManifestExtractor = null)
     {
         _store = store;
-        _extractors = extractors;
         _extensions = new ExtractorExtensions(extractors);
         _options = optionsAccessor.Value;
         _fileSystem = fileSystem;
