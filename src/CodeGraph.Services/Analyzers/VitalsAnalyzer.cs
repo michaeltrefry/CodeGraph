@@ -35,28 +35,29 @@ public class VitalsAnalyzer(
     private readonly IndexingOptions indexingOptions = indexingOptionsAccessor?.Value ?? new IndexingOptions();
     private static readonly HashSet<string> SourceExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".cs", ".ts", ".tsx", ".js", ".jsx", ".cfm", ".cfc", ".sql", ".vue", ".py", ".java", ".swift", ".rs"
+        ".cs", ".ts", ".tsx", ".js", ".jsx", ".cfm", ".cfc", ".sql", ".vue", ".py", ".java", ".swift", ".rs",
+        ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".hh", ".go", ".rb", ".php", ".sh", ".bash", ".zsh"
     };
 
     /// <summary>
-    /// Brace languages whose complexity is measured by <see cref="ComputeBraceComplexity"/>: block
-    /// depth from braces, functions from declaration keywords, branches from control-flow tokens
-    /// inside function bodies (so a Swift enum's <c>case</c> declarations are not branches).
+    /// Languages whose complexity is measured by <see cref="BlockComplexity"/>: block depth from
+    /// braces (Swift, Rust, C/C++, Go, PHP) or block keywords (Ruby, shell), with each language's
+    /// comments and literals removed first; functions from declarations; branches from control-flow
+    /// tokens inside function bodies (so a Swift enum's <c>case</c> declarations are not branches).
     /// Other source extensions (C# aside) use the indentation heuristic.
     /// </summary>
-    private static readonly Dictionary<string, BraceLanguage> BraceLanguages = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, Func<IBlockScanner>> BlockScanners = new(StringComparer.OrdinalIgnoreCase)
     {
-        [".swift"] = new(
-            Swift: true,
-            new Regex(@"(^|[\s(])(func\s+[^\s(<]+|init[?!]?\s*[(<]|deinit\b)", RegexOptions.Compiled | RegexOptions.CultureInvariant),
-            new Regex(@"\b(if|guard|switch|case|for|while|repeat|catch)\b|&&|\|\||\?\?|\s\?\s", RegexOptions.Compiled | RegexOptions.CultureInvariant)),
-        [".rs"] = new(
-            Swift: false,
-            new Regex(@"\bfn\s+[A-Za-z_]", RegexOptions.Compiled | RegexOptions.CultureInvariant),
-            new Regex(@"\b(if|match|for|while|loop)\b|=>|&&|\|\||\?(?=[\s;.)?,]|$)", RegexOptions.Compiled | RegexOptions.CultureInvariant))
+        [".swift"] = BraceBlockScanner.Swift,
+        [".rs"] = BraceBlockScanner.Rust,
+        [".c"] = BraceBlockScanner.C, [".h"] = BraceBlockScanner.C,
+        [".cpp"] = BraceBlockScanner.C, [".cc"] = BraceBlockScanner.C, [".cxx"] = BraceBlockScanner.C,
+        [".hpp"] = BraceBlockScanner.C, [".hxx"] = BraceBlockScanner.C, [".hh"] = BraceBlockScanner.C,
+        [".go"] = BraceBlockScanner.Go,
+        [".php"] = BraceBlockScanner.Php,
+        [".rb"] = () => new RubyBlockScanner(),
+        [".sh"] = () => new ShellBlockScanner(), [".bash"] = () => new ShellBlockScanner(), [".zsh"] = () => new ShellBlockScanner()
     };
-
-    private sealed record BraceLanguage(bool Swift, Regex FunctionDeclaration, Regex Branch);
 
     private static readonly HashSet<string> TestPathSegments = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -969,11 +970,7 @@ public class VitalsAnalyzer(
                 try { content = fileSystem.ReadAllText(fullPath); }
                 catch { continue; }
 
-                var data = ext.Equals(".cs", StringComparison.OrdinalIgnoreCase)
-                    ? ComputeCSharpComplexity(content)
-                    : BraceLanguages.TryGetValue(ext, out var braceLanguage)
-                        ? ComputeBraceComplexity(content, braceLanguage)
-                        : ComputeIndentationComplexity(content);
+                var data = ComputeFileComplexity(ext, content);
 
                 if (data.MaxNestingDepth >= 2)
                     result[relPath] = data;
@@ -1062,83 +1059,13 @@ public class VitalsAnalyzer(
         };
     }
 
-    /// <summary>
-    /// Swift/Rust complexity: nesting from braces (comments and literals ignored, per
-    /// <see cref="BraceSourceLexer"/>), a function from its declaration to the line its body
-    /// closes, branches from the language's control-flow tokens within functions.
-    /// </summary>
-    private static ComplexityData ComputeBraceComplexity(string source, BraceLanguage language)
-    {
-        var lines = source.Split('\n');
-        int maxDepth = 0;
-        int deepLines = 0;
-        int functionCount = 0;
-        int longestFunction = 0;
-        int branchCount = 0;
-        int braceDepth = 0;
-        int? functionDepth = null;
-        int functionStart = 0;
-        var lexer = new BraceSourceLexer(language.Swift);
-
-        for (var index = 0; index < lines.Length; index++)
-        {
-            var code = lexer.StripLine(lines[index]).Trim();
-            if (code.Length == 0) continue;
-
-            // A declaration at the depth of a still-open body-less one (a protocol requirement)
-            // ends that one; a declaration inside a function body is part of it.
-            if (functionDepth is { } open && braceDepth <= open && language.FunctionDeclaration.IsMatch(code))
-            {
-                longestFunction = Math.Max(longestFunction, index - functionStart);
-                functionDepth = null;
-            }
-
-            if (functionDepth is null && language.FunctionDeclaration.IsMatch(code))
-            {
-                functionCount++;
-                functionDepth = braceDepth;
-                functionStart = index;
-            }
-
-            if (functionDepth is not null)
-                branchCount += language.Branch.Matches(code).Count;
-
-            var lineDepth = braceDepth;
-            foreach (var c in code)
-            {
-                if (c == '{') lineDepth = Math.Max(lineDepth, ++braceDepth);
-                else if (c == '}') braceDepth = Math.Max(0, braceDepth - 1);
-            }
-
-            if (lineDepth > maxDepth) maxDepth = lineDepth;
-            if (lineDepth >= 3) deepLines++;
-
-            // The function ends on the line its body closes, or a body-less declaration (a trait
-            // method, an extern fn) on the line ending it with ';' or closing its enclosing scope.
-            if (functionDepth is { } depth
-                && (braceDepth < depth || (braceDepth == depth && (lineDepth > depth || code.EndsWith(';')))))
-            {
-                longestFunction = Math.Max(longestFunction, index - functionStart + 1);
-                functionDepth = null;
-            }
-        }
-
-        if (functionDepth is not null)
-            longestFunction = Math.Max(longestFunction, lines.Length - functionStart);
-
-        var score = ComputeComplexityScore(maxDepth, deepLines, longestFunction,
-            lines.Length, branchCount, functionCount);
-
-        return new ComplexityData
-        {
-            Score = score,
-            MaxNestingDepth = maxDepth,
-            DeepNestingLines = deepLines,
-            FunctionCount = functionCount,
-            LongestFunction = longestFunction,
-            BranchCount = branchCount
-        };
-    }
+    /// <summary>The structural complexity of one source file, by its extension's language.</summary>
+    internal static ComplexityData ComputeFileComplexity(string extension, string source)
+        => extension.Equals(".cs", StringComparison.OrdinalIgnoreCase)
+            ? ComputeCSharpComplexity(source)
+            : BlockScanners.TryGetValue(extension, out var scanner)
+                ? BlockComplexity.Compute(source, scanner())
+                : ComputeIndentationComplexity(source);
 
     private static ComplexityData ComputeIndentationComplexity(string source)
     {
@@ -1232,7 +1159,7 @@ public class VitalsAnalyzer(
 
     // --- Scoring ---
 
-    private static int ComputeComplexityScore(int maxNesting, int deepLines,
+    internal static int ComputeComplexityScore(int maxNesting, int deepLines,
         int longestFunction, int fileLength, int branchCount, int functionCount)
     {
         if (maxNesting <= 2) return 0; // Config/data files
@@ -1721,7 +1648,7 @@ public class VitalsAnalyzer(
         public int DeepNestingLines { get; set; }
         public int FunctionCount { get; set; }
         public int LongestFunction { get; set; }
-        /// <summary>Branch tokens counted (brace languages only; not persisted).</summary>
+        /// <summary>Branch tokens counted (block-measured languages only; not persisted).</summary>
         public int BranchCount { get; set; }
     }
 
