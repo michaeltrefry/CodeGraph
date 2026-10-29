@@ -18,12 +18,13 @@ public sealed class WorkSessionOptions
 
     /// <summary>
     /// The PruneWorkSessions job deletes a session that ended, or was last seen, longer ago than this
-    /// many days (default 30), unless something durable still refers to it (sc-27882).
+    /// many days (default 30; never less than WorkMessageLimits.DirectMessageRetention, 7 days, so a direct
+    /// message can still be inherited a second time), unless something live still refers to it (sc-27882).
     /// </summary>
     public int RetentionDays { get; set; } = 30;
 
     /// <summary>Sessions deleted per transaction by the prune job.</summary>
-    public int PruneBatchSize { get; set; } = 100;
+    public int PruneBatchSize { get; set; } = 10;
 }
 
 /// <summary>A tool argument type that can carry the caller's session.</summary>

@@ -396,7 +396,8 @@ public sealed partial class MySqlWorkStore(
     // claim in its history. An item a human moved to in progress is not "whose claim lapsed".
     private const string RecoverableCondition =
         "i.status = 'in_progress' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
-        "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id)) " +
+        "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id) " +
+        "OR EXISTS (SELECT 1 FROM work_attempts att WHERE att.item_id = i.id)) " +
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
         "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') AND NOT " + OpenBlockingQuestion;
 

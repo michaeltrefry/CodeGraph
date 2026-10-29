@@ -25,8 +25,11 @@ public sealed partial class MySqlWorkStore : IWorkSessionPruner
         "AND (d.read_at IS NULL OR m.state = 'open')))";
 
     // (table, session id column, harness, model, host) -- the attribution copied onto rows before their session goes.
-    private static readonly (string Table, string Session, string Harness, string Model, string Host)[] AttributedColumns =
+    internal static readonly (string Table, string Session, string Harness, string Model, string Host)[] AttributedColumns =
     [
+        ("work_projects", "created_session_id", "created_harness", "created_model", "created_host"),
+        ("work_features", "created_session_id", "created_harness", "created_model", "created_host"),
+        ("work_items", "created_session_id", "created_harness", "created_model", "created_host"),
         ("work_changes", "actor_session_id", "actor_harness", "actor_model", "actor_host"),
         ("work_handoffs", "author_session_id", "author_harness", "author_model", "author_host"),
         ("work_item_comments", "author_session_id", "author_harness", "author_model", "author_host"),
@@ -44,8 +47,13 @@ public sealed partial class MySqlWorkStore : IWorkSessionPruner
         int sessions = 0, claims = 0, keys = 0;
         var now = Now();
 
-        // Closed claim rows of every session past the window go, kept session or not: they only feed the
-        // recovery fallback "who last held this item", which is meaningless after the retention window.
+        // Closed claim rows of every session past the window go, kept session or not. Recovery of an item
+        // does not need them: work_attempts (one row per claim, attribution copied on prune) is the claim
+        // history after this point (RecoverableCondition, IsRecoverableAsync, LoadRecoveryAsync).
+        //
+        // Not pruned, by design: a crashed session with an open claim row stays until the item is reclaimed
+        // (the open row is how its next write is told claim_lost); and message deliveries addressed to a
+        // pruned recipient are left to the message retention of S7a.
         while (true)
         {
             var deleted = await RunAsync([], async connection => await connection.ExecuteAsync(new CommandDefinition(
@@ -62,7 +70,9 @@ public sealed partial class MySqlWorkStore : IWorkSessionPruner
         {
             var batch = await RunAsync([], async connection =>
             {
-                await using var transaction = await connection.BeginTransactionAsync(ct);
+                // READ COMMITTED: the candidate scan takes no gap locks against writers; the session rows
+                // are still locked first (before any history row), the same order every writer uses.
+                await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
                 var ids = (await connection.QueryAsync<string>(new CommandDefinition(
                     $"SELECT s.id FROM work_sessions s WHERE {PrunableSessions} ORDER BY s.id LIMIT {batchSize} FOR UPDATE",
                     new { cutoff = cutoffUtc, now, inheritFrom = now - WorkMessageLimits.DirectMessageRetention }, transaction, cancellationToken: ct))).ToList();

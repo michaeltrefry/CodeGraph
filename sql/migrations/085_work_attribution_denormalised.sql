@@ -4,6 +4,18 @@
 -- deletes it; reads use COALESCE(live session value, the row's own value). Rows therefore carry NULL
 -- here until their session is pruned. Restart-safe: columns and indexes are created if missing.
 
+ALTER TABLE work_projects
+    ADD COLUMN IF NOT EXISTS created_harness VARCHAR(64) NULL,
+    ADD COLUMN IF NOT EXISTS created_model VARCHAR(128) NULL,
+    ADD COLUMN IF NOT EXISTS created_host VARCHAR(255) NULL;
+ALTER TABLE work_features
+    ADD COLUMN IF NOT EXISTS created_harness VARCHAR(64) NULL,
+    ADD COLUMN IF NOT EXISTS created_model VARCHAR(128) NULL,
+    ADD COLUMN IF NOT EXISTS created_host VARCHAR(255) NULL;
+ALTER TABLE work_items
+    ADD COLUMN IF NOT EXISTS created_harness VARCHAR(64) NULL,
+    ADD COLUMN IF NOT EXISTS created_model VARCHAR(128) NULL,
+    ADD COLUMN IF NOT EXISTS created_host VARCHAR(255) NULL;
 ALTER TABLE work_changes
     ADD COLUMN IF NOT EXISTS actor_harness VARCHAR(64) NULL,
     ADD COLUMN IF NOT EXISTS actor_model VARCHAR(128) NULL,

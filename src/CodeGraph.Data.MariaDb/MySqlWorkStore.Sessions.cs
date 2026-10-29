@@ -106,8 +106,11 @@ public sealed partial class MySqlWorkStore
             if (row.EndedAt is { } ended)
                 throw WorkException.SessionUnusable(WorkErrorCodes.InvalidArgument, $"Session {sessionId} ended at {Utc(ended):O}. Start a new session with start_session.");
 
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE work_sessions SET last_seen_at = @now WHERE id = @id", new { id = sessionId.ToString(), now }, cancellationToken: ct));
+            // A session pruned between the read and this write is gone: nothing may then name it.
+            var renewed = await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_sessions SET last_seen_at = @now WHERE id = @id AND ended_at IS NULL", new { id = sessionId.ToString(), now }, cancellationToken: ct));
+            if (renewed == 0)
+                throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}. Start one with start_session.");
             // Only claims that are still live are renewed: one that lapsed stays lapsed, and the
             // session's next write on that item is refused claim_lost.
             await connection.ExecuteAsync(new CommandDefinition(
@@ -430,6 +433,16 @@ public sealed partial class MySqlWorkStore
             if (lastSession is not null && Guid.TryParse(lastSession, out var sessionId) &&
                 await ReadSessionRowAsync(connection, transaction, sessionId, ct) is { } session)
                 previous = new HolderView(session.Identity, lastSession, session.Harness, session.Model, session.Host);
+            if (previous is null)
+            {
+                // The claim rows (and the session) are gone after pruning; the latest attempt keeps the holder
+                // and, copied when its session was pruned, its harness, model and host.
+                var attempt = await connection.QueryFirstOrDefaultAsync<AttemptRow>(new CommandDefinition(
+                    $"SELECT {AttemptColumns} FROM work_attempts a LEFT JOIN work_sessions s ON s.id = a.session_id WHERE a.item_id = @id ORDER BY a.number DESC LIMIT 1",
+                    new { id = before.Id }, transaction, cancellationToken: ct));
+                if (attempt is not null)
+                    previous = new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host);
+            }
         }
 
         var (branches, prs) = await ReadWorkLinksAsync(connection, transaction, before.Id, ct);
@@ -546,7 +559,8 @@ public sealed partial class MySqlWorkStore
     private static async Task<bool> IsRecoverableAsync(MySqlConnection connection, ItemRow row, DateTime now, CancellationToken ct) =>
         WorkStatuses.Parse(row.Status) == WorkStatus.InProgress && !row.HasLiveClaim(now) &&
         (row.ClaimHolder is not null || await connection.ExecuteScalarAsync<long>(new CommandDefinition(
-            "SELECT COUNT(*) FROM work_session_claims WHERE item_id = @id", new { id = row.Id }, cancellationToken: ct)) > 0);
+            "SELECT (SELECT COUNT(*) FROM work_session_claims WHERE item_id = @id) + (SELECT COUNT(*) FROM work_attempts WHERE item_id = @id)",
+            new { id = row.Id }, cancellationToken: ct)) > 0);
 
     private async Task<BriefingItem> BriefingItemAsync(MySqlConnection connection, ItemRow row, bool recoverable, HolderView? previous, CancellationToken ct)
     {

@@ -36,6 +36,17 @@ public class PruneWorkSessionsJobTests
     }
 
     [Fact]
+    public async Task A_retention_shorter_than_the_direct_message_window_is_raised_to_seven_days()
+    {
+        var pruner = new RecordingWorkSessionPruner();
+        var dispatcher = JobCommandDispatcherTests.CreateDispatcherWith(pruner, new WorkSessionOptions { RetentionDays = 1 });
+
+        await dispatcher.ExecuteAsync(JobTypes.PruneWorkSessions, "{}");
+
+        pruner.Calls.ShouldHaveSingleItem().Cutoff.ShouldBeInRange(DateTime.UtcNow.AddDays(-7).AddSeconds(-5), DateTime.UtcNow.AddDays(-7));
+    }
+
+    [Fact]
     public void The_job_type_is_registered_supported_and_normalizes_empty_arguments()
     {
         var dispatcher = JobCommandDispatcherTests.CreateDispatcherWith(new RecordingWorkSessionPruner(), new WorkSessionOptions());

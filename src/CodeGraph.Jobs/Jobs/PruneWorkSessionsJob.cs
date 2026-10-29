@@ -13,7 +13,9 @@ public class PruneWorkSessionsJob(
     {
         var startedAtUtc = DateTime.UtcNow;
         var settings = options.Value;
-        var days = settings.RetentionDays > 0 ? settings.RetentionDays : new WorkSessionOptions().RetentionDays;
+        // Never shorter than the direct-message inheritance window, whatever the configuration says.
+        var minimumDays = (int)Math.Ceiling(WorkMessageLimits.DirectMessageRetention.TotalDays);
+        var days = Math.Max(settings.RetentionDays > 0 ? settings.RetentionDays : new WorkSessionOptions().RetentionDays, minimumDays);
         var result = await pruner.PruneSessionsAsync(startedAtUtc.AddDays(-days), settings.PruneBatchSize, ct);
 
         return new JobExecutionResult(
