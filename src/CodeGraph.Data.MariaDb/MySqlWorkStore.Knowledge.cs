@@ -651,6 +651,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             Lesson: row.Kind == "lesson" ? await LoadLessonViewAsync(connection, transaction, row, withEvents: withRevisions, ct) : null);
     }
 
+    private static WorkActor AuthorOf(KnowledgeEntryRow row) =>
+        new(row.Author, row.AuthorKind, row.AuthorSessionId, row.AuthorHarness, row.AuthorModel, row.AuthorHost);
+
     private static KnowledgeRow ToRow(KnowledgeEntryRow row, string? match = null)
     {
         var status = ParseName<KnowledgeStatus>(row.Status);

@@ -1,0 +1,184 @@
+<section class="cg-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Lessons</h1>
+      <p>Corrections agents were given and the rules they became. Recurrence is information, not a trigger: nothing here acts on its own.</p>
+    </div>
+    <div class="cg-page-header-actions">
+      <label class="cg-field">
+        <span class="cg-field-label">Project</span>
+        <select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)">
+          @for (p of project.projects(); track p.key) {
+            <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
+          }
+        </select>
+      </label>
+    </div>
+  </header>
+
+  @if (project.error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p>
+  } @else if (!project.selected()) {
+    <p class="kn-empty">No projects yet.</p>
+  } @else {
+    <div class="cg-segmented" role="tablist" aria-label="Lesson views">
+      @for (t of tabs; track t.id) {
+        <button type="button" role="tab" [class.active]="tab() === t.id" [attr.aria-selected]="tab() === t.id" (click)="show(t.id)">{{ t.label }}</button>
+      }
+    </div>
+    <p class="cg-muted cg-small">{{ hint() }}</p>
+
+    @if (tab() !== 'unlearned_reviews') {
+      <form class="kn-toolbar" (ngSubmit)="load()">
+        <label class="cg-field">
+          <span class="cg-field-label">Activity</span>
+          <select class="cg-select" name="activity" [(ngModel)]="activity" (ngModelChange)="load()">
+            <option value="">Any activity</option>
+            @for (a of activities; track a) { <option [value]="a">{{ words(a) }}</option> }
+          </select>
+        </label>
+        <label class="cg-field">
+          <span class="cg-field-label">Source</span>
+          <select class="cg-select" name="source" [(ngModel)]="source" (ngModelChange)="load()">
+            <option value="">Any source</option>
+            @for (s of sources; track s) { <option [value]="s">{{ words(s) }}</option> }
+          </select>
+        </label>
+        @if (tab() === 'all') {
+          <label class="cg-field">
+            <span class="cg-field-label">Tier</span>
+            <select class="cg-select" name="tier" [(ngModel)]="tier" (ngModelChange)="load()">
+              <option value="">Any tier</option>
+              @for (s of ruleStates; track s) { <option [value]="s">{{ tierLabel(s) }}</option> }
+            </select>
+          </label>
+          <label class="cg-field kn-grow">
+            <span class="cg-field-label">Search</span>
+            <input class="cg-input" name="text" [(ngModel)]="text" placeholder="Words in the lesson" />
+          </label>
+        }
+        @if (tab() === 'unmatched') {
+          <label class="cg-field">
+            <span class="cg-field-label">Days not served</span>
+            <input class="cg-input" type="number" name="sinceDays" min="1" max="3650" [(ngModel)]="sinceDays" />
+          </label>
+        }
+        <button class="cg-btn primary" type="submit">Apply</button>
+      </form>
+    }
+
+    @if (error()) {
+      <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p>
+    }
+
+    <div class="kn-layout">
+      <div class="cg-card kn-list" aria-label="Lessons">
+        @switch (tab()) {
+          @case ('all') {
+            @for (lesson of lessons(); track lesson.id) {
+              <button type="button" class="kn-row" [class.selected]="selected()?.id === lesson.id" (click)="select(lesson.id)">
+                <span class="kn-summary">{{ lesson.summary }}</span>
+                <span class="kn-meta">
+                  @if (lesson.lesson) {
+                    <span [class]="'cg-chip ' + tierClass(lesson.lesson.state)">{{ tierLabel(lesson.lesson.state) }}</span>
+                    <span class="cg-chip">{{ lesson.lesson.priority }}</span>
+                    <span class="kn-numbers">{{ lesson.lesson.recurrence.events }}×</span>
+                  }
+                  @if (lesson.status !== 'active') { <span class="cg-chip cg-chip-err">{{ lesson.status }}</span> }
+                  @if (lesson.details?.source) { <span>{{ words(lesson.details!.source!.kind) }}</span> }
+                  <span>·</span>
+                  <span class="kn-actor" [title]="actorTitle(lesson.author)">{{ actorLabel(lesson.author) }}</span>
+                  <span>· {{ lesson.created_at | date: 'mediumDate' }}</span>
+                </span>
+              </button>
+            } @empty {
+              <p class="kn-empty">{{ loading() ? 'Loading…' : 'No lessons match.' }}</p>
+            }
+          }
+          @case ('unaddressed') {
+            @for (g of groups(); track g.activity) {
+              <div class="kn-group-title adm-section-label">{{ words(g.activity) }}</div>
+              @for (row of g.lessons; track row.id) {
+                <ng-container *ngTemplateOutlet="lessonRow; context: { $implicit: row }" />
+              }
+            } @empty {
+              <p class="kn-empty">{{ loading() ? 'Loading…' : 'Every rule is addressed locally.' }}</p>
+            }
+          }
+          @case ('unlearned_reviews') {
+            @for (r of reviews(); track r.evidence_id) {
+              <div class="kn-row kn-static">
+                <span class="kn-summary">{{ r.body || '(no text)' }}</span>
+                <span class="kn-meta">
+                  <span class="cg-chip">{{ words(r.kind) }}</span>
+                  <span class="cg-chip">{{ r.priority }}</span>
+                  <span>{{ r.item }}</span>
+                  <span>·</span>
+                  <span class="kn-actor">{{ r.author_login }}</span>
+                  <span>· {{ words(r.source) }} · {{ r.created_at | date: 'medium' }}</span>
+                  @if (r.url) { <a [href]="r.url" target="_blank" rel="noopener">open</a> }
+                </span>
+              </div>
+            } @empty {
+              <p class="kn-empty">{{ loading() ? 'Loading…' : 'Every review has a lesson.' }}</p>
+            }
+          }
+          @default {
+            @for (row of rows(); track row.id) {
+              <ng-container *ngTemplateOutlet="lessonRow; context: { $implicit: row }" />
+            } @empty {
+              <p class="kn-empty">{{ loading() ? 'Loading…' : 'Nothing here yet.' }}</p>
+            }
+          }
+        }
+        @if (nextCursor()) {
+          <div class="kn-more"><button class="cg-btn" type="button" (click)="load(true)" [disabled]="loading()">Load more</button></div>
+        }
+      </div>
+
+      <aside class="cg-card kn-detail" aria-label="Lesson detail">
+        @if (selected(); as lesson) {
+          <div class="kn-meta">
+            <span class="cg-chip cg-chip-accent">lesson</span>
+            @if (lesson.status !== 'active') { <span class="cg-chip cg-chip-err">{{ lesson.status }}</span> }
+            <span>version {{ lesson.version }}</span>
+          </div>
+          <h2>{{ lesson.summary }}</h2>
+          <div class="kn-meta">
+            <span class="kn-actor" [title]="actorTitle(lesson.author)">{{ actorLabel(lesson.author) }}</span>
+            <span>· {{ lesson.created_at | date: 'medium' }}</span>
+            <span class="cg-mono cg-faint">{{ lesson.id }}</span>
+          </div>
+          @if (lesson.details?.what) { <p>{{ lesson.details!.what }}</p> }
+          @if (lesson.status_reason) { <p><strong>Why {{ lesson.status }}:</strong> {{ lesson.status_reason }}</p> }
+          <app-lesson-actions [entry]="lesson" (changed)="changed($event)" />
+        } @else {
+          <p class="kn-empty">Select a lesson to review it: approve, reject, edit, challenge or retract.</p>
+        }
+      </aside>
+    </div>
+  }
+</section>
+
+<ng-template #lessonRow let-row>
+  <button type="button" class="kn-row" [class.selected]="selected()?.id === row.id" (click)="select(row.id)">
+    <span class="kn-summary">{{ row.summary }}</span>
+    <span class="kn-meta">
+      <span [class]="'cg-chip ' + tierClass(row.state)">{{ tierLabel(row.state) }}</span>
+      <span class="cg-chip">{{ row.priority }}</span>
+      @if (row.rule_reason) { <span>from {{ words(row.rule_reason) }}</span> }
+      @if (row.source) { <span>· {{ words(row.source) }}</span> }
+      @if (row.activity?.length) { <span>· {{ row.activity.map(words).join(', ') }}</span> }
+      @if (row.contradicted) { <span class="cg-chip cg-chip-warn">contradicted</span> }
+      @if (row.open_challenges) { <span class="cg-chip cg-chip-warn">{{ row.open_challenges }} open challenge{{ row.open_challenges > 1 ? 's' : '' }}</span> }
+      @if (row.addressed_by?.length) { <span class="cg-chip cg-chip-ok">addressed by {{ row.addressed_by[0].kind }} {{ row.addressed_by[0].name }}</span> }
+    </span>
+    <span class="kn-meta">
+      <span class="kn-numbers">{{ row.recurrence.events }} events · {{ row.recurrence.while_served }} recurred while served · {{ row.recurrence.while_not_served }} while not served</span>
+      <span>· last served {{ row.last_served_at ? (row.last_served_at | date: 'mediumDate') : 'never' }}</span>
+      <span>·</span>
+      <span class="kn-actor" [title]="actorTitle(row.author)">{{ actorLabel(row.author) }}</span>
+      <span>· {{ (row.rule_since ?? row.created_at) | date: 'mediumDate' }}</span>
+    </span>
+  </button>
+</ng-template>

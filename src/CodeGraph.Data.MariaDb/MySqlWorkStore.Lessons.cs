@@ -1162,7 +1162,8 @@ public sealed partial class MySqlWorkStore
                 served.TryGetValue(row.Id, out var found) ? found.Last : null,
                 contradicts[row.Id].Any() ? true : null,
                 open == 0 ? null : open,
-                by.Count == 0 ? null : by);
+                by.Count == 0 ? null : by,
+                AuthorOf(row));
         }).ToList();
     }
 
@@ -1186,14 +1187,14 @@ public sealed partial class MySqlWorkStore
             var open = challenges[row.Id].ToList();
             var shown = open.Take(LessonLimits.MaxShownChallenges).ToList();
             items.Add(new ReviewItem(ReviewKinds.Challenge, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, open.Min(challenge => challenge.CreatedAt),
-                Challenges: shown, MoreChallenges: open.Count > shown.Count ? open.Count - shown.Count : null));
+                Challenges: shown, MoreChallenges: open.Count > shown.Count ? open.Count - shown.Count : null, Author: AuthorOf(row)));
         }
 
         // Lessons proposed for rule status.
         foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'lesson' AND e.rule_state = 'proposed' " +
             $"ORDER BY e.id LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
-            items.Add(new ReviewItem(ReviewKinds.ProposedRule, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, Utc(row.UpdatedAt)));
+            items.Add(new ReviewItem(ReviewKinds.ProposedRule, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, Utc(row.UpdatedAt), Author: AuthorOf(row)));
 
         // Contradicting lessons, both active: one item per pair.
         var pairs = (await connection.QueryAsync<(Guid EntryId, Guid OtherId, DateTime CreatedAt)>(new CommandDefinition(
@@ -1213,7 +1214,7 @@ public sealed partial class MySqlWorkStore
                 // The higher priority side leads.
                 var (lead, other) = LessonSimilarity.PriorityRank(a.Priority) <= LessonSimilarity.PriorityRank(b.Priority) ? (a, b) : (b, a);
                 items.Add(new ReviewItem(ReviewKinds.Contradiction, ToRow(lead), lead.Priority ?? "normal",
-                    Math.Max(a.Recurrence ?? 1, b.Recurrence ?? 1), Utc(createdAt), Other: ToRow(other)));
+                    Math.Max(a.Recurrence ?? 1, b.Recurrence ?? 1), Utc(createdAt), Other: ToRow(other), Author: AuthorOf(lead), OtherAuthor: AuthorOf(other)));
             }
         }
 
@@ -1221,7 +1222,7 @@ public sealed partial class MySqlWorkStore
         foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'decision' AND e.made_autonomously = 1 " +
             $"AND e.reviewed_at IS NULL ORDER BY e.created_at LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
-            items.Add(new ReviewItem(ReviewKinds.AutonomousDecision, ToRow(row), "normal", 1, Utc(row.CreatedAt)));
+            items.Add(new ReviewItem(ReviewKinds.AutonomousDecision, ToRow(row), "normal", 1, Utc(row.CreatedAt), Author: AuthorOf(row)));
 
         // Ranked by priority, then recurrence, then the oldest first.
         var ranked = items
