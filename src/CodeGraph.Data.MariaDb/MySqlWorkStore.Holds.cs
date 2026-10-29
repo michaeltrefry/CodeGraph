@@ -59,7 +59,7 @@ public sealed partial class MySqlWorkStore
     private const string HoldSelect =
         "SELECT h.id, h.seq, h.resource_id, r.name AS resource_name, p.project_key, h.identity, h.session_id, i.number AS item_number, " +
         "h.purpose, h.priority, h.state, h.ttl_seconds, h.requested_at, h.wait_expires_at, h.granted_at, h.expires_at, h.renewed_at, h.ended_at, " +
-        "s.harness AS session_harness, s.model AS session_model, s.host AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
+        "COALESCE(s.harness, h.harness) AS session_harness, COALESCE(s.model, h.model) AS session_model, COALESCE(s.host, h.host) AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
         "FROM work_holds h JOIN work_resources r ON r.id = h.resource_id JOIN work_projects p ON p.id = h.project_id " +
         "LEFT JOIN work_items i ON i.id = h.item_id LEFT JOIN work_sessions s ON s.id = h.session_id ";
 

@@ -69,6 +69,21 @@ public class JobCommandDispatcherTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_DispatchesPruneWorkMessagesJob()
+    {
+        var retention = new RecordingWorkMessageRetentionService { Result = new MessageRetentionResult(2, 3, 4) };
+        var dispatcher = CreateDispatcher(workMessageRetention: retention);
+
+        var result = await dispatcher.ExecuteAsync(JobTypes.PruneWorkMessages, "{}");
+
+        result.Success.ShouldBeTrue();
+        result.Message.ShouldContain("9 rows");
+        retention.Calls.ShouldBe(1);
+        dispatcher.GetSupportedJobTypes().ShouldContain(JobTypes.PruneWorkMessages);
+        dispatcher.NormalizeArgsJson(JobTypes.PruneWorkMessages, null).ShouldBe("{}");
+    }
+
+    [Fact]
     public async Task ExecuteAsync_DispatchesDetectCommunitiesThroughIndexerClient()
     {
         var indexerClient = new RecordingIndexerClient();
@@ -81,9 +96,26 @@ public class JobCommandDispatcherTests
         indexerClient.DetectCommunitiesCalls.ShouldBe(1);
     }
 
+    internal static JobCommandDispatcher CreateDispatcherWith(RecordingWorkSessionPruner pruner, CodeGraph.Models.Work.WorkSessionOptions sessionOptions)
+    {
+        var indexerClient = new RecordingIndexerClient();
+        return new JobCommandDispatcher(
+            new DiscoverRepositoriesJob(indexerClient, NullLogger<DiscoverRepositoriesJob>.Instance),
+            new ReIndexAllRepositoriesJob(indexerClient),
+            new ProcessBatchAnalysisJob(indexerClient),
+            new LinkAndDetectJob(indexerClient),
+            new DetectCommunitiesJob(indexerClient),
+            new RegenerateMcpDocsJob(new RecordingMcpDocService()),
+            new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()),
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
+            new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)),
+            new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()));
+    }
+
     private static JobCommandDispatcher CreateDispatcher(
         RecordingAssistantRetentionCleanupService? cleanupService = null,
-        RecordingIndexerClient? indexerClient = null)
+        RecordingIndexerClient? indexerClient = null,
+        RecordingWorkMessageRetentionService? workMessageRetention = null)
     {
         indexerClient ??= new RecordingIndexerClient
         {
@@ -97,7 +129,9 @@ public class JobCommandDispatcherTests
             new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(new RecordingMcpDocService()),
             new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()),
-            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()));
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
+            new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
+            new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

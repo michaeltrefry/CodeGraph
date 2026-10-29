@@ -5,6 +5,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Assistant;
+using CodeGraph.Services.Work;
 
 namespace CodeGraph.Jobs.Tests.Jobs;
 
@@ -234,6 +235,18 @@ internal sealed class RecordingAssistantRetentionCleanupService : IAssistantRete
     }
 }
 
+internal sealed class RecordingWorkMessageRetentionService : IWorkMessageRetentionService
+{
+    public int Calls { get; private set; }
+    public MessageRetentionResult Result { get; set; } = new(0, 0, 0);
+
+    public Task<MessageRetentionResult> CleanupAsync(CancellationToken ct = default)
+    {
+        Calls++;
+        return Task.FromResult(Result);
+    }
+}
+
 internal sealed class InMemoryJobScheduleStore : IJobScheduleStore
 {
     private readonly List<JobScheduleEntity> _items = [];
@@ -431,4 +444,16 @@ internal static class JobScheduleEntityCloneExtensions
         CreatedAtUtc = entity.CreatedAtUtc,
         UpdatedAtUtc = entity.UpdatedAtUtc
     };
+}
+
+internal sealed class RecordingWorkSessionPruner : CodeGraph.Data.IWorkSessionPruner
+{
+    public List<(DateTime Cutoff, int BatchSize)> Calls { get; } = [];
+    public CodeGraph.Data.WorkSessionPruneResult Result { get; set; } = new(3, 5, 1);
+
+    public Task<CodeGraph.Data.WorkSessionPruneResult> PruneSessionsAsync(DateTime cutoffUtc, int batchSize, CancellationToken ct = default)
+    {
+        Calls.Add((cutoffUtc, batchSize));
+        return Task.FromResult(Result);
+    }
 }
