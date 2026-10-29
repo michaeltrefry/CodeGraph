@@ -72,7 +72,7 @@ public sealed class WorkMcpTool : McpServerTool
 
     public static CallToolResult ToError(WorkException exception)
     {
-        var element = JsonSerializer.SerializeToElement(new WorkError(exception.Code, exception.Message, exception.Current), WorkJson.Options);
+        var element = JsonSerializer.SerializeToElement(new WorkError(exception.Code, exception.Message, exception.Current, exception.Reason), WorkJson.Options);
         return new CallToolResult
         {
             IsError = true,

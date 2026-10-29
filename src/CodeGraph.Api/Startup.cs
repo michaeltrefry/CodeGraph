@@ -200,6 +200,9 @@ public static class Startup
         // Work tracking (agent coordination S1). IWorkStore is registered with the MariaDB
         // provider only; without it the work tools answer a plain server error.
         services.AddTransient<IWorkService, WorkService>();
+        // Sessions (S2): the idle threshold after which a silent session's claims lapse, and the
+        // default briefing budget.
+        services.Configure<CodeGraph.Models.Work.WorkSessionOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkSessionOptions.Section));
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<McpPersonalAccessTokenService>();

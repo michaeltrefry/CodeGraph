@@ -69,7 +69,11 @@ public static class WorkErrorCodes
     public const string InvalidArgument = "invalid_argument";
     /// <summary>Other writers kept the call waiting or deadlocked it three times. Retry the same call.</summary>
     public const string Busy = "busy";
-    /// <summary>Reserved for S2: a write by a session whose claim lapsed and passed to someone else.</summary>
+    /// <summary>
+    /// A write on an item by a session whose claim on it lapsed or passed to another holder. The
+    /// refusal names the holder now (or says unclaimed); the session may reclaim an unclaimed item
+    /// with claim, or let go of it with release_claim.
+    /// </summary>
     public const string ClaimLost = "claim_lost";
 }
 
@@ -81,13 +85,28 @@ public static class WorkErrorCodes
 public sealed class WorkStoreUnavailableException()
     : InvalidOperationException("Work tracking needs the MariaDB storage provider; this deployment runs without it.");
 
-/// <summary>A refused work call. <see cref="Code"/> is one of <see cref="WorkErrorCodes"/>.</summary>
-public sealed class WorkException(string code, string message, object? current = null) : Exception(message)
+/// <summary>Sub-reasons a refusal may carry besides its code (see <see cref="WorkException.Reason"/>).</summary>
+public static class WorkErrorReasons
 {
+    public const string SessionUnusable = "session_unusable";
+}
+
+/// <summary>A refused work call. <see cref="Code"/> is one of <see cref="WorkErrorCodes"/>.</summary>
+public sealed class WorkException(string code, string message, object? current = null, string? reason = null) : Exception(message)
+{
+    /// <summary>
+    /// A stable sub-reason of the code, outside the closed code vocabulary, for the refusals a client
+    /// acts on: <see cref="WorkErrorReasons.SessionUnusable"/>.
+    /// </summary>
+    public string? Reason { get; } = reason;
+
     public string Code { get; } = code;
 
     /// <summary>The object as it is now, for a <c>conflict</c> on <c>expected_version</c>.</summary>
     public object? Current { get; } = current;
+
+    /// <summary>The session in session_id cannot be used: unknown, ended, malformed or another identity's.</summary>
+    public static WorkException SessionUnusable(string code, string message) => new(code, message, reason: WorkErrorReasons.SessionUnusable);
 
     public static WorkException Invalid(string message) => new(WorkErrorCodes.InvalidArgument, message);
 
@@ -134,6 +153,7 @@ public static class WorkChangeKinds
     public const string ItemCreated = "item_created";
     public const string ItemUpdated = "item_updated";
     public const string Claimed = "claimed";
+    public const string Recovered = "recovered";
 }
 
 /// <summary>

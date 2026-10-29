@@ -29,7 +29,10 @@ namespace CodeGraph.Data.MariaDb;
 /// and then refused <c>busy</c>.</item>
 /// </list>
 /// </summary>
-public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optionsAccessor, TimeProvider? timeProvider = null) : IWorkStore
+public sealed partial class MySqlWorkStore(
+    IOptions<MariaDbStorageOptions> optionsAccessor,
+    TimeProvider? timeProvider = null,
+    IOptions<WorkSessionOptions>? sessionOptions = null) : IWorkStore
 {
     public const string ChangeLockName = "codegraph_work_changes";
     public const string DependencyLockName = "codegraph_work_dependencies";
@@ -46,6 +49,9 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
 
     private readonly MariaDbStorageOptions options = optionsAccessor.Value;
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+
+    // A session silent this long is presumed dead; a session's claim lapses at its last heartbeat plus this.
+    private readonly int idleSeconds = Math.Max(1, sessionOptions?.Value.IdleSeconds ?? new WorkSessionOptions().IdleSeconds);
 
     static MySqlWorkStore()
     {
@@ -364,6 +370,16 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
         "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
 
+    // The condition, on alias i, for an item next_work recovers at @now (§5.9): in progress, every
+    // blocker complete, and no live claim (its claim lapsed with its session, or was released).
+    // It must have been claimed: a claim that lapsed in place (holder still on the row) or a session
+    // claim in its history. An item a human moved to in progress is not "whose claim lapsed".
+    private const string RecoverableCondition =
+        "i.status = 'in_progress' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
+        "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id)) " +
+        "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+
     private const string BlockedCondition =
         "EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
         "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
@@ -469,15 +485,17 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
         public string Author { get; init; } = "";
         public string Body { get; init; } = "";
         public DateTime CreatedAt { get; init; }
+        public string? AuthorSessionId { get; init; }
+        public string? Harness { get; init; }
     }
 
-    private async Task<ItemView?> LoadItemViewAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct)
+    private async Task<ItemView?> LoadItemViewAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct, bool fullHandoffs = false)
     {
         var row = await ReadItemRowAsync(connection, transaction, itemId, ct);
-        return row is null ? null : await ToViewAsync(connection, transaction, row, ct);
+        return row is null ? null : await ToViewAsync(connection, transaction, row, ct, fullHandoffs);
     }
 
-    private async Task<ItemView> ToViewAsync(MySqlConnection connection, MySqlTransaction? transaction, ItemRow row, CancellationToken ct)
+    private async Task<ItemView> ToViewAsync(MySqlConnection connection, MySqlTransaction? transaction, ItemRow row, CancellationToken ct, bool fullHandoffs = false)
     {
         var now = Now();
         var blockedBy = (await connection.QueryAsync<DependencyRow>(new CommandDefinition(
@@ -493,9 +511,16 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
             new { id = row.Id }, transaction, cancellationToken: ct)))
             .Select(link => new LinkView(link.Id, ParseName<WorkLinkKind>(link.Kind), link.Url, Utc(link.CreatedAt))).ToList();
         var comments = (await connection.QueryAsync<CommentRow>(new CommandDefinition(
-            "SELECT id, author, body, created_at FROM work_item_comments WHERE item_id = @id ORDER BY created_at, id",
+            "SELECT c.id, c.author, c.body, c.created_at, c.author_session_id, s.harness FROM work_item_comments c " +
+            "LEFT JOIN work_sessions s ON s.id = c.author_session_id WHERE c.item_id = @id ORDER BY c.created_at, c.id",
             new { id = row.Id }, transaction, cancellationToken: ct)))
-            .Select(comment => new CommentView(comment.Id, comment.Author, comment.Body, Utc(comment.CreatedAt))).ToList();
+            .Select(comment => new CommentView(comment.Id, comment.Author, comment.Body, Utc(comment.CreatedAt), comment.AuthorSessionId, comment.Harness)).ToList();
+        // E4: the latest handoff and a count; the whole history only when asked for.
+        var handoffs = await ReadHandoffsAsync(connection, transaction, row.Id, limit: fullHandoffs ? null : 1, ct);
+        var handoffCount = fullHandoffs
+            ? handoffs.Count
+            : (int)await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                "SELECT COUNT(*) FROM work_handoffs WHERE item_id = @id", new { id = row.Id }, transaction, cancellationToken: ct));
 
         EntityRef? feature = null;
         if (row.FeatureId is { } featureId)
@@ -519,7 +544,8 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
             row.HasLiveClaim(now)
                 ? new ClaimView(row.ClaimHolder!, row.ClaimMarker!, Utc(row.ClaimedAt!.Value), Utc(row.ClaimExpiresAt!.Value), row.ClaimSessionId)
                 : null,
-            links, comments, row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt));
+            links, comments, row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt),
+            handoffs.Count == 0 ? null : handoffs, handoffCount == 0 ? null : handoffCount);
     }
 
     private static DependencyView ToView(DependencyRow row) =>
@@ -586,10 +612,10 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
         return await LoadFeatureViewAsync(connection, null, featureId, withCounts: true, ct);
     }
 
-    public async Task<ItemView?> GetItemAsync(Guid itemId, CancellationToken ct = default)
+    public async Task<ItemView?> GetItemAsync(Guid itemId, bool fullHandoffs, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await LoadItemViewAsync(connection, null, itemId, ct);
+        return await LoadItemViewAsync(connection, null, itemId, ct, fullHandoffs);
     }
 
     public async Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default)
@@ -765,6 +791,9 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
         public string ActorName { get; init; } = "";
         public string ActorKind { get; init; } = "";
         public string? ActorSessionId { get; init; }
+        public string? Harness { get; init; }
+        public string? Model { get; init; }
+        public string? Host { get; init; }
         public string Changes { get; init; } = "[]";
         public DateTime CreatedAt { get; init; }
     }
@@ -774,16 +803,21 @@ public sealed partial class MySqlWorkStore(IOptions<MariaDbStorageOptions> optio
         await using var connection = await OpenAsync(ct);
         // The primary key (or ix_work_changes_project): a range and a limit, never an offset.
         var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
-            "SELECT sequence, project_id, project_key, entity_kind, entity_id, entity_key, kind, actor_name, actor_kind, actor_session_id, changes, created_at " +
-            "FROM work_changes WHERE sequence > @afterSequence" + (projectId is null ? string.Empty : " AND project_id = @projectId") +
-            " ORDER BY sequence LIMIT @limit",
+            "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
+            "s.harness, s.model, s.host, c.changes, c.created_at " +
+            "FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id WHERE c.sequence > @afterSequence" +
+            (projectId is null ? string.Empty : " AND c.project_id = @projectId") +
+            " ORDER BY c.sequence LIMIT @limit",
             new { afterSequence, projectId, limit }, cancellationToken: ct));
-        return rows.Select(row =>
-        {
-            using var changes = JsonDocument.Parse(row.Changes);
-            return new ChangeView(
-                row.Sequence, row.ProjectId, row.ProjectKey, ParseName<WorkEntityKind>(row.EntityKind), row.EntityId, row.EntityKey,
-                row.Kind, new WorkActor(row.ActorName, row.ActorKind, row.ActorSessionId), changes.RootElement.Clone(), Utc(row.CreatedAt));
-        }).ToList();
+        return rows.Select(ToView).ToList();
+    }
+
+    private static ChangeView ToView(ChangeRow row)
+    {
+        using var changes = JsonDocument.Parse(row.Changes);
+        return new ChangeView(
+            row.Sequence, row.ProjectId, row.ProjectKey, ParseName<WorkEntityKind>(row.EntityKind), row.EntityId, row.EntityKey,
+            row.Kind, new WorkActor(row.ActorName, row.ActorKind, row.ActorSessionId, row.Harness, row.Model, row.Host),
+            changes.RootElement.Clone(), Utc(row.CreatedAt));
     }
 }

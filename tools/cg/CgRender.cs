@@ -1,0 +1,129 @@
+using System.Globalization;
+using System.Text.Json.Nodes;
+
+namespace CodeGraph.Cg;
+
+/// <summary>
+/// Renders API answers as short lines of data: labels and values, no instructions. A section the
+/// answer leaves out is not printed.
+/// </summary>
+public static class CgRender
+{
+    public static IEnumerable<string> Briefing(JsonNode? briefing)
+    {
+        if (briefing is null)
+            yield break;
+
+        var project = briefing["project"];
+        yield return $"codegraph session {Str(briefing["session_id"])} · project {Str(project?["key"])} ({Str(project?["name"])})";
+        if (project?["goals"] is JsonArray goals)
+            foreach (var goal in goals)
+                yield return $"goal: {Str(goal)}";
+
+        if (briefing["my_work"] is JsonArray mine)
+            foreach (var line in Items("my work", mine))
+                yield return line;
+
+        if (briefing["focus"] is JsonObject focus)
+            foreach (var line in Item("focus", focus))
+                yield return line;
+
+        if (briefing["other_sessions"] is JsonArray others)
+        {
+            foreach (var other in others)
+            {
+                var where = Join("/", Str(other?["repository"]), Str(other?["branch"]));
+                var holds = other?["holds"] is JsonArray held
+                    ? " · holds " + string.Join(", ", held.Select(hold => $"{Str(hold?["key"])} [{Str(hold?["status"])}] {Str(hold?["title"])}"))
+                    : "";
+                var intent = other?["intent"] is { } text ? $" · intent: {Str(text)}" : "";
+                yield return $"other session: {Str(other?["identity"])} {Join(" ", Str(other?["harness"]), Str(other?["model"]))}" +
+                    $"{(other?["host"] is { } host ? $" on {Str(host)}" : "")}{(where.Length > 0 ? $" · {where}" : "")} · seen {Str(other?["last_seen_at"])}{holds}{intent}";
+            }
+        }
+
+        if (briefing["suggested_next"] is JsonObject next)
+            foreach (var line in Item("suggested next", next))
+                yield return line;
+
+        // Sections of later stories (S5, S7, S8) print as they appear; unknown ones as their JSON.
+        foreach (var (name, value) in briefing.AsObject())
+        {
+            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "truncated" || value is null)
+                continue;
+            yield return $"{name.Replace('_', ' ')}: {value.ToJsonString()}";
+        }
+
+        if (briefing["truncated"] is JsonArray truncated)
+            yield return $"truncated to {Str(briefing["budget_tokens"])} tokens: {string.Join(", ", truncated.Select(Str))}";
+    }
+
+    public static IEnumerable<string> Inbox(JsonNode? briefing)
+    {
+        if (briefing?["inbox"] is { } inbox)
+            yield return $"inbox: {inbox.ToJsonString()}";
+    }
+
+    public static IEnumerable<string> Ended(JsonNode? ended)
+    {
+        var released = ended?["released"] is JsonArray items && items.Count > 0
+            ? "; released " + string.Join(", ", items.Select(item => Str(item?["key"])))
+            : "";
+        var handoff = ended?["handoff"] is JsonObject ? "; handoff recorded" : "";
+        yield return $"codegraph session {Str(ended?["session"]?["id"])} ended{released}{handoff}";
+    }
+
+    private static IEnumerable<string> Items(string label, JsonArray items)
+    {
+        foreach (var item in items.OfType<JsonObject>())
+            foreach (var line in Item(label, item))
+                yield return line;
+    }
+
+    private static IEnumerable<string> Item(string label, JsonObject item)
+    {
+        var recoverable = item["recoverable"]?.GetValue<bool>() == true ? " · recoverable" : "";
+        var previous = item["previous_holder"] is JsonObject holder
+            ? $" · previous holder {Join(" ", Str(holder["identity"]), Str(holder["harness"]))}"
+            : "";
+        var links = new List<string>();
+        if (item["branches"] is JsonArray branches)
+            links.AddRange(branches.Select(branch => $"branch {Str(branch)}"));
+        if (item["prs"] is JsonArray prs)
+            links.AddRange(prs.Select(pr => $"pr {Str(pr)}"));
+        yield return $"{label}: {Str(item["key"])} [{Str(item["status"])}] {Str(item["title"])}{recoverable}{previous}" +
+            (links.Count > 0 ? " · " + string.Join(" · ", links) : "");
+
+        if (item["latest_handoff"] is JsonObject handoff)
+        {
+            var parts = new List<string>();
+            Add(parts, "done", handoff["done"]);
+            Add(parts, "next action", handoff["next_action"]);
+            Add(parts, "open issues", handoff["open_issues"]);
+            Add(parts, "decisions", handoff["decisions"]);
+            Add(parts, "corrections", handoff["corrections"]);
+            Add(parts, "branch", handoff["branch"]);
+            Add(parts, "commit", handoff["commit"]);
+            yield return $"  last handoff ({Join(" ", Str(handoff["author"]), Str(handoff["harness"]))}, {Str(handoff["created_at"])}): {string.Join(" | ", parts)}";
+        }
+    }
+
+    private static void Add(List<string> parts, string label, JsonNode? value)
+    {
+        if (value is JsonArray list)
+            parts.Add($"{label}: {string.Join("; ", list.Select(Str))}");
+        else if (value is not null)
+            parts.Add($"{label}: {Str(value)}");
+    }
+
+    private static string Join(string separator, params string[] parts) =>
+        string.Join(separator, parts.Where(part => part.Length > 0));
+
+    private static string Str(JsonNode? node) => node switch
+    {
+        null => "",
+        JsonValue value when value.TryGetValue<string>(out var text) => CgApp.OneLine(text),
+        JsonValue value => CgApp.OneLine(Convert.ToString(value.GetValue<object>(), CultureInfo.InvariantCulture) ?? ""),
+        _ => node.ToJsonString()
+    };
+}

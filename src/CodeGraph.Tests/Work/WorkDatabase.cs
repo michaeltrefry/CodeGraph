@@ -22,6 +22,11 @@ public sealed class WorkDatabase : IAsyncLifetime
 
     public string ConnectionString { get; private set; } = "";
     public MySqlWorkStore Store { get; private set; } = null!;
+
+    /// <summary>The clock of the store and the service: real time, moved forward by <see cref="ShiftableClock.Advance"/>.</summary>
+    public ShiftableClock Clock { get; } = new();
+
+    public const int IdleSeconds = 900;
     public WorkService Service { get; private set; } = null!;
 
     public async Task InitializeAsync()
@@ -43,8 +48,9 @@ public sealed class WorkDatabase : IAsyncLifetime
         await using var connection = new MySqlConnection(ConnectionString);
         await connection.ExecuteAsync("INSERT INTO repositories (name) VALUES (@name)", Repositories.Select(name => new { name }));
 
-        Store = new MySqlWorkStore(options);
-        Service = new WorkService(Store);
+        var sessions = Options.Create(new WorkSessionOptions { IdleSeconds = IdleSeconds });
+        Store = new MySqlWorkStore(options, Clock, sessions);
+        Service = new WorkService(Store, Clock, sessions);
     }
 
     public async Task DisposeAsync()
@@ -113,4 +119,14 @@ public sealed class WorkDatabase : IAsyncLifetime
             page = await CallAsync(WorkTools.Changes, new { project, cursor = page.GetProperty("next_cursor").GetString(), limit = 200 });
         }
     }
+}
+
+/// <summary>The system clock plus an offset that tests move forward, to let session heartbeats lapse.</summary>
+public sealed class ShiftableClock : TimeProvider
+{
+    private long offsetTicks;
+
+    public void Advance(TimeSpan by) => Interlocked.Add(ref offsetTicks, by.Ticks);
+
+    public override DateTimeOffset GetUtcNow() => base.GetUtcNow().AddTicks(Interlocked.Read(ref offsetTicks));
 }

@@ -136,4 +136,37 @@ public sealed class WorkRestMariaDbTests(WorkDatabase db) : IClassFixture<WorkDa
         var (unownedStatus, unowned) = await Create(new { project = key, item = new { title = "Elsewhere", repository = "INFERENCE" } });
         (unownedStatus, unowned.GetProperty("code").GetString()).ShouldBe((400, "invalid_argument"));
     }
+
+    [Fact]
+    public async Task Sessions_are_reachable_over_rest_start_briefing_heartbeat_and_end()
+    {
+        var key = "RX" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await Create(new { new_project = new { key, name = "REST sessions" } });
+        await Create(new { project = key, item = new { title = "Over REST", status = "ready" } });
+
+        var (startStatus, started) = await Call(HttpMethod.Post, "/api/work/sessions", new { project = key, harness = "shell", host = "ci" });
+        startStatus.ShouldBe(200);
+        var session = started.GetProperty("session").GetProperty("id").GetString()!;
+        started.GetProperty("briefing").GetProperty("suggested_next").GetProperty("key").GetString().ShouldBe($"{key}-1");
+
+        var (_, next) = await Next(new { project = key, session_id = session });
+        next.GetProperty("item").GetProperty("claim").GetProperty("session_id").GetString().ShouldBe(session);
+
+        var (briefingStatus, briefing) = await Call(HttpMethod.Get, $"/api/work/sessions/{session}/briefing", query: "?budget_tokens=500");
+        briefingStatus.ShouldBe(200);
+        briefing.GetProperty("budget_tokens").GetInt32().ShouldBe(500);
+        briefing.GetProperty("my_work").EnumerateArray().Single().GetProperty("key").GetString().ShouldBe($"{key}-1");
+        (await Call(HttpMethod.Get, $"/api/work/sessions/{session}/briefing", query: "?budget=500")).Status.ShouldBe(400);
+
+        (await Call(HttpMethod.Get, $"/api/work/{key}-1", query: $"?session_id={session}")).Status.ShouldBe(200);
+        (await Call(HttpMethod.Get, $"/api/work/{key}-1", query: "?sessionid=x")).Status.ShouldBe(400);
+
+        var (endStatus, ended) = await host.SendAsync(HttpMethod.Post, $"/api/work/sessions/{session}/end", null, token, contentType: null);
+        endStatus.ShouldBe(200);
+        ended.GetProperty("released").EnumerateArray().Single().GetProperty("key").GetString().ShouldBe($"{key}-1");
+        ended.GetProperty("session").GetProperty("live").GetBoolean().ShouldBeFalse();
+
+        var (writeStatus, write) = await Next(new { project = key, session_id = session });
+        (writeStatus, write.GetProperty("code").GetString()).ShouldBe((400, "invalid_argument"));
+    }
 }
