@@ -72,7 +72,7 @@ internal static class KnowledgeBaselines
                     return;
 
                 var found = (await connection.QueryAsync<(string Project, string RelPath, string ContentHash)>(new CommandDefinition(
-                    "SELECT project, rel_path, content_hash FROM file_hashes WHERE project IN @repositories AND rel_path IN @variants",
+                    "SELECT repository, rel_path, content_hash FROM file_hashes WHERE repository IN @repositories AND rel_path IN @variants",
                     new
                     {
                         repositories = pending.Select(row => row.RepositoryName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),

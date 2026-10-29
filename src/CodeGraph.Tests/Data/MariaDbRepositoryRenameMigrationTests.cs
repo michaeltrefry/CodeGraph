@@ -20,8 +20,12 @@ public sealed class MariaDbRepositoryRenameMigrationTests
 {
     private const string RenameMigration = "076_rename_project_to_repository.sql";
 
-    [Fact]
-    public async Task RenameMigration_KeepsRowsCascadeHubStateAndGrantsAcrossRestartsAndSeeding()
+    // laterMigrationsAlreadyApplied: the database already ran every migration numbered after 076
+    // (the runner orders by file name and tracks applied scripts by name, so 076 still applies).
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RenameMigration_KeepsRowsCascadeHubStateAndGrantsAcrossRestartsAndSeeding(bool laterMigrationsAlreadyApplied)
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();
         var builder = new MySqlConnectionStringBuilder(connectionString)
@@ -36,7 +40,9 @@ public sealed class MariaDbRepositoryRenameMigrationTests
         try
         {
             foreach (var file in Directory.EnumerateFiles(sourceMigrations, "*.sql")
-                         .Where(file => string.CompareOrdinal(Path.GetFileName(file), RenameMigration) < 0))
+                         .Where(file => laterMigrationsAlreadyApplied
+                             ? Path.GetFileName(file) != RenameMigration
+                             : string.CompareOrdinal(Path.GetFileName(file), RenameMigration) < 0))
             {
                 File.Copy(file, Path.Combine(migrationsPath, Path.GetFileName(file)));
             }

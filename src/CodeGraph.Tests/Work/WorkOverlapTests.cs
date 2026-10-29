@@ -221,16 +221,16 @@ public sealed class WorkOverlapUnitTests
         }
 
         // A file lookup answers only for the touch registered as a file; a symbol only for a symbol.
-        public async Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null)
+        public async Task<ImpactReport?> AnalyzeFileImpactAsync(string repository, string filePath, int maxDepth = 3, IGraphReader? graph = null)
         {
             await Task.Delay(Delay);
-            return from.Touch.Contains('/') ? Report(project, filePath) : NoteMiss(filePath);
+            return from.Touch.Contains('/') ? Report(repository, filePath) : NoteMiss(filePath);
         }
 
-        public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null)
+        public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? repository = null, int maxDepth = 3, IGraphReader? graph = null)
         {
             await Task.Delay(Delay);
-            return Report(project ?? "", qualifiedName);
+            return Report(repository ?? "", qualifiedName);
         }
 
         private ImpactReport? NoteMiss(string touch)
@@ -286,10 +286,10 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .IndexProjectAsync(Repository, root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
         var sha = new string('c', 40);
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repository, LocalPath = root, LastCommitSha = sha });
-        await store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repository, LastCommitSha = sha });
+        await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = sha });
 
         var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
         service = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }), new WorkOverlaps(impact));
@@ -420,13 +420,13 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
 
     private sealed class SlowImpact : IImpactAnalysisService
     {
-        public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null)
+        public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? repository = null, int maxDepth = 3, IGraphReader? graph = null)
         {
             await Task.Delay(TimeSpan.FromSeconds(2));
             return null;
         }
 
-        public async Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null)
+        public async Task<ImpactReport?> AnalyzeFileImpactAsync(string repository, string filePath, int maxDepth = 3, IGraphReader? graph = null)
         {
             await Task.Delay(TimeSpan.FromSeconds(2));
             return null;

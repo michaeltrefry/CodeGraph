@@ -191,7 +191,7 @@ public partial class MySqlGraphStore
             await transaction.CommitAsync(ct);
             // After the commit, on its own connection, best effort (sc-27869): knowledge entries
             // waiting for these files' first hash take it as their baseline. Never fails the index write.
-            await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, project, fileHashes.ToList(), logger, ct);
+            await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, repository, fileHashes.ToList(), logger, ct);
             return resolvedEdges.Count;
         }
         catch
@@ -384,7 +384,7 @@ public partial class MySqlGraphStore
             await transaction.CommitAsync(ct);
             // After the commit, on its own connection, best effort (sc-27869): knowledge entries
             // waiting for these files' first hash take it as their baseline. Never fails the index write.
-            await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, project, fileHashes.ToList(), logger, ct);
+            await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, repository, fileHashes.ToList(), logger, ct);
             return resolvedEdges.Count;
         }
         catch

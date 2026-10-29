@@ -80,9 +80,9 @@ public sealed class KnowledgeBaselinesMariaDbTests : IAsyncLifetime
         switch (how)
         {
             case "files":
-                return await store.ReplaceProjectFilesAsync(Repository, [path], [], [], hashes);
+                return await store.ReplaceRepositoryFilesAsync(Repository, [path], [], [], hashes);
             case "graph":
-                return await store.ReplaceProjectGraphAsync(Repository, [], [], hashes, new RepositoryEntity { Name = Repository }, null);
+                return await store.ReplaceRepositoryGraphAsync(Repository, [], [], hashes, new RepositoryEntity { Name = Repository }, null);
             default:
                 await store.UpsertFileHashBatchAsync(Repository, hashes);
                 return 0;
@@ -133,7 +133,7 @@ public sealed class KnowledgeBaselinesMariaDbTests : IAsyncLifetime
         await using (var connection = new MySqlConnection(connectionString))
         {
             await connection.ExecuteAsync(
-                "INSERT INTO nodes (project, label, name, qualified_name, file_path) VALUES (@Repository, 'Method', 'Run', 'App.Run', 'src/App/Run.cs')", new { Repository });
+                "INSERT INTO nodes (repository, label, name, qualified_name, file_path) VALUES (@Repository, 'Method', 'Run', 'App.Run', 'src/App/Run.cs')", new { Repository });
             node = await connection.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE qualified_name = 'App.Run'");
         }
 
@@ -164,7 +164,7 @@ public sealed class KnowledgeBaselinesMariaDbTests : IAsyncLifetime
 
         // The index write is stored; the adoption was skipped and logged, the row still pending.
         await using var connection = new MySqlConnection(connectionString);
-        (await connection.ExecuteScalarAsync<string>("SELECT content_hash FROM file_hashes WHERE project = @Repository AND rel_path = 'src/Locked.cs'", new { Repository })).ShouldBe("hl");
+        (await connection.ExecuteScalarAsync<string>("SELECT content_hash FROM file_hashes WHERE repository = @Repository AND rel_path = 'src/Locked.cs'", new { Repository })).ShouldBe("hl");
         (await FileOfAsync(entry)).Hash.ShouldBeNull();
         logger.Warnings.ShouldContain(message => message.Contains("not adopted"));
     }
@@ -178,7 +178,7 @@ public sealed class KnowledgeBaselinesMariaDbTests : IAsyncLifetime
         {
             await WriteAsync("files", "src/Any.cs", "ha");
             await WriteAsync("graph", "src/Any.cs", "ha2");
-            (await connection.ExecuteScalarAsync<string>("SELECT content_hash FROM file_hashes WHERE project = @Repository AND rel_path = 'src/Any.cs'", new { Repository })).ShouldBe("ha2");
+            (await connection.ExecuteScalarAsync<string>("SELECT content_hash FROM file_hashes WHERE repository = @Repository AND rel_path = 'src/Any.cs'", new { Repository })).ShouldBe("ha2");
             logger.Warnings.Count.ShouldBeGreaterThanOrEqualTo(2);
         }
         finally
@@ -195,7 +195,7 @@ public sealed class KnowledgeBaselinesMariaDbTests : IAsyncLifetime
         await record.OpenAsync();
         await using var transaction = await record.BeginTransactionAsync();
         // The first read fixes the transaction's REPEATABLE READ snapshot.
-        (await record.ExecuteScalarAsync<string?>("SELECT content_hash FROM file_hashes WHERE project = @Repository AND rel_path = 'src/Race.cs'", new { Repository }, transaction)).ShouldBeNull();
+        (await record.ExecuteScalarAsync<string?>("SELECT content_hash FROM file_hashes WHERE repository = @Repository AND rel_path = 'src/Race.cs'", new { Repository }, transaction)).ShouldBeNull();
 
         // ... the index write commits F and adopts: the record's row is not committed yet, so it sees none ...
         await WriteAsync("batch", "src/Race.cs", "hr");

@@ -93,7 +93,11 @@ public sealed class LegacyProjectArgumentGuardTests
         var tools = await client.ListToolsAsync();
 
         tools.ShouldNotBeEmpty();
-        tools.Where(tool => tool.Properties.Contains("project")).Select(tool => tool.Name).ShouldBeEmpty();
+        // Only the work tools (record, recall, import_knowledge, acquire, renew_hold, release, sync_plan,
+        // post, inbox, ack, ...) may take `project`: there it means the multi-repo work scope.
+        var workTools = CodeGraph.Services.Work.WorkTools.All.Select(definition => definition.Name).ToHashSet();
+        tools.Select(tool => tool.Name).ShouldContain(CodeGraph.Services.Work.WorkTools.Record);
+        tools.Where(tool => tool.Properties.Contains("project") && !workTools.Contains(tool.Name)).Select(tool => tool.Name).ShouldBeEmpty();
         foreach (var name in new[] { "search_graph", "get_service_summary", "get_architecture", "get_repository_health", "trace_call_path", "analyze_impact", "find_consumers", "find_publishers", "trace_data_lineage" })
             tools.Single(tool => tool.Name == name).Properties.ShouldContain("repository");
         tools.Select(tool => tool.Name).ShouldNotContain("list_projects");
@@ -135,6 +139,7 @@ public sealed class LegacyProjectArgumentGuardTests
                         .WithTools<ConsolidatedMcpServer>()
                         .WithTools<McpHubServer>()
                         .WithTools<OverlayMcpServer>()
+                        .WithTools(CodeGraph.Services.Work.WorkMcpTool.CreateAll())
                         .WithRequestFilters(filters => filters.AddCallToolFilter(LegacyProjectArgumentGuard.Filter));
                 })
                 .Configure(app =>

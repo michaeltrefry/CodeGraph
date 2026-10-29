@@ -287,8 +287,8 @@ public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, OverlapI
         foreach (var node in report.AffectedNodes)
         {
             if (node.FilePath is { Length: > 0 } file)
-                reached.Add((node.Project, Normalize(file)));
-            reached.Add((node.Project, node.QualifiedName));
+                reached.Add((node.Repository, Normalize(file)));
+            reached.Add((node.Repository, node.QualifiedName));
         }
 
         return reached;

@@ -36,7 +36,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     // An entry is possibly stale while a file it was verified against has another indexed hash, or
     // is no longer indexed. A file not yet indexed at verification (NULL hash) is not counted.
     private const string StaleCondition =
-        "EXISTS (SELECT 1 FROM knowledge_entry_files kf LEFT JOIN file_hashes h ON h.project = kf.repository_name AND h.rel_path = kf.path " +
+        "EXISTS (SELECT 1 FROM knowledge_entry_files kf LEFT JOIN file_hashes h ON h.repository = kf.repository_name AND h.rel_path = kf.path " +
         "WHERE kf.entry_id = e.id AND kf.content_hash IS NOT NULL AND (h.content_hash IS NULL OR h.content_hash <> kf.content_hash))";
 
     private const string KnowledgeColumns =
@@ -407,7 +407,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         {
             var ids = nodeIds.Distinct().ToArray();
             var found = (await connection.QueryAsync<(long Id, string Project, string QualifiedName, string? FilePath)>(new CommandDefinition(
-                "SELECT id, project, qualified_name, file_path FROM nodes WHERE id IN @ids", new { ids }, transaction, cancellationToken: ct)))
+                "SELECT id, repository, qualified_name, file_path FROM nodes WHERE id IN @ids", new { ids }, transaction, cancellationToken: ct)))
                 .ToDictionary(node => node.Id);
             foreach (var id in ids)
             {
@@ -471,7 +471,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         {
             var variants = lookups.SelectMany(lookup => new[] { lookup.path.Replace('\\', '/'), lookup.path.Replace('/', '\\') }).Distinct(StringComparer.Ordinal).ToArray();
             var found = (await connection.QueryAsync<(string Project, string RelPath, string ContentHash)>(new CommandDefinition(
-                "SELECT project, rel_path, content_hash FROM file_hashes WHERE project IN @repositories AND rel_path IN @variants",
+                "SELECT repository, rel_path, content_hash FROM file_hashes WHERE repository IN @repositories AND rel_path IN @variants",
                 new { repositories = lookups.Select(lookup => lookup.repository).Distinct().ToArray(), variants },
                 transaction, cancellationToken: ct))).ToList();
             foreach (var (repository, path) in lookups)
@@ -549,7 +549,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             .Select(node => new KnowledgeNodeView(node.NodeId, node.RepositoryName, node.QualifiedName, node.FilePath)).ToList();
         var files = (await connection.QueryAsync<(string RepositoryName, string Path, string? ContentHash, string? CurrentHash)>(new CommandDefinition(
             "SELECT kf.repository_name, kf.path, kf.content_hash, h.content_hash FROM knowledge_entry_files kf " +
-            "LEFT JOIN file_hashes h ON h.project = kf.repository_name AND h.rel_path = kf.path WHERE kf.entry_id = @entryId ORDER BY kf.repository_name, kf.path",
+            "LEFT JOIN file_hashes h ON h.repository = kf.repository_name AND h.rel_path = kf.path WHERE kf.entry_id = @entryId ORDER BY kf.repository_name, kf.path",
             new { entryId }, transaction, cancellationToken: ct))).ToList();
         var stale = files.Where(file => file.ContentHash is not null && file.CurrentHash != file.ContentHash)
             .Select(file => new KnowledgeFileView(file.RepositoryName, file.Path)).ToList();
@@ -672,7 +672,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         if (spec.Nodes.Count > 0)
         {
             var nodes = (await connection.QueryAsync<(long Id, string Project, string QualifiedName, string? FilePath)>(new CommandDefinition(
-                "SELECT id, project, qualified_name, file_path FROM nodes WHERE id IN @ids", new { ids = spec.Nodes.Distinct().ToArray() }, cancellationToken: ct))).ToList();
+                "SELECT id, repository, qualified_name, file_path FROM nodes WHERE id IN @ids", new { ids = spec.Nodes.Distinct().ToArray() }, cancellationToken: ct))).ToList();
             var missing = spec.Nodes.Where(id => nodes.All(node => node.Id != id)).ToList();
             if (missing.Count > 0)
                 throw WorkException.Invalid($"There is no graph node {string.Join(", ", missing)}.");
