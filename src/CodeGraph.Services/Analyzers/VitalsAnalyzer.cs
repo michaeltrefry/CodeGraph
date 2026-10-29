@@ -71,20 +71,20 @@ public class VitalsAnalyzer(
     private static readonly Regex FirefightingKeywordPattern = new(@"\b(hotfix|incident|urgent|emergency|rollback|revert)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    public async Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
+    public async Task ComputeMetricsAsync(string repositoryName, string repoPath, CancellationToken ct = default)
     {
-        logger.LogInformation("Computing vitals metrics for {Project}", projectName);
+        logger.LogInformation("Computing vitals metrics for {Repository}", repositoryName);
         var sw = Stopwatch.StartNew();
 
         // 1. Get indexed file nodes from store to know which files & their DotnetProject mapping
         // Only File nodes and do-not-trust flags are needed; never load the whole graph (with
         // node properties) of a large repository for this.
-        var allNodes = await store.GetFileAndUntrustedNodesAsync(projectName);
+        var allNodes = await store.GetFileAndUntrustedNodesAsync(repositoryName);
         var fileNodes = allNodes.Where(n => n.Label == "File").ToList();
 
         if (fileNodes.Count == 0)
         {
-            logger.LogWarning("No File nodes found for {Project} — skipping vitals", projectName);
+            logger.LogWarning("No File nodes found for {Repository} — skipping vitals", repositoryName);
             return;
         }
 
@@ -115,7 +115,7 @@ public class VitalsAnalyzer(
         var filePaths = fileToDotnetProject.Keys.ToList();
 
         // The checkout can be fetched and hard-reset (overlay build, scheduled sync) while this
-        // runs, since vitals do not hold the project indexing lock. Read HEAD before any history,
+        // runs, since vitals do not hold the repository indexing lock. Read HEAD before any history,
         // lint or complexity is read and again after; only an unchanged HEAD is recorded as the
         // commit these metrics describe.
         var headBefore = await ReadHeadCommitShaAsync(repoPath, ct);
@@ -131,9 +131,9 @@ public class VitalsAnalyzer(
             f.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".jsx", StringComparison.OrdinalIgnoreCase));
-        var hasRoslynLintResults = lintCache.HasResults(projectName);
+        var hasRoslynLintResults = lintCache.HasResults(repositoryName);
         var lintTask = hasLintableFiles || hasRoslynLintResults
-            ? lintRunner.LintProjectAsync(repoPath, ct)
+            ? lintRunner.LintRepositoryAsync(repoPath, ct)
             : Task.FromResult<IReadOnlyDictionary<string, LintResult>>(
                 new Dictionary<string, LintResult>());
 
@@ -143,18 +143,18 @@ public class VitalsAnalyzer(
         var coupling = await couplingTask;
         var knowledge = await knowledgeTask;
         var lint = await lintTask;
-        var diagnostics = diagnosticDetailCache.Take(projectName);
+        var diagnostics = diagnosticDetailCache.Take(repositoryName);
 
         if (lint.Count > 0)
-            logger.LogInformation("Lint found issues in {Count} files for {Project}",
-                lint.Count, projectName);
+            logger.LogInformation("Lint found issues in {Count} files for {Repository}",
+                lint.Count, repositoryName);
 
-        await store.DeleteProjectDiagnosticsAsync(projectName);
+        await store.DeleteProjectDiagnosticsAsync(repositoryName);
         if (diagnostics.Count > 0)
         {
-            await store.UpsertProjectDiagnosticsBatchAsync(projectName, diagnostics);
-            logger.LogInformation("Persisted {Count} diagnostics for {Project}",
-                diagnostics.Count, projectName);
+            await store.UpsertProjectDiagnosticsBatchAsync(repositoryName, diagnostics);
+            logger.LogInformation("Persisted {Count} diagnostics for {Repository}",
+                diagnostics.Count, repositoryName);
         }
 
         // 3. Run structural complexity
@@ -164,8 +164,8 @@ public class VitalsAnalyzer(
         var commitSha = headBefore == headAfter ? headBefore : null;
         if (headBefore != headAfter)
             logger.LogWarning(
-                "Checkout HEAD moved from {Before} to {After} while computing vitals for {Project}; metrics are stored without a commit",
-                headBefore, headAfter, projectName);
+                "Checkout HEAD moved from {Before} to {After} while computing vitals for {Repository}; metrics are stored without a commit",
+                headBefore, headAfter, repositoryName);
 
         // 4. Build FileMetricsEntity list
         var now = DateTime.UtcNow;
@@ -208,7 +208,7 @@ public class VitalsAnalyzer(
 
             metrics.Add(new FileMetricsEntity
             {
-                Project = projectName,
+                Repository = repositoryName,
                 FilePath = relPath,
                 DotnetProject = dotnetProject,
                 Changes = changes,
@@ -250,27 +250,27 @@ public class VitalsAnalyzer(
         }
 
         // 5. Delete old metrics and upsert new
-        await store.DeleteFileMetricsAsync(projectName);
-        await store.UpsertFileMetricsBatchAsync(projectName, metrics);
+        await store.DeleteFileMetricsAsync(repositoryName);
+        await store.UpsertFileMetricsBatchAsync(repositoryName, metrics);
 
-        // 6. Compute and store project health summaries
-        await ComputeAndStoreHealthSummaries(projectName, metrics, history);
+        // 6. Compute and store repository health summaries
+        await ComputeAndStoreHealthSummaries(repositoryName, metrics, history);
 
         logger.LogInformation(
-            "Vitals complete for {Project}: {Count} files analyzed in {Elapsed:F1}s",
-            projectName, metrics.Count, sw.Elapsed.TotalSeconds);
+            "Vitals complete for {Repository}: {Count} files analyzed in {Elapsed:F1}s",
+            repositoryName, metrics.Count, sw.Elapsed.TotalSeconds);
     }
 
-    public async Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default)
+    public async Task AnalyzeHealthAsync(string repositoryName, CancellationToken ct = default)
     {
-        var healthSummaries = await store.GetProjectHealthSummariesAsync(projectName);
+        var healthSummaries = await store.GetProjectHealthSummariesAsync(repositoryName);
         if (healthSummaries.Count == 0)
         {
-            logger.LogWarning("No health summaries for {Project} — run ComputeMetricsAsync first", projectName);
+            logger.LogWarning("No health summaries for {Repository} — run ComputeMetricsAsync first", repositoryName);
             return;
         }
 
-        // Optional model-backed step: skip cleanly (no 401 per project) when the configured
+        // Optional model-backed step: skip cleanly (no 401 per repository) when the configured
         // provider has no credentials.
         var analysisSettings = analysisSettingsResolver is null
             ? LlmAnalysisRuntimeConfig.FromOptions(analysisOptions)
@@ -279,35 +279,35 @@ public class VitalsAnalyzer(
         if (!await provider.IsConfiguredAsync(ct))
         {
             logger.LogInformation(
-                "Skipping health analysis for {Project}: analysis provider {Provider} has no API key configured",
-                projectName, provider.ProviderName);
+                "Skipping health analysis for {Repository}: analysis provider {Provider} has no API key configured",
+                repositoryName, provider.ProviderName);
             return;
         }
 
         var now = DateTime.UtcNow;
 
         // Load security summary for inclusion in health prompts
-        var securitySummary = await store.GetProjectSecuritySummaryAsync(projectName);
+        var securitySummary = await store.GetRepositorySecuritySummaryAsync(repositoryName);
 
         // Analyze each DotnetProject separately, then repo-level
-        var projectSummaries = healthSummaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
+        var dotnetProjectSummaries = healthSummaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
         var repoSummary = healthSummaries.FirstOrDefault(s => string.IsNullOrEmpty(s.DotnetProject));
 
         // The store shares the caller's scoped DbContext, which allows one operation at a time
         // (sc-25698: concurrent GetFileMetricsAsync/UpsertProjectHealthAnalysisAsync calls here threw
         // "A second operation was started on this context instance"). Read the metrics sequentially,
         // run only the independent model calls in parallel, then persist sequentially.
-        var projectPrompts = new List<(ProjectHealthSummaryEntity Summary, string Prompt)>();
-        foreach (var summary in projectSummaries)
+        var dotnetProjectPrompts = new List<(ProjectHealthSummaryEntity Summary, string Prompt)>();
+        foreach (var summary in dotnetProjectSummaries)
         {
-            var metrics = await store.GetFileMetricsAsync(projectName, summary.DotnetProject);
+            var metrics = await store.GetFileMetricsAsync(repositoryName, summary.DotnetProject);
             if (metrics.Count == 0) continue;
 
-            projectPrompts.Add((summary,
-                BuildHealthPrompt(projectName, summary.DotnetProject!, summary, metrics, securitySummary)));
+            dotnetProjectPrompts.Add((summary,
+                BuildHealthPrompt(repositoryName, summary.DotnetProject!, summary, metrics, securitySummary)));
         }
 
-        var projectResponses = await Task.WhenAll(projectPrompts.Select(async item =>
+        var dotnetProjectResponses = await Task.WhenAll(dotnetProjectPrompts.Select(async item =>
         {
             try
             {
@@ -315,13 +315,13 @@ public class VitalsAnalyzer(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Health analysis failed for {Project}/{Dp}",
-                    projectName, item.Summary.DotnetProject);
+                logger.LogWarning(ex, "Health analysis failed for {Repository}/{Dp}",
+                    repositoryName, item.Summary.DotnetProject);
                 return (item.Summary, Response: (AnalysisTextResponse?)null);
             }
         }));
 
-        foreach (var (summary, response) in projectResponses)
+        foreach (var (summary, response) in dotnetProjectResponses)
         {
             if (response is null || string.IsNullOrWhiteSpace(response.Text))
                 continue;
@@ -330,7 +330,7 @@ public class VitalsAnalyzer(
             {
                 await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
                 {
-                    Project = projectName,
+                    Repository = repositoryName,
                     DotnetProject = summary.DotnetProject,
                     Analysis = response.Text,
                     Confidence = summary.OverallHealth < 4.0 ? "high" : "medium",
@@ -338,21 +338,21 @@ public class VitalsAnalyzer(
                     CreatedAt = now,
                     UpdatedAt = now
                 });
-                logger.LogInformation("Health analysis stored for {Project}/{Dp}",
-                    projectName, summary.DotnetProject);
+                logger.LogInformation("Health analysis stored for {Repository}/{Dp}",
+                    repositoryName, summary.DotnetProject);
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Health analysis failed for {Project}/{Dp}",
-                    projectName, summary.DotnetProject);
+                logger.LogWarning(ex, "Health analysis failed for {Repository}/{Dp}",
+                    repositoryName, summary.DotnetProject);
             }
         }
 
         // Repo-level synthesis
         if (repoSummary is not null)
         {
-            var allMetrics = await store.GetFileMetricsAsync(projectName);
-            var prompt = BuildRepoHealthPrompt(projectName, repoSummary, projectSummaries, allMetrics, securitySummary);
+            var allMetrics = await store.GetFileMetricsAsync(repositoryName);
+            var prompt = BuildRepoHealthPrompt(repositoryName, repoSummary, dotnetProjectSummaries, allMetrics, securitySummary);
 
             try
             {
@@ -361,7 +361,7 @@ public class VitalsAnalyzer(
                 {
                     await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
                     {
-                        Project = projectName,
+                        Repository = repositoryName,
                         DotnetProject = null,
                         Analysis = response.Text,
                         Confidence = repoSummary.OverallHealth < 4.0 ? "high" : "medium",
@@ -369,22 +369,22 @@ public class VitalsAnalyzer(
                         CreatedAt = now,
                         UpdatedAt = now
                     });
-                    logger.LogInformation("Repo-level health analysis stored for {Project}", projectName);
+                    logger.LogInformation("Repo-level health analysis stored for {Repository}", repositoryName);
                 }
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Repo-level health analysis failed for {Project}", projectName);
+                logger.LogWarning(ex, "Repo-level health analysis failed for {Repository}", repositoryName);
             }
         }
     }
 
     private static string BuildHealthPrompt(string repoName, string dotnetProject,
         ProjectHealthSummaryEntity summary, IReadOnlyList<FileMetricsEntity> metrics,
-        ProjectSecuritySummaryEntity? securitySummary = null)
+        RepositorySecuritySummaryEntity? securitySummary = null)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"You are a solo-maintenance code health analyst. Analyze the following metrics for project '{dotnetProject}' in repository '{repoName}'.");
+        sb.AppendLine($"You are a solo-maintenance code health analyst. Analyze the following metrics for repository '{dotnetProject}' in repository '{repoName}'.");
         sb.AppendLine();
         sb.AppendLine($"Overall health: {summary.OverallHealth:F1}/10");
         sb.AppendLine($"Total files: {summary.TotalFiles}");
@@ -427,9 +427,9 @@ public class VitalsAnalyzer(
 
     private static string BuildRepoHealthPrompt(string repoName,
         ProjectHealthSummaryEntity repoSummary,
-        IReadOnlyList<ProjectHealthSummaryEntity> projectSummaries,
+        IReadOnlyList<ProjectHealthSummaryEntity> dotnetProjectSummaries,
         IReadOnlyList<FileMetricsEntity> allMetrics,
-        ProjectSecuritySummaryEntity? securitySummary = null)
+        RepositorySecuritySummaryEntity? securitySummary = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"You are a solo-maintenance code health analyst. Synthesize the health status of repository '{repoName}'.");
@@ -456,12 +456,12 @@ public class VitalsAnalyzer(
         AppendSecurityContext(sb, securitySummary);
         sb.AppendLine();
 
-        if (projectSummaries.Count > 0)
+        if (dotnetProjectSummaries.Count > 0)
         {
             sb.AppendLine("Per-project breakdown:");
             sb.AppendLine("| Project | Health | Files | Hotspots | Alerts |");
             sb.AppendLine("|---------|--------|-------|----------|--------|");
-            foreach (var ps in projectSummaries.OrderBy(p => p.OverallHealth))
+            foreach (var ps in dotnetProjectSummaries.OrderBy(p => p.OverallHealth))
                 sb.AppendLine($"| {ps.DotnetProject} | {ps.OverallHealth:F1} | {ps.TotalFiles} | {ps.HotspotCount} | {ps.AlertCount} |");
             sb.AppendLine();
         }
@@ -494,7 +494,7 @@ public class VitalsAnalyzer(
         return sb.ToString();
     }
 
-    private static void AppendSecurityContext(StringBuilder sb, ProjectSecuritySummaryEntity? sec)
+    private static void AppendSecurityContext(StringBuilder sb, RepositorySecuritySummaryEntity? sec)
     {
         if (sec is null) return;
 
@@ -1343,7 +1343,7 @@ public class VitalsAnalyzer(
     }
 
     private async Task ComputeAndStoreHealthSummaries(
-        string projectName, List<FileMetricsEntity> metrics, HistorySnapshot history)
+        string repositoryName, List<FileMetricsEntity> metrics, HistorySnapshot history)
     {
         var now = DateTime.UtcNow;
 
@@ -1355,13 +1355,13 @@ public class VitalsAnalyzer(
         foreach (var group in groups)
         {
             var files = group.ToList();
-            var summary = AggregateHealth(projectName,
+            var summary = AggregateHealth(repositoryName,
                 group.Key == "" ? null : group.Key, files, now);
             await store.UpsertProjectHealthSummaryAsync(summary);
         }
 
         // Repo-level aggregate (DotnetProject = null)
-        var repoSummary = AggregateHealth(projectName, null, metrics, now);
+        var repoSummary = AggregateHealth(repositoryName, null, metrics, now);
         repoSummary.HistoryMaturity = history.HistoryMaturity;
         repoSummary.HasSufficientHistoryForTrends = history.HasSufficientHistoryForTrends;
         repoSummary.ActivityStatus = history.ActivityStatus;
@@ -1380,14 +1380,14 @@ public class VitalsAnalyzer(
     }
 
     private static ProjectHealthSummaryEntity AggregateHealth(
-        string project, string? dotnetProject,
+        string repository, string? dotnetProject,
         IReadOnlyList<FileMetricsEntity> files, DateTime now)
     {
         if (files.Count == 0)
         {
             return new ProjectHealthSummaryEntity
             {
-                Project = project,
+                Repository = repository,
                 DotnetProject = dotnetProject,
                 OverallHealth = 5.0,
                 ComputedAt = now
@@ -1420,7 +1420,7 @@ public class VitalsAnalyzer(
 
         return new ProjectHealthSummaryEntity
         {
-            Project = project,
+            Repository = repository,
             DotnetProject = dotnetProject,
             OverallHealth = overallHealth,
             TotalFiles = files.Count,

@@ -41,7 +41,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
             return [];
 
         _logger.LogInformation(
-            "Extracting TypeScript project {Project} via Node.js sidecar", context.ProjectName);
+            "Extracting TypeScript repository {Repository} via Node.js sidecar", context.RepositoryName);
 
         // The scope of a large repository (tens of thousands of paths) goes through a temp file,
         // so it never meets the sidecar's request body limit.
@@ -52,7 +52,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
             await File.WriteAllTextAsync(scopePath, JsonSerializer.Serialize(includedFiles), ct);
             response = await _server.ExtractProjectAsync(new ExtractProjectRequest
             {
-                ProjectName = context.ProjectName,
+                RepositoryName = context.RepositoryName,
                 RootPath = context.RootPath,
                 TsconfigPath = tsconfigPath,
                 IncludedFilesPath = scopePath,
@@ -67,7 +67,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
         if (response is null)
         {
             throw new InvalidOperationException(
-                $"The TypeScript sidecar returned no extraction result for {context.ProjectName} (see the preceding warning for the cause).");
+                $"The TypeScript sidecar returned no extraction result for {context.RepositoryName} (see the preceding warning for the cause).");
         }
 
         // Detect Angular vs plain Node.js from angular.json in root
@@ -77,7 +77,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
         var result = new ExtractionResult
         {
             Nodes = response.Nodes
-                .Select(n => ToGraphNode(n, context.ProjectName))
+                .Select(n => ToGraphNode(n, context.RepositoryName))
                 .ToList(),
             Edges = response.Edges
                 .Select(ToPendingEdge)
@@ -110,9 +110,9 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
         return [result];
     }
 
-    private static GraphNode ToGraphNode(GraphNodeDto dto, string projectName) => new()
+    private static GraphNode ToGraphNode(GraphNodeDto dto, string repositoryName) => new()
     {
-        Project = projectName,
+        Repository = repositoryName,
         Label = Enum.Parse<NodeLabel>(dto.Label),
         Name = dto.Name,
         QualifiedName = dto.QualifiedName,

@@ -49,14 +49,14 @@ public partial class BatchAnalysisService(
                 repoName);
         }
 
-        var allNodes = await store.GetAllNodesByProjectAsync(repoName);
+        var allNodes = await store.GetAllNodesByRepositoryAsync(repoName);
         if (allNodes.Count == 0)
             throw new InvalidOperationException(
                 $"No nodes found for repo '{repoName}'. Index the repo first.");
 
         // Every edge touching one of the repo's nodes (so cross-project edges within the repo are
         // included). Prompts only use endpoints and type, so edge properties are not loaded.
-        var allEdges = await store.GetEdgeEndpointsForProjectAsync(repoName);
+        var allEdges = await store.GetEdgeEndpointsForRepositoryAsync(repoName);
 
         // Group nodes by DotnetProject — one batch request per .csproj
         var nodesByProject = allNodes
@@ -83,12 +83,12 @@ public partial class BatchAnalysisService(
         var batchRequestEntities = new List<AnalysisBatchRequestEntity>();
         var provider = providerRegistry.GetProvider(analysisSettings.DefaultProvider);
 
-        foreach (var (projectName, projectNodes) in nodesByProject)
+        foreach (var (projectName, repositoryNodes) in nodesByProject)
         {
             var prompt = await BuildProjectPromptAsync(
                 repoName,
                 projectName,
-                projectNodes,
+                repositoryNodes,
                 allEdges,
                 nodeById,
                 provider,

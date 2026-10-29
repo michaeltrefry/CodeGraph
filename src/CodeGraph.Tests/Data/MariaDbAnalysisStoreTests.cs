@@ -128,7 +128,7 @@ public class MariaDbAnalysisStoreTests
                 new NodeEntity
                 {
                     Id = 10,
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     Label = NodeLabel.Class.ToString(),
                     Name = "Widget",
                     QualifiedName = "Widget",
@@ -137,7 +137,7 @@ public class MariaDbAnalysisStoreTests
                 new NodeEntity
                 {
                     Id = 11,
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     Label = NodeLabel.Method.ToString(),
                     Name = "Run",
                     QualifiedName = "Widget.Run",
@@ -149,7 +149,7 @@ public class MariaDbAnalysisStoreTests
                 new EdgeEntity
                 {
                     Id = 100,
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     SourceId = 10,
                     TargetId = 11,
                     Type = "DEFINES"
@@ -157,7 +157,7 @@ public class MariaDbAnalysisStoreTests
                 new EdgeEntity
                 {
                     Id = 101,
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     SourceId = 11,
                     TargetId = 10,
                     Type = "CALLS"
@@ -168,8 +168,8 @@ public class MariaDbAnalysisStoreTests
             (await store.GetChildNodesAsync(10)).Single().Name.ShouldBe("Run");
             (await store.GetInboundEdgesAsync(10)).Single().Type.ShouldBe("CALLS");
             (await store.GetOutboundEdgesAsync(11)).Single().Type.ShouldBe("CALLS");
-            (await store.GetAllNodesByProjectAsync("CodeGraph")).Count.ShouldBe(2);
-            (await store.GetAllEdgesByProjectAsync("CodeGraph")).Count.ShouldBe(2);
+            (await store.GetAllNodesByRepositoryAsync("CodeGraph")).Count.ShouldBe(2);
+            (await store.GetAllEdgesByRepositoryAsync("CodeGraph")).Count.ShouldBe(2);
             (await store.GetEdgesForNodesAsync([10])).Count.ShouldBe(2);
         }
         finally

@@ -271,7 +271,7 @@
   font-weight: 500;
 }
 
-.im-tree-project {
+.im-tree-repository {
   flex: 0 0 auto;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -415,7 +415,7 @@
 }
 
 /* ================================================================
-   Secondary cards (changed nodes, cross-repo, affected projects)
+   Secondary cards (changed nodes, cross-repo, affected repositories)
    ================================================================ */
 .im-sub-card {
   background: var(--surface);
@@ -455,7 +455,7 @@
   overflow-x: auto;
 }
 
-.im-project-chips {
+.im-repository-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;

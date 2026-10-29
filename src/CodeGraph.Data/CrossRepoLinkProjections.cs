@@ -19,7 +19,7 @@ public sealed record LinkNodeQuery(IReadOnlyList<NodeLabel> Labels)
 
 public sealed record LinkNodeRow(
     long Id,
-    string Project,
+    string Repository,
     NodeLabel Label,
     string Name,
     string QualifiedName,
@@ -51,9 +51,9 @@ public sealed record LinkEdgeQuery(IReadOnlyList<EdgeType> Types)
 /// </summary>
 public sealed record LinkEdgeRow(
     long SourceId,
-    string SourceProject,
+    string SourceRepository,
     long TargetId,
-    string TargetProject,
+    string TargetRepository,
     NodeLabel? TargetLabel,
     string TargetName,
     string TargetQualifiedName,
@@ -82,7 +82,7 @@ public static class CrossRepoLinkProjection
         return true;
     }
 
-    public static IReadOnlyDictionary<string, string?> Project(
+    public static IReadOnlyDictionary<string, string?> Repository(
         IReadOnlyDictionary<string, object> properties,
         IReadOnlyList<string> keys)
     {
@@ -96,14 +96,14 @@ public static class CrossRepoLinkProjection
     }
 
     public static LinkNodeRow ToRow(GraphNode node, LinkNodeQuery query) =>
-        new(node.Id, node.Project, node.Label, node.Name, node.QualifiedName,
-            Project(node.Properties, query.PropertyKeys));
+        new(node.Id, node.Repository, node.Label, node.Name, node.QualifiedName,
+            Repository(node.Properties, query.PropertyKeys));
 
     public static LinkEdgeRow ToRow(GraphEdge edge, GraphNode source, GraphNode? target, LinkEdgeQuery query) =>
-        new(edge.SourceId, source.Project, edge.TargetId, target?.Project ?? "", target?.Label, target?.Name ?? "",
+        new(edge.SourceId, source.Repository, edge.TargetId, target?.Repository ?? "", target?.Label, target?.Name ?? "",
             target?.QualifiedName ?? "", edge.Type,
-            Project(edge.Properties, query.EdgePropertyKeys),
-            Project(target?.Properties ?? EmptyNodeProperties, query.TargetPropertyKeys));
+            Repository(edge.Properties, query.EdgePropertyKeys),
+            Repository(target?.Properties ?? EmptyNodeProperties, query.TargetPropertyKeys));
 
     public static bool HasTargetFilter(LinkEdgeQuery query) =>
         query.TargetLabels is not null || query.TargetPropertyEquals.Count > 0;

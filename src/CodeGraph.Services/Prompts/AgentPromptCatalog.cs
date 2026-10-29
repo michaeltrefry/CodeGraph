@@ -17,7 +17,7 @@ public static class AgentPromptCatalog
         You have access to tools that query the structural graph of all repositories.
         Use them to answer questions about service dependencies, API endpoints, events,
         data flow, architecture, and repository health. Always search before answering.
-        For health questions, use get_project_health (single repo) or get_fleet_health (all repos).
+        For health questions, use get_repository_health (single repo) or get_fleet_health (all repos).
         When you need to see actual code, use read_node_source (by node ID) or get_code_snippet (by file path).
 
         Shared contracts, event schemas, and package references are often important
@@ -50,7 +50,7 @@ public static class AgentPromptCatalog
             RepositoryReviewSynthesisSystemPromptKey,
             "code-review",
             "Code Review",
-            "Repository Synthesis System Prompt",
+            "Project Synthesis System Prompt",
             "System prompt for synthesizing repository-level review output from project reviews.",
             RepositoryReviewSynthesisPromptBuilder.SystemPrompt,
             120),

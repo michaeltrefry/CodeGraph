@@ -159,16 +159,16 @@ public class SecurityAnalyzer(
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(24);
     private static DateTime _lastCacheEviction = DateTime.UtcNow;
 
-    public async Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default)
+    public async Task<SecurityScanResult> ScanAsync(string repositoryName, string repoPath, CancellationToken ct = default)
     {
-        logger.LogInformation("Starting security scan for {Project}", projectName);
+        logger.LogInformation("Starting security scan for {Repository}", repositoryName);
         var sw = Stopwatch.StartNew();
 
         var findings = new ConcurrentBag<SecurityFinding>();
 
         // Run all three pillars in parallel
         var secretsTask = Task.Run(() => ScanForSecrets(repoPath, findings), ct);
-        var vulnTask = ScanVulnerablePackagesAsync(projectName, repoPath, findings, ct);
+        var vulnTask = ScanVulnerablePackagesAsync(repositoryName, repoPath, findings, ct);
         var attackTask = Task.Run(() => ScanAttackSurface(repoPath, findings), ct);
 
         await Task.WhenAll(secretsTask, vulnTask, attackTask);
@@ -184,7 +184,7 @@ public class SecurityAnalyzer(
         var now = DateTime.UtcNow;
         var entities = findingsList.Select(f => new SecurityFindingEntity
         {
-            Project = projectName,
+            Repository = repositoryName,
             Category = f.Category,
             Severity = f.Severity,
             Title = f.Title,
@@ -197,13 +197,13 @@ public class SecurityAnalyzer(
             ComputedAt = now
         }).ToList();
 
-        await store.DeleteSecurityFindingsAsync(projectName);
+        await store.DeleteSecurityFindingsAsync(repositoryName);
         if (entities.Count > 0)
-            await store.UpsertSecurityFindingsBatchAsync(projectName, entities);
+            await store.UpsertSecurityFindingsBatchAsync(repositoryName, entities);
 
-        await store.UpsertProjectSecuritySummaryAsync(new ProjectSecuritySummaryEntity
+        await store.UpsertRepositorySecuritySummaryAsync(new RepositorySecuritySummaryEntity
         {
-            Project = projectName,
+            Repository = repositoryName,
             SecurityScore = score,
             CriticalCount = criticalCount,
             HighCount = highCount,
@@ -214,8 +214,8 @@ public class SecurityAnalyzer(
 
         sw.Stop();
         logger.LogInformation(
-            "Security scan for {Project}: score={Score:F1}, findings={Count} (C:{Critical} H:{High} M:{Medium} L:{Low}) in {Elapsed}ms",
-            projectName, score, findingsList.Count, criticalCount, highCount, mediumCount, lowCount, sw.ElapsedMilliseconds);
+            "Security scan for {Repository}: score={Score:F1}, findings={Count} (C:{Critical} H:{High} M:{Medium} L:{Low}) in {Elapsed}ms",
+            repositoryName, score, findingsList.Count, criticalCount, highCount, mediumCount, lowCount, sw.ElapsedMilliseconds);
 
         EvictExpiredCacheEntries();
 
@@ -305,14 +305,14 @@ public class SecurityAnalyzer(
 
     // ── Pillar 2: Vulnerable NuGet Packages ─────────────────────────────
 
-    private async Task ScanVulnerablePackagesAsync(string projectName, string repoPath, ConcurrentBag<SecurityFinding> findings, CancellationToken ct)
+    private async Task ScanVulnerablePackagesAsync(string repositoryName, string repoPath, ConcurrentBag<SecurityFinding> findings, CancellationToken ct)
     {
         try
         {
-            var packages = await GetPackagesForVulnerabilityScanAsync(projectName, repoPath, ct);
+            var packages = await GetPackagesForVulnerabilityScanAsync(repositoryName, repoPath, ct);
 
-            logger.LogInformation("Checking {Count} NuGet packages for vulnerabilities in {Project}",
-                packages.Count, projectName);
+            logger.LogInformation("Checking {Count} NuGet packages for vulnerabilities in {Repository}",
+                packages.Count, repositoryName);
 
             if (packages.Count == 0) return;
 
@@ -350,7 +350,7 @@ public class SecurityAnalyzer(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "NuGet vulnerability scan failed for {Project}", projectName);
+            logger.LogWarning(ex, "NuGet vulnerability scan failed for {Repository}", repositoryName);
         }
     }
 
@@ -450,7 +450,7 @@ public class SecurityAnalyzer(
     }
 
     private async Task<List<(string Name, string Version)>> GetPackagesForVulnerabilityScanAsync(
-        string projectName, string repoPath, CancellationToken ct)
+        string repositoryName, string repoPath, CancellationToken ct)
     {
         var localPackages = GetPackagesFromProjectFiles(repoPath);
         if (localPackages.HasProjectFiles)
@@ -458,7 +458,7 @@ public class SecurityAnalyzer(
 
         // Fallback to graph when a local checkout isn't available.
         var nugetNodes = await store.SearchNodesAsync(
-            projectName, "%", label: NodeLabel.NuGetPackage, limit: 500);
+            repositoryName, "%", label: NodeLabel.NuGetPackage, limit: 500);
 
         return nugetNodes
             .Select(n => (

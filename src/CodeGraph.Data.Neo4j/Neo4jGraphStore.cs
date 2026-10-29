@@ -139,7 +139,7 @@ public partial class Neo4jGraphStore(
             await UpsertRepositoryAsync(repository);
     }
 
-    public async Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync()
+    public async Task<IReadOnlyList<RepositoryInfo>> ListRepositoriesAsync()
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
@@ -147,7 +147,7 @@ public partial class Neo4jGraphStore(
         {
             var cursor = await tx.RunAsync(
                 $"MATCH (r:{RepositoryMetadataLabel}) RETURN r ORDER BY r.name");
-            var results = new List<ProjectInfo>();
+            var results = new List<RepositoryInfo>();
             await foreach (var record in cursor)
             {
                 var node = record["r"].As<INode>();
@@ -215,7 +215,7 @@ public partial class Neo4jGraphStore(
             var cursor = await tx.RunAsync(
                 $"MATCH (r:{RepositoryMetadataLabel}) {whereClause} RETURN r ORDER BY r.name SKIP $skip LIMIT $limit",
                 parameters);
-            var items = new List<ProjectInfo>();
+            var items = new List<RepositoryInfo>();
             await foreach (var record in cursor)
                 items.Add(MapRepositoryNode(record["r"].As<INode>()));
 
@@ -252,7 +252,7 @@ public partial class Neo4jGraphStore(
         });
     }
 
-    public async Task<ProjectInfo?> GetRepositoryByName(string name)
+    public async Task<RepositoryInfo?> GetRepositoryByName(string name)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
@@ -270,34 +270,34 @@ public partial class Neo4jGraphStore(
         });
     }
 
-    public async Task DeleteRepositoryAsync(string project)
+    public async Task DeleteRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
                 $"MATCH (r:{RepositoryMetadataLabel} {{name: $name}}) DETACH DELETE r",
-                new { name = project });
+                new { name = repository });
         });
     }
 
     // ── Sync State ────────────────────────────────────────────────────────
 
-    public async Task<SyncStateEntity?> GetSyncStateAsync(string project)
+    public async Task<SyncStateEntity?> GetSyncStateAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (s:SyncState {project: $project}) RETURN s",
-                new { project });
+                "MATCH (s:SyncState {repository: $repository}) RETURN s",
+                new { repository });
             if (await cursor.FetchAsync())
             {
                 var node = cursor.Current["s"].As<INode>();
                 return new SyncStateEntity
                 {
-                    Project = node["project"].As<string>(),
+                    Repository = node["repository"].As<string>(),
                     LastSyncAt = GetDateTimeOrNull(node, "lastSyncAt"),
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
@@ -313,9 +313,9 @@ public partial class Neo4jGraphStore(
         });
     }
 
-    public async Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects)
+    public async Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> repositories)
     {
-        if (projects.Count == 0)
+        if (repositories.Count == 0)
             return new Dictionary<string, SyncStateEntity>(StringComparer.OrdinalIgnoreCase);
 
         await using var session = sessionFactory.GetSession(AccessMode.Read);
@@ -324,10 +324,10 @@ public partial class Neo4jGraphStore(
         {
             var cursor = await tx.RunAsync("""
                 MATCH (s:SyncState)
-                WHERE s.project IN $projects
+                WHERE s.repository IN $repositories
                 RETURN s
                 """,
-                new { projects });
+                new { repositories });
 
             var results = new Dictionary<string, SyncStateEntity>(StringComparer.OrdinalIgnoreCase);
             await foreach (var record in cursor)
@@ -335,7 +335,7 @@ public partial class Neo4jGraphStore(
                 var node = record["s"].As<INode>();
                 var entity = new SyncStateEntity
                 {
-                    Project = node["project"].As<string>(),
+                    Repository = node["repository"].As<string>(),
                     LastSyncAt = GetDateTimeOrNull(node, "lastSyncAt"),
                     LastCommitSha = GetStringOrNull(node, "lastCommitSha"),
                     Status = node["status"].As<string>(),
@@ -346,7 +346,7 @@ public partial class Neo4jGraphStore(
                     VitalsFailedVersion = GetIntOrNull(node, "vitalsFailedVersion"),
                     VitalsConsecutiveFailures = GetIntOrNull(node, "vitalsConsecutiveFailures") ?? 0
                 };
-                results[entity.Project] = entity;
+                results[entity.Repository] = entity;
             }
 
             return (IReadOnlyDictionary<string, SyncStateEntity>)results;
@@ -359,7 +359,7 @@ public partial class Neo4jGraphStore(
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
-                MERGE (s:SyncState {project: $project})
+                MERGE (s:SyncState {repository: $repository})
                 SET s.lastSyncAt = $lastSyncAt,
                     s.lastCommitSha = COALESCE($lastCommitSha, s.lastCommitSha),
                     s.extractionFingerprint = COALESCE($extractionFingerprint, s.extractionFingerprint),
@@ -368,7 +368,7 @@ public partial class Neo4jGraphStore(
                 """,
                 new
                 {
-                    project = state.Project,
+                    repository = state.Repository,
                     extractionFingerprint = state.ExtractionFingerprint,
                     lastSyncAt = state.LastSyncAt,
                     lastCommitSha = state.LastCommitSha,
@@ -378,30 +378,30 @@ public partial class Neo4jGraphStore(
         });
     }
 
-    public async Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    public async Task SetVitalsVersionAsync(string repository, int vitalsVersion)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
                 """
-                MATCH (s:SyncState {project: $project})
+                MATCH (s:SyncState {repository: $repository})
                 SET s.vitalsVersion = $vitalsVersion,
                     s.vitalsFailedCommitSha = null,
                     s.vitalsFailedVersion = null,
                     s.vitalsConsecutiveFailures = 0
                 """,
-                new { project, vitalsVersion });
+                new { repository, vitalsVersion });
         });
     }
 
-    public async Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    public async Task<int> RecordVitalsFailureAsync(string repository, string? commitSha, int vitalsVersion)
     {
         await using var session = sessionFactory.GetSession();
         return await session.ExecuteWriteAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (s:SyncState {project: $project})
+                MATCH (s:SyncState {repository: $repository})
                 WITH s, coalesce(s.vitalsFailedCommitSha, '') = coalesce($commitSha, '')
                         AND s.vitalsFailedVersion = $vitalsVersion AS same
                 SET s.vitalsConsecutiveFailures = CASE WHEN same
@@ -410,116 +410,116 @@ public partial class Neo4jGraphStore(
                     s.vitalsFailedVersion = $vitalsVersion
                 RETURN s.vitalsConsecutiveFailures AS failures
                 """,
-                new { project, commitSha, vitalsVersion });
+                new { repository, commitSha, vitalsVersion });
             return await cursor.FetchAsync() ? cursor.Current["failures"].As<int>() : 0;
         });
     }
 
-    public async Task DeleteSyncStateAsync(string project)
+    public async Task DeleteSyncStateAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (s:SyncState {project: $project}) DELETE s",
-                new { project });
+                "MATCH (s:SyncState {repository: $repository}) DELETE s",
+                new { repository });
         });
     }
 
-    // ── Project Cleanup ───────────────────────────────────────────────────
+    // ── Repository Cleanup ───────────────────────────────────────────────────
 
-    public async Task DeleteAllEdgesForProjectAsync(string project)
+    public async Task DeleteAllEdgesForRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
-            // Delete all relationships between CodeNodes in this project
+            // Delete all relationships between CodeNodes in this repository
             await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})-[r]-()
+                MATCH (n:CodeNode {repository: $repository})-[r]-()
                 DELETE r
                 """,
-                new { project });
+                new { repository });
         });
     }
 
-    public async Task DeleteCrossRepoEdgesForProjectAsync(string project)
+    public async Task DeleteCrossRepoEdgesForRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
                 MATCH (cre:CrossRepoEdge)
-                WHERE cre.sourceProject = $project OR cre.targetProject = $project
+                WHERE cre.sourceRepository = $repository OR cre.targetRepository = $repository
                 DELETE cre
                 """,
-                new { project });
+                new { repository });
         });
     }
 
-    public async Task DeleteAnalysisDataForProjectAsync(string project)
+    public async Task DeleteAnalysisDataForRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             // Delete batch requests and batches together
             await tx.RunAsync("""
-                MATCH (b:AnalysisBatch {repo: $project})
+                MATCH (b:AnalysisBatch {repo: $repository})
                 OPTIONAL MATCH (b)-[:HAS_REQUEST]->(br:AnalysisBatchRequest)
                 DETACH DELETE br, b
-                """, new { project });
+                """, new { repository });
 
-            // Delete standalone analysis nodes (project analyses, summaries, health)
+            // Delete standalone analysis nodes (repository analyses, summaries, health)
             await tx.RunAsync("""
-                OPTIONAL MATCH (a:ProjectAnalysis {repo: $project})
-                OPTIONAL MATCH (s:RepositorySummary {project: $project})
-                OPTIONAL MATCH (ha:ProjectHealthAnalysis {project: $project})
-                OPTIONAL MATCH (hs:ProjectHealthSummary {project: $project})
-                OPTIONAL MATCH (ps:ProjectSecuritySummary {project: $project})
+                OPTIONAL MATCH (a:ProjectAnalysis {repo: $repository})
+                OPTIONAL MATCH (s:RepositorySummary {repository: $repository})
+                OPTIONAL MATCH (ha:ProjectHealthAnalysis {repository: $repository})
+                OPTIONAL MATCH (hs:ProjectHealthSummary {repository: $repository})
+                OPTIONAL MATCH (ps:RepositorySecuritySummary {repository: $repository})
                 DELETE a, s, ha, hs, ps
-                """, new { project });
+                """, new { repository });
 
             await tx.RunAsync("""
-                MATCH (sf:SecurityFinding {project: $project})
+                MATCH (sf:SecurityFinding {repository: $repository})
                 DELETE sf
-                """, new { project });
+                """, new { repository });
 
             await tx.RunAsync("""
-                MATCH (pd:ProjectDiagnostic {project: $project})
+                MATCH (pd:ProjectDiagnostic {repository: $repository})
                 DELETE pd
-                """, new { project });
+                """, new { repository });
 
             await tx.RunAsync("""
-                MATCH (rr:ProjectReviewRun {project: $project})
+                MATCH (rr:ProjectReviewRun {repository: $repository})
                 OPTIONAL MATCH (rr)-[rfRel:HAS_FINDING]->(rf:ProjectReviewFinding)
                 DELETE rfRel, rf, rr
-                """, new { project });
+                """, new { repository });
 
             await tx.RunAsync("""
-                MATCH (rr:RepositoryReviewRun {repo: $project})-[rfRel:HAS_FINDING]->(rf:RepositoryReviewFinding)
+                MATCH (rr:RepositoryReviewRun {repo: $repository})-[rfRel:HAS_FINDING]->(rf:RepositoryReviewFinding)
                 DELETE rfRel, rf
-                """, new { project });
+                """, new { repository });
 
             await tx.RunAsync("""
-                MATCH (rr:RepositoryReviewRun {repo: $project})-[rsRel:HAS_PROJECT_SECTION]->(rs:RepositoryReviewProjectSection)
+                MATCH (rr:RepositoryReviewRun {repo: $repository})-[rsRel:HAS_PROJECT_SECTION]->(rs:RepositoryReviewProjectSection)
                 DELETE rsRel, rs
-                """, new { project });
+                """, new { repository });
 
             await tx.RunAsync("""
-                MATCH (rr:RepositoryReviewRun {repo: $project})
+                MATCH (rr:RepositoryReviewRun {repo: $repository})
                 DELETE rr
-                """, new { project });
+                """, new { repository });
 
-            // Delete node analyses for nodes in this project
+            // Delete node analyses for nodes in this repository
             await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})-[:HAS_ANALYSIS]->(na:NodeAnalysis)
+                MATCH (n:CodeNode {repository: $repository})-[:HAS_ANALYSIS]->(na:NodeAnalysis)
                 DELETE na
-                """, new { project });
+                """, new { repository });
         });
     }
 
     // ── Shared Helpers ────────────────────────────────────────────────────
 
-    private static ProjectInfo MapRepositoryNode(INode node) => new(
+    private static RepositoryInfo MapRepositoryNode(INode node) => new(
         node["name"].As<string>(),
         GetStringOrNull(node, "repoUrl"),
         GetStringOrNull(node, "sourceGroup"),
@@ -534,7 +534,7 @@ public partial class Neo4jGraphStore(
     internal static GraphNode MapCodeNode(INode node) => new()
     {
         Id = node["appId"].As<long>(),
-        Project = node["project"].As<string>(),
+        Repository = node["repository"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
         Label = GetNodeLabel(node),
         Name = node["name"].As<string>(),
@@ -549,7 +549,7 @@ public partial class Neo4jGraphStore(
     internal static GraphEdge MapEdgeRecord(IRecord record) => new()
     {
         Id = GetRelationshipId(record),
-        Project = record["project"].As<string>(),
+        Repository = record["repository"].As<string>(),
         SourceId = record["sourceId"].As<long>(),
         TargetId = record["targetId"].As<long>(),
         Type = Enum.Parse<EdgeType>(record["type"].As<string>()),

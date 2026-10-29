@@ -27,11 +27,11 @@ public class DotnetSupportInspectorTests
                 }
                 """);
             File.WriteAllText(Path.Combine(rootPath, "Legacy.csproj"), """
-                <Project Sdk="Microsoft.NET.Sdk">
+                <Repository Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>netcoreapp2.1</TargetFramework>
                   </PropertyGroup>
-                </Project>
+                </Repository>
                 """);
 
             var support = DotnetSupportInspector.InspectRepository(rootPath, new DateTime(2026, 4, 7, 0, 0, 0, DateTimeKind.Utc));
@@ -68,11 +68,11 @@ public class DotnetSupportInspectorTests
                 }
                 """);
             File.WriteAllText(Path.Combine(rootPath, "Legacy.csproj"), """
-                <Project Sdk="Microsoft.NET.Sdk">
+                <Repository Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>netcoreapp2.1</TargetFramework>
                   </PropertyGroup>
-                </Project>
+                </Repository>
                 """);
 
             var store = new InMemoryGraphStore();
@@ -84,7 +84,7 @@ public class DotnetSupportInspectorTests
                 Framework = ".NET"
             });
 
-            var service = new ProjectQueryService(
+            var service = new RepositoryQueryService(
                 store,
                 Options.Create(new RepositorySourceOptions()));
 
@@ -117,11 +117,11 @@ public class DotnetSupportInspectorTests
                 }
                 """);
             File.WriteAllText(Path.Combine(rootPath, "Legacy.csproj"), """
-                <Project Sdk="Microsoft.NET.Sdk">
+                <Repository Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>netcoreapp2.1</TargetFramework>
                   </PropertyGroup>
-                </Project>
+                </Repository>
                 """);
 
             var store = new InMemoryGraphStore();
@@ -134,7 +134,7 @@ public class DotnetSupportInspectorTests
             });
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {
-                Project = "Legacy.Api",
+                Repository = "Legacy.Api",
                 OverallHealth = 6.4,
                 TotalFiles = 12,
                 HotspotCount = 2,
@@ -142,7 +142,7 @@ public class DotnetSupportInspectorTests
                 ComputedAt = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
             });
 
-            var service = new ProjectQueryService(
+            var service = new RepositoryQueryService(
                 store,
                 Options.Create(new RepositorySourceOptions()));
 
@@ -177,11 +177,11 @@ public class DotnetSupportInspectorTests
                 }
                 """);
             File.WriteAllText(Path.Combine(rootPath, "Modern.csproj"), """
-                <Project Sdk="Microsoft.NET.Sdk">
+                <Repository Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net8.0</TargetFramework>
                   </PropertyGroup>
-                </Project>
+                </Repository>
                 """);
 
             var store = new InMemoryGraphStore();
@@ -193,7 +193,7 @@ public class DotnetSupportInspectorTests
                 Framework = ".NET"
             });
 
-            var service = new ProjectQueryService(
+            var service = new RepositoryQueryService(
                 store,
                 Options.Create(new RepositorySourceOptions()));
 
@@ -203,7 +203,7 @@ public class DotnetSupportInspectorTests
             health.DotnetSupport.ShouldNotBeNull();
             health.DotnetSupport.OverallStatus.ShouldBe("supported");
             health.RepoHealth.ShouldBeNull();
-            health.ProjectHealths.ShouldBeEmpty();
+            health.DotnetProjectHealths.ShouldBeEmpty();
             health.TopHotspots.ShouldBeEmpty();
         }
         finally

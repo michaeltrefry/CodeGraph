@@ -25,7 +25,7 @@ public class GitHubRepoProvider(
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    public async Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
+    public async Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default)
     {
         EnsureConfigured();
 
@@ -46,7 +46,7 @@ public class GitHubRepoProvider(
             }
         }
 
-        var allProjects = new List<DiscoveredProject>();
+        var allRepositories = new List<DiscoveredRepository>();
         foreach (var repository in repositories)
         {
             if (repository.Archived)
@@ -59,11 +59,11 @@ public class GitHubRepoProvider(
             var exclusionType = await exclusionService.GetExclusionTypeAsync(repository.Name ?? "", sourceGroup);
             if (exclusionType == "complete")
             {
-                logger.LogDebug("Skipping {Project} (excluded: complete)", fullName);
+                logger.LogDebug("Skipping {Repository} (excluded: complete)", fullName);
                 continue;
             }
 
-            allProjects.Add(new DiscoveredProject(
+            allRepositories.Add(new DiscoveredRepository(
                 repository.Id,
                 repository.Name ?? "",
                 fullName,
@@ -73,16 +73,16 @@ public class GitHubRepoProvider(
         }
 
         logger.LogInformation(
-            "Discovered {Count} projects from {ScopeCount} GitHub scopes",
-            allProjects.Count,
+            "Discovered {Count} repositories from {ScopeCount} GitHub scopes",
+            allRepositories.Count,
             scopes.Count);
 
-        return allProjects;
+        return allRepositories;
     }
 
-    public async Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
+    public async Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default)
     {
-        var discovered = await DiscoverProjectsAsync(ct);
+        var discovered = await DiscoverRepositoriesAsync(ct);
         var normalizedSearchTerm = NormalizeRepoName(searchTerm);
         return discovered
             .Where(p => p.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
@@ -127,7 +127,7 @@ public class GitHubRepoProvider(
         if (!string.IsNullOrWhiteSpace(repoUrl))
             return repoUrl;
 
-        var discovered = await DiscoverProjectsAsync(ct);
+        var discovered = await DiscoverRepositoriesAsync(ct);
         var resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: true);
         if (!string.IsNullOrWhiteSpace(resolved))
         {
@@ -233,15 +233,15 @@ public class GitHubRepoProvider(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    private static string? ResolveExactMatchUrl(string repoName, IEnumerable<DiscoveredProject> projects, bool allowPartial)
+    private static string? ResolveExactMatchUrl(string repoName, IEnumerable<DiscoveredRepository> repositories, bool allowPartial)
     {
         var normalizedRepoName = NormalizeRepoName(repoName);
-        var exactMatches = FindDistinctUrls(projects,
+        var exactMatches = FindDistinctUrls(repositories,
             p => p.Name.Equals(repoName, StringComparison.OrdinalIgnoreCase));
         if (exactMatches.Count > 0)
             return ResolveSingleUrl(repoName, exactMatches);
 
-        var normalizedMatches = FindDistinctUrls(projects,
+        var normalizedMatches = FindDistinctUrls(repositories,
             p => NormalizeRepoName(p.Name).Equals(normalizedRepoName, StringComparison.Ordinal));
         if (normalizedMatches.Count > 0)
             return ResolveSingleUrl(repoName, normalizedMatches);
@@ -249,7 +249,7 @@ public class GitHubRepoProvider(
         if (!allowPartial)
             return null;
 
-        var partialMatches = FindDistinctUrls(projects,
+        var partialMatches = FindDistinctUrls(repositories,
             p =>
             {
                 var normalizedName = NormalizeRepoName(p.Name);
@@ -274,10 +274,10 @@ public class GitHubRepoProvider(
         };
     }
 
-    private static List<string> FindDistinctUrls(IEnumerable<DiscoveredProject> projects,
-        Func<DiscoveredProject, bool> predicate)
+    private static List<string> FindDistinctUrls(IEnumerable<DiscoveredRepository> repositories,
+        Func<DiscoveredRepository, bool> predicate)
     {
-        return projects
+        return repositories
             .Where(predicate)
             .Select(p => p.HttpUrlToRepo)
             .Where(url => !string.IsNullOrWhiteSpace(url))

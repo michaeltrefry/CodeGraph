@@ -51,7 +51,7 @@ public class MariaDbOverlayQueryTests
                 runner);
             var overlays = new MySqlBranchOverlayStore(context);
 
-            await store.ReplaceProjectGraphAsync(
+            await store.ReplaceRepositoryGraphAsync(
                 Repo,
                 [
                     Function("alpha", "src/a.py"),
@@ -71,7 +71,7 @@ public class MariaDbOverlayQueryTests
             var created = DateTime.UtcNow;
             var overlayId = await overlays.CreateOverlayAsync(new BranchOverlayEntity
             {
-                Project = Repo,
+                Repository = Repo,
                 RequestedRef = "factory/feature",
                 CreatedAt = created
             });
@@ -135,7 +135,7 @@ public class MariaDbOverlayQueryTests
 
     private static GraphNode Function(string name, string path, int startLine = 1) => new()
     {
-        Project = Repo,
+        Repository = Repo,
         Label = NodeLabel.Function,
         Name = name,
         QualifiedName = Qn(path, name),

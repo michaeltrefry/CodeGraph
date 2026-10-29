@@ -41,14 +41,14 @@ public class MariaDbBranchOverlayStoreTests
                 var store = new MySqlBranchOverlayStore(context);
                 oldId = await store.CreateOverlayAsync(new BranchOverlayEntity
                 {
-                    Project = "OverlayRepo",
+                    Repository = "OverlayRepo",
                     RequestedRef = "factory/feature",
                     RequestedByUsername = "michael",
                     CreatedAt = created
                 });
                 freshId = await store.CreateOverlayAsync(new BranchOverlayEntity
                 {
-                    Project = "OverlayRepo",
+                    Repository = "OverlayRepo",
                     RequestedRef = "factory/fresh",
                     CreatedAt = created.AddHours(30)
                 });
@@ -73,7 +73,7 @@ public class MariaDbBranchOverlayStoreTests
                     [
                         new GraphNode
                         {
-                            Project = "OverlayRepo",
+                            Repository = "OverlayRepo",
                             Label = NodeLabel.Function,
                             Name = "alpha",
                             QualifiedName = "OverlayRepo:src/a.py:alpha",
@@ -84,7 +84,7 @@ public class MariaDbBranchOverlayStoreTests
                         },
                         new GraphNode
                         {
-                            Project = "OverlayRepo",
+                            Repository = "OverlayRepo",
                             Label = NodeLabel.Function,
                             Name = "Alpha",
                             QualifiedName = "OverlayRepo:src/a.py:Alpha",
@@ -117,7 +117,7 @@ public class MariaDbBranchOverlayStoreTests
                 // Lookup by commit: resolved heads, plus queued overlays requested by that SHA.
                 var queuedBySha = await store.CreateOverlayAsync(new BranchOverlayEntity
                 {
-                    Project = "OverlayRepo",
+                    Repository = "OverlayRepo",
                     RequestedRef = new string('a', 40),
                     CreatedAt = created.AddHours(31)
                 });
@@ -197,7 +197,7 @@ public class MariaDbBranchOverlayStoreTests
             var head = new string('a', 40);
             var id = await first.CreateOverlayAsync(new BranchOverlayEntity
             {
-                Project = "OverlayRepo",
+                Repository = "OverlayRepo",
                 RequestedRef = "factory/feature",
                 HeadSha = head,
                 BaseSha = new string('b', 40),

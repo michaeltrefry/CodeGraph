@@ -174,7 +174,7 @@ public class AnsibleParser
         if (root is not YamlSequenceNode plays) return;
 
         var playbookName = Path.GetFileNameWithoutExtension(_filePath);
-        var playbookQN = $"{_context.ProjectName}.playbook.{playbookName}";
+        var playbookQN = $"{_context.RepositoryName}.playbook.{playbookName}";
 
         _nodes.Add(MakeNode(playbookQN, playbookName, NodeLabel.Playbook, new()
         {
@@ -234,7 +234,7 @@ public class AnsibleParser
 
             if (string.IsNullOrEmpty(roleName)) continue;
 
-            var roleQN = $"{_context.ProjectName}.role.{roleName}";
+            var roleQN = $"{_context.RepositoryName}.role.{roleName}";
 
             // Create a role node (may be merged with existing one from the role's own files)
             _nodes.Add(MakeNode(roleQN, roleName, NodeLabel.Role, new()
@@ -302,7 +302,7 @@ public class AnsibleParser
 
             foreach (var handler in handlerNames.Where(h => !string.IsNullOrEmpty(h)))
             {
-                var handlerQN = $"{_context.ProjectName}.handler.{Sanitize(handler)}";
+                var handlerQN = $"{_context.RepositoryName}.handler.{Sanitize(handler)}";
                 _edges.Add(new PendingEdge(taskQN, handlerQN, EdgeType.NOTIFIES_HANDLER));
             }
         }
@@ -316,7 +316,7 @@ public class AnsibleParser
                 var roleName = GetScalar(includeMap, "name");
                 if (!string.IsNullOrEmpty(roleName))
                 {
-                    var roleQN = $"{_context.ProjectName}.role.{roleName}";
+                    var roleQN = $"{_context.RepositoryName}.role.{roleName}";
                     _nodes.Add(MakeNode(roleQN, roleName, NodeLabel.Role));
                     _edges.Add(new PendingEdge(taskQN, roleQN, EdgeType.INCLUDES_ROLE));
                 }
@@ -350,7 +350,7 @@ public class AnsibleParser
 
             var handlerName = GetScalar(handler, "name") ?? "unnamed_handler";
             var module = DetectModule(handler);
-            var handlerQN = $"{_context.ProjectName}.handler.{Sanitize(handlerName)}";
+            var handlerQN = $"{_context.RepositoryName}.handler.{Sanitize(handlerName)}";
 
             var props = new Dictionary<string, object>
             {
@@ -385,7 +385,7 @@ public class AnsibleParser
         {
             if (entry.Key is not YamlScalarNode keyNode) continue;
             var varName = keyNode.Value ?? "unknown";
-            var varQN = $"{_context.ProjectName}.{scope}.{roleName}.{varName}";
+            var varQN = $"{_context.RepositoryName}.{scope}.{roleName}.{varName}";
 
             var props = new Dictionary<string, object>
             {
@@ -419,7 +419,7 @@ public class AnsibleParser
         if (root is not YamlMappingNode meta) return;
 
         var roleName = DetectRoleName() ?? Path.GetFileNameWithoutExtension(_filePath);
-        var roleQN = $"{_context.ProjectName}.role.{roleName}";
+        var roleQN = $"{_context.RepositoryName}.role.{roleName}";
 
         _nodes.Add(MakeNode(roleQN, roleName, NodeLabel.Role, new()
         {
@@ -439,7 +439,7 @@ public class AnsibleParser
 
                 if (string.IsNullOrEmpty(depName)) continue;
 
-                var depQN = $"{_context.ProjectName}.role.{depName}";
+                var depQN = $"{_context.RepositoryName}.role.{depName}";
                 _nodes.Add(MakeNode(depQN, depName, NodeLabel.Role));
                 _edges.Add(new PendingEdge(roleQN, depQN, EdgeType.INCLUDES_ROLE));
             }
@@ -497,7 +497,7 @@ public class AnsibleParser
 
             if (string.IsNullOrEmpty(roleName) && string.IsNullOrEmpty(src)) continue;
             var name = roleName ?? src!;
-            var roleQN = $"{_context.ProjectName}.role.{name}";
+            var roleQN = $"{_context.RepositoryName}.role.{name}";
 
             var props = new Dictionary<string, object> { ["confidence"] = "medium" };
             if (src != null) props["source"] = src;
@@ -739,10 +739,10 @@ public class AnsibleParser
     {
         var roleName = DetectRoleName();
         if (roleName != null)
-            return $"{_context.ProjectName}.role.{roleName}";
+            return $"{_context.RepositoryName}.role.{roleName}";
 
         var fileName = Path.GetFileNameWithoutExtension(_filePath);
-        return $"{_context.ProjectName}.taskfile.{fileName}";
+        return $"{_context.RepositoryName}.taskfile.{fileName}";
     }
 
     private string? DetectRoleName()
@@ -763,7 +763,7 @@ public class AnsibleParser
         {
             var parentDir = segments[^2].ToLowerInvariant();
             if (parentDir is "tasks" or "handlers" or "vars" or "defaults" or "meta")
-                return _context.ProjectName;
+                return _context.RepositoryName;
         }
 
         return null;
@@ -777,7 +777,7 @@ public class AnsibleParser
 
         return new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = label,
             Name = name,
             QualifiedName = qualifiedName,

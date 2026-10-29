@@ -28,7 +28,7 @@ export class SchemaCatalogComponent implements OnChanges {
   private api = inject(ApiService);
   private requestId = 0;
 
-  @Input({ required: true }) projectName = '';
+  @Input({ required: true }) repositoryName = '';
 
   catalog = signal<SchemaCatalogResponse | null>(null);
   loading = signal(false);
@@ -54,7 +54,7 @@ export class SchemaCatalogComponent implements OnChanges {
   });
 
   ngOnChanges(changes: SimpleChanges) {
-    if (changes['projectName']) this.loadCatalog();
+    if (changes['repositoryName']) this.loadCatalog();
   }
 
   isProcedure(item: SchemaCatalogItem): item is SchemaProcedure {
@@ -134,7 +134,7 @@ export class SchemaCatalogComponent implements OnChanges {
   }
 
   private loadCatalog() {
-    if (!this.projectName) {
+    if (!this.repositoryName) {
       this.catalog.set(null);
       return;
     }
@@ -145,7 +145,7 @@ export class SchemaCatalogComponent implements OnChanges {
     this.catalog.set(null);
     this.expandedObjects.set(new Set());
 
-    this.api.getSchemaCatalog(this.projectName).subscribe({
+    this.api.getSchemaCatalog(this.repositoryName).subscribe({
       next: catalog => {
         if (requestId !== this.requestId) return;
         this.catalog.set(catalog);

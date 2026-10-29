@@ -29,7 +29,7 @@ namespace CodeGraph.Tests.Services;
 public sealed class RustCrateGroupPipelineTests
 {
     [Fact]
-    public async Task IndexProjectAsync_ThreeCrateGroups_FailingGroupFallsBackAloneAndCrossGroupCallLinks()
+    public async Task IndexRepositoryAsync_ThreeCrateGroups_FailingGroupFallsBackAloneAndCrossGroupCallLinks()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -40,7 +40,7 @@ public sealed class RustCrateGroupPipelineTests
         var diagnostics = new IndexingRunDiagnostics();
         var pipeline = CreatePipeline(store, diagnostics);
 
-        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
 
         // Only the failing group falls back, with exactly its crate.
         var fallback = diagnostics.RustSemanticFallbacks.ShouldHaveSingleItem();
@@ -95,7 +95,7 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_AllGroupsSemantic_RecordsEveryGroupOutcomeAndSettingsSnapshot()
+    public async Task IndexRepositoryAsync_AllGroupsSemantic_RecordsEveryGroupOutcomeAndSettingsSnapshot()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -105,7 +105,7 @@ public sealed class RustCrateGroupPipelineTests
         var diagnostics = new IndexingRunDiagnostics();
         var pipeline = CreatePipeline(store, diagnostics);
 
-        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
 
         diagnostics.RustSemanticFallbacks.ShouldBeEmpty();
         var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
@@ -154,7 +154,7 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_MultiCrateGroups_OutcomesListEachGroupsCrates()
+    public async Task IndexRepositoryAsync_MultiCrateGroups_OutcomesListEachGroupsCrates()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -163,7 +163,7 @@ public sealed class RustCrateGroupPipelineTests
         var diagnostics = new IndexingRunDiagnostics();
         var pipeline = CreatePipeline(new InMemoryGraphStore(), diagnostics, groupSize: 2);
 
-        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
 
         var outcomes = diagnostics.RustSemanticOutcomes.ShouldNotBeNull();
         (outcomes.CrateCount, outcomes.GroupCount, outcomes.GroupSize).ShouldBe((3, 2, 2));
@@ -172,7 +172,7 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_SeveralFailingGroups_RecordsOneFallbackPerGroupInGroupOrder()
+    public async Task IndexRepositoryAsync_SeveralFailingGroups_RecordsOneFallbackPerGroupInGroupOrder()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -183,7 +183,7 @@ public sealed class RustCrateGroupPipelineTests
         var diagnostics = new IndexingRunDiagnostics();
         var pipeline = CreatePipeline(store, diagnostics);
 
-        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
 
         diagnostics.RustSemanticFallbacks.Select(fallback => string.Join(",", fallback.Crates))
             .ShouldBe(["alpha", "gamma"]);
@@ -193,7 +193,7 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_WorkspaceTimeout_EveryUnfinishedGroupFallsBackAndTheRunCompletes()
+    public async Task IndexRepositoryAsync_WorkspaceTimeout_EveryUnfinishedGroupFallsBackAndTheRunCompletes()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -204,7 +204,7 @@ public sealed class RustCrateGroupPipelineTests
         var diagnostics = new IndexingRunDiagnostics();
         var pipeline = CreatePipeline(store, diagnostics, workspaceTimeoutSeconds: 1);
 
-        await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
 
         diagnostics.RustSemanticFallbacks.Select(fallback => string.Join(",", fallback.Crates))
             .ShouldBe(["alpha", "beta", "gamma"]);
@@ -233,7 +233,7 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_MariaDb_PersistsRustSemanticOutcomesReadableFromProjectList()
+    public async Task IndexRepositoryAsync_MariaDb_PersistsRustSemanticOutcomesReadableFromProjectList()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -268,10 +268,10 @@ public sealed class RustCrateGroupPipelineTests
                 runner);
             var pipeline = CreatePipeline(store, new IndexingRunDiagnostics());
 
-            await pipeline.IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None);
 
-            // GET /api/projects?search=RustGroups serializes this response with the web defaults.
-            var list = await new ProjectQueryService(store, Options.Create(new RepositorySourceOptions()))
+            // GET /api/repositories?search=RustGroups serializes this response with the web defaults.
+            var list = await new RepositoryQueryService(store, Options.Create(new RepositorySourceOptions()))
                 .ListAsync("RustGroups", null, 1, 25);
             using var response = JsonDocument.Parse(
                 JsonSerializer.Serialize(list, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
@@ -323,7 +323,7 @@ public sealed class RustCrateGroupPipelineTests
 
         // Consumer-driven run (POST /api/indexer/repositories/process → ProcessRepository).
         toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, "beta");
-        await database.UseStoreAsync(store => CreateProjectService(store, toolchain.RootPath)
+        await database.UseStoreAsync(store => CreateRepositoryService(store, toolchain.RootPath)
             .ProcessRepository(new ProcessRepository
             {
                 Name = "RustGroups",
@@ -344,7 +344,7 @@ public sealed class RustCrateGroupPipelineTests
         // Durable ReAnalyze run (replacement path) without fallbacks: outcomes are replaced
         // and the fallback record of the previous run is gone.
         toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, null);
-        await database.UseStoreAsync(store => CreateProjectService(store, toolchain.RootPath)
+        await database.UseStoreAsync(store => CreateRepositoryService(store, toolchain.RootPath)
             .ReAnalyzeRepository("RustGroups", CancellationToken.None));
 
         var afterReAnalyze = await database.UseStoreAsync(ListedPropertiesAsync);
@@ -356,7 +356,7 @@ public sealed class RustCrateGroupPipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_MariaDb_RunFailingAfterRustAnalysisKeepsTheLastCompletedIndexResults()
+    public async Task IndexRepositoryAsync_MariaDb_RunFailingAfterRustAnalysisKeepsTheLastCompletedIndexResults()
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -365,14 +365,14 @@ public sealed class RustCrateGroupPipelineTests
         using var toolchain = CreateThreeCrateWorkspace();
         toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, "beta");
         await database.UseStoreAsync(store => CreatePipeline(store, new IndexingRunDiagnostics())
-            .IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None));
+            .IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None));
         var completed = await database.UseStoreAsync(store => store.GetRepositoryByName("RustGroups"));
 
         // The next run analyzes the workspace (no fallback this time) but its graph write fails.
         toolchain.SetEnvironment(FakeRustToolchain.FailingCratesVariable, null);
         var failure = await Should.ThrowAsync<InvalidOperationException>(database.UseStoreAsync(store =>
             CreatePipeline(FailingFileReplacementStore.Wrap(store), new IndexingRunDiagnostics())
-                .IndexProjectAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None)));
+                .IndexRepositoryAsync("RustGroups", toolchain.RootPath, ct: CancellationToken.None)));
         failure.Message.ShouldBe(FailingFileReplacementStore.FailureMessage);
 
         // The repository still describes the last completed run: same indexedAt, same records.
@@ -384,10 +384,10 @@ public sealed class RustCrateGroupPipelineTests
             .GetProperty("crates").EnumerateArray().Single().GetString().ShouldBe("beta");
     }
 
-    /// <summary>The project's properties as GET /api/projects?search= serializes them.</summary>
+    /// <summary>The repository's properties as GET /api/repositories?search= serializes them.</summary>
     private static async Task<JsonElement> ListedPropertiesAsync(IGraphStore store)
     {
-        var list = await new ProjectQueryService(store, Options.Create(new RepositorySourceOptions()))
+        var list = await new RepositoryQueryService(store, Options.Create(new RepositorySourceOptions()))
             .ListAsync("RustGroups", null, 1, 25);
         using var response = JsonDocument.Parse(
             JsonSerializer.Serialize(list, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
@@ -395,7 +395,7 @@ public sealed class RustCrateGroupPipelineTests
             .GetProperty("properties").Clone();
     }
 
-    private static ProjectService CreateProjectService(IGraphStore store, string rootPath) =>
+    private static RepositoryService CreateRepositoryService(IGraphStore store, string rootPath) =>
         new(
             store,
             new NoOpBatchAnalysisService(),
@@ -403,7 +403,7 @@ public sealed class RustCrateGroupPipelineTests
             new FixedRepoProvider(rootPath),
             CreatePipeline(store, new IndexingRunDiagnostics()),
             Options.Create(new IndexingOptions { MaxParallelRepos = 1 }),
-            NullLogger<ProjectService>.Instance);
+            NullLogger<RepositoryService>.Instance);
 
     /// <summary>A throwaway MariaDB database; each operation gets its own DbContext, like a request scope.</summary>
     private sealed class MariaDbRustDatabase : IAsyncDisposable
@@ -485,7 +485,7 @@ public sealed class RustCrateGroupPipelineTests
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
-            if (targetMethod!.Name == nameof(IGraphStore.ReplaceProjectFilesAsync))
+            if (targetMethod!.Name == nameof(IGraphStore.ReplaceRepositoryFilesAsync))
                 throw new InvalidOperationException(FailureMessage);
             try
             {
@@ -514,13 +514,13 @@ public sealed class RustCrateGroupPipelineTests
             string? repoUrl,
             CancellationToken ct = default) => Task.FromResult(rootPath);
 
-        public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default) =>
-            Task.FromResult(new List<DiscoveredProject>());
+        public Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default) =>
+            Task.FromResult(new List<DiscoveredRepository>());
 
-        public Task<List<DiscoveredProject>> SearchProjectsAsync(
+        public Task<List<DiscoveredRepository>> SearchRepositoriesAsync(
             string searchTerm,
             CancellationToken ct = default) =>
-            Task.FromResult(new List<DiscoveredProject>());
+            Task.FromResult(new List<DiscoveredRepository>());
     }
 
     private sealed class NoOpMessageBus : IMessageBus
@@ -556,7 +556,7 @@ public sealed class RustCrateGroupPipelineTests
 
     private static List<GraphNode> CodeNodes(InMemoryGraphStore store, string filePath) =>
         store.Nodes
-            .Where(node => node.Project == "RustGroups" && node.FilePath == filePath &&
+            .Where(node => node.Repository == "RustGroups" && node.FilePath == filePath &&
                            node.Label is not (NodeLabel.File or NodeLabel.Folder))
             .ToList();
 

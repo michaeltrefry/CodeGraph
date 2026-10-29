@@ -12,27 +12,27 @@ public class CompositeLintRunner(
     ILintRunner sidecarRunner,
     ILogger<CompositeLintRunner> logger) : ILintRunner
 {
-    public async Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(
+    public async Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(
         string repoPath, CancellationToken ct = default)
     {
-        // Extract the project name from the repo path (last segment)
-        var projectName = Path.GetFileName(repoPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        // Extract the repository name from the repo path (last segment)
+        var repositoryName = Path.GetFileName(repoPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
         var merged = new Dictionary<string, LintResult>(StringComparer.OrdinalIgnoreCase);
 
         // 1. Check cache for Roslyn diagnostics (C# files)
-        if (cache.HasResults(projectName))
+        if (cache.HasResults(repositoryName))
         {
-            var roslynResults = cache.Take(projectName);
+            var roslynResults = cache.Take(repositoryName);
             foreach (var (file, result) in roslynResults)
                 merged[file] = result;
 
             logger.LogInformation("Loaded {Count} Roslyn lint results from cache for {Project}",
-                roslynResults.Count, projectName);
+                roslynResults.Count, repositoryName);
         }
 
         // 2. Call sidecar for ESLint results (TS/JS files)
-        var eslintResults = await sidecarRunner.LintProjectAsync(repoPath, ct);
+        var eslintResults = await sidecarRunner.LintRepositoryAsync(repoPath, ct);
         foreach (var (file, result) in eslintResults)
         {
             // ESLint results won't overlap with Roslyn (different file extensions)

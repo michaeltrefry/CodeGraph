@@ -21,8 +21,8 @@ namespace CodeGraph.Tests.Data;
 /// </summary>
 public class MariaDbSwiftImportTests
 {
-    private const string Project = "SwiftImports";
-    private const string Shape = $"{Project}:Sources/App/Shape.swift";
+    private const string Repository = "SwiftImports";
+    private const string Shape = $"{Repository}:Sources/App/Shape.swift";
 
     private static string Manifest(bool withCollections) => $$"""
         let package = Package(
@@ -85,7 +85,7 @@ public class MariaDbSwiftImportTests
                         new LocalFileSystem(),
                         NullLogger<IndexingPipeline>.Instance,
                         swiftPackageManifestExtractor: new SwiftPackageManifestExtractor())
-                    .IndexProjectAsync(Project, root, ct: CancellationToken.None);
+                    .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
             }
 
             void Write(string path, string source) => File.WriteAllText(Path.Combine(root, path), source);
@@ -149,8 +149,8 @@ public class MariaDbSwiftImportTests
             FROM edges e
             JOIN nodes s ON s.id = e.source_id
             JOIN nodes t ON t.id = e.target_id
-            WHERE e.project = @Project AND e.type = 'IMPORTS' AND s.qualified_name = @Shape
-            """, new { Project, Shape });
+            WHERE e.repository = @Repository AND e.type = 'IMPORTS' AND s.qualified_name = @Shape
+            """, new { Repository, Shape });
         return rows.ToList();
     }
 
@@ -158,6 +158,6 @@ public class MariaDbSwiftImportTests
     {
         await using var conn = new MySqlConnection(connectionString);
         return (await conn.QueryAsync<string>(
-            $"SELECT qualified_name FROM nodes WHERE project = @Project AND {predicate}", new { Project })).ToList();
+            $"SELECT qualified_name FROM nodes WHERE repository = @Repository AND {predicate}", new { Repository })).ToList();
     }
 }

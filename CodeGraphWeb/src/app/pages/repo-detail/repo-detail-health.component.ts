@@ -5,9 +5,9 @@ import {
   CONFIDENCE_COLORS,
   DotnetSupportInfo,
   MonthlyCommitPoint,
-  ProjectDetailResponse,
-  ProjectHealthResponse,
-  ProjectSecurityResponse,
+  RepositoryDetailResponse,
+  RepositoryHealthResponse,
+  RepositorySecurityResponse,
   RepositoryVitalitySummary
 } from '../../core/models';
 import { MarkdownComponent } from '../../shared/markdown.component';
@@ -23,17 +23,17 @@ export class RepoDetailHealthComponent implements OnChanges {
   private api = inject(ApiService);
   private router = inject(Router);
 
-  @Input() projectName = '';
-  @Input() health: ProjectHealthResponse | null = null;
-  @Input() security: ProjectSecurityResponse | null = null;
-  @Input() detail: ProjectDetailResponse | null = null;
+  @Input() repositoryName = '';
+  @Input() health: RepositoryHealthResponse | null = null;
+  @Input() security: RepositorySecurityResponse | null = null;
+  @Input() detail: RepositoryDetailResponse | null = null;
 
   securityOpen = signal(false);
 
   readonly confidenceColors = CONFIDENCE_COLORS;
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['projectName']) {
+    if (changes['repositoryName']) {
       this.securityOpen.set(false);
     }
   }
@@ -49,7 +49,7 @@ export class RepoDetailHealthComponent implements OnChanges {
       health.topHotspots.length > 0 ||
       !!health.repositoryVitality ||
       health.analyses.length > 0 ||
-      health.projectHealths.length > 0
+      health.dotnetProjectHealths.length > 0
     );
   }
 
@@ -71,7 +71,7 @@ export class RepoDetailHealthComponent implements OnChanges {
     const target = event.currentTarget as HTMLElement;
     target.classList.add('finding-location-loading');
 
-    this.api.findNodeByFile(this.projectName, filePath, lineNumber ?? undefined).subscribe({
+    this.api.findNodeByFile(this.repositoryName, filePath, lineNumber ?? undefined).subscribe({
       next: res => {
         target.classList.remove('finding-location-loading');
         const queryParams = lineNumber ? { line: lineNumber } : {};

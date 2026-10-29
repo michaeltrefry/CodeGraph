@@ -61,7 +61,7 @@ public partial class Neo4jGraphStore : INeo4jToMariaDbGraphExporter
             var cursor = await tx.RunAsync("""
                 MATCH (n:CodeNode)
                 RETURN n
-                ORDER BY n.project, n.qualifiedName
+                ORDER BY n.repository, n.qualifiedName
                 """);
 
             var results = new List<GraphNode>();
@@ -84,12 +84,12 @@ public partial class Neo4jGraphStore : INeo4jToMariaDbGraphExporter
             var cursor = await tx.RunAsync("""
                 MATCH (source:CodeNode)-[e]->(target:CodeNode)
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
                        e.properties AS properties
-                ORDER BY project, sourceId, targetId, type
+                ORDER BY repository, sourceId, targetId, type
                 """);
 
             var results = new List<GraphEdge>();
@@ -103,7 +103,7 @@ public partial class Neo4jGraphStore : INeo4jToMariaDbGraphExporter
         });
     }
 
-    private static RepositoryEntity ToRepositoryEntity(ProjectInfo repository) => new()
+    private static RepositoryEntity ToRepositoryEntity(RepositoryInfo repository) => new()
     {
         Name = repository.Name,
         RepoUrl = repository.RepoUrl,

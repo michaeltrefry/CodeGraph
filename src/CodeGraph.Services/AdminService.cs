@@ -65,21 +65,21 @@ public class AdminService(
     public async Task<ProcessReposResponse> ReIndexAllAsync(CancellationToken ct = default)
     {
         var published = new List<string>();
-        var projects = await graphStore.ListRepositoriesAsync();
-        foreach (var project in projects)
+        var repositories = await graphStore.ListRepositoriesAsync();
+        foreach (var repository in repositories)
         {
             var message = new ProcessRepository
             {
-                Name             = project.Name,
-                Path             = string.IsNullOrWhiteSpace(project.RepoUrl) ? project.LocalPath ?? "" : "",
-                RepoUrl          = project.RepoUrl,
-                SourceGroup      = project.SourceGroup,
+                Name             = repository.Name,
+                Path             = string.IsNullOrWhiteSpace(repository.RepoUrl) ? repository.LocalPath ?? "" : "",
+                RepoUrl          = repository.RepoUrl,
+                SourceGroup      = repository.SourceGroup,
                 ShouldIndex      = true,
                 ShouldAnalyze    = false,
                 SkipIfUpToDate   = false
             };
             await messageBus.PublishAsync(message, ct);
-            published.Add(project.Name);
+            published.Add(repository.Name);
         }
         return new ProcessReposResponse(published, published.Count);
     }
@@ -109,8 +109,8 @@ public class AdminService(
     public async Task<DiscoverResponse> DiscoverAsync(DiscoverRequest? request, CancellationToken ct = default)
     {
         var allDiscovered = string.IsNullOrWhiteSpace(request?.NamePattern)
-            ? await repoProvider.DiscoverProjectsAsync()
-            : await repoProvider.SearchProjectsAsync(request.NamePattern);
+            ? await repoProvider.DiscoverRepositoriesAsync()
+            : await repoProvider.SearchRepositoriesAsync(request.NamePattern);
 
         if (allDiscovered.Count == 0)
             return new DiscoverResponse(0, 0, 0, 0, 0, []);
@@ -134,8 +134,8 @@ public class AdminService(
         HashSet<string>? alreadySynced = null;
         if (skipIfUpToDate && limit.HasValue)
         {
-            var allProjects = await graphStore.ListRepositoriesAsync();
-            var syncStates = await graphStore.GetSyncStatesAsync(allProjects.Select(p => p.Name).ToList());
+            var allRepositories = await graphStore.ListRepositoriesAsync();
+            var syncStates = await graphStore.GetSyncStatesAsync(allRepositories.Select(p => p.Name).ToList());
             alreadySynced = syncStates
                 .Where(kvp => kvp.Value.LastCommitSha is not null)
                 .Select(kvp => kvp.Key)
@@ -146,23 +146,23 @@ public class AdminService(
         var skippedNames = new List<string>();
         int newCount = 0;
 
-        foreach (var project in discovered)
+        foreach (var repository in discovered)
         {
             ct.ThrowIfCancellationRequested();
-            var likelySynced = alreadySynced?.Contains(project.Name) == true;
+            var likelySynced = alreadySynced?.Contains(repository.Name) == true;
 
             if (!likelySynced && limit.HasValue && newCount >= limit.Value)
             {
-                skippedNames.Add(project.Name);
+                skippedNames.Add(repository.Name);
                 continue;
             }
 
-            // Extract group from PathWithNamespace (e.g. "group/subgroup/project" → "group/subgroup")
-            var lastSlash = project.PathWithNamespace.LastIndexOf('/');
-            var sourceGroup = lastSlash > 0 ? project.PathWithNamespace[..lastSlash] : null;
+            // Extract group from PathWithNamespace (e.g. "group/subgroup/repository" → "group/subgroup")
+            var lastSlash = repository.PathWithNamespace.LastIndexOf('/');
+            var sourceGroup = lastSlash > 0 ? repository.PathWithNamespace[..lastSlash] : null;
 
             // Check exclusion rules
-            var exclusionType = await exclusionService.GetExclusionTypeAsync(project.Name, sourceGroup);
+            var exclusionType = await exclusionService.GetExclusionTypeAsync(repository.Name, sourceGroup);
             if (exclusionType == "complete")
                 continue;
 
@@ -170,15 +170,15 @@ public class AdminService(
 
             await messageBus.PublishAsync(new ProcessRepository
             {
-                Name = project.Name,
-                RepoUrl = project.HttpUrlToRepo,
+                Name = repository.Name,
+                RepoUrl = repository.HttpUrlToRepo,
                 SourceGroup = sourceGroup,
                 ShouldIndex = shouldIndex,
                 ShouldAnalyze = effectiveShouldAnalyze,
                 SkipIfUpToDate = skipIfUpToDate,
                 IncludeAllSource = includeAllSource
             }, ct);
-            published.Add(project.Name);
+            published.Add(repository.Name);
 
             if (!likelySynced)
                 newCount++;

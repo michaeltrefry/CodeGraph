@@ -2,7 +2,7 @@ import { Component, inject, OnInit, signal, computed } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../core/api.service';
-import { ProjectInfo } from '../../core/models';
+import { RepositoryInfo } from '../../core/models';
 import { TypeaheadComponent, TypeaheadItem } from '../../shared/typeahead.component';
 
 @Component({
@@ -20,7 +20,7 @@ export class ReposComponent implements OnInit {
   group = signal('');
   page = signal(1);
   pageSize = 25;
-  items = signal<ProjectInfo[]>([]);
+  items = signal<RepositoryInfo[]>([]);
   total = signal(0);
   groups = signal<string[]>([]);
   groupItems = computed<TypeaheadItem[]>(() =>
@@ -57,7 +57,7 @@ export class ReposComponent implements OnInit {
   load() {
     this.loading.set(true);
     this.updateUrl();
-    this.api.listProjects(this.search() || undefined, this.group() || undefined, this.page(), this.pageSize)
+    this.api.listRepositories(this.search() || undefined, this.group() || undefined, this.page(), this.pageSize)
       .subscribe({
         next: r => {
           this.items.set(r.items);

@@ -257,7 +257,7 @@ public sealed class KnowledgeMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
     {
         var key = await ProjectAsync("KW", dependencies: "sceneworks");
         await using var connection = new MySqlConnection(db.ConnectionString);
-        await connection.ExecuteAsync("INSERT INTO file_hashes (project, rel_path, content_hash) VALUES ('sceneworks', 'src\\\\Win\\\\Main.cs', 'h1')");
+        await connection.ExecuteAsync("INSERT INTO file_hashes (repository, rel_path, content_hash) VALUES ('sceneworks', 'src\\\\Win\\\\Main.cs', 'h1')");
 
         var entry = (await db.CallAsync(WorkTools.Record, new
         {
@@ -267,7 +267,7 @@ public sealed class KnowledgeMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         entry.GetProperty("verified_files").EnumerateArray().Single().GetProperty("path").GetString().ShouldBe("src\\Win\\Main.cs");
         entry.GetProperty("possibly_stale").GetBoolean().ShouldBeFalse();
 
-        await connection.ExecuteAsync("UPDATE file_hashes SET content_hash = 'h2' WHERE project = 'sceneworks' AND rel_path = 'src\\\\Win\\\\Main.cs'");
+        await connection.ExecuteAsync("UPDATE file_hashes SET content_hash = 'h2' WHERE repository = 'sceneworks' AND rel_path = 'src\\\\Win\\\\Main.cs'");
         Items(await db.CallAsync(WorkTools.Recall, new { id = entry.GetProperty("id").GetString() })).Single().GetProperty("possibly_stale").GetBoolean().ShouldBeTrue();
     }
 

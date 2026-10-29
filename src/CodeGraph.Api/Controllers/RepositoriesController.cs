@@ -12,17 +12,17 @@ using CodeGraph.Services.Overlays;
 namespace CodeGraph.Api.Controllers;
 
 [ApiController]
-[Route("api/projects")]
-public class ProjectsController(
-    IProjectQueryService queryService,
-    IProjectService projectService,
+[Route("api/repositories")]
+public class RepositoriesController(
+    IRepositoryQueryService queryService,
+    IRepositoryService repositoryService,
     IImpactAnalysisService impactService,
     IIndexerOperationsService indexerOperations,
     ICommitScopeResolver commitScopes) : Controller
 {
-    // GET /api/projects?search=&page=1&pageSize=25
+    // GET /api/repositories?search=&page=1&pageSize=25
     [HttpGet]
-    public async Task<ActionResult<ProjectListResponse>> List(
+    public async Task<ActionResult<RepositoryListResponse>> List(
         [FromQuery] string? search,
         [FromQuery] string? group,
         [FromQuery] int page = 1,
@@ -31,31 +31,31 @@ public class ProjectsController(
         return Ok(await queryService.ListAsync(search, group, page, pageSize));
     }
 
-    // GET /api/projects/{name}
+    // GET /api/repositories/{name}
     [HttpGet("{name}")]
-    public async Task<ActionResult<ProjectDetailResponse>> Detail(string name)
+    public async Task<ActionResult<RepositoryDetailResponse>> Detail(string name)
     {
         var result = await queryService.GetDetailAsync(name);
         return result is null ? NotFound() : Ok(result);
     }
 
-    // GET /api/projects/{name}/health
+    // GET /api/repositories/{name}/health
     [HttpGet("{name}/health")]
-    public async Task<ActionResult<ProjectHealthResponse>> Health(string name)
+    public async Task<ActionResult<RepositoryHealthResponse>> Health(string name)
     {
         var result = await queryService.GetHealthAsync(name);
         return result is null ? NotFound() : Ok(result);
     }
 
-    // GET /api/projects/{name}/security
+    // GET /api/repositories/{name}/security
     [HttpGet("{name}/security")]
-    public async Task<ActionResult<ProjectSecurityResponse>> Security(string name)
+    public async Task<ActionResult<RepositorySecurityResponse>> Security(string name)
     {
         var result = await queryService.GetSecurityAsync(name);
         return result is null ? NotFound() : Ok(result);
     }
 
-    // GET /api/projects/{name}/metrics?dotnetProject=X&top=20
+    // GET /api/repositories/{name}/metrics?dotnetProject=X&top=20
     [HttpGet("{name}/metrics")]
     public async Task<ActionResult<IReadOnlyList<FileMetrics>>> Metrics(
         string name,
@@ -65,7 +65,7 @@ public class ProjectsController(
         return Ok(await queryService.GetMetricsAsync(name, dotnetProject, top));
     }
 
-    // GET /api/projects/{name}/hotspots?top=10
+    // GET /api/repositories/{name}/hotspots?top=10
     [HttpGet("{name}/hotspots")]
     public async Task<ActionResult<IReadOnlyList<FileMetrics>>> Hotspots(
         string name,
@@ -74,7 +74,7 @@ public class ProjectsController(
         return Ok(await queryService.GetHotspotsAsync(name, top));
     }
 
-    // GET /api/projects/{name}/nodes?label=Method&dotnetProject=Orders.Services&page=1&pageSize=50
+    // GET /api/repositories/{name}/nodes?label=Method&dotnetProject=Orders.Services&page=1&pageSize=50
     [HttpGet("{name}/nodes")]
     public async Task<ActionResult<NodeListResponse>> Nodes(
         string name,
@@ -86,7 +86,7 @@ public class ProjectsController(
         return Ok(await queryService.GetNodesAsync(name, label, dotnetProject, page, pageSize));
     }
 
-    // GET /api/projects/{name}/batch-status
+    // GET /api/repositories/{name}/batch-status
     [HttpGet("{name}/batch-status")]
     public async Task<ActionResult<AnalysisBatchResponse>> BatchStatus(string name)
     {
@@ -94,16 +94,16 @@ public class ProjectsController(
         return result is null ? NotFound() : Ok(result);
     }
 
-    // DELETE /api/projects/{name}
+    // DELETE /api/repositories/{name}
     [Authorize(Policy = CodeGraphAuthenticationDefaults.AdminPolicy)]
     [HttpDelete("{name}")]
     public async Task<ActionResult> Delete(string name)
     {
-        var deleted = await projectService.DeleteRepositoryAsync(name);
+        var deleted = await repositoryService.DeleteRepositoryAsync(name);
         return deleted ? NoContent() : NotFound();
     }
 
-    // GET /api/projects/{name}/readme
+    // GET /api/repositories/{name}/readme
     [HttpGet("{name}/readme")]
     public async Task<ActionResult> Readme(string name)
     {
@@ -111,7 +111,7 @@ public class ProjectsController(
         return content is null ? NotFound() : Ok(new { content });
     }
 
-    // GET /api/projects/{name}/impact?node=QualifiedName&depth=3&sha=<full commit sha>
+    // GET /api/repositories/{name}/impact?node=QualifiedName&depth=3&sha=<full commit sha>
     [HttpGet("{name}/impact")]
     public async Task<ActionResult<ImpactReport>> Impact(
         string name,
@@ -130,7 +130,7 @@ public class ProjectsController(
         return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name, node));
     }
 
-    // GET /api/projects/{name}/impact/file?path=relative/file.cs&depth=3&sha=<full commit sha>
+    // GET /api/repositories/{name}/impact/file?path=relative/file.cs&depth=3&sha=<full commit sha>
     [HttpGet("{name}/impact/file")]
     public async Task<ActionResult<ImpactReport>> FileImpact(
         string name,
@@ -149,18 +149,18 @@ public class ProjectsController(
         return result is null ? NotFound() : Ok(await WithCommitAsync(result, scope, name));
     }
 
-    private async Task<ImpactReport> WithCommitAsync(ImpactReport report, CommitScope scope, string project, string? queriedName = null)
+    private async Task<ImpactReport> WithCommitAsync(ImpactReport report, CommitScope scope, string repository, string? queriedName = null)
     {
-        var projects = report.ChangedNodes.Select(node => node.Project)
-            .Concat(report.AffectedNodes.Select(node => node.Project))
-            .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceProject, impact.TargetProject }))
-            .Append(project);
-        var commit = await commitScopes.DescribeAsync(scope, projects);
+        var repositories = report.ChangedNodes.Select(node => node.Repository)
+            .Concat(report.AffectedNodes.Select(node => node.Repository))
+            .Concat(report.CrossRepoImpacts.SelectMany(impact => new[] { impact.SourceRepository, impact.TargetRepository }))
+            .Append(repository);
+        var commit = await commitScopes.DescribeAsync(scope, repositories);
         // With a SHA, CommitSha is that SHA for the pinned repository; Commits names every repository
         // in the report with the commit its nodes were read from.
         return report with
         {
-            CommitSha = scope.IsPinned ? commit.CommitSha : commit.Commits.GetValueOrDefault(project) ?? commit.CommitSha,
+            CommitSha = scope.IsPinned ? commit.CommitSha : commit.Commits.GetValueOrDefault(repository) ?? commit.CommitSha,
             Commits = commit.Commits,
             UnmappedInboundEdges = scope.Overlay?.CountUnmappedInboundEdges(report, queriedName)
         };

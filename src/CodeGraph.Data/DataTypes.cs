@@ -15,7 +15,7 @@ public record TraversalEntry(
 public record NodeInDegree(GraphNode Node, int InDegree);
 
 public record RepositorySearchResult(
-    IReadOnlyList<ProjectInfo> Items,
+    IReadOnlyList<RepositoryInfo> Items,
     int TotalCount);
 
 public record SchemaRepositorySearchResult(
@@ -28,14 +28,14 @@ public record SchemaRepositorySearchResult(
     IReadOnlyList<string> Databases);
 
 public record SchemaRepositoryItem(
-    ProjectInfo Project,
+    RepositoryInfo Repository,
     string ServerName,
     string DatabaseName,
     int TableCount,
     int ViewCount,
     int ProcedureCount);
 
-public record ProjectInfo(
+public record RepositoryInfo(
     string Name,
     string? RepoUrl,
     string? SourceGroup,
@@ -47,8 +47,8 @@ public record ProjectInfo(
     bool IsFoundational,
     Dictionary<string, object>? Properties);
 
-public record ProjectSummary(
-    string Project,
+public record RepositorySummary(
+    string Repository,
     string Summary,
     ConfidenceLevel Confidence,
     string SourceHash,

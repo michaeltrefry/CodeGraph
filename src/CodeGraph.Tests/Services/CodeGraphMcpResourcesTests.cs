@@ -22,7 +22,7 @@ public class CodeGraphMcpResourcesTests
     }
 
     [Fact]
-    public async Task GetProjectSummary_ReturnsFormattedSummary()
+    public async Task GetRepositorySummary_ReturnsFormattedSummary()
     {
         var graphStore = new InMemoryGraphStore();
         await graphStore.UpsertRepositorySummaryAsync(
@@ -34,7 +34,7 @@ public class CodeGraphMcpResourcesTests
         var wikiStore = new InMemoryWikiStore();
         var sut = new CodeGraphMcpResources(graphStore, wikiStore);
 
-        var markdown = await sut.GetProjectSummary("OrdersApi");
+        var markdown = await sut.GetRepositorySummary("OrdersApi");
 
         markdown.ShouldContain("# OrdersApi");
         markdown.ShouldContain("**Confidence:** High");

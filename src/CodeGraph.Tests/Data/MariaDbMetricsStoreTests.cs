@@ -106,7 +106,7 @@ public class MariaDbMetricsStoreTests
 
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {
-                Project = "CodeGraph",
+                Repository = "CodeGraph",
                 OverallHealth = 7.5,
                 TotalFiles = 2,
                 HotspotCount = 1,
@@ -115,7 +115,7 @@ public class MariaDbMetricsStoreTests
 
             await store.UpsertProjectHealthAnalysisAsync(new ProjectHealthAnalysisEntity
             {
-                Project = "CodeGraph",
+                Repository = "CodeGraph",
                 Analysis = "Healthy enough",
                 Confidence = "high",
                 CreatedAt = now,
@@ -123,7 +123,7 @@ public class MariaDbMetricsStoreTests
             });
 
             (await store.GetProjectHealthSummariesAsync("CodeGraph")).Single().DotnetProject.ShouldBe("");
-            (await store.GetAllRepoHealthSummariesAsync()).Single().Project.ShouldBe("CodeGraph");
+            (await store.GetAllRepoHealthSummariesAsync()).Single().Repository.ShouldBe("CodeGraph");
             (await store.GetProjectHealthAnalysesAsync("CodeGraph")).Single().Analysis.ShouldBe("Healthy enough");
 
             await store.UpsertSecurityFindingsBatchAsync("CodeGraph",
@@ -140,16 +140,16 @@ public class MariaDbMetricsStoreTests
                 }
             ]);
 
-            await store.UpsertProjectSecuritySummaryAsync(new ProjectSecuritySummaryEntity
+            await store.UpsertRepositorySecuritySummaryAsync(new RepositorySecuritySummaryEntity
             {
-                Project = "CodeGraph",
+                Repository = "CodeGraph",
                 SecurityScore = 8,
                 HighCount = 1,
                 ComputedAt = now
             });
 
             (await store.GetSecurityFindingsAsync("CodeGraph")).Single().Severity.ShouldBe("high");
-            (await store.GetProjectSecuritySummaryAsync("CodeGraph"))!.HighCount.ShouldBe(1);
+            (await store.GetRepositorySecuritySummaryAsync("CodeGraph"))!.HighCount.ShouldBe(1);
 
             await store.DeleteSecurityFindingsAsync("CodeGraph");
             (await store.GetSecurityFindingsAsync("CodeGraph")).ShouldBeEmpty();

@@ -58,7 +58,7 @@ public class TypeScriptExtractor : ICodeExtractor
 
             var response = await _server.ExtractProjectAsync(new ExtractProjectRequest
             {
-                ProjectName = context.ProjectName,
+                RepositoryName = context.RepositoryName,
                 RootPath = tempDir,
                 TsconfigPath = tempTsconfig,
                 IncludedFiles = [Path.GetFileName(tempTs), Path.GetFileName(tempTsconfig)],
@@ -72,7 +72,7 @@ public class TypeScriptExtractor : ICodeExtractor
                 Nodes = response.Nodes
                     .Select(n => new GraphNode
                     {
-                        Project = context.ProjectName,
+                        Repository = context.RepositoryName,
                         Label = Enum.Parse<NodeLabel>(n.Label),
                         Name = n.Name,
                         QualifiedName = n.QualifiedName,

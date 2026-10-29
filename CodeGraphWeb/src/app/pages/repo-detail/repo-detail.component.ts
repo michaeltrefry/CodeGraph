@@ -14,11 +14,11 @@ import {
   IndexerRunResponse,
   LABEL_ICONS,
   MonthlyCommitPoint,
-  ProjectDetailResponse,
+  RepositoryDetailResponse,
   ProjectDiagnosticResponse,
   ProjectDiagnosticsResponse,
-  ProjectHealthResponse,
-  ProjectSecurityResponse,
+  RepositoryHealthResponse,
+  RepositorySecurityResponse,
   RepositoryVitalitySummary,
   RepositoryReviewFindingResponse,
   RepositoryReviewProjectSectionResponse,
@@ -81,15 +81,15 @@ export class RepoDetailComponent implements OnInit {
   private router = inject(Router);
 
   name = signal('');
-  detail = signal<ProjectDetailResponse | null>(null);
-  health = signal<ProjectHealthResponse | null>(null);
+  detail = signal<RepositoryDetailResponse | null>(null);
+  health = signal<RepositoryHealthResponse | null>(null);
   readme = signal<string | null>(null);
   loading = signal(true);
   expandedAnalysis = signal<string | null>(null);
   healthOpen = signal(true);
   healthDetailsOpen = signal(false);
   expandedHealthAnalysis = signal<string | null>(null);
-  security = signal<ProjectSecurityResponse | null>(null);
+  security = signal<RepositorySecurityResponse | null>(null);
   securityOpen = signal(false);
   batchStatus = signal<AnalysisBatchStatus | null>(null);
   reAnalyzing = signal(false);
@@ -116,10 +116,10 @@ export class RepoDetailComponent implements OnInit {
     const d = this.detail();
     if (!d) return '';
     const parts: string[] = [];
-    if (d.project.sourceGroup) parts.push(d.project.sourceGroup);
-    if (d.project.language) parts.push(d.project.language);
-    if (d.project.framework) parts.push(d.project.framework);
-    if (d.project.indexedAt) parts.push(`indexed ${this.relTime(d.project.indexedAt)}`);
+    if (d.repository.sourceGroup) parts.push(d.repository.sourceGroup);
+    if (d.repository.language) parts.push(d.repository.language);
+    if (d.repository.framework) parts.push(d.repository.framework);
+    if (d.repository.indexedAt) parts.push(`indexed ${this.relTime(d.repository.indexedAt)}`);
     return parts.join(' · ');
   });
 
@@ -176,7 +176,7 @@ export class RepoDetailComponent implements OnInit {
   ngOnInit() {
     this.route.paramMap
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe(params => this.loadProject(params.get('name') ?? ''));
+      .subscribe(params => this.loadRepository(params.get('name') ?? ''));
 
     this.route.queryParamMap
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -186,7 +186,7 @@ export class RepoDetailComponent implements OnInit {
       });
   }
 
-  private loadProject(n: string) {
+  private loadRepository(n: string) {
     const requestId = ++this.loadRequestId;
     this.name.set(n);
     this.chatContext.setRepo(n);
@@ -206,13 +206,13 @@ export class RepoDetailComponent implements OnInit {
     this.repositoryReviewState.set(this.createInitialRepositoryReviewState());
     this.projectDiagnosticsStates.set({});
 
-    this.api.getProject(n).subscribe({
+    this.api.getRepository(n).subscribe({
       next: d => {
         if (requestId !== this.loadRequestId) return;
         this.detail.set(d);
         this.loading.set(false);
         this.initializeProjectDiagnosticsStates(n, d);
-        if (!this.isSchemaProject()) {
+        if (!this.isSchemaRepository()) {
           this.loadLatestRepositoryReview(n);
         }
       },
@@ -226,21 +226,21 @@ export class RepoDetailComponent implements OnInit {
       return;
     }
 
-    this.api.getProjectHealth(n).subscribe({
+    this.api.getRepositoryHealth(n).subscribe({
       next: h => {
         if (requestId !== this.loadRequestId) return;
         this.health.set(h);
       },
       error: () => {}
     });
-    this.api.getProjectSecurity(n).subscribe({
+    this.api.getRepositorySecurity(n).subscribe({
       next: s => {
         if (requestId !== this.loadRequestId) return;
         this.security.set(s);
       },
       error: () => {}
     });
-    this.api.getProjectReadme(n).subscribe({
+    this.api.getRepositoryReadme(n).subscribe({
       next: r => {
         if (requestId !== this.loadRequestId) return;
         this.readme.set(r.content);
@@ -266,20 +266,20 @@ export class RepoDetailComponent implements OnInit {
     });
   }
 
-  isSchemaProject(): boolean {
+  isSchemaRepository(): boolean {
     return this.name().startsWith('db:');
   }
 
   schemaServerName() {
-    return this.projectStringProperty('serverName') ?? this.detail()?.project.sourceGroup ?? 'Unknown server';
+    return this.repositoryStringProperty('serverName') ?? this.detail()?.repository.sourceGroup ?? 'Unknown server';
   }
 
   schemaDatabaseName() {
-    return this.projectStringProperty('databaseName') ?? this.name();
+    return this.repositoryStringProperty('databaseName') ?? this.name();
   }
 
-  private projectStringProperty(key: string): string | null {
-    const value = this.detail()?.project.properties?.[key];
+  private repositoryStringProperty(key: string): string | null {
+    const value = this.detail()?.repository.properties?.[key];
     return typeof value === 'string' && value.trim() ? value : null;
   }
 
@@ -339,7 +339,7 @@ export class RepoDetailComponent implements OnInit {
     };
   }
 
-  private initializeProjectDiagnosticsStates(repo: string, detail: ProjectDetailResponse) {
+  private initializeProjectDiagnosticsStates(repo: string, detail: RepositoryDetailResponse) {
     const projectNames = Array.from(new Set(detail.analyses.map(analysis => analysis.projectName)));
     const states = Object.fromEntries(
       projectNames.map(projectName => [projectName, this.createInitialProjectDiagnosticsState()])
@@ -381,7 +381,7 @@ export class RepoDetailComponent implements OnInit {
 
   isRepositoryReviewStale(): boolean {
     const review = this.completedRepositoryReview();
-    const currentCommit = this.detail()?.project.lastCommitSha;
+    const currentCommit = this.detail()?.repository.lastCommitSha;
     return !!review?.run.reviewedCommitSha &&
       !!currentCommit &&
       review.run.reviewedCommitSha !== currentCommit;
@@ -398,7 +398,7 @@ export class RepoDetailComponent implements OnInit {
 
     if (review.run.reviewMode.toLowerCase() !== 'update') return true;
 
-    const currentCommit = this.detail()?.project.lastCommitSha;
+    const currentCommit = this.detail()?.repository.lastCommitSha;
     return !review.run.reviewedCommitSha ||
       !currentCommit ||
       review.run.reviewedCommitSha === currentCommit;
@@ -835,7 +835,7 @@ export class RepoDetailComponent implements OnInit {
       case 'queued':
         return 'Queued for server-side repository review execution.';
       case 'running':
-        return 'Repository review is gathering project evidence and synthesizing results.';
+        return 'Repository review is gathering repository evidence and synthesizing results.';
       case 'interrupted':
         return 'The previous repository review was interrupted before it finished.';
       default:
@@ -1223,7 +1223,7 @@ export class RepoDetailComponent implements OnInit {
 
   deleteRepo() {
     this.deleting.set(true);
-    this.api.deleteProject(this.name()).subscribe({
+    this.api.deleteRepository(this.name()).subscribe({
       next: () => this.router.navigate(['/repos']),
       error: () => this.deleting.set(false)
     });

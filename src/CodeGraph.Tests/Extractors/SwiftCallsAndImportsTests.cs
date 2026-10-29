@@ -17,7 +17,7 @@ public class SwiftCallsAndImportsTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 
@@ -239,7 +239,7 @@ public class SwiftCallsAndImportsTests
 
     // ── Pipeline: exact CALLS edges ─────────────────────────────────
 
-    private const string Project = "SwiftCalls";
+    private const string Repository = "SwiftCalls";
 
     private const string ShapesSource = """
         struct Circle {
@@ -330,9 +330,9 @@ public class SwiftCallsAndImportsTests
         func helper(_ c: Circle?) { _ = c?.area() }
         """;
 
-    private const string S = $"{Project}:Sources/Shapes.swift";
-    private const string X = $"{Project}:Sources/Circle+Scale.swift";
-    private const string C = $"{Project}:Sources/Scene.swift";
+    private const string S = $"{Repository}:Sources/Shapes.swift";
+    private const string X = $"{Repository}:Sources/Circle+Scale.swift";
+    private const string C = $"{Repository}:Sources/Scene.swift";
     private const string Circle = $"{S}#type:Circle";
     private const string Renderer = $"{S}#type:Renderer";
     private const string Render = $"{C}#type:Scene#method:render()";
@@ -374,7 +374,7 @@ public class SwiftCallsAndImportsTests
                 Options.Create(new IndexingOptions { MaxParallelFiles = 2 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .IndexProjectAsync(Project, root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
 
     private static async Task WithRepoAsync(Func<string, Task> test)
     {
@@ -394,7 +394,7 @@ public class SwiftCallsAndImportsTests
     }
 
     [Fact]
-    public Task IndexProject_SwiftCallsResolveToExactSameRepoFunctions() =>
+    public Task IndexRepository_SwiftCallsResolveToExactSameRepoFunctions() =>
         WithRepoAsync(async root =>
         {
             var store = new InMemoryGraphStore();
@@ -404,7 +404,7 @@ public class SwiftCallsAndImportsTests
         });
 
     [Fact]
-    public Task IndexProject_IncrementalRunTouchingOnlyTheCaller_StillResolvesIntoUnchangedFiles() =>
+    public Task IndexRepository_IncrementalRunTouchingOnlyTheCaller_StillResolvesIntoUnchangedFiles() =>
         WithRepoAsync(async root =>
         {
             var store = new InMemoryGraphStore();
@@ -420,7 +420,7 @@ public class SwiftCallsAndImportsTests
         });
 
     [Fact]
-    public async Task IndexProject_ReceiverOnANestedTypeDeclaredInAnotherFile_ResolvesByItsFullPath()
+    public async Task IndexRepository_ReceiverOnANestedTypeDeclaredInAnotherFile_ResolvesByItsFullPath()
     {
         var root = Path.Combine(Path.GetTempPath(), $"codegraph-swift-nested-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -442,9 +442,9 @@ public class SwiftCallsAndImportsTests
             var store = new InMemoryGraphStore();
             await IndexAsync(store, root);
 
-            const string run = $"{Project}:User.swift#type:User#method:run()";
-            const string make = $"{Project}:Outer.swift#type:Outer#type:Inner#method:make()";
-            const string build = $"{Project}:Outer+Build.swift#extension:Outer.Inner#method:build()";
+            const string run = $"{Repository}:User.swift#type:User#method:run()";
+            const string make = $"{Repository}:Outer.swift#type:Outer#type:Inner#method:make()";
+            const string build = $"{Repository}:Outer+Build.swift#extension:Outer.Inner#method:build()";
             // Missing.Inner is not the repository's Outer.Inner, although both are named Inner.
             Calls(store).ShouldBe([(run, make), (run, build)], ignoreOrder: true);
 

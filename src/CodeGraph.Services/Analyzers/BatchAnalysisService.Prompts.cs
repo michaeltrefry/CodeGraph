@@ -14,14 +14,14 @@ public partial class BatchAnalysisService
     private async Task<string> BuildProjectPromptAsync(
         string repoName,
         string projectName,
-        IReadOnlyList<NodeEntity> projectNodes,
+        IReadOnlyList<NodeEntity> repositoryNodes,
         IReadOnlyList<EdgeEntity> allRepoEdges,
         Dictionary<long, NodeEntity> nodeById,
         IAnalysisModelProvider provider,
         LlmAnalysisRuntimeConfig analysisSettings,
         bool includeAllSource = false)
     {
-        var projectNodeIds = new HashSet<long>(projectNodes.Select(n => n.Id));
+        var projectNodeIds = new HashSet<long>(repositoryNodes.Select(n => n.Id));
 
         // Edges where source OR target is in this project (includes cross-project edges within the repo)
         var relevantEdges = allRepoEdges
@@ -64,9 +64,9 @@ public partial class BatchAnalysisService
         }
 
         var repo = await store.GetRepositoryByName(repoName);
-        var promptStyle = DeterminePromptStyle(projectNodes, repo?.Language);
+        var promptStyle = DeterminePromptStyle(repositoryNodes, repo?.Language);
         var promptBudget = GetPromptBudget(provider, promptStyle, analysisSettings);
-        var describableNodes = SelectDescribableNodesForPrompt(projectNodes, outboundBySource, promptStyle, promptBudget);
+        var describableNodes = SelectDescribableNodesForPrompt(repositoryNodes, outboundBySource, promptStyle, promptBudget);
 
         var sb = new StringBuilder();
 
@@ -499,7 +499,7 @@ public partial class BatchAnalysisService
     // --- Property helpers ---
 
     private static string GetDotnetProject(NodeEntity node)
-        => node.DotnetProject ?? node.Project;
+        => node.DotnetProject ?? node.Repository;
 
     private static string GetIndent(string line)
     {
@@ -543,28 +543,28 @@ public partial class BatchAnalysisService
         };
     }
 
-    private static PromptStyle DeterminePromptStyle(IReadOnlyList<NodeEntity> projectNodes, string? repoLanguage)
+    private static PromptStyle DeterminePromptStyle(IReadOnlyList<NodeEntity> repositoryNodes, string? repoLanguage)
     {
         if (string.Equals(repoLanguage, "C", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(repoLanguage, "C++", StringComparison.OrdinalIgnoreCase))
             return PromptStyle.CStyle;
 
-        var classLikeCount = projectNodes.Count(n => n.Label is "Class" or "Interface" or "Record");
-        var cStyleCount = projectNodes.Count(n => n.Label is "Struct" or "Function");
+        var classLikeCount = repositoryNodes.Count(n => n.Label is "Class" or "Interface" or "Record");
+        var cStyleCount = repositoryNodes.Count(n => n.Label is "Struct" or "Function");
         return cStyleCount >= Math.Max(12, classLikeCount * 3)
             ? PromptStyle.CStyle
             : PromptStyle.ObjectOriented;
     }
 
     private static List<NodeEntity> SelectDescribableNodesForPrompt(
-        IReadOnlyList<NodeEntity> projectNodes,
+        IReadOnlyList<NodeEntity> repositoryNodes,
         Dictionary<long, List<EdgeEntity>> outboundBySource,
         PromptStyle promptStyle,
         PromptBudget promptBudget)
     {
         if (promptStyle == PromptStyle.CStyle)
         {
-            var candidates = projectNodes
+            var candidates = repositoryNodes
                 .Where(n => n.Label is "Function" or "Struct")
                 .ToList();
 
@@ -605,7 +605,7 @@ public partial class BatchAnalysisService
                 .ToList();
         }
 
-        return projectNodes
+        return repositoryNodes
             .Where(n => n.Label is "Class" or "Interface")
             .OrderByDescending(n => IsHighSignalNode(n, outboundBySource, promptStyle))
             .ThenByDescending(n => outboundBySource.TryGetValue(n.Id, out var edges) ? edges.Count : 0)

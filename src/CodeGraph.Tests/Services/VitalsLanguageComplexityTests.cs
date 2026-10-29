@@ -692,7 +692,7 @@ public class VitalsLanguageComplexityTests
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
-            await pipeline.IndexProjectAsync("TestProject", repoPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("TestProject", repoPath, ct: CancellationToken.None);
             store.Nodes.Where(node => node.Label == NodeLabel.File).Select(node => node.FilePath)
                 .ShouldBe(expected, ignoreOrder: true);
 
@@ -718,7 +718,7 @@ public class VitalsLanguageComplexityTests
 
     private sealed class NoLint : ILintRunner
     {
-        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default)
+        public Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
     }
 

@@ -99,17 +99,17 @@ public sealed class DatabaseSchemaExtractor(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
-        var projectName = BuildProjectName(serverName, databaseName);
+        var repositoryName = BuildRepositoryName(serverName, databaseName);
 
-        logger.LogInformation("Syncing schema for {Project}", projectName);
+        logger.LogInformation("Syncing schema for {Repository}", repositoryName);
 
         await using var conn = new MySqlConnection(connectionString);
         await conn.OpenAsync(ct);
 
-        var snapshot = await ExtractSnapshotAsync(conn, serverName, databaseName, projectName, ct);
+        var snapshot = await ExtractSnapshotAsync(conn, serverName, databaseName, repositoryName, ct);
         var repository = new RepositoryEntity
         {
-            Name = projectName,
+            Name = repositoryName,
             LocalPath = "",
             SourceGroup = serverName,
             IsFoundational = false,
@@ -123,8 +123,8 @@ public sealed class DatabaseSchemaExtractor(
             })
         };
 
-        var edgeCount = await store.ReplaceProjectGraphAsync(
-            projectName,
+        var edgeCount = await store.ReplaceRepositoryGraphAsync(
+            repositoryName,
             snapshot.Nodes,
             snapshot.PendingEdges,
             new Dictionary<string, string>(),
@@ -133,8 +133,8 @@ public sealed class DatabaseSchemaExtractor(
             ct: ct);
 
         logger.LogInformation(
-            "Synced {Project}: {Nodes} node(s), {Edges} edge(s)",
-            projectName,
+            "Synced {Repository}: {Nodes} node(s), {Edges} edge(s)",
+            repositoryName,
             snapshot.Nodes.Count,
             edgeCount);
     }
@@ -143,7 +143,7 @@ public sealed class DatabaseSchemaExtractor(
         MySqlConnection conn,
         string serverName,
         string databaseName,
-        string projectName,
+        string repositoryName,
         CancellationToken ct)
     {
         var databaseQualifiedName = $"{serverName}.{databaseName}";
@@ -151,7 +151,7 @@ public sealed class DatabaseSchemaExtractor(
         {
             new()
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = NodeLabel.Database,
                 Name = databaseName,
                 QualifiedName = databaseQualifiedName,
@@ -244,7 +244,7 @@ public sealed class DatabaseSchemaExtractor(
 
             nodes.Add(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = table.TABLE_TYPE == "VIEW" ? NodeLabel.View : NodeLabel.Table,
                 Name = table.TABLE_NAME,
                 QualifiedName = tableQualifiedName,
@@ -280,7 +280,7 @@ public sealed class DatabaseSchemaExtractor(
 
                 nodes.Add(new GraphNode
                 {
-                    Project = projectName,
+                    Repository = repositoryName,
                     Label = NodeLabel.Column,
                     Name = column.COLUMN_NAME,
                     QualifiedName = columnQualifiedName,
@@ -308,7 +308,7 @@ public sealed class DatabaseSchemaExtractor(
 
             nodes.Add(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = NodeLabel.StoredProcedure,
                 Name = routine.ROUTINE_NAME,
                 QualifiedName = routineQualifiedName,
@@ -334,7 +334,7 @@ public sealed class DatabaseSchemaExtractor(
         return new SchemaSnapshot(nodes, pendingEdges);
     }
 
-    private static string BuildProjectName(string serverName, string databaseName)
+    private static string BuildRepositoryName(string serverName, string databaseName)
         => $"db:{serverName}:{databaseName}";
 
     private static IndexMetadata BuildIndexMetadata(IReadOnlyList<IndexInfo> indexes)

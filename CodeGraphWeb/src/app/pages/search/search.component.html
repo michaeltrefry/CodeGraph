@@ -21,8 +21,8 @@
             <span class="result-icon">{{ getIcon(item) }}</span>
             <span class="result-name">{{ item.name }}</span>
             <span class="cg-chip">{{ getTypeLabel(item) }}</span>
-            @if (item.project && item.type !== 'repository') {
-              <span class="result-project">in {{ item.project }}</span>
+            @if (item.repository && item.type !== 'repository') {
+              <span class="result-repository">in {{ item.repository }}</span>
             }
           </div>
           @if (item.description) {

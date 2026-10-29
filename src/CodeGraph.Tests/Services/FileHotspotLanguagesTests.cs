@@ -126,10 +126,10 @@ public sealed class FileHotspotLanguagesTests : IDisposable
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .IndexProjectAsync(Repo, _root, ct: CancellationToken.None).GetAwaiter().GetResult();
+            .IndexRepositoryAsync(Repo, _root, ct: CancellationToken.None).GetAwaiter().GetResult();
         _store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repo, LocalPath = _root, LastCommitSha = _headSha })
             .GetAwaiter().GetResult();
-        _store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repo, LastCommitSha = _headSha })
+        _store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repo, LastCommitSha = _headSha })
             .GetAwaiter().GetResult();
     }
 
@@ -207,7 +207,7 @@ public sealed class FileHotspotLanguagesTests : IDisposable
 
     private sealed class NoLint : ILintRunner
     {
-        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default)
+        public Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
     }
 

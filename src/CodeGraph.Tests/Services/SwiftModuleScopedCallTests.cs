@@ -20,7 +20,7 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class SwiftModuleScopedCallTests : IDisposable
 {
-    private const string Project = "Lens";
+    private const string Repository = "Lens";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-swift-scoped-calls-{Guid.NewGuid():N}");
     private readonly InMemoryGraphStore _store = new();
 
@@ -46,7 +46,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
             NullLogger<IndexingPipeline>.Instance,
             swiftPackageManifestExtractor: new SwiftPackageManifestExtractor());
 
-    private Task IndexAsync() => Pipeline().IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+    private Task IndexAsync() => Pipeline().IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
     private List<(string Caller, string CallerFile, string Callee, string CalleeFile)> Calls()
     {
@@ -66,7 +66,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
 
     /// <summary>Members declared in the body of a type both copies declare (an ambiguous receiver).</summary>
     [Fact]
-    public async Task IndexProject_VendoredAppCopy_AmbiguousReceiverResolvesToTheCallersCopy()
+    public async Task IndexRepository_VendoredAppCopy_AmbiguousReceiverResolvesToTheCallersCopy()
     {
         Write("native/Compositor.xcodeproj/project.pbxproj", AppProject());
         Write("native/Compositor/Layer.swift", """
@@ -127,7 +127,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
     /// its own module's copy. A name only the original declares still binds (single candidate).
     /// </summary>
     [Fact]
-    public async Task IndexProject_VendoredAppCopy_DuplicateExtensionMembersBindPerCaller()
+    public async Task IndexRepository_VendoredAppCopy_DuplicateExtensionMembersBindPerCaller()
     {
         foreach (var root in new[] { "native", "vendor/Compositor" })
         {
@@ -194,15 +194,15 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
             }
             """);
         var slice = await Pipeline().ExtractOverlayAsync(
-            Project, _root, ["vendor/Compositor/Compositor/Render.swift"], [], [], CancellationToken.None);
+            Repository, _root, ["vendor/Compositor/Compositor/Render.swift"], [], [], CancellationToken.None);
 
         slice.Edges.Where(edge => edge.Type == EdgeType.CALLS)
             .Select(edge => edge.TargetQN)
-            .ShouldBe([$"{Project}:vendor/Compositor/Compositor/CGRect+Blend.swift#extension:CGRect#method:blend()"]);
+            .ShouldBe([$"{Repository}:vendor/Compositor/Compositor/CGRect+Blend.swift#extension:CGRect#method:blend()"]);
     }
 
     [Fact]
-    public async Task IndexProject_SwiftPackageTargets_TieBreaksToTheCallersModuleThenItsImports()
+    public async Task IndexRepository_SwiftPackageTargets_TieBreaksToTheCallersModuleThenItsImports()
     {
         Write("Package.swift", """
             // swift-tools-version:5.9
@@ -257,7 +257,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
     /// root without <c>sources:</c> are one module scope.
     /// </summary>
     [Fact]
-    public async Task IndexProject_TargetsSharingASourcePath_TieBreakByTheirSources()
+    public async Task IndexRepository_TargetsSharingASourcePath_TieBreakByTheirSources()
     {
         Write("Package.swift", """
             // swift-tools-version:5.9
@@ -326,7 +326,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
 
     /// <summary>Feature imports CoreKit, which re-exports Models: Models' <c>make()</c> is visible.</summary>
     [Fact]
-    public async Task IndexProject_ReexportedModule_IsVisibleThroughTheImportingModule()
+    public async Task IndexRepository_ReexportedModule_IsVisibleThroughTheImportingModule()
     {
         WriteReexportPackage();
 
@@ -334,7 +334,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
 
         var byId = _store.Nodes.ToDictionary(node => node.Id);
         _store.Edges.Single(edge => edge.Type == EdgeType.IMPORTS
-                                    && byId[edge.SourceId].QualifiedName == $"{Project}:Sources/CoreKit/Exports.swift")
+                                    && byId[edge.SourceId].QualifiedName == $"{Repository}:Sources/CoreKit/Exports.swift")
             .Properties[IndexingPipeline.ExportedProperty].ShouldBe(true);
         Calls().ShouldBe([("run", "Sources/Feature/Use.swift", "make", "Sources/Models/Model.swift")]);
     }
@@ -344,7 +344,7 @@ public sealed class SwiftModuleScopedCallTests : IDisposable
     /// a file it does not re-extract (the persisted import edges).
     /// </summary>
     [Fact]
-    public async Task IndexProject_ReexportedModule_IncrementalRunOfTheCallerOnly_StillSeesIt()
+    public async Task IndexRepository_ReexportedModule_IncrementalRunOfTheCallerOnly_StillSeesIt()
     {
         WriteReexportPackage();
         await IndexAsync();

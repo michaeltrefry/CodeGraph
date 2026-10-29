@@ -17,7 +17,7 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class CrossLanguageCallResolutionTests : IDisposable
 {
-    private const string Project = "Mixed";
+    private const string Repository = "Mixed";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-xlang-calls-{Guid.NewGuid():N}");
 
     public void Dispose()
@@ -34,7 +34,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_CallsBindWithinTheLanguageFamilyAndAcrossFfiBoundariesOnly()
+    public async Task IndexRepository_CallsBindWithinTheLanguageFamilyAndAcrossFfiBoundariesOnly()
     {
         Write("App/Canvas.swift", """
             final class Canvas: NSView {
@@ -69,7 +69,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
         var byId = store.Nodes.ToDictionary(node => node.Id);
         var calls = store.Edges.Where(edge => edge.Type == EdgeType.CALLS)
@@ -100,7 +100,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     /// Rust call binds to C functions only, never to a C type (Rust → C struct <c>range</c>).
     /// </summary>
     [Fact]
-    public async Task IndexProject_CallsNeverBindToPackagesOrNonCallableForeignDefinitions()
+    public async Task IndexRepository_CallsNeverBindToPackagesOrNonCallableForeignDefinitions()
     {
         Write("Cargo.toml", "[package]\nname = \"engine\"\nversion = \"0.1.0\"\n\n[dependencies]\nblake3 = \"1\"\n");
         Write("scripts/digest.py", "def digest(data):\n    return blake3(data)\n");
@@ -129,7 +129,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 cargoManifestExtractor: new CargoManifestExtractor())
-            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
         // The fixture really has each tempting target.
         store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package && node.Name == "blake3");
@@ -182,7 +182,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     {
         CallLanguages.IsCallTarget(callerFamily, new GraphNode
         {
-            Project = Project, Label = label, Name = "x", QualifiedName = "x", FilePath = filePath!
+            Repository = Repository, Label = label, Name = "x", QualifiedName = "x", FilePath = filePath!
         }).ShouldBe(expected);
     }
 
@@ -205,7 +205,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     public async Task RustAbi_IsRecordedOnlyForFunctionsExportedBySymbolName(string source, string? expectedAbi)
     {
         var result = await new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)
-            .ExtractAsync("/r/src/lib.rs", source, new ExtractorContext { ProjectName = Project, RootPath = "/r" });
+            .ExtractAsync("/r/src/lib.rs", source, new ExtractorContext { RepositoryName = Repository, RootPath = "/r" });
 
         var function = result.Nodes.Single(node => node.Name == "f");
         function.Properties.GetValueOrDefault(CallLanguages.AbiProperty).ShouldBe(expectedAbi);
@@ -229,7 +229,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     /// and Rust reaches a C++ function only when it has C linkage.
     /// </summary>
     [Fact]
-    public async Task IndexProject_FfiCallsBindOnlyBareCallsToExposedFreeFunctions()
+    public async Task IndexRepository_FfiCallsBindOnlyBareCallsToExposedFreeFunctions()
     {
         Write("engine/src/catalog.rs", """
             pub fn migrate(rows: &[u32]) -> u32 {
@@ -280,7 +280,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
         // The fixture really has each tempting target, and the linkage the extractor recorded.
         store.Nodes.ShouldContain(node => node.Name == "find" && node.Label == NodeLabel.Method);
@@ -315,14 +315,14 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
         GraphNode Node(NodeLabel label, string name, string qualifiedName, string filePath,
             Dictionary<string, object>? properties = null) => new()
         {
-            Project = Project, Label = label, Name = name, QualifiedName = qualifiedName, FilePath = filePath,
+            Repository = Repository, Label = label, Name = name, QualifiedName = qualifiedName, FilePath = filePath,
             Properties = properties ?? []
         };
-        buffer.AddNode(Node(NodeLabel.Struct, "Bridge", $"{Project}:native/bridge.h#type:Bridge", "native/bridge.h"));
-        buffer.AddNode(Node(NodeLabel.Function, "open_bridge", $"{Project}:native/bridge.c#function:open_bridge()",
+        buffer.AddNode(Node(NodeLabel.Struct, "Bridge", $"{Repository}:native/bridge.h#type:Bridge", "native/bridge.h"));
+        buffer.AddNode(Node(NodeLabel.Function, "open_bridge", $"{Repository}:native/bridge.c#function:open_bridge()",
             "native/bridge.c", new() { ["receiver_owner"] = "Bridge" }));
-        const string receiverCaller = $"{Project}:App/A.swift#type:A#method:viaReceiver()";
-        const string bareCaller = $"{Project}:App/A.swift#type:A#method:bare()";
+        const string receiverCaller = $"{Repository}:App/A.swift#type:A#method:viaReceiver()";
+        const string bareCaller = $"{Repository}:App/A.swift#type:A#method:bare()";
         buffer.AddNode(Node(NodeLabel.Method, "viaReceiver", receiverCaller, "App/A.swift"));
         buffer.AddNode(Node(NodeLabel.Method, "bare", bareCaller, "App/A.swift"));
         buffer.AddUnresolvedCall(new UnresolvedCall(receiverCaller, "open_bridge", "Bridge", 0.65, CallReceiverKind.Resolved));
@@ -331,11 +331,11 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
         await new IndexingPipeline(
                 new InMemoryGraphStore(), [], Options.Create(new IndexingOptions()), new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .ResolveCallsAsync(Project, buffer, includePersistedNodes: false, new HashSet<string>(), CancellationToken.None);
+            .ResolveCallsAsync(Repository, buffer, includePersistedNodes: false, new HashSet<string>(), CancellationToken.None);
 
         buffer.AllPendingEdges.Where(edge => edge.Type == EdgeType.CALLS)
             .Select(edge => (edge.SourceQN, edge.TargetQN))
-            .ShouldBe([(bareCaller, $"{Project}:native/bridge.c#function:open_bridge()")]);
+            .ShouldBe([(bareCaller, $"{Repository}:native/bridge.c#function:open_bridge()")]);
     }
 
     [Theory]
@@ -345,7 +345,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     {
         var cFunction = new GraphNode
         {
-            Project = Project, Label = NodeLabel.Function, Name = "f", QualifiedName = "f", FilePath = "native/a.c"
+            Repository = Repository, Label = NodeLabel.Function, Name = "f", QualifiedName = "f", FilePath = "native/a.c"
         };
         CallLanguages.IsCallTarget("swift", cFunction, isBareCall).ShouldBe(expected);
         CallLanguages.IsCallTarget("rust", cFunction, isBareCall).ShouldBe(expected);
@@ -373,10 +373,10 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
             properties[CallLanguages.AbiProperty] = abi;
         var node = new GraphNode
         {
-            Project = Project,
+            Repository = Repository,
             Label = NodeLabel.Function,
             Name = "count",
-            QualifiedName = $"{Project}:scip-local:src/managed.rs:local 12",
+            QualifiedName = $"{Repository}:scip-local:src/managed.rs:local 12",
             FilePath = "src/managed.rs",
             Properties = properties
         };
@@ -390,10 +390,10 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     [Fact]
     public void FamilyOfCaller_FallsBackToTheFileOfTheCallerQualifiedName()
     {
-        CallLanguages.FamilyOfQualifiedName(Project, $"{Project}:native/gennmtab.c#function:total()").ShouldBe("c");
-        CallLanguages.FamilyOfQualifiedName(Project, $"{Project}:src/lib.rs").ShouldBe("rust");
-        CallLanguages.FamilyOfQualifiedName(Project, "Other:src/lib.rs#function:f()").ShouldBeNull();
-        CallLanguages.FamilyOfQualifiedName(Project, $"{Project}:scip:rust-analyzer cargo x f().").ShouldBeNull();
+        CallLanguages.FamilyOfQualifiedName(Repository, $"{Repository}:native/gennmtab.c#function:total()").ShouldBe("c");
+        CallLanguages.FamilyOfQualifiedName(Repository, $"{Repository}:src/lib.rs").ShouldBe("rust");
+        CallLanguages.FamilyOfQualifiedName(Repository, "Other:src/lib.rs#function:f()").ShouldBeNull();
+        CallLanguages.FamilyOfQualifiedName(Repository, $"{Repository}:scip:rust-analyzer cargo x f().").ShouldBeNull();
     }
 
     [Theory]
@@ -410,15 +410,15 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     [Fact]
     public void CanCall_NodesOfUnknownLanguageAreNotFiltered()
     {
-        var stub = new GraphNode { Project = Project, Label = NodeLabel.Method, Name = "convert", QualifiedName = "convert" };
+        var stub = new GraphNode { Repository = Repository, Label = NodeLabel.Method, Name = "convert", QualifiedName = "convert" };
         CallLanguages.CanCall("swift", stub).ShouldBeTrue();
         CallLanguages.CanCall(null, new GraphNode
         {
-            Project = Project, Label = NodeLabel.Function, Name = "convert", QualifiedName = "py", FilePath = "a.py"
+            Repository = Repository, Label = NodeLabel.Function, Name = "convert", QualifiedName = "py", FilePath = "a.py"
         }).ShouldBeTrue();
         CallLanguages.CanCall("javascript", new GraphNode
         {
-            Project = Project, Label = NodeLabel.Function, Name = "f", QualifiedName = "js", FilePath = "a.js"
+            Repository = Repository, Label = NodeLabel.Function, Name = "f", QualifiedName = "js", FilePath = "a.js"
         }).ShouldBeTrue();
     }
 }

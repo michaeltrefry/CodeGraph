@@ -46,7 +46,7 @@ public partial class IndexingPipeline
     /// Phase 2 stub — full resolution happens when extractors populate UnresolvedCalls.
     /// </summary>
     internal async Task ResolveCallsAsync(
-        string projectName,
+        string repositoryName,
         GraphBuffer buffer,
         bool includePersistedNodes,
         IReadOnlySet<string> excludedPersistedFiles,
@@ -71,7 +71,7 @@ public partial class IndexingPipeline
             var candidates = buffer.FindByName(name).AsEnumerable();
             if (includePersistedNodes)
             {
-                var persisted = await _store.FindNodesByNameAsync(projectName, name);
+                var persisted = await _store.FindNodesByNameAsync(repositoryName, name);
                 candidates = candidates.Concat(persisted.Where(IsPersistedNodeEligible));
             }
 
@@ -112,7 +112,7 @@ public partial class IndexingPipeline
             }
 
             var receiver = await ResolveReceiverOwnerAsync(
-                projectName,
+                repositoryName,
                 buffer,
                 receiverType,
                 includePersistedNodes,
@@ -146,17 +146,17 @@ public partial class IndexingPipeline
             // declared in.
             var callerFile = buffer.FindByQN(call.CallerQN) is { FilePath: { Length: > 0 } callerPath }
                 ? NormalizeRelativePath(callerPath)
-                : CallLanguages.FileOfQualifiedName(projectName, call.CallerQN);
+                : CallLanguages.FileOfQualifiedName(repositoryName, call.CallerQN);
             var callerFamily = CallLanguages.FamilyOf(callerFile);
 
             // Module visibility only breaks ties for a Swift caller (several candidates, or a
             // receiver type several modules declare); the scopes are loaded on first need.
             var isSwiftCaller = callerFamily == "swift" && callerFile is not null;
-            var callerFileQN = $"{projectName}:{callerFile}";
+            var callerFileQN = $"{repositoryName}:{callerFile}";
             async Task<SwiftModuleScopes?> ScopesAsync()
             {
                 swiftScopes ??= await LoadSwiftModuleScopesAsync(
-                    projectName, buffer, swiftManifestsExtracted, includePersistedNodes, excludedPersistedFiles,
+                    repositoryName, buffer, swiftManifestsExtracted, includePersistedNodes, excludedPersistedFiles,
                     swiftImportRebinding ?? SwiftRebinding.None, ct);
                 return swiftScopes.IsEmpty ? null : swiftScopes;
             }
@@ -189,7 +189,7 @@ public partial class IndexingPipeline
                 {
                     owned = candidates
                         .Where(candidate => ownership.SwiftPath is { } path
-                            ? IsOwnedBySwiftType(projectName, candidate, ownership.Receiver, path)
+                            ? IsOwnedBySwiftType(repositoryName, candidate, ownership.Receiver, path)
                             : IsOwnedBy(candidate, ownership.Receiver!, ownership.AllowSymbolicOwnership))
                         .ToList();
                     ownedCandidates[key] = owned;
@@ -277,7 +277,7 @@ public partial class IndexingPipeline
             .Where(node => isVisible?.Invoke(node) != false)
             .ToList();
         var atPath = types
-            .Where(node => SwiftTypeReference.TypePath(node.Project, node.FilePath, node.QualifiedName) == typePath)
+            .Where(node => SwiftTypeReference.TypePath(node.Repository, node.FilePath, node.QualifiedName) == typePath)
             .ToList();
         if (atPath.Count > 0)
             return atPath.Count == 1 ? (atPath[0], false) : (null, true);
@@ -292,14 +292,14 @@ public partial class IndexingPipeline
     /// declared in the type's body (<paramref name="owner"/>), or in an extension of that path in
     /// any file (<c>{file}#extension:{path}#method:...</c>).
     /// </summary>
-    private static bool IsOwnedBySwiftType(string projectName, GraphNode candidate, GraphNode? owner, string typePath)
+    private static bool IsOwnedBySwiftType(string repositoryName, GraphNode candidate, GraphNode? owner, string typePath)
     {
         if (owner is not null && IsOwnedBy(candidate, owner, allowSymbolicOwnership: false))
             return true;
 
         return !string.IsNullOrEmpty(candidate.FilePath)
             && candidate.QualifiedName.StartsWith(
-                $"{projectName}:{candidate.FilePath}#extension:{typePath}#method:", StringComparison.Ordinal);
+                $"{repositoryName}:{candidate.FilePath}#extension:{typePath}#method:", StringComparison.Ordinal);
     }
 
     private static bool IsReceiverOwnerLabel(NodeLabel label) =>
@@ -307,7 +307,7 @@ public partial class IndexingPipeline
             or NodeLabel.Enum or NodeLabel.Struct or NodeLabel.Record or NodeLabel.Module;
 
     private async Task<GraphNode?> ResolveReceiverOwnerAsync(
-        string projectName,
+        string repositoryName,
         GraphBuffer buffer,
         string receiverType,
         bool includePersistedNodes,
@@ -321,7 +321,7 @@ public partial class IndexingPipeline
 
         if (includePersistedNodes)
         {
-            exact = await _store.FindNodeByQualifiedNameAsync(projectName, receiverType);
+            exact = await _store.FindNodeByQualifiedNameAsync(repositoryName, receiverType);
             if (exact is not null && isPersistedNodeEligible(exact) && IsReceiverOwnerLabel(exact.Label))
                 return exact;
         }
@@ -370,7 +370,7 @@ public partial class IndexingPipeline
     /// INHERITS, and IMPLEMENTS, only targets that look like application types get stubs
     /// (to avoid creating stubs for framework/System types).
     /// </summary>
-    private void CreateStubNodesForExternalTargets(string projectName, GraphBuffer buffer)
+    private void CreateStubNodesForExternalTargets(string repositoryName, GraphBuffer buffer)
     {
         // These edge types always get stubs for missing targets
         var alwaysStubEdgeTypes = new HashSet<EdgeType>
@@ -434,7 +434,7 @@ public partial class IndexingPipeline
 
             buffer.AddNode(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = label,
                 Name = name,
                 QualifiedName = pending.TargetQN,

@@ -11,7 +11,7 @@ public class RoslynExtractorTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 
@@ -57,7 +57,7 @@ public class RoslynExtractorTests
         var classNode = result.Nodes.ShouldContain(n => n.Label == NodeLabel.Class);
         classNode.Name.ShouldBe("WalletService");
         classNode.QualifiedName.ShouldBe("MyApp.Services.WalletService");
-        classNode.Project.ShouldBe("TestProject");
+        classNode.Repository.ShouldBe("TestProject");
     }
 
     [Fact]

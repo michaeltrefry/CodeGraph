@@ -16,8 +16,8 @@ public interface INodeQueryService
     /// <see cref="ICommitScopeResolver"/>), or from the default-branch index when it is null, and
     /// name the commit they describe. A scope with <see cref="CommitScope.NotIndexed"/> must not be passed.
     /// </summary>
-    Task<NodeListResponse> SearchAsync(string query, string? project, string? label, int page, int pageSize, CommitScope? scope = null);
+    Task<NodeListResponse> SearchAsync(string query, string? repository, string? label, int page, int pageSize, CommitScope? scope = null);
     Task<NodeSourceResponse?> GetNodeSourceAsync(long id, CommitScope? scope = null);
-    Task<NodeByFileResponse?> FindNodeByFileAsync(string project, string filePath, int? line = null, CommitScope? scope = null);
+    Task<NodeByFileResponse?> FindNodeByFileAsync(string repository, string filePath, int? line = null, CommitScope? scope = null);
     Task SetDoNotTrustAsync(long nodeId, bool doNotTrust);
 }

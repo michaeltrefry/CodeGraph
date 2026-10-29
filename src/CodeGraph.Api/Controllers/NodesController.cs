@@ -11,21 +11,21 @@ public record DoNotTrustRequest(bool DoNotTrust);
 [Route("api/nodes")]
 public class NodesController(INodeQueryService nodeQueryService, ICommitScopeResolver commitScopes) : Controller
 {
-    // GET /api/nodes/by-file?project=X&filePath=Y&line=N&sha=<full commit sha>
+    // GET /api/nodes/by-file?repository=X&filePath=Y&line=N&sha=<full commit sha>
     [HttpGet("by-file")]
     public async Task<ActionResult<NodeByFileResponse>> ByFile(
-        [FromQuery] string project,
+        [FromQuery] string repository,
         [FromQuery] string filePath,
         [FromQuery] int? line = null,
         [FromQuery] string? sha = null)
     {
-        var scope = await commitScopes.ResolveAsync(project, sha);
+        var scope = await commitScopes.ResolveAsync(repository, sha);
         if (scope.NotIndexed is { } notIndexed)
             return this.NotIndexed(notIndexed);
 
-        var result = await nodeQueryService.FindNodeByFileAsync(project, filePath, line, scope);
+        var result = await nodeQueryService.FindNodeByFileAsync(repository, filePath, line, scope);
         return result is null
-            ? NotFound(new { message = "No node found for file", project, filePath, line, commitSha = scope.Sha })
+            ? NotFound(new { message = "No node found for file", repository, filePath, line, commitSha = scope.Sha })
             : Ok(result);
     }
 
@@ -61,20 +61,20 @@ public class NodesController(INodeQueryService nodeQueryService, ICommitScopeRes
         return Ok();
     }
 
-    // GET /api/nodes/search?q=&project=&label=&page=1&pageSize=25&sha=<full commit sha>
+    // GET /api/nodes/search?q=&repository=&label=&page=1&pageSize=25&sha=<full commit sha>
     [HttpGet("search")]
     public async Task<ActionResult<NodeListResponse>> Search(
         [FromQuery] string q = "%",
-        [FromQuery] string? project = null,
+        [FromQuery] string? repository = null,
         [FromQuery] string? label = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         [FromQuery] string? sha = null)
     {
-        var scope = await commitScopes.ResolveAsync(project, sha);
+        var scope = await commitScopes.ResolveAsync(repository, sha);
         if (scope.NotIndexed is { } notIndexed)
             return this.NotIndexed(notIndexed);
 
-        return Ok(await nodeQueryService.SearchAsync(q, project, label, page, pageSize, scope));
+        return Ok(await nodeQueryService.SearchAsync(q, repository, label, page, pageSize, scope));
     }
 }

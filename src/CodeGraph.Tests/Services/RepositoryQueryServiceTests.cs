@@ -10,10 +10,10 @@ using System.Text.Json;
 
 namespace CodeGraph.Tests.Services;
 
-public class ProjectQueryServiceTests
+public class RepositoryQueryServiceTests
 {
     [Fact]
-    public async Task ListSchemasAsync_ReturnsOnlyDatabaseSchemaProjectsWithCounts()
+    public async Task ListSchemasAsync_ReturnsOnlyDatabaseSchemaRepositoriesWithCounts()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -27,14 +27,14 @@ public class ProjectQueryServiceTests
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "CodeGraph", Language = "C#" });
         await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.Table,
             Name = "Customers",
             QualifiedName = "dbo.Customers"
         });
         await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.View,
             Name = "ActiveCustomers",
             QualifiedName = "dbo.ActiveCustomers"
@@ -72,16 +72,16 @@ public class ProjectQueryServiceTests
             var store = new InMemoryGraphStore();
             for (var index = size - 1; index >= 0; index--)
             {
-                var project = $"db:sql-prod/Database{index:D4}";
+                var repository = $"db:sql-prod/Database{index:D4}";
                 await store.UpsertRepositoryAsync(new RepositoryEntity
                 {
-                    Name = project,
+                    Name = repository,
                     SourceGroup = "sql-prod",
                     Language = "SQL"
                 });
                 store.AddNode(new GraphNode
                 {
-                    Project = project,
+                    Repository = repository,
                     Label = NodeLabel.Table,
                     Name = $"Table{index:D4}",
                     QualifiedName = $"dbo.Table{index:D4}"
@@ -94,7 +94,7 @@ public class ProjectQueryServiceTests
     }
 
     [Fact]
-    public async Task ListSchemasAsync_UsesStableProjectTieBreakerAcrossPages()
+    public async Task ListSchemasAsync_UsesStableRepositoryTieBreakerAcrossPages()
     {
         var store = new InMemoryGraphStore();
         foreach (var name in new[] { "db:server/Shared-C", "db:server/Shared-A", "db:server/Shared-B" })
@@ -121,7 +121,7 @@ public class ProjectQueryServiceTests
         var store = new ConcurrencyDetectingGraphStore();
         store.AddNode(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.Table,
             Name = "Orders",
             QualifiedName = "dbo.Orders"
@@ -147,7 +147,7 @@ public class ProjectQueryServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.Table,
             Name = "Orders",
             QualifiedName = "dbo.Orders"
@@ -173,7 +173,7 @@ public class ProjectQueryServiceTests
 
         var customerId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.Table,
             Name = "Customers",
             QualifiedName = "dbo.Customers",
@@ -193,7 +193,7 @@ public class ProjectQueryServiceTests
         });
         var orderId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.Table,
             Name = "Orders",
             QualifiedName = "dbo.Orders",
@@ -222,7 +222,7 @@ public class ProjectQueryServiceTests
         });
         await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             Label = NodeLabel.StoredProcedure,
             Name = "GetOrders",
             QualifiedName = "dbo.GetOrders",
@@ -240,7 +240,7 @@ public class ProjectQueryServiceTests
         });
         await store.InsertEdgeAsync(new GraphEdge
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             SourceId = orderId,
             TargetId = customerId,
             Type = EdgeType.QUERIES,
@@ -253,7 +253,7 @@ public class ProjectQueryServiceTests
         });
         await store.InsertEdgeAsync(new GraphEdge
         {
-            Project = "db:sql-prod/Orders",
+            Repository = "db:sql-prod/Orders",
             SourceId = orderId,
             TargetId = orderId,
             Type = EdgeType.DEFINES,
@@ -285,25 +285,25 @@ public class ProjectQueryServiceTests
     [Fact]
     public async Task GetSchemaCatalogAsync_MapsCurrentSchemaExtractorGraphShape()
     {
-        const string project = "db:sql-prod:Orders";
+        const string repository = "db:sql-prod:Orders";
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
         {
-            Name = project,
+            Name = repository,
             SourceGroup = "sql-prod",
             Properties = JsonSerializer.Serialize(new { serverName = "sql-prod", databaseName = "Orders" })
         });
 
         var customersId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Table,
             Name = "customers",
             QualifiedName = "sql-prod.Orders.customers"
         });
         var ordersId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Table,
             Name = "orders",
             QualifiedName = "sql-prod.Orders.orders",
@@ -324,7 +324,7 @@ public class ProjectQueryServiceTests
         });
         var customerId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Column,
             Name = "id",
             QualifiedName = "sql-prod.Orders.customers.id",
@@ -338,7 +338,7 @@ public class ProjectQueryServiceTests
         });
         var orderId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Column,
             Name = "id",
             QualifiedName = "sql-prod.Orders.orders.id",
@@ -352,7 +352,7 @@ public class ProjectQueryServiceTests
         });
         var orderCustomerId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Column,
             Name = "customer_id",
             QualifiedName = "sql-prod.Orders.orders.customer_id",
@@ -365,7 +365,7 @@ public class ProjectQueryServiceTests
         });
         var orderExternalId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Column,
             Name = "external_id",
             QualifiedName = "sql-prod.Orders.orders.external_id",
@@ -379,13 +379,13 @@ public class ProjectQueryServiceTests
 
         foreach (var edge in new[]
         {
-            new GraphEdge { Project = project, SourceId = customersId, TargetId = customerId, Type = EdgeType.HAS_COLUMN },
-            new GraphEdge { Project = project, SourceId = ordersId, TargetId = orderId, Type = EdgeType.HAS_COLUMN },
-            new GraphEdge { Project = project, SourceId = ordersId, TargetId = orderCustomerId, Type = EdgeType.HAS_COLUMN },
-            new GraphEdge { Project = project, SourceId = ordersId, TargetId = orderExternalId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Repository = repository, SourceId = customersId, TargetId = customerId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Repository = repository, SourceId = ordersId, TargetId = orderId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Repository = repository, SourceId = ordersId, TargetId = orderCustomerId, Type = EdgeType.HAS_COLUMN },
+            new GraphEdge { Repository = repository, SourceId = ordersId, TargetId = orderExternalId, Type = EdgeType.HAS_COLUMN },
             new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = orderCustomerId,
                 TargetId = customerId,
                 Type = EdgeType.FOREIGN_KEY,
@@ -400,7 +400,7 @@ public class ProjectQueryServiceTests
             await store.InsertEdgeAsync(edge);
         }
 
-        var catalog = await CreateService(store).GetSchemaCatalogAsync(project);
+        var catalog = await CreateService(store).GetSchemaCatalogAsync(repository);
 
         catalog.ShouldNotBeNull();
         var orders = catalog.Tables.Single(table => table.Name == "orders");
@@ -434,7 +434,7 @@ public class ProjectQueryServiceTests
 
         await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
         {
-            Project = "TestProject",
+            Repository = "TestProject",
             DotnetProject = null,
             OverallHealth = 6.8,
             TotalFiles = 4,
@@ -461,7 +461,7 @@ public class ProjectQueryServiceTests
         [
             new FileMetricsEntity
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 FilePath = "src/LowRiskHighConcern.cs",
                 DotnetProject = "TestProject.Api",
                 HealthScore = 4.8,
@@ -474,7 +474,7 @@ public class ProjectQueryServiceTests
             },
             new FileMetricsEntity
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 FilePath = "src/HighRiskLowConcern.cs",
                 DotnetProject = "TestProject.Api",
                 HealthScore = 3.5,
@@ -502,7 +502,7 @@ public class ProjectQueryServiceTests
         response.TopHotspots[0].ConcernScore.ShouldBe(22);
     }
 
-    private static ProjectQueryService CreateService(InMemoryGraphStore store) =>
+    private static RepositoryQueryService CreateService(InMemoryGraphStore store) =>
         new(store, Options.Create(new RepositorySourceOptions()));
 
     private sealed class ConcurrencyDetectingGraphStore : InMemoryGraphStore
@@ -512,13 +512,13 @@ public class ProjectQueryServiceTests
         public bool OverlapDetected { get; private set; }
 
         public override Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(
-            string project,
+            string repository,
             NodeLabel label,
             int limit = 10000) =>
-            TrackAsync(() => base.FindNodesByLabelAsync(project, label, limit));
+            TrackAsync(() => base.FindNodesByLabelAsync(repository, label, limit));
 
         public override Task<IReadOnlyList<GraphNode>> SearchNodesAsync(
-            string? project,
+            string? repository,
             string namePattern,
             NodeLabel? label = null,
             string? filePattern = null,
@@ -526,16 +526,16 @@ public class ProjectQueryServiceTests
             int offset = 0,
             string? dotnetProject = null) =>
             TrackAsync(() => base.SearchNodesAsync(
-                project, NormalizeWildcard(namePattern), label, filePattern, limit, offset, dotnetProject));
+                repository, NormalizeWildcard(namePattern), label, filePattern, limit, offset, dotnetProject));
 
         public override Task<int> SearchNodesCountAsync(
-            string? project,
+            string? repository,
             string namePattern,
             NodeLabel? label = null,
             string? filePattern = null,
             string? dotnetProject = null) =>
             TrackAsync(() => base.SearchNodesCountAsync(
-                project, NormalizeWildcard(namePattern), label, filePattern, dotnetProject));
+                repository, NormalizeWildcard(namePattern), label, filePattern, dotnetProject));
 
         private static string NormalizeWildcard(string pattern) => pattern == "%" ? "" : pattern;
 

@@ -23,11 +23,11 @@ public class CodeGraphMcpResources(IGraphStore store, IWikiStore wikiStore)
 
             Static resources:
             - `codegraph://server/info`
-            - `codegraph://projects/index`
+            - `codegraph://repositories/index`
             - `codegraph://conventions/index`
 
             Resource templates:
-            - `codegraph://projects/{project}/summary`
+            - `codegraph://repositories/{repository}/summary`
             - `codegraph://conventions/{slug}`
 
             Use the `resources/read` MCP method to fetch the content for a listed resource URI.
@@ -35,27 +35,27 @@ public class CodeGraphMcpResources(IGraphStore store, IWikiStore wikiStore)
     }
 
     [McpServerResource(
-        UriTemplate = "codegraph://projects/index",
-        Name = "projects_index",
-        Title = "Indexed Projects",
+        UriTemplate = "codegraph://repositories/index",
+        Name = "repositories_index",
+        Title = "Indexed Repositories",
         MimeType = "text/markdown")]
     [Description("Lists all indexed repositories with metadata.")]
-    public async Task<string> GetProjectsIndex()
+    public async Task<string> GetRepositoriesIndex()
     {
-        var projects = await store.ListRepositoriesAsync();
-        if (projects.Count == 0)
-            return "No projects indexed yet.";
+        var repositories = await store.ListRepositoriesAsync();
+        if (repositories.Count == 0)
+            return "No repositories indexed yet.";
 
-        var lines = new List<string> { $"## Indexed Projects ({projects.Count})", "" };
-        foreach (var project in projects.OrderBy(p => p.Name))
+        var lines = new List<string> { $"## Indexed Repositories ({repositories.Count})", "" };
+        foreach (var repository in repositories.OrderBy(p => p.Name))
         {
             var flags = new List<string>();
-            if (project.IsFoundational) flags.Add("foundational");
-            if (!string.IsNullOrWhiteSpace(project.Language)) flags.Add(project.Language!);
-            if (!string.IsNullOrWhiteSpace(project.Framework)) flags.Add(project.Framework!);
+            if (repository.IsFoundational) flags.Add("foundational");
+            if (!string.IsNullOrWhiteSpace(repository.Language)) flags.Add(repository.Language!);
+            if (!string.IsNullOrWhiteSpace(repository.Framework)) flags.Add(repository.Framework!);
 
             var suffix = flags.Count > 0 ? $" [{string.Join(", ", flags)}]" : "";
-            lines.Add($"- **{project.Name}**{suffix}");
+            lines.Add($"- **{repository.Name}**{suffix}");
         }
 
         return string.Join('\n', lines);
@@ -90,19 +90,19 @@ public class CodeGraphMcpResources(IGraphStore store, IWikiStore wikiStore)
     }
 
     [McpServerResource(
-        UriTemplate = "codegraph://projects/{project}/summary",
-        Name = "project_summary",
-        Title = "Project Summary",
+        UriTemplate = "codegraph://repositories/{repository}/summary",
+        Name = "repository_summary",
+        Title = "Repository Summary",
         MimeType = "text/markdown")]
-    [Description("Reads the generated repository summary for a project.")]
-    public async Task<string> GetProjectSummary(string project)
+    [Description("Reads the generated repository summary for a repository.")]
+    public async Task<string> GetRepositorySummary(string repository)
     {
-        var summary = await store.GetRepositorySummaryAsync(project);
+        var summary = await store.GetRepositorySummaryAsync(repository);
         if (summary is null)
-            return $"No analysis available for '{project}'. Run the analyze command first.";
+            return $"No analysis available for '{repository}'. Run the analyze command first.";
 
         var sb = new StringBuilder();
-        sb.AppendLine($"# {project}");
+        sb.AppendLine($"# {repository}");
         sb.AppendLine($"**Confidence:** {summary.Confidence}");
         if (summary.ModelUsed is not null)
             sb.AppendLine($"**Model:** {summary.ModelUsed}");

@@ -11,7 +11,7 @@ public interface IExclusionService
     /// </summary>
     Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup);
 
-    Task<HashSet<string>> GetSecretFilePathsAsync(string project);
+    Task<HashSet<string>> GetSecretFilePathsAsync(string repository);
 
     Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync();
     Task<ExclusionRuleEntity> CreateRuleAsync(string targetType, string targetValue, string exclusionType, string? reason, string createdBy);
@@ -59,9 +59,9 @@ public class ExclusionService(
         return null;
     }
 
-    public async Task<HashSet<string>> GetSecretFilePathsAsync(string project)
+    public async Task<HashSet<string>> GetSecretFilePathsAsync(string repository)
     {
-        return await exclusionStore.GetSecretFilePathsAsync(project);
+        return await exclusionStore.GetSecretFilePathsAsync(repository);
     }
 
     public async Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync()

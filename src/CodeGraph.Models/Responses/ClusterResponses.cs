@@ -3,8 +3,8 @@ namespace CodeGraph.Models.Responses;
 public record ClusterOverviewResponse(
     IReadOnlyList<ClusterSummary> Clusters,
     double Modularity,
-    int TotalProjects,
-    int ClusteredProjects,
+    int TotalRepositories,
+    int ClusteredRepositories,
     DateTime? ComputedAt);
 
 public record ClusterSummary(
@@ -25,7 +25,7 @@ public record ClusterDetailResponse(
     IReadOnlyList<ClusterConnection> TopConnections);
 
 public record ClusterMember(
-    string ProjectName,
+    string RepositoryName,
     decimal BetweennessCentrality,
     int InternalEdges,
     int ExternalEdges);

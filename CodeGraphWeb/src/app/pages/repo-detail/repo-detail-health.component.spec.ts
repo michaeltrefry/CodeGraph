@@ -2,13 +2,13 @@ import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiService } from '../../core/api.service';
-import { ProjectHealthResponse } from '../../core/models';
+import { RepositoryHealthResponse } from '../../core/models';
 import { RepoDetailHealthComponent } from './repo-detail-health.component';
 
-function createHealth(overrides?: Partial<ProjectHealthResponse>): ProjectHealthResponse {
+function createHealth(overrides?: Partial<RepositoryHealthResponse>): RepositoryHealthResponse {
   return {
     repoHealth: {
-      project: 'TC.CodeGraphApi',
+      repository: 'TC.CodeGraphApi',
       overallHealth: 8.7,
       totalFiles: 42,
       hotspotCount: 3,
@@ -17,7 +17,7 @@ function createHealth(overrides?: Partial<ProjectHealthResponse>): ProjectHealth
       baseOverallHealth: 8.7,
       scorePenalty: 0
     },
-    projectHealths: [],
+    dotnetProjectHealths: [],
     topHotspots: [],
     analyses: [],
     repositoryVitality: {
@@ -44,7 +44,7 @@ function createHealth(overrides?: Partial<ProjectHealthResponse>): ProjectHealth
   };
 }
 
-async function createComponent(health: ProjectHealthResponse) {
+async function createComponent(health: RepositoryHealthResponse) {
   await TestBed.configureTestingModule({
     imports: [RepoDetailHealthComponent],
     providers: [
@@ -64,7 +64,7 @@ async function createComponent(health: ProjectHealthResponse) {
   }).compileComponents();
 
   const fixture = TestBed.createComponent(RepoDetailHealthComponent);
-  fixture.componentInstance.projectName = 'TC.CodeGraphApi';
+  fixture.componentInstance.repositoryName = 'TC.CodeGraphApi';
   fixture.componentInstance.health = health;
   fixture.detectChanges();
   return fixture;
@@ -80,14 +80,14 @@ describe('RepoDetailHealthComponent', () => {
     expect(text).toContain('hotspots');
     expect(text).toContain('alerts');
     expect(text).not.toContain('Show details');
-    expect(text).toContain('Project vitality');
+    expect(text).toContain('Repository vitality');
   });
 
   it('renders repository vitality metrics and monthly activity bars', async () => {
     const fixture = await createComponent(createHealth());
     const text = fixture.nativeElement.textContent as string;
 
-    expect(text).toContain('Project vitality');
+    expect(text).toContain('Repository vitality');
     expect(text).toContain('Activity');
     expect(text).toContain('Sustained');
     expect(text).toContain('Firefighting');
@@ -129,9 +129,9 @@ describe('RepoDetailHealthComponent', () => {
 
   it('shows project-level AI analysis inline', async () => {
     const fixture = await createComponent(createHealth({
-      projectHealths: [
+      dotnetProjectHealths: [
         {
-          project: 'TC.CodeGraphApi',
+          repository: 'TC.CodeGraphApi',
           dotnetProject: 'TC.CodeGraphApi.Service',
           overallHealth: 7.4,
           totalFiles: 12,
@@ -144,9 +144,9 @@ describe('RepoDetailHealthComponent', () => {
       ],
       analyses: [
         {
-          project: 'TC.CodeGraphApi',
+          repository: 'TC.CodeGraphApi',
           dotnetProject: 'TC.CodeGraphApi.Service',
-          analysis: 'Service project analysis body',
+          analysis: 'Service repository analysis body',
           confidence: 'high',
           modelUsed: 'claude-test',
           createdAt: '2026-04-12T00:00:00Z',
@@ -159,7 +159,7 @@ describe('RepoDetailHealthComponent', () => {
 
     expect(text).toContain('Per-project health');
     expect(text).toContain('TC.CodeGraphApi.Service');
-    expect(text).toContain('Service project analysis body');
+    expect(text).toContain('Service repository analysis body');
     expect(fixture.nativeElement.querySelectorAll('.rdh-project-row').length).toBe(1);
   });
 });

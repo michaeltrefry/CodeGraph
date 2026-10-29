@@ -19,8 +19,8 @@ public record SecurityScanResult(
     int LowCount,
     IReadOnlyList<SecurityFinding> Findings);
 
-public record ProjectSecurityResponse(
-    string Project,
+public record RepositorySecurityResponse(
+    string Repository,
     double SecurityScore,
     int CriticalCount,
     int HighCount,
@@ -30,7 +30,7 @@ public record ProjectSecurityResponse(
     string? Analysis,
     DateTime ComputedAt);
 
-public record ProjectSecuritySummary(
+public record RepositorySecuritySummary(
     double SecurityScore,
     int CriticalCount,
     int HighCount,

@@ -467,7 +467,7 @@ public class RepositoryReviewService(
     {
         ct.ThrowIfCancellationRequested();
 
-        var nodes = await store.GetAllNodesByProjectAsync(repo);
+        var nodes = await store.GetAllNodesByRepositoryAsync(repo);
         var metrics = await store.GetFileMetricsAsync(repo);
 
         var directOwners = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
@@ -505,11 +505,11 @@ public class RepositoryReviewService(
 
         ct.ThrowIfCancellationRequested();
 
-        var nodes = await store.GetAllNodesByProjectAsync(repo);
+        var nodes = await store.GetAllNodesByRepositoryAsync(repo);
         if (nodes.Count == 0)
             return new GraphBlastRadiusExpansion(blastRadiusFilesByProject);
 
-        var edges = await store.GetAllEdgesByProjectAsync(repo);
+        var edges = await store.GetAllEdgesByRepositoryAsync(repo);
         if (edges.Count == 0)
             return new GraphBlastRadiusExpansion(blastRadiusFilesByProject);
 
@@ -1309,7 +1309,7 @@ public class RepositoryReviewService(
             _ => "full"
         };
 
-    private string? ResolveRepoRoot(string repo, ProjectInfo repository)
+    private string? ResolveRepoRoot(string repo, RepositoryInfo repository)
     {
         if (!string.IsNullOrWhiteSpace(repository.LocalPath) && Directory.Exists(repository.LocalPath))
             return repository.LocalPath;
@@ -1324,7 +1324,7 @@ public class RepositoryReviewService(
         return null;
     }
 
-    private string? ResolveReviewedCommitSha(ProjectInfo repository, string? repoRoot)
+    private string? ResolveReviewedCommitSha(RepositoryInfo repository, string? repoRoot)
     {
         if (!string.IsNullOrWhiteSpace(repoRoot))
         {

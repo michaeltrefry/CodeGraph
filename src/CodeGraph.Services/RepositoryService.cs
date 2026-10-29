@@ -14,15 +14,15 @@ using CodeGraph.Services.Query;
 
 namespace CodeGraph.Services;
 
-public class ProjectService(
+public class RepositoryService(
     IGraphStore graphStore,
     IBatchAnalysisService batchService,
     IMessageBus messageBus,
     IRepoProvider repoProvider,
     IndexingPipeline pipeline,
     IOptions<IndexingOptions> indexingOptionsAccessor,
-    ILogger<ProjectService> logger,
-    IHostApplicationLifetime? hostLifetime = null) : IProjectService
+    ILogger<RepositoryService> logger,
+    IHostApplicationLifetime? hostLifetime = null) : IRepositoryService
 {
     private readonly IndexingOptions indexingOptions = indexingOptionsAccessor.Value;
     // Shared across all transient instances to limit concurrent repo processing.
@@ -56,7 +56,7 @@ public class ProjectService(
         {
             var batch = await graphStore.GetLatestBatchAsync(repo);
             if (batch is not null && IsActiveAnalysisBatch(batch.Status))
-                return ProjectQueryService.MapBatch(batch);
+                return RepositoryQueryService.MapBatch(batch);
 
             // Re-analyze builds a complete replacement snapshot, then submits analysis
             // directly so the API can return the new batch synchronously.
@@ -78,7 +78,7 @@ public class ProjectService(
             await batchService.SubmitAnalysisBatchAsync(repo, repoPath, includeAllSource: true, cancellationToken);
 
             var updated = await graphStore.GetLatestBatchAsync(repo);
-            return updated is not null ? ProjectQueryService.MapBatch(updated) : null;
+            return updated is not null ? RepositoryQueryService.MapBatch(updated) : null;
         }, cancellationToken);
     }
 
@@ -222,7 +222,7 @@ public class ProjectService(
         {
             setPhase("index");
             logger.LogInformation("Indexing {Repo}", message.Name);
-            await pipeline.IndexProjectAsync(message.Name, repoPath,
+            await pipeline.IndexRepositoryAsync(message.Name, repoPath,
                 repoUrl: repoUrl,
                 sourceGroup: sourceGroup,
                 repositoryToolingIdentity: resolvedRepository.CanonicalIdentity,
@@ -257,7 +257,7 @@ public class ProjectService(
         {
             setPhase("submit-analysis");
             // Analysis-only (no indexing) — verify graph data exists, then submit directly
-            var allNodes = await graphStore.GetAllNodesByProjectAsync(message.Name);
+            var allNodes = await graphStore.GetAllNodesByRepositoryAsync(message.Name);
             var hasAnalyzableNodes = allNodes.Any(n =>
                 n.Label is "Class" or "Interface");
             if (!hasAnalyzableNodes)
@@ -300,7 +300,7 @@ public class ProjectService(
                 : 1;
             await graphStore.UpsertSyncStateAsync(new SyncStateEntity
             {
-                Project = repository,
+                Repository = repository,
                 LastSyncAt = existing?.LastSyncAt,
                 LastCommitSha = existing?.LastCommitSha,
                 Status = "error",
@@ -343,7 +343,7 @@ public class ProjectService(
             try
             {
                 await using var distributedLock =
-                    await graphStore.AcquireProjectIndexingLockAsync(repository, cancellationToken);
+                    await graphStore.AcquireRepositoryIndexingLockAsync(repository, cancellationToken);
                 return await action();
             }
             finally
@@ -358,9 +358,9 @@ public class ProjectService(
     }
 
     private static SyncStateEntity CreateIdleSyncState(
-        string project, string? commitSha, string extractionFingerprint) => new()
+        string repository, string? commitSha, string extractionFingerprint) => new()
     {
-        Project = project,
+        Repository = repository,
         LastCommitSha = commitSha,
         ExtractionFingerprint = extractionFingerprint,
         LastSyncAt = DateTime.UtcNow,
@@ -374,10 +374,10 @@ public class ProjectService(
 
         logger.LogInformation("Deleting repository {Repo} from graph database", repo);
 
-        await graphStore.DeleteAnalysisDataForProjectAsync(repo);
-        await graphStore.DeleteCrossRepoEdgesForProjectAsync(repo);
-        await graphStore.DeleteAllEdgesForProjectAsync(repo);
-        await graphStore.DeleteNodesByProjectAsync(repo);
+        await graphStore.DeleteAnalysisDataForRepositoryAsync(repo);
+        await graphStore.DeleteCrossRepoEdgesForRepositoryAsync(repo);
+        await graphStore.DeleteAllEdgesForRepositoryAsync(repo);
+        await graphStore.DeleteNodesByRepositoryAsync(repo);
         await graphStore.DeleteSyncStateAsync(repo);
         await graphStore.DeleteRepositoryAsync(repo);
 

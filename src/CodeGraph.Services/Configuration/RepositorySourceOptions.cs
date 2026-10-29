@@ -23,7 +23,7 @@ public class RepositorySourceOptions
 
     /// <summary>
     /// Group full paths to exclude from discovery (case-insensitive).
-    /// e.g. ["ansible", "terraform", "old-svn-projects"]
+    /// e.g. ["ansible", "terraform", "old-svn-repositories"]
     /// </summary>
     public List<string> ExcludedGroups { get; set; } = [];
 

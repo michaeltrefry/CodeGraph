@@ -104,17 +104,17 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<HashSet<string>> GetSecretFilePathsAsync(string project)
+    public async Task<HashSet<string>> GetSecretFilePathsAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (f:SecurityFinding {project: $project, category: 'secret'})
+                MATCH (f:SecurityFinding {repository: $repository, category: 'secret'})
                 WHERE f.filePath IS NOT NULL
                 RETURN DISTINCT f.filePath AS filePath
                 """,
-                new { project });
+                new { repository });
 
             var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             await foreach (var record in cursor)

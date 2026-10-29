@@ -43,7 +43,7 @@ public sealed class BranchOverlayTransientException(string message, Exception? i
 /// read commits/trees, so the overlay head always comes from that ref (or a commit SHA), never
 /// from whatever the working tree currently holds. Note that the repo provider's sync step,
 /// which <see cref="BranchOverlayService"/> runs before these commands, does fetch and reset the
-/// checkout to the remote default branch; that runs under the project indexing lock and is the
+/// checkout to the remote default branch; that runs under the repository indexing lock and is the
 /// same resync default-branch indexing performs. Arguments are passed as an argument vector (no shell).
 /// When the repository source has a token, remote commands send it per command through the
 /// environment (<see cref="GitHttpCredential"/>) against origin's URL without user-info, so a

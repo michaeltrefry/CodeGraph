@@ -11,12 +11,12 @@ public class NuGetReferenceExtractorTests
     public void Extracts_PackageReferences()
     {
         var refs = _extractor.ExtractFromProjectXml("""
-            <Project Sdk="Microsoft.NET.Sdk">
+            <Repository Sdk="Microsoft.NET.Sdk">
               <ItemGroup>
                 <PackageReference Include="OrdersApi.Models" Version="1.2.3" />
                 <PackageReference Include="Dapper" Version="2.1.0" />
               </ItemGroup>
-            </Project>
+            </Repository>
             """);
 
         refs.Count.ShouldBe(2);
@@ -25,14 +25,14 @@ public class NuGetReferenceExtractorTests
     }
 
     [Fact]
-    public void Handles_EmptyProject()
+    public void Handles_EmptyRepository()
     {
         var refs = _extractor.ExtractFromProjectXml("""
-            <Project Sdk="Microsoft.NET.Sdk">
+            <Repository Sdk="Microsoft.NET.Sdk">
               <PropertyGroup>
                 <TargetFramework>net10.0</TargetFramework>
               </PropertyGroup>
-            </Project>
+            </Repository>
             """);
 
         refs.Count.ShouldBe(0);
@@ -42,11 +42,11 @@ public class NuGetReferenceExtractorTests
     public void Handles_MissingVersion()
     {
         var refs = _extractor.ExtractFromProjectXml("""
-            <Project Sdk="Microsoft.NET.Sdk">
+            <Repository Sdk="Microsoft.NET.Sdk">
               <ItemGroup>
                 <PackageReference Include="SomePackage" />
               </ItemGroup>
-            </Project>
+            </Repository>
             """);
 
         refs.Count.ShouldBe(1);
@@ -58,12 +58,12 @@ public class NuGetReferenceExtractorTests
     public void Skips_Empty_Include()
     {
         var refs = _extractor.ExtractFromProjectXml("""
-            <Project Sdk="Microsoft.NET.Sdk">
+            <Repository Sdk="Microsoft.NET.Sdk">
               <ItemGroup>
                 <PackageReference Include="" Version="1.0.0" />
                 <PackageReference Include="ValidPackage" Version="2.0.0" />
               </ItemGroup>
-            </Project>
+            </Repository>
             """);
 
         refs.Count.ShouldBe(1);
@@ -74,14 +74,14 @@ public class NuGetReferenceExtractorTests
     public void Extracts_MultipleItemGroups()
     {
         var refs = _extractor.ExtractFromProjectXml("""
-            <Project Sdk="Microsoft.NET.Sdk">
+            <Repository Sdk="Microsoft.NET.Sdk">
               <ItemGroup>
                 <PackageReference Include="PackageA" Version="1.0.0" />
               </ItemGroup>
               <ItemGroup>
                 <PackageReference Include="PackageB" Version="2.0.0" />
               </ItemGroup>
-            </Project>
+            </Repository>
             """);
 
         refs.Count.ShouldBe(2);

@@ -140,7 +140,7 @@ public static class DotnetSupportInspector
             }
             catch
             {
-                // Ignore malformed project files; they shouldn't block the rest of the repo metadata.
+                // Ignore malformed repository files; they shouldn't block the rest of the repo metadata.
             }
         }
 

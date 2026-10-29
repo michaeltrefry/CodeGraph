@@ -9,7 +9,7 @@ public class MariaDbStorageOptions
 
     /// <summary>
     /// Command timeout, in seconds, for each statement of a graph snapshot write (file-slice and
-    /// full-project replacement). MySqlConnector's 30 s default is far too short for a large repository:
+    /// full-repository replacement). MySqlConnector's 30 s default is far too short for a large repository:
     /// replacing a slice of ~130k nodes cascades the delete to ~900k edges. 0 means no limit.
     /// </summary>
     public int GraphWriteCommandTimeoutSeconds { get; set; } = 3600;

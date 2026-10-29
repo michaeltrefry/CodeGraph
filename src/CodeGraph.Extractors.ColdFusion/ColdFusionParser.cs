@@ -91,7 +91,7 @@ public partial class ColdFusionParser
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = NodeLabel.Component,
             Name = componentName,
             QualifiedName = qn,
@@ -130,7 +130,7 @@ public partial class ColdFusionParser
 
             _nodes.Add(new GraphNode
             {
-                Project = _context.ProjectName,
+                Repository = _context.RepositoryName,
                 Label = NodeLabel.Function,
                 Name = funcName,
                 QualifiedName = qn,
@@ -166,7 +166,7 @@ public partial class ColdFusionParser
 
             _nodes.Add(new GraphNode
             {
-                Project = _context.ProjectName,
+                Repository = _context.RepositoryName,
                 Label = NodeLabel.Function,
                 Name = funcName,
                 QualifiedName = qn,
@@ -244,7 +244,7 @@ public partial class ColdFusionParser
             var routeQN = $"{sourceQN}:HTTP:{httpMethod}:{url}";
             _nodes.Add(new GraphNode
             {
-                Project = _context.ProjectName,
+                Repository = _context.RepositoryName,
                 Label = NodeLabel.Route,
                 Name = $"{httpMethod} {url}",
                 QualifiedName = routeQN,
@@ -400,7 +400,7 @@ public partial class ColdFusionParser
 
     private string BuildQualifiedName(string name)
     {
-        return $"{_context.ProjectName}.{name}";
+        return $"{_context.RepositoryName}.{name}";
     }
 
     private string BuildFileQualifiedName()
@@ -410,7 +410,7 @@ public partial class ColdFusionParser
         {
             relativePath = _filePath[_context.RootPath.Length..].TrimStart('/', '\\');
         }
-        return $"{_context.ProjectName}.{relativePath.Replace('/', '.').Replace('\\', '.')}";
+        return $"{_context.RepositoryName}.{relativePath.Replace('/', '.').Replace('\\', '.')}";
     }
 
     private static int CountLinesTo(string content, int charIndex)

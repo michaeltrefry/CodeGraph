@@ -214,7 +214,7 @@ public class SettingsControllerIndexerDelegationTests
     private sealed class ThrowingExclusionService : IExclusionService
     {
         public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) => throw new NotSupportedException();
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) => throw new NotSupportedException();
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) => throw new NotSupportedException();
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() => throw new NotSupportedException();
         public Task<ExclusionRuleEntity> CreateRuleAsync(string targetType, string targetValue, string exclusionType, string? reason, string createdBy) => throw new NotSupportedException();
         public Task<ExclusionRuleEntity?> UpdateRuleAsync(long id, string exclusionType, string? reason) => throw new NotSupportedException();

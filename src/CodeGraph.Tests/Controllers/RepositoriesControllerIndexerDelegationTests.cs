@@ -12,13 +12,13 @@ using Shouldly;
 
 namespace CodeGraph.Tests.Controllers;
 
-public class ProjectsControllerIndexerDelegationTests
+public class RepositoriesControllerIndexerDelegationTests
 {
     [Fact]
     public void Delete_RequiresAdminPolicy()
     {
-        var method = typeof(ProjectsController).GetMethod(
-            nameof(ProjectsController.Delete),
+        var method = typeof(RepositoriesController).GetMethod(
+            nameof(RepositoriesController.Delete),
             BindingFlags.Instance | BindingFlags.Public,
             [typeof(string)]);
 
@@ -32,7 +32,7 @@ public class ProjectsControllerIndexerDelegationTests
     public async Task ReAnalyze_DelegatesToConfiguredIndexerOperations()
     {
         var operations = new RecordingIndexerOperations();
-        var controller = new ProjectsController(null!, null!, null!, operations, null!)
+        var controller = new RepositoriesController(null!, null!, null!, operations, null!)
         {
             ControllerContext = new ControllerContext
             {

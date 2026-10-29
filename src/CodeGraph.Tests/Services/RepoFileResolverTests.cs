@@ -213,13 +213,13 @@ public sealed class RepoFileResolverTests : IDisposable
         var store = await CreateStoreAsync("Repo", repo);
         var options = Options.Create(new RepositorySourceOptions());
         var mcp = new CodeGraphMcpServer(null!, null!, store, null!, options, null!, null!);
-        var projects = new ProjectQueryService(store, options);
+        var repositories = new RepositoryQueryService(store, options);
 
         (await mcp.GetCodeSnippet("Repo", "README.md")).Text().ShouldContain("Safe readme");
         (await mcp.GetCodeSnippet("Repo", "../secret.txt")).Text().ShouldContain("File not found");
         (await mcp.GetCodeSnippet("MissingRepo", "README.md")).Text().ShouldContain("File not found");
-        (await projects.GetReadmeAsync("Repo")).ShouldBe("# Safe readme");
-        (await projects.GetReadmeAsync("MissingRepo")).ShouldBeNull();
+        (await repositories.GetReadmeAsync("Repo")).ShouldBe("# Safe readme");
+        (await repositories.GetReadmeAsync("MissingRepo")).ShouldBeNull();
     }
 
     [Fact]
@@ -231,7 +231,7 @@ public sealed class RepoFileResolverTests : IDisposable
         var store = await CreateStoreAsync("Repo", repo);
         var nodeId = store.AddNode(new GraphNode
         {
-            Project = "Repo",
+            Repository = "Repo",
             Label = NodeLabel.Class,
             Name = "Escaped",
             QualifiedName = "Escaped",
@@ -256,7 +256,7 @@ public sealed class RepoFileResolverTests : IDisposable
         var store = await CreateStoreAsync("Repo", repo);
         var nodeId = store.AddNode(new GraphNode
         {
-            Project = "Repo",
+            Repository = "Repo",
             Label = NodeLabel.Class,
             Name = "Shape",
             QualifiedName = "Shape",

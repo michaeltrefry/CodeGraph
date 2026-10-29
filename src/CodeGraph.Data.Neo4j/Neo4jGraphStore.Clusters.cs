@@ -23,7 +23,7 @@ public partial class Neo4jGraphStore
         {
             var items = batch.Select(c => new Dictionary<string, object?>
             {
-                ["projectName"] = c.ProjectName,
+                ["repositoryName"] = c.RepositoryName,
                 ["clusterId"] = c.ClusterId,
                 ["clusterLabel"] = c.ClusterLabel,
                 ["modularityScore"] = (double)c.ModularityScore,
@@ -37,7 +37,7 @@ public partial class Neo4jGraphStore
                 await tx.RunAsync("""
                     UNWIND $items AS c
                     CREATE (rc:RepoCluster {
-                        projectName: c.projectName,
+                        repositoryName: c.repositoryName,
                         clusterId: c.clusterId,
                         clusterLabel: c.clusterLabel,
                         modularityScore: c.modularityScore,
@@ -57,7 +57,7 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (c:RepoCluster {level: $level}) RETURN c ORDER BY c.clusterId, c.projectName",
+                "MATCH (c:RepoCluster {level: $level}) RETURN c ORDER BY c.clusterId, c.repositoryName",
                 new { level });
             var results = new List<RepoCluster>();
             await foreach (var record in cursor)
@@ -83,7 +83,7 @@ public partial class Neo4jGraphStore
 
     private static RepoCluster MapClusterNode(INode node) => new()
     {
-        ProjectName = node["projectName"].As<string>(),
+        RepositoryName = node["repositoryName"].As<string>(),
         ClusterId = node["clusterId"].As<int>(),
         ClusterLabel = GetStringOrNull(node, "clusterLabel"),
         ModularityScore = node.Properties.ContainsKey("modularityScore") ? (decimal)node["modularityScore"].As<double>() : 0,

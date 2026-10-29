@@ -82,13 +82,13 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
-    public async Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync()
+    public async Task<IReadOnlyList<RepositoryInfo>> ListRepositoriesAsync()
     {
         var repositories = await db.Repositories.AsNoTracking()
             .OrderBy(p => p.Name)
             .ToListAsync();
 
-        return repositories.Select(MapProjectInfo).ToList();
+        return repositories.Select(MapRepositoryInfo).ToList();
     }
 
     public async Task<RepositorySearchResult> SearchRepositoriesAsync(string? search = null, string? group = null,
@@ -113,7 +113,7 @@ public partial class MySqlGraphStore(
             .Take(pageSize)
             .ToListAsync();
 
-        return new RepositorySearchResult(repositories.Select(MapProjectInfo).ToList(), total);
+        return new RepositorySearchResult(repositories.Select(MapRepositoryInfo).ToList(), total);
     }
 
     private static string BuildRepositorySearchPattern(string search)
@@ -130,10 +130,10 @@ public partial class MySqlGraphStore(
             .OrderBy(g => g)
             .ToListAsync();
 
-    public async Task<ProjectInfo?> GetRepositoryByName(string name)
+    public async Task<RepositoryInfo?> GetRepositoryByName(string name)
     {
         var repository = await db.Repositories.AsNoTracking().FirstOrDefaultAsync(p => p.Name == name);
-        return repository is null ? null : MapProjectInfo(repository);
+        return repository is null ? null : MapRepositoryInfo(repository);
     }
 
     public async Task UpdateRepositoryCommitShaAsync(string name, string? commitSha)
@@ -158,22 +158,22 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
-    public async Task DeleteRepositoryAsync(string project)
+    public async Task DeleteRepositoryAsync(string repository)
     {
-        var repository = await db.Repositories.FindAsync(project);
-        if (repository is null)
+        var entity = await db.Repositories.FindAsync(repository);
+        if (entity is null)
         {
             return;
         }
 
-        db.Repositories.Remove(repository);
+        db.Repositories.Remove(entity);
         await db.SaveChangesAsync();
     }
 
     public async Task<long> UpsertNodeAsync(GraphNode node)
     {
         var ids = await UpsertNodeBatchAsync([node]);
-        return ids.TryGetValue(GraphNodeKey.Create(node.Project, Truncate(node.QualifiedName, 1000)), out var id)
+        return ids.TryGetValue(GraphNodeKey.Create(node.Repository, Truncate(node.QualifiedName, 1000)), out var id)
             ? id
             : 0;
     }
@@ -195,7 +195,7 @@ public partial class MySqlGraphStore(
             ct.ThrowIfCancellationRequested();
 
             var sql = new StringBuilder("""
-                INSERT INTO nodes (project, dotnet_project, label, name, qualified_name, file_path, start_line, end_line, properties, do_not_trust)
+                INSERT INTO nodes (repository, dotnet_project, label, name, qualified_name, file_path, start_line, end_line, properties, do_not_trust)
                 VALUES
                 """);
             var parameters = new DynamicParameters();
@@ -207,9 +207,9 @@ public partial class MySqlGraphStore(
                     sql.Append(',');
                 }
 
-                sql.AppendLine($"(@Project{i}, @DotnetProject{i}, @Label{i}, @Name{i}, @QualifiedName{i}, @FilePath{i}, @StartLine{i}, @EndLine{i}, @Properties{i}, @DoNotTrust{i})");
+                sql.AppendLine($"(@Repository{i}, @DotnetProject{i}, @Label{i}, @Name{i}, @QualifiedName{i}, @FilePath{i}, @StartLine{i}, @EndLine{i}, @Properties{i}, @DoNotTrust{i})");
                 var node = batch[i];
-                parameters.Add($"Project{i}", node.Project);
+                parameters.Add($"Repository{i}", node.Repository);
                 parameters.Add($"DotnetProject{i}", node.DotnetProject);
                 parameters.Add($"Label{i}", node.Label.ToString());
                 parameters.Add($"Name{i}", Truncate(node.Name, 1000));
@@ -235,16 +235,16 @@ public partial class MySqlGraphStore(
 
             await WithDeadlockRetryAsync(() => conn.ExecuteAsync(sql.ToString(), parameters));
 
-            var projects = batch.Select(n => n.Project).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var repositories = batch.Select(n => n.Repository).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var qualifiedNames = batch.Select(n => Truncate(n.QualifiedName, 1000)).Distinct(StringComparer.Ordinal).ToList();
-            var lookup = new DynamicParameters(new { Projects = projects });
-            var rows = await conn.QueryAsync<(long id, string project, string qualified_name)>(
-                $"SELECT id, project, qualified_name FROM nodes WHERE project IN @Projects AND {QualifiedNameMatch(qualifiedNames, lookup)}",
+            var lookup = new DynamicParameters(new { Repositories = repositories });
+            var rows = await conn.QueryAsync<(long id, string repository, string qualified_name)>(
+                $"SELECT id, repository, qualified_name FROM nodes WHERE repository IN @Repositories AND {QualifiedNameMatch(qualifiedNames, lookup)}",
                 lookup);
 
             foreach (var row in rows)
             {
-                result[GraphNodeKey.Create(row.project, row.qualified_name)] = row.id;
+                result[GraphNodeKey.Create(row.repository, row.qualified_name)] = row.id;
             }
         }
 
@@ -257,14 +257,14 @@ public partial class MySqlGraphStore(
         return node is null ? null : MapNode(node);
     }
 
-    public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName)
+    public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string repository, string qualifiedName)
     {
         var truncatedQualifiedName = Truncate(qualifiedName, 1000);
-        // Seek uq_node (project, qualified_name_hash); qualified_name alone is not indexed.
+        // Seek uq_node (repository, qualified_name_hash); qualified_name alone is not indexed.
         var node = await db.Nodes
             .FromSqlRaw(
-                "SELECT * FROM nodes WHERE project = {0} AND qualified_name_hash = UNHEX(SHA2({1}, 256))",
-                project,
+                "SELECT * FROM nodes WHERE repository = {0} AND qualified_name_hash = UNHEX(SHA2({1}, 256))",
+                repository,
                 truncatedQualifiedName)
             .AsNoTracking()
             .FirstOrDefaultAsync(n => n.QualifiedName == truncatedQualifiedName);
@@ -273,7 +273,7 @@ public partial class MySqlGraphStore(
     }
 
     public async Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<string> qualifiedNames)
     {
         if (qualifiedNames.Count == 0)
@@ -286,13 +286,13 @@ public partial class MySqlGraphStore(
                      .Chunk(500))
         {
             var names = batch.ToList();
-            // Seek uq_node (project, qualified_name_hash); qualified_name alone is not indexed.
+            // Seek uq_node (repository, qualified_name_hash); qualified_name alone is not indexed.
             // The SQL holds only positional placeholders; every value is a parameter.
-            var sql = "SELECT * FROM nodes WHERE project = {0} AND qualified_name_hash IN ("
+            var sql = "SELECT * FROM nodes WHERE repository = {0} AND qualified_name_hash IN ("
                 + string.Join(", ", names.Select((_, i) => $"UNHEX(SHA2({{{i + 1}}}, 256))"))
                 + ")";
             var nodes = await db.Nodes
-                .FromSqlRaw(sql, [project, .. names])
+                .FromSqlRaw(sql, [repository, .. names])
                 .AsNoTracking()
                 .Where(n => names.Contains(n.QualifiedName))
                 .OrderBy(n => n.Id)
@@ -303,10 +303,10 @@ public partial class MySqlGraphStore(
         return result;
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string repository, string name, int limit = 1000)
     {
         var nodes = await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project && n.Name == name)
+            .Where(n => n.Repository == repository && n.Name == name)
             .OrderBy(n => n.Id)
             .Take(limit)
             .ToListAsync();
@@ -314,11 +314,11 @@ public partial class MySqlGraphStore(
         return nodes.Select(MapNode).ToList();
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string project, NodeLabel label, int limit = 10000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string repository, NodeLabel label, int limit = 10000)
     {
         var labelName = label.ToString();
         var nodes = await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project && n.Label == labelName)
+            .Where(n => n.Repository == repository && n.Label == labelName)
             .OrderBy(n => n.Id)
             .Take(limit)
             .ToListAsync();
@@ -326,10 +326,10 @@ public partial class MySqlGraphStore(
         return nodes.Select(MapNode).ToList();
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string project, string filePath, int limit = 5000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string repository, string filePath, int limit = 5000)
     {
         var nodes = await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project && n.FilePath == filePath)
+            .Where(n => n.Repository == repository && n.FilePath == filePath)
             .OrderBy(n => n.Id)
             .Take(limit)
             .ToListAsync();
@@ -338,7 +338,7 @@ public partial class MySqlGraphStore(
     }
 
     public async Task<IReadOnlyList<GraphNode>> SearchNodesAsync(
-        string? project,
+        string? repository,
         string namePattern,
         NodeLabel? label = null,
         string? filePattern = null,
@@ -349,7 +349,7 @@ public partial class MySqlGraphStore(
         var query = db.Nodes.AsNoTracking()
             .Where(n => EF.Functions.Like(n.Name, $"%{namePattern}%"));
 
-        query = ApplyNodeSearchFilters(query, project, label, filePattern, dotnetProject);
+        query = ApplyNodeSearchFilters(query, repository, label, filePattern, dotnetProject);
 
         var nodes = await query
             .OrderBy(n => n.Name)
@@ -362,7 +362,7 @@ public partial class MySqlGraphStore(
     }
 
     public Task<int> SearchNodesCountAsync(
-        string? project,
+        string? repository,
         string namePattern,
         NodeLabel? label = null,
         string? filePattern = null,
@@ -371,7 +371,7 @@ public partial class MySqlGraphStore(
         var query = db.Nodes.AsNoTracking()
             .Where(n => EF.Functions.Like(n.Name, $"%{namePattern}%"));
 
-        return ApplyNodeSearchFilters(query, project, label, filePattern, dotnetProject).CountAsync();
+        return ApplyNodeSearchFilters(query, repository, label, filePattern, dotnetProject).CountAsync();
     }
 
     public async Task<IReadOnlyList<GraphNode>> FindAllNodesByLabelAsync(NodeLabel label, int limit = 50000)
@@ -420,10 +420,10 @@ public partial class MySqlGraphStore(
         return result;
     }
 
-    public async Task<Dictionary<string, Dictionary<string, int>>> GetNodeCountsByDotnetProjectAsync(string project)
+    public async Task<Dictionary<string, Dictionary<string, int>>> GetNodeCountsByDotnetProjectAsync(string repository)
     {
         var rows = await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project && n.DotnetProject != null)
+            .Where(n => n.Repository == repository && n.DotnetProject != null)
             .GroupBy(n => new { n.DotnetProject, n.Label })
             .Select(g => new { g.Key.DotnetProject, g.Key.Label, Count = g.Count() })
             .ToListAsync();
@@ -444,10 +444,10 @@ public partial class MySqlGraphStore(
         return result;
     }
 
-    public async Task<Dictionary<string, int>> GetNodeCountsByLabelForProjectAsync(string project)
+    public async Task<Dictionary<string, int>> GetNodeCountsByLabelForRepositoryAsync(string repository)
     {
         var rows = await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project)
+            .Where(n => n.Repository == repository)
             .GroupBy(n => n.Label)
             .Select(g => new { Label = g.Key, Count = g.Count() })
             .ToListAsync();
@@ -483,7 +483,7 @@ public partial class MySqlGraphStore(
             ct.ThrowIfCancellationRequested();
 
             var sql = new StringBuilder("""
-                INSERT INTO edges (project, source_id, target_id, type, properties)
+                INSERT INTO edges (repository, source_id, target_id, type, properties)
                 VALUES
                 """);
             var parameters = new DynamicParameters();
@@ -495,9 +495,9 @@ public partial class MySqlGraphStore(
                     sql.Append(',');
                 }
 
-                sql.AppendLine($"(@Project{i}, @SourceId{i}, @TargetId{i}, @Type{i}, @Properties{i})");
+                sql.AppendLine($"(@Repository{i}, @SourceId{i}, @TargetId{i}, @Type{i}, @Properties{i})");
                 var edge = batch[i];
-                parameters.Add($"Project{i}", edge.Project);
+                parameters.Add($"Repository{i}", edge.Repository);
                 parameters.Add($"SourceId{i}", edge.SourceId);
                 parameters.Add($"TargetId{i}", edge.TargetId);
                 parameters.Add($"Type{i}", edge.Type.ToString());
@@ -622,7 +622,7 @@ public partial class MySqlGraphStore(
             ct.ThrowIfCancellationRequested();
 
             var sql = new StringBuilder("""
-                INSERT INTO cross_repo_edges (source_project, target_project, source_node_id, target_node_id, type, properties)
+                INSERT INTO cross_repo_edges (source_repository, target_repository, source_node_id, target_node_id, type, properties)
                 VALUES
                 """);
             var parameters = new DynamicParameters();
@@ -634,10 +634,10 @@ public partial class MySqlGraphStore(
                     sql.Append(',');
                 }
 
-                sql.AppendLine($"(@SourceProject{i}, @TargetProject{i}, @SourceNodeId{i}, @TargetNodeId{i}, @Type{i}, @Properties{i})");
+                sql.AppendLine($"(@SourceRepository{i}, @TargetRepository{i}, @SourceNodeId{i}, @TargetNodeId{i}, @Type{i}, @Properties{i})");
                 var edge = batch[i];
-                parameters.Add($"SourceProject{i}", edge.SourceProject);
-                parameters.Add($"TargetProject{i}", edge.TargetProject);
+                parameters.Add($"SourceRepository{i}", edge.SourceRepository);
+                parameters.Add($"TargetRepository{i}", edge.TargetRepository);
                 parameters.Add($"SourceNodeId{i}", edge.SourceNodeId);
                 parameters.Add($"TargetNodeId{i}", edge.TargetNodeId);
                 parameters.Add($"Type{i}", edge.Type.ToString());
@@ -649,10 +649,10 @@ public partial class MySqlGraphStore(
         }
     }
 
-    public async Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string project, EdgeType? type = null)
+    public async Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string repository, EdgeType? type = null)
     {
         var query = db.CrossRepoEdges.AsNoTracking()
-            .Where(e => e.SourceProject == project || e.TargetProject == project);
+            .Where(e => e.SourceRepository == repository || e.TargetRepository == repository);
         if (type is not null)
         {
             var typeName = type.Value.ToString();
@@ -663,15 +663,15 @@ public partial class MySqlGraphStore(
         return edges.Select(MapCrossRepoEdge).ToList();
     }
 
-    public async Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync()
+    public async Task<IReadOnlyList<string>> FindRepositoriesWithNoCrossRepoEdgesAsync()
     {
-        var projects = await db.Repositories.AsNoTracking()
-            .Where(p => !db.CrossRepoEdges.Any(e => e.SourceProject == p.Name || e.TargetProject == p.Name))
+        var repositories = await db.Repositories.AsNoTracking()
+            .Where(p => !db.CrossRepoEdges.Any(e => e.SourceRepository == p.Name || e.TargetRepository == p.Name))
             .OrderBy(p => p.Name)
             .Select(p => p.Name)
             .ToListAsync();
 
-        return projects;
+        return repositories;
     }
 
     public async Task<IReadOnlyList<CrossRepoEdge>> GetAllCrossRepoEdgesAsync()
@@ -758,7 +758,7 @@ public partial class MySqlGraphStore(
             )
             SELECT DISTINCT
                 n.id,
-                n.project,
+                n.repository,
                 n.dotnet_project,
                 n.label,
                 n.name,
@@ -787,7 +787,7 @@ public partial class MySqlGraphStore(
     }
 
     public async Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<EdgeType> edgeTypes,
         IReadOnlyCollection<NodeLabel>? targetLabels,
         int minInDegree,
@@ -797,14 +797,14 @@ public partial class MySqlGraphStore(
             return [];
 
         var types = edgeTypes.Select(type => type.ToString()).Distinct().ToList();
-        var edges = db.Edges.AsNoTracking().Where(e => e.Project == project && types.Contains(e.Type));
+        var edges = db.Edges.AsNoTracking().Where(e => e.Repository == repository && types.Contains(e.Type));
         if (targetLabels is { Count: > 0 })
         {
             var labels = targetLabels.Select(label => label.ToString()).Distinct().ToList();
             edges = edges.Where(e => db.Nodes.Any(n => n.Id == e.TargetId && labels.Contains(n.Label)));
         }
 
-        // One GROUP BY over the (project, type) index; only the top rows' nodes are loaded.
+        // One GROUP BY over the (repository, type) index; only the top rows' nodes are loaded.
         var rows = await edges
             .GroupBy(e => e.TargetId)
             .Select(g => new { TargetId = g.Key, Count = g.Count() })
@@ -821,35 +821,35 @@ public partial class MySqlGraphStore(
             .ToList();
     }
 
-    public async Task DeleteNodesByFileAsync(string project, string filePath)
+    public async Task DeleteNodesByFileAsync(string repository, string filePath)
     {
-        var nodes = await db.Nodes.Where(n => n.Project == project && n.FilePath == filePath).ToListAsync();
+        var nodes = await db.Nodes.Where(n => n.Repository == repository && n.FilePath == filePath).ToListAsync();
         db.Nodes.RemoveRange(nodes);
         await db.SaveChangesAsync();
     }
 
-    public async Task DeleteNodesByProjectAsync(string project)
+    public async Task DeleteNodesByRepositoryAsync(string repository)
     {
-        var nodes = await db.Nodes.Where(n => n.Project == project).ToListAsync();
+        var nodes = await db.Nodes.Where(n => n.Repository == repository).ToListAsync();
         db.Nodes.RemoveRange(nodes);
         await db.SaveChangesAsync();
     }
 
-    public async Task<Dictionary<string, string>> GetFileHashesAsync(string project)
+    public async Task<Dictionary<string, string>> GetFileHashesAsync(string repository)
         => await db.FileHashes.AsNoTracking()
-            .Where(f => f.Project == project)
+            .Where(f => f.Repository == repository)
             .ToDictionaryAsync(f => f.RelPath, f => f.ContentHash, StringComparer.OrdinalIgnoreCase);
 
-    public async Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project)
+    public async Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string repository)
         => await db.FileHashes.AsNoTracking()
-            .Where(f => f.Project == project)
+            .Where(f => f.Repository == repository)
             .ToDictionaryAsync(
                 f => f.RelPath,
                 f => new FileHashRecord(f.ContentHash, f.ExtractionVersion),
                 StringComparer.OrdinalIgnoreCase);
 
     public async Task UpsertFileHashBatchAsync(
-        string project,
+        string repository,
         Dictionary<string, string> hashes,
         CancellationToken ct = default)
     {
@@ -864,7 +864,7 @@ public partial class MySqlGraphStore(
             ct.ThrowIfCancellationRequested();
 
             var sql = new StringBuilder("""
-                INSERT INTO file_hashes (project, rel_path, content_hash)
+                INSERT INTO file_hashes (repository, rel_path, content_hash)
                 VALUES
                 """);
             var parameters = new DynamicParameters();
@@ -876,8 +876,8 @@ public partial class MySqlGraphStore(
                     sql.Append(',');
                 }
 
-                sql.AppendLine($"(@Project{i}, @RelPath{i}, @ContentHash{i})");
-                parameters.Add($"Project{i}", project);
+                sql.AppendLine($"(@Repository{i}, @RelPath{i}, @ContentHash{i})");
+                parameters.Add($"Repository{i}", repository);
                 parameters.Add($"RelPath{i}", batch[i].Key);
                 parameters.Add($"ContentHash{i}", batch[i].Value);
             }
@@ -888,10 +888,10 @@ public partial class MySqlGraphStore(
 
         // After the write, on its own connection, best effort (sc-27869): knowledge entries waiting
         // for these files' first hash take it as their baseline. Never fails the hash write.
-        await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, project, hashes.ToList(), logger, ct);
+        await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, repository, hashes.ToList(), logger, ct);
     }
 
-    public async Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths)
+    public async Task DeleteFileHashesAsync(string repository, IReadOnlyList<string> relPaths)
     {
         if (relPaths.Count == 0)
         {
@@ -902,7 +902,7 @@ public partial class MySqlGraphStore(
         {
             var batchPaths = batch.ToList();
             var hashes = await db.FileHashes
-                .Where(f => f.Project == project && batchPaths.Contains(f.RelPath))
+                .Where(f => f.Repository == repository && batchPaths.Contains(f.RelPath))
                 .ToListAsync();
             db.FileHashes.RemoveRange(hashes);
         }
@@ -910,26 +910,26 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
-    public Task<SyncStateEntity?> GetSyncStateAsync(string project)
-        => db.SyncStates.AsNoTracking().FirstOrDefaultAsync(s => s.Project == project);
+    public Task<SyncStateEntity?> GetSyncStateAsync(string repository)
+        => db.SyncStates.AsNoTracking().FirstOrDefaultAsync(s => s.Repository == repository);
 
-    public async Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects)
+    public async Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> repositories)
     {
-        if (projects.Count == 0)
+        if (repositories.Count == 0)
         {
             return new Dictionary<string, SyncStateEntity>();
         }
 
         var states = await db.SyncStates.AsNoTracking()
-            .Where(s => projects.Contains(s.Project))
+            .Where(s => repositories.Contains(s.Repository))
             .ToListAsync();
 
-        return states.ToDictionary(s => s.Project, StringComparer.OrdinalIgnoreCase);
+        return states.ToDictionary(s => s.Repository, StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task UpsertSyncStateAsync(SyncStateEntity state)
     {
-        var existing = await db.SyncStates.FindAsync(state.Project);
+        var existing = await db.SyncStates.FindAsync(state.Repository);
         if (existing is null)
         {
             db.SyncStates.Add(state);
@@ -949,7 +949,7 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
-    public async Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    public async Task SetVitalsVersionAsync(string repository, int vitalsVersion)
     {
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             UPDATE sync_state
@@ -957,11 +957,11 @@ public partial class MySqlGraphStore(
                 vitals_failed_commit_sha = NULL,
                 vitals_failed_version = NULL,
                 vitals_consecutive_failures = 0
-            WHERE project = {project}
+            WHERE repository = {repository}
             """);
     }
 
-    public async Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    public async Task<int> RecordVitalsFailureAsync(string repository, string? commitSha, int vitalsVersion)
     {
         // One statement: the count is consecutive only while the commit and version stay the same.
         await db.Database.ExecuteSqlInterpolatedAsync($"""
@@ -973,17 +973,17 @@ public partial class MySqlGraphStore(
                 END,
                 vitals_failed_commit_sha = {commitSha},
                 vitals_failed_version = {vitalsVersion}
-            WHERE project = {project}
+            WHERE repository = {repository}
             """);
         return await db.SyncStates.AsNoTracking()
-            .Where(s => s.Project == project)
+            .Where(s => s.Repository == repository)
             .Select(s => s.VitalsConsecutiveFailures)
             .FirstOrDefaultAsync();
     }
 
-    public async Task DeleteSyncStateAsync(string project)
+    public async Task DeleteSyncStateAsync(string repository)
     {
-        var state = await db.SyncStates.FindAsync(project);
+        var state = await db.SyncStates.FindAsync(repository);
         if (state is null)
         {
             return;
@@ -1006,7 +1006,7 @@ public partial class MySqlGraphStore(
         foreach (var batch in clusters.Chunk(options.BatchSize))
         {
             var sql = new StringBuilder("""
-                INSERT INTO repo_clusters (project_name, cluster_id, cluster_label, modularity_score, level, betweenness_centrality, computed_at)
+                INSERT INTO repo_clusters (repository_name, cluster_id, cluster_label, modularity_score, level, betweenness_centrality, computed_at)
                 VALUES
                 """);
             var parameters = new DynamicParameters();
@@ -1018,9 +1018,9 @@ public partial class MySqlGraphStore(
                     sql.Append(',');
                 }
 
-                sql.AppendLine($"(@ProjectName{i}, @ClusterId{i}, @ClusterLabel{i}, @ModularityScore{i}, @Level{i}, @BetweennessCentrality{i}, @ComputedAt{i})");
+                sql.AppendLine($"(@RepositoryName{i}, @ClusterId{i}, @ClusterLabel{i}, @ModularityScore{i}, @Level{i}, @BetweennessCentrality{i}, @ComputedAt{i})");
                 var cluster = batch[i];
-                parameters.Add($"ProjectName{i}", cluster.ProjectName);
+                parameters.Add($"RepositoryName{i}", cluster.RepositoryName);
                 parameters.Add($"ClusterId{i}", cluster.ClusterId);
                 parameters.Add($"ClusterLabel{i}", cluster.ClusterLabel);
                 parameters.Add($"ModularityScore{i}", cluster.ModularityScore);
@@ -1037,10 +1037,10 @@ public partial class MySqlGraphStore(
     {
         await using var conn = await GetOpenConnectionAsync();
         var rows = await conn.QueryAsync<RepoClusterRow>("""
-            SELECT id, project_name, cluster_id, cluster_label, modularity_score, level, betweenness_centrality, computed_at
+            SELECT id, repository_name, cluster_id, cluster_label, modularity_score, level, betweenness_centrality, computed_at
             FROM repo_clusters
             WHERE level = @Level
-            ORDER BY cluster_id, project_name
+            ORDER BY cluster_id, repository_name
             """, new { Level = level });
 
         return rows.Select(MapRepoCluster).ToList();
@@ -1050,7 +1050,7 @@ public partial class MySqlGraphStore(
     {
         await using var conn = await GetOpenConnectionAsync();
         var rows = await conn.QueryAsync<RepoClusterRow>("""
-            SELECT id, project_name, cluster_id, cluster_label, modularity_score, level, betweenness_centrality, computed_at
+            SELECT id, repository_name, cluster_id, cluster_label, modularity_score, level, betweenness_centrality, computed_at
             FROM repo_clusters
             WHERE cluster_id = @ClusterId AND level = @Level
             ORDER BY betweenness_centrality DESC
@@ -1059,46 +1059,46 @@ public partial class MySqlGraphStore(
         return rows.Select(MapRepoCluster).ToList();
     }
 
-    public async Task DeleteAllEdgesForProjectAsync(string project)
+    public async Task DeleteAllEdgesForRepositoryAsync(string repository)
     {
-        var edges = await db.Edges.Where(e => e.Project == project).ToListAsync();
+        var edges = await db.Edges.Where(e => e.Repository == repository).ToListAsync();
         db.Edges.RemoveRange(edges);
         await db.SaveChangesAsync();
     }
 
-    public async Task DeleteCrossRepoEdgesForProjectAsync(string project)
+    public async Task DeleteCrossRepoEdgesForRepositoryAsync(string repository)
     {
-        // Delete server-side; tracking every cross-repo edge of a large project just to remove it is wasteful.
+        // Delete server-side; tracking every cross-repo edge of a large repository just to remove it is wasteful.
         await db.CrossRepoEdges
-            .Where(e => e.SourceProject == project || e.TargetProject == project)
+            .Where(e => e.SourceRepository == repository || e.TargetRepository == repository)
             .ExecuteDeleteAsync();
     }
 
-    public async Task DeleteAnalysisDataForProjectAsync(string project)
+    public async Task DeleteAnalysisDataForRepositoryAsync(string repository)
     {
         await using var conn = await GetOpenConnectionAsync();
         await conn.ExecuteAsync("""
             DELETE br FROM analysis_batch_requests br
             INNER JOIN analysis_batches b ON br.batch_id = b.id
-            WHERE b.repo = @Project
-            """, new { Project = project });
-        await conn.ExecuteAsync("DELETE FROM analysis_batches WHERE repo = @Project", new { Project = project });
-        await conn.ExecuteAsync("DELETE FROM project_analyses WHERE repo = @Project", new { Project = project });
-        await conn.ExecuteAsync("DELETE FROM repository_summaries WHERE project = @Project", new { Project = project });
+            WHERE b.repo = @Repository
+            """, new { Repository = repository });
+        await conn.ExecuteAsync("DELETE FROM analysis_batches WHERE repo = @Repository", new { Repository = repository });
+        await conn.ExecuteAsync("DELETE FROM project_analyses WHERE repo = @Repository", new { Repository = repository });
+        await conn.ExecuteAsync("DELETE FROM repository_summaries WHERE repository = @Repository", new { Repository = repository });
         await conn.ExecuteAsync("""
             DELETE na FROM node_analysis na
             INNER JOIN nodes n ON n.id = na.node_id
-            WHERE n.project = @Project
-            """, new { Project = project });
-        await conn.ExecuteAsync("DELETE FROM project_health_analyses WHERE project = @Project", new { Project = project });
-        await conn.ExecuteAsync("DELETE FROM project_health_summaries WHERE project = @Project", new { Project = project });
+            WHERE n.repository = @Repository
+            """, new { Repository = repository });
+        await conn.ExecuteAsync("DELETE FROM project_health_analyses WHERE repository = @Repository", new { Repository = repository });
+        await conn.ExecuteAsync("DELETE FROM project_health_summaries WHERE repository = @Repository", new { Repository = repository });
     }
 
-    public Task UpsertRepositorySummaryAsync(string project, string summary, ConfidenceLevel confidence, string sourceHash, string? modelUsed = null)
-        => analysisStore.UpsertRepositorySummaryAsync(project, summary, confidence, sourceHash, modelUsed);
+    public Task UpsertRepositorySummaryAsync(string repository, string summary, ConfidenceLevel confidence, string sourceHash, string? modelUsed = null)
+        => analysisStore.UpsertRepositorySummaryAsync(repository, summary, confidence, sourceHash, modelUsed);
 
-    public Task<ProjectSummary?> GetRepositorySummaryAsync(string project)
-        => analysisStore.GetRepositorySummaryAsync(project);
+    public Task<RepositorySummary?> GetRepositorySummaryAsync(string repository)
+        => analysisStore.GetRepositorySummaryAsync(repository);
 
     public Task UpsertProjectAnalysisAsync(string repo, StoredProjectAnalysis analysis)
         => analysisStore.UpsertProjectAnalysisAsync(repo, analysis);
@@ -1139,8 +1139,8 @@ public partial class MySqlGraphStore(
     public Task<Dictionary<long, StoredNodeAnalysis>> GetNodeAnalysesBatchAsync(IReadOnlyList<long> nodeIds)
         => analysisStore.GetNodeAnalysesBatchAsync(nodeIds);
 
-    public Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string project)
-        => analysisStore.GetClassNodesWithEdgesAsync(project);
+    public Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string repository)
+        => analysisStore.GetClassNodesWithEdgesAsync(repository);
 
     public Task<IReadOnlyList<NodeEntity>> GetChildNodesAsync(long parentNodeId)
         => analysisStore.GetChildNodesAsync(parentNodeId);
@@ -1151,41 +1151,41 @@ public partial class MySqlGraphStore(
     public Task<IReadOnlyList<EdgeEntity>> GetInboundEdgesAsync(long nodeId)
         => analysisStore.GetInboundEdgesAsync(nodeId);
 
-    public Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project)
-        => analysisStore.GetAllNodesByProjectAsync(project);
+    public Task<IReadOnlyList<NodeEntity>> GetAllNodesByRepositoryAsync(string repository)
+        => analysisStore.GetAllNodesByRepositoryAsync(repository);
 
-    public Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project)
-        => analysisStore.GetAllEdgesByProjectAsync(project);
+    public Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByRepositoryAsync(string repository)
+        => analysisStore.GetAllEdgesByRepositoryAsync(repository);
 
     public Task<IReadOnlyList<EdgeEntity>> GetEdgesForNodesAsync(IReadOnlyList<long> nodeIds)
         => analysisStore.GetEdgesForNodesAsync(nodeIds);
 
-    public Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForProjectAsync(string project)
-        => analysisStore.GetEdgeEndpointsForProjectAsync(project);
+    public Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForRepositoryAsync(string repository)
+        => analysisStore.GetEdgeEndpointsForRepositoryAsync(repository);
 
-    public Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string project)
-        => analysisStore.GetFileAndUntrustedNodesAsync(project);
+    public Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string repository)
+        => analysisStore.GetFileAndUntrustedNodesAsync(repository);
 
-    public Task UpsertFileMetricsBatchAsync(string project, IReadOnlyList<FileMetricsEntity> metrics)
-        => metricsStore.UpsertFileMetricsBatchAsync(project, metrics);
+    public Task UpsertFileMetricsBatchAsync(string repository, IReadOnlyList<FileMetricsEntity> metrics)
+        => metricsStore.UpsertFileMetricsBatchAsync(repository, metrics);
 
-    public Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null)
-        => metricsStore.GetFileMetricsAsync(project, dotnetProject);
+    public Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string repository, string? dotnetProject = null)
+        => metricsStore.GetFileMetricsAsync(repository, dotnetProject);
 
-    public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10)
-        => metricsStore.GetHotspotsAsync(project, top);
+    public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string repository, int top = 10)
+        => metricsStore.GetHotspotsAsync(repository, top);
 
-    public Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath)
-        => metricsStore.GetFileMetricAsync(project, filePath);
+    public Task<FileMetricsEntity?> GetFileMetricAsync(string repository, string filePath)
+        => metricsStore.GetFileMetricAsync(repository, filePath);
 
-    public Task DeleteFileMetricsAsync(string project)
-        => metricsStore.DeleteFileMetricsAsync(project);
+    public Task DeleteFileMetricsAsync(string repository)
+        => metricsStore.DeleteFileMetricsAsync(repository);
 
     public Task UpsertProjectHealthSummaryAsync(ProjectHealthSummaryEntity summary)
         => metricsStore.UpsertProjectHealthSummaryAsync(summary);
 
-    public Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project)
-        => metricsStore.GetProjectHealthSummariesAsync(project);
+    public Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string repository)
+        => metricsStore.GetProjectHealthSummariesAsync(repository);
 
     public Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetAllRepoHealthSummariesAsync()
         => metricsStore.GetAllRepoHealthSummariesAsync();
@@ -1193,32 +1193,32 @@ public partial class MySqlGraphStore(
     public Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis)
         => metricsStore.UpsertProjectHealthAnalysisAsync(analysis);
 
-    public Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string project)
-        => metricsStore.GetProjectHealthAnalysesAsync(project);
+    public Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string repository)
+        => metricsStore.GetProjectHealthAnalysesAsync(repository);
 
-    public Task DeleteSecurityFindingsAsync(string project)
-        => metricsStore.DeleteSecurityFindingsAsync(project);
+    public Task DeleteSecurityFindingsAsync(string repository)
+        => metricsStore.DeleteSecurityFindingsAsync(repository);
 
-    public Task UpsertSecurityFindingsBatchAsync(string project, IReadOnlyList<SecurityFindingEntity> findings)
-        => metricsStore.UpsertSecurityFindingsBatchAsync(project, findings);
+    public Task UpsertSecurityFindingsBatchAsync(string repository, IReadOnlyList<SecurityFindingEntity> findings)
+        => metricsStore.UpsertSecurityFindingsBatchAsync(repository, findings);
 
-    public Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string project)
-        => metricsStore.GetSecurityFindingsAsync(project);
+    public Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string repository)
+        => metricsStore.GetSecurityFindingsAsync(repository);
 
-    public Task UpsertProjectSecuritySummaryAsync(ProjectSecuritySummaryEntity summary)
-        => metricsStore.UpsertProjectSecuritySummaryAsync(summary);
+    public Task UpsertRepositorySecuritySummaryAsync(RepositorySecuritySummaryEntity summary)
+        => metricsStore.UpsertRepositorySecuritySummaryAsync(summary);
 
-    public Task<ProjectSecuritySummaryEntity?> GetProjectSecuritySummaryAsync(string project)
-        => metricsStore.GetProjectSecuritySummaryAsync(project);
+    public Task<RepositorySecuritySummaryEntity?> GetRepositorySecuritySummaryAsync(string repository)
+        => metricsStore.GetRepositorySecuritySummaryAsync(repository);
 
-    public Task DeleteProjectDiagnosticsAsync(string project)
-        => reviewStore.DeleteProjectDiagnosticsAsync(project);
+    public Task DeleteProjectDiagnosticsAsync(string repository)
+        => reviewStore.DeleteProjectDiagnosticsAsync(repository);
 
-    public Task UpsertProjectDiagnosticsBatchAsync(string project, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
-        => reviewStore.UpsertProjectDiagnosticsBatchAsync(project, diagnostics);
+    public Task UpsertProjectDiagnosticsBatchAsync(string repository, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+        => reviewStore.UpsertProjectDiagnosticsBatchAsync(repository, diagnostics);
 
-    public Task<IReadOnlyList<ProjectDiagnosticEntity>> GetProjectDiagnosticsAsync(string project, string? dotnetProject = null)
-        => reviewStore.GetProjectDiagnosticsAsync(project, dotnetProject);
+    public Task<IReadOnlyList<ProjectDiagnosticEntity>> GetProjectDiagnosticsAsync(string repository, string? dotnetProject = null)
+        => reviewStore.GetProjectDiagnosticsAsync(repository, dotnetProject);
 
     public Task<long> CreateProjectReviewRunAsync(ProjectReviewRunEntity run)
         => reviewStore.CreateProjectReviewRunAsync(run);
@@ -1232,8 +1232,8 @@ public partial class MySqlGraphStore(
     public Task<ProjectReviewRunEntity?> GetProjectReviewRunAsync(long reviewRunId)
         => reviewStore.GetProjectReviewRunAsync(reviewRunId);
 
-    public Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string project, string projectName)
-        => reviewStore.GetLatestProjectReviewRunAsync(project, projectName);
+    public Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string repository, string repositoryName)
+        => reviewStore.GetLatestProjectReviewRunAsync(repository, repositoryName);
 
     public Task<IReadOnlyList<ProjectReviewFindingEntity>> GetProjectReviewFindingsAsync(long reviewRunId)
         => reviewStore.GetProjectReviewFindingsAsync(reviewRunId);
@@ -1292,14 +1292,14 @@ public partial class MySqlGraphStore(
 
     private static IQueryable<NodeEntity> ApplyNodeSearchFilters(
         IQueryable<NodeEntity> query,
-        string? project,
+        string? repository,
         NodeLabel? label,
         string? filePattern,
         string? dotnetProject)
     {
-        if (project is not null)
+        if (repository is not null)
         {
-            query = query.Where(n => n.Project == project);
+            query = query.Where(n => n.Repository == repository);
         }
 
         if (label is not null)
@@ -1321,7 +1321,7 @@ public partial class MySqlGraphStore(
         return query;
     }
 
-    private static ProjectInfo MapProjectInfo(RepositoryEntity repository)
+    private static RepositoryInfo MapRepositoryInfo(RepositoryEntity repository)
         => new(
             repository.Name,
             repository.RepoUrl,
@@ -1338,7 +1338,7 @@ public partial class MySqlGraphStore(
         => new()
         {
             Id = node.Id,
-            Project = node.Project,
+            Repository = node.Repository,
             DotnetProject = node.DotnetProject,
             Label = Enum.Parse<NodeLabel>(node.Label),
             Name = node.Name,
@@ -1354,7 +1354,7 @@ public partial class MySqlGraphStore(
         => new()
         {
             Id = row.Id,
-            Project = row.Project,
+            Repository = row.Repository,
             DotnetProject = row.DotnetProject,
             Label = Enum.Parse<NodeLabel>(row.Label),
             Name = row.Name,
@@ -1370,7 +1370,7 @@ public partial class MySqlGraphStore(
         => new()
         {
             Id = edge.Id,
-            Project = edge.Project,
+            Repository = edge.Repository,
             SourceId = edge.SourceId,
             TargetId = edge.TargetId,
             Type = Enum.Parse<EdgeType>(edge.Type),
@@ -1381,8 +1381,8 @@ public partial class MySqlGraphStore(
         => new()
         {
             Id = edge.Id,
-            SourceProject = edge.SourceProject,
-            TargetProject = edge.TargetProject,
+            SourceRepository = edge.SourceRepository,
+            TargetRepository = edge.TargetRepository,
             SourceNodeId = edge.SourceNodeId,
             TargetNodeId = edge.TargetNodeId,
             Type = Enum.Parse<EdgeType>(edge.Type),
@@ -1393,7 +1393,7 @@ public partial class MySqlGraphStore(
         => new()
         {
             Id = row.Id,
-            ProjectName = row.ProjectName,
+            RepositoryName = row.RepositoryName,
             ClusterId = row.ClusterId,
             ClusterLabel = row.ClusterLabel,
             ModularityScore = row.ModularityScore,
@@ -1415,9 +1415,9 @@ public partial class MySqlGraphStore(
 
     /// <summary>
     /// Builds an indexed exact-match predicate over <c>nodes.qualified_name</c>. The column has
-    /// no index of its own — uniqueness is enforced on <c>(project, qualified_name_hash)</c>, a
+    /// no index of its own — uniqueness is enforced on <c>(repository, qualified_name_hash)</c>, a
     /// stored SHA-256 of the name (migration 061) — so a bare <c>qualified_name = …</c> or
-    /// <c>IN (…)</c> scans every node of the project. Matching the digest first lets MariaDB
+    /// <c>IN (…)</c> scans every node of the repository. Matching the digest first lets MariaDB
     /// range-scan <c>uq_node</c>; the name comparison keeps the result an exact match.
     /// Each name is bound once, as <c>@Qn{i}</c>.
     /// </summary>
@@ -1447,7 +1447,7 @@ public partial class MySqlGraphStore(
 
     private sealed record TraversalRow(
         long Id,
-        string Project,
+        string Repository,
         string? DotnetProject,
         string Label,
         string Name,
@@ -1464,7 +1464,7 @@ public partial class MySqlGraphStore(
 
     private sealed record RepoClusterRow(
         long Id,
-        string ProjectName,
+        string RepositoryName,
         int ClusterId,
         string? ClusterLabel,
         decimal ModularityScore,

@@ -4,12 +4,12 @@
   @if (detail(); as d) {
     <header class="rd-header">
       <div class="rd-header-main">
-        <h1 class="rd-title">{{ isSchemaProject() ? schemaDatabaseName() : d.project.name }}</h1>
+        <h1 class="rd-title">{{ isSchemaRepository() ? schemaDatabaseName() : d.repository.name }}</h1>
         <div class="rd-header-chips">
-          @if (d.project.isFoundational) {
+          @if (d.repository.isFoundational) {
             <span class="cg-chip cg-chip-accent">foundational</span>
           }
-          @if (!isSchemaProject() && dotnetSupportStatus(); as support) {
+          @if (!isSchemaRepository() && dotnetSupportStatus(); as support) {
             <span class="cg-chip"
                   [style.background]="dotnetSupportBackground(support.overallStatus)"
                   [style.color]="dotnetSupportColor(support.overallStatus)"
@@ -22,7 +22,7 @@
       </div>
 
       <div class="rd-header-actions">
-        @if (!isSchemaProject()) {
+        @if (!isSchemaRepository()) {
           <a class="cg-chip cg-chip-mono" [routerLink]="['/repos', name(), 'nodes']">
             Browse {{ totalNodes().toLocaleString() }} nodes →
           </a>
@@ -42,7 +42,7 @@
         @if (isAdmin()) {
           @if (showDeleteConfirm()) {
             <span class="rd-delete-confirm">
-              {{ isSchemaProject() ? 'Delete schema?' : 'Delete repo?' }}
+              {{ isSchemaRepository() ? 'Delete schema?' : 'Delete repo?' }}
             </span>
             <button class="rd-btn danger" (click)="deleteRepo()" [disabled]="deleting()">
               {{ deleting() ? 'Deleting…' : 'Yes, delete' }}
@@ -50,7 +50,7 @@
             <button class="rd-btn" (click)="cancelDelete()">Cancel</button>
           } @else {
             <button class="rd-btn ghost-danger" (click)="confirmDelete()">
-              {{ isSchemaProject() ? 'Delete schema' : 'Delete' }}
+              {{ isSchemaRepository() ? 'Delete schema' : 'Delete' }}
             </button>
           }
         }
@@ -86,24 +86,24 @@
       <div class="rd-banner err">{{ cancelError }}</div>
     }
 
-    @if (isSchemaProject()) {
+    @if (isSchemaRepository()) {
       <div class="rd-meta-strip">
         <div><span class="cg-muted cg-xsmall">SERVER</span>&nbsp;<span class="cg-mono">{{ schemaServerName() }}</span></div>
         <div><span class="cg-muted cg-xsmall">DATABASE</span>&nbsp;<span class="cg-mono">{{ schemaDatabaseName() }}</span></div>
-        <div><span class="cg-muted cg-xsmall">SCHEMA ID</span>&nbsp;<span class="cg-mono">{{ d.project.name }}</span></div>
+        <div><span class="cg-muted cg-xsmall">SCHEMA ID</span>&nbsp;<span class="cg-mono">{{ d.repository.name }}</span></div>
       </div>
-    } @else if (d.project.repoUrl || d.project.lastCommitSha) {
+    } @else if (d.repository.repoUrl || d.repository.lastCommitSha) {
       <div class="rd-meta-strip">
-        @if (d.project.repoUrl) {
-          <div><span class="cg-muted cg-xsmall">REPO</span>&nbsp;<a class="cg-mono cg-small" [href]="d.project.repoUrl" target="_blank" rel="noopener">{{ d.project.repoUrl }}</a></div>
+        @if (d.repository.repoUrl) {
+          <div><span class="cg-muted cg-xsmall">REPO</span>&nbsp;<a class="cg-mono cg-small" [href]="d.repository.repoUrl" target="_blank" rel="noopener">{{ d.repository.repoUrl }}</a></div>
         }
-        @if (d.project.lastCommitSha) {
-          <div><span class="cg-muted cg-xsmall">COMMIT</span>&nbsp;<span class="cg-mono cg-small">{{ formatCommit(d.project.lastCommitSha) }}</span></div>
+        @if (d.repository.lastCommitSha) {
+          <div><span class="cg-muted cg-xsmall">COMMIT</span>&nbsp;<span class="cg-mono cg-small">{{ formatCommit(d.repository.lastCommitSha) }}</span></div>
         }
       </div>
     }
 
-    @if (!isSchemaProject()) {
+    @if (!isSchemaRepository()) {
       <nav class="rd-tabs" role="tablist">
         <button class="rd-tab" type="button" role="tab"
                 [attr.aria-selected]="tab() === 'overview'"
@@ -202,8 +202,8 @@
           </section>
         }
 
-        <app-repo-detail-projects [projectName]="name()" [detail]="d" />
-        <app-repo-detail-dependencies [projectName]="name()" [detail]="d" />
+        <app-repo-detail-projects [repositoryName]="name()" [detail]="d" />
+        <app-repo-detail-dependencies [repositoryName]="name()" [detail]="d" />
 
         @if (readme(); as readmeContent) {
           <section class="rd-readme-card">
@@ -215,24 +215,24 @@
         }
       } @else if (tab() === 'health') {
         <app-repo-detail-health
-          [projectName]="name()"
+          [repositoryName]="name()"
           [detail]="d"
           [health]="health()"
           [security]="security()"
         />
       } @else if (tab() === 'reviews') {
         <app-repo-detail-review
-          [projectName]="name()"
+          [repositoryName]="name()"
           [review]="repositoryReviewState().latestReview"
           [reviewRunning]="isRepositoryReviewInProgress()"
           [reviewLoading]="repositoryReviewState().startingReview || repositoryReviewState().loadingLatestReview"
-          [lastCommitSha]="d.project.lastCommitSha ?? null"
+          [lastCommitSha]="d.repository.lastCommitSha ?? null"
           (startReview)="startRepositoryReview()"
         />
       }
     } @else {
-      <app-schema-catalog [projectName]="name()" />
-      <app-repo-detail-dependencies [projectName]="name()" [detail]="d" />
+      <app-schema-catalog [repositoryName]="name()" />
+      <app-repo-detail-dependencies [repositoryName]="name()" [detail]="d" />
     }
   }
 </div>

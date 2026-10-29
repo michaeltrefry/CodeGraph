@@ -183,8 +183,8 @@ public static class Startup
         services.AddScoped<IAnalysisModelProvider, LmStudioAnalysisProvider>();
         services.AddScoped<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
-        services.AddTransient<IProjectService, ProjectService>();
-        services.AddTransient<IProjectQueryService, ProjectQueryService>();
+        services.AddTransient<IRepositoryService, RepositoryService>();
+        services.AddTransient<IRepositoryQueryService, RepositoryQueryService>();
         services.AddSingleton<IProjectReviewBackgroundRunner, ProjectReviewBackgroundRunner>();
         services.AddSingleton<IRepositoryReviewBackgroundRunner, RepositoryReviewBackgroundRunner>();
         services.AddTransient<IRepositoryReviewRecoveryService, RepositoryReviewRecoveryService>();
@@ -371,6 +371,7 @@ public static class Startup
         // The work tools read their raw arguments strictly (WorkJson), so they are registered as
         // tool instances with generated schemas rather than as attribute-bound methods.
         .WithTools(WorkMcpTool.CreateAll())
+        .WithRequestFilters(filters => filters.AddCallToolFilter(LegacyProjectArgumentGuard.Filter))
         .WithResources<CodeGraphMcpResources>();
     }
 

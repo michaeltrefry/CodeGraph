@@ -1,20 +1,20 @@
 namespace CodeGraph.Models.Responses;
 
-public record ProjectDetailResponse(
-    ProjectListItem Project,
+public record RepositoryDetailResponse(
+    RepositoryListItem Repository,
     DotnetSupportInfo? DotnetSupport,
-    ProjectSummaryResponse? Summary,
+    RepositorySummaryResponse? Summary,
     IReadOnlyList<ProjectAnalysisResponse> Analyses,
     Dictionary<string, int> NodeCounts,
     Dictionary<string, Dictionary<string, int>> DotnetProjects,
     int InboundEdgeCount,
     int OutboundEdgeCount,
-    IReadOnlyList<string> InboundProjects,
-    IReadOnlyList<string> OutboundProjects,
+    IReadOnlyList<string> InboundRepositories,
+    IReadOnlyList<string> OutboundRepositories,
     ProjectHealthSummary? Health);
 
-public record ProjectSummaryResponse(
-    string Project,
+public record RepositorySummaryResponse(
+    string Repository,
     string Summary,
     string Confidence,
     string SourceHash,

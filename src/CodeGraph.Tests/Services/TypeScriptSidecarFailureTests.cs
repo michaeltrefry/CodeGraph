@@ -16,7 +16,7 @@ namespace CodeGraph.Tests.Services;
 
 /// <summary>
 /// sc-26145: a sidecar that rejects the extraction request (413 body too large on a big scope)
-/// must not read as an empty project; the cause is logged at Warning and the analysis fails so the
+/// must not read as an empty repository; the cause is logged at Warning and the analysis fails so the
 /// pipeline logs its per-file fallback. The scope itself travels in a temp file.
 /// </summary>
 public class TypeScriptSidecarFailureTests
@@ -32,7 +32,7 @@ public class TypeScriptSidecarFailureTests
 
         var failure = await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync(
             "/repo/tsconfig.json",
-            new ExtractorContext { ProjectName = "Lens", RootPath = "/repo" },
+            new ExtractorContext { RepositoryName = "Lens", RootPath = "/repo" },
             ["tsconfig.json", "src/app.ts"]));
 
         failure.Message.ShouldContain("Lens");
@@ -51,7 +51,7 @@ public class TypeScriptSidecarFailureTests
 
         var results = await analyzer.AnalyzeProjectAsync(
             "/repo/tsconfig.json",
-            new ExtractorContext { ProjectName = "Lens", RootPath = "/repo" },
+            new ExtractorContext { RepositoryName = "Lens", RootPath = "/repo" },
             ["tsconfig.json", "src/app.ts"]);
 
         results.ShouldHaveSingleItem().ProcessedFiles.ShouldBe(["src/app.ts"]);

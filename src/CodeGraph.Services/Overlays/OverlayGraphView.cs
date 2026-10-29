@@ -10,12 +10,12 @@ namespace CodeGraph.Services.Overlays;
 /// <summary>
 /// Read-only graph for the head commit of a ready branch overlay: the default-branch graph with
 /// the overlay's changed files replacing that graph's nodes and edges for those paths, and the
-/// overlay's deleted (and renamed-away) paths removed. Other projects pass through unchanged.
+/// overlay's deleted (and renamed-away) paths removed. Other repositories pass through unchanged.
 /// </summary>
 /// <remarks>
 /// <para>Nodes. Base nodes whose file is changed, deleted or renamed away are hidden. Overlay nodes
 /// get negative ids (<c>-overlay node row id</c>) so they never collide with default-branch ids.
-/// As in incremental indexing, a node is unique by qualified name within the project: an overlay
+/// As in incremental indexing, a node is unique by qualified name within the repository: an overlay
 /// node whose qualified name also belongs to a visible base node (one in an unchanged file) is
 /// merged into that base node.</para>
 /// <para>Edges. Mirroring incremental re-indexing of the changed files: base edges whose source is
@@ -84,7 +84,7 @@ public sealed class OverlayGraphView : IGraphReader
 
     public BranchOverlayEntity Overlay { get; }
 
-    public string Project => Overlay.Project;
+    public string Repository => Overlay.Repository;
 
     public static async Task<OverlayGraphView> CreateAsync(
         IGraphReader baseGraph,
@@ -111,7 +111,7 @@ public sealed class OverlayGraphView : IGraphReader
             .ToHashSet(StringComparer.Ordinal);
         if (retractedNodeQns.Count > 0)
         {
-            foreach (var node in await baseGraph.FindNodesByQualifiedNamesAsync(overlay.Project, retractedNodeQns))
+            foreach (var node in await baseGraph.FindNodesByQualifiedNamesAsync(overlay.Repository, retractedNodeQns))
             {
                 if (string.IsNullOrEmpty(node.FilePath))
                     hidden[node.Id] = node;
@@ -122,9 +122,9 @@ public sealed class OverlayGraphView : IGraphReader
         {
             foreach (var variant in PathVariants(path))
             {
-                foreach (var node in await baseGraph.FindNodesByFileAsync(overlay.Project, variant, int.MaxValue))
+                foreach (var node in await baseGraph.FindNodesByFileAsync(overlay.Repository, variant, int.MaxValue))
                 {
-                    if (string.Equals(node.Project, overlay.Project, StringComparison.OrdinalIgnoreCase)
+                    if (string.Equals(node.Repository, overlay.Repository, StringComparison.OrdinalIgnoreCase)
                         && hiddenPaths.Contains(NormalizePath(node.FilePath)))
                     {
                         hidden[node.Id] = node;
@@ -155,7 +155,7 @@ public sealed class OverlayGraphView : IGraphReader
         var visibleBaseByQn = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
         if (qualifiedNames.Count > 0)
         {
-            foreach (var node in await _base.FindNodesByQualifiedNamesAsync(Project, qualifiedNames))
+            foreach (var node in await _base.FindNodesByQualifiedNamesAsync(Repository, qualifiedNames))
             {
                 if (!_hiddenBaseNodes.ContainsKey(node.Id))
                     visibleBaseByQn.TryAdd(node.QualifiedName, node);
@@ -173,7 +173,7 @@ public sealed class OverlayGraphView : IGraphReader
                 continue;
             }
 
-            var effective = node with { Id = overlayId, Project = Project };
+            var effective = node with { Id = overlayId, Repository = Repository };
             _overlayNodes[overlayId] = effective;
             _overlayNodesByQn[node.QualifiedName] = effective;
             effectiveIdByQn[node.QualifiedName] = overlayId;
@@ -227,7 +227,7 @@ public sealed class OverlayGraphView : IGraphReader
             _overlayEdges.Add(new GraphEdge
             {
                 Id = -(_overlayEdges.Count + 1),
-                Project = Project,
+                Repository = Repository,
                 SourceId = source,
                 TargetId = target,
                 Type = edge.Type,
@@ -248,11 +248,11 @@ public sealed class OverlayGraphView : IGraphReader
     /// The unmapped inbound edges (see <see cref="UnmappedInboundEdgeCount"/>) an answer would have
     /// reached on the default branch: edges whose source is one of the answer's nodes, whose target
     /// was in the same file as one of the answer's nodes, or whose target has the queried name.
-    /// Nodes of other projects are ignored. <paramref name="edgeTypes"/>, when given, limits the
+    /// Nodes of other repositories are ignored. <paramref name="edgeTypes"/>, when given, limits the
     /// count to those edge types.
     /// </summary>
     public int CountUnmappedInboundEdges(
-        IEnumerable<(string? Project, long Id, string? FilePath)> answerNodes,
+        IEnumerable<(string? Repository, long Id, string? FilePath)> answerNodes,
         string? queriedName = null,
         IReadOnlyCollection<EdgeType>? edgeTypes = null)
     {
@@ -261,9 +261,9 @@ public sealed class OverlayGraphView : IGraphReader
 
         var ids = new HashSet<long>();
         var files = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (project, id, filePath) in answerNodes)
+        foreach (var (repository, id, filePath) in answerNodes)
         {
-            if (!IsOverlayProject(project))
+            if (!IsOverlayRepository(repository))
                 continue;
             ids.Add(id);
             if (!string.IsNullOrEmpty(filePath))
@@ -285,7 +285,7 @@ public sealed class OverlayGraphView : IGraphReader
         string? queriedName = null,
         IReadOnlyCollection<EdgeType>? edgeTypes = null)
         => CountUnmappedInboundEdges(
-            answerNodes.OfType<GraphNode>().Select(node => ((string?)node.Project, node.Id, (string?)node.FilePath)),
+            answerNodes.OfType<GraphNode>().Select(node => ((string?)node.Repository, node.Id, (string?)node.FilePath)),
             queriedName,
             edgeTypes);
 
@@ -293,7 +293,7 @@ public sealed class OverlayGraphView : IGraphReader
     public int CountUnmappedInboundEdges(ImpactReport report, string? queriedName = null)
         => CountUnmappedInboundEdges(
             report.ChangedNodes.Concat(report.AffectedNodes)
-                .Select(node => ((string?)node.Project, node.NodeId, (string?)node.FilePath)),
+                .Select(node => ((string?)node.Repository, node.NodeId, (string?)node.FilePath)),
             queriedName);
 
     /// <summary>
@@ -421,8 +421,8 @@ public sealed class OverlayGraphView : IGraphReader
     /// <summary>True when <paramref name="relativePath"/> was added, modified or renamed to at the overlay head.</summary>
     public bool IsChangedPath(string relativePath) => _changedPaths.Contains(NormalizePath(relativePath));
 
-    public bool IsOverlayProject(string? project)
-        => project is not null && string.Equals(project, Project, StringComparison.OrdinalIgnoreCase);
+    public bool IsOverlayRepository(string? repository)
+        => repository is not null && string.Equals(repository, Repository, StringComparison.OrdinalIgnoreCase);
 
     // ── Nodes ────────────────────────────────────────────────────────────
 
@@ -461,23 +461,23 @@ public sealed class OverlayGraphView : IGraphReader
         return result;
     }
 
-    public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName)
+    public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string repository, string qualifiedName)
     {
-        if (!IsOverlayProject(project))
-            return await _base.FindNodeByQualifiedNameAsync(project, qualifiedName);
+        if (!IsOverlayRepository(repository))
+            return await _base.FindNodeByQualifiedNameAsync(repository, qualifiedName);
         if (_overlayNodesByQn.TryGetValue(qualifiedName, out var node))
             return node;
 
-        var baseNode = await _base.FindNodeByQualifiedNameAsync(project, qualifiedName);
+        var baseNode = await _base.FindNodeByQualifiedNameAsync(repository, qualifiedName);
         return baseNode is null || IsHidden(baseNode) ? null : baseNode;
     }
 
     public async Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<string> qualifiedNames)
     {
-        var baseNodes = await _base.FindNodesByQualifiedNamesAsync(project, qualifiedNames);
-        if (!IsOverlayProject(project))
+        var baseNodes = await _base.FindNodesByQualifiedNamesAsync(repository, qualifiedNames);
+        if (!IsOverlayRepository(repository))
             return baseNodes;
 
         var names = qualifiedNames.ToHashSet(StringComparer.Ordinal);
@@ -486,12 +486,12 @@ public sealed class OverlayGraphView : IGraphReader
             .ToList();
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string repository, string name, int limit = 1000)
     {
-        if (!IsOverlayProject(project))
-            return await _base.FindNodesByNameAsync(project, name, limit);
+        if (!IsOverlayRepository(repository))
+            return await _base.FindNodesByNameAsync(repository, name, limit);
 
-        var baseNodes = await _base.FindNodesByNameAsync(project, name, SaturatingAdd(limit, _hiddenBaseNodes.Count));
+        var baseNodes = await _base.FindNodesByNameAsync(repository, name, SaturatingAdd(limit, _hiddenBaseNodes.Count));
         return baseNodes.Where(node => !IsHidden(node))
             .Concat(_overlayNodes.Values
                 .Where(node => string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase))
@@ -500,10 +500,10 @@ public sealed class OverlayGraphView : IGraphReader
             .ToList();
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string project, string filePath, int limit = 5000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string repository, string filePath, int limit = 5000)
     {
-        if (!IsOverlayProject(project))
-            return await _base.FindNodesByFileAsync(project, filePath, limit);
+        if (!IsOverlayRepository(repository))
+            return await _base.FindNodesByFileAsync(repository, filePath, limit);
 
         var path = NormalizePath(filePath);
         if (_removedPaths.Contains(path))
@@ -517,13 +517,13 @@ public sealed class OverlayGraphView : IGraphReader
                 .ToList();
         }
 
-        return (await _base.FindNodesByFileAsync(project, filePath, limit))
+        return (await _base.FindNodesByFileAsync(repository, filePath, limit))
             .Where(node => !IsHidden(node))
             .ToList();
     }
 
     public async Task<IReadOnlyList<GraphNode>> SearchNodesAsync(
-        string? project,
+        string? repository,
         string namePattern,
         NodeLabel? label = null,
         string? filePattern = null,
@@ -531,11 +531,11 @@ public sealed class OverlayGraphView : IGraphReader
         int offset = 0,
         string? dotnetProject = null)
     {
-        if (project is not null && !IsOverlayProject(project))
-            return await _base.SearchNodesAsync(project, namePattern, label, filePattern, limit, offset, dotnetProject);
+        if (repository is not null && !IsOverlayRepository(repository))
+            return await _base.SearchNodesAsync(repository, namePattern, label, filePattern, limit, offset, dotnetProject);
 
         var window = SaturatingAdd(SaturatingAdd(offset, limit), _hiddenBaseNodes.Count);
-        var baseNodes = (await _base.SearchNodesAsync(project, namePattern, label, filePattern, window, 0, dotnetProject))
+        var baseNodes = (await _base.SearchNodesAsync(repository, namePattern, label, filePattern, window, 0, dotnetProject))
             .Where(node => !IsHidden(node))
             .ToList();
         var matcher = new NodeFilter(namePattern, label, filePattern, dotnetProject);
@@ -549,14 +549,14 @@ public sealed class OverlayGraphView : IGraphReader
     }
 
     public async Task<int> SearchNodesCountAsync(
-        string? project,
+        string? repository,
         string namePattern,
         NodeLabel? label = null,
         string? filePattern = null,
         string? dotnetProject = null)
     {
-        var baseCount = await _base.SearchNodesCountAsync(project, namePattern, label, filePattern, dotnetProject);
-        if (project is not null && !IsOverlayProject(project))
+        var baseCount = await _base.SearchNodesCountAsync(repository, namePattern, label, filePattern, dotnetProject);
+        if (repository is not null && !IsOverlayRepository(repository))
             return baseCount;
 
         var matcher = new NodeFilter(namePattern, label, filePattern, dotnetProject);
@@ -602,9 +602,9 @@ public sealed class OverlayGraphView : IGraphReader
         return Combine(baseEdges, overlayEdges);
     }
 
-    public async Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string project, EdgeType? type = null)
+    public async Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string repository, EdgeType? type = null)
     {
-        var edges = await _base.FindCrossRepoEdgesAsync(project, type);
+        var edges = await _base.FindCrossRepoEdgesAsync(repository, type);
         var result = new List<CrossRepoEdge>(edges.Count);
         foreach (var edge in edges)
         {
@@ -694,7 +694,7 @@ public sealed class OverlayGraphView : IGraphReader
         => ids.Select(Canonical).OfType<long>().ToHashSet();
 
     private bool IsHidden(GraphNode node)
-        => _hiddenBaseNodes.ContainsKey(node.Id) && IsOverlayProject(node.Project);
+        => _hiddenBaseNodes.ContainsKey(node.Id) && IsOverlayRepository(node.Repository);
 
     /// <summary>Applies the edge rules from the class remarks to a default-branch edge.</summary>
     private GraphEdge? MapBaseEdge(GraphEdge edge)

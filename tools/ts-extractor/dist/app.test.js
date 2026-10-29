@@ -55,7 +55,7 @@ function writeFixture() {
         // ~1.5 MiB of admitted (non-source) paths, as a 15k+ file repository would send.
         const padding = Array.from({ length: 20000 }, (_, i) => `docs/section-${i}/a-reasonably-long-page-name-${i}.md`);
         const payload = {
-            projectName: 'Demo',
+            repositoryName: 'Demo',
             rootPath,
             tsconfigPath: path.join(rootPath, 'tsconfig.json'),
             includedFiles: ['tsconfig.json', 'src/app.ts', ...padding],
@@ -82,7 +82,7 @@ function writeFixture() {
             method: 'POST',
             url: '/extract-project',
             payload: {
-                projectName: 'Demo',
+                repositoryName: 'Demo',
                 rootPath,
                 tsconfigPath: path.join(rootPath, 'tsconfig.json'),
                 includedFiles: ['tsconfig.json', 'src/app.ts'],

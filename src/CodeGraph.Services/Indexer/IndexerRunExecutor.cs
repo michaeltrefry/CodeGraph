@@ -10,7 +10,7 @@ public sealed class IndexerRunExecutor(
     IDatabaseSourceStore databaseSourceStore,
     IDatabaseSchemaExtractor databaseSchemaExtractor,
     IAdminService adminService,
-    IProjectService projectService,
+    IRepositoryService repositoryService,
     IBranchOverlayService? branchOverlayService = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -28,7 +28,7 @@ public sealed class IndexerRunExecutor(
                 if (string.IsNullOrWhiteSpace(args.Repo))
                     throw new InvalidOperationException($"Indexer run '{run.Id}' has no repository to re-analyze.");
 
-                var batch = await projectService.ReAnalyzeRepository(args.Repo.Trim(), ct)
+                var batch = await repositoryService.ReAnalyzeRepository(args.Repo.Trim(), ct)
                     ?? throw new KeyNotFoundException($"Repository '{args.Repo.Trim()}' was not found.");
                 return $"Completed re-analysis for {args.Repo.Trim()}; analysis batch {batch.Id} is {batch.Status}.";
             }
@@ -107,7 +107,7 @@ public sealed class IndexerRunExecutor(
                 if (string.IsNullOrWhiteSpace(message.Name))
                     throw new InvalidOperationException($"Indexer run '{run.Id}' has no repository to process.");
 
-                await projectService.ProcessRepository(message, ct);
+                await repositoryService.ProcessRepository(message, ct);
                 return $"Processed repository {message.Name}.";
             }
 

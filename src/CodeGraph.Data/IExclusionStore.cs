@@ -7,5 +7,5 @@ public interface IExclusionStore
     Task<ExclusionRuleEntity> CreateExclusionRuleAsync(ExclusionRuleEntity rule);
     Task<ExclusionRuleEntity?> UpdateExclusionRuleAsync(long id, string exclusionType, string? reason);
     Task<bool> DeleteExclusionRuleAsync(long id);
-    Task<HashSet<string>> GetSecretFilePathsAsync(string project);
+    Task<HashSet<string>> GetSecretFilePathsAsync(string repository);
 }

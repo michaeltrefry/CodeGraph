@@ -47,7 +47,7 @@ public class CodeGraphDocGenerator
         {
             sb.AppendLine("## Dependencies (this service calls)");
             sb.AppendLine();
-            foreach (var dep in outboundDeps.GroupBy(d => d.TargetProject))
+            foreach (var dep in outboundDeps.GroupBy(d => d.TargetRepository))
             {
                 sb.AppendLine($"- **{dep.Key}**");
                 foreach (var edge in dep)
@@ -60,7 +60,7 @@ public class CodeGraphDocGenerator
         {
             sb.AppendLine("## Dependents (these services call us)");
             sb.AppendLine();
-            foreach (var dep in inboundDeps.GroupBy(d => d.SourceProject))
+            foreach (var dep in inboundDeps.GroupBy(d => d.SourceRepository))
             {
                 sb.AppendLine($"- **{dep.Key}**");
                 foreach (var edge in dep)

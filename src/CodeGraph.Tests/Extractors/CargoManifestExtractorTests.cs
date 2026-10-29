@@ -49,7 +49,7 @@ public class CargoManifestExtractorTests
         };
         var context = new ExtractorContext
         {
-            ProjectName = "RustWorkspace",
+            RepositoryName = "RustWorkspace",
             RootPath = rootPath
         };
 
@@ -108,7 +108,7 @@ public class CargoManifestExtractorTests
 
         var result = new CargoManifestExtractor().Extract(manifests, new ExtractorContext
         {
-            ProjectName = "PublicLib",
+            RepositoryName = "PublicLib",
             RootPath = rootPath
         });
 

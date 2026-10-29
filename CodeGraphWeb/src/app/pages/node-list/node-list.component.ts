@@ -51,7 +51,7 @@ export class NodeListComponent implements OnInit {
   private readonly nodePageSize = 500;
   private nodeLoadRequestId = 0;
 
-  projectName = signal('');
+  repositoryName = signal('');
   label = signal('');
   dotnetProject = signal('');
   allNodes = signal<GraphNode[]>([]);
@@ -255,7 +255,7 @@ export class NodeListComponent implements OnInit {
     const name = this.route.snapshot.paramMap.get('name') ?? '';
     const label = this.route.snapshot.queryParamMap.get('label') ?? '';
     const dotnetProject = this.route.snapshot.queryParamMap.get('dotnetProject') ?? '';
-    this.projectName.set(name);
+    this.repositoryName.set(name);
     this.label.set(label);
     this.dotnetProject.set(dotnetProject);
     this.chatContext.setNodeList(name, label || undefined);
@@ -272,8 +272,8 @@ export class NodeListComponent implements OnInit {
     this.expandedContainers.set(new Set());
     this.loadNodePage(requestId, 1, []);
 
-    // Load project detail to get matching analysis
-    this.api.getProject(this.projectName()).subscribe({
+    // Load repository detail to get matching analysis
+    this.api.getRepository(this.repositoryName()).subscribe({
       next: d => {
         this.indexedTotal.set(this.countIndexedNodes(d));
         const dp = this.dotnetProject();
@@ -285,8 +285,8 @@ export class NodeListComponent implements OnInit {
         } else if (d.summary) {
           // No dotnet project filter — use repo-level summary as a synthetic analysis
           this.analysis.set({
-            repo: d.project.name,
-            projectName: d.project.name,
+            repo: d.repository.name,
+            projectName: d.repository.name,
             summary: d.summary.summary,
             confidence: d.summary.confidence,
             endpoints: [],
@@ -302,8 +302,8 @@ export class NodeListComponent implements OnInit {
   }
 
   private loadNodePage(requestId: number, page: number, accumulatedNodes: GraphNode[]) {
-    this.api.getProjectNodes(
-      this.projectName(),
+    this.api.getRepositoryNodes(
+      this.repositoryName(),
       this.label() || undefined,
       this.dotnetProject() || undefined,
       page,
@@ -346,12 +346,12 @@ export class NodeListComponent implements OnInit {
     return this.labelIcons[this.label()] ?? '•';
   }
 
-  projectBaseRoute(): string {
-    return this.projectName().startsWith('db:') ? '/schemas' : '/repos';
+  repositoryBaseRoute(): string {
+    return this.repositoryName().startsWith('db:') ? '/schemas' : '/repos';
   }
 
-  projectBaseLabel(): string {
-    return this.projectName().startsWith('db:') ? 'Schemas' : 'Repositories';
+  repositoryBaseLabel(): string {
+    return this.repositoryName().startsWith('db:') ? 'Schemas' : 'Repositories';
   }
 
   toggleSection(label: string) {

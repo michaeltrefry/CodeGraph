@@ -14,7 +14,7 @@
       <div class="sc-header-actions">
         <span class="cg-count-pill">{{ totalObjects().toLocaleString() }} objects</span>
         @if (catalog(); as data) {
-          <a [routerLink]="['/schemas', data.projectName, 'nodes']" class="cg-btn cg-btn-secondary">All nodes</a>
+          <a [routerLink]="['/schemas', data.repositoryName, 'nodes']" class="cg-btn cg-btn-secondary">All nodes</a>
         }
       </div>
     </div>

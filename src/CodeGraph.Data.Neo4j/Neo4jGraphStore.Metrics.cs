@@ -7,7 +7,7 @@ public partial class Neo4jGraphStore
 {
     // ── File Metrics ──────────────────────────────────────────────────────
 
-    public async Task UpsertFileMetricsBatchAsync(string project, IReadOnlyList<FileMetricsEntity> metrics)
+    public async Task UpsertFileMetricsBatchAsync(string repository, IReadOnlyList<FileMetricsEntity> metrics)
     {
         if (metrics.Count == 0) return;
 
@@ -56,7 +56,7 @@ public partial class Neo4jGraphStore
             {
                 await tx.RunAsync("""
                     UNWIND $items AS m
-                    MERGE (fm:FileMetrics {project: $project, filePath: m.filePath})
+                    MERGE (fm:FileMetrics {repository: $repository, filePath: m.filePath})
                     SET fm.dotnetProject = m.dotnetProject,
                         fm.changes = m.changes, fm.linesAdded = m.linesAdded,
                         fm.linesRemoved = m.linesRemoved, fm.authorCount = m.authorCount,
@@ -84,24 +84,24 @@ public partial class Neo4jGraphStore
                         fm.computedAt = m.computedAt,
                         fm.commitSha = m.commitSha
                     """,
-                    new { project, items });
+                    new { repository, items });
             });
         }
 
-        logger.LogInformation("Upserted {Count} file metrics for {Project}", metrics.Count, project);
+        logger.LogInformation("Upserted {Count} file metrics for {Repository}", metrics.Count, repository);
     }
 
     public async Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(
-        string project, string? dotnetProject = null)
+        string repository, string? dotnetProject = null)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cypher = dotnetProject is null
-                ? "MATCH (fm:FileMetrics {project: $project}) RETURN fm"
-                : "MATCH (fm:FileMetrics {project: $project, dotnetProject: $dotnetProject}) RETURN fm";
+                ? "MATCH (fm:FileMetrics {repository: $repository}) RETURN fm"
+                : "MATCH (fm:FileMetrics {repository: $repository, dotnetProject: $dotnetProject}) RETURN fm";
 
-            var cursor = await tx.RunAsync(cypher, new { project, dotnetProject });
+            var cursor = await tx.RunAsync(cypher, new { repository, dotnetProject });
             var results = new List<FileMetricsEntity>();
             await foreach (var record in cursor)
                 results.Add(MapFileMetricsNode(record["fm"].As<INode>()));
@@ -109,28 +109,28 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath)
+    public async Task<FileMetricsEntity?> GetFileMetricAsync(string repository, string filePath)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (fm:FileMetrics {project: $project, filePath: $filePath}) RETURN fm LIMIT 1",
-                new { project, filePath });
+                "MATCH (fm:FileMetrics {repository: $repository, filePath: $filePath}) RETURN fm LIMIT 1",
+                new { repository, filePath });
             await foreach (var record in cursor)
                 return MapFileMetricsNode(record["fm"].As<INode>());
             return null;
         });
     }
 
-    public async Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10)
+    public async Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string repository, int top = 10)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (fm:FileMetrics {project: $project}) RETURN fm ORDER BY COALESCE(fm.concernScore, 0) DESC, COALESCE(fm.riskScore, 0) DESC LIMIT $top",
-                new { project, top });
+                "MATCH (fm:FileMetrics {repository: $repository}) RETURN fm ORDER BY COALESCE(fm.concernScore, 0) DESC, COALESCE(fm.riskScore, 0) DESC LIMIT $top",
+                new { repository, top });
             var results = new List<FileMetricsEntity>();
             await foreach (var record in cursor)
                 results.Add(MapFileMetricsNode(record["fm"].As<INode>()));
@@ -138,18 +138,18 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task DeleteFileMetricsAsync(string project)
+    public async Task DeleteFileMetricsAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (fm:FileMetrics {project: $project}) DELETE fm",
-                new { project });
+                "MATCH (fm:FileMetrics {repository: $repository}) DELETE fm",
+                new { repository });
         });
     }
 
-    // ── Project Health Summaries ──────────────────────────────────────────
+    // ── Repository Health Summaries ──────────────────────────────────────────
 
     public async Task UpsertProjectHealthSummaryAsync(ProjectHealthSummaryEntity summary)
     {
@@ -157,7 +157,7 @@ public partial class Neo4jGraphStore
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
-                MERGE (h:ProjectHealthSummary {project: $project, dotnetProject: $dotnetProject})
+                MERGE (h:ProjectHealthSummary {repository: $repository, dotnetProject: $dotnetProject})
                 SET h.overallHealth = $overallHealth,
                     h.totalFiles = $totalFiles,
                     h.hotspotCount = $hotspotCount,
@@ -181,7 +181,7 @@ public partial class Neo4jGraphStore
                 """,
                 new
                 {
-                    project = summary.Project,
+                    repository = summary.Repository,
                     dotnetProject = summary.DotnetProject ?? "",
                     overallHealth = summary.OverallHealth,
                     totalFiles = summary.TotalFiles,
@@ -207,14 +207,14 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project)
+    public async Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (h:ProjectHealthSummary {project: $project}) RETURN h",
-                new { project });
+                "MATCH (h:ProjectHealthSummary {repository: $repository}) RETURN h",
+                new { repository });
             var results = new List<ProjectHealthSummaryEntity>();
             await foreach (var record in cursor)
                 results.Add(MapHealthSummaryNode(record["h"].As<INode>()));
@@ -236,7 +236,7 @@ public partial class Neo4jGraphStore
         });
     }
 
-    // ── Project Health Analyses ───────────────────────────────────────────
+    // ── Repository Health Analyses ───────────────────────────────────────────
 
     public async Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis)
     {
@@ -244,7 +244,7 @@ public partial class Neo4jGraphStore
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
-                MERGE (h:ProjectHealthAnalysis {project: $project, dotnetProject: $dotnetProject})
+                MERGE (h:ProjectHealthAnalysis {repository: $repository, dotnetProject: $dotnetProject})
                 SET h.analysis = $analysis,
                     h.confidence = $confidence,
                     h.modelUsed = $modelUsed,
@@ -253,7 +253,7 @@ public partial class Neo4jGraphStore
                 """,
                 new
                 {
-                    project = analysis.Project,
+                    repository = analysis.Repository,
                     dotnetProject = analysis.DotnetProject ?? "",
                     analysis = analysis.Analysis,
                     confidence = analysis.Confidence,
@@ -263,21 +263,21 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string project)
+    public async Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (h:ProjectHealthAnalysis {project: $project}) RETURN h",
-                new { project });
+                "MATCH (h:ProjectHealthAnalysis {repository: $repository}) RETURN h",
+                new { repository });
             var results = new List<ProjectHealthAnalysisEntity>();
             await foreach (var record in cursor)
             {
                 var node = record["h"].As<INode>();
                 results.Add(new ProjectHealthAnalysisEntity
                 {
-                    Project = node["project"].As<string>(),
+                    Repository = node["repository"].As<string>(),
                     DotnetProject = GetStringOrNull(node, "dotnetProject"),
                     Analysis = node["analysis"].As<string>(),
                     Confidence = node["confidence"].As<string>(),
@@ -294,7 +294,7 @@ public partial class Neo4jGraphStore
 
     private static FileMetricsEntity MapFileMetricsNode(INode node) => new()
     {
-        Project = node["project"].As<string>(),
+        Repository = node["repository"].As<string>(),
         FilePath = node["filePath"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
         Changes = node.Properties.ContainsKey("changes") ? node["changes"].As<int>() : 0,
@@ -332,7 +332,7 @@ public partial class Neo4jGraphStore
 
     private static ProjectHealthSummaryEntity MapHealthSummaryNode(INode node) => new()
     {
-        Project = node["project"].As<string>(),
+        Repository = node["repository"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
         OverallHealth = node.Properties.ContainsKey("overallHealth") ? node["overallHealth"].As<double>() : 5.0,
         TotalFiles = node.Properties.ContainsKey("totalFiles") ? node["totalFiles"].As<int>() : 0,

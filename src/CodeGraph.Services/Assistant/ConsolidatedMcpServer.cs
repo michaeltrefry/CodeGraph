@@ -30,7 +30,7 @@ public sealed class ConsolidatedMcpServer
         [Description("Operation: search (default) | schema.")] string operation = "search",
         [Description("Name pattern to search for (supports % wildcards). Required for operation=search.")] string? query = null,
         [Description("Filter by node type: Class, Method, Route, Service, Event, Queue, Table, Interface, etc.")] string? label = null,
-        [Description("Filter by project/repository name.")] string? project = null,
+        [Description("Filter by repository name.")] string? repository = null,
         [Description("Max results (default 20).")] int limit = 20,
         [Description(ShaDescription)] string? sha = null)
     {
@@ -40,7 +40,7 @@ public sealed class ConsolidatedMcpServer
             case "" or "search":
                 if (string.IsNullOrWhiteSpace(query))
                     return TextResult(Error(tool, "search", "missing_argument", "operation=search requires 'query'."));
-                return Wrap(tool, "search", await codegraph.SearchGraph(query, label, project, limit, sha));
+                return Wrap(tool, "search", await codegraph.SearchGraph(query, label, repository, limit, sha));
             case "schema":
                 return TextResult(Wrap(tool, "schema", codegraph.GetGraphSchema()));
             default:
@@ -76,7 +76,7 @@ public sealed class ConsolidatedMcpServer
         [Description("The function, method, model, event, queue, or element name to trace.")] string? target = null,
         [Description("call_path direction: inbound | outbound | both (default both).")] string direction = "both",
         [Description("Traversal depth for call_path/impact (default 3).")] int depth = 3,
-        [Description("Filter by project/repository name.")] string? project = null,
+        [Description("Filter by repository name.")] string? repository = null,
         [Description(ShaDescription)] string? sha = null)
     {
         const string tool = "graph_trace";
@@ -87,11 +87,11 @@ public sealed class ConsolidatedMcpServer
 
         return op switch
         {
-            "call_path" => Wrap(tool, op, await codegraph.TraceCallPath(target!, direction, depth, project, sha)),
-            "data_lineage" => Wrap(tool, op, await codegraph.TraceDataLineage(target!, project, sha)),
-            "consumers" => Wrap(tool, op, await codegraph.FindConsumers(target!, project, sha)),
-            "publishers" => Wrap(tool, op, await codegraph.FindPublishers(target!, project, sha)),
-            "impact" => Wrap(tool, op, await codegraph.AnalyzeImpact(target!, project, depth, sha)),
+            "call_path" => Wrap(tool, op, await codegraph.TraceCallPath(target!, direction, depth, repository, sha)),
+            "data_lineage" => Wrap(tool, op, await codegraph.TraceDataLineage(target!, repository, sha)),
+            "consumers" => Wrap(tool, op, await codegraph.FindConsumers(target!, repository, sha)),
+            "publishers" => Wrap(tool, op, await codegraph.FindPublishers(target!, repository, sha)),
+            "impact" => Wrap(tool, op, await codegraph.AnalyzeImpact(target!, repository, depth, sha)),
             _ => TextResult(InvalidOperation(tool, operation, "call_path", "data_lineage", "consumers", "publishers", "impact")),
         };
     }
@@ -101,7 +101,7 @@ public sealed class ConsolidatedMcpServer
     public static async Task<CallToolResult> GraphSource(
         CodeGraphMcpServer codegraph,
         [Description("Operation: snippet | node.")] string operation,
-        [Description("Project/repository name. Required for operation=snippet.")] string? project = null,
+        [Description("Repository name. Required for operation=snippet.")] string? repository = null,
         [Description("File path relative to repo root. Required for operation=snippet.")] string? filePath = null,
         [Description("Start line (0 for beginning).")] int startLine = 0,
         [Description("End line (0 for entire file).")] int endLine = 0,
@@ -112,9 +112,9 @@ public sealed class ConsolidatedMcpServer
         switch (Normalize(operation))
         {
             case "snippet":
-                if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(filePath))
-                    return TextResult(Error(tool, "snippet", "missing_argument", "operation=snippet requires 'project' and 'filePath'."));
-                return Wrap(tool, "snippet", await codegraph.GetCodeSnippet(project, filePath, startLine, endLine, sha));
+                if (string.IsNullOrWhiteSpace(repository) || string.IsNullOrWhiteSpace(filePath))
+                    return TextResult(Error(tool, "snippet", "missing_argument", "operation=snippet requires 'repository' and 'filePath'."));
+                return Wrap(tool, "snippet", await codegraph.GetCodeSnippet(repository, filePath, startLine, endLine, sha));
             case "node":
                 if (nodeId is null)
                     return TextResult(Error(tool, "node", "missing_argument", "operation=node requires 'nodeId'."));
@@ -124,12 +124,12 @@ public sealed class ConsolidatedMcpServer
         }
     }
 
-    [McpServerTool(Name = "project_report", Title = "Project Intelligence", ReadOnly = true)]
-    [Description("Project/repository intelligence. operation=search | summary | architecture | health | fleet_health | archival_candidates.")]
-    public static async Task<CallToolResult> ProjectReport(
+    [McpServerTool(Name = "repository_report", Title = "Repository Intelligence", ReadOnly = true)]
+    [Description("Repository intelligence. operation=search | summary | architecture | health | fleet_health | archival_candidates.")]
+    public static async Task<CallToolResult> RepositoryReport(
         CodeGraphMcpServer codegraph,
         [Description("Operation: search (default) | summary | architecture | health | fleet_health | archival_candidates.")] string operation = "search",
-        [Description("Project/repository name. Required for summary, architecture, and health.")] string? project = null,
+        [Description("Repository name. Required for summary, architecture, and health.")] string? repository = null,
         [Description("Partial or wildcard repository name search (operation=search).")] string? search = null,
         [Description("Source group filter (operation=search).")] string? group = null,
         [Description("Page number, 1-based (operation=search).")] int page = 1,
@@ -138,17 +138,17 @@ public sealed class ConsolidatedMcpServer
         [Description("Only show repos with health below this threshold (operation=fleet_health).")] double? maxHealth = null,
         [Description("Max repos to return (operation=fleet_health, default 50).")] int limit = 50)
     {
-        const string tool = "project_report";
+        const string tool = "repository_report";
         var op = Normalize(operation);
-        if (op is "summary" or "architecture" or "health" && string.IsNullOrWhiteSpace(project))
-            return TextResult(Error(tool, op, "missing_argument", $"operation={op} requires 'project'."));
+        if (op is "summary" or "architecture" or "health" && string.IsNullOrWhiteSpace(repository))
+            return TextResult(Error(tool, op, "missing_argument", $"operation={op} requires 'repository'."));
 
         return op switch
         {
-            "" or "search" => TextResult(Wrap(tool, "search", await codegraph.SearchProjects(search, group, page, pageSize))),
-            "summary" => TextResult(Wrap(tool, op, await codegraph.GetServiceSummary(project!))),
-            "architecture" => Wrap(tool, op, await codegraph.GetArchitecture(project!)),
-            "health" => TextResult(Wrap(tool, op, await codegraph.GetProjectHealth(project!, topHotspots))),
+            "" or "search" => TextResult(Wrap(tool, "search", await codegraph.SearchRepositories(search, group, page, pageSize))),
+            "summary" => TextResult(Wrap(tool, op, await codegraph.GetServiceSummary(repository!))),
+            "architecture" => Wrap(tool, op, await codegraph.GetArchitecture(repository!)),
+            "health" => TextResult(Wrap(tool, op, await codegraph.GetRepositoryHealth(repository!, topHotspots))),
             "fleet_health" => TextResult(Wrap(tool, op, await codegraph.GetFleetHealth(maxHealth, limit))),
             "archival_candidates" => TextResult(Wrap(tool, op, await codegraph.FindArchivalCandidates())),
             _ => TextResult(InvalidOperation(tool, operation, "search", "summary", "architecture", "health", "fleet_health", "archival_candidates")),
@@ -177,16 +177,16 @@ public sealed class ConsolidatedMcpServer
     }
 
     [McpServerTool(Name = "storage_table", Title = "Database Schema Catalog", ReadOnly = true)]
-    [Description("Indexed database schema catalog. operation=list_schemas lists schema projects; operation=catalog returns one schema's full catalog.")]
+    [Description("Indexed database schema catalog. operation=list_schemas lists schema repositories; operation=catalog returns one schema's full catalog.")]
     public static async Task<string> StorageTable(
         CodeGraphMcpServer codegraph,
         [Description("Operation: list_schemas (default) | catalog.")] string operation = "list_schemas",
-        [Description("Search across schema project, server, and database names (operation=list_schemas).")] string? search = null,
+        [Description("Search across schema repository, server, and database names (operation=list_schemas).")] string? search = null,
         [Description("Server name filter (operation=list_schemas).")] string? server = null,
         [Description("Database name filter (operation=list_schemas).")] string? database = null,
         [Description("Page number, 1-based (operation=list_schemas).")] int page = 1,
         [Description("Page size (operation=list_schemas).")] int pageSize = 25,
-        [Description("Schema project name, for example db:server/database. Required for operation=catalog.")] string? name = null)
+        [Description("Schema repository name, for example db:server/database. Required for operation=catalog.")] string? name = null)
     {
         const string tool = "storage_table";
         switch (Normalize(operation))

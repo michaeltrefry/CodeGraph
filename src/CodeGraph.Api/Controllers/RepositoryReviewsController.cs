@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace CodeGraph.Api.Controllers;
 
 [ApiController]
-[Route("api/projects/{repo}/code-review")]
+[Route("api/repositories/{repo}/code-review")]
 public class RepositoryReviewsController(
     IRepositoryReviewService reviewService,
     ILogger<RepositoryReviewsController> logger) : Controller

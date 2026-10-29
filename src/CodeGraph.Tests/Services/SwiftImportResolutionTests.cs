@@ -17,12 +17,12 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class SwiftImportResolutionTests : IDisposable
 {
-    private const string Project = "ShapeKit";
-    private const string Shape = $"{Project}:Sources/ShapeKit/Shape.swift";
-    private const string ShapeTests = $"{Project}:Tests/ShapeKitTests/ShapeTests.swift";
-    private const string GeometryTarget = $"{Project}:Package.swift#target:Geometry";
-    private const string ShapeKitTarget = $"{Project}:Package.swift#target:ShapeKit";
-    private const string Point = $"{Project}:Sources/Geometry/Point.swift#type:Point";
+    private const string Repository = "ShapeKit";
+    private const string Shape = $"{Repository}:Sources/ShapeKit/Shape.swift";
+    private const string ShapeTests = $"{Repository}:Tests/ShapeKitTests/ShapeTests.swift";
+    private const string GeometryTarget = $"{Repository}:Package.swift#target:Geometry";
+    private const string ShapeKitTarget = $"{Repository}:Package.swift#target:ShapeKit";
+    private const string Point = $"{Repository}:Sources/Geometry/Point.swift#type:Point";
     private const string SwiftLog = "package:swiftpm:scm:github.com/apple/swift-log@upToNextMajor:1.5.0";
     private const string Collections = "package:swiftpm:scm:github.com/apple/swift-collections@upToNextMajor:1.0.0";
 
@@ -106,7 +106,7 @@ public sealed class SwiftImportResolutionTests : IDisposable
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 swiftPackageManifestExtractor: new SwiftPackageManifestExtractor())
-            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
     private void WriteRepository(bool withCollections = false, string sparkleVersion = "2.10.0")
     {
@@ -140,11 +140,11 @@ public sealed class SwiftImportResolutionTests : IDisposable
         (Shape, Point, null, "Point"),
         (ShapeTests, "swift-external-module:XCTest", "external", null),
         (ShapeTests, ShapeKitTarget, "target", null),
-        ($"{Project}:Package.swift", "swift-external-module:PackageDescription", "external", null)
+        ($"{Repository}:Package.swift", "swift-external-module:PackageDescription", "external", null)
     ];
 
     [Fact]
-    public async Task IndexProject_SwiftImports_ResolveToTargetsPackagesAndExternalModules()
+    public async Task IndexRepository_SwiftImports_ResolveToTargetsPackagesAndExternalModules()
     {
         WriteRepository();
         await IndexAsync();
@@ -160,7 +160,7 @@ public sealed class SwiftImportResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_IncrementalRun_RebindsImportsOfUnchangedFilesWhenManifestsChange()
+    public async Task IndexRepository_IncrementalRun_RebindsImportsOfUnchangedFilesWhenManifestsChange()
     {
         WriteRepository();
         await IndexAsync();
@@ -187,7 +187,7 @@ public sealed class SwiftImportResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_DeletingTheOnlyImporterOfAnExternalModule_RemovesItsStub()
+    public async Task IndexRepository_DeletingTheOnlyImporterOfAnExternalModule_RemovesItsStub()
     {
         WriteRepository();
         await IndexAsync();
@@ -201,7 +201,7 @@ public sealed class SwiftImportResolutionTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_SameTargetNameInSeveralPackages_BindsTheNearestEnclosingPackage()
+    public async Task IndexRepository_SameTargetNameInSeveralPackages_BindsTheNearestEnclosingPackage()
     {
         Write("Package.swift", "let package = Package(name: \"Root\", targets: [.target(name: \"Core\"), .target(name: \"App\")])\n");
         Write("Modules/Feature/Package.swift", "let package = Package(name: \"Feature\", targets: [.target(name: \"Core\"), .target(name: \"Feature\")])\n");
@@ -217,12 +217,12 @@ public sealed class SwiftImportResolutionTests : IDisposable
                 edge.Properties["confidence"].ToString()))
             .ShouldBe(
             [
-                ($"{Project}:Sources/App/App.swift", $"{Project}:Package.swift#target:Core", "high"),
-                ($"{Project}:Modules/Feature/Sources/Feature/Feature.swift",
-                    $"{Project}:Modules/Feature/Package.swift#target:Core", "high"),
+                ($"{Repository}:Sources/App/App.swift", $"{Repository}:Package.swift#target:Core", "high"),
+                ($"{Repository}:Modules/Feature/Sources/Feature/Feature.swift",
+                    $"{Repository}:Modules/Feature/Package.swift#target:Core", "high"),
                 // Neither package encloses the importer: both stay candidates, with low confidence.
-                ($"{Project}:Sources/App/App.swift", $"{Project}:Modules/A/Package.swift#target:Util", "low"),
-                ($"{Project}:Sources/App/App.swift", $"{Project}:Modules/B/Package.swift#target:Util", "low")
+                ($"{Repository}:Sources/App/App.swift", $"{Repository}:Modules/A/Package.swift#target:Util", "low"),
+                ($"{Repository}:Sources/App/App.swift", $"{Repository}:Modules/B/Package.swift#target:Util", "low")
             ], ignoreOrder: true);
     }
 
@@ -240,9 +240,9 @@ public sealed class SwiftImportResolutionTests : IDisposable
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 swiftPackageManifestExtractor: new SwiftPackageManifestExtractor())
-            .ExtractOverlayAsync(Project, _root, ["Sources/ShapeKit/Extra.swift"], [], [], CancellationToken.None);
+            .ExtractOverlayAsync(Repository, _root, ["Sources/ShapeKit/Extra.swift"], [], [], CancellationToken.None);
 
-        const string extra = $"{Project}:Sources/ShapeKit/Extra.swift";
+        const string extra = $"{Repository}:Sources/ShapeKit/Extra.swift";
         slice.Edges.Where(edge => edge.Type == EdgeType.IMPORTS)
             .Select(edge => (edge.SourceQN, edge.TargetQN))
             .ShouldBe(

@@ -13,12 +13,12 @@ public partial class GraphAssistant
     {
         var pattern = GetString(input, "namePattern") ?? "%";
         var label = GetString(input, "label");
-        var project = GetString(input, "project");
+        var repository = GetString(input, "repository");
         var limit = GetInt(input, "limit") ?? 20;
 
         var parsedLabel = label.TryParseEnum<NodeLabel>();
 
-        var result = await query.SearchAsync(new SearchRequest(pattern, parsedLabel, project, Math.Min(limit * 2, 100)));
+        var result = await query.SearchAsync(new SearchRequest(pattern, parsedLabel, repository, Math.Min(limit * 2, 100)));
 
         if (result.Nodes.Count == 0)
             return $"No results found for '{pattern}'.";
@@ -39,7 +39,7 @@ public partial class GraphAssistant
         foreach (var node in ranked)
         {
             var trustLabel = node.DoNotTrust ? " **[UNTRUSTED]**" : "";
-            sb.AppendLine($"- **{node.Name}** ({node.Label}) — {node.Project}{trustLabel}{AnswerConfidence.Tag(node)}");
+            sb.AppendLine($"- **{node.Name}** ({node.Label}) — {node.Repository}{trustLabel}{AnswerConfidence.Tag(node)}");
             if (!string.IsNullOrEmpty(node.FilePath))
                 sb.AppendLine($"  File: {node.FilePath}:{node.StartLine}");
             if (!string.IsNullOrEmpty(node.QualifiedName) && node.QualifiedName != node.Name)
@@ -51,15 +51,15 @@ public partial class GraphAssistant
         return sb.ToString();
     }
 
-    private async Task<string> ListProjectsAsync()
+    private async Task<string> ListRepositoriesAsync()
     {
-        var projects = await store.ListRepositoriesAsync();
-        if (projects.Count == 0) return "No projects indexed yet.";
+        var repositories = await store.ListRepositoriesAsync();
+        if (repositories.Count == 0) return "No repositories indexed yet.";
 
-        return FormatProjects(projects.OrderBy(p => p.Name).ToList(), projects.Count, includeRepoUrl: false);
+        return FormatRepositories(repositories.OrderBy(p => p.Name).ToList(), repositories.Count, includeRepoUrl: false);
     }
 
-    private async Task<string> SearchProjectsAsync(JsonElement input)
+    private async Task<string> SearchRepositoriesAsync(JsonElement input)
     {
         var search = GetString(input, "search");
         var group = GetString(input, "group");
@@ -69,17 +69,17 @@ public partial class GraphAssistant
         var result = await store.SearchRepositoriesAsync(search, group, page, pageSize);
         if (result.TotalCount == 0)
             return string.IsNullOrWhiteSpace(search) && string.IsNullOrWhiteSpace(group)
-                ? "No projects indexed yet."
-                : "No projects matched the search.";
+                ? "No repositories indexed yet."
+                : "No repositories matched the search.";
 
-        return FormatProjects(result.Items, result.TotalCount, includeRepoUrl: true);
+        return FormatRepositories(result.Items, result.TotalCount, includeRepoUrl: true);
     }
 
-    private static string FormatProjects(IReadOnlyList<ProjectInfo> projects, int totalCount, bool includeRepoUrl)
+    private static string FormatRepositories(IReadOnlyList<RepositoryInfo> repositories, int totalCount, bool includeRepoUrl)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"## Indexed Projects ({totalCount})\n");
-        foreach (var p in projects)
+        sb.AppendLine($"## Indexed Repositories ({totalCount})\n");
+        foreach (var p in repositories)
         {
             var flags = new List<string>();
             if (p.IsFoundational) flags.Add("foundational");
@@ -96,12 +96,12 @@ public partial class GraphAssistant
 
     private async Task<string> GetServiceSummaryAsync(JsonElement input)
     {
-        var project = GetString(input, "project") ?? "";
-        var summary = await store.GetRepositorySummaryAsync(project);
-        if (summary is null) return $"No analysis available for '{project}'.";
+        var repository = GetString(input, "repository") ?? "";
+        var summary = await store.GetRepositorySummaryAsync(repository);
+        if (summary is null) return $"No analysis available for '{repository}'.";
 
         var sb = new StringBuilder();
-        sb.AppendLine($"# {project}");
+        sb.AppendLine($"# {repository}");
         sb.AppendLine($"**Confidence:** {summary.Confidence}");
         sb.AppendLine($"**Last updated:** {summary.UpdatedAt:yyyy-MM-dd}");
         sb.AppendLine();
@@ -114,13 +114,13 @@ public partial class GraphAssistant
         var fn = GetString(input, "functionName") ?? "";
         var dirStr = GetString(input, "direction") ?? "both";
         var depth = GetInt(input, "depth") ?? 3;
-        var project = GetString(input, "project");
+        var repository = GetString(input, "repository");
 
         var dir = dirStr.TryParseEnum<TraceDirection>() ?? TraceDirection.Both;
 
-        var (start, result) = await query.TraceCallPathWithStartAsync(fn, project, dir, depth);
+        var (start, result) = await query.TraceCallPathWithStartAsync(fn, repository, dir, depth);
         var startLine = start is not null && GraphNodeConfidence.IsLowConfidence(start)
-            ? $"Start: **{start.Name}** ({start.Label}) — {start.Project}{AnswerConfidence.NodeTag}"
+            ? $"Start: **{start.Name}** ({start.Label}) — {start.Repository}{AnswerConfidence.NodeTag}"
             : null;
         var lowConfidenceCount = AnswerConfidence.Count(result.Select(entry => entry.Node).Append(start));
         if (result.Count == 0)
@@ -139,7 +139,7 @@ public partial class GraphAssistant
         foreach (var entry in result)
         {
             var indent = new string(' ', entry.Depth * 2);
-            sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Project} [{entry.EdgeType}]{AnswerConfidence.Tag(entry.Node)}");
+            sb.AppendLine($"{indent}- **{entry.Node.Name}** ({entry.Node.Label}) — {entry.Node.Repository} [{entry.EdgeType}]{AnswerConfidence.Tag(entry.Node)}");
         }
         AppendLowConfidenceLine(sb, lowConfidenceCount);
         return sb.ToString();
@@ -148,8 +148,8 @@ public partial class GraphAssistant
     private async Task<string> TraceDataLineageAsync(JsonElement input)
     {
         var model = GetString(input, "modelName") ?? "";
-        var project = GetString(input, "project");
-        var result = await query.TraceDataLineageAsync(model, project);
+        var repository = GetString(input, "repository");
+        var result = await query.TraceDataLineageAsync(model, repository);
 
         if (result.Producers.Count == 0 && result.Consumers.Count == 0 && result.CrossRepoEdges.Count == 0)
             return $"No data lineage found for '{model}'.";
@@ -160,19 +160,19 @@ public partial class GraphAssistant
         {
             sb.AppendLine("### Producers\n");
             foreach (var e in result.Producers)
-                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Project} [{e.EdgeType}]{AnswerConfidence.Tag(e.Node)}");
+                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Repository} [{e.EdgeType}]{AnswerConfidence.Tag(e.Node)}");
         }
         if (result.Consumers.Count > 0)
         {
             sb.AppendLine("### Consumers\n");
             foreach (var e in result.Consumers)
-                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Project} [{e.EdgeType}]{AnswerConfidence.Tag(e.Node)}");
+                sb.AppendLine($"- **{e.Node.Name}** ({e.Node.Label}) — {e.Node.Repository} [{e.EdgeType}]{AnswerConfidence.Tag(e.Node)}");
         }
         if (result.CrossRepoEdges.Count > 0)
         {
             sb.AppendLine("### Cross-Repo\n");
             foreach (var e in result.CrossRepoEdges)
-                sb.AppendLine($"- {e.SourceProject} → {e.TargetProject} ({e.Type})");
+                sb.AppendLine($"- {e.SourceRepository} → {e.TargetRepository} ({e.Type})");
         }
         AppendLowConfidenceLine(sb, AnswerConfidence.Count(result.Producers.Concat(result.Consumers)
             .Select(entry => entry.Node).Append(result.ModelNode)));
@@ -182,14 +182,14 @@ public partial class GraphAssistant
     private async Task<string> FindConsumersAsync(JsonElement input)
     {
         var name = GetString(input, "name") ?? "";
-        var project = GetString(input, "project");
-        var result = await query.FindConsumersAsync(name, project);
+        var repository = GetString(input, "repository");
+        var result = await query.FindConsumersAsync(name, repository);
         if (result.Count == 0) return $"No consumers found for '{name}'.";
 
         var sb = new StringBuilder();
         sb.AppendLine($"## Consumers of {name} ({result.Count})\n");
         foreach (var c in result)
-            sb.AppendLine($"- **{c.Name}** — {c.Project} ({c.EdgeType}){AnswerConfidence.Tag(c.LowConfidence)}");
+            sb.AppendLine($"- **{c.Name}** — {c.Repository} ({c.EdgeType}){AnswerConfidence.Tag(c.LowConfidence)}");
         AppendLowConfidenceLine(sb, result.Count(c => c.LowConfidence));
         return sb.ToString();
     }
@@ -197,14 +197,14 @@ public partial class GraphAssistant
     private async Task<string> FindPublishersAsync(JsonElement input)
     {
         var name = GetString(input, "name") ?? "";
-        var project = GetString(input, "project");
-        var result = await query.FindPublishersAsync(name, project);
+        var repository = GetString(input, "repository");
+        var result = await query.FindPublishersAsync(name, repository);
         if (result.Count == 0) return $"No publishers found for '{name}'.";
 
         var sb = new StringBuilder();
         sb.AppendLine($"## Publishers to {name} ({result.Count})\n");
         foreach (var p in result)
-            sb.AppendLine($"- **{p.Name}** — {p.Project} ({p.EdgeType}){AnswerConfidence.Tag(p.LowConfidence)}");
+            sb.AppendLine($"- **{p.Name}** — {p.Repository} ({p.EdgeType}){AnswerConfidence.Tag(p.LowConfidence)}");
         AppendLowConfidenceLine(sb, result.Count(p => p.LowConfidence));
         return sb.ToString();
     }
@@ -217,8 +217,8 @@ public partial class GraphAssistant
 
     private async Task<string> GetArchitectureAsync(JsonElement input)
     {
-        var project = GetString(input, "project") ?? "";
-        return ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(project));
+        var repository = GetString(input, "repository") ?? "";
+        return ArchitectureReportFormatter.Format(await query.GetArchitectureAsync(repository));
     }
 
     private async Task<string> FindArchivalCandidatesAsync()
@@ -233,17 +233,17 @@ public partial class GraphAssistant
         return sb.ToString();
     }
 
-    private async Task<string> GetProjectHealthAsync(JsonElement input)
+    private async Task<string> GetRepositoryHealthAsync(JsonElement input)
     {
-        var project = GetString(input, "project") ?? "";
+        var repository = GetString(input, "repository") ?? "";
         var top = GetInt(input, "topHotspots") ?? 10;
-        var report = await query.GetProjectHealthAsync(project, top);
+        var report = await query.GetRepositoryHealthAsync(repository, top);
 
         if (report.RepoHealth is null && report.Analyses.Count == 0)
-            return $"No health data available for '{project}'.";
+            return $"No health data available for '{repository}'.";
 
         var sb = new StringBuilder();
-        sb.AppendLine($"# Health: {project}\n");
+        sb.AppendLine($"# Health: {repository}\n");
 
         if (report.RepoHealth is not null)
         {
@@ -275,10 +275,10 @@ public partial class GraphAssistant
             }
         }
 
-        if (report.ProjectHealths.Count > 0)
+        if (report.DotnetProjectHealths.Count > 0)
         {
             sb.AppendLine("### Per-Project");
-            foreach (var ph in report.ProjectHealths.OrderBy(p => p.OverallHealth))
+            foreach (var ph in report.DotnetProjectHealths.OrderBy(p => p.OverallHealth))
                 sb.AppendLine($"- **{ph.DotnetProject}**: {ph.OverallHealth:F1}/10 ({ph.HotspotCount} hotspots)");
             sb.AppendLine();
         }
@@ -332,7 +332,7 @@ public partial class GraphAssistant
         sb.AppendLine();
 
         foreach (var s in displayed)
-            sb.AppendLine($"- **{s.Project}**: {s.OverallHealth:F1}/10 ({s.TotalFiles} files, {s.HotspotCount} hotspots)");
+            sb.AppendLine($"- **{s.Repository}**: {s.OverallHealth:F1}/10 ({s.TotalFiles} files, {s.HotspotCount} hotspots)");
 
         if (filtered.Count > limit)
             sb.AppendLine($"\n*...and {filtered.Count - limit} more*");
@@ -350,16 +350,16 @@ public partial class GraphAssistant
         if (string.IsNullOrWhiteSpace(node.FilePath))
             return $"Node '{node.Name}' ({node.Label}) has no source file path.";
 
-        var lines = await RepoFileResolver.ReadAllLinesAsync(node.Project, node.FilePath, sourceOptions, store);
+        var lines = await RepoFileResolver.ReadAllLinesAsync(node.Repository, node.FilePath, sourceOptions, store);
         if (lines is null)
-            return $"Source file not found: {node.Project}/{node.FilePath}";
+            return $"Source file not found: {node.Repository}/{node.FilePath}";
         var start = node.StartLine > 0 ? Math.Max(0, node.StartLine - 1 - 5) : 0;
         var end = node.EndLine > 0 ? Math.Min(lines.Length, node.EndLine + 5) : lines.Length;
         if (lines.Length <= 200) { start = 0; end = lines.Length; }
 
         var ext = Path.GetExtension(node.FilePath).TrimStart('.');
         var sb = new StringBuilder();
-        sb.AppendLine($"## {node.Name} ({node.Label}) — {node.Project}");
+        sb.AppendLine($"## {node.Name} ({node.Label}) — {node.Repository}");
         sb.AppendLine($"File: {node.FilePath}, lines {node.StartLine}–{node.EndLine}\n");
         sb.AppendLine($"```{ext}");
         for (var i = start; i < end; i++)
@@ -373,17 +373,17 @@ public partial class GraphAssistant
 
     private async Task<string> GetCodeSnippetAsync(JsonElement input)
     {
-        var project = GetString(input, "project") ?? "";
+        var repository = GetString(input, "repository") ?? "";
         var filePath = GetString(input, "filePath") ?? "";
         var startLine = GetInt(input, "startLine") ?? 0;
         var endLine = GetInt(input, "endLine") ?? 0;
 
-        if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(filePath))
-            return "project and filePath are required.";
+        if (string.IsNullOrWhiteSpace(repository) || string.IsNullOrWhiteSpace(filePath))
+            return "repository and filePath are required.";
 
-        var lines = await RepoFileResolver.ReadAllLinesAsync(project, filePath, sourceOptions, store);
+        var lines = await RepoFileResolver.ReadAllLinesAsync(repository, filePath, sourceOptions, store);
         if (lines is null)
-            return $"File not found: {project}/{filePath}";
+            return $"File not found: {repository}/{filePath}";
         var start = startLine > 0 ? startLine - 1 : 0;
         var end = endLine > 0 ? Math.Min(endLine, lines.Length) : lines.Length;
         if (start >= lines.Length)

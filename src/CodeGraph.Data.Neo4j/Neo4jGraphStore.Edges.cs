@@ -49,7 +49,7 @@ public partial class Neo4jGraphStore
                 ? """
                     MATCH (source:CodeNode {appId: $sourceId})-[e]->(target:CodeNode)
                     RETURN elementId(e) AS elementId,
-                           coalesce(e.project, source.project) AS project,
+                           coalesce(e.repository, source.repository) AS repository,
                            source.appId AS sourceId,
                            target.appId AS targetId,
                            type(e) AS type,
@@ -58,7 +58,7 @@ public partial class Neo4jGraphStore
                 : $@"
                     MATCH (source:CodeNode {{appId: $sourceId}})-[e:{type}]->(target:CodeNode)
                     RETURN elementId(e) AS elementId,
-                           coalesce(e.project, source.project) AS project,
+                           coalesce(e.repository, source.repository) AS repository,
                            source.appId AS sourceId,
                            target.appId AS targetId,
                            type(e) AS type,
@@ -89,7 +89,7 @@ public partial class Neo4jGraphStore
                 WHERE source.appId IN $sourceIds
                   AND ($types IS NULL OR type(e) IN $types)
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
@@ -119,7 +119,7 @@ public partial class Neo4jGraphStore
                 ? """
                     MATCH (source:CodeNode)-[e]->(target:CodeNode {appId: $targetId})
                     RETURN elementId(e) AS elementId,
-                           coalesce(e.project, source.project) AS project,
+                           coalesce(e.repository, source.repository) AS repository,
                            source.appId AS sourceId,
                            target.appId AS targetId,
                            type(e) AS type,
@@ -128,7 +128,7 @@ public partial class Neo4jGraphStore
                 : $@"
                     MATCH (source:CodeNode)-[e:{type}]->(target:CodeNode {{appId: $targetId}})
                     RETURN elementId(e) AS elementId,
-                           coalesce(e.project, source.project) AS project,
+                           coalesce(e.repository, source.repository) AS repository,
                            source.appId AS sourceId,
                            target.appId AS targetId,
                            type(e) AS type,
@@ -157,7 +157,7 @@ public partial class Neo4jGraphStore
                 WHERE target.appId IN $targetIds
                   AND ($types IS NULL OR type(e) IN $types)
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
@@ -186,7 +186,7 @@ public partial class Neo4jGraphStore
             var cypher = $@"
                 MATCH (source:CodeNode)-[e:{type}]->(target:CodeNode)
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
@@ -222,7 +222,7 @@ public partial class Neo4jGraphStore
     }
 
     public async Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<EdgeType> edgeTypes,
         IReadOnlyCollection<NodeLabel>? targetLabels,
         int minInDegree,
@@ -236,9 +236,9 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (s:CodeNode {project: $project})-[e]->(t:CodeNode)
+                MATCH (s:CodeNode {repository: $repository})-[e]->(t:CodeNode)
                 WHERE type(e) IN $types
-                  AND coalesce(e.project, s.project) = $project
+                  AND coalesce(e.repository, s.repository) = $repository
                   AND ($labels IS NULL OR t.label IN $labels)
                 WITH t, count(e) AS cnt
                 WHERE cnt >= $minInDegree
@@ -248,7 +248,7 @@ public partial class Neo4jGraphStore
                 """,
                 new
                 {
-                    project,
+                    repository,
                     types = edgeTypes.Select(type => type.ToString()).Distinct().ToList(),
                     labels = targetLabels is { Count: > 0 }
                         ? targetLabels.Select(label => label.ToString()).Distinct().ToList()
@@ -273,14 +273,14 @@ public partial class Neo4jGraphStore
         {
             await tx.RunAsync("""
                 MERGE (e:CrossRepoEdge {sourceNodeId: $sourceNodeId, targetNodeId: $targetNodeId, type: $type})
-                SET e.sourceProject = $sourceProject,
-                    e.targetProject = $targetProject,
+                SET e.sourceRepository = $sourceRepository,
+                    e.targetRepository = $targetRepository,
                     e.properties = $properties
                 """,
                 new
                 {
-                    sourceProject = edge.SourceProject,
-                    targetProject = edge.TargetProject,
+                    sourceRepository = edge.SourceRepository,
+                    targetRepository = edge.TargetRepository,
                     sourceNodeId = edge.SourceNodeId,
                     targetNodeId = edge.TargetNodeId,
                     type = edge.Type.ToString(),
@@ -303,8 +303,8 @@ public partial class Neo4jGraphStore
 
             var edgeParams = batch.Select(e => new Dictionary<string, object?>
             {
-                ["sourceProject"] = e.SourceProject,
-                ["targetProject"] = e.TargetProject,
+                ["sourceRepository"] = e.SourceRepository,
+                ["targetRepository"] = e.TargetRepository,
                 ["sourceNodeId"] = e.SourceNodeId,
                 ["targetNodeId"] = e.TargetNodeId,
                 ["type"] = e.Type.ToString(),
@@ -316,8 +316,8 @@ public partial class Neo4jGraphStore
                 await tx.RunAsync("""
                     UNWIND $edges AS e
                     MERGE (edge:CrossRepoEdge {sourceNodeId: e.sourceNodeId, targetNodeId: e.targetNodeId, type: e.type})
-                    SET edge.sourceProject = e.sourceProject,
-                        edge.targetProject = e.targetProject,
+                    SET edge.sourceRepository = e.sourceRepository,
+                        edge.targetRepository = e.targetRepository,
                         edge.properties = e.properties
                     """,
                     new { edges = edgeParams });
@@ -326,14 +326,14 @@ public partial class Neo4jGraphStore
     }
 
     public async Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(
-        string project, EdgeType? type = null)
+        string repository, EdgeType? type = null)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            var cypher = "MATCH (e:CrossRepoEdge) WHERE e.sourceProject = $project OR e.targetProject = $project";
-            var parameters = new Dictionary<string, object?> { ["project"] = project };
+            var cypher = "MATCH (e:CrossRepoEdge) WHERE e.sourceRepository = $repository OR e.targetRepository = $repository";
+            var parameters = new Dictionary<string, object?> { ["repository"] = repository };
 
             if (type is not null)
             {
@@ -353,7 +353,7 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync()
+    public async Task<IReadOnlyList<string>> FindRepositoriesWithNoCrossRepoEdgesAsync()
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
@@ -363,7 +363,7 @@ public partial class Neo4jGraphStore
                 MATCH (r:{{RepositoryMetadataLabel}})
                 WHERE NOT EXISTS {
                     MATCH (e:CrossRepoEdge)
-                    WHERE e.sourceProject = r.name OR e.targetProject = r.name
+                    WHERE e.sourceRepository = r.name OR e.targetRepository = r.name
                 }
                 RETURN r.name AS name ORDER BY name
                 """);
@@ -440,15 +440,15 @@ public partial class Neo4jGraphStore
 
     // ── File Hashes ───────────────────────────────────────────────────────
 
-    public async Task<Dictionary<string, string>> GetFileHashesAsync(string project)
+    public async Task<Dictionary<string, string>> GetFileHashesAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (f:FileHash {project: $project}) RETURN f.relPath AS relPath, f.contentHash AS contentHash",
-                new { project });
+                "MATCH (f:FileHash {repository: $repository}) RETURN f.relPath AS relPath, f.contentHash AS contentHash",
+                new { repository });
             var result = new Dictionary<string, string>();
             await foreach (var record in cursor)
                 result[record["relPath"].As<string>()] = record["contentHash"].As<string>();
@@ -456,17 +456,17 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project)
+    public async Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (f:FileHash {project: $project})
+                MATCH (f:FileHash {repository: $repository})
                 RETURN f.relPath AS relPath, f.contentHash AS contentHash, f.extractionVersion AS extractionVersion
                 """,
-                new { project });
+                new { repository });
             var result = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
             await foreach (var record in cursor)
             {
@@ -478,14 +478,14 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task UpsertFileHashBatchAsync(string project, Dictionary<string, string> hashes, CancellationToken ct = default)
+    public async Task UpsertFileHashBatchAsync(string repository, Dictionary<string, string> hashes, CancellationToken ct = default)
     {
         if (hashes.Count == 0) return;
 
         await using var session = sessionFactory.GetSession();
         var items = hashes.Select(kv => new Dictionary<string, object?>
         {
-            ["project"] = project,
+            ["repository"] = repository,
             ["relPath"] = kv.Key,
             ["contentHash"] = kv.Value
         }).ToList();
@@ -498,7 +498,7 @@ public partial class Neo4jGraphStore
             {
                 await tx.RunAsync("""
                     UNWIND $items AS h
-                    MERGE (f:FileHash {project: h.project, relPath: h.relPath})
+                    MERGE (f:FileHash {repository: h.repository, relPath: h.relPath})
                     SET f.contentHash = h.contentHash
                     """,
                     new { items = batch });
@@ -506,7 +506,7 @@ public partial class Neo4jGraphStore
         }
     }
 
-    public async Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths)
+    public async Task DeleteFileHashesAsync(string repository, IReadOnlyList<string> relPaths)
     {
         if (relPaths.Count == 0) return;
 
@@ -514,8 +514,8 @@ public partial class Neo4jGraphStore
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (f:FileHash {project: $project}) WHERE f.relPath IN $relPaths DELETE f",
-                new { project, relPaths });
+                "MATCH (f:FileHash {repository: $repository}) WHERE f.relPath IN $relPaths DELETE f",
+                new { repository, relPaths });
         });
     }
 
@@ -532,7 +532,7 @@ public partial class Neo4jGraphStore
             MATCH (source:CodeNode {{appId: e.sourceId}})
             MATCH (target:CodeNode {{appId: e.targetId}})
             MERGE (source)-[rel:{relationshipType}]->(target)
-            SET rel.project = e.project,
+            SET rel.repository = e.repository,
                 rel.properties = e.properties
             SET rel += e.promotedProperties
             ";
@@ -543,7 +543,7 @@ public partial class Neo4jGraphStore
 
     private static Dictionary<string, object?> BuildEdgeParams(GraphEdge edge) => new()
     {
-        ["project"] = edge.Project,
+        ["repository"] = edge.Repository,
         ["sourceId"] = edge.SourceId,
         ["targetId"] = edge.TargetId,
         ["properties"] = SerializeJson(edge.Properties),
@@ -599,8 +599,8 @@ public partial class Neo4jGraphStore
         return new()
         {
             Id = id,
-            SourceProject = node["sourceProject"].As<string>(),
-            TargetProject = node["targetProject"].As<string>(),
+            SourceRepository = node["sourceRepository"].As<string>(),
+            TargetRepository = node["targetRepository"].As<string>(),
             SourceNodeId = node["sourceNodeId"].As<long>(),
             TargetNodeId = node["targetNodeId"].As<long>(),
             Type = Enum.Parse<EdgeType>(node["type"].As<string>()),

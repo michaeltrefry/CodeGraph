@@ -13,17 +13,17 @@ public class GraphBufferTests
 
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "OrderService", QualifiedName = "P.OrderService"
         });
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "OrderService", QualifiedName = "P.Other.OrderService"
         });
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "WalletService", QualifiedName = "P.WalletService"
         });
 
@@ -38,7 +38,7 @@ public class GraphBufferTests
         var buffer = new GraphBuffer();
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "Foo", QualifiedName = "P.Foo"
         });
 
@@ -52,7 +52,7 @@ public class GraphBufferTests
         var buffer = new GraphBuffer();
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "Foo", QualifiedName = "P.Foo"
         });
 
@@ -66,12 +66,12 @@ public class GraphBufferTests
         var buffer = new GraphBuffer();
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "Foo", QualifiedName = "P.Foo"
         });
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Interface,
+            Repository = "P", Label = NodeLabel.Interface,
             Name = "Foo", QualifiedName = "P.Foo"
         });
 
@@ -85,7 +85,7 @@ public class GraphBufferTests
         var buffer = new GraphBuffer();
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "Foo", QualifiedName = "P.Foo"
         });
         buffer.AddEdge(new PendingEdge("P.Foo", "P.Bar", EdgeType.CALLS));
@@ -105,12 +105,12 @@ public class GraphBufferTests
         var buffer = new GraphBuffer();
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "Src", QualifiedName = "P.Src"
         });
         buffer.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "Tgt", QualifiedName = "P.Tgt"
         });
         buffer.AddEdge(new PendingEdge("P.Src", "P.Tgt", EdgeType.CALLS));
@@ -131,20 +131,20 @@ public class GraphBufferTests
     }
 
     [Fact]
-    public void ResolveEdges_UsesProjectScopedQualifiedNames()
+    public void ResolveEdges_UsesRepositoryScopedQualifiedNames()
     {
         var buffer = new GraphBuffer();
         buffer.AddEdge(new PendingEdge("src/app/service.ts:Widget", "src/app/service.ts:Run", EdgeType.CALLS));
 
         var qnToId = new Dictionary<string, long>
         {
-            [GraphNodeKey.Create("ProjectA", "src/app/service.ts:Widget")] = 10,
-            [GraphNodeKey.Create("ProjectA", "src/app/service.ts:Run")] = 11,
-            [GraphNodeKey.Create("ProjectB", "src/app/service.ts:Widget")] = 20,
-            [GraphNodeKey.Create("ProjectB", "src/app/service.ts:Run")] = 21
+            [GraphNodeKey.Create("RepositoryA", "src/app/service.ts:Widget")] = 10,
+            [GraphNodeKey.Create("RepositoryA", "src/app/service.ts:Run")] = 11,
+            [GraphNodeKey.Create("RepositoryB", "src/app/service.ts:Widget")] = 20,
+            [GraphNodeKey.Create("RepositoryB", "src/app/service.ts:Run")] = 21
         };
 
-        var resolved = buffer.ResolveEdges("ProjectB", qnToId);
+        var resolved = buffer.ResolveEdges("RepositoryB", qnToId);
 
         resolved.Count.ShouldBe(1);
         resolved[0].SourceId.ShouldBe(20);

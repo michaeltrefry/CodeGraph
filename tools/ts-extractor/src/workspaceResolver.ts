@@ -44,7 +44,7 @@ interface WorkspacePackageInfo {
 }
 
 interface ResolverContext {
-  projectName: string;
+  repositoryName: string;
   rootPath: string;
   tsconfigs: TsConfigInfo[];
   fallbackConfig: TsConfigInfo;
@@ -66,7 +66,7 @@ export interface WorkspaceResolutionResult {
 }
 
 export function analyzeWorkspaceImports(
-  projectName: string,
+  repositoryName: string,
   rootPath: string,
   requestedTsconfigPath: string,
   sourceFiles: SourceFile[],
@@ -92,13 +92,13 @@ export function analyzeWorkspaceImports(
   const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests, scope);
   const fallbackConfig = pickFallbackConfig(tsconfigs, requestedTsconfigPath);
   const workspacePackages = discoverWorkspacePackages(
-    projectName,
+    repositoryName,
     normalizedRoot,
     tsconfigs,
     diag,
     findManifests,
   ).filter(pkg => !scope || scope.includesDirectory(pkg.relativeRoot));
-  qualifyCollidingPackages(projectName, workspacePackages);
+  qualifyCollidingPackages(repositoryName, workspacePackages);
 
   const sourceFilesByPath = new Map<string, SourceFile>();
   for (const sourceFile of sourceFiles) {
@@ -106,7 +106,7 @@ export function analyzeWorkspaceImports(
   }
 
   const ctx: ResolverContext = {
-    projectName,
+    repositoryName,
     rootPath: normalizedRoot,
     tsconfigs,
     fallbackConfig,
@@ -118,7 +118,7 @@ export function analyzeWorkspaceImports(
   };
 
   const nodes = buildWorkspacePackageNodes(workspacePackages);
-  const edges = buildWorkspacePackageContainmentEdges(projectName, workspacePackages);
+  const edges = buildWorkspacePackageContainmentEdges(repositoryName, workspacePackages);
   const resolvedImports: ResolvedImportDto[] = [];
   const unresolvedImports: UnresolvedImportDto[] = [];
 
@@ -128,7 +128,7 @@ export function analyzeWorkspaceImports(
     const relPath = toRelative(rootPath, absPath);
     if (shouldSkipRelativePath(relPath)) continue;
 
-    const fileQN = `${projectName}:${relPath}`;
+    const fileQN = `${repositoryName}:${relPath}`;
     const sourcePackage = findOwningPackage(workspacePackages, absPath);
 
     const specs = collectImportSpecs(sourceFile);
@@ -141,7 +141,7 @@ export function analyzeWorkspaceImports(
       resolutionCount++;
       const resolved = resolveImportSpec(ctx, absPath, fileQN, relPath, sourcePackage, spec);
       resolvedImports.push(resolved);
-      addGraphEdgesForResolvedImport(edges, projectName, fileQN, sourcePackage, resolved);
+      addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved);
       if (resolved.classification === 'unresolved_alias' ||
           resolved.classification === 'unsupported_dynamic_expression') {
         unresolvedImports.push({
@@ -305,7 +305,7 @@ function pickFallbackConfig(configs: TsConfigInfo[], requestedTsconfigPath: stri
 }
 
 function discoverWorkspacePackages(
-  projectName: string,
+  repositoryName: string,
   rootPath: string,
   tsconfigs: TsConfigInfo[],
   diag: (msg: string) => void,
@@ -335,7 +335,7 @@ function discoverWorkspacePackages(
     const inferredName = packageName ?? path.basename(packageRoot);
     addWorkspacePackage(packagesByRoot, {
       name: inferredName,
-      qualifiedName: buildWorkspacePackageQN(projectName, inferredName),
+      qualifiedName: buildWorkspacePackageQN(repositoryName, inferredName),
       rootPath: packageRoot,
       relativeRoot: toRelative(rootPath, packageRoot),
       kind: isRoot ? 'root_package' : 'workspace_package',
@@ -344,7 +344,7 @@ function discoverWorkspacePackages(
     });
   }
 
-  addAngularWorkspacePackages(projectName, rootPath, packagesByRoot);
+  addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot);
 
   for (const config of tsconfigs) {
     for (const reference of config.references) {
@@ -355,7 +355,7 @@ function discoverWorkspacePackages(
       if (!isInside(rootPath, referencedRoot)) continue;
       addWorkspacePackage(packagesByRoot, {
         name: path.basename(referencedRoot),
-        qualifiedName: buildWorkspacePackageQN(projectName, path.basename(referencedRoot)),
+        qualifiedName: buildWorkspacePackageQN(repositoryName, path.basename(referencedRoot)),
         rootPath: referencedRoot,
         relativeRoot: toRelative(rootPath, referencedRoot),
         kind: 'project_reference',
@@ -389,7 +389,7 @@ function addWorkspacePackage(
 }
 
 function addAngularWorkspacePackages(
-  projectName: string,
+  repositoryName: string,
   rootPath: string,
   packagesByRoot: Map<string, WorkspacePackageInfo>,
 ): void {
@@ -412,7 +412,7 @@ function addAngularWorkspacePackages(
         : root.includes('/libs/') || root.startsWith(path.join(rootPath, 'libs')) ? 'library' : 'application';
       addWorkspacePackage(packagesByRoot, {
         name,
-        qualifiedName: buildWorkspacePackageQN(projectName, name),
+        qualifiedName: buildWorkspacePackageQN(repositoryName, name),
         rootPath: root,
         relativeRoot: toRelative(rootPath, root),
         kind: projectType === 'library' ? 'angular_library' : 'angular_application',
@@ -441,11 +441,11 @@ function buildWorkspacePackageNodes(packages: WorkspacePackageInfo[]): GraphNode
 }
 
 function buildWorkspacePackageContainmentEdges(
-  projectName: string,
+  repositoryName: string,
   packages: WorkspacePackageInfo[],
 ): PendingEdgeDto[] {
   return packages.map(pkg => ({
-    sourceQN: projectName,
+    sourceQN: repositoryName,
     targetQN: pkg.qualifiedName,
     type: 'CONTAINS_PROJECT',
     properties: {
@@ -548,7 +548,7 @@ function resolveImportSpec(
       importKind: spec.kind,
       classification: 'local_workspace_package',
       resolvedFilePath: exportedFilePath,
-      targetFileQN: exportedFilePath ? `${ctx.projectName}:${exportedFilePath}` : undefined,
+      targetFileQN: exportedFilePath ? `${ctx.repositoryName}:${exportedFilePath}` : undefined,
       targetWorkspacePackage: localPackage.name,
       targetPackageQN: localPackage.qualifiedName,
       diagnostic: exportedFilePath
@@ -615,7 +615,7 @@ function resolveImportSpec(
       importKind: spec.kind,
       classification: isCrossWorkspacePackage ? 'local_workspace_package' : 'local_file',
       resolvedFilePath,
-      targetFileQN: `${ctx.projectName}:${targetFilePath}`,
+      targetFileQN: `${ctx.repositoryName}:${targetFilePath}`,
       targetWorkspacePackage: isCrossWorkspacePackage ? targetPackage.name : undefined,
       targetPackageQN: isCrossWorkspacePackage ? targetPackage.qualifiedName : undefined,
       isBarrel: !!barrelTarget,
@@ -638,7 +638,7 @@ function resolveImportSpec(
 
 function addGraphEdgesForResolvedImport(
   edges: PendingEdgeDto[],
-  projectName: string,
+  repositoryName: string,
   fileQN: string,
   sourcePackage: WorkspacePackageInfo | undefined,
   resolved: ResolvedImportDto,
@@ -703,7 +703,7 @@ function addGraphEdgesForResolvedImport(
       });
     } else {
       edges.push({
-        sourceQN: projectName,
+        sourceQN: repositoryName,
         targetQN: resolved.targetPackageQN,
         type: 'REFERENCES_PACKAGE',
         properties: {
@@ -829,11 +829,11 @@ function groupPackagesByName(packages: WorkspacePackageInfo[]): Map<string, Work
  * qualified names that include their repo-relative directory; a package whose name is unique keeps
  * the name-only qualified name, so existing graphs are unaffected.
  */
-function qualifyCollidingPackages(projectName: string, packages: WorkspacePackageInfo[]): void {
+function qualifyCollidingPackages(repositoryName: string, packages: WorkspacePackageInfo[]): void {
   for (const group of groupPackagesByName(packages).values()) {
     if (group.length < 2) continue;
     for (const pkg of group) {
-      pkg.qualifiedName = buildWorkspacePackageQN(projectName, pkg.name, pkg.relativeRoot);
+      pkg.qualifiedName = buildWorkspacePackageQN(repositoryName, pkg.name, pkg.relativeRoot);
     }
   }
 }
@@ -1020,8 +1020,8 @@ function getPackageNameFromSpecifier(specifier: string): string {
   return specifier.split('/')[0] || specifier;
 }
 
-function buildWorkspacePackageQN(projectName: string, packageName: string, relativeRoot?: string): string {
-  const qualifiedName = `typescript-package:${projectName}:${packageName}`;
+function buildWorkspacePackageQN(repositoryName: string, packageName: string, relativeRoot?: string): string {
+  const qualifiedName = `typescript-package:${repositoryName}:${packageName}`;
   return relativeRoot === undefined ? qualifiedName : `${qualifiedName}#${relativeRoot || '.'}`;
 }
 

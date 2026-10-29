@@ -27,7 +27,7 @@ public class StringExtensionsTests
             Here's the JSON:
 
             ```json
-            {"projectSummary":"Processes jobs","confidence":"medium"}
+            {"repositorySummary":"Processes jobs","confidence":"medium"}
             ```
 
             Hope that helps.
@@ -35,7 +35,7 @@ public class StringExtensionsTests
 
         var normalized = text.NormalizeJsonResponse();
 
-        normalized.ShouldBe("""{"projectSummary":"Processes jobs","confidence":"medium"}""");
+        normalized.ShouldBe("""{"repositorySummary":"Processes jobs","confidence":"medium"}""");
     }
 
     [Fact]
@@ -44,24 +44,24 @@ public class StringExtensionsTests
         var text = """
             <think>
             comparing alternatives
-            {"projectSummary":"Indexes code","confidence":"low"
+            {"repositorySummary":"Indexes code","confidence":"low"
             """;
 
         var normalized = text.NormalizeJsonResponse();
 
-        normalized.ShouldBe("{\"projectSummary\":\"Indexes code\",\"confidence\":\"low\"");
+        normalized.ShouldBe("{\"repositorySummary\":\"Indexes code\",\"confidence\":\"low\"");
     }
 
     [Fact]
     public void NormalizeJsonResponse_PreservesBracesInsideStrings()
     {
         var text = """
-            {"projectSummary":"Parses strings like {value} safely","confidence":"high"}
+            {"repositorySummary":"Parses strings like {value} safely","confidence":"high"}
             trailing note
             """;
 
         var normalized = text.NormalizeJsonResponse();
 
-        normalized.ShouldBe("""{"projectSummary":"Parses strings like {value} safely","confidence":"high"}""");
+        normalized.ShouldBe("""{"repositorySummary":"Parses strings like {value} safely","confidence":"high"}""");
     }
 }

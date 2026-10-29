@@ -66,7 +66,7 @@ public sealed class RustSemanticIndexingValidatorTests : IDisposable
 
     private static GraphNode CreateLocalDefinition(string filePath) => new()
     {
-        Project = "RustValidation",
+        Repository = "RustValidation",
         Label = NodeLabel.Method,
         Name = "caller",
         QualifiedName = "RustValidation.caller",

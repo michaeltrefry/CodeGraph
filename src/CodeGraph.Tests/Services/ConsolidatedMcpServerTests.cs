@@ -59,7 +59,7 @@ public class ConsolidatedMcpServerTests
     }
 
     [Fact]
-    public async Task ProjectReport_Search_RoutesToSearchProjects()
+    public async Task RepositoryReport_Search_RoutesToSearchRepositories()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -69,10 +69,10 @@ public class ConsolidatedMcpServerTests
         });
         var codegraph = CreateCodeGraphServer(store);
 
-        var response = (await ConsolidatedMcpServer.ProjectReport(codegraph, operation: "search", search: "Code")).Text();
+        var response = (await ConsolidatedMcpServer.RepositoryReport(codegraph, operation: "search", search: "Code")).Text();
 
         Result(response).ShouldContain("CodeGraph");
-        Result(response).ShouldContain("## Indexed Projects (1)");
+        Result(response).ShouldContain("## Indexed Repositories (1)");
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public class ConsolidatedMcpServerTests
     [InlineData("rag_search")]
     [InlineData("graph_trace")]
     [InlineData("graph_source")]
-    [InlineData("project_report")]
+    [InlineData("repository_report")]
     [InlineData("graph_cluster")]
     [InlineData("storage_table")]
     [InlineData("convention")]
@@ -189,9 +189,9 @@ public class ConsolidatedMcpServerTests
     [InlineData("graph_trace", "impact")]
     [InlineData("graph_source", "snippet")]
     [InlineData("graph_source", "node")]
-    [InlineData("project_report", "summary")]
-    [InlineData("project_report", "architecture")]
-    [InlineData("project_report", "health")]
+    [InlineData("repository_report", "summary")]
+    [InlineData("repository_report", "architecture")]
+    [InlineData("repository_report", "health")]
     [InlineData("graph_cluster", "detail")]
     [InlineData("storage_table", "catalog")]
     [InlineData("convention", "get")]
@@ -224,7 +224,7 @@ public class ConsolidatedMcpServerTests
             "rag_search" => await ConsolidatedMcpServer.RagSearch(codegraph, operation),
             "graph_trace" => (await ConsolidatedMcpServer.GraphTrace(codegraph, operation)).Text(),
             "graph_source" => (await ConsolidatedMcpServer.GraphSource(codegraph, operation)).Text(),
-            "project_report" => (await ConsolidatedMcpServer.ProjectReport(codegraph, operation)).Text(),
+            "repository_report" => (await ConsolidatedMcpServer.RepositoryReport(codegraph, operation)).Text(),
             "graph_cluster" => await ConsolidatedMcpServer.GraphCluster(codegraph, operation),
             "storage_table" => await ConsolidatedMcpServer.StorageTable(codegraph, operation),
             "convention" => await ConsolidatedMcpServer.Convention(codegraph, operation),

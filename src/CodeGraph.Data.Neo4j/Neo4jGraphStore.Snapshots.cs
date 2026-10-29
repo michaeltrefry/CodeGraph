@@ -5,8 +5,8 @@ namespace CodeGraph.Data.Neo4j;
 
 public partial class Neo4jGraphStore
 {
-    public async Task<int> ReplaceProjectFilesAsync(
-        string project,
+    public async Task<int> ReplaceRepositoryFilesAsync(
+        string repository,
         IReadOnlyList<string> filePaths,
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
@@ -36,24 +36,24 @@ public partial class Neo4jGraphStore
                 {
                     await tx.RunAsync("""
                         UNWIND $edges AS e
-                        MATCH (source:CodeNode {project: $project, qualifiedName: e.source})-[edge]->(target:CodeNode {project: $project, qualifiedName: e.target})
+                        MATCH (source:CodeNode {repository: $repository, qualifiedName: e.source})-[edge]->(target:CodeNode {repository: $repository, qualifiedName: e.target})
                         WHERE type(edge) = e.type
                         DELETE edge
-                        """, new { project, edges = batch });
+                        """, new { repository, edges = batch });
                 }
             }
 
             var incomingCursor = await tx.RunAsync("""
-                MATCH (source:CodeNode)-[edge]->(target:CodeNode {project: $project})
+                MATCH (source:CodeNode)-[edge]->(target:CodeNode {repository: $repository})
                 WHERE target.filePath IN $filePaths
                   // coalesce: a file-less source (null filePath) would make the predicate null and
                   // silently drop its edge instead of preserving it.
-                  AND NOT (source.project = $project AND coalesce(source.filePath, '') IN $filePaths)
+                  AND NOT (source.repository = $repository AND coalesce(source.filePath, '') IN $filePaths)
                 RETURN source.qualifiedName AS sourceQN,
                        target.qualifiedName AS targetQN,
                        type(edge) AS type,
                        edge.properties AS properties
-                """, new { project, filePaths = pathVariants });
+                """, new { repository, filePaths = pathVariants });
             var preservedIncoming = new List<PendingEdge>();
             await foreach (var record in incomingCursor)
             {
@@ -67,10 +67,10 @@ public partial class Neo4jGraphStore
             }
 
             var oldIdsCursor = await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})
+                MATCH (n:CodeNode {repository: $repository})
                 WHERE n.filePath IN $filePaths
                 RETURN collect(n.appId) AS nodeIds
-                """, new { project, filePaths = pathVariants });
+                """, new { repository, filePaths = pathVariants });
             await oldIdsCursor.FetchAsync();
             var oldIds = oldIdsCursor.Current["nodeIds"].As<List<long>>();
 
@@ -85,15 +85,15 @@ public partial class Neo4jGraphStore
                 DETACH DELETE edge
                 """, new { nodeIds = oldIds });
             await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})
+                MATCH (n:CodeNode {repository: $repository})
                 WHERE n.filePath IN $filePaths
                 DETACH DELETE n
-                """, new { project, filePaths = pathVariants });
+                """, new { repository, filePaths = pathVariants });
             await tx.RunAsync("""
-                MATCH (hash:FileHash {project: $project})
+                MATCH (hash:FileHash {repository: $repository})
                 WHERE hash.relPath IN $filePaths
                 DELETE hash
-                """, new { project, filePaths = pathVariants });
+                """, new { repository, filePaths = pathVariants });
 
             var candidates = nodes
                 .GroupBy(node => TruncateQualifiedName(node.QualifiedName), StringComparer.Ordinal)
@@ -112,10 +112,10 @@ public partial class Neo4jGraphStore
             foreach (var batch in Chunk(endpointNames, 1000))
             {
                 var cursor = await tx.RunAsync("""
-                    MATCH (n:CodeNode {project: $project})
+                    MATCH (n:CodeNode {repository: $repository})
                     WHERE n.qualifiedName IN $qualifiedNames
                     RETURN n.qualifiedName AS qualifiedName, n.appId AS appId
-                    """, new { project, qualifiedNames = batch });
+                    """, new { repository, qualifiedNames = batch });
                 await foreach (var record in cursor)
                     qnToId[record["qualifiedName"].As<string>()] = record["appId"].As<long>();
             }
@@ -139,7 +139,7 @@ public partial class Neo4jGraphStore
             }
 
             var preparedNodes = nodesToInsert.Select((node, index) => new PreparedNodeWrite(
-                project,
+                repository,
                 node.DotnetProject,
                 node.Label,
                 node.Name.Length > 1000 ? node.Name[..1000] : node.Name,
@@ -160,7 +160,7 @@ public partial class Neo4jGraphStore
                     var nodeLabels = GetCodeNodeSetLabels(group.Key);
                     var nodeParams = group.Select(node => new Dictionary<string, object?>
                     {
-                        ["project"] = node.Project,
+                        ["repository"] = node.Repository,
                         ["dotnetProject"] = node.DotnetProject,
                         ["label"] = node.Label.ToString(),
                         ["name"] = node.Name,
@@ -175,7 +175,7 @@ public partial class Neo4jGraphStore
                     }).ToList();
                     await tx.RunAsync($@"
                         UNWIND $nodes AS n
-                        CREATE (node:CodeNode {{project: n.project, qualifiedName: n.qualifiedName}})
+                        CREATE (node:CodeNode {{repository: n.repository, qualifiedName: n.qualifiedName}})
                         SET node.appId = n.appId,
                             node.label = n.label,
                             node.name = n.name,
@@ -198,7 +198,7 @@ public partial class Neo4jGraphStore
                 pendingByKey[EdgeKey(edge)] = edge;
             foreach (var edge in edges)
                 pendingByKey[EdgeKey(edge)] = edge;
-            var resolvedEdges = ResolveFileSliceEdges(project, pendingByKey.Values, qnToId);
+            var resolvedEdges = ResolveFileSliceEdges(repository, pendingByKey.Values, qnToId);
             foreach (var batch in Chunk(resolvedEdges, 100))
             {
                 ct.ThrowIfCancellationRequested();
@@ -210,15 +210,15 @@ public partial class Neo4jGraphStore
             {
                 await tx.RunAsync("""
                     UNWIND $qualifiedNames AS qn
-                    MATCH (n:CodeNode {project: $project, qualifiedName: qn})
+                    MATCH (n:CodeNode {repository: $repository, qualifiedName: qn})
                     WHERE (n.filePath IS NULL OR n.filePath = '') AND NOT (n)-[]-(:CodeNode)
                     DETACH DELETE n
-                    """, new { project, qualifiedNames = retractions.OrphanCandidateQNs.Distinct().ToList() });
+                    """, new { repository, qualifiedNames = retractions.OrphanCandidateQNs.Distinct().ToList() });
             }
 
             foreach (var batch in Chunk(fileHashes.Select(hash => new Dictionary<string, object?>
                      {
-                         ["project"] = project,
+                         ["repository"] = repository,
                          ["relPath"] = hash.Key,
                          ["contentHash"] = hash.Value,
                          ["extractionVersion"] = extractionVersions?.GetValueOrDefault(hash.Key)
@@ -227,7 +227,7 @@ public partial class Neo4jGraphStore
                 ct.ThrowIfCancellationRequested();
                 await tx.RunAsync("""
                     UNWIND $items AS item
-                    MERGE (hash:FileHash {project: item.project, relPath: item.relPath})
+                    MERGE (hash:FileHash {repository: item.repository, relPath: item.relPath})
                     SET hash.contentHash = item.contentHash,
                         hash.extractionVersion = item.extractionVersion
                     """, new { items = batch });
@@ -237,12 +237,12 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<int> ReplaceProjectGraphAsync(
-        string project,
+    public async Task<int> ReplaceRepositoryGraphAsync(
+        string repository,
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
-        RepositoryEntity repository,
+        RepositoryEntity repositoryEntity,
         SyncStateEntity? syncState,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
@@ -269,37 +269,37 @@ public partial class Neo4jGraphStore
                     r.updatedAt = $now
                 """, new
             {
-                name = repository.Name,
+                name = repositoryEntity.Name,
                 now,
-                repoUrl = repository.RepoUrl,
-                sourceGroup = repository.SourceGroup,
-                localPath = repository.LocalPath,
-                defaultBranch = repository.DefaultBranch,
-                lastCommitSha = repository.LastCommitSha,
-                language = repository.Language,
-                framework = repository.Framework,
-                isFoundational = repository.IsFoundational,
-                properties = repository.Properties
+                repoUrl = repositoryEntity.RepoUrl,
+                sourceGroup = repositoryEntity.SourceGroup,
+                localPath = repositoryEntity.LocalPath,
+                defaultBranch = repositoryEntity.DefaultBranch,
+                lastCommitSha = repositoryEntity.LastCommitSha,
+                language = repositoryEntity.Language,
+                framework = repositoryEntity.Framework,
+                isFoundational = repositoryEntity.IsFoundational,
+                properties = repositoryEntity.Properties
             });
 
             await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})
+                MATCH (n:CodeNode {repository: $repository})
                 WITH collect(n.appId) AS nodeIds
                 MATCH (na:NodeAnalysis)
                 WHERE na.nodeId IN nodeIds
                 DETACH DELETE na
-                """, new { project });
+                """, new { repository });
             await tx.RunAsync("""
                 MATCH (e:CrossRepoEdge)
-                WHERE e.sourceProject = $project OR e.targetProject = $project
+                WHERE e.sourceRepository = $repository OR e.targetRepository = $repository
                 DETACH DELETE e
-                """, new { project });
+                """, new { repository });
             await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project}) DETACH DELETE n",
-                new { project });
+                "MATCH (n:CodeNode {repository: $repository}) DETACH DELETE n",
+                new { repository });
             await tx.RunAsync(
-                "MATCH (f:FileHash {project: $project}) DELETE f",
-                new { project });
+                "MATCH (f:FileHash {repository: $repository}) DELETE f",
+                new { repository });
 
             var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.Ordinal);
             if (nodes.Count > 0)
@@ -316,7 +316,7 @@ public partial class Neo4jGraphStore
                 var startId = sequenceCursor.Current["startId"].As<long>();
 
                 var preparedNodes = nodes.Select((node, index) => new PreparedNodeWrite(
-                    node.Project,
+                    node.Repository,
                     node.DotnetProject,
                     node.Label,
                     node.Name.Length > 1000 ? node.Name[..1000] : node.Name,
@@ -338,7 +338,7 @@ public partial class Neo4jGraphStore
                         var nodeLabels = GetCodeNodeSetLabels(group.Key);
                         var nodeParams = group.Select(node => new Dictionary<string, object?>
                         {
-                            ["project"] = node.Project,
+                            ["repository"] = node.Repository,
                             ["dotnetProject"] = node.DotnetProject,
                             ["label"] = node.Label.ToString(),
                             ["name"] = node.Name,
@@ -354,7 +354,7 @@ public partial class Neo4jGraphStore
 
                         await tx.RunAsync($@"
                             UNWIND $nodes AS n
-                            CREATE (node:CodeNode {{project: n.project, qualifiedName: n.qualifiedName}})
+                            CREATE (node:CodeNode {{repository: n.repository, qualifiedName: n.qualifiedName}})
                             SET node.appId = n.appId,
                                 node.label = n.label,
                                 node.name = n.name,
@@ -371,10 +371,10 @@ public partial class Neo4jGraphStore
                 }
 
                 for (var i = 0; i < nodes.Count; i++)
-                    qnToId[GraphNodeKey.Create(project, nodes[i].QualifiedName)] = startId + i + 1;
+                    qnToId[GraphNodeKey.Create(repository, nodes[i].QualifiedName)] = startId + i + 1;
             }
 
-            var resolvedEdges = ResolveSnapshotEdges(project, edges, qnToId);
+            var resolvedEdges = ResolveSnapshotEdges(repository, edges, qnToId);
             const int edgeBatchSize = 100;
             foreach (var batch in Chunk(resolvedEdges, edgeBatchSize))
             {
@@ -387,7 +387,7 @@ public partial class Neo4jGraphStore
             {
                 var hashItems = fileHashes.Select(hash => new Dictionary<string, object?>
                 {
-                    ["project"] = project,
+                    ["repository"] = repository,
                     ["relPath"] = hash.Key,
                     ["contentHash"] = hash.Value,
                     ["extractionVersion"] = extractionVersions?.GetValueOrDefault(hash.Key)
@@ -399,7 +399,7 @@ public partial class Neo4jGraphStore
                     ct.ThrowIfCancellationRequested();
                     await tx.RunAsync("""
                         UNWIND $items AS h
-                        CREATE (f:FileHash {project: h.project, relPath: h.relPath, contentHash: h.contentHash,
+                        CREATE (f:FileHash {repository: h.repository, relPath: h.relPath, contentHash: h.contentHash,
                                             extractionVersion: h.extractionVersion})
                         """, new { items = batch });
                 }
@@ -408,7 +408,7 @@ public partial class Neo4jGraphStore
             if (syncState is not null)
             {
                 await tx.RunAsync("""
-                    MERGE (s:SyncState {project: $project})
+                    MERGE (s:SyncState {repository: $repository})
                     SET s.lastSyncAt = $lastSyncAt,
                         s.lastCommitSha = COALESCE($lastCommitSha, s.lastCommitSha),
                         s.extractionFingerprint = COALESCE($extractionFingerprint, s.extractionFingerprint),
@@ -416,7 +416,7 @@ public partial class Neo4jGraphStore
                         s.errorMessage = $errorMessage
                     """, new
                 {
-                    project = syncState.Project,
+                    repository = syncState.Repository,
                     extractionFingerprint = syncState.ExtractionFingerprint,
                     lastSyncAt = syncState.LastSyncAt,
                     lastCommitSha = syncState.LastCommitSha,
@@ -429,8 +429,8 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task DeleteFilesFromProjectGraphAsync(
-        string project,
+    public async Task DeleteFilesFromRepositoryGraphAsync(
+        string repository,
         IReadOnlyList<string> filePaths,
         CancellationToken ct = default)
     {
@@ -444,31 +444,31 @@ public partial class Neo4jGraphStore
             {
                 ct.ThrowIfCancellationRequested();
                 await tx.RunAsync("""
-                    MATCH (n:CodeNode {project: $project})
+                    MATCH (n:CodeNode {repository: $repository})
                     WHERE n.filePath IN $filePaths
                     WITH collect(n.appId) AS nodeIds
                     MATCH (na:NodeAnalysis)
                     WHERE na.nodeId IN nodeIds
                     DETACH DELETE na
-                    """, new { project, filePaths = batch });
+                    """, new { repository, filePaths = batch });
                 await tx.RunAsync("""
-                    MATCH (n:CodeNode {project: $project})
+                    MATCH (n:CodeNode {repository: $repository})
                     WHERE n.filePath IN $filePaths
                     WITH collect(n.appId) AS nodeIds
                     MATCH (e:CrossRepoEdge)
                     WHERE e.sourceNodeId IN nodeIds OR e.targetNodeId IN nodeIds
                     DETACH DELETE e
-                    """, new { project, filePaths = batch });
+                    """, new { repository, filePaths = batch });
                 await tx.RunAsync("""
-                    MATCH (n:CodeNode {project: $project})
+                    MATCH (n:CodeNode {repository: $repository})
                     WHERE n.filePath IN $filePaths
                     DETACH DELETE n
-                    """, new { project, filePaths = batch });
+                    """, new { repository, filePaths = batch });
                 await tx.RunAsync("""
-                    MATCH (f:FileHash {project: $project})
+                    MATCH (f:FileHash {repository: $repository})
                     WHERE f.relPath IN $filePaths
                     DELETE f
-                    """, new { project, filePaths = batch });
+                    """, new { repository, filePaths = batch });
             }
         });
     }
@@ -484,22 +484,22 @@ public partial class Neo4jGraphStore
             .ToList();
 
     private static List<GraphEdge> ResolveSnapshotEdges(
-        string project,
+        string repository,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, long> qnToId)
     {
         var resolved = new List<GraphEdge>(edges.Count);
         foreach (var edge in edges)
         {
-            if (!qnToId.TryGetValue(GraphNodeKey.Create(project, edge.SourceQN), out var sourceId) ||
-                !qnToId.TryGetValue(GraphNodeKey.Create(project, edge.TargetQN), out var targetId))
+            if (!qnToId.TryGetValue(GraphNodeKey.Create(repository, edge.SourceQN), out var sourceId) ||
+                !qnToId.TryGetValue(GraphNodeKey.Create(repository, edge.TargetQN), out var targetId))
             {
                 continue;
             }
 
             resolved.Add(new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = sourceId,
                 TargetId = targetId,
                 Type = edge.Type,
@@ -511,7 +511,7 @@ public partial class Neo4jGraphStore
     }
 
     private static List<GraphEdge> ResolveFileSliceEdges(
-        string project,
+        string repository,
         IEnumerable<PendingEdge> edges,
         IReadOnlyDictionary<string, long> qnToId)
     {
@@ -523,7 +523,7 @@ public partial class Neo4jGraphStore
                 continue;
             resolved.Add(new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = sourceId,
                 TargetId = targetId,
                 Type = edge.Type,

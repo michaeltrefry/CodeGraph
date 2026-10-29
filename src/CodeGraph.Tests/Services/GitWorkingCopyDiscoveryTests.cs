@@ -19,7 +19,7 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public class GitWorkingCopyDiscoveryTests : IDisposable
 {
-    private const string Project = "Lens";
+    private const string Repository = "Lens";
 
     private readonly string _scratch =
         Path.Combine(Path.GetTempPath(), $"codegraph-git-discovery-{Guid.NewGuid():N}");
@@ -119,15 +119,15 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
     /// discovery, and the stored graph (no node under an ignored path or a submodule).
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_GitWorkingCopy_IndexesNothingUnderIgnoredPathsOrSubmodules()
+    public async Task IndexRepositoryAsync_GitWorkingCopy_IndexesNothingUnderIgnoredPathsOrSubmodules()
     {
         CreateWorkingCopy();
         AddManifests();
         var store = new InMemoryGraphStore();
 
-        await CreatePipeline(store).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync(Repository, Repo, ct: CancellationToken.None);
 
-        var indexed = (await store.GetFileHashesAsync(Project)).Keys.ToList();
+        var indexed = (await store.GetFileHashesAsync(Repository)).Keys.ToList();
         indexed.ShouldContain("src/app.py");
         indexed.ShouldContain("generated/kept.py");
         indexed.ShouldContain("untracked.py");
@@ -147,21 +147,21 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
     /// (here: indexed before the folder was a git repository); the next full scan removes them.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_PreviouslyIndexedIgnoredFiles_AreRemovedOnTheNextRun()
+    public async Task IndexRepositoryAsync_PreviouslyIndexedIgnoredFiles_AreRemovedOnTheNextRun()
     {
         Write(Repo, ".gitignore", "vendor/PhotoCatalog/\nignored.py\n");
         Write(Repo, "src/app.py", "def app(): pass\n");
         Write(Repo, "vendor/PhotoCatalog/catalog.py", "def catalog(): pass\n");
         Write(Repo, "vendor/Compositor/compositor.py", "def compose(): pass\n");
         Write(Repo, "ignored.py", "def ignored(): pass\n");
-        Write(Repo, "vendor/PhotoCatalog/Catalog.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Vendored.Catalog\" Version=\"1.0.0\" /></ItemGroup></Project>");
+        Write(Repo, "vendor/PhotoCatalog/Catalog.csproj", "<Repository Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"Vendored.Catalog\" Version=\"1.0.0\" /></ItemGroup></Repository>");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store, withNuGet: true).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        await CreatePipeline(store, withNuGet: true).IndexRepositoryAsync(Repository, Repo, ct: CancellationToken.None);
         store.Nodes.ShouldContain(node => node.Label == NodeLabel.DotnetProject && node.Name == "Catalog");
         store.Nodes.ShouldContain(node => node.Label == NodeLabel.NuGetPackage && node.Name == "Vendored.Catalog");
-        (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("vendor/PhotoCatalog/catalog.py");
-        (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("vendor/Compositor/compositor.py");
-        (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("ignored.py");
+        (await store.GetFileHashesAsync(Repository)).Keys.ShouldContain("vendor/PhotoCatalog/catalog.py");
+        (await store.GetFileHashesAsync(Repository)).Keys.ShouldContain("vendor/Compositor/compositor.py");
+        (await store.GetFileHashesAsync(Repository)).Keys.ShouldContain("ignored.py");
 
         var compositor = Path.Combine(Repo, "vendor", "Compositor");
         Git(compositor, "init", "-q");
@@ -171,9 +171,9 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
         Git(Repo, "add", ".");
         Commit(Repo);
 
-        await CreatePipeline(store, withNuGet: true).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        await CreatePipeline(store, withNuGet: true).IndexRepositoryAsync(Repository, Repo, ct: CancellationToken.None);
 
-        (await store.GetFileHashesAsync(Project)).Keys.ShouldBe(["src/app.py"]);
+        (await store.GetFileHashesAsync(Repository)).Keys.ShouldBe(["src/app.py"]);
         store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.DotnetProject || node.Label == NodeLabel.NuGetPackage);
         store.Nodes.ShouldNotContain(node => node.FilePath != null
                                              && (node.FilePath.StartsWith("vendor/") || node.FilePath == "ignored.py"));
@@ -184,13 +184,13 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
     /// no DotnetProject node and no NuGet reference, also when an earlier walk indexed them.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_GitWorkingCopy_IgnoredAndSubmoduleProjectsMakeNoProjectOrNuGetNodes()
+    public async Task IndexRepositoryAsync_GitWorkingCopy_IgnoredAndSubmoduleProjectsMakeNoDotnetProjectOrNuGetNodes()
     {
         CreateWorkingCopy();
         AddDotnetProjects();
         var store = new InMemoryGraphStore();
 
-        await CreatePipeline(store, withNuGet: true).IndexProjectAsync(Project, Repo, ct: CancellationToken.None);
+        await CreatePipeline(store, withNuGet: true).IndexRepositoryAsync(Repository, Repo, ct: CancellationToken.None);
 
         store.Nodes.Where(node => node.Label == NodeLabel.DotnetProject).Select(node => node.Name)
             .ShouldBe(["App"]);
@@ -368,10 +368,10 @@ public class GitWorkingCopyDiscoveryTests : IDisposable
     private void AddDotnetProjects()
     {
         const string app = """
-            <Project Sdk="Microsoft.NET.Sdk">
+            <Repository Sdk="Microsoft.NET.Sdk">
               <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
               <ItemGroup><PackageReference Include="Serilog" Version="3.1.1" /></ItemGroup>
-            </Project>
+            </Repository>
             """;
         Write(Repo, "App/App.csproj", app);
         Write(Repo, "vendor/PhotoCatalog/Catalog/Catalog.csproj",

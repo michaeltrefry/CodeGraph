@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeGraph.Data;
 using CodeGraph.Mcp.Hub;
+using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -67,6 +68,20 @@ public sealed class McpToolEntitlementMiddleware(
         if (string.IsNullOrWhiteSpace(toolName))
         {
             await RejectAsync(context, request.Id, null, new("tool_name_required", "MCP tools/call requests must include params.name."));
+            return;
+        }
+
+        // A tool renamed away from "project" is answered with its replacement before the entitlement
+        // check, which would otherwise report it as an unknown tool or a missing grant. This
+        // grants nothing: the replacement is entitled on its own.
+        if (LegacyProjectArgumentGuard.RenamedToolError(toolName) is { } renamed)
+        {
+            await WriteJsonRpcAsync(context, new JsonObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = request.Id?.DeepClone(),
+                ["result"] = LegacyProjectArgumentGuard.ToResultBody(renamed),
+            });
             return;
         }
 

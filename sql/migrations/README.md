@@ -8,6 +8,10 @@ The API, indexer, memory, metrics, and Jobs hosts all call `MariaDbMigrationRunn
 
 The lock wait defaults to 120 seconds and is configured through `CodeGraph:StorageOptions:MariaDbMigrationLockTimeoutSeconds`. If the lock cannot be acquired, host initialization fails instead of reporting readiness against an unknown schema. MariaDB itself must therefore be reachable before any application host can become ready; RabbitMQ and inter-service readiness do not bypass this database gate.
 
+## Releases that rename columns: replace every host together
+
+Migration `092_rename_project_to_repository.sql` (sc-27867) renames columns and one table in place (`project` to `repository` across the graph, metrics, review, security, overlay and cluster tables). The runner does not provide expand/contract: once any new-release host has applied it, a host still running the previous release fails on the renamed columns. Deploy this release by replacing the API, indexer, memory, metrics and Jobs hosts together (stop all old hosts, then start all new ones); do not run a mixed-version rolling deploy across the 092 boundary. The lock coordination above only makes simultaneous starts of the *same* release safe. It is numbered after every migration already merged (077-091) so it runs last on both fresh and existing databases; 076 and 090 are unused. Migration numbers 074 and 088 must never be reused.
+
 ## Restart safety
 
 MariaDB DDL can implicitly commit, so the runner does not use a transaction as rollback protection. It records every statement in `migration_statement_history` with its script name, ordinal, checksum, status, attempts, and timestamps. A host interruption after a statement commits leaves the row in `started`; the next lock owner replays the same checksummed, restart-safe statement before marking it complete. Completed persistent statements are skipped, the complete dependency chain for session-scoped temporary tables is replayed on each new connection, and a checksum change after execution starts is rejected.

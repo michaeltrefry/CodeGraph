@@ -25,7 +25,7 @@ public partial class Neo4jGraphStore
                 ON CREATE SET seq.value = 0
                 SET seq.value = seq.value + 1
                 WITH seq.value AS newId
-                MERGE (n:CodeNode {{project: $project, qualifiedName: $qualifiedName}})
+                MERGE (n:CodeNode {{repository: $repository, qualifiedName: $qualifiedName}})
                 ON CREATE SET n.appId = newId
                 SET n.label = $label,
                     n.name = $name,
@@ -43,7 +43,7 @@ public partial class Neo4jGraphStore
             var cursor = await tx.RunAsync(cypher,
                 new
                 {
-                    project = node.Project,
+                    repository = node.Repository,
                     qualifiedName = nodeQualifiedName,
                     label = node.Label.ToString(),
                     name = nodeName,
@@ -91,7 +91,7 @@ public partial class Neo4jGraphStore
 
         // Use smaller batches for Neo4j — large UNWIND+MERGE transactions are expensive
         var preparedNodes = nodes.Select((n, i) => new PreparedNodeWrite(
-            n.Project,
+            n.Repository,
             n.DotnetProject,
             n.Label,
             n.Name.Length > 1000 ? n.Name[..1000] : n.Name,
@@ -113,14 +113,14 @@ public partial class Neo4jGraphStore
             batchNum++;
             var batchSw = Stopwatch.StartNew();
 
-            var batchResult = new List<(string project, string qn, long id)>();
+            var batchResult = new List<(string repository, string qn, long id)>();
 
             foreach (var group in batch.GroupBy(n => n.Label))
             {
                 var nodeLabels = GetCodeNodeSetLabels(group.Key);
                 var nodeParams = group.Select(n => new Dictionary<string, object?>
                 {
-                    ["project"] = n.Project,
+                    ["repository"] = n.Repository,
                     ["dotnetProject"] = n.DotnetProject,
                     ["label"] = n.Label.ToString(),
                     ["name"] = n.Name,
@@ -138,7 +138,7 @@ public partial class Neo4jGraphStore
                 {
                     var cypher = $@"
                         UNWIND $nodes AS n
-                        MERGE (node:CodeNode {{project: n.project, qualifiedName: n.qualifiedName}})
+                        MERGE (node:CodeNode {{repository: n.repository, qualifiedName: n.qualifiedName}})
                         ON CREATE SET node.appId = n.appId
                         SET node.label = n.label,
                             node.name = n.name,
@@ -150,16 +150,16 @@ public partial class Neo4jGraphStore
                             node.doNotTrust = n.doNotTrust
                         SET node += n.promotedProperties
                         SET node{nodeLabels}
-                        RETURN node.project AS project, node.qualifiedName AS qualifiedName, node.appId AS appId
+                        RETURN node.repository AS repository, node.qualifiedName AS qualifiedName, node.appId AS appId
                         ";
 
                     var resultCursor = await tx.RunAsync(cypher,
                         new { nodes = nodeParams });
 
-                    var pairs = new List<(string project, string qn, long id)>();
+                    var pairs = new List<(string repository, string qn, long id)>();
                     await foreach (var record in resultCursor)
                         pairs.Add((
-                            record["project"].As<string>(),
+                            record["repository"].As<string>(),
                             record["qualifiedName"].As<string>(),
                             record["appId"].As<long>()));
                     return pairs;
@@ -171,8 +171,8 @@ public partial class Neo4jGraphStore
             logger.LogInformation("[Timing] Neo4j node batch {BatchNum} ({BatchSize} nodes): {ElapsedMs}ms",
                 batchNum, batch.Count, batchSw.ElapsedMilliseconds);
 
-            foreach (var (project, qn, id) in batchResult)
-                result[GraphNodeKey.Create(project, qn)] = id;
+            foreach (var (repository, qn, id) in batchResult)
+                result[GraphNodeKey.Create(repository, qn)] = id;
         }
 
         return result;
@@ -193,15 +193,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName)
+    public async Task<GraphNode?> FindNodeByQualifiedNameAsync(string repository, string qualifiedName)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project, qualifiedName: $qualifiedName}) RETURN n",
-                new { project, qualifiedName });
+                "MATCH (n:CodeNode {repository: $repository, qualifiedName: $qualifiedName}) RETURN n",
+                new { repository, qualifiedName });
             if (await cursor.FetchAsync())
                 return MapCodeNode(cursor.Current["n"].As<INode>());
             return null;
@@ -209,7 +209,7 @@ public partial class Neo4jGraphStore
     }
 
     public async Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<string> qualifiedNames)
     {
         if (qualifiedNames.Count == 0)
@@ -220,8 +220,8 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project}) WHERE n.qualifiedName IN $names RETURN n",
-                new { project, names });
+                "MATCH (n:CodeNode {repository: $repository}) WHERE n.qualifiedName IN $names RETURN n",
+                new { repository, names });
             var results = new List<GraphNode>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNode(record["n"].As<INode>()));
@@ -229,15 +229,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string repository, string name, int limit = 1000)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project, name: $name}) RETURN n LIMIT $limit",
-                new { project, name, limit });
+                "MATCH (n:CodeNode {repository: $repository, name: $name}) RETURN n LIMIT $limit",
+                new { repository, name, limit });
             var results = new List<GraphNode>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNode(record["n"].As<INode>()));
@@ -245,15 +245,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string project, NodeLabel label, int limit = 10000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string repository, NodeLabel label, int limit = 10000)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                $"MATCH {GetCodeNodeMatchPattern("n", label)} WHERE n.project = $project RETURN n LIMIT $limit",
-                new { project, limit });
+                $"MATCH {GetCodeNodeMatchPattern("n", label)} WHERE n.repository = $repository RETURN n LIMIT $limit",
+                new { repository, limit });
             var results = new List<GraphNode>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNode(record["n"].As<INode>()));
@@ -261,15 +261,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string project, string filePath, int limit = 5000)
+    public async Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string repository, string filePath, int limit = 5000)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project, filePath: $filePath}) RETURN n LIMIT $limit",
-                new { project, filePath, limit });
+                "MATCH (n:CodeNode {repository: $repository, filePath: $filePath}) RETURN n LIMIT $limit",
+                new { repository, filePath, limit });
             var results = new List<GraphNode>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNode(record["n"].As<INode>()));
@@ -278,7 +278,7 @@ public partial class Neo4jGraphStore
     }
 
     public async Task<IReadOnlyList<GraphNode>> SearchNodesAsync(
-        string? project, string namePattern,
+        string? repository, string namePattern,
         NodeLabel? label = null, string? filePattern = null,
         int limit = 50, int offset = 0, string? dotnetProject = null)
     {
@@ -312,10 +312,10 @@ public partial class Neo4jGraphStore
                 whereAdded = true;
             }
 
-            if (project is not null)
+            if (repository is not null)
             {
-                AddWhere("n.project = $project");
-                parameters["project"] = project;
+                AddWhere("n.repository = $repository");
+                parameters["repository"] = repository;
             }
             if (label is not null && useFulltext)
             {
@@ -359,7 +359,7 @@ public partial class Neo4jGraphStore
         return sb.ToString();
     }
 
-    public async Task<int> SearchNodesCountAsync(string? project, string namePattern,
+    public async Task<int> SearchNodesCountAsync(string? repository, string namePattern,
         NodeLabel? label = null, string? filePattern = null, string? dotnetProject = null)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
@@ -389,10 +389,10 @@ public partial class Neo4jGraphStore
                 whereAdded = true;
             }
 
-            if (project is not null)
+            if (repository is not null)
             {
-                AddWhere("n.project = $project");
-                parameters["project"] = project;
+                AddWhere("n.repository = $repository");
+                parameters["repository"] = repository;
             }
             if (label is not null && useFulltext)
             {
@@ -489,18 +489,18 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<Dictionary<string, Dictionary<string, int>>> GetNodeCountsByDotnetProjectAsync(string project)
+    public async Task<Dictionary<string, Dictionary<string, int>>> GetNodeCountsByDotnetProjectAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (n:CodeNode {project: $project})
+                MATCH (n:CodeNode {repository: $repository})
                 WHERE n.dotnetProject IS NOT NULL
                 RETURN n.dotnetProject AS dotnetProject, n.label AS label, count(n) AS count
                 """,
-                new { project });
+                new { repository });
 
             var result = new Dictionary<string, Dictionary<string, int>>();
             await foreach (var record in cursor)
@@ -519,15 +519,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<Dictionary<string, int>> GetNodeCountsByLabelForProjectAsync(string project)
+    public async Task<Dictionary<string, int>> GetNodeCountsByLabelForRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
 
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project}) RETURN n.label AS label, count(n) AS count",
-                new { project });
+                "MATCH (n:CodeNode {repository: $repository}) RETURN n.label AS label, count(n) AS count",
+                new { repository });
             var result = new Dictionary<string, int>();
             await foreach (var record in cursor)
                 result[record["label"].As<string>()] = record["count"].As<int>();
@@ -537,21 +537,21 @@ public partial class Neo4jGraphStore
 
     // ── Bulk Delete ───────────────────────────────────────────────────────
 
-    public async Task DeleteNodesByFileAsync(string project, string filePath)
+    public async Task DeleteNodesByFileAsync(string repository, string filePath)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project, filePath: $filePath}) DETACH DELETE n",
-                new { project, filePath });
+                "MATCH (n:CodeNode {repository: $repository, filePath: $filePath}) DETACH DELETE n",
+                new { repository, filePath });
         });
     }
 
-    public async Task DeleteNodesByProjectAsync(string project)
+    public async Task DeleteNodesByRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
-        // Delete in batches to avoid transaction memory issues on large projects
+        // Delete in batches to avoid transaction memory issues on large repositories
         var deleted = 0;
         int batchDeleted;
         do
@@ -559,12 +559,12 @@ public partial class Neo4jGraphStore
             batchDeleted = await session.ExecuteWriteAsync(async tx =>
             {
                 var cursor = await tx.RunAsync("""
-                    MATCH (n:CodeNode {project: $project})
+                    MATCH (n:CodeNode {repository: $repository})
                     WITH n LIMIT 5000
                     DETACH DELETE n
                     RETURN count(*) AS deleted
                     """,
-                    new { project });
+                    new { repository });
                 await cursor.FetchAsync();
                 return cursor.Current["deleted"].As<int>();
             });
@@ -573,7 +573,7 @@ public partial class Neo4jGraphStore
     }
 
     private sealed record PreparedNodeWrite(
-        string Project,
+        string Repository,
         string? DotnetProject,
         NodeLabel Label,
         string Name,

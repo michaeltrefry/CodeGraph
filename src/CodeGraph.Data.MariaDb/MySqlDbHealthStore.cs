@@ -24,9 +24,9 @@ public class MySqlDbHealthStore(IOptions<MariaDbStorageOptions> optionsAccessor)
         "repository_summaries:PRIMARY",
         "project_analyses:uq_project_analysis",
         "node_analysis:PRIMARY",
-        "file_metrics:uq_file_metrics_project_path",
-        "project_health_summaries:uq_project_health_project_dp",
-        "project_security_summaries:uq_security_summary_project",
+        "file_metrics:uq_file_metrics_repository_path",
+        "project_health_summaries:uq_repository_health_repository_dp",
+        "repository_security_summaries:uq_security_summary_repository",
         "wiki_sections:uq_wiki_sections_slug",
         "wiki_pages:uq_wiki_pages_sibling_slug",
         "wiki_revisions:uq_wiki_revisions_page_rev",
@@ -42,7 +42,7 @@ public class MySqlDbHealthStore(IOptions<MariaDbStorageOptions> optionsAccessor)
         "analysis_batches:idx_ab_status",
         "analysis_batch_requests:idx_abr_batch",
         "analysis_batch_requests:idx_abr_custom",
-        "security_findings:ix_security_project",
+        "security_findings:ix_security_repository",
         "security_findings:ix_security_severity",
         "wiki_pages:idx_wiki_pages_section",
         "wiki_pages:idx_wiki_pages_parent",
@@ -104,21 +104,21 @@ public class MySqlDbHealthStore(IOptions<MariaDbStorageOptions> optionsAccessor)
     {
         var duplicates = await conn.QueryAsync<DuplicateGroupRow>("""
             SELECT 'CodeNode' AS Category,
-                   CONCAT(project, '|', qualified_name) AS `Key`,
+                   CONCAT(repository, '|', qualified_name) AS `Key`,
                    COUNT(*) AS `Count`,
                    JSON_ARRAYAGG(CAST(id AS CHAR)) AS SampleValuesJson
             FROM nodes
-            GROUP BY project, qualified_name
+            GROUP BY repository, qualified_name
             HAVING COUNT(*) > 1
 
             UNION ALL
 
             SELECT 'FileHash' AS Category,
-                   CONCAT(project, '|', rel_path) AS `Key`,
+                   CONCAT(repository, '|', rel_path) AS `Key`,
                    COUNT(*) AS `Count`,
                    JSON_ARRAYAGG(content_hash) AS SampleValuesJson
             FROM file_hashes
-            GROUP BY project, rel_path
+            GROUP BY repository, rel_path
             HAVING COUNT(*) > 1
 
             ORDER BY `Count` DESC, Category, `Key`

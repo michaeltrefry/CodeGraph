@@ -139,9 +139,9 @@ public class RustProjectAnalyzer : IRustAnalyzer
         }
 
         _logger.LogInformation(
-            "Rust semantic analysis of {Project}: {CrateCount} crates in {GroupCount} groups of up to {GroupSize} " +
+            "Rust semantic analysis of {Repository}: {CrateCount} crates in {GroupCount} groups of up to {GroupSize} " +
             "(build scripts {BuildScripts}, proc-macros {ProcMacros})",
-            context.ProjectName,
+            context.RepositoryName,
             workspace.WorkspaceMembers.Count,
             groups.Count,
             _groupSettings.GroupSize,
@@ -158,9 +158,9 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 var skipped = WorkspaceTimeoutExceeded(group);
                 _logger.LogWarning(
                     skipped,
-                    "Rust semantic group {Group} for {Project} skipped ({FailureCode}): crates {Crates}",
+                    "Rust semantic group {Group} for {Repository} skipped ({FailureCode}): crates {Crates}",
                     group.Index,
-                    context.ProjectName,
+                    context.RepositoryName,
                     skipped.FailureCode,
                     group.Crates);
                 outcomes.Add(new RustCrateGroupAnalysis(group.Crates, group.SourceDirectories, null, skipped)
@@ -206,9 +206,9 @@ public class RustProjectAnalyzer : IRustAnalyzer
         try
         {
             _logger.LogInformation(
-                "Rust semantic group {Group} for {Project}: crates {Crates}",
+                "Rust semantic group {Group} for {Repository}: crates {Crates}",
                 group.Index,
-                context.ProjectName,
+                context.RepositoryName,
                 group.Crates);
 
             var buildOutputs = _groupSettings.BuildScripts
@@ -230,7 +230,7 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 throw new RustSemanticIndexingException(
                     "rust_semantic_empty",
                     $"Rust semantic indexing produced no importable definitions for crates " +
-                    $"{string.Join(", ", group.Crates)} of '{context.ProjectName}'.");
+                    $"{string.Join(", ", group.Crates)} of '{context.RepositoryName}'.");
             }
 
             _logger.LogInformation(
@@ -259,9 +259,9 @@ public class RustProjectAnalyzer : IRustAnalyzer
                 ex);
             _logger.LogWarning(
                 failure,
-                "Rust semantic group {Group} for {Project} failed ({FailureCode}) after {ElapsedMs}ms: crates {Crates}",
+                "Rust semantic group {Group} for {Repository} failed ({FailureCode}) after {ElapsedMs}ms: crates {Crates}",
                 group.Index,
-                context.ProjectName,
+                context.RepositoryName,
                 failure.FailureCode,
                 stopwatch.ElapsedMilliseconds,
                 group.Crates);

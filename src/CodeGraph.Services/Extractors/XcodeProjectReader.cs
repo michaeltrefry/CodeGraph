@@ -13,7 +13,7 @@ namespace CodeGraph.Services.Extractors;
 /// The module name follows Xcode's build settings: <c>PRODUCT_MODULE_NAME</c>, else
 /// <c>PRODUCT_NAME</c> made a C99 extended identifier (Xcode's default
 /// <c>$(PRODUCT_NAME:c99extidentifier)</c>), else the target name. Target settings override the
-/// project's for the same configuration. <c>$(TARGET_NAME)</c>, <c>$(PRODUCT_NAME)</c>,
+/// repository's for the same configuration. <c>$(TARGET_NAME)</c>, <c>$(PRODUCT_NAME)</c>,
 /// <c>$(PRODUCT_MODULE_NAME)</c> and <c>$(inherited)</c> references and the
 /// <c>c99extidentifier</c>, <c>identifier</c>, <c>rfc1034identifier</c>, <c>lower</c> and
 /// <c>upper</c> modifiers are evaluated; a setting that references anything else (an
@@ -34,7 +34,7 @@ internal static partial class XcodeProjectReader
 
         var projectSettings = objects.Values.OfType<Dictionary<string, object>>()
             .Where(entry => Text(entry, "isa") == "PBXProject")
-            .Select(project => ConfigurationSettings(objects, project))
+            .Select(repository => ConfigurationSettings(objects, repository))
             .FirstOrDefault() ?? [];
 
         var targets = new List<XcodeNativeTarget>();
@@ -90,9 +90,9 @@ internal static partial class XcodeProjectReader
     }
 
     private static Dictionary<string, object> Merge(
-        Dictionary<string, object>? project, Dictionary<string, object>? target)
+        Dictionary<string, object>? repository, Dictionary<string, object>? target)
     {
-        var merged = new Dictionary<string, object>(project ?? [], StringComparer.Ordinal);
+        var merged = new Dictionary<string, object>(repository ?? [], StringComparer.Ordinal);
         foreach (var (key, value) in target ?? [])
             merged[key] = value;
         return merged;

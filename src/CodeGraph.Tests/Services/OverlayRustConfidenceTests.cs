@@ -62,15 +62,15 @@ public sealed class OverlayRustConfidenceTests : IDisposable
 
         _store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repo, LocalPath = _root, LastCommitSha = _baseSha })
             .GetAwaiter().GetResult();
-        _store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repo, LastCommitSha = _baseSha })
+        _store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repo, LastCommitSha = _baseSha })
             .GetAwaiter().GetResult();
 
         // A semantic default-branch index: SCIP qualified names, 0-based SCIP lines.
         var alpha = _store.AddNode(Scip("alpha_value", LibPath, 0));
         var removed = _store.AddNode(Scip("removed_fn", LibPath, 4));
         var main = _store.AddNode(Scip("main", MainPath, 0));
-        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = main, TargetId = alpha, Type = EdgeType.CALLS });
-        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = main, TargetId = removed, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Repo, SourceId = main, TargetId = alpha, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Repo, SourceId = main, TargetId = removed, Type = EdgeType.CALLS });
     }
 
     [Fact]
@@ -106,12 +106,12 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         mcp.StructuredString("lowConfidence").ShouldBe("true");
         mcp.StructuredString("unmappedInboundEdges").ShouldBe("1");
 
-        var rest = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, "alpha_value", sha: _headSha)).Result!).Value!;
+        var rest = (ImpactReport)((OkObjectResult)(await RepositoriesController().Impact(Repo, "alpha_value", sha: _headSha)).Result!).Value!;
         rest.AffectedNodes.Select(node => node.Name).ShouldContain("main");
         rest.Summary.LowConfidenceCount.ShouldBeGreaterThan(0);
         rest.UnmappedInboundEdges.ShouldBe(1);
 
-        var defaultBranch = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, "alpha_value")).Result!).Value!;
+        var defaultBranch = (ImpactReport)((OkObjectResult)(await RepositoriesController().Impact(Repo, "alpha_value")).Result!).Value!;
         defaultBranch.UnmappedInboundEdges.ShouldBeNull();
     }
 
@@ -120,7 +120,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
     {
         await BuildOverlayAsync();
 
-        var trace = await Mcp().TraceCallPath("alpha_value", "inbound", project: Repo, sha: _headSha);
+        var trace = await Mcp().TraceCallPath("alpha_value", "inbound", repository: Repo, sha: _headSha);
 
         var text = trace.Text();
         text.ShouldContain("**main** (Function)");
@@ -135,7 +135,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         var inbound = (await graph.FindEdgesByTargetAsync(head.Id, EdgeType.CALLS)).ShouldHaveSingleItem();
         inbound.Properties[OverlayGraphView.InferredRetargetProperty].ShouldBe("name-match");
 
-        var consolidated = await ConsolidatedMcpServer.GraphTrace(Mcp(), "call_path", "alpha_value", "inbound", project: Repo, sha: _headSha);
+        var consolidated = await ConsolidatedMcpServer.GraphTrace(Mcp(), "call_path", "alpha_value", "inbound", repository: Repo, sha: _headSha);
         using var envelope = JsonDocument.Parse(consolidated.Text());
         envelope.RootElement.GetProperty("lowConfidence").GetBoolean().ShouldBeTrue();
         envelope.RootElement.GetProperty("unmappedInboundEdges").GetInt32().ShouldBe(1);
@@ -146,7 +146,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
     {
         await BuildOverlayAsync();
 
-        var trace = await Mcp().TraceCallPath("added_fn", "inbound", project: Repo, sha: _headSha);
+        var trace = await Mcp().TraceCallPath("added_fn", "inbound", repository: Repo, sha: _headSha);
 
         trace.Body().ShouldStartWith("No call paths found for 'added_fn'.");
         trace.Text().ShouldContain("Start: **added_fn** (Function) — RustOverlay [low confidence]");
@@ -165,24 +165,24 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         var other = _store.AddNode(Scip("other", OtherPath, 4));
         var orphan = _store.AddNode(Scip("orphan", OtherPath, 8));
         var removed = (await _store.FindNodesByNameAsync(Repo, "removed_fn")).ShouldHaveSingleItem().Id;
-        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = other, TargetId = helper, Type = EdgeType.CALLS });
-        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = orphan, TargetId = removed, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Repo, SourceId = other, TargetId = helper, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Repo, SourceId = orphan, TargetId = removed, Type = EdgeType.CALLS });
         await BuildOverlayAsync();
 
         // Unrelated: neither answer touches lib.rs, removed_fn, or a caller of it.
-        var trace = await Mcp().TraceCallPath("helper", "inbound", project: Repo, sha: _headSha);
+        var trace = await Mcp().TraceCallPath("helper", "inbound", repository: Repo, sha: _headSha);
         trace.Text().ShouldContain("**other** (Function)");
         trace.Text().ShouldNotContain("Unmapped callers");
         trace.StructuredString("unmappedInboundEdges").ShouldBe("0");
         var impact = await Mcp().AnalyzeImpact("helper", Repo, sha: _headSha);
         impact.Text().ShouldNotContain("Unmapped callers");
-        var rest = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, "helper", sha: _headSha)).Result!).Value!;
+        var rest = (ImpactReport)((OkObjectResult)(await RepositoriesController().Impact(Repo, "helper", sha: _headSha)).Result!).Value!;
         rest.UnmappedInboundEdges.ShouldBe(0);
         var consumers = await Mcp().FindConsumers("helper", Repo, sha: _headSha);
         consumers.Text().ShouldNotContain("Unmapped callers");
 
         // Related by source: orphan's own call into removed_fn (main -> removed_fn is not in this answer).
-        var outbound = await Mcp().TraceCallPath("orphan", "outbound", project: Repo, sha: _headSha);
+        var outbound = await Mcp().TraceCallPath("orphan", "outbound", repository: Repo, sha: _headSha);
         outbound.Text().ShouldContain("**Unmapped callers:** 1");
 
         // Related by name: the default branch would have found removed_fn's two callers.
@@ -201,8 +201,8 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         var callerB = store.AddNode(Scip("call_b", MainPath, 4));
         var baseA = store.AddNode(ScipMethod("A", "new", 2));
         var baseB = store.AddNode(ScipMethod("B", "new", 6));
-        store.AddEdge(new GraphEdge { Project = Repo, SourceId = callerA, TargetId = baseA, Type = EdgeType.CALLS });
-        store.AddEdge(new GraphEdge { Project = Repo, SourceId = callerB, TargetId = baseB, Type = EdgeType.CALLS });
+        store.AddEdge(new GraphEdge { Repository = Repo, SourceId = callerA, TargetId = baseA, Type = EdgeType.CALLS });
+        store.AddEdge(new GraphEdge { Repository = Repo, SourceId = callerB, TargetId = baseB, Type = EdgeType.CALLS });
 
         var view = await ViewAsync(store,
         [
@@ -221,7 +221,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         var store = new InMemoryGraphStore();
         var caller = store.AddNode(Scip("call_b", MainPath, 0));
         var baseB = store.AddNode(ScipMethod("B", "new", 6));
-        store.AddEdge(new GraphEdge { Project = Repo, SourceId = caller, TargetId = baseB, Type = EdgeType.CALLS });
+        store.AddEdge(new GraphEdge { Repository = Repo, SourceId = caller, TargetId = baseB, Type = EdgeType.CALLS });
 
         // A::new (known, other type) is excluded; of the two with unknown enclosing type, line 9 is closer.
         var view = await ViewAsync(store,
@@ -249,12 +249,12 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         var caller = store.AddNode(Scip("caller", MainPath, 0));
         var near = store.AddNode(Scip("near", LibPath, 10));
         var tied = store.AddNode(Scip("tied", LibPath, 10));
-        store.AddEdge(new GraphEdge { Project = Repo, SourceId = caller, TargetId = near, Type = EdgeType.CALLS });
-        store.AddEdge(new GraphEdge { Project = Repo, SourceId = caller, TargetId = tied, Type = EdgeType.CALLS });
+        store.AddEdge(new GraphEdge { Repository = Repo, SourceId = caller, TargetId = near, Type = EdgeType.CALLS });
+        store.AddEdge(new GraphEdge { Repository = Repo, SourceId = caller, TargetId = tied, Type = EdgeType.CALLS });
 
         var view = await OverlayGraphView.CreateAsync(
             store,
-            new BranchOverlayEntity { Id = 1, Project = Repo, HeadSha = _headSha, BaseSha = _baseSha },
+            new BranchOverlayEntity { Id = 1, Repository = Repo, HeadSha = _headSha, BaseSha = _baseSha },
             [new BranchOverlayFileEntity { OverlayId = 1, FilePath = LibPath, ChangeKind = BranchOverlayChangeKinds.Modified }],
             [
                 TreeSitter(11, "near", 12),
@@ -277,7 +277,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
     {
         await BuildOverlayAsync();
 
-        var search = await Mcp().SearchGraph("alpha_value", project: Repo, sha: _headSha);
+        var search = await Mcp().SearchGraph("alpha_value", repository: Repo, sha: _headSha);
 
         search.Text().ShouldContain("**alpha_value** (Function) — RustOverlay [low confidence]");
         search.Text().ShouldContain("includes 1 low-confidence node(s)");
@@ -347,7 +347,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
         new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance),
         commitScopes: Resolver());
 
-    private ProjectsController ProjectsController() => new(
+    private RepositoriesController RepositoriesController() => new(
         null!,
         null!,
         new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance),
@@ -369,7 +369,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
 
     private static GraphNode Scip(string name, string path, int line) => new()
     {
-        Project = Repo,
+        Repository = Repo,
         Label = NodeLabel.Function,
         Name = name,
         QualifiedName = $"{Repo}:scip:rust-analyzer cargo {(path == LibPath ? "alpha" : "app")} 0.1.0 {name}().",
@@ -382,7 +382,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
     private Task<OverlayGraphView> ViewAsync(InMemoryGraphStore store, IReadOnlyList<GraphNode> overlayNodes)
         => OverlayGraphView.CreateAsync(
             store,
-            new BranchOverlayEntity { Id = 1, Project = Repo, HeadSha = _headSha, BaseSha = _baseSha },
+            new BranchOverlayEntity { Id = 1, Repository = Repo, HeadSha = _headSha, BaseSha = _baseSha },
             [new BranchOverlayFileEntity { OverlayId = 1, FilePath = LibPath, ChangeKind = BranchOverlayChangeKinds.Modified }],
             overlayNodes,
             []);
@@ -411,7 +411,7 @@ public sealed class OverlayRustConfidenceTests : IDisposable
     private static GraphNode TreeSitter(long id, string name, int line) => new()
     {
         Id = id,
-        Project = Repo,
+        Repository = Repo,
         Label = NodeLabel.Function,
         Name = name,
         QualifiedName = $"{Repo}:{LibPath}#{name}@{line}",

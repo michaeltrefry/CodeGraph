@@ -19,15 +19,15 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class XcodeProjectImportTests : IDisposable
 {
-    private const string Project = "Lens";
+    private const string Repository = "Lens";
     private const string AppProject = "native/Compositor.xcodeproj/project.pbxproj";
-    private const string AppTarget = $"{Project}:{AppProject}#target:Compositor";
-    private const string TestsTarget = $"{Project}:{AppProject}#target:CompositorTests";
+    private const string AppTarget = $"{Repository}:{AppProject}#target:Compositor";
+    private const string TestsTarget = $"{Repository}:{AppProject}#target:CompositorTests";
     private const string VendorProject = "vendor/Compositor/Compositor.xcodeproj/project.pbxproj";
-    private const string VendorTarget = $"{Project}:{VendorProject}#target:Compositor";
-    private const string RendererTests = $"{Project}:native/CompositorTests/RendererTests.swift";
-    private const string VendorTests = $"{Project}:vendor/Compositor/Tests/VendorTests.swift";
-    private const string Canvas = $"{Project}:native/Compositor/Canvas.swift";
+    private const string VendorTarget = $"{Repository}:{VendorProject}#target:Compositor";
+    private const string RendererTests = $"{Repository}:native/CompositorTests/RendererTests.swift";
+    private const string VendorTests = $"{Repository}:vendor/Compositor/Tests/VendorTests.swift";
+    private const string Canvas = $"{Repository}:native/Compositor/Canvas.swift";
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-xcode-imports-{Guid.NewGuid():N}");
     private readonly InMemoryGraphStore _store = new();
@@ -54,7 +54,7 @@ public sealed class XcodeProjectImportTests : IDisposable
         var objects = new List<string>
         {
             """
-            		AA0000000000000000000001 /* Project object */ = {
+            		AA0000000000000000000001 /* Repository object */ = {
             			isa = PBXProject;
             			buildConfigurationList = AA0000000000000000000002 /* Build configuration list for PBXProject "Compositor" */;
             			targets = (
@@ -143,7 +143,7 @@ public sealed class XcodeProjectImportTests : IDisposable
             {{string.Join("\n", objects)}}
             /* End XCConfigurationList section */
             	};
-            	rootObject = AA0000000000000000000001 /* Project object */;
+            	rootObject = AA0000000000000000000001 /* Repository object */;
             }
             """;
     }
@@ -173,7 +173,7 @@ public sealed class XcodeProjectImportTests : IDisposable
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 swiftPackageManifestExtractor: new SwiftPackageManifestExtractor())
-            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
     private void WriteRepository()
     {
@@ -199,7 +199,7 @@ public sealed class XcodeProjectImportTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_TestableImportOfTheXcodeAppTarget_BindsTheNearestLocalModule()
+    public async Task IndexRepository_TestableImportOfTheXcodeAppTarget_BindsTheNearestLocalModule()
     {
         WriteRepository();
 
@@ -228,7 +228,7 @@ public sealed class XcodeProjectImportTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_ChangedXcodeModuleName_RebindsImportsOfUnchangedFiles()
+    public async Task IndexRepository_ChangedXcodeModuleName_RebindsImportsOfUnchangedFiles()
     {
         WriteRepository();
         Delete(VendorProject);
@@ -256,7 +256,7 @@ public sealed class XcodeProjectImportTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProject_RemovedXcodeProject_RemovesItsModulesAndRebindsImports()
+    public async Task IndexRepository_RemovedXcodeProject_RemovesItsModulesAndRebindsImports()
     {
         WriteRepository();
         await IndexAsync();
@@ -285,7 +285,7 @@ public sealed class XcodeProjectImportTests : IDisposable
     /// The SwiftPM target is the canonical provider: one high-confidence edge, never an ambiguous pair.
     /// </summary>
     [Fact]
-    public async Task IndexProject_SwiftPmAndXcodeTargetOfTheSameModule_BindsOnlyTheSwiftPmTarget()
+    public async Task IndexRepository_SwiftPmAndXcodeTargetOfTheSameModule_BindsOnlyTheSwiftPmTarget()
     {
         Write("Package.swift", """
             // swift-tools-version:5.9
@@ -305,9 +305,9 @@ public sealed class XcodeProjectImportTests : IDisposable
 
         await IndexAsync();
 
-        _store.Nodes.ShouldContain(node => node.QualifiedName == $"{Project}:Alamo.xcodeproj/project.pbxproj#target:Alamo");
-        Imports().Where(import => import.Source == $"{Project}:Tests/T.swift").ShouldBe(
-            [($"{Project}:Tests/T.swift", $"{Project}:Package.swift#target:Alamo", "target", "high")]);
+        _store.Nodes.ShouldContain(node => node.QualifiedName == $"{Repository}:Alamo.xcodeproj/project.pbxproj#target:Alamo");
+        Imports().Where(import => import.Source == $"{Repository}:Tests/T.swift").ShouldBe(
+            [($"{Repository}:Tests/T.swift", $"{Repository}:Package.swift#target:Alamo", "target", "high")]);
     }
 
     [Fact]
@@ -330,7 +330,7 @@ public sealed class XcodeProjectImportTests : IDisposable
             ("Configured", "com.apple.product-type.framework",
                 ["PRODUCT_NAME = Shared;", "PRODUCT_MODULE_NAME = \"$(SHARED_MODULE)\";"],
                 ["PRODUCT_NAME = Shared;", "PRODUCT_MODULE_NAME = \"$(SHARED_MODULE)\";"]),
-            // No target PRODUCT_NAME: the project-level $(TARGET_NAME) applies.
+            // No target PRODUCT_NAME: the repository-level $(TARGET_NAME) applies.
             ("3DEngine", "com.apple.product-type.framework", [], []),
             // Configurations disagree: Release wins.
             ("Flavored", "com.apple.product-type.application",
@@ -373,7 +373,7 @@ public sealed class XcodeProjectImportTests : IDisposable
     }
 
     [Fact]
-    public void ReadNativeTargets_MalformedProject_Throws()
+    public void ReadNativeTargets_MalformedRepository_Throws()
     {
         Should.Throw<FormatException>(() => XcodeProjectReader.ReadNativeTargets("{ objects = { A = { isa = "));
     }

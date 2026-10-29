@@ -62,7 +62,7 @@ public class MariaDbMemoryGraphStoreTests
                 {
                     Id = "codegraph",
                     Label = "CodeGraph",
-                    Type = "project",
+                    Type = "repository",
                     Summary = "Indexes code",
                     Source = "test",
                     Embedding = [1f, 0f, 0f],
@@ -157,7 +157,7 @@ public class MariaDbMemoryGraphStoreTests
                     {
                         Id = "codegraph",
                         Label = "Second User CodeGraph",
-                        Type = "project",
+                        Type = "repository",
                         Summary = "Private second-user memory",
                         Source = "test",
                     }

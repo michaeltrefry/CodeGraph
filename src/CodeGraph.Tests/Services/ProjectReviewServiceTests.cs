@@ -31,7 +31,7 @@ public class ProjectReviewServiceTests
             [
                 new FileMetricsEntity
                 {
-                    Project = "TestRepo",
+                    Repository = "TestRepo",
                     DotnetProject = "TestRepo.Api",
                     FilePath = "../secret.cs",
                     ComplexityScore = 100,
@@ -76,7 +76,7 @@ public class ProjectReviewServiceTests
             [
                 new FileMetricsEntity
                 {
-                    Project = "TestRepo",
+                    Repository = "TestRepo",
                     DotnetProject = "TestRepo.Api",
                     FilePath = "src/FooService.cs",
                     ComplexityScore = 12,
@@ -89,7 +89,7 @@ public class ProjectReviewServiceTests
                 },
                 new FileMetricsEntity
                 {
-                    Project = "TestRepo",
+                    Repository = "TestRepo",
                     DotnetProject = "TestRepo.Api",
                     FilePath = "src/BarService.cs",
                     ComplexityScore = 4,
@@ -102,7 +102,7 @@ public class ProjectReviewServiceTests
                 },
                 new FileMetricsEntity
                 {
-                    Project = "TestRepo",
+                    Repository = "TestRepo",
                     DotnetProject = "TestRepo.Api",
                     FilePath = "src/BigService.cs",
                     ComplexityScore = 35,
@@ -118,7 +118,7 @@ public class ProjectReviewServiceTests
             [
                 new ProjectDiagnosticEntity
                 {
-                    Project = "TestRepo",
+                    Repository = "TestRepo",
                     DotnetProject = "TestRepo.Api",
                     Source = "roslyn",
                     DiagnosticKey = "foo-warning",
@@ -245,7 +245,7 @@ public class ProjectReviewServiceTests
             [
                 new ProjectDiagnosticEntity
                 {
-                    Project = "TestRepo",
+                    Repository = "TestRepo",
                     DotnetProject = "TestRepo.Api",
                     Source = "roslyn",
                     DiagnosticKey = "foo-warning",
@@ -708,7 +708,7 @@ public class ProjectReviewServiceTests
 
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.File,
             Name = "FooService.cs",
@@ -717,7 +717,7 @@ public class ProjectReviewServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.File,
             Name = "BarService.cs",
@@ -726,7 +726,7 @@ public class ProjectReviewServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.File,
             Name = "BigService.cs",
@@ -735,7 +735,7 @@ public class ProjectReviewServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.Class,
             Name = "BigService",
@@ -762,7 +762,7 @@ public class ProjectReviewServiceTests
         [
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Api",
                 FilePath = "src/FooService.cs",
                 ComplexityScore = 12,
@@ -775,7 +775,7 @@ public class ProjectReviewServiceTests
             },
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Api",
                 FilePath = "src/BarService.cs",
                 ComplexityScore = 4,
@@ -788,7 +788,7 @@ public class ProjectReviewServiceTests
             },
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Api",
                 FilePath = "src/BigService.cs",
                 ComplexityScore = 70,

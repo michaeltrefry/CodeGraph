@@ -3,7 +3,7 @@ namespace CodeGraph.Models;
 public record GraphEdge
 {
     public long Id { get; init; }
-    public required string Project { get; init; }
+    public required string Repository { get; init; }
     public long SourceId { get; init; }
     public long TargetId { get; init; }
     public required EdgeType Type { get; init; }

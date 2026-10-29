@@ -36,7 +36,7 @@ public partial class IndexingPipeline
     /// endpoint is one of those nodes. The default-branch graph is never written.
     /// </summary>
     public async Task<BranchOverlaySlice> ExtractOverlayAsync(
-        string projectName,
+        string repositoryName,
         string rootPath,
         IReadOnlyCollection<string> changedPaths,
         IReadOnlyCollection<string> removedPaths,
@@ -58,12 +58,12 @@ public partial class IndexingPipeline
         // Untrusted: overlays never run repository-controlled restore/MSBuild tooling.
         var context = new ExtractorContext
         {
-            ProjectName = projectName,
+            RepositoryName = repositoryName,
             RootPath = rootPath,
             RepositoryToolingTrust = RepositoryToolingTrust.Untrusted
         };
 
-        CreateStructuralNodes(projectName, rootPath, files, csprojFiles, buffer);
+        CreateStructuralNodes(repositoryName, rootPath, files, csprojFiles, buffer);
         if (files.Count > 0)
             await ExtractFilesAsync(
                 files, rootPath, context, buffer, failOnExtractionError: false, OverlayRustSourceOwners, ct);
@@ -74,13 +74,13 @@ public partial class IndexingPipeline
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Overlays do not extract manifests: imports resolve against the default branch's packages.
         await ResolveSwiftImportsAsync(
-            projectName, buffer, manifestsExtracted: false, incremental: false, rebindPersisted: false,
+            repositoryName, buffer, manifestsExtracted: false, incremental: false, rebindPersisted: false,
             excludedPersistedFiles, ct);
         await ResolveCallsAsync(
-            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct,
+            repositoryName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct,
             swiftManifestsExtracted: false);
         var swiftRebinding = await ResolveSwiftTypeReferencesAsync(
-            projectName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
+            repositoryName, buffer, includePersistedNodes: true, excludedPersistedFiles, ct);
 
         var nodes = buffer.AllNodes
             .Where(node => !string.IsNullOrWhiteSpace(node.FilePath)
@@ -104,7 +104,7 @@ public partial class IndexingPipeline
         }
 
         AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, nodes, edges);
-        await AddOverlayRetractionsAsync(projectName, swiftRebinding, nodes, edges, ct);
+        await AddOverlayRetractionsAsync(repositoryName, swiftRebinding, nodes, edges, ct);
 
         return new BranchOverlaySlice(nodes, edges);
     }

@@ -51,8 +51,8 @@ public class AnalysisPromptBuilderTests
             [
                 new CrossRepoEdge
                 {
-                    SourceProject = "CodeGraph.Api",
-                    TargetProject = "Shared.Contracts",
+                    SourceRepository = "CodeGraph.Api",
+                    TargetRepository = "Shared.Contracts",
                     Type = EdgeType.REFERENCES_PACKAGE
                 }
             ],

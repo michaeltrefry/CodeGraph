@@ -81,14 +81,14 @@ public sealed class CargoCrossRepoDependencyTests
             ["crates/cli/Cargo.toml"] = Crate("tools-cli", "core.workspace = true")
         });
 
-        foreach (var (project, file) in new[] { (Inference, "crates/core/src/lib.rs"), (Inference, "crates/api/src/lib.rs"), (Fork, "crates/core/src/lib.rs") })
+        foreach (var (repository, file) in new[] { (Inference, "crates/core/src/lib.rs"), (Inference, "crates/api/src/lib.rs"), (Fork, "crates/core/src/lib.rs") })
         {
             _store.AddNode(new GraphNode
             {
-                Project = project,
+                Repository = repository,
                 Label = NodeLabel.Function,
                 Name = "run",
-                QualifiedName = $"{project}:{file}:run",
+                QualifiedName = $"{repository}:{file}:run",
                 FilePath = file
             });
         }
@@ -96,27 +96,27 @@ public sealed class CargoCrossRepoDependencyTests
         await new CrossRepoLinker(_store, NullLogger<CrossRepoLinker>.Instance).LinkAsync(CancellationToken.None);
     }
 
-    private void Index(string project, string? repoUrl, Dictionary<string, string> manifests)
+    private void Index(string repository, string? repoUrl, Dictionary<string, string> manifests)
     {
-        var rootPath = Path.Combine(_root, project);
+        var rootPath = Path.Combine(_root, repository);
         var result = new CargoManifestExtractor().Extract(
             manifests.ToDictionary(manifest => Path.Combine(rootPath, manifest.Key), manifest => manifest.Value),
-            new ExtractorContext { ProjectName = project, RootPath = rootPath });
+            new ExtractorContext { RepositoryName = repository, RootPath = rootPath });
 
-        _store.AddProject(new ProjectInfo(project, repoUrl, null, null, "sha-" + project, null, "Rust", "Cargo", false, null));
+        _store.AddRepository(new RepositoryInfo(repository, repoUrl, null, null, "sha-" + repository, null, "Rust", "Cargo", false, null));
         var ids = result.Nodes.ToDictionary(node => node.QualifiedName, node => _store.AddNode(node));
-        ids[project] = _store.AddNode(new GraphNode
+        ids[repository] = _store.AddNode(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Repository,
-            Name = project,
-            QualifiedName = project
+            Name = repository,
+            QualifiedName = repository
         });
         foreach (var edge in result.Edges)
         {
             _store.AddEdge(new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = ids[edge.SourceQN],
                 TargetId = ids[edge.TargetQN],
                 Type = edge.Type,
@@ -146,10 +146,10 @@ public sealed class CargoCrossRepoDependencyTests
         {
             edge.Type.ShouldBe(EdgeType.REFERENCES_PACKAGE);
             var target = await NodeAsync(edge.TargetNodeId);
-            target.Project.ShouldBe(edge.TargetProject);
+            target.Repository.ShouldBe(edge.TargetRepository);
             ((bool)target.Properties["is_definition"]).ShouldBeTrue();
-            (await NodeAsync(edge.SourceNodeId)).Project.ShouldBe(edge.SourceProject);
-            links.Add((edge.SourceProject, edge.TargetProject, target.Name,
+            (await NodeAsync(edge.SourceNodeId)).Repository.ShouldBe(edge.SourceRepository);
+            links.Add((edge.SourceRepository, edge.TargetRepository, target.Name,
                 (string)edge.Properties["matched_by"], (string)edge.Properties["confidence_band"]));
         }
 
@@ -183,7 +183,7 @@ public sealed class CargoCrossRepoDependencyTests
         if (expectedLinks == 1)
         {
             var edge = _store.CrossEdges.Single();
-            (edge.SourceProject, edge.TargetProject).ShouldBe(("Downstream", "Upstream"));
+            (edge.SourceRepository, edge.TargetRepository).ShouldBe(("Downstream", "Upstream"));
             edge.Properties["confidence_band"].ShouldBe("medium");
         }
     }
@@ -258,9 +258,9 @@ public sealed class CargoCrossRepoDependencyTests
         // A second link kind and a second link of one kind, to pin the grouping.
         await _store.InsertCrossRepoEdgeBatchAsync(
         [
-            new CrossRepoEdge { SourceProject = Inference, TargetProject = Tools, SourceNodeId = 1, TargetNodeId = 2, Type = EdgeType.CALLS, Properties = new() { ["confidence_band"] = "high" } },
-            new CrossRepoEdge { SourceProject = Inference, TargetProject = Tools, SourceNodeId = 3, TargetNodeId = 2, Type = EdgeType.CALLS, Properties = new() { ["confidence_band"] = "medium" } },
-            new CrossRepoEdge { SourceProject = SceneWorks, TargetProject = Inference, SourceNodeId = 4, TargetNodeId = 5, Type = EdgeType.HTTP_CALLS }
+            new CrossRepoEdge { SourceRepository = Inference, TargetRepository = Tools, SourceNodeId = 1, TargetNodeId = 2, Type = EdgeType.CALLS, Properties = new() { ["confidence_band"] = "high" } },
+            new CrossRepoEdge { SourceRepository = Inference, TargetRepository = Tools, SourceNodeId = 3, TargetNodeId = 2, Type = EdgeType.CALLS, Properties = new() { ["confidence_band"] = "medium" } },
+            new CrossRepoEdge { SourceRepository = SceneWorks, TargetRepository = Inference, SourceNodeId = 4, TargetNodeId = 5, Type = EdgeType.HTTP_CALLS }
         ]);
         var mcp = Mcp();
 
@@ -314,7 +314,7 @@ public sealed class CargoCrossRepoDependencyTests
             outcomes with { Groups = [outcomes.Groups[0]] }, camelCase));
         AddRustRepository("failed", JsonSerializer.SerializeToElement(
             outcomes with { Groups = [outcomes.Groups[1]] }, camelCase));
-        _store.AddProject("plain");
+        _store.AddRepository("plain");
         var mcp = Mcp();
 
         var mixedAnswer = await mcp.GetRepoDependencies("mixed");
@@ -350,7 +350,7 @@ public sealed class CargoCrossRepoDependencyTests
     }
 
     private void AddRustRepository(string name, JsonElement outcomes) =>
-        _store.AddProject(new ProjectInfo(name, null, null, null, null, null, "Rust", "Cargo", false,
+        _store.AddRepository(new RepositoryInfo(name, null, null, null, null, null, "Rust", "Cargo", false,
             new Dictionary<string, object> { ["rustSemanticOutcomes"] = outcomes }));
 
     private static List<(string Source, string Target, string EdgeType, int Count)> CrossRepoImpacts(JsonElement structured)

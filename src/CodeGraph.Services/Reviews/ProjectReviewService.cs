@@ -51,7 +51,7 @@ public class ProjectReviewService(
         var reviewSettings = await GetReviewSettingsAsync(ct);
         var reviewRun = new ProjectReviewRunEntity
         {
-            Project = repo,
+            Repository = repo,
             ProjectName = projectName,
             ReviewedCommitSha = reviewedCommitSha,
             Status = "queued",
@@ -74,15 +74,15 @@ public class ProjectReviewService(
             return;
 
         var reviewMode = NormalizeMode(run.ReviewMode);
-        var repository = await store.GetRepositoryByName(run.Project)
-            ?? throw new InvalidOperationException($"Repository '{run.Project}' was not found.");
-        var repoRoot = ResolveRepoRoot(run.Project, repository);
+        var repository = await store.GetRepositoryByName(run.Repository)
+            ?? throw new InvalidOperationException($"Repository '{run.Repository}' was not found.");
+        var repoRoot = ResolveRepoRoot(run.Repository, repository);
 
         try
         {
             await store.UpdateProjectReviewRunStatusAsync(reviewRunId, "running");
 
-            var finalReview = await GenerateReviewAsync(run.Project, run.ProjectName, reviewMode, ct);
+            var finalReview = await GenerateReviewAsync(run.Repository, run.ProjectName, reviewMode, ct);
 
             var overviewPayload = new StoredProjectReviewOverview(
                 finalReview.Overview,
@@ -115,12 +115,12 @@ public class ProjectReviewService(
 
             logger.LogInformation(
                 "Completed project review {ReviewRunId} for {Repo}/{ProjectName} with {FindingCount} findings",
-                reviewRunId, run.Project, run.ProjectName, finalReview.Findings.Count);
+                reviewRunId, run.Repository, run.ProjectName, finalReview.Findings.Count);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Project review {ReviewRunId} failed for {Repo}/{ProjectName}",
-                reviewRunId, run.Project, run.ProjectName);
+                reviewRunId, run.Repository, run.ProjectName);
             await store.UpdateProjectReviewRunStatusAsync(
                 reviewRunId,
                 "failed",
@@ -236,7 +236,7 @@ public class ProjectReviewService(
     }
 
     private async Task<ProjectReviewContext> BuildContextAsync(
-        ProjectInfo repository,
+        RepositoryInfo repository,
         string repo,
         string? repoRoot,
         string projectName,
@@ -248,16 +248,16 @@ public class ProjectReviewService(
         if (repoRoot is null)
             throw new InvalidOperationException($"Could not resolve a local path for repository '{repo}'.");
 
-        var allNodes = await store.GetAllNodesByProjectAsync(repo);
-        var projectNodes = allNodes
+        var allNodes = await store.GetAllNodesByRepositoryAsync(repo);
+        var repositoryNodes = allNodes
             .Where(n => string.Equals(n.DotnetProject, projectName, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        if (projectNodes.Count == 0)
+        if (repositoryNodes.Count == 0)
         {
-            projectNodes = allNodes.Where(n => string.IsNullOrWhiteSpace(n.DotnetProject)).ToList();
+            repositoryNodes = allNodes.Where(n => string.IsNullOrWhiteSpace(n.DotnetProject)).ToList();
         }
 
-        var nodeCounts = projectNodes
+        var nodeCounts = repositoryNodes
             .GroupBy(n => n.Label)
             .ToDictionary(g => g.Key.ToString(), g => g.Count(), StringComparer.OrdinalIgnoreCase);
 
@@ -272,8 +272,8 @@ public class ProjectReviewService(
         var projectAnalysis = analyses.FirstOrDefault(a =>
             string.Equals(a.ProjectName, projectName, StringComparison.OrdinalIgnoreCase));
 
-        var edges = projectNodes.Count > 0
-            ? await store.GetEdgesForNodesAsync(projectNodes.Select(n => n.Id).Distinct().ToList())
+        var edges = repositoryNodes.Count > 0
+            ? await store.GetEdgesForNodesAsync(repositoryNodes.Select(n => n.Id).Distinct().ToList())
             : [];
 
         var relationshipCounts = edges
@@ -287,7 +287,7 @@ public class ProjectReviewService(
 
         var inspectionBudget = GetInspectionBudget(mode, reviewSettings);
         var inspectionTargets = SelectInspectionTargets(
-            projectNodes,
+            repositoryNodes,
             metrics,
             diagnostics,
             securityFindings,
@@ -562,7 +562,7 @@ public class ProjectReviewService(
     }
 
     private IReadOnlyList<InspectionTarget> SelectInspectionTargets(
-        IReadOnlyList<NodeEntity> projectNodes,
+        IReadOnlyList<NodeEntity> repositoryNodes,
         IReadOnlyList<FileMetricsEntity> metrics,
         IReadOnlyList<ProjectDiagnosticEntity> diagnostics,
         IReadOnlyList<SecurityFindingEntity> securityFindings,
@@ -612,7 +612,7 @@ public class ProjectReviewService(
             candidate.Reasons.Add($"security {finding.Severity}: {finding.Title}");
         }
 
-        var labelsByFile = projectNodes
+        var labelsByFile = repositoryNodes
             .Where(n => !string.IsNullOrWhiteSpace(n.FilePath))
             .GroupBy(n => n.FilePath)
             .ToDictionary(g => g.Key, g => g.Select(n => n.Label.ToString()).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
@@ -631,7 +631,7 @@ public class ProjectReviewService(
 
         if (candidates.Count == 0)
         {
-            foreach (var filePath in projectNodes
+            foreach (var filePath in repositoryNodes
                          .Where(n => n.Label == "File" && !string.IsNullOrWhiteSpace(n.FilePath))
                          .Select(n => n.FilePath)
                          .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -708,7 +708,7 @@ public class ProjectReviewService(
             _ => "standard"
         };
 
-    private string? ResolveRepoRoot(string repo, ProjectInfo repository)
+    private string? ResolveRepoRoot(string repo, RepositoryInfo repository)
     {
         if (!string.IsNullOrWhiteSpace(repository.LocalPath) && fileSystem.DirectoryExists(repository.LocalPath))
             return repository.LocalPath;
@@ -723,7 +723,7 @@ public class ProjectReviewService(
         return null;
     }
 
-    private string? ResolveReviewedCommitSha(ProjectInfo repository, string? repoRoot)
+    private string? ResolveReviewedCommitSha(RepositoryInfo repository, string? repoRoot)
     {
         if (!string.IsNullOrWhiteSpace(repoRoot))
         {
@@ -782,7 +782,7 @@ public class ProjectReviewService(
     private static ProjectReviewRunResponse MapRun(ProjectReviewRunEntity run)
         => new(
             run.Id,
-            run.Project,
+            run.Repository,
             run.ProjectName,
             run.ReviewedCommitSha,
             run.Status,
@@ -1133,7 +1133,7 @@ public class ProjectReviewService(
     }
 
     private sealed record ProjectReviewContext(
-        ProjectInfo Repository,
+        RepositoryInfo Repository,
         string RepoRoot,
         string ReviewMode,
         string ProjectName,

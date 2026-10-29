@@ -9,7 +9,7 @@ public class TerraformExtractorTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 

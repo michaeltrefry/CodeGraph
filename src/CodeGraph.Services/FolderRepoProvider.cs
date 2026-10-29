@@ -17,13 +17,13 @@ public class FolderRepoProvider(
 {
     private readonly FolderSourceOptions _folder = sourceOptionsAccessor.Value.Folder;
 
-    public async Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
+    public async Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_folder.RootPath) || !Directory.Exists(_folder.RootPath))
             throw new InvalidOperationException(
                 $"RepositorySource:Folder:RootPath is not configured or does not exist: '{_folder.RootPath}'");
 
-        var results = new List<DiscoveredProject>();
+        var results = new List<DiscoveredRepository>();
         var id = 0;
 
         foreach (var dir in EnumerateRepositoryDirectories(ct))
@@ -36,14 +36,14 @@ public class FolderRepoProvider(
             var exclusionType = await exclusionService.GetExclusionTypeAsync(name, sourceGroup);
             if (exclusionType == "complete")
             {
-                logger.LogDebug("Skipping {Project} (excluded: complete)", name);
+                logger.LogDebug("Skipping {Repository} (excluded: complete)", name);
                 continue;
             }
 
             var lastWrite = Directory.GetLastWriteTimeUtc(dir);
             var defaultBranch = await GetDefaultBranchAsync(dir, ct);
 
-            results.Add(new DiscoveredProject(
+            results.Add(new DiscoveredRepository(
                 ++id,
                 name,
                 sourceGroup is not null ? $"{sourceGroup}/{name}" : name,
@@ -52,13 +52,13 @@ public class FolderRepoProvider(
                 lastWrite));
         }
 
-        logger.LogInformation("Discovered {Count} projects from folder {Path}", results.Count, _folder.RootPath);
+        logger.LogInformation("Discovered {Count} repositories from folder {Path}", results.Count, _folder.RootPath);
         return results;
     }
 
-    public async Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
+    public async Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default)
     {
-        var all = await DiscoverProjectsAsync(ct);
+        var all = await DiscoverRepositoriesAsync(ct);
         return all
             .Where(p => p.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
             .ToList();

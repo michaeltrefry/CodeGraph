@@ -33,7 +33,7 @@ internal static class SwiftGrammarValidator
         var result = await extractor.ExtractAsync(
             Path.Combine(root, "Shape.swift"),
             "struct Shape {\n    func area() -> Double { 0 }\n}\n",
-            new ExtractorContext { ProjectName = "SwiftGrammarValidation", RootPath = root });
+            new ExtractorContext { RepositoryName = "SwiftGrammarValidation", RootPath = root });
         if (!result.Succeeded || !result.Nodes.Any(node => node.Label == NodeLabel.Method && node.Name == "area"))
         {
             Console.Error.WriteLine(

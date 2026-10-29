@@ -28,8 +28,8 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class TypeScriptWorkspaceModuleRetargetTests : IDisposable
 {
-    private const string Project = "Lens";
-    private const string Importer = $"{Project}:web/src/app.ts";
+    private const string Repository = "Lens";
+    private const string Importer = $"{Repository}:web/src/app.ts";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-ts-retarget-{Guid.NewGuid():N}");
 
     public void Dispose()
@@ -53,17 +53,17 @@ public sealed class TypeScriptWorkspaceModuleRetargetTests : IDisposable
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance,
                 typeScriptAnalyzer: new SidecarLikeAnalyzer(_root))
-            .IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
     private static async Task<List<string>> ImportTargetsAsync(IGraphStore store) =>
         (await store.FindEdgesByPropertyAsync(
-            Project, [EdgeType.IMPORTS], "classification", ["local_workspace_package"], CancellationToken.None))
+            Repository, [EdgeType.IMPORTS], "classification", ["local_workspace_package"], CancellationToken.None))
         .Where(edge => edge.SourceQN == Importer)
         .Select(edge => edge.TargetQN)
         .ToList();
 
     private static async Task<List<string>> ModulesAsync(IGraphStore store) =>
-        (await store.FindNodesByLabelAsync(Project, NodeLabel.Module, int.MaxValue))
+        (await store.FindNodesByLabelAsync(Repository, NodeLabel.Module, int.MaxValue))
         .Select(node => $"{node.QualifiedName}@{node.FilePath}")
         .Order(StringComparer.Ordinal)
         .ToList();
@@ -75,33 +75,33 @@ public sealed class TypeScriptWorkspaceModuleRetargetTests : IDisposable
         Write("packages/desk/src/index.ts", "export class Index {}\n");
         Write("web/src/app.ts", "import { Index } from 'desk';\n");
         await IndexAsync(openStore());
-        (await ImportTargetsAsync(openStore())).ShouldBe([$"typescript-package:{Project}:desk"]);
+        (await ImportTargetsAsync(openStore())).ShouldBe([$"typescript-package:{Repository}:desk"]);
 
         // A vendored copy with the same name appears; the importer's file is unchanged.
         Write("vendor/desk/package.json", """{ "name": "desk" }""");
         await IndexAsync(openStore());
         (await ModulesAsync(openStore())).ShouldBe([
-            $"typescript-package:{Project}:desk#packages/desk@packages/desk",
-            $"typescript-package:{Project}:desk#vendor/desk@vendor/desk"
+            $"typescript-package:{Repository}:desk#packages/desk@packages/desk",
+            $"typescript-package:{Repository}:desk#vendor/desk@vendor/desk"
         ]);
-        (await ImportTargetsAsync(openStore())).ShouldBe([$"typescript-package:{Project}:desk#packages/desk"]);
+        (await ImportTargetsAsync(openStore())).ShouldBe([$"typescript-package:{Repository}:desk#packages/desk"]);
 
         // The copy goes away again: the module and the import return to the name-only form.
         Directory.Delete(Path.Combine(_root, "vendor"), recursive: true);
         await IndexAsync(openStore());
-        (await ModulesAsync(openStore())).ShouldBe([$"typescript-package:{Project}:desk@packages/desk"]);
-        (await ImportTargetsAsync(openStore())).ShouldBe([$"typescript-package:{Project}:desk"]);
+        (await ModulesAsync(openStore())).ShouldBe([$"typescript-package:{Repository}:desk@packages/desk"]);
+        (await ImportTargetsAsync(openStore())).ShouldBe([$"typescript-package:{Repository}:desk"]);
     }
 
     [Fact]
-    public Task IndexProject_SameNamedPackageAddedThenRemoved_UnchangedImporterFollowsTheModule()
+    public Task IndexRepository_SameNamedPackageAddedThenRemoved_UnchangedImporterFollowsTheModule()
     {
         var store = new InMemoryGraphStore();
         return AddThenRemoveSameNamedPackageAsync(() => store);
     }
 
     [Fact]
-    public async Task IndexProject_SameNamedPackageAddedThenRemoved_UnchangedImporterFollowsTheModule_MariaDb()
+    public async Task IndexRepository_SameNamedPackageAddedThenRemoved_UnchangedImporterFollowsTheModule_MariaDb()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();
         var builder = new MySqlConnectionStringBuilder(connectionString)
@@ -170,19 +170,19 @@ public sealed class TypeScriptWorkspaceModuleRetargetTests : IDisposable
                 .ToList();
             string QualifiedName((string Name, string Dir) package) =>
                 packages.Count(other => other.Name == package.Name) > 1
-                    ? $"typescript-package:{context.ProjectName}:{package.Name}#{package.Dir}"
-                    : $"typescript-package:{context.ProjectName}:{package.Name}";
+                    ? $"typescript-package:{context.RepositoryName}:{package.Name}#{package.Dir}"
+                    : $"typescript-package:{context.RepositoryName}:{package.Name}";
 
             var nodes = packages.Select(package => new GraphNode
             {
-                Project = context.ProjectName,
+                Repository = context.RepositoryName,
                 Label = NodeLabel.Module,
                 Name = package.Name,
                 QualifiedName = QualifiedName(package),
                 FilePath = package.Dir,
                 Properties = new() { ["module_kind"] = "typescript_workspace_package" }
             }).ToList();
-            var edges = nodes.Select(node => new PendingEdge(context.ProjectName, node.QualifiedName, EdgeType.CONTAINS_PROJECT))
+            var edges = nodes.Select(node => new PendingEdge(context.RepositoryName, node.QualifiedName, EdgeType.CONTAINS_PROJECT))
                 .ToList();
             var sources = includedFiles.Where(file => file.EndsWith(".ts", StringComparison.Ordinal)).ToList();
             foreach (var source in sources)
@@ -193,7 +193,7 @@ public sealed class TypeScriptWorkspaceModuleRetargetTests : IDisposable
                 {
                     // The nearest same-named package: the first by directory here.
                     var target = packages.Where(other => other.Name == name).OrderBy(other => other.Dir).First();
-                    edges.Add(new PendingEdge($"{context.ProjectName}:{source}", QualifiedName(target), EdgeType.IMPORTS,
+                    edges.Add(new PendingEdge($"{context.RepositoryName}:{source}", QualifiedName(target), EdgeType.IMPORTS,
                         new() { ["classification"] = "local_workspace_package" }));
                 }
             }

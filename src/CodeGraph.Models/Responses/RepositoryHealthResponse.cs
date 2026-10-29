@@ -1,11 +1,11 @@
 namespace CodeGraph.Models.Responses;
 
-public record ProjectHealthResponse(
+public record RepositoryHealthResponse(
     ProjectHealthSummary? RepoHealth,
-    IReadOnlyList<ProjectHealthSummary> ProjectHealths,
+    IReadOnlyList<ProjectHealthSummary> DotnetProjectHealths,
     IReadOnlyList<FileMetrics> TopHotspots,
     IReadOnlyList<ProjectHealthAnalysis> Analyses,
-    ProjectSecuritySummary? SecuritySummary = null,
+    RepositorySecuritySummary? SecuritySummary = null,
     DotnetSupportInfo? DotnetSupport = null,
     RepositoryVitalitySummary? RepositoryVitality = null);
 
@@ -18,7 +18,7 @@ public enum HistoryMaturity
 
 public record ProjectHealthSummary(
     long Id,
-    string Project,
+    string Repository,
     string? DotnetProject,
     double OverallHealth,
     int TotalFiles,
@@ -32,7 +32,7 @@ public record ProjectHealthSummary(
 
 public record FileMetrics(
     long Id,
-    string Project,
+    string Repository,
     string FilePath,
     string? DotnetProject,
     int Changes,
@@ -88,7 +88,7 @@ public record MonthlyCommitPoint(
 
 public record ProjectHealthAnalysis(
     long Id,
-    string Project,
+    string Repository,
     string? DotnetProject,
     string Analysis,
     string Confidence,

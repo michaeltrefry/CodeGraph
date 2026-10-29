@@ -21,11 +21,11 @@ export class ChatContextService {
     });
   }
 
-  setNode(nodeId: number, nodeName: string, nodeLabel: string, project: string) {
+  setNode(nodeId: number, nodeName: string, nodeLabel: string, repository: string) {
     this.context.set({
       label: `${nodeName}`,
-      detail: `${nodeLabel} in ${project}`,
-      apiContext: `The user is viewing ${nodeLabel} "${nodeName}" (ID: ${nodeId}) in repository "${project}". Focus answers on this node and its relationships.`
+      detail: `${nodeLabel} in ${repository}`,
+      apiContext: `The user is viewing ${nodeLabel} "${nodeName}" (ID: ${nodeId}) in repository "${repository}". Focus answers on this node and its relationships.`
     });
   }
 

@@ -90,9 +90,9 @@ public sealed class KnowledgeFreshnessMariaDbTests : IAsyncLifetime
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance)
-            .IndexProjectAsync(Repository, root, ct: CancellationToken.None);
+            .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repository, LocalPath = root, LastCommitSha = sha });
-        await store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repository, LastCommitSha = sha });
+        await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = sha });
     }
 
     private async Task<JsonElement> CallAsync(string tool, object arguments)
@@ -195,7 +195,7 @@ public sealed class KnowledgeFreshnessMariaDbTests : IAsyncLifetime
         await CallAsync(WorkTools.CreateWork, new { new_project = new { key = "NODES", name = "Nodes", repositories = new[] { new { repository = Repository, role = "owned" } } } });
         long greet;
         await using (var connection = new MySqlConnection(connectionString))
-            greet = await connection.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE project = @Repository AND name = 'greet'", new { Repository });
+            greet = await connection.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE repository = @Repository AND name = 'greet'", new { Repository });
 
         var entry = (await CallAsync(WorkTools.Record, new { project = "NODES", entry = new { kind = "decision", summary = "greet stays pure", nodes = new[] { greet } } }))
             .GetProperty("entry");
@@ -226,8 +226,8 @@ public sealed class KnowledgeFreshnessMariaDbTests : IAsyncLifetime
         await index.OpenAsync();
         await using var transaction = await index.BeginTransactionAsync();
         await index.ExecuteAsync(
-            "INSERT INTO file_hashes (project, rel_path, content_hash) VALUES (@Repository, 'Sources/App/Pending.swift', 'pending')", new { Repository }, transaction);
-        await index.ExecuteAsync("UPDATE file_hashes SET content_hash = 'changing' WHERE project = @Repository", new { Repository }, transaction);
+            "INSERT INTO file_hashes (repository, rel_path, content_hash) VALUES (@Repository, 'Sources/App/Pending.swift', 'pending')", new { Repository }, transaction);
+        await index.ExecuteAsync("UPDATE file_hashes SET content_hash = 'changing' WHERE repository = @Repository", new { Repository }, transaction);
 
         var reads = Task.WhenAll(
             CallAsync(WorkTools.Recall, new { project = "LOCKS", paths = new[] { "Sources/App" } }),

@@ -92,12 +92,12 @@ public sealed partial class SwiftPackageManifestExtractor(
             ParsedPackageSwift parsed;
             try
             {
-                parsed = ParsePackageSwift(content, relativePath, context.ProjectName);
+                parsed = ParsePackageSwift(content, relativePath, context.RepositoryName);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Skipping unparseable Swift package manifest {Manifest} in {Project}",
-                    relativePath, context.ProjectName);
+                _logger.LogWarning(ex, "Skipping unparseable Swift package manifest {Manifest} in {Repository}",
+                    relativePath, context.RepositoryName);
                 continue;
             }
 
@@ -109,10 +109,10 @@ public sealed partial class SwiftPackageManifestExtractor(
                 continue;
             }
 
-            var key = $"swiftpm:local:{context.ProjectName.ToLowerInvariant()}:{parsed.Name.ToLowerInvariant()}";
+            var key = $"swiftpm:local:{context.RepositoryName.ToLowerInvariant()}:{parsed.Name.ToLowerInvariant()}";
             var definition = new GraphNode
             {
-                Project = context.ProjectName,
+                Repository = context.RepositoryName,
                 Label = NodeLabel.Package,
                 Name = parsed.Name,
                 QualifiedName = QualifiedName(key, null),
@@ -137,7 +137,7 @@ public sealed partial class SwiftPackageManifestExtractor(
             if (added)
             {
                 AddEdge(edges, edgeKeys, new PendingEdge(
-                    context.ProjectName,
+                    context.RepositoryName,
                     definition.QualifiedName,
                     EdgeType.CONTAINS_PROJECT,
                     new() { ["ecosystem"] = Ecosystem, ["source"] = PackageSwiftFileName }));
@@ -152,7 +152,7 @@ public sealed partial class SwiftPackageManifestExtractor(
             var owner = manifest.Name is null
                 ? null
                 : definitionByDirectory.GetValueOrDefault(Path.GetDirectoryName(manifest.FullPath) ?? rootPath);
-            var sourceQN = owner?.QualifiedName ?? context.ProjectName;
+            var sourceQN = owner?.QualifiedName ?? context.RepositoryName;
             var declaredNodes = new List<(PackageDeclaration Declaration, GraphNode Node)>();
             foreach (var declaration in manifest.Dependencies)
             {
@@ -189,14 +189,14 @@ public sealed partial class SwiftPackageManifestExtractor(
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Skipping unparseable Swift package resolution file {Manifest} in {Project}",
-                    relativePath, context.ProjectName);
+                _logger.LogWarning(ex, "Skipping unparseable Swift package resolution file {Manifest} in {Repository}",
+                    relativePath, context.RepositoryName);
                 continue;
             }
 
             processed.Add(relativePath);
             foreach (var pin in pins)
-                AddDependency(nodes, edges, edgeKeys, context.ProjectName, pin);
+                AddDependency(nodes, edges, edgeKeys, context.RepositoryName, pin);
         }
 
         // Pass 4: native targets of every Xcode project, as the Swift modules they build.
@@ -209,8 +209,8 @@ public sealed partial class SwiftPackageManifestExtractor(
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Skipping unparseable Xcode project {Manifest} in {Project}",
-                    relativePath, context.ProjectName);
+                _logger.LogWarning(ex, "Skipping unparseable Xcode project {Manifest} in {Repository}",
+                    relativePath, context.RepositoryName);
                 continue;
             }
 
@@ -235,7 +235,7 @@ public sealed partial class SwiftPackageManifestExtractor(
 
     // ── Package.swift ────────────────────────────────────────────────────
 
-    private ParsedPackageSwift ParsePackageSwift(string content, string relativePath, string project)
+    private ParsedPackageSwift ParsePackageSwift(string content, string relativePath, string repository)
     {
         var (code, masked) = Scan(content);
         var nameMatch = PackageNameRegex().Match(masked);
@@ -256,8 +256,8 @@ public sealed partial class SwiftPackageManifestExtractor(
                 dependencies.Add(declaration);
             else
                 _logger.LogDebug(
-                    "Skipping .package(...) without a literal url, path or id in {Manifest} of {Project}: {Declaration}",
-                    relativePath, project, code[call.Index..(close + 1)].Trim());
+                    "Skipping .package(...) without a literal url, path or id in {Manifest} of {Repository}: {Declaration}",
+                    relativePath, repository, code[call.Index..(close + 1)].Trim());
         }
 
         return new ParsedPackageSwift(name, dependencies, ParseTargets(code, masked));
@@ -395,7 +395,7 @@ public sealed partial class SwiftPackageManifestExtractor(
                 externalPath = source;
             identity = Path.GetFileName(resolvedPath.TrimEnd(Path.DirectorySeparatorChar)).ToLowerInvariant();
             sourceKind = "path";
-            packageKey = $"swiftpm:path:{context.ProjectName.ToLowerInvariant()}:{source.ToLowerInvariant()}";
+            packageKey = $"swiftpm:path:{context.RepositoryName.ToLowerInvariant()}:{source.ToLowerInvariant()}";
         }
         else if (declaration.Url is not null)
         {
@@ -440,7 +440,7 @@ public sealed partial class SwiftPackageManifestExtractor(
 
         var node = new GraphNode
         {
-            Project = context.ProjectName,
+            Repository = context.RepositoryName,
             Label = NodeLabel.Package,
             Name = identity,
             QualifiedName = QualifiedName(packageKey, declaration.Requirement?.Text),
@@ -566,7 +566,7 @@ public sealed partial class SwiftPackageManifestExtractor(
 
         return new GraphNode
         {
-            Project = context.ProjectName,
+            Repository = context.RepositoryName,
             Label = NodeLabel.Package,
             Name = identity,
             QualifiedName = QualifiedName(packageKey, version ?? revision ?? branch),
@@ -578,7 +578,7 @@ public sealed partial class SwiftPackageManifestExtractor(
     // ── Targets ──────────────────────────────────────────────────────────
 
     /// <summary>
-    /// One Module node per declared target, at <c>{project}:{manifest}#target:{name}</c>, defined by
+    /// One Module node per declared target, at <c>{repository}:{manifest}#target:{name}</c>, defined by
     /// the manifest's package (or the repository when the package name is not static).
     /// </summary>
     /// <summary>
@@ -612,10 +612,10 @@ public sealed partial class SwiftPackageManifestExtractor(
 
             var module = new GraphNode
             {
-                Project = context.ProjectName,
+                Repository = context.RepositoryName,
                 Label = NodeLabel.Module,
                 Name = target.ModuleName,
-                QualifiedName = $"{context.ProjectName}:{relativePath}#target:{target.Name}",
+                QualifiedName = $"{context.RepositoryName}:{relativePath}#target:{target.Name}",
                 FilePath = relativePath,
                 Properties = properties
             };
@@ -623,7 +623,7 @@ public sealed partial class SwiftPackageManifestExtractor(
                 continue;
 
             AddEdge(edges, edgeKeys, new PendingEdge(
-                context.ProjectName,
+                context.RepositoryName,
                 module.QualifiedName,
                 EdgeType.DEFINES,
                 new() { ["ecosystem"] = XcodeEcosystem, ["source"] = XcodeProjectReader.ProjectFileName }));
@@ -669,10 +669,10 @@ public sealed partial class SwiftPackageManifestExtractor(
 
             var module = new GraphNode
             {
-                Project = context.ProjectName,
+                Repository = context.RepositoryName,
                 Label = NodeLabel.Module,
                 Name = target.Name,
-                QualifiedName = $"{context.ProjectName}:{relativePath}#target:{target.Name}",
+                QualifiedName = $"{context.RepositoryName}:{relativePath}#target:{target.Name}",
                 FilePath = relativePath,
                 Properties = properties
             };
@@ -680,7 +680,7 @@ public sealed partial class SwiftPackageManifestExtractor(
                 continue;
 
             AddEdge(edges, edgeKeys, new PendingEdge(
-                owner?.QualifiedName ?? context.ProjectName,
+                owner?.QualifiedName ?? context.RepositoryName,
                 module.QualifiedName,
                 EdgeType.DEFINES,
                 new() { ["ecosystem"] = Ecosystem, ["target_kind"] = target.Kind }));

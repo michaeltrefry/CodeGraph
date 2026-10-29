@@ -20,18 +20,18 @@ public sealed class MariaDbCrossRepoLinkCollection;
 /// <summary>
 /// sc-25698: once the inference repository reached ~130k nodes / ~900k edges, every other
 /// repository's post-index cross-repo linking loaded all CALLS edges and all definition nodes
-/// (with their JSON properties) of every project and the indexer hit OutOfMemoryException.
+/// (with their JSON properties) of every repository and the indexer hit OutOfMemoryException.
 /// Runs without parallelization so the managed-heap measurement only sees the linker.
 /// </summary>
 [Collection(nameof(MariaDbCrossRepoLinkTests))]
 public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
 {
-    private const string LargeProject = "inference";
-    private const string SmallProject = "centralized_logging";
+    private const string LargeRepository = "inference";
+    private const string SmallRepository = "centralized_logging";
     private const string LinkedSymbol = "rust-analyzer cargo inference 0.1.0 mod/n1().";
 
     [Fact]
-    public async Task LinkForProjectAsync_LinksEveryKindAndLeavesOtherPairsAlone()
+    public async Task LinkForRepositoryAsync_LinksEveryKindAndLeavesOtherPairsAlone()
     {
         await using var db = await LinkTestDatabase.CreateAsync();
         await db.SeedFleetAsync();
@@ -39,7 +39,7 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         var store = db.CreateStore(context);
 
         await new CrossRepoLinker(store, NullLogger<CrossRepoLinker>.Instance)
-            .LinkForProjectAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
+            .LinkForRepositoryAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
 
         var qualifiedNames = await db.QualifiedNamesAsync();
         var edges = await store.GetAllCrossRepoEdgesAsync();
@@ -62,7 +62,7 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public async Task LinkAsync_LinksEveryProjectPair()
+    public async Task LinkAsync_LinksEveryRepositoryPair()
     {
         await using var db = await LinkTestDatabase.CreateAsync();
         await db.SeedFleetAsync();
@@ -77,7 +77,7 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public async Task StreamLinkEdgesAsync_FiltersOnTheServerAndProjectsOnlyRequestedKeys()
+    public async Task StreamLinkEdgesAsync_FiltersOnTheServerAndRepositoriesOnlyRequestedKeys()
     {
         await using var db = await LinkTestDatabase.CreateAsync();
         await db.SeedFleetAsync();
@@ -100,13 +100,13 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
             rows.Add(row);
         }
 
-        rows.Select(row => (row.SourceProject, row.TargetProject, row.TargetLabel, row.Type))
-            .OrderBy(row => row.SourceProject)
+        rows.Select(row => (row.SourceRepository, row.TargetRepository, row.TargetLabel, row.Type))
+            .OrderBy(row => row.SourceRepository)
             .ShouldBe([
                 (CrossRepoLinkFleet.Consumer, CrossRepoLinkFleet.Consumer, (NodeLabel?)NodeLabel.ExternalSymbol, EdgeType.CALLS),
                 (CrossRepoLinkFleet.Other, CrossRepoLinkFleet.Other, (NodeLabel?)NodeLabel.ExternalSymbol, EdgeType.USES_TYPE)
             ]);
-        var consumer = rows.Single(row => row.SourceProject == CrossRepoLinkFleet.Consumer);
+        var consumer = rows.Single(row => row.SourceRepository == CrossRepoLinkFleet.Consumer);
         consumer.EdgeProperties["line"].ShouldBe("12");
         consumer.EdgeProperties["missing"].ShouldBeNull();
         consumer.TargetProperties.Keys.ShouldBe(["scip_symbol"]);
@@ -137,26 +137,26 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         await using var db = await LinkTestDatabase.CreateAsync();
         await db.SeedFleetAsync();
         await db.ExecuteAsync("""
-            INSERT INTO edges (project, source_id, target_id, type, properties)
+            INSERT INTO edges (repository, source_id, target_id, type, properties)
             SELECT 'Provider', p.id, c.id, 'CALLS', '{"line":7}'
             FROM nodes p JOIN nodes c ON c.qualified_name = 'Consumer:caller'
             WHERE p.qualified_name = 'Provider:run'
             """);
         await db.ExecuteAsync("""
-            INSERT INTO nodes (project, label, name, qualified_name, file_path, properties)
+            INSERT INTO nodes (repository, label, name, qualified_name, file_path, properties)
             VALUES ('Consumer', 'File', 'lib.rs', 'Consumer:file:src/lib.rs', 'src/lib.rs', '{"documentation":"x"}')
             """);
         await db.ExecuteAsync("UPDATE nodes SET do_not_trust = TRUE WHERE qualified_name = 'Consumer:caller'");
         await using var context = db.CreateContext();
         var store = db.CreateStore(context);
 
-        var consumerNodes = await store.GetAllNodesByProjectAsync(CrossRepoLinkFleet.Consumer);
+        var consumerNodes = await store.GetAllNodesByRepositoryAsync(CrossRepoLinkFleet.Consumer);
         var expectedEdges = await store.GetEdgesForNodesAsync(consumerNodes.Select(node => node.Id).ToList());
-        var edges = await store.GetEdgeEndpointsForProjectAsync(CrossRepoLinkFleet.Consumer);
+        var edges = await store.GetEdgeEndpointsForRepositoryAsync(CrossRepoLinkFleet.Consumer);
 
-        edges.Select(edge => (edge.Id, edge.Project, edge.SourceId, edge.TargetId, edge.Type))
-            .ShouldBe(expectedEdges.Select(edge => (edge.Id, edge.Project, edge.SourceId, edge.TargetId, edge.Type)));
-        edges.ShouldContain(edge => edge.Project == CrossRepoLinkFleet.Provider);
+        edges.Select(edge => (edge.Id, edge.Repository, edge.SourceId, edge.TargetId, edge.Type))
+            .ShouldBe(expectedEdges.Select(edge => (edge.Id, edge.Repository, edge.SourceId, edge.TargetId, edge.Type)));
+        edges.ShouldContain(edge => edge.Repository == CrossRepoLinkFleet.Provider);
         edges.ShouldAllBe(edge => edge.Properties == null);
 
         var vitalsNodes = await store.GetFileAndUntrustedNodesAsync(CrossRepoLinkFleet.Consumer);
@@ -169,12 +169,12 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// A synthetic inference-sized project (scaled by CODEGRAPH_LINKER_BENCHMARK_NODES, default 20k
+    /// A synthetic inference-sized repository (scaled by CODEGRAPH_LINKER_BENCHMARK_NODES, default 20k
     /// nodes with 7 edges each) and a small repository linked to it. Linking the small repository must
     /// not grow the managed heap with the size of the large one.
     /// </summary>
     [Fact]
-    public async Task LinkForProjectAsync_SmallRepoNextToLargeProject_KeepsManagedHeapBounded()
+    public async Task LinkForRepositoryAsync_SmallRepoNextToLargeRepository_KeepsManagedHeapBounded()
     {
         var nodeCount = int.TryParse(
             Environment.GetEnvironmentVariable("CODEGRAPH_LINKER_BENCHMARK_NODES"), out var configured)
@@ -182,21 +182,21 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
             : 20_000;
 
         await using var db = await LinkTestDatabase.CreateAsync();
-        await db.SeedLargeProjectAsync(LargeProject, nodeCount, edgesPerNode: 7);
-        await db.SeedSmallProjectAsync(SmallProject, LinkedSymbol);
+        await db.SeedLargeRepositoryAsync(LargeRepository, nodeCount, edgesPerNode: 7);
+        await db.SeedSmallRepositoryAsync(SmallRepository, LinkedSymbol);
         await using var context = db.CreateContext();
         var store = db.CreateStore(context);
         var linker = new CrossRepoLinker(store, NullLogger<CrossRepoLinker>.Instance);
 
         var peakGrowth = await MeasurePeakManagedGrowthAsync(
-            () => linker.LinkForProjectAsync(SmallProject, CancellationToken.None));
+            () => linker.LinkForRepositoryAsync(SmallRepository, CancellationToken.None));
 
         output.WriteLine(
             $"{nodeCount} nodes / {nodeCount * 7} edges: peak managed heap growth {peakGrowth / (1024.0 * 1024.0):F1} MiB");
         var edges = await store.GetAllCrossRepoEdgesAsync();
-        edges.ShouldContain(edge => edge.SourceProject == SmallProject && edge.TargetProject == LargeProject);
-        // Bounded by the small repository and the referenced definitions, not the large project:
-        // reading the large project's CALLS edges and definition nodes needs several times this.
+        edges.ShouldContain(edge => edge.SourceRepository == SmallRepository && edge.TargetRepository == LargeRepository);
+        // Bounded by the small repository and the referenced definitions, not the large repository:
+        // reading the large repository's CALLS edges and definition nodes needs several times this.
         peakGrowth.ShouldBeLessThan(48L * 1024 * 1024);
     }
 
@@ -271,10 +271,10 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         {
             await using var context = CreateContext();
             var store = CreateStore(context);
-            foreach (var (project, (nodes, edges)) in CrossRepoLinkFleet.Build())
+            foreach (var (repository, (nodes, edges)) in CrossRepoLinkFleet.Build())
             {
-                await store.ReplaceProjectGraphAsync(project, nodes, edges, new Dictionary<string, string>(),
-                    new RepositoryEntity { Name = project, RepoUrl = CrossRepoLinkFleet.RepoUrl(project) }, null);
+                await store.ReplaceRepositoryGraphAsync(repository, nodes, edges, new Dictionary<string, string>(),
+                    new RepositoryEntity { Name = repository, RepoUrl = CrossRepoLinkFleet.RepoUrl(repository) }, null);
             }
         }
 
@@ -293,66 +293,66 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
         }
 
         /// <summary>
-        /// Rust-shaped project: 70% SCIP definitions and 10% SCIP external symbols, each node with
+        /// Rust-shaped repository: 70% SCIP definitions and 10% SCIP external symbols, each node with
         /// documentation/signature text like the real importer, and <paramref name="edgesPerNode"/>
         /// CALLS/USES_TYPE edges per node carrying small JSON properties.
         /// </summary>
-        public async Task SeedLargeProjectAsync(string project, int nodeCount, int edgesPerNode)
+        public async Task SeedLargeRepositoryAsync(string repository, int nodeCount, int edgesPerNode)
         {
             await using var connection = new MySqlConnection(_connectionString);
             await connection.OpenAsync();
             await ExecuteAsync(connection,
-                "INSERT INTO repositories (name, created_at, updated_at) VALUES (@Project, NOW(), NOW())",
-                new { Project = project });
+                "INSERT INTO repositories (name, created_at, updated_at) VALUES (@Repository, NOW(), NOW())",
+                new { Repository = repository });
             await ExecuteAsync(connection, $$"""
-                INSERT INTO nodes (project, label, name, qualified_name, file_path, start_line, end_line, properties)
-                SELECT @Project,
+                INSERT INTO nodes (repository, label, name, qualified_name, file_path, start_line, end_line, properties)
+                SELECT @Repository,
                        CASE WHEN seq % 10 = 0 THEN 'ExternalSymbol' WHEN seq % 10 < 8 THEN 'Function' ELSE 'Struct' END,
                        CONCAT('n', seq),
-                       CONCAT(@Project, ':n', seq),
+                       CONCAT(@Repository, ':n', seq),
                        CONCAT('src/f', seq % 2000, '.rs'),
                        seq % 500, seq % 500 + 20,
                        CASE WHEN seq % 10 = 0
                             THEN CONCAT('{"source":"scip","scip_external":true,"confidence":"high","scip_symbol":"rust-analyzer cargo std 1.0.0 std/sym', seq % 3000, '().","documentation":"', REPEAT('d', 400), '","signature":"', REPEAT('s', 120), '"}')
-                            ELSE CONCAT('{"source":"scip","confidence":"high","scip_symbol":"rust-analyzer cargo {{project}} 0.1.0 mod/n', seq, '().","documentation":"', REPEAT('d', 400), '","signature":"', REPEAT('s', 120), '"}')
+                            ELSE CONCAT('{"source":"scip","confidence":"high","scip_symbol":"rust-analyzer cargo {{repository}} 0.1.0 mod/n', seq, '().","documentation":"', REPEAT('d', 400), '","signature":"', REPEAT('s', 120), '"}')
                        END
                 FROM seq_1_to_{{nodeCount}}
-                """, new { Project = project });
+                """, new { Repository = repository });
             var firstId = await connection.ExecuteScalarAsync<long>(
-                "SELECT MIN(id) FROM nodes WHERE project = @Project", new { Project = project });
+                "SELECT MIN(id) FROM nodes WHERE repository = @Repository", new { Repository = repository });
             for (var k = 1; k <= edgesPerNode; k++)
             {
                 await ExecuteAsync(connection, $$"""
-                    INSERT INTO edges (project, source_id, target_id, type, properties)
-                    SELECT @Project,
+                    INSERT INTO edges (repository, source_id, target_id, type, properties)
+                    SELECT @Repository,
                            @FirstId + seq - 1,
                            @FirstId + MOD(seq * 7 + {{k * 13}}, {{nodeCount}}),
                            '{{(k <= 5 ? "CALLS" : "USES_TYPE")}}',
                            CONCAT('{"source":"scip","confidence":"high","line":', seq % 500, ',"file":"src/f', seq % 2000, '.rs"}')
                     FROM seq_1_to_{{nodeCount}}
-                    """, new { Project = project, FirstId = firstId });
+                    """, new { Repository = repository, FirstId = firstId });
             }
         }
 
-        public async Task SeedSmallProjectAsync(string project, string referencedSymbol)
+        public async Task SeedSmallRepositoryAsync(string repository, string referencedSymbol)
         {
             var nodes = new List<GraphNode>
             {
                 new()
                 {
-                    Project = project, Label = NodeLabel.Function, Name = "ship", QualifiedName = $"{project}:ship",
-                    Properties = new() { ["source"] = "scip", ["scip_symbol"] = $"rust-analyzer cargo {project} 0.1.0 ship()." }
+                    Repository = repository, Label = NodeLabel.Function, Name = "ship", QualifiedName = $"{repository}:ship",
+                    Properties = new() { ["source"] = "scip", ["scip_symbol"] = $"rust-analyzer cargo {repository} 0.1.0 ship()." }
                 },
                 new()
                 {
-                    Project = project, Label = NodeLabel.ExternalSymbol, Name = "n1", QualifiedName = $"{project}:external:n1",
+                    Repository = repository, Label = NodeLabel.ExternalSymbol, Name = "n1", QualifiedName = $"{repository}:external:n1",
                     Properties = new() { ["source"] = "scip", ["scip_external"] = true, ["scip_symbol"] = referencedSymbol }
                 }
             };
             await using var context = CreateContext();
-            await CreateStore(context).ReplaceProjectGraphAsync(project, nodes,
-                [new PendingEdge($"{project}:ship", $"{project}:external:n1", EdgeType.CALLS)],
-                new Dictionary<string, string>(), new RepositoryEntity { Name = project }, null);
+            await CreateStore(context).ReplaceRepositoryGraphAsync(repository, nodes,
+                [new PendingEdge($"{repository}:ship", $"{repository}:external:n1", EdgeType.CALLS)],
+                new Dictionary<string, string>(), new RepositoryEntity { Name = repository }, null);
         }
 
         private static Task ExecuteAsync(MySqlConnection connection, string sql, object parameters) =>

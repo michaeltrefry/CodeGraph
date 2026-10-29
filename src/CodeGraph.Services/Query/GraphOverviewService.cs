@@ -11,7 +11,7 @@ public class GraphOverviewService(IGraphStore store) : IGraphOverviewService
         var allEdges = await store.GetAllCrossRepoEdgesAsync();
 
         var aggregated = allEdges
-            .GroupBy(e => (Source: e.SourceProject, Target: e.TargetProject))
+            .GroupBy(e => (Source: e.SourceRepository, Target: e.TargetRepository))
             .Select(g => new GraphOverviewEdge(
                 g.Key.Source,
                 g.Key.Target,

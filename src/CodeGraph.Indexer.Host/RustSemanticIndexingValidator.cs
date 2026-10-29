@@ -48,7 +48,7 @@ internal static class RustSemanticIndexingValidator
                 Options.Create(new IndexingOptions { RustSemanticCrateGroupSize = ownsFixture ? 1 : 8 }));
             var context = new ExtractorContext
             {
-                ProjectName = ownsFixture
+                RepositoryName = ownsFixture
                     ? "RustSemanticValidation"
                     : Path.GetFileName(fixtureRoot),
                 RootPath = fixtureRoot

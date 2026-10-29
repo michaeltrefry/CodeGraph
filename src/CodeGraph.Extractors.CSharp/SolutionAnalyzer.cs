@@ -49,14 +49,14 @@ public class SolutionAnalyzer : ISolutionAnalyzer
         if (context.RepositoryToolingTrust != RepositoryToolingTrust.Trusted)
         {
             _logger.LogWarning(
-                "SECURITY-AUDIT: blocked repository-controlled restore and MSBuild solution analysis for untrusted repository {Project}",
-                context.ProjectName);
+                "SECURITY-AUDIT: blocked repository-controlled restore and MSBuild solution analysis for untrusted repository {Repository}",
+                context.RepositoryName);
             return new SolutionAnalysisResult();
         }
 
         _logger.LogWarning(
-            "SECURITY-AUDIT: executing repository-controlled restore and MSBuild solution analysis for explicitly trusted repository {Project}",
-            context.ProjectName);
+            "SECURITY-AUDIT: executing repository-controlled restore and MSBuild solution analysis for explicitly trusted repository {Repository}",
+            context.RepositoryName);
         _logger.LogInformation("Opening solution {Solution}", solutionPath);
 
         await RestoreNuGetPackagesAsync(solutionPath, ct);
@@ -97,7 +97,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
 
                 diagnosticDetails.Add(new ProjectDiagnosticEntity
                 {
-                    Project = context.ProjectName,
+                    Repository = context.RepositoryName,
                     DotnetProject = project.Name,
                     Source = "roslyn",
                     DiagnosticKey = BuildDiagnosticKey(project.Name, diag.Id, relPath, lineStart, lineEnd, message),
@@ -123,7 +123,7 @@ public class SolutionAnalyzer : ISolutionAnalyzer
 
             var projectContext = new ExtractorContext
             {
-                ProjectName = context.ProjectName,
+                RepositoryName = context.RepositoryName,
                 RootPath = context.RootPath,
                 DotnetProject = project.Name,
                 FoundationalKnowledge = context.FoundationalKnowledge,
@@ -173,17 +173,17 @@ public class SolutionAnalyzer : ISolutionAnalyzer
                 kvp => kvp.Key,
                 kvp => new LintResult(kvp.Value.Errors, kvp.Value.Warnings),
                 StringComparer.OrdinalIgnoreCase);
-            _lintCache.Set(context.ProjectName, lintResults);
-            _logger.LogInformation("Stashed Roslyn diagnostics for {Project}: {Count} files with issues",
-                context.ProjectName, lintResults.Count);
+            _lintCache.Set(context.RepositoryName, lintResults);
+            _logger.LogInformation("Stashed Roslyn diagnostics for {Repository}: {Count} files with issues",
+                context.RepositoryName, lintResults.Count);
         }
 
         if (!diagnosticDetails.IsEmpty)
         {
             var detailList = diagnosticDetails.ToList();
-            _diagnosticDetailCache.Merge(context.ProjectName, detailList);
-            _logger.LogInformation("Stashed {Count} detailed Roslyn diagnostics for {Project}",
-                detailList.Count, context.ProjectName);
+            _diagnosticDetailCache.Merge(context.RepositoryName, detailList);
+            _logger.LogInformation("Stashed {Count} detailed Roslyn diagnostics for {Repository}",
+                detailList.Count, context.RepositoryName);
         }
 
         // Detect framework from .csproj files next to the solution

@@ -29,7 +29,7 @@ public class MariaDbMigrationRunnerTests
             );
 
             ALTER TABLE repositories
-                ADD COLUMN repo_url TEXT NULL;
+                ADD COLUMN repo_url TET NULL;
             """;
 
         var statements = MariaDbMigrationRunner.SplitStatements(sql);
@@ -146,7 +146,8 @@ public class MariaDbMigrationRunnerTests
             // sc-27869: the memory tools stop being pre-selected for new tokens (D17).
             ["078_knowledge_store.sql"] = 1,
             // sc-27873: lessons stored before the migration get their rule state (restart-safe: WHERE rule_state IS NULL).
-            ["084_lessons_rules.sql"] = 1
+            ["084_lessons_rules.sql"] = 1,
+            ["092_rename_project_to_repository.sql"] = 2
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",

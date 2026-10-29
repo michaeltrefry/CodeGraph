@@ -52,10 +52,10 @@ public class ArchitectureAggregateStoreTests
             await ArchitectureGraphFixture.SeedAsync(store, ArchitectureGraphFixture.LargeMethodCount);
 
             var report = await new GraphQueryEngine(store, NullLogger<GraphQueryEngine>.Instance)
-                .GetArchitectureAsync(ArchitectureGraphFixture.Project);
+                .GetArchitectureAsync(ArchitectureGraphFixture.Repository);
             ArchitectureGraphFixture.AssertReport(report, ArchitectureGraphFixture.LargeMethodCount);
 
-            await AssertTopInDegreeContractAsync(store, ArchitectureGraphFixture.Project);
+            await AssertTopInDegreeContractAsync(store, ArchitectureGraphFixture.Repository);
         }
         finally
         {
@@ -78,8 +78,8 @@ public class ArchitectureAggregateStoreTests
             Neo4jUsername = Require("CODEGRAPH_NEO4J_TEST_USERNAME"),
             Neo4jPassword = Require("CODEGRAPH_NEO4J_TEST_PASSWORD")
         });
-        var project = $"Arch_{Guid.NewGuid():N}";
-        var otherProject = $"ArchOther_{Guid.NewGuid():N}";
+        var repository = $"Arch_{Guid.NewGuid():N}";
+        var otherRepository = $"ArchOther_{Guid.NewGuid():N}";
         await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var sessions = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
@@ -87,13 +87,13 @@ public class ArchitectureAggregateStoreTests
 
         try
         {
-            await ArchitectureGraphFixture.SeedAsync(store, fillerMethodCount, project, otherProject);
+            await ArchitectureGraphFixture.SeedAsync(store, fillerMethodCount, repository, otherRepository);
 
             var report = await new GraphQueryEngine(store, NullLogger<GraphQueryEngine>.Instance)
-                .GetArchitectureAsync(project);
+                .GetArchitectureAsync(repository);
             ArchitectureGraphFixture.AssertReport(report, fillerMethodCount);
 
-            await AssertTopInDegreeContractAsync(store, project);
+            await AssertTopInDegreeContractAsync(store, repository);
         }
         finally
         {
@@ -101,25 +101,25 @@ public class ArchitectureAggregateStoreTests
             await session.ExecuteWriteAsync(async tx =>
             {
                 await tx.RunAsync(
-                    "MATCH (n:CodeNode) WHERE n.project IN $projects DETACH DELETE n",
-                    new { projects = new[] { project, otherProject } });
+                    "MATCH (n:CodeNode) WHERE n.repository IN $repositories DETACH DELETE n",
+                    new { repositories = new[] { repository, otherRepository } });
             });
         }
     }
 
-    private static async Task AssertTopInDegreeContractAsync(IGraphStore store, string project)
+    private static async Task AssertTopInDegreeContractAsync(IGraphStore store, string repository)
     {
         // Label filter, minimum and limit are applied before rows are returned.
-        (await store.GetTopInDegreeNodesAsync(project, [EdgeType.CALLS], [NodeLabel.Method, NodeLabel.Function], 3, 1))
+        (await store.GetTopInDegreeNodesAsync(repository, [EdgeType.CALLS], [NodeLabel.Method, NodeLabel.Function], 3, 1))
             .Select(entry => (entry.Node.Name, entry.InDegree))
             .ShouldBe([("hot", 5)]);
-        (await store.GetTopInDegreeNodesAsync(project, [EdgeType.CALLS], null, 1, 10))
+        (await store.GetTopInDegreeNodesAsync(repository, [EdgeType.CALLS], null, 1, 10))
             .Select(entry => (entry.Node.Name, entry.InDegree))
             .ShouldBe([("Widget", 6), ("hot", 5), ("warm", 3), ("cold", 2)]);
-        (await store.GetTopInDegreeNodesAsync(project, [EdgeType.INHERITS], null, 1, 10))
+        (await store.GetTopInDegreeNodesAsync(repository, [EdgeType.INHERITS], null, 1, 10))
             .Select(entry => entry.Node.Name)
             .ShouldBe(["Base"]);
-        (await store.GetTopInDegreeNodesAsync(project, [], null, 1, 10)).ShouldBeEmpty();
+        (await store.GetTopInDegreeNodesAsync(repository, [], null, 1, 10)).ShouldBeEmpty();
     }
 
     private static string Require(string name) =>

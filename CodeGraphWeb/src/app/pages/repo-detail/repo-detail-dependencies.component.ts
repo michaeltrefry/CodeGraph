@@ -1,6 +1,6 @@
 import { Component, Input } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { LABEL_ICONS, ProjectDetailResponse } from '../../core/models';
+import { LABEL_ICONS, RepositoryDetailResponse } from '../../core/models';
 
 @Component({
   selector: 'app-repo-detail-dependencies',
@@ -10,17 +10,17 @@ import { LABEL_ICONS, ProjectDetailResponse } from '../../core/models';
   styleUrl: './repo-detail-dependencies.component.scss'
 })
 export class RepoDetailDependenciesComponent {
-  @Input() projectName = '';
-  @Input() detail: ProjectDetailResponse | null = null;
+  @Input() repositoryName = '';
+  @Input() detail: RepositoryDetailResponse | null = null;
 
   readonly labelIcons = LABEL_ICONS;
 
-  projectRoute(projectName: string) {
-    return [projectName.startsWith('db:') ? '/schemas' : '/repos', projectName];
+  repositoryRoute(repositoryName: string) {
+    return [repositoryName.startsWith('db:') ? '/schemas' : '/repos', repositoryName];
   }
 
-  projectNodesRoute(projectName: string) {
-    return [projectName.startsWith('db:') ? '/schemas' : '/repos', projectName, 'nodes'];
+  repositoryNodesRoute(repositoryName: string) {
+    return [repositoryName.startsWith('db:') ? '/schemas' : '/repos', repositoryName, 'nodes'];
   }
 
   nodeLabelEntries() {

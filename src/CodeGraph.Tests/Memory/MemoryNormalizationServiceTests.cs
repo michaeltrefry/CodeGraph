@@ -8,7 +8,7 @@ public class MemoryNormalizationServiceTests
     [Theory]
     [InlineData("HelloWorld", "hello_world")]
     [InlineData("ESP IDF", "esp_idf")]
-    [InlineData("my-project-name", "my_project_name")]
+    [InlineData("my-repository-name", "my_repository_name")]
     [InlineData("camelCaseId", "camel_case_id")]
     [InlineData("already_snake_case", "already_snake_case")]
     [InlineData("MixedCase WithSpaces", "mixed_case_with_spaces")]

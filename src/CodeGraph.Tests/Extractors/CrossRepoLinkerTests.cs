@@ -17,23 +17,23 @@ public class CrossRepoLinkerTests
     }
 
     [Fact]
-    public async Task Links_EventPublisher_ToConsumer_AcrossProjects()
+    public async Task Links_EventPublisher_ToConsumer_AcrossRepositories()
     {
-        _store.AddProject("ProjectA");
-        _store.AddProject("ProjectB");
+        _store.AddRepository("RepositoryA");
+        _store.AddRepository("RepositoryB");
 
-        // ProjectA publishes OrderCreatedEvent
+        // RepositoryA publishes OrderCreatedEvent
         var publisherClass = _store.AddNode(new GraphNode
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             Label = NodeLabel.Class,
             Name = "OrderService",
-            QualifiedName = "ProjectA.OrderService"
+            QualifiedName = "RepositoryA.OrderService"
         });
 
         var eventNode = _store.AddNode(new GraphNode
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             Label = NodeLabel.Record,
             Name = "OrderCreatedEvent",
             QualifiedName = "Orders.Messages.OrderCreatedEvent"
@@ -41,25 +41,25 @@ public class CrossRepoLinkerTests
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             SourceId = publisherClass,
             TargetId = eventNode,
             Type = EdgeType.PUBLISHES
         });
 
-        // ProjectB consumes OrderCreatedEvent
+        // RepositoryB consumes OrderCreatedEvent
         var consumerClass = _store.AddNode(new GraphNode
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             Label = NodeLabel.Class,
             Name = "OrderCreatedConsumer",
-            QualifiedName = "ProjectB.OrderCreatedConsumer"
+            QualifiedName = "RepositoryB.OrderCreatedConsumer"
         });
 
         // Consumer's event node (same QN shared across repos)
         var eventNodeB = _store.AddNode(new GraphNode
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             Label = NodeLabel.Record,
             Name = "OrderCreatedEvent",
             QualifiedName = "Orders.Messages.OrderCreatedEvent"
@@ -67,7 +67,7 @@ public class CrossRepoLinkerTests
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             SourceId = consumerClass,
             TargetId = eventNodeB,
             Type = EdgeType.CONSUMES
@@ -77,22 +77,22 @@ public class CrossRepoLinkerTests
 
         _store.CrossEdges.Count.ShouldBe(1);
         var crossEdge = _store.CrossEdges[0];
-        crossEdge.SourceProject.ShouldBe("ProjectA");
-        crossEdge.TargetProject.ShouldBe("ProjectB");
+        crossEdge.SourceRepository.ShouldBe("RepositoryA");
+        crossEdge.TargetRepository.ShouldBe("RepositoryB");
         crossEdge.Type.ShouldBe(EdgeType.PUBLISHES);
         crossEdge.Properties["event_type"].ShouldBe("Orders.Messages.OrderCreatedEvent");
     }
 
     [Fact]
-    public async Task Links_NuGetPackage_ToSourceProject()
+    public async Task Links_NuGetPackage_ToSourceRepository()
     {
-        _store.AddProject("OrdersApi");
-        _store.AddProject("WalletApi");
+        _store.AddRepository("OrdersApi");
+        _store.AddRepository("WalletApi");
 
         // WalletApi references OrdersApi.Models package
-        var walletProject = _store.AddNode(new GraphNode
+        var walletRepository = _store.AddNode(new GraphNode
         {
-            Project = "WalletApi",
+            Repository = "WalletApi",
             Label = NodeLabel.Repository,
             Name = "WalletApi",
             QualifiedName = "WalletApi"
@@ -100,7 +100,7 @@ public class CrossRepoLinkerTests
 
         var nugetNode = _store.AddNode(new GraphNode
         {
-            Project = "WalletApi",
+            Repository = "WalletApi",
             Label = NodeLabel.NuGetPackage,
             Name = "OrdersApi.Models",
             QualifiedName = "nuget:OrdersApi.Models",
@@ -109,8 +109,8 @@ public class CrossRepoLinkerTests
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "WalletApi",
-            SourceId = walletProject,
+            Repository = "WalletApi",
+            SourceId = walletRepository,
             TargetId = nugetNode,
             Type = EdgeType.REFERENCES_PACKAGE,
             Properties = new() { ["version"] = "1.2.3" }
@@ -120,21 +120,21 @@ public class CrossRepoLinkerTests
 
         _store.CrossEdges.Count.ShouldBe(1);
         var crossEdge = _store.CrossEdges[0];
-        crossEdge.SourceProject.ShouldBe("WalletApi");
-        crossEdge.TargetProject.ShouldBe("OrdersApi");
+        crossEdge.SourceRepository.ShouldBe("WalletApi");
+        crossEdge.TargetRepository.ShouldBe("OrdersApi");
         crossEdge.Type.ShouldBe(EdgeType.REFERENCES_PACKAGE);
         crossEdge.Properties["package_name"].ShouldBe("OrdersApi.Models");
     }
 
     [Fact]
-    public async Task Links_NonTc_NuGetPackage_ToSourceProject()
+    public async Task Links_NonTc_NuGetPackage_ToSourceRepository()
     {
-        _store.AddProject("OrdersApi");
-        _store.AddProject("WalletApi");
+        _store.AddRepository("OrdersApi");
+        _store.AddRepository("WalletApi");
 
-        var walletProject = _store.AddNode(new GraphNode
+        var walletRepository = _store.AddNode(new GraphNode
         {
-            Project = "WalletApi",
+            Repository = "WalletApi",
             Label = NodeLabel.Repository,
             Name = "WalletApi",
             QualifiedName = "WalletApi"
@@ -142,7 +142,7 @@ public class CrossRepoLinkerTests
 
         var nugetNode = _store.AddNode(new GraphNode
         {
-            Project = "WalletApi",
+            Repository = "WalletApi",
             Label = NodeLabel.NuGetPackage,
             Name = "OrdersApi.Contracts",
             QualifiedName = "nuget:OrdersApi.Contracts",
@@ -151,8 +151,8 @@ public class CrossRepoLinkerTests
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "WalletApi",
-            SourceId = walletProject,
+            Repository = "WalletApi",
+            SourceId = walletRepository,
             TargetId = nugetNode,
             Type = EdgeType.REFERENCES_PACKAGE,
             Properties = new() { ["version"] = "2.0.0" }
@@ -162,25 +162,25 @@ public class CrossRepoLinkerTests
 
         _store.CrossEdges.Count.ShouldBe(1);
         var crossEdge = _store.CrossEdges[0];
-        crossEdge.SourceProject.ShouldBe("WalletApi");
-        crossEdge.TargetProject.ShouldBe("OrdersApi");
+        crossEdge.SourceRepository.ShouldBe("WalletApi");
+        crossEdge.TargetRepository.ShouldBe("OrdersApi");
         crossEdge.Type.ShouldBe(EdgeType.REFERENCES_PACKAGE);
         crossEdge.Properties["package_name"].ShouldBe("OrdersApi.Contracts");
     }
 
     [Fact]
-    public async Task Links_HttpCalls_ToRoutes_AcrossProjects()
+    public async Task Links_HttpCalls_ToRoutes_AcrossRepositories()
     {
-        _store.AddProject("ProjectA");
-        _store.AddProject("ProjectB");
+        _store.AddRepository("RepositoryA");
+        _store.AddRepository("RepositoryB");
 
-        // ProjectA has a route: GET /api/wallet/{id}
+        // RepositoryA has a route: GET /api/wallet/{id}
         var routeNode = _store.AddNode(new GraphNode
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             Label = NodeLabel.Route,
             Name = "GET api/wallet/{id}",
-            QualifiedName = "route:ProjectA:GET:api/wallet/{id}",
+            QualifiedName = "route:RepositoryA:GET:api/wallet/{id}",
             Properties = new()
             {
                 ["http_method"] = "GET",
@@ -188,18 +188,18 @@ public class CrossRepoLinkerTests
             }
         });
 
-        // ProjectB calls GET /api/wallet/123
+        // RepositoryB calls GET /api/wallet/123
         var callerMethod = _store.AddNode(new GraphNode
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             Label = NodeLabel.Method,
             Name = "GetWallet",
-            QualifiedName = "ProjectB.OrderService.GetWallet"
+            QualifiedName = "RepositoryB.OrderService.GetWallet"
         });
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             SourceId = callerMethod,
             TargetId = 0, // target is a URL pattern, not a resolved node
             Type = EdgeType.HTTP_CALLS,
@@ -214,26 +214,26 @@ public class CrossRepoLinkerTests
 
         _store.CrossEdges.Count.ShouldBe(1);
         var crossEdge = _store.CrossEdges[0];
-        crossEdge.SourceProject.ShouldBe("ProjectB");
-        crossEdge.TargetProject.ShouldBe("ProjectA");
+        crossEdge.SourceRepository.ShouldBe("RepositoryB");
+        crossEdge.TargetRepository.ShouldBe("RepositoryA");
         crossEdge.Type.ShouldBe(EdgeType.HTTP_CALLS);
     }
 
     [Fact]
-    public async Task Skips_Ambiguous_HttpRoute_Matches_AcrossProjects()
+    public async Task Skips_Ambiguous_HttpRoute_Matches_AcrossRepositories()
     {
-        _store.AddProject("ProjectA");
-        _store.AddProject("ProjectB");
-        _store.AddProject("ProjectC");
+        _store.AddRepository("RepositoryA");
+        _store.AddRepository("RepositoryB");
+        _store.AddRepository("RepositoryC");
 
-        foreach (var project in new[] { "ProjectA", "ProjectC" })
+        foreach (var repository in new[] { "RepositoryA", "RepositoryC" })
         {
             _store.AddNode(new GraphNode
             {
-                Project = project,
+                Repository = repository,
                 Label = NodeLabel.Route,
                 Name = "GET api/status",
-                QualifiedName = $"route:{project}:GET:api/status",
+                QualifiedName = $"route:{repository}:GET:api/status",
                 Properties = new()
                 {
                     ["http_method"] = "GET",
@@ -244,15 +244,15 @@ public class CrossRepoLinkerTests
 
         var callerMethod = _store.AddNode(new GraphNode
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             Label = NodeLabel.Method,
             Name = "GetStatus",
-            QualifiedName = "ProjectB.StatusClient.GetStatus"
+            QualifiedName = "RepositoryB.StatusClient.GetStatus"
         });
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             SourceId = callerMethod,
             TargetId = 0,
             Type = EdgeType.HTTP_CALLS,
@@ -269,20 +269,20 @@ public class CrossRepoLinkerTests
     }
 
     [Fact]
-    public async Task Uses_HttpCall_TargetRouteProjectHint_ToDisambiguate()
+    public async Task Uses_HttpCall_TargetRouteRepositoryHint_ToDisambiguate()
     {
-        _store.AddProject("ProjectA");
-        _store.AddProject("ProjectB");
-        _store.AddProject("ProjectC");
+        _store.AddRepository("RepositoryA");
+        _store.AddRepository("RepositoryB");
+        _store.AddRepository("RepositoryC");
 
-        foreach (var project in new[] { "ProjectA", "ProjectC" })
+        foreach (var repository in new[] { "RepositoryA", "RepositoryC" })
         {
             _store.AddNode(new GraphNode
             {
-                Project = project,
+                Repository = repository,
                 Label = NodeLabel.Route,
                 Name = "GET api/status",
-                QualifiedName = $"route:{project}:GET:api/status",
+                QualifiedName = $"route:{repository}:GET:api/status",
                 Properties = new()
                 {
                     ["http_method"] = "GET",
@@ -293,23 +293,23 @@ public class CrossRepoLinkerTests
 
         var callerMethod = _store.AddNode(new GraphNode
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             Label = NodeLabel.Method,
             Name = "GetStatus",
-            QualifiedName = "ProjectB.StatusClient.GetStatus"
+            QualifiedName = "RepositoryB.StatusClient.GetStatus"
         });
 
         var targetStub = _store.AddNode(new GraphNode
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             Label = NodeLabel.Route,
             Name = "GET api/status",
-            QualifiedName = "route:ProjectA:GET:api/status"
+            QualifiedName = "route:RepositoryA:GET:api/status"
         });
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectB",
+            Repository = "RepositoryB",
             SourceId = callerMethod,
             TargetId = targetStub,
             Type = EdgeType.HTTP_CALLS,
@@ -323,20 +323,20 @@ public class CrossRepoLinkerTests
         await _linker.LinkAsync(CancellationToken.None);
 
         _store.CrossEdges.Count.ShouldBe(1);
-        _store.CrossEdges[0].SourceProject.ShouldBe("ProjectB");
-        _store.CrossEdges[0].TargetProject.ShouldBe("ProjectA");
+        _store.CrossEdges[0].SourceRepository.ShouldBe("RepositoryB");
+        _store.CrossEdges[0].TargetRepository.ShouldBe("RepositoryA");
         _store.CrossEdges[0].Type.ShouldBe(EdgeType.HTTP_CALLS);
     }
 
     [Fact]
     public async Task Links_GatewayCalls_UsingExactServiceName_Only()
     {
-        _store.AddProject("OrdersApi");
-        _store.AddProject("GatewayApi");
+        _store.AddRepository("OrdersApi");
+        _store.AddRepository("GatewayApi");
 
         var ordersRoute = _store.AddNode(new GraphNode
         {
-            Project = "OrdersApi",
+            Repository = "OrdersApi",
             Label = NodeLabel.Route,
             Name = "GET api/orders/{id}",
             QualifiedName = "route:OrdersApi:GET:api/orders/{id}",
@@ -349,7 +349,7 @@ public class CrossRepoLinkerTests
 
         var gatewayCaller = _store.AddNode(new GraphNode
         {
-            Project = "GatewayApi",
+            Repository = "GatewayApi",
             Label = NodeLabel.Method,
             Name = "GetOrder",
             QualifiedName = "GatewayApi.Controllers.OrdersController.GetOrder"
@@ -357,7 +357,7 @@ public class CrossRepoLinkerTests
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "GatewayApi",
+            Repository = "GatewayApi",
             SourceId = gatewayCaller,
             TargetId = ordersRoute,
             Type = EdgeType.HTTP_CALLS,
@@ -373,37 +373,37 @@ public class CrossRepoLinkerTests
 
         _store.CrossEdges.Count.ShouldBe(1);
         var crossEdge = _store.CrossEdges[0];
-        crossEdge.SourceProject.ShouldBe("GatewayApi");
-        crossEdge.TargetProject.ShouldBe("OrdersApi");
+        crossEdge.SourceRepository.ShouldBe("GatewayApi");
+        crossEdge.TargetRepository.ShouldBe("OrdersApi");
         crossEdge.Type.ShouldBe(EdgeType.HTTP_CALLS);
         crossEdge.Properties["request_dto"].ShouldBe("OrdersApi.Models.GetOrderRequest");
     }
 
     [Fact]
-    public async Task Skips_SameProject_Links()
+    public async Task Skips_SameRepository_Links()
     {
-        _store.AddProject("ProjectA");
+        _store.AddRepository("RepositoryA");
 
-        // Publisher and consumer in same project
+        // Publisher and consumer in same repository
         var publisherClass = _store.AddNode(new GraphNode
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             Label = NodeLabel.Class,
             Name = "OrderService",
-            QualifiedName = "ProjectA.OrderService"
+            QualifiedName = "RepositoryA.OrderService"
         });
 
         var eventNode = _store.AddNode(new GraphNode
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             Label = NodeLabel.Record,
             Name = "OrderCreatedEvent",
-            QualifiedName = "ProjectA.Models.OrderCreatedEvent"
+            QualifiedName = "RepositoryA.Models.OrderCreatedEvent"
         });
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             SourceId = publisherClass,
             TargetId = eventNode,
             Type = EdgeType.PUBLISHES
@@ -411,15 +411,15 @@ public class CrossRepoLinkerTests
 
         var consumerClass = _store.AddNode(new GraphNode
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             Label = NodeLabel.Class,
             Name = "OrderCreatedConsumer",
-            QualifiedName = "ProjectA.OrderCreatedConsumer"
+            QualifiedName = "RepositoryA.OrderCreatedConsumer"
         });
 
         _store.AddEdge(new GraphEdge
         {
-            Project = "ProjectA",
+            Repository = "RepositoryA",
             SourceId = consumerClass,
             TargetId = eventNode,
             Type = EdgeType.CONSUMES
@@ -427,7 +427,7 @@ public class CrossRepoLinkerTests
 
         await _linker.LinkAsync(CancellationToken.None);
 
-        // Same project — no cross-repo edges
+        // Same repository — no cross-repo edges
         _store.CrossEdges.Count.ShouldBe(0);
     }
 
@@ -437,7 +437,7 @@ public class CrossRepoLinkerTests
         const string symbol = "rust-analyzer cargo provider 1.2.3 provider/process().";
         var callerId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.Function,
             Name = "run",
             QualifiedName = "Consumer:run",
@@ -445,7 +445,7 @@ public class CrossRepoLinkerTests
         });
         var externalId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.ExternalSymbol,
             Name = "process",
             QualifiedName = "Consumer:external:process",
@@ -458,7 +458,7 @@ public class CrossRepoLinkerTests
         });
         var definitionId = _store.AddNode(new GraphNode
         {
-            Project = "Provider",
+            Repository = "Provider",
             Label = NodeLabel.Function,
             Name = "process",
             QualifiedName = "Provider:process",
@@ -470,7 +470,7 @@ public class CrossRepoLinkerTests
         });
         _store.AddEdge(new GraphEdge
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             SourceId = callerId,
             TargetId = externalId,
             Type = EdgeType.CALLS
@@ -479,8 +479,8 @@ public class CrossRepoLinkerTests
         await _linker.LinkAsync(CancellationToken.None);
 
         var edge = _store.CrossEdges.Single();
-        edge.SourceProject.ShouldBe("Consumer");
-        edge.TargetProject.ShouldBe("Provider");
+        edge.SourceRepository.ShouldBe("Consumer");
+        edge.TargetRepository.ShouldBe("Provider");
         edge.SourceNodeId.ShouldBe(callerId);
         edge.TargetNodeId.ShouldBe(definitionId);
         edge.Type.ShouldBe(EdgeType.CALLS);
@@ -493,14 +493,14 @@ public class CrossRepoLinkerTests
         const string symbol = "rust-analyzer cargo shared 1.0.0 shared/run().";
         var callerId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.Function,
             Name = "caller",
             QualifiedName = "Consumer:caller"
         });
         var externalId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.ExternalSymbol,
             Name = "run",
             QualifiedName = "Consumer:external:run",
@@ -511,14 +511,14 @@ public class CrossRepoLinkerTests
                 ["scip_symbol"] = symbol
             }
         });
-        foreach (var project in new[] { "ProviderA", "ProviderB" })
+        foreach (var repository in new[] { "ProviderA", "ProviderB" })
         {
             _store.AddNode(new GraphNode
             {
-                Project = project,
+                Repository = repository,
                 Label = NodeLabel.Function,
                 Name = "run",
-                QualifiedName = $"{project}:run",
+                QualifiedName = $"{repository}:run",
                 Properties = new()
                 {
                     ["source"] = "scip",
@@ -528,7 +528,7 @@ public class CrossRepoLinkerTests
         }
         _store.AddEdge(new GraphEdge
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             SourceId = callerId,
             TargetId = externalId,
             Type = EdgeType.CALLS
@@ -546,14 +546,14 @@ public class CrossRepoLinkerTests
         const string definitionSymbol = "rust-analyzer cargo other 1.0.0 other/run().";
         var callerId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.Function,
             Name = "caller",
             QualifiedName = "Consumer:caller"
         });
         var externalId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.ExternalSymbol,
             Name = "run",
             QualifiedName = "Consumer:external:run",
@@ -566,7 +566,7 @@ public class CrossRepoLinkerTests
         });
         _store.AddNode(new GraphNode
         {
-            Project = "Provider",
+            Repository = "Provider",
             Label = NodeLabel.Function,
             Name = "run",
             QualifiedName = "Provider:run",
@@ -578,7 +578,7 @@ public class CrossRepoLinkerTests
         });
         _store.AddEdge(new GraphEdge
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             SourceId = callerId,
             TargetId = externalId,
             Type = EdgeType.CALLS
@@ -595,7 +595,7 @@ public class CrossRepoLinkerTests
         const string packageKey = "cargo:registry:crates.io:provider-lib";
         var consumerId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.Package,
             Name = "consumer",
             QualifiedName = "package:consumer",
@@ -608,7 +608,7 @@ public class CrossRepoLinkerTests
         });
         var dependencyId = _store.AddNode(new GraphNode
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             Label = NodeLabel.Package,
             Name = "provider-lib",
             QualifiedName = "package:provider-lib-ref",
@@ -624,7 +624,7 @@ public class CrossRepoLinkerTests
         });
         var providerId = _store.AddNode(new GraphNode
         {
-            Project = "Provider",
+            Repository = "Provider",
             Label = NodeLabel.Package,
             Name = "provider-lib",
             QualifiedName = "package:provider-lib-definition",
@@ -638,7 +638,7 @@ public class CrossRepoLinkerTests
         });
         _store.AddEdge(new GraphEdge
         {
-            Project = "Consumer",
+            Repository = "Consumer",
             SourceId = consumerId,
             TargetId = dependencyId,
             Type = EdgeType.REFERENCES_PACKAGE
@@ -647,8 +647,8 @@ public class CrossRepoLinkerTests
         await _linker.LinkAsync(CancellationToken.None);
 
         var edge = _store.CrossEdges.Single();
-        edge.SourceProject.ShouldBe("Consumer");
-        edge.TargetProject.ShouldBe("Provider");
+        edge.SourceRepository.ShouldBe("Consumer");
+        edge.TargetRepository.ShouldBe("Provider");
         edge.SourceNodeId.ShouldBe(consumerId);
         edge.TargetNodeId.ShouldBe(providerId);
         edge.Properties["local_name"].ShouldBe("provider_alias");
@@ -663,31 +663,31 @@ public class CrossRepoLinkerTests
     }
 
     [Fact]
-    public async Task LinkForProjectAsync_LinksScopeProjectWithoutLoadingWholeGraphRows()
+    public async Task LinkForRepositoryAsync_LinksScopeRepositoryWithoutLoadingWholeGraphRows()
     {
         var store = new FullScanRejectingGraphStore();
         CrossRepoLinkFleet.SeedInMemory(store);
         var linker = new CrossRepoLinker(store, NullLogger<CrossRepoLinker>.Instance);
 
-        await linker.LinkForProjectAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
+        await linker.LinkForRepositoryAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
 
         CrossRepoLinkFleet.ShouldMatch(store.CrossEdges, QualifiedNameOf(store), CrossRepoLinkFleet.ConsumerLinks);
         store.CrossEdges.ShouldAllBe(edge =>
-            edge.SourceProject == CrossRepoLinkFleet.Consumer && edge.TargetProject == CrossRepoLinkFleet.Provider);
+            edge.SourceRepository == CrossRepoLinkFleet.Consumer && edge.TargetRepository == CrossRepoLinkFleet.Provider);
     }
 
     [Fact]
-    public async Task LinkForProjectAsync_LeavesLinksBetweenOtherProjectsAlone()
+    public async Task LinkForRepositoryAsync_LeavesLinksBetweenOtherRepositoriesAlone()
     {
         CrossRepoLinkFleet.SeedInMemory(_store);
 
-        await _linker.LinkForProjectAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
+        await _linker.LinkForRepositoryAsync(CrossRepoLinkFleet.Consumer, CancellationToken.None);
 
         CrossRepoLinkFleet.ShouldMatch(_store.CrossEdges, QualifiedNameOf(_store), CrossRepoLinkFleet.ConsumerLinks);
     }
 
     [Fact]
-    public async Task LinkAsync_LinksEveryProjectPair()
+    public async Task LinkAsync_LinksEveryRepositoryPair()
     {
         CrossRepoLinkFleet.SeedInMemory(_store);
 
@@ -702,7 +702,7 @@ public class CrossRepoLinkerTests
 
     /// <summary>
     /// sc-25698: post-index linking loaded every CALLS edge and every definition node of every
-    /// project (with their JSON properties) and ran the indexer out of memory once one repository
+    /// repository (with their JSON properties) and ran the indexer out of memory once one repository
     /// reached ~900k edges. The linker must read only the streamed link projections.
     /// </summary>
     private sealed class FullScanRejectingGraphStore : InMemoryGraphStore

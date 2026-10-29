@@ -11,16 +11,16 @@ namespace CodeGraph.Tests.Extractors;
 /// </summary>
 public class InMemoryGraphStore : IGraphStore, IExclusionStore
 {
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectIndexingLocks =
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryIndexingLocks =
         new(StringComparer.OrdinalIgnoreCase);
     private long _nextId = 1;
     private readonly List<GraphNode> _nodes = new();
     private readonly List<GraphEdge> _edges = new();
     private readonly List<CrossRepoEdge> _crossEdges = new();
-    private readonly List<ProjectInfo> _projects = new();
+    private readonly List<RepositoryInfo> _repositories = new();
     private readonly Dictionary<string, Dictionary<string, string>> _fileHashes = new();
     private readonly Dictionary<string, Dictionary<string, string>> _fileExtractionVersions = new();
-    private readonly Dictionary<string, ProjectSummary> _summaries = new();
+    private readonly Dictionary<string, RepositorySummary> _summaries = new();
     private readonly List<ProjectDiagnosticEntity> _projectDiagnostics = new();
     private readonly List<ProjectReviewRunEntity> _projectReviewRuns = new();
     private readonly List<ProjectReviewFindingEntity> _projectReviewFindings = new();
@@ -36,22 +36,22 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Exception? IncrementalReplacementFailure { get; set; }
     public Exception? IndexingLockFailure { get; set; }
 
-    public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
-        string project,
+    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
+        string repository,
         CancellationToken ct = default)
     {
         if (IndexingLockFailure is not null)
             throw IndexingLockFailure;
-        var projectLock = ProjectIndexingLocks.GetOrAdd(project, _ => new SemaphoreSlim(1, 1));
-        await projectLock.WaitAsync(ct);
-        return new InMemoryIndexingLock(projectLock);
+        var repositoryLock = RepositoryIndexingLocks.GetOrAdd(repository, _ => new SemaphoreSlim(1, 1));
+        await repositoryLock.WaitAsync(ct);
+        return new InMemoryIndexingLock(repositoryLock);
     }
 
-    private sealed class InMemoryIndexingLock(SemaphoreSlim projectLock) : IAsyncDisposable
+    private sealed class InMemoryIndexingLock(SemaphoreSlim repositoryLock) : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
         {
-            projectLock.Release();
+            repositoryLock.Release();
             return ValueTask.CompletedTask;
         }
     }
@@ -60,14 +60,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public IReadOnlyList<GraphEdge> Edges => _edges;
 
     /// <summary>Incremental file-slice writes made so far.</summary>
-    public int ReplaceProjectFilesCallCount { get; private set; }
+    public int ReplaceRepositoryFilesCallCount { get; private set; }
 
-    /// <summary>The replaced file paths of every non-empty <see cref="ReplaceProjectFilesAsync"/> call.</summary>
+    /// <summary>The replaced file paths of every non-empty <see cref="ReplaceRepositoryFilesAsync"/> call.</summary>
     public List<IReadOnlyList<string>> ReplacedFileSlices { get; } = [];
 
-    /// <summary>Stored file hash records of a project (source files and tracked manifests).</summary>
-    public IReadOnlyDictionary<string, string> FileHashesOf(string project) =>
-        _fileHashes.TryGetValue(project, out var hashes) ? hashes : new Dictionary<string, string>();
+    /// <summary>Stored file hash records of a repository (source files and tracked manifests).</summary>
+    public IReadOnlyDictionary<string, string> FileHashesOf(string repository) =>
+        _fileHashes.TryGetValue(repository, out var hashes) ? hashes : new Dictionary<string, string>();
 
     /// <summary>Calls of the batched lookups, by method name.</summary>
     public Dictionary<string, int> LookupCallCounts { get; } = new(StringComparer.Ordinal);
@@ -76,37 +76,37 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         LookupCallCounts[method] = LookupCallCounts.GetValueOrDefault(method) + 1;
 
     public Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
-        string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+        string repository, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
     {
         CountLookup(nameof(FindNodesByFilesAsync));
         var paths = filePaths.Select(path => path.Replace('\\', '/')).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return Task.FromResult<IReadOnlyList<GraphNode>>(_nodes.Where(node =>
-                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase)
                 && node.FilePath is not null
                 && paths.Contains(node.FilePath.Replace('\\', '/')))
             .ToList());
     }
 
-    public Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default) =>
+    public Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string repository, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<string>>(_nodes
-            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+            .Where(node => node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase)
                            && !string.IsNullOrEmpty(node.FilePath))
             .Select(node => node.FilePath!)
             .Distinct(StringComparer.Ordinal)
             .ToList());
 
     public Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
-        string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
+        string repository, IReadOnlyCollection<string> names, CancellationToken ct = default)
     {
         CountLookup(nameof(FindNodesByNamesAsync));
         var wanted = names.ToHashSet(StringComparer.Ordinal);
         return Task.FromResult<IReadOnlyList<GraphNode>>(_nodes.Where(node =>
-                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) && wanted.Contains(node.Name))
+                node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) && wanted.Contains(node.Name))
             .ToList());
     }
 
     public Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<EdgeType> types,
         string propertyKey,
         IReadOnlyCollection<string> values,
@@ -116,7 +116,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var wanted = values.ToHashSet(StringComparer.Ordinal);
         var nodeById = _nodes.ToDictionary(node => node.Id);
         return Task.FromResult<IReadOnlyList<StoredEdge>>(_edges
-            .Where(edge => edge.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+            .Where(edge => edge.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase)
                            && types.Contains(edge.Type)
                            && edge.Properties?.GetValueOrDefault(propertyKey)?.ToString() is { } value
                            && wanted.Contains(value))
@@ -127,7 +127,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .ToList());
     }
     public IReadOnlyList<CrossRepoEdge> CrossEdges => _crossEdges;
-    public IReadOnlyDictionary<string, ProjectSummary> Summaries => _summaries;
+    public IReadOnlyDictionary<string, RepositorySummary> Summaries => _summaries;
     public int SchemaSearchQueryCount { get; private set; }
     public int SchemaPageEnrichmentCount { get; private set; }
 
@@ -140,10 +140,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public void AddEdge(GraphEdge edge) => _edges.Add(edge);
 
-    public void AddProject(string name, bool isFoundational = false) =>
-        _projects.Add(new ProjectInfo(name, null, null, null, null, null, null, null, isFoundational, null));
+    public void AddRepository(string name, bool isFoundational = false) =>
+        _repositories.Add(new RepositoryInfo(name, null, null, null, null, null, null, null, isFoundational, null));
 
-    public void AddProject(ProjectInfo project) => _projects.Add(project);
+    public void AddRepository(RepositoryInfo repository) => _repositories.Add(repository);
 
     // ── IGraphStore implementation ──────────────────────────────────────
 
@@ -197,7 +197,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         Task.FromResult(_edges.GroupBy(e => e.Type).ToDictionary(g => g.Key, g => g.Count()));
 
     public Task<IReadOnlyList<NodeInDegree>> GetTopInDegreeNodesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<EdgeType> edgeTypes,
         IReadOnlyCollection<NodeLabel>? targetLabels,
         int minInDegree,
@@ -205,7 +205,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     {
         var nodesById = _nodes.ToDictionary(node => node.Id);
         return Task.FromResult<IReadOnlyList<NodeInDegree>>(
-            _edges.Where(e => e.Project == project && edgeTypes.Contains(e.Type))
+            _edges.Where(e => e.Repository == repository && edgeTypes.Contains(e.Type))
                 .Where(e => nodesById.ContainsKey(e.TargetId))
                 .Where(e => targetLabels is not { Count: > 0 } || targetLabels.Contains(nodesById[e.TargetId].Label))
                 .GroupBy(e => e.TargetId)
@@ -217,13 +217,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 .ToList());
     }
 
-    public Task<IReadOnlyList<string>> FindProjectsWithNoCrossRepoEdgesAsync()
+    public Task<IReadOnlyList<string>> FindRepositoriesWithNoCrossRepoEdgesAsync()
     {
         var withEdges = _crossEdges
-            .SelectMany(e => new[] { e.SourceProject, e.TargetProject })
+            .SelectMany(e => new[] { e.SourceRepository, e.TargetRepository })
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return Task.FromResult<IReadOnlyList<string>>(
-            _projects.Select(p => p.Name).Where(n => !withEdges.Contains(n)).ToList());
+            _repositories.Select(p => p.Name).Where(n => !withEdges.Contains(n)).ToList());
     }
 
     public Task InsertCrossRepoEdgeBatchAsync(IReadOnlyList<CrossRepoEdge> edges, CancellationToken ct = default)
@@ -232,13 +232,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<ProjectInfo>> ListRepositoriesAsync() =>
-        Task.FromResult<IReadOnlyList<ProjectInfo>>(_projects);
+    public Task<IReadOnlyList<RepositoryInfo>> ListRepositoriesAsync() =>
+        Task.FromResult<IReadOnlyList<RepositoryInfo>>(_repositories);
 
     public Task<RepositorySearchResult> SearchRepositoriesAsync(string? search = null, string? group = null,
         int page = 1, int pageSize = 25)
     {
-        IEnumerable<ProjectInfo> filtered = _projects;
+        IEnumerable<RepositoryInfo> filtered = _repositories;
         if (!string.IsNullOrWhiteSpace(group))
             filtered = filtered.Where(p => string.Equals(p.SourceGroup, group, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(search))
@@ -259,13 +259,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 
-        var schemas = _projects
-            .Where(IsDatabaseSchemaProject)
-            .Select(project => new
+        var schemas = _repositories
+            .Where(IsDatabaseSchemaRepository)
+            .Select(repository => new
             {
-                Project = project,
-                ServerName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "",
-                DatabaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name)
+                Repository = repository,
+                ServerName = GetStringProperty(repository.Properties, "serverName") ?? repository.SourceGroup ?? "",
+                DatabaseName = GetStringProperty(repository.Properties, "databaseName") ?? GetDatabaseNameFromRepository(repository.Name)
             })
             .Where(x => !string.IsNullOrWhiteSpace(x.ServerName) && !string.IsNullOrWhiteSpace(x.DatabaseName))
             .ToList();
@@ -274,33 +274,33 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             (string.IsNullOrWhiteSpace(server) || x.ServerName.Equals(server, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(database) || x.DatabaseName.Equals(database, StringComparison.OrdinalIgnoreCase)) &&
             (string.IsNullOrWhiteSpace(search) ||
-                x.Project.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                x.Repository.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                 x.ServerName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                 x.DatabaseName.Contains(search, StringComparison.OrdinalIgnoreCase)))
             .OrderBy(x => x.ServerName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(x => x.ServerName, StringComparer.Ordinal)
             .ThenBy(x => x.DatabaseName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(x => x.DatabaseName, StringComparer.Ordinal)
-            .ThenBy(x => x.Project.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(x => x.Project.Name, StringComparer.Ordinal)
+            .ThenBy(x => x.Repository.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Repository.Name, StringComparer.Ordinal)
             .ToList();
 
-        var filteredProjects = filtered.Select(x => x.Project.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var filteredNodes = _nodes.Where(node => filteredProjects.Contains(node.Project)).ToList();
+        var filteredRepositories = filtered.Select(x => x.Repository.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var filteredNodes = _nodes.Where(node => filteredRepositories.Contains(node.Repository)).ToList();
         var pageItems = filtered
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(x =>
             {
                 SchemaPageEnrichmentCount++;
-                var projectNodes = filteredNodes.Where(node => node.Project.Equals(x.Project.Name, StringComparison.OrdinalIgnoreCase));
+                var repositoryNodes = filteredNodes.Where(node => node.Repository.Equals(x.Repository.Name, StringComparison.OrdinalIgnoreCase));
                 return new SchemaRepositoryItem(
-                    x.Project,
+                    x.Repository,
                     x.ServerName,
                     x.DatabaseName,
-                    projectNodes.Count(node => node.Label == NodeLabel.Table),
-                    projectNodes.Count(node => node.Label == NodeLabel.View),
-                    projectNodes.Count(node => node.Label == NodeLabel.StoredProcedure));
+                    repositoryNodes.Count(node => node.Label == NodeLabel.Table),
+                    repositoryNodes.Count(node => node.Label == NodeLabel.View),
+                    repositoryNodes.Count(node => node.Label == NodeLabel.StoredProcedure));
             })
             .ToList();
 
@@ -328,16 +328,16 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             databaseOptions));
     }
 
-    private static bool IsDatabaseSchemaProject(ProjectInfo project) =>
-        project.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
-        GetStringProperty(project.Properties, "serverName") is not null ||
-        GetStringProperty(project.Properties, "databaseName") is not null;
+    private static bool IsDatabaseSchemaRepository(RepositoryInfo repository) =>
+        repository.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
+        GetStringProperty(repository.Properties, "serverName") is not null ||
+        GetStringProperty(repository.Properties, "databaseName") is not null;
 
-    private static string GetDatabaseNameFromProject(string projectName)
+    private static string GetDatabaseNameFromRepository(string repositoryName)
     {
-        var name = projectName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
-            ? projectName[3..]
-            : projectName;
+        var name = repositoryName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
+            ? repositoryName[3..]
+            : repositoryName;
         var slash = name.LastIndexOf('/');
         return slash >= 0 ? name[(slash + 1)..] : name;
     }
@@ -372,7 +372,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task<IReadOnlyList<string>> GetDistinctGroupsAsync()
     {
-        var groups = _projects
+        var groups = _repositories
             .Select(p => p.SourceGroup)
             .Where(g => !string.IsNullOrEmpty(g))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -381,19 +381,19 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult<IReadOnlyList<string>>(groups!);
     }
 
-    public Task<ProjectInfo?> GetRepositoryByName(string name)
+    public Task<RepositoryInfo?> GetRepositoryByName(string name)
     {
-        return Task.FromResult(_projects.FirstOrDefault(x => x.Name == name));
+        return Task.FromResult(_repositories.FirstOrDefault(x => x.Name == name));
     }
 
     public Task UpdateRepositoryCommitShaAsync(string name, string? commitSha)
     {
-        var existing = _projects.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var existing = _repositories.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (existing is null)
             return Task.CompletedTask;
 
-        _projects.Remove(existing);
-        _projects.Add(existing with { LastCommitSha = commitSha });
+        _repositories.Remove(existing);
+        _repositories.Add(existing with { LastCommitSha = commitSha });
         return Task.CompletedTask;
     }
 
@@ -433,16 +433,16 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(result);
     }
 
-    public virtual Task<Dictionary<string, int>> GetNodeCountsByLabelForProjectAsync(string project) =>
+    public virtual Task<Dictionary<string, int>> GetNodeCountsByLabelForRepositoryAsync(string repository) =>
         Task.FromResult(
-            _nodes.Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            _nodes.Where(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(n => n.Label.ToString())
                 .ToDictionary(g => g.Key, g => g.Count()));
 
-    public Task<Dictionary<string, Dictionary<string, int>>> GetNodeCountsByDotnetProjectAsync(string project)
+    public Task<Dictionary<string, Dictionary<string, int>>> GetNodeCountsByDotnetProjectAsync(string repository)
     {
         var result = _nodes
-            .Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) && n.DotnetProject is not null)
+            .Where(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) && n.DotnetProject is not null)
             .GroupBy(n => n.DotnetProject!)
             .ToDictionary(
                 g => g.Key,
@@ -450,14 +450,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(result);
     }
 
-    // ── Project operations ──────────────────────────────────────────────
+    // ── Repository operations ──────────────────────────────────────────────
 
     public Task UpsertRepositoryAsync(RepositoryEntity repository)
     {
-        var existing = _projects.FirstOrDefault(p => p.Name.Equals(repository.Name, StringComparison.OrdinalIgnoreCase));
+        var existing = _repositories.FirstOrDefault(p => p.Name.Equals(repository.Name, StringComparison.OrdinalIgnoreCase));
         if (existing != null)
-            _projects.Remove(existing);
-        _projects.Add(new ProjectInfo(repository.Name, repository.RepoUrl, repository.SourceGroup,
+            _repositories.Remove(existing);
+        _repositories.Add(new RepositoryInfo(repository.Name, repository.RepoUrl, repository.SourceGroup,
             repository.LocalPath, repository.LastCommitSha, repository.IndexedAt, repository.Language, repository.Framework,
             repository.IsFoundational,
             string.IsNullOrWhiteSpace(repository.Properties)
@@ -468,12 +468,12 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task EnsureRepositoryAsync(RepositoryEntity repository)
     {
-        var index = _projects.FindIndex(p => p.Name.Equals(repository.Name, StringComparison.OrdinalIgnoreCase));
+        var index = _repositories.FindIndex(p => p.Name.Equals(repository.Name, StringComparison.OrdinalIgnoreCase));
         if (index < 0)
             return UpsertRepositoryAsync(repository);
 
-        var existing = _projects[index];
-        _projects[index] = existing with
+        var existing = _repositories[index];
+        _repositories[index] = existing with
         {
             RepoUrl = repository.RepoUrl ?? existing.RepoUrl,
             SourceGroup = repository.SourceGroup ?? existing.SourceGroup,
@@ -483,23 +483,23 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task DeleteRepositoryAsync(string project)
+    public Task DeleteRepositoryAsync(string repository)
     {
-        _projects.RemoveAll(p => p.Name.Equals(project, StringComparison.OrdinalIgnoreCase));
-        _nodes.RemoveAll(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase));
+        _repositories.RemoveAll(p => p.Name.Equals(repository, StringComparison.OrdinalIgnoreCase));
+        _nodes.RemoveAll(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase));
         _edges.RemoveAll(e =>
         {
             var source = _nodes.FirstOrDefault(n => n.Id == e.SourceId);
             var target = _nodes.FirstOrDefault(n => n.Id == e.TargetId);
-            return (source?.Project.Equals(project, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                   (target?.Project.Equals(project, StringComparison.OrdinalIgnoreCase) ?? false);
+            return (source?.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                   (target?.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) ?? false);
         });
         _crossEdges.RemoveAll(e =>
-            e.SourceProject.Equals(project, StringComparison.OrdinalIgnoreCase) ||
-            e.TargetProject.Equals(project, StringComparison.OrdinalIgnoreCase));
-        _fileHashes.Remove(project);
-        _fileExtractionVersions.Remove(project);
-        _summaries.Remove(project);
+            e.SourceRepository.Equals(repository, StringComparison.OrdinalIgnoreCase) ||
+            e.TargetRepository.Equals(repository, StringComparison.OrdinalIgnoreCase));
+        _fileHashes.Remove(repository);
+        _fileExtractionVersions.Remove(repository);
+        _summaries.Remove(repository);
         return Task.CompletedTask;
     }
 
@@ -508,7 +508,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Task<long> UpsertNodeAsync(GraphNode node)
     {
         var existing = _nodes.FirstOrDefault(n =>
-            n.Project.Equals(node.Project, StringComparison.OrdinalIgnoreCase) &&
+            n.Repository.Equals(node.Repository, StringComparison.OrdinalIgnoreCase) &&
             n.QualifiedName.Equals(node.QualifiedName, StringComparison.Ordinal));
 
         if (existing != null)
@@ -530,54 +530,54 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         foreach (var node in nodes)
         {
             var id = await UpsertNodeAsync(node);
-            result[GraphNodeKey.Create(node.Project, node.QualifiedName)] = id;
+            result[GraphNodeKey.Create(node.Repository, node.QualifiedName)] = id;
         }
         return result;
     }
 
-    public virtual Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName) =>
+    public virtual Task<GraphNode?> FindNodeByQualifiedNameAsync(string repository, string qualifiedName) =>
         Task.FromResult(_nodes.FirstOrDefault(n =>
-            n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+            n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
             n.QualifiedName.Equals(qualifiedName, StringComparison.Ordinal)));
 
     public Task<IReadOnlyList<GraphNode>> FindNodesByQualifiedNamesAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<string> qualifiedNames)
     {
         var names = qualifiedNames.ToHashSet(StringComparer.Ordinal);
         return Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
-                n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                 names.Contains(n.QualifiedName)).ToList());
     }
 
-    public virtual Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string project, string name, int limit = 1000) =>
+    public virtual Task<IReadOnlyList<GraphNode>> FindNodesByNameAsync(string repository, string name, int limit = 1000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
-                n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                 n.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Take(limit).ToList());
 
-    public virtual Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string project, NodeLabel label, int limit = 10000) =>
+    public virtual Task<IReadOnlyList<GraphNode>> FindNodesByLabelAsync(string repository, NodeLabel label, int limit = 10000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
-                n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                 n.Label == label).Take(limit).ToList());
 
-    public Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string project, string filePath, int limit = 5000) =>
+    public Task<IReadOnlyList<GraphNode>> FindNodesByFileAsync(string repository, string filePath, int limit = 5000) =>
         Task.FromResult<IReadOnlyList<GraphNode>>(
             _nodes.Where(n =>
-                n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                 n.FilePath != null &&
                 n.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase)).Take(limit).ToList());
 
-    public virtual Task<IReadOnlyList<GraphNode>> SearchNodesAsync(string? project, string namePattern,
+    public virtual Task<IReadOnlyList<GraphNode>> SearchNodesAsync(string? repository, string namePattern,
         NodeLabel? label = null, string? filePattern = null, int limit = 50, int offset = 0,
         string? dotnetProject = null)
     {
         var query = _nodes.AsEnumerable();
 
-        if (!string.IsNullOrEmpty(project))
-            query = query.Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrEmpty(repository))
+            query = query.Where(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase));
 
         if (!string.IsNullOrEmpty(namePattern))
             query = query.Where(n => MatchesLike(n.Name, namePattern));
@@ -611,12 +611,12 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return true;
     }
 
-    public virtual Task<int> SearchNodesCountAsync(string? project, string namePattern,
+    public virtual Task<int> SearchNodesCountAsync(string? repository, string namePattern,
         NodeLabel? label = null, string? filePattern = null, string? dotnetProject = null)
     {
         var query = _nodes.AsEnumerable();
-        if (!string.IsNullOrEmpty(project))
-            query = query.Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrEmpty(repository))
+            query = query.Where(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrEmpty(namePattern))
             query = query.Where(n => MatchesLike(n.Name, namePattern));
         if (label.HasValue)
@@ -664,11 +664,11 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string project, EdgeType? type = null) =>
+    public Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string repository, EdgeType? type = null) =>
         Task.FromResult<IReadOnlyList<CrossRepoEdge>>(
             _crossEdges.Where(e =>
-                (e.SourceProject.Equals(project, StringComparison.OrdinalIgnoreCase) ||
-                 e.TargetProject.Equals(project, StringComparison.OrdinalIgnoreCase)) &&
+                (e.SourceRepository.Equals(repository, StringComparison.OrdinalIgnoreCase) ||
+                 e.TargetRepository.Equals(repository, StringComparison.OrdinalIgnoreCase)) &&
                 (type == null || e.Type == type)).ToList());
 
     public Task<IReadOnlyList<CrossRepoEdge>> GetAllCrossRepoEdgesAsync() =>
@@ -684,10 +684,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     // ── Bulk operations ─────────────────────────────────────────────────
 
-    public Task DeleteNodesByFileAsync(string project, string filePath)
+    public Task DeleteNodesByFileAsync(string repository, string filePath)
     {
         var toDelete = _nodes.Where(n =>
-            n.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+            n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
             n.FilePath != null &&
             n.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase)).ToList();
 
@@ -697,10 +697,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task DeleteNodesByProjectAsync(string project)
+    public Task DeleteNodesByRepositoryAsync(string repository)
     {
         var nodeIds = _nodes.Where(n =>
-            n.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
             .Select(n => n.Id)
             .ToHashSet();
 
@@ -709,12 +709,12 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<int> ReplaceProjectGraphAsync(
-        string project,
+    public Task<int> ReplaceRepositoryGraphAsync(
+        string repository,
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
-        RepositoryEntity repository,
+        RepositoryEntity repositoryEntity,
         SyncStateEntity? syncState,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
@@ -728,58 +728,58 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .Select(node => node with { Id = nextId++ })
             .ToList();
         var qnToId = replacementNodes.ToDictionary(
-            node => GraphNodeKey.Create(project, node.QualifiedName),
+            node => GraphNodeKey.Create(repository, node.QualifiedName),
             node => node.Id,
             StringComparer.Ordinal);
         var replacementEdges = edges
             .Where(edge =>
-                qnToId.ContainsKey(GraphNodeKey.Create(project, edge.SourceQN)) &&
-                qnToId.ContainsKey(GraphNodeKey.Create(project, edge.TargetQN)))
+                qnToId.ContainsKey(GraphNodeKey.Create(repository, edge.SourceQN)) &&
+                qnToId.ContainsKey(GraphNodeKey.Create(repository, edge.TargetQN)))
             .Select(edge => new GraphEdge
             {
-                Project = project,
-                SourceId = qnToId[GraphNodeKey.Create(project, edge.SourceQN)],
-                TargetId = qnToId[GraphNodeKey.Create(project, edge.TargetQN)],
+                Repository = repository,
+                SourceId = qnToId[GraphNodeKey.Create(repository, edge.SourceQN)],
+                TargetId = qnToId[GraphNodeKey.Create(repository, edge.TargetQN)],
                 Type = edge.Type,
                 Properties = edge.Properties ?? []
             })
             .ToList();
 
         var oldNodeIds = _nodes
-            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            .Where(node => node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
             .Select(node => node.Id)
             .ToHashSet();
         _nodeAnalyses.Keys.Where(oldNodeIds.Contains).ToList()
             .ForEach(nodeId => _nodeAnalyses.Remove(nodeId));
         _crossEdges.RemoveAll(edge =>
-            edge.SourceProject.Equals(project, StringComparison.OrdinalIgnoreCase) ||
-            edge.TargetProject.Equals(project, StringComparison.OrdinalIgnoreCase));
+            edge.SourceRepository.Equals(repository, StringComparison.OrdinalIgnoreCase) ||
+            edge.TargetRepository.Equals(repository, StringComparison.OrdinalIgnoreCase));
         _edges.RemoveAll(edge =>
-            edge.Project.Equals(project, StringComparison.OrdinalIgnoreCase) ||
+            edge.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) ||
             oldNodeIds.Contains(edge.SourceId) ||
             oldNodeIds.Contains(edge.TargetId));
         _nodes.RemoveAll(node => oldNodeIds.Contains(node.Id));
 
         _nodes.AddRange(replacementNodes);
         _edges.AddRange(replacementEdges);
-        _fileHashes[project] = new Dictionary<string, string>(fileHashes, StringComparer.OrdinalIgnoreCase);
-        _fileExtractionVersions[project] = fileHashes.Keys
+        _fileHashes[repository] = new Dictionary<string, string>(fileHashes, StringComparer.OrdinalIgnoreCase);
+        _fileExtractionVersions[repository] = fileHashes.Keys
             .Where(path => extractionVersions?.ContainsKey(path) == true)
             .ToDictionary(path => path, path => extractionVersions![path], StringComparer.OrdinalIgnoreCase);
-        _ = UpsertRepositoryAsync(repository);
+        _ = UpsertRepositoryAsync(repositoryEntity);
         if (syncState is not null)
         {
-            if (_syncStates.TryGetValue(project, out var previous))
+            if (_syncStates.TryGetValue(repository, out var previous))
                 CopyVitalsRecord(previous, syncState);
-            _syncStates[project] = syncState;
+            _syncStates[repository] = syncState;
         }
         _nextId = nextId;
 
         return Task.FromResult(replacementEdges.Count);
     }
 
-    public Task<int> ReplaceProjectFilesAsync(
-        string project,
+    public Task<int> ReplaceRepositoryFilesAsync(
+        string repository,
         IReadOnlyList<string> filePaths,
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
@@ -792,16 +792,16 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         if (filePaths.Count == 0) return Task.FromResult(0);
         if (IncrementalReplacementFailure is not null)
             throw IncrementalReplacementFailure;
-        ReplaceProjectFilesCallCount++;
+        ReplaceRepositoryFilesCallCount++;
         ReplacedFileSlices.Add(filePaths.ToList());
 
-        var projectIdsByQn = _nodes
-            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+        var repositoryIdsByQn = _nodes
+            .Where(node => node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
             .GroupBy(node => node.QualifiedName, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.Ordinal);
         var retractedKeys = (retractions?.Edges ?? [])
-            .Where(edge => projectIdsByQn.ContainsKey(edge.SourceQN) && projectIdsByQn.ContainsKey(edge.TargetQN))
-            .Select(edge => (projectIdsByQn[edge.SourceQN], projectIdsByQn[edge.TargetQN], edge.Type))
+            .Where(edge => repositoryIdsByQn.ContainsKey(edge.SourceQN) && repositoryIdsByQn.ContainsKey(edge.TargetQN))
+            .Select(edge => (repositoryIdsByQn[edge.SourceQN], repositoryIdsByQn[edge.TargetQN], edge.Type))
             .ToHashSet();
         bool IsRetracted(GraphEdge edge) => retractedKeys.Contains((edge.SourceId, edge.TargetId, edge.Type));
 
@@ -809,7 +809,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .SelectMany(path => new[] { path.Replace('\\', '/'), path.Replace('/', '\\') })
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var oldNodes = _nodes.Where(node =>
-                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                 paths.Contains(node.FilePath))
             .ToList();
         var oldIds = oldNodes.Select(node => node.Id).ToHashSet();
@@ -833,10 +833,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         var stagedAnalyses = _nodeAnalyses
             .Where(entry => !oldIds.Contains(entry.Key))
             .ToDictionary(entry => entry.Key, entry => entry.Value);
-        var stagedHashes = _fileHashes.TryGetValue(project, out var existingHashes)
+        var stagedHashes = _fileHashes.TryGetValue(repository, out var existingHashes)
             ? new Dictionary<string, string>(existingHashes, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var stagedVersions = _fileExtractionVersions.TryGetValue(project, out var existingVersions)
+        var stagedVersions = _fileExtractionVersions.TryGetValue(repository, out var existingVersions)
             ? new Dictionary<string, string>(existingVersions, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in paths)
@@ -847,13 +847,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
         var nextId = _nextId;
         var qnToId = stagedNodes
-            .Where(node => node.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+            .Where(node => node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
             .ToDictionary(node => node.QualifiedName, node => node.Id, StringComparer.Ordinal);
         foreach (var node in nodes.DistinctBy(node => node.QualifiedName, StringComparer.Ordinal))
         {
             if (qnToId.ContainsKey(node.QualifiedName))
                 continue;
-            var stored = node with { Id = nextId++, Project = project };
+            var stored = node with { Id = nextId++, Repository = repository };
             stagedNodes.Add(stored);
             qnToId[stored.QualifiedName] = stored.Id;
         }
@@ -868,7 +868,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .Where(edge => qnToId.ContainsKey(edge.SourceQN) && qnToId.ContainsKey(edge.TargetQN))
             .Select(edge => new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = qnToId[edge.SourceQN],
                 TargetId = qnToId[edge.TargetQN],
                 Type = edge.Type,
@@ -888,7 +888,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             var candidates = retractions.OrphanCandidateQNs.ToHashSet(StringComparer.Ordinal);
             var connected = stagedEdges.SelectMany(edge => new[] { edge.SourceId, edge.TargetId }).ToHashSet();
             stagedNodes.RemoveAll(node =>
-                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase)
                 && candidates.Contains(node.QualifiedName)
                 && string.IsNullOrEmpty(node.FilePath)
                 && !connected.Contains(node.Id));
@@ -910,15 +910,15 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         _nodeAnalyses.Clear();
         foreach (var analysis in stagedAnalyses)
             _nodeAnalyses[analysis.Key] = analysis.Value;
-        _fileHashes[project] = stagedHashes;
-        _fileExtractionVersions[project] = stagedVersions;
+        _fileHashes[repository] = stagedHashes;
+        _fileExtractionVersions[repository] = stagedVersions;
         _nextId = nextId;
 
         return Task.FromResult(resolved.Count);
     }
 
-    public Task DeleteFilesFromProjectGraphAsync(
-        string project,
+    public Task DeleteFilesFromRepositoryGraphAsync(
+        string repository,
         IReadOnlyList<string> filePaths,
         CancellationToken ct = default)
     {
@@ -934,7 +934,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var nodeIds = _nodes
             .Where(node =>
-                node.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+                node.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                 paths.Contains(node.FilePath))
             .Select(node => node.Id)
             .ToHashSet();
@@ -945,7 +945,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         _edges.RemoveAll(edge => nodeIds.Contains(edge.SourceId) || nodeIds.Contains(edge.TargetId));
         _nodes.RemoveAll(node => nodeIds.Contains(node.Id));
 
-        if (_fileHashes.TryGetValue(project, out var hashes))
+        if (_fileHashes.TryGetValue(repository, out var hashes))
         {
             foreach (var path in paths)
                 hashes.Remove(path);
@@ -956,41 +956,41 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     // ── File hashes ─────────────────────────────────────────────────────
 
-    public Task<Dictionary<string, string>> GetFileHashesAsync(string project)
+    public Task<Dictionary<string, string>> GetFileHashesAsync(string repository)
     {
-        if (_fileHashes.TryGetValue(project, out var hashes))
+        if (_fileHashes.TryGetValue(repository, out var hashes))
             return Task.FromResult(new Dictionary<string, string>(hashes));
         return Task.FromResult(new Dictionary<string, string>());
     }
 
     /// <summary>Simulates file_hashes rows written before extraction versioning existed.</summary>
-    public void ClearFileExtractionVersions(string project) => _fileExtractionVersions.Remove(project);
+    public void ClearFileExtractionVersions(string repository) => _fileExtractionVersions.Remove(repository);
 
-    public Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string project)
+    public Task<Dictionary<string, FileHashRecord>> GetFileHashRecordsAsync(string repository)
     {
         var result = new Dictionary<string, FileHashRecord>(StringComparer.OrdinalIgnoreCase);
-        if (!_fileHashes.TryGetValue(project, out var hashes))
+        if (!_fileHashes.TryGetValue(repository, out var hashes))
             return Task.FromResult(result);
-        _fileExtractionVersions.TryGetValue(project, out var versions);
+        _fileExtractionVersions.TryGetValue(repository, out var versions);
         foreach (var hash in hashes)
             result[hash.Key] = new FileHashRecord(hash.Value, versions?.GetValueOrDefault(hash.Key));
         return Task.FromResult(result);
     }
 
-    public Task UpsertFileHashBatchAsync(string project, Dictionary<string, string> hashes, CancellationToken ct = default)
+    public Task UpsertFileHashBatchAsync(string repository, Dictionary<string, string> hashes, CancellationToken ct = default)
     {
-        if (!_fileHashes.ContainsKey(project))
-            _fileHashes[project] = new Dictionary<string, string>();
+        if (!_fileHashes.ContainsKey(repository))
+            _fileHashes[repository] = new Dictionary<string, string>();
 
         foreach (var kvp in hashes)
-            _fileHashes[project][kvp.Key] = kvp.Value;
+            _fileHashes[repository][kvp.Key] = kvp.Value;
 
         return Task.CompletedTask;
     }
 
-    public Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths)
+    public Task DeleteFileHashesAsync(string repository, IReadOnlyList<string> relPaths)
     {
-        if (_fileHashes.TryGetValue(project, out var hashes))
+        if (_fileHashes.TryGetValue(repository, out var hashes))
         {
             foreach (var path in relPaths)
                 hashes.Remove(path);
@@ -1000,20 +1000,20 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     // ── Summaries ───────────────────────────────────────────────────────
 
-    public Task UpsertRepositorySummaryAsync(string project, string summary,
+    public Task UpsertRepositorySummaryAsync(string repository, string summary,
         ConfidenceLevel confidence, string sourceHash, string? modelUsed = null)
     {
-        _summaries[project] = new ProjectSummary(project, summary, confidence, sourceHash, modelUsed, DateTime.UtcNow, DateTime.UtcNow);
+        _summaries[repository] = new RepositorySummary(repository, summary, confidence, sourceHash, modelUsed, DateTime.UtcNow, DateTime.UtcNow);
         return Task.CompletedTask;
     }
 
-    public Task<ProjectSummary?> GetRepositorySummaryAsync(string project)
+    public Task<RepositorySummary?> GetRepositorySummaryAsync(string repository)
     {
-        _summaries.TryGetValue(project, out var summary);
+        _summaries.TryGetValue(repository, out var summary);
         return Task.FromResult(summary);
     }
 
-    // ── Per-project analyses ─────────────────────────────────────────────
+    // ── Per-repository analyses ─────────────────────────────────────────────
 
     private readonly Dictionary<(string, string), StoredProjectAnalysis> _projectAnalyses = new();
 
@@ -1044,24 +1044,24 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     private readonly Dictionary<string, SyncStateEntity> _syncStates = new();
 
-    public Task<SyncStateEntity?> GetSyncStateAsync(string project) =>
-        Task.FromResult(_syncStates.GetValueOrDefault(project));
+    public Task<SyncStateEntity?> GetSyncStateAsync(string repository) =>
+        Task.FromResult(_syncStates.GetValueOrDefault(repository));
 
-    public Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> projects)
+    public Task<IReadOnlyDictionary<string, SyncStateEntity>> GetSyncStatesAsync(IReadOnlyList<string> repositories)
     {
         var result = new Dictionary<string, SyncStateEntity>(StringComparer.OrdinalIgnoreCase);
-        foreach (var project in projects)
+        foreach (var repository in repositories)
         {
-            if (_syncStates.TryGetValue(project, out var state))
-                result[project] = state;
+            if (_syncStates.TryGetValue(repository, out var state))
+                result[repository] = state;
         }
 
         return Task.FromResult<IReadOnlyDictionary<string, SyncStateEntity>>(result);
     }
 
-    public Task SetVitalsVersionAsync(string project, int vitalsVersion)
+    public Task SetVitalsVersionAsync(string repository, int vitalsVersion)
     {
-        if (_syncStates.TryGetValue(project, out var state))
+        if (_syncStates.TryGetValue(repository, out var state))
         {
             state.VitalsVersion = vitalsVersion;
             state.VitalsFailedCommitSha = null;
@@ -1072,9 +1072,9 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<int> RecordVitalsFailureAsync(string project, string? commitSha, int vitalsVersion)
+    public Task<int> RecordVitalsFailureAsync(string repository, string? commitSha, int vitalsVersion)
     {
-        if (!_syncStates.TryGetValue(project, out var state))
+        if (!_syncStates.TryGetValue(repository, out var state))
             return Task.FromResult(0);
 
         state.VitalsConsecutiveFailures =
@@ -1099,7 +1099,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     {
         // Mirrors the MariaDB store: a null fingerprint keeps the stored one.
         // Mirrors the stores: an upsert never changes the vitals version.
-        if (_syncStates.TryGetValue(state.Project, out var existing))
+        if (_syncStates.TryGetValue(state.Repository, out var existing))
         {
             state.ExtractionFingerprint ??= existing.ExtractionFingerprint;
             CopyVitalsRecord(existing, state);
@@ -1109,16 +1109,16 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             CopyVitalsRecord(new SyncStateEntity(), state);
         }
 
-        _syncStates[state.Project] = state;
+        _syncStates[state.Repository] = state;
         return Task.CompletedTask;
     }
 
     // ── Graph context for batch analysis ────────────────────────────────
 
-    public Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string project) =>
+    public Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string repository) =>
         Task.FromResult<IReadOnlyList<NodeEntity>>(
             _nodes
-                .Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase)
+                .Where(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase)
                     && n.Label is NodeLabel.Class or NodeLabel.Interface)
                 .Select(MapNodeEntity)
                 .ToList());
@@ -1142,17 +1142,17 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         Task.FromResult<IReadOnlyList<EdgeEntity>>(
             _edges.Where(e => e.TargetId == nodeId).Select(MapEdgeEntity).ToList());
 
-    public Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project) =>
+    public Task<IReadOnlyList<NodeEntity>> GetAllNodesByRepositoryAsync(string repository) =>
         Task.FromResult<IReadOnlyList<NodeEntity>>(
             _nodes
-                .Where(n => n.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+                .Where(n => n.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
                 .Select(MapNodeEntity)
                 .ToList());
 
-    public Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project) =>
+    public Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByRepositoryAsync(string repository) =>
         Task.FromResult<IReadOnlyList<EdgeEntity>>(
             _edges
-                .Where(e => e.Project.Equals(project, StringComparison.OrdinalIgnoreCase))
+                .Where(e => e.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))
                 .Select(MapEdgeEntity)
                 .ToList());
 
@@ -1254,7 +1254,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private static NodeEntity MapNodeEntity(GraphNode node) => new()
     {
         Id = node.Id,
-        Project = node.Project,
+        Repository = node.Repository,
         DotnetProject = node.DotnetProject,
         Label = node.Label.ToString(),
         Name = node.Name,
@@ -1269,7 +1269,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private static EdgeEntity MapEdgeEntity(GraphEdge edge) => new()
     {
         Id = edge.Id,
-        Project = edge.Project,
+        Repository = edge.Repository,
         SourceId = edge.SourceId,
         TargetId = edge.TargetId,
         Type = edge.Type.ToString(),
@@ -1310,104 +1310,104 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private readonly List<FileMetricsEntity> _fileMetrics = new();
     private readonly List<ProjectHealthSummaryEntity> _healthSummaries = new();
 
-    public Task UpsertFileMetricsBatchAsync(string project, IReadOnlyList<FileMetricsEntity> metrics)
+    public Task UpsertFileMetricsBatchAsync(string repository, IReadOnlyList<FileMetricsEntity> metrics)
     {
-        _fileMetrics.RemoveAll(m => m.Project == project);
+        _fileMetrics.RemoveAll(m => m.Repository == repository);
         _fileMetrics.AddRange(metrics);
         return Task.CompletedTask;
     }
 
-    public virtual Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null)
+    public virtual Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string repository, string? dotnetProject = null)
     {
         var results = _fileMetrics
-            .Where(m => m.Project == project && (dotnetProject is null || m.DotnetProject == dotnetProject))
+            .Where(m => m.Repository == repository && (dotnetProject is null || m.DotnetProject == dotnetProject))
             .ToList();
         return Task.FromResult<IReadOnlyList<FileMetricsEntity>>(results);
     }
 
-    public Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath) =>
+    public Task<FileMetricsEntity?> GetFileMetricAsync(string repository, string filePath) =>
         Task.FromResult(_fileMetrics.FirstOrDefault(m =>
-            m.Project == project && string.Equals(m.FilePath, filePath, StringComparison.Ordinal)));
+            m.Repository == repository && string.Equals(m.FilePath, filePath, StringComparison.Ordinal)));
 
-    public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10) =>
+    public Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string repository, int top = 10) =>
         Task.FromResult<IReadOnlyList<FileMetricsEntity>>(
-            _fileMetrics.Where(m => m.Project == project)
+            _fileMetrics.Where(m => m.Repository == repository)
                 .OrderByDescending(m => m.ConcernScore)
                 .ThenByDescending(m => m.RiskScore)
                 .Take(top)
                 .ToList());
 
-    public Task DeleteFileMetricsAsync(string project)
+    public Task DeleteFileMetricsAsync(string repository)
     {
-        _fileMetrics.RemoveAll(m => m.Project == project);
+        _fileMetrics.RemoveAll(m => m.Repository == repository);
         return Task.CompletedTask;
     }
 
     public Task UpsertProjectHealthSummaryAsync(ProjectHealthSummaryEntity summary)
     {
         _healthSummaries.RemoveAll(s =>
-            s.Project == summary.Project && s.DotnetProject == summary.DotnetProject);
+            s.Repository == summary.Repository && s.DotnetProject == summary.DotnetProject);
         _healthSummaries.Add(summary);
         return Task.CompletedTask;
     }
 
-    public virtual Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project) =>
+    public virtual Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string repository) =>
         Task.FromResult<IReadOnlyList<ProjectHealthSummaryEntity>>(
-            _healthSummaries.Where(s => s.Project == project).ToList());
+            _healthSummaries.Where(s => s.Repository == repository).ToList());
 
     public Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetAllRepoHealthSummariesAsync() =>
         Task.FromResult<IReadOnlyList<ProjectHealthSummaryEntity>>(
             _healthSummaries.Where(s => string.IsNullOrEmpty(s.DotnetProject)).OrderBy(s => s.OverallHealth).ToList());
 
-    // ── Project health analyses (Claude-generated) ───────────────────────
+    // ── Repository health analyses (Claude-generated) ───────────────────────
 
     private readonly List<ProjectHealthAnalysisEntity> _healthAnalyses = new();
 
     public virtual Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis)
     {
         _healthAnalyses.RemoveAll(a =>
-            a.Project == analysis.Project && a.DotnetProject == analysis.DotnetProject);
+            a.Repository == analysis.Repository && a.DotnetProject == analysis.DotnetProject);
         _healthAnalyses.Add(analysis);
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string project) =>
+    public Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string repository) =>
         Task.FromResult<IReadOnlyList<ProjectHealthAnalysisEntity>>(
-            _healthAnalyses.Where(a => a.Project == project).ToList());
+            _healthAnalyses.Where(a => a.Repository == repository).ToList());
 
     // ── Security findings ──────────────────────────────────────────────
 
     private readonly List<SecurityFindingEntity> _securityFindings = new();
-    private readonly Dictionary<string, ProjectSecuritySummaryEntity> _securitySummaries = new();
+    private readonly Dictionary<string, RepositorySecuritySummaryEntity> _securitySummaries = new();
 
-    public Task DeleteSecurityFindingsAsync(string project)
+    public Task DeleteSecurityFindingsAsync(string repository)
     {
-        _securityFindings.RemoveAll(f => f.Project == project);
+        _securityFindings.RemoveAll(f => f.Repository == repository);
         return Task.CompletedTask;
     }
 
-    public Task DeleteProjectDiagnosticsAsync(string project)
+    public Task DeleteProjectDiagnosticsAsync(string repository)
     {
-        _projectDiagnostics.RemoveAll(d => d.Project == project);
+        _projectDiagnostics.RemoveAll(d => d.Repository == repository);
         return Task.CompletedTask;
     }
 
-    public Task UpsertProjectDiagnosticsBatchAsync(string project, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+    public Task UpsertProjectDiagnosticsBatchAsync(string repository, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
     {
         foreach (var diagnostic in diagnostics)
-            diagnostic.Project = project;
+            diagnostic.Repository = repository;
 
         var incomingKeys = diagnostics.Select(d => d.DiagnosticKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
         _projectDiagnostics.RemoveAll(d =>
-            d.Project == project && incomingKeys.Contains(d.DiagnosticKey));
+            d.Repository == repository && incomingKeys.Contains(d.DiagnosticKey));
         _projectDiagnostics.AddRange(diagnostics);
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<ProjectDiagnosticEntity>> GetProjectDiagnosticsAsync(string project, string? dotnetProject = null)
+    public Task<IReadOnlyList<ProjectDiagnosticEntity>> GetProjectDiagnosticsAsync(string repository, string? dotnetProject = null)
     {
         var results = _projectDiagnostics
-            .Where(d => d.Project == project && (dotnetProject is null || d.DotnetProject == dotnetProject))
+            .Where(d => d.Repository == repository && (dotnetProject is null || d.DotnetProject == dotnetProject))
             .OrderBy(d => d.FilePath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(d => d.LineStart ?? 0)
             .ThenBy(d => d.DiagnosticId, StringComparer.OrdinalIgnoreCase)
@@ -1454,10 +1454,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.CompletedTask;
     }
 
-    public Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string project, string projectName)
+    public Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string repository, string projectName)
     {
         var run = _projectReviewRuns
-            .Where(r => r.Project == project && r.ProjectName == projectName)
+            .Where(r => r.Repository == repository && r.ProjectName == projectName)
             .OrderByDescending(r => r.CreatedAt)
             .ThenByDescending(r => r.Id)
             .FirstOrDefault();
@@ -1575,66 +1575,66 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 .ThenBy(s => s.Id)
                 .ToList());
 
-    public Task UpsertSecurityFindingsBatchAsync(string project, IReadOnlyList<SecurityFindingEntity> findings)
+    public Task UpsertSecurityFindingsBatchAsync(string repository, IReadOnlyList<SecurityFindingEntity> findings)
     {
         _securityFindings.AddRange(findings);
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string project) =>
+    public Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string repository) =>
         Task.FromResult<IReadOnlyList<SecurityFindingEntity>>(
-            _securityFindings.Where(f => f.Project == project).ToList());
+            _securityFindings.Where(f => f.Repository == repository).ToList());
 
-    public Task UpsertProjectSecuritySummaryAsync(ProjectSecuritySummaryEntity summary)
+    public Task UpsertRepositorySecuritySummaryAsync(RepositorySecuritySummaryEntity summary)
     {
-        _securitySummaries[summary.Project] = summary;
+        _securitySummaries[summary.Repository] = summary;
         return Task.CompletedTask;
     }
 
-    public Task<ProjectSecuritySummaryEntity?> GetProjectSecuritySummaryAsync(string project) =>
-        Task.FromResult(_securitySummaries.GetValueOrDefault(project));
+    public Task<RepositorySecuritySummaryEntity?> GetRepositorySecuritySummaryAsync(string repository) =>
+        Task.FromResult(_securitySummaries.GetValueOrDefault(repository));
 
     // ── Cleanup operations ───────────────────────────────────────────────
 
-    public Task DeleteSyncStateAsync(string project)
+    public Task DeleteSyncStateAsync(string repository)
     {
-        _syncStates.Remove(project);
+        _syncStates.Remove(repository);
         return Task.CompletedTask;
     }
 
-    public Task DeleteAllEdgesForProjectAsync(string project)
+    public Task DeleteAllEdgesForRepositoryAsync(string repository)
     {
         _edges.RemoveAll(e =>
         {
             var sourceNode = _nodes.FirstOrDefault(n => n.Id == e.SourceId);
-            return sourceNode?.Project.Equals(project, StringComparison.OrdinalIgnoreCase) == true;
+            return sourceNode?.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) == true;
         });
         return Task.CompletedTask;
     }
 
-    public Task DeleteCrossRepoEdgesForProjectAsync(string project)
+    public Task DeleteCrossRepoEdgesForRepositoryAsync(string repository)
     {
         _crossEdges.RemoveAll(e =>
-            e.SourceProject.Equals(project, StringComparison.OrdinalIgnoreCase) ||
-            e.TargetProject.Equals(project, StringComparison.OrdinalIgnoreCase));
+            e.SourceRepository.Equals(repository, StringComparison.OrdinalIgnoreCase) ||
+            e.TargetRepository.Equals(repository, StringComparison.OrdinalIgnoreCase));
         return Task.CompletedTask;
     }
 
-    public Task DeleteAnalysisDataForProjectAsync(string project)
+    public Task DeleteAnalysisDataForRepositoryAsync(string repository)
     {
-        _batches.RemoveAll(b => b.Repo == project);
+        _batches.RemoveAll(b => b.Repo == repository);
         _batchRequests.RemoveAll(r => _batches.All(b => b.Id != r.BatchId));
-        _projectAnalyses.Keys.Where(k => k.Item1 == project).ToList()
+        _projectAnalyses.Keys.Where(k => k.Item1 == repository).ToList()
             .ForEach(k => _projectAnalyses.Remove(k));
-        _summaries.Remove(project);
-        _healthSummaries.RemoveAll(s => s.Project == project);
-        _healthAnalyses.RemoveAll(a => a.Project == project);
-        _projectDiagnostics.RemoveAll(d => d.Project == project);
-        var reviewRunIds = _projectReviewRuns.Where(r => r.Project == project).Select(r => r.Id).ToHashSet();
-        _projectReviewRuns.RemoveAll(r => r.Project == project);
+        _summaries.Remove(repository);
+        _healthSummaries.RemoveAll(s => s.Repository == repository);
+        _healthAnalyses.RemoveAll(a => a.Repository == repository);
+        _projectDiagnostics.RemoveAll(d => d.Repository == repository);
+        var reviewRunIds = _projectReviewRuns.Where(r => r.Repository == repository).Select(r => r.Id).ToHashSet();
+        _projectReviewRuns.RemoveAll(r => r.Repository == repository);
         _projectReviewFindings.RemoveAll(f => reviewRunIds.Contains(f.ReviewRunId));
-        _securityFindings.RemoveAll(f => f.Project == project);
-        _securitySummaries.Remove(project);
+        _securityFindings.RemoveAll(f => f.Repository == repository);
+        _securitySummaries.Remove(repository);
         return Task.CompletedTask;
     }
 
@@ -1651,7 +1651,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task<IReadOnlyList<RepoCluster>> GetRepoClustersAsync(int level = 0) =>
         Task.FromResult<IReadOnlyList<RepoCluster>>(
-            _repoClusters.Where(c => c.Level == level).OrderBy(c => c.ClusterId).ThenBy(c => c.ProjectName).ToList());
+            _repoClusters.Where(c => c.Level == level).OrderBy(c => c.ClusterId).ThenBy(c => c.RepositoryName).ToList());
 
     public Task<IReadOnlyList<RepoCluster>> GetRepoClusterMembersAsync(int clusterId, int level = 0) =>
         Task.FromResult<IReadOnlyList<RepoCluster>>(
@@ -1692,10 +1692,10 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(removed > 0);
     }
 
-    public Task<HashSet<string>> GetSecretFilePathsAsync(string project)
+    public Task<HashSet<string>> GetSecretFilePathsAsync(string repository)
     {
         var paths = _securityFindings
-            .Where(f => f.Project == project && f.Category == "secret" && f.FilePath is not null)
+            .Where(f => f.Repository == repository && f.Category == "secret" && f.FilePath is not null)
             .Select(f => f.FilePath!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return Task.FromResult(paths);

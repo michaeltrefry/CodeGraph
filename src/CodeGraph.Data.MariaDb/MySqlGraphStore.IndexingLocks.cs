@@ -10,13 +10,13 @@ public partial class MySqlGraphStore
 {
     private const int IndexingLockWaitSeconds = 600;
 
-    public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
-        string project,
+    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
+        string repository,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         var connection = await GetOpenConnectionAsync();
-        var lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(project)));
+        var lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(repository)));
 
         try
         {
@@ -28,7 +28,7 @@ public partial class MySqlGraphStore
                 commandTimeout: IndexingLockWaitSeconds + 30,
                 cancellationToken: ct));
             if (acquired != 1)
-                throw new TimeoutException($"Timed out waiting for the indexing lock for '{project}'.");
+                throw new TimeoutException($"Timed out waiting for the indexing lock for '{repository}'.");
 
             return new MariaDbIndexingLock(connection, lockName, logger);
         }

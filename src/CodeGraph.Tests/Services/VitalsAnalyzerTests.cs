@@ -47,7 +47,7 @@ public class VitalsAnalyzerTests
 
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Foo.cs",
@@ -66,7 +66,7 @@ public class VitalsAnalyzerTests
             [
                 new ProjectDiagnosticEntity
                 {
-                    Project = "TestProject",
+                    Repository = "TestProject",
                     DotnetProject = "TestProject.Api",
                     Source = "roslyn",
                     DiagnosticKey = "TestProject.Api|CS8602|src/Foo.cs|12|12|Possible null dereference",
@@ -129,7 +129,7 @@ public class VitalsAnalyzerTests
 
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Foo.cs",
@@ -141,7 +141,7 @@ public class VitalsAnalyzerTests
             [
                 new ProjectDiagnosticEntity
                 {
-                    Project = "TestProject",
+                    Repository = "TestProject",
                     DotnetProject = "TestProject.Api",
                     Source = "roslyn",
                     DiagnosticKey = "old",
@@ -190,7 +190,7 @@ public class VitalsAnalyzerTests
 
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Foo.cs",
@@ -199,7 +199,7 @@ public class VitalsAnalyzerTests
             });
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Bar.cs",
@@ -282,7 +282,7 @@ public class VitalsAnalyzerTests
 
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Foo.cs",
@@ -291,7 +291,7 @@ public class VitalsAnalyzerTests
             });
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Bar.cs",
@@ -333,7 +333,7 @@ public class VitalsAnalyzerTests
 
             store.AddNode(new GraphNode
             {
-                Project = "TestProject",
+                Repository = "TestProject",
                 DotnetProject = "TestProject.Api",
                 Label = NodeLabel.File,
                 Name = "Foo.cs",
@@ -592,7 +592,7 @@ public class VitalsAnalyzerTests
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
-            await pipeline.IndexProjectAsync("TestProject", repoPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("TestProject", repoPath, ct: CancellationToken.None);
             store.Nodes.Where(node => node.Label == NodeLabel.File).Select(node => node.FilePath)
                 .ShouldBe(expected, ignoreOrder: true);
 
@@ -705,7 +705,7 @@ public class VitalsAnalyzerTests
     {
         public int CallCount { get; private set; }
 
-        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default)
+        public Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default)
         {
             CallCount++;
             return Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
@@ -716,7 +716,7 @@ public class VitalsAnalyzerTests
     {
         public int CallCount { get; private set; }
 
-        public async Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default)
+        public async Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default)
         {
             CallCount++;
             await moveHead();
@@ -730,7 +730,7 @@ public class VitalsAnalyzerTests
     }
 
     /// <summary>
-    /// sc-25698: per-project health analyses ran their store reads and writes in parallel on the
+    /// sc-25698: per-repository health analyses ran their store reads and writes in parallel on the
     /// caller's scoped DbContext and failed with "A second operation was started on this context".
     /// </summary>
     [Fact]
@@ -742,7 +742,7 @@ public class VitalsAnalyzerTests
         {
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {
-                Project = "Demo",
+                Repository = "Demo",
                 DotnetProject = dotnetProject,
                 OverallHealth = 6.0,
                 TotalFiles = 1
@@ -751,7 +751,7 @@ public class VitalsAnalyzerTests
         await store.UpsertFileMetricsBatchAsync("Demo", dotnetProjects
             .Select(dotnetProject => new FileMetricsEntity
             {
-                Project = "Demo", DotnetProject = dotnetProject, FilePath = $"{dotnetProject}/A.cs"
+                Repository = "Demo", DotnetProject = dotnetProject, FilePath = $"{dotnetProject}/A.cs"
             })
             .ToList());
 
@@ -774,7 +774,7 @@ public class VitalsAnalyzerTests
 
     /// <summary>
     /// With no API key the hosted provider is never called (it would answer 401 once per
-    /// project); the step logs and returns without storing an analysis.
+    /// repository); the step logs and returns without storing an analysis.
     /// </summary>
     [Fact]
     public async Task AnalyzeHealthAsync_ProviderWithoutApiKey_SkipsWithoutCallingTheModel()
@@ -784,11 +784,11 @@ public class VitalsAnalyzerTests
         {
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {
-                Project = "Demo", DotnetProject = dotnetProject, OverallHealth = 6.0, TotalFiles = 1
+                Repository = "Demo", DotnetProject = dotnetProject, OverallHealth = 6.0, TotalFiles = 1
             });
         }
         await store.UpsertFileMetricsBatchAsync("Demo",
-            [new FileMetricsEntity { Project = "Demo", DotnetProject = "Demo.Api", FilePath = "Demo.Api/A.cs" }]);
+            [new FileMetricsEntity { Repository = "Demo", DotnetProject = "Demo.Api", FilePath = "Demo.Api/A.cs" }]);
         var options = new AnalysisOptions { DefaultProvider = "anthropic" };
         options.Anthropic.ApiKey = "";
         var handler = new CountingHandler();
@@ -866,8 +866,8 @@ public class VitalsAnalyzerTests
 
         public bool OverlapDetected { get; private set; }
 
-        public override Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string project, string? dotnetProject = null) =>
-            TrackAsync(() => base.GetFileMetricsAsync(project, dotnetProject));
+        public override Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(string repository, string? dotnetProject = null) =>
+            TrackAsync(() => base.GetFileMetricsAsync(repository, dotnetProject));
 
         public override Task UpsertProjectHealthAnalysisAsync(ProjectHealthAnalysisEntity analysis) =>
             TrackAsync(async () =>
@@ -894,7 +894,7 @@ public class VitalsAnalyzerTests
 
     private sealed class NoOpLintRunner : ILintRunner
     {
-        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default) =>
+        public Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
     }
 

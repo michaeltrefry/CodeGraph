@@ -13,9 +13,9 @@ public class DiagnosticDetailCache
     private readonly ConcurrentDictionary<string, IReadOnlyList<ProjectDiagnosticEntity>> _store = new(
         StringComparer.OrdinalIgnoreCase);
 
-    public void Set(string projectName, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+    public void Set(string repositoryName, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
     {
-        _store[projectName] = diagnostics.ToList();
+        _store[repositoryName] = diagnostics.ToList();
     }
 
     /// <summary>
@@ -23,10 +23,10 @@ public class DiagnosticDetailCache
     /// collected for the same repository. Shared projects can appear in more
     /// than one solution, so diagnostic keys are used to suppress duplicates.
     /// </summary>
-    public void Merge(string projectName, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+    public void Merge(string repositoryName, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
     {
         _store.AddOrUpdate(
-            projectName,
+            repositoryName,
             _ => diagnostics.ToList(),
             (_, existing) => existing
                 .Concat(diagnostics)
@@ -35,12 +35,12 @@ public class DiagnosticDetailCache
                 .ToList());
     }
 
-    public IReadOnlyList<ProjectDiagnosticEntity> Take(string projectName)
+    public IReadOnlyList<ProjectDiagnosticEntity> Take(string repositoryName)
     {
-        return _store.TryRemove(projectName, out var diagnostics)
+        return _store.TryRemove(repositoryName, out var diagnostics)
             ? diagnostics
             : [];
     }
 
-    public bool HasResults(string projectName) => _store.ContainsKey(projectName);
+    public bool HasResults(string repositoryName) => _store.ContainsKey(repositoryName);
 }

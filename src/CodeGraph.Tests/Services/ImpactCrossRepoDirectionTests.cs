@@ -9,9 +9,9 @@ using Shouldly;
 namespace CodeGraph.Tests.Services;
 
 /// <summary>
-/// Cross-repo edges only make the depended-upon end's project affected: a file that calls into
-/// another project's library has no dependents there, while callers and message consumers in other
-/// projects are dependents of the file. "App" calls into "Lib"; "Client" calls App; "Sub" consumes
+/// Cross-repo edges only make the depended-upon end's repository affected: a file that calls into
+/// another repository's library has no dependents there, while callers and message consumers in other
+/// repositories are dependents of the file. "App" calls into "Lib"; "Client" calls App; "Sub" consumes
 /// an event App publishes.
 /// </summary>
 public sealed class ImpactCrossRepoDirectionTests
@@ -23,7 +23,7 @@ public sealed class ImpactCrossRepoDirectionTests
 
     private readonly TraversingStore _store = new();
 
-    /// <summary>InMemoryGraphStore whose inbound traversal walks the intra-project edges.</summary>
+    /// <summary>InMemoryGraphStore whose inbound traversal walks the intra-repository edges.</summary>
     private sealed class TraversingStore : InMemoryGraphStore
     {
         public override async Task<IReadOnlyList<TraversalEntry>> TraverseAsync(long startNodeId,
@@ -48,12 +48,12 @@ public sealed class ImpactCrossRepoDirectionTests
         }
     }
 
-    private long Node(string project, string name, string file) => _store.AddNode(new GraphNode
+    private long Node(string repository, string name, string file) => _store.AddNode(new GraphNode
     {
-        Project = project,
+        Repository = repository,
         Label = NodeLabel.Function,
         Name = name,
-        QualifiedName = $"{project}:{file}:{name}",
+        QualifiedName = $"{repository}:{file}:{name}",
         FilePath = file
     });
 
@@ -72,17 +72,17 @@ public sealed class ImpactCrossRepoDirectionTests
 
         await _store.InsertCrossRepoEdgeBatchAsync(
         [
-            new CrossRepoEdge { SourceProject = App, TargetProject = Lib, SourceNodeId = adapter, TargetNodeId = catalog, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = App, TargetProject = Lib, SourceNodeId = adapter, TargetNodeId = route, Type = EdgeType.HTTP_CALLS },
-            new CrossRepoEdge { SourceProject = App, TargetProject = Lib, SourceNodeId = adapter, TargetNodeId = crate, Type = EdgeType.REFERENCES_PACKAGE },
-            new CrossRepoEdge { SourceProject = Client, TargetProject = App, SourceNodeId = client, TargetNodeId = serve, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = App, TargetProject = Sub, SourceNodeId = serve, TargetNodeId = handler, Type = EdgeType.PUBLISHES }
+            new CrossRepoEdge { SourceRepository = App, TargetRepository = Lib, SourceNodeId = adapter, TargetNodeId = catalog, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = App, TargetRepository = Lib, SourceNodeId = adapter, TargetNodeId = route, Type = EdgeType.HTTP_CALLS },
+            new CrossRepoEdge { SourceRepository = App, TargetRepository = Lib, SourceNodeId = adapter, TargetNodeId = crate, Type = EdgeType.REFERENCES_PACKAGE },
+            new CrossRepoEdge { SourceRepository = Client, TargetRepository = App, SourceNodeId = client, TargetNodeId = serve, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = App, TargetRepository = Sub, SourceNodeId = serve, TargetNodeId = handler, Type = EdgeType.PUBLISHES }
         ]);
         return new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
     }
 
     [Fact]
-    public async Task FileThatOnlyCallsAnotherProject_HasNoCrossRepoDependents()
+    public async Task FileThatOnlyCallsAnotherRepository_HasNoCrossRepoDependents()
     {
         var impact = await SeedAsync();
 
@@ -91,11 +91,11 @@ public sealed class ImpactCrossRepoDirectionTests
         report.AffectedNodes.ShouldBeEmpty();
         report.CrossRepoImpacts.ShouldBeEmpty();
         report.Summary.CriticalCount.ShouldBe(0);
-        report.Summary.AffectedProjects.ShouldBe([App]);
+        report.Summary.AffectedRepositories.ShouldBe([App]);
     }
 
     [Fact]
-    public async Task ConsumerOfAnotherProjectsEvent_HasNoCrossRepoDependents()
+    public async Task ConsumerOfAnotherRepositoriesEvent_HasNoCrossRepoDependents()
     {
         var impact = await SeedAsync();
 
@@ -114,31 +114,31 @@ public sealed class ImpactCrossRepoDirectionTests
         var report = (await impact.AnalyzeFileImpactAsync(App, "src/api.rs"))!;
 
         report.AffectedNodes
-            .Select(n => (n.Project, n.Name, n.Depth, n.EdgeType, n.Risk))
-            .OrderBy(n => n.Project)
+            .Select(n => (n.Repository, n.Name, n.Depth, n.EdgeType, n.Risk))
+            .OrderBy(n => n.Repository)
             .ShouldBe(
             [
                 (Client, "fetch", 1, "CALLS", RiskLevel.Critical),
                 (Sub, "on_ready", 1, "PUBLISHES", RiskLevel.Critical)
             ]);
-        // One row per dependent project: no TRANSITIVE duplicate for a direct dependent.
+        // One row per dependent repository: no TRANSITIVE duplicate for a direct dependent.
         report.CrossRepoImpacts
-            .Select(c => (c.SourceProject, c.TargetProject, c.EdgeType, c.AffectedNodeCount))
-            .OrderBy(c => c.SourceProject)
+            .Select(c => (c.SourceRepository, c.TargetRepository, c.EdgeType, c.AffectedNodeCount))
+            .OrderBy(c => c.SourceRepository)
             .ShouldBe([(App, Sub, "PUBLISHES", 1), (Client, App, "CALLS", 1)]);
         report.Summary.CrossRepoCount.ShouldBe(2);
     }
 
     [Fact]
-    public async Task ProjectThatCallsAndConsumes_CountsAsOneCrossRepoProject()
+    public async Task RepositoryThatCallsAndConsumes_CountsAsOneCrossRepoRepository()
     {
         var serve = Node(App, "serve", "src/api.rs");
         var fetch = Node(Client, "fetch", "src/main.rs");
         var onEvent = Node(Client, "on_ready", "src/events.rs");
         await _store.InsertCrossRepoEdgeBatchAsync(
         [
-            new CrossRepoEdge { SourceProject = Client, TargetProject = App, SourceNodeId = fetch, TargetNodeId = serve, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = App, TargetProject = Client, SourceNodeId = serve, TargetNodeId = onEvent, Type = EdgeType.PUBLISHES }
+            new CrossRepoEdge { SourceRepository = Client, TargetRepository = App, SourceNodeId = fetch, TargetNodeId = serve, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = App, TargetRepository = Client, SourceNodeId = serve, TargetNodeId = onEvent, Type = EdgeType.PUBLISHES }
         ]);
         var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
 
@@ -160,14 +160,14 @@ public sealed class ImpactCrossRepoDirectionTests
         var run = Node(Plugin, "run", "src/run.rs");
         var handle = Node(Rest, "handle", "src/handle.rs");
         var ext = Node(Ext, "main", "src/main.rs");
-        _store.AddEdge(new GraphEdge { Project = Plugin, SourceId = wrap, TargetId = entry, Type = EdgeType.CALLS });
-        _store.AddEdge(new GraphEdge { Project = Plugin, SourceId = run, TargetId = wrap, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Plugin, SourceId = wrap, TargetId = entry, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Plugin, SourceId = run, TargetId = wrap, Type = EdgeType.CALLS });
         await _store.InsertCrossRepoEdgeBatchAsync(
         [
-            new CrossRepoEdge { SourceProject = Plugin, TargetProject = Core, SourceNodeId = entry, TargetNodeId = parse, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = Rest, TargetProject = Core, SourceNodeId = handle, TargetNodeId = parse, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = Plugin, TargetProject = Rest, SourceNodeId = run, TargetNodeId = handle, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = Ext, TargetProject = Plugin, SourceNodeId = ext, TargetNodeId = run, Type = EdgeType.CALLS }
+            new CrossRepoEdge { SourceRepository = Plugin, TargetRepository = Core, SourceNodeId = entry, TargetNodeId = parse, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = Rest, TargetRepository = Core, SourceNodeId = handle, TargetNodeId = parse, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = Plugin, TargetRepository = Rest, SourceNodeId = run, TargetNodeId = handle, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = Ext, TargetRepository = Plugin, SourceNodeId = ext, TargetNodeId = run, Type = EdgeType.CALLS }
         ]);
         var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
 
@@ -190,22 +190,22 @@ public sealed class ImpactCrossRepoDirectionTests
         var top = Node(Top, "main", "src/main.rs");
         await _store.InsertCrossRepoEdgeBatchAsync(
         [
-            new CrossRepoEdge { SourceProject = Mid, TargetProject = Core, SourceNodeId = mid, TargetNodeId = core, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = Top, TargetProject = Mid, SourceNodeId = top, TargetNodeId = mid, Type = EdgeType.CALLS },
-            new CrossRepoEdge { SourceProject = Core, TargetProject = Mid, SourceNodeId = helper, TargetNodeId = mid, Type = EdgeType.CALLS }
+            new CrossRepoEdge { SourceRepository = Mid, TargetRepository = Core, SourceNodeId = mid, TargetNodeId = core, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = Top, TargetRepository = Mid, SourceNodeId = top, TargetNodeId = mid, Type = EdgeType.CALLS },
+            new CrossRepoEdge { SourceRepository = Core, TargetRepository = Mid, SourceNodeId = helper, TargetNodeId = mid, Type = EdgeType.CALLS }
         ]);
         var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
 
         var report = (await impact.AnalyzeFileImpactAsync(Core, "src/parse.rs"))!;
 
         report.AffectedNodes
-            .Select(n => (n.Project, n.Name, n.Depth))
-            .OrderBy(n => n.Depth).ThenBy(n => n.Project)
+            .Select(n => (n.Repository, n.Name, n.Depth))
+            .OrderBy(n => n.Depth).ThenBy(n => n.Repository)
             .ShouldBe([(Mid, "load", 1), (Core, "helper", 2), (Top, "main", 2)]);
         // Mid→Core is fetched for both Core and Mid but counted once.
         report.CrossRepoImpacts
-            .Select(c => (c.SourceProject, c.TargetProject, c.EdgeType, c.AffectedNodeCount))
-            .OrderBy(c => c.SourceProject)
+            .Select(c => (c.SourceRepository, c.TargetRepository, c.EdgeType, c.AffectedNodeCount))
+            .OrderBy(c => c.SourceRepository)
             .ShouldBe([(Core, Top, "TRANSITIVE", 1), (Mid, Core, "CALLS", 1)]);
 
         var oneHop = (await impact.AnalyzeFileImpactAsync(Core, "src/parse.rs", maxDepth: 1))!;

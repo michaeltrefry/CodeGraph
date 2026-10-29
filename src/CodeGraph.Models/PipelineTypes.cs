@@ -21,13 +21,13 @@ public record ExtractionResult
     public IReadOnlyList<UnresolvedImport> UnresolvedImports { get; init; } = [];
 
     /// <summary>
-    /// Repository-relative files that a project-level analyzer completed successfully.
+    /// Repository-relative files that a repository-level analyzer completed successfully.
     /// Incremental indexing uses this to avoid advancing a hash for a partial result.
     /// </summary>
     public IReadOnlyList<string> ProcessedFiles { get; init; } = [];
 
     /// <summary>
-    /// Optional metadata about the project detected by the extractor.
+    /// Optional metadata about the repository detected by the extractor.
     /// Only set by project-level analyzers (SolutionAnalyzer, TypeScriptProjectAnalyzer).
     /// </summary>
     public ProjectMetadata? Metadata { get; init; }

@@ -236,7 +236,7 @@ public sealed class StandaloneIndexerOperationsService(
                 IndexerRunOperations.BranchOverlay,
                 NormalizeUsername(username),
                 overlay.Id.ToString(),
-                $"Queued branch overlay {overlay.Id} for {overlay.Project}@{overlay.RequestedRef}.",
+                $"Queued branch overlay {overlay.Id} for {overlay.Repository}@{overlay.RequestedRef}.",
                 JsonSerializer.Serialize(new BranchOverlayIndexerRunArgs(overlay.Id), JsonOptions),
                 submissionKey: null,
                 CancellationToken.None);

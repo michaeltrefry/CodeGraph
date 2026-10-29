@@ -105,7 +105,7 @@ public partial class MySqlGraphStore
                 COALESCE(SUM(CASE WHEN n.label = 'StoredProcedure' THEN 1 ELSE 0 END), 0) AS ProcedureCount
             FROM paged_schemas p
             LEFT JOIN nodes n
-                ON n.project = p.name
+                ON n.repository = p.name
                 AND n.label IN ('Table', 'View', 'StoredProcedure')
             GROUP BY
                 p.name, p.repo_url, p.gitlab_group, p.local_path, p.last_commit_sha,
@@ -132,7 +132,7 @@ public partial class MySqlGraphStore
                 COALESCE(SUM(CASE WHEN n.label = 'StoredProcedure' THEN 1 ELSE 0 END), 0) AS TotalProcedures
             FROM filtered_schemas f
             LEFT JOIN nodes n
-                ON n.project = f.name
+                ON n.repository = f.name
                 AND n.label IN ('Table', 'View', 'StoredProcedure')
             """;
         var totals = await connection.QuerySingleAsync<SchemaRepositoryTotals>(totalsSql, parameters, transaction);
@@ -159,7 +159,7 @@ public partial class MySqlGraphStore
         var databases = (await connection.QueryAsync<string>(databasesSql, parameters, transaction)).ToList();
 
         var items = pageRows.Select(row => new SchemaRepositoryItem(
-            new ProjectInfo(
+            new RepositoryInfo(
                 row.Name,
                 row.RepoUrl,
                 row.SourceGroup,

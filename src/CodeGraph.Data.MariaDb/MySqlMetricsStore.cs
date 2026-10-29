@@ -5,7 +5,7 @@ namespace CodeGraph.Data.MariaDb;
 
 public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
 {
-    public async Task UpsertFileMetricsBatchAsync(string project, IReadOnlyList<FileMetricsEntity> metrics)
+    public async Task UpsertFileMetricsBatchAsync(string repository, IReadOnlyList<FileMetricsEntity> metrics)
     {
         if (metrics.Count == 0)
         {
@@ -15,9 +15,9 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         foreach (var metric in metrics)
         {
             var existing = await db.FileMetrics
-                .FirstOrDefaultAsync(m => m.Project == project && m.FilePath == metric.FilePath);
+                .FirstOrDefaultAsync(m => m.Repository == repository && m.FilePath == metric.FilePath);
 
-            metric.Project = project;
+            metric.Repository = repository;
 
             if (existing is null)
             {
@@ -62,9 +62,9 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
     }
 
     public async Task<IReadOnlyList<FileMetricsEntity>> GetFileMetricsAsync(
-        string project, string? dotnetProject = null)
+        string repository, string? dotnetProject = null)
     {
-        var query = db.FileMetrics.AsNoTracking().Where(m => m.Project == project);
+        var query = db.FileMetrics.AsNoTracking().Where(m => m.Repository == repository);
 
         if (dotnetProject is not null)
         {
@@ -74,26 +74,26 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         return await query.OrderBy(m => m.FilePath).ToListAsync();
     }
 
-    public async Task<FileMetricsEntity?> GetFileMetricAsync(string project, string filePath)
+    public async Task<FileMetricsEntity?> GetFileMetricAsync(string repository, string filePath)
     {
         // file_path uses a case-insensitive collation; repository paths are case-sensitive.
         var candidates = await db.FileMetrics.AsNoTracking()
-            .Where(m => m.Project == project && m.FilePath == filePath)
+            .Where(m => m.Repository == repository && m.FilePath == filePath)
             .ToListAsync();
         return candidates.FirstOrDefault(m => string.Equals(m.FilePath, filePath, StringComparison.Ordinal));
     }
 
-    public async Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string project, int top = 10)
+    public async Task<IReadOnlyList<FileMetricsEntity>> GetHotspotsAsync(string repository, int top = 10)
         => await db.FileMetrics.AsNoTracking()
-            .Where(m => m.Project == project)
+            .Where(m => m.Repository == repository)
             .OrderByDescending(m => m.RiskScore)
             .ThenByDescending(m => m.HealthScore)
             .Take(top)
             .ToListAsync();
 
-    public async Task DeleteFileMetricsAsync(string project)
+    public async Task DeleteFileMetricsAsync(string repository)
     {
-        var metrics = await db.FileMetrics.Where(m => m.Project == project).ToListAsync();
+        var metrics = await db.FileMetrics.Where(m => m.Repository == repository).ToListAsync();
         db.FileMetrics.RemoveRange(metrics);
         await db.SaveChangesAsync();
     }
@@ -103,7 +103,7 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         summary.DotnetProject = NormalizeDotnetProject(summary.DotnetProject);
 
         var existing = await db.ProjectHealthSummaries.FirstOrDefaultAsync(h =>
-            h.Project == summary.Project && h.DotnetProject == summary.DotnetProject);
+            h.Repository == summary.Repository && h.DotnetProject == summary.DotnetProject);
 
         if (existing is null)
         {
@@ -122,9 +122,9 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         await db.SaveChangesAsync();
     }
 
-    public async Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project)
+    public async Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string repository)
         => await db.ProjectHealthSummaries.AsNoTracking()
-            .Where(h => h.Project == project)
+            .Where(h => h.Repository == repository)
             .OrderBy(h => h.DotnetProject)
             .ToListAsync();
 
@@ -139,7 +139,7 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         analysis.DotnetProject = NormalizeDotnetProject(analysis.DotnetProject);
 
         var existing = await db.ProjectHealthAnalyses.FirstOrDefaultAsync(h =>
-            h.Project == analysis.Project && h.DotnetProject == analysis.DotnetProject);
+            h.Repository == analysis.Repository && h.DotnetProject == analysis.DotnetProject);
 
         if (existing is null)
         {
@@ -156,20 +156,20 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         await db.SaveChangesAsync();
     }
 
-    public async Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string project)
+    public async Task<IReadOnlyList<ProjectHealthAnalysisEntity>> GetProjectHealthAnalysesAsync(string repository)
         => await db.ProjectHealthAnalyses.AsNoTracking()
-            .Where(h => h.Project == project)
+            .Where(h => h.Repository == repository)
             .OrderBy(h => h.DotnetProject)
             .ToListAsync();
 
-    public async Task DeleteSecurityFindingsAsync(string project)
+    public async Task DeleteSecurityFindingsAsync(string repository)
     {
-        var findings = await db.SecurityFindings.Where(f => f.Project == project).ToListAsync();
+        var findings = await db.SecurityFindings.Where(f => f.Repository == repository).ToListAsync();
         db.SecurityFindings.RemoveRange(findings);
         await db.SaveChangesAsync();
     }
 
-    public async Task UpsertSecurityFindingsBatchAsync(string project, IReadOnlyList<SecurityFindingEntity> findings)
+    public async Task UpsertSecurityFindingsBatchAsync(string repository, IReadOnlyList<SecurityFindingEntity> findings)
     {
         if (findings.Count == 0)
         {
@@ -178,16 +178,16 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
 
         foreach (var finding in findings)
         {
-            finding.Project = project;
+            finding.Repository = repository;
         }
 
         db.SecurityFindings.AddRange(findings);
         await db.SaveChangesAsync();
     }
 
-    public async Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string project)
+    public async Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string repository)
         => await db.SecurityFindings.AsNoTracking()
-            .Where(f => f.Project == project)
+            .Where(f => f.Repository == repository)
             .OrderBy(f => f.Severity == "critical" ? 0 :
                 f.Severity == "high" ? 1 :
                 f.Severity == "medium" ? 2 :
@@ -195,13 +195,13 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
             .ThenBy(f => f.FilePath)
             .ToListAsync();
 
-    public async Task UpsertProjectSecuritySummaryAsync(ProjectSecuritySummaryEntity summary)
+    public async Task UpsertRepositorySecuritySummaryAsync(RepositorySecuritySummaryEntity summary)
     {
-        var existing = await db.ProjectSecuritySummaries.FirstOrDefaultAsync(s => s.Project == summary.Project);
+        var existing = await db.RepositorySecuritySummaries.FirstOrDefaultAsync(s => s.Repository == summary.Repository);
 
         if (existing is null)
         {
-            db.ProjectSecuritySummaries.Add(summary);
+            db.RepositorySecuritySummaries.Add(summary);
         }
         else
         {
@@ -217,8 +217,8 @@ public class MySqlMetricsStore(CodeGraphDbContext db) : IMetricsStore
         await db.SaveChangesAsync();
     }
 
-    public async Task<ProjectSecuritySummaryEntity?> GetProjectSecuritySummaryAsync(string project)
-        => await db.ProjectSecuritySummaries.AsNoTracking().FirstOrDefaultAsync(s => s.Project == project);
+    public async Task<RepositorySecuritySummaryEntity?> GetRepositorySecuritySummaryAsync(string repository)
+        => await db.RepositorySecuritySummaries.AsNoTracking().FirstOrDefaultAsync(s => s.Repository == repository);
 
     private static string NormalizeDotnetProject(string? dotnetProject)
         => string.IsNullOrWhiteSpace(dotnetProject) ? "" : dotnetProject;

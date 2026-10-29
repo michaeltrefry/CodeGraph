@@ -14,17 +14,17 @@ public class InMemoryGraphStoreNewMethodsTests
     {
         var id1 = _store.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "A", QualifiedName = "P.A"
         });
         var id2 = _store.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "B", QualifiedName = "P.B"
         });
         var id3 = _store.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "C", QualifiedName = "P.C"
         });
 
@@ -47,7 +47,7 @@ public class InMemoryGraphStoreNewMethodsTests
     {
         var id1 = _store.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "A", QualifiedName = "P.A"
         });
 
@@ -62,23 +62,23 @@ public class InMemoryGraphStoreNewMethodsTests
     {
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Services",
+            Repository = "P", DotnetProject = "P.Services",
             Label = NodeLabel.Class, Name = "A", QualifiedName = "P.A"
         });
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Services",
+            Repository = "P", DotnetProject = "P.Services",
             Label = NodeLabel.Method, Name = "B", QualifiedName = "P.B"
         });
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Models",
+            Repository = "P", DotnetProject = "P.Models",
             Label = NodeLabel.Class, Name = "C", QualifiedName = "P.C"
         });
         // No dotnet_project — should be excluded
         _store.AddNode(new GraphNode
         {
-            Project = "P", Label = NodeLabel.Class,
+            Repository = "P", Label = NodeLabel.Class,
             Name = "D", QualifiedName = "P.D"
         });
 
@@ -95,12 +95,12 @@ public class InMemoryGraphStoreNewMethodsTests
     {
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Services",
+            Repository = "P", DotnetProject = "P.Services",
             Label = NodeLabel.Class, Name = "A", QualifiedName = "P.A"
         });
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Models",
+            Repository = "P", DotnetProject = "P.Models",
             Label = NodeLabel.Class, Name = "B", QualifiedName = "P.B"
         });
 
@@ -115,12 +115,12 @@ public class InMemoryGraphStoreNewMethodsTests
     {
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Services",
+            Repository = "P", DotnetProject = "P.Services",
             Label = NodeLabel.Class, Name = "A", QualifiedName = "P.A"
         });
         _store.AddNode(new GraphNode
         {
-            Project = "P", DotnetProject = "P.Models",
+            Repository = "P", DotnetProject = "P.Models",
             Label = NodeLabel.Class, Name = "B", QualifiedName = "P.B"
         });
 
@@ -134,13 +134,13 @@ public class InMemoryGraphStoreNewMethodsTests
     {
         await _store.UpsertSyncStateAsync(new SyncStateEntity
         {
-            Project = "P1",
+            Repository = "P1",
             LastCommitSha = "abc",
             Status = "idle"
         });
         await _store.UpsertSyncStateAsync(new SyncStateEntity
         {
-            Project = "P2",
+            Repository = "P2",
             LastCommitSha = "def",
             Status = "idle"
         });

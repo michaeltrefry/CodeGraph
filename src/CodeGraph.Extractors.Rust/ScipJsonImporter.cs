@@ -54,7 +54,7 @@ public static partial class ScipJsonImporter
         {
             var document = rustDocument.Element;
             var relativePath = rustDocument.RelativePath;
-            var fileQN = $"{context.ProjectName}:{relativePath}";
+            var fileQN = $"{context.RepositoryName}:{relativePath}";
             var definitions = new List<DefinitionNode>();
             string[]? documentLines = null;
             definitionsByDocument[relativePath] = definitions;
@@ -84,7 +84,7 @@ public static partial class ScipJsonImporter
                 if (label is null)
                     continue;
 
-                var qualifiedName = ResolveQualifiedName(context.ProjectName, relativePath, symbol);
+                var qualifiedName = ResolveQualifiedName(context.RepositoryName, relativePath, symbol);
                 if (knownNodes.ContainsKey(qualifiedName))
                     continue;
 
@@ -94,7 +94,7 @@ public static partial class ScipJsonImporter
 
                 var node = new GraphNode
                 {
-                    Project = context.ProjectName,
+                    Repository = context.RepositoryName,
                     Label = label.Value,
                     Name = name,
                     QualifiedName = qualifiedName,
@@ -148,7 +148,7 @@ public static partial class ScipJsonImporter
         {
             var document = rustDocument.Element;
             var relativePath = rustDocument.RelativePath;
-            var fileQN = $"{context.ProjectName}:{relativePath}";
+            var fileQN = $"{context.RepositoryName}:{relativePath}";
             var definitions = definitionsByDocument.GetValueOrDefault(relativePath) ?? [];
 
             if (!TryGetProperty(document, "occurrences", out var occurrences) ||
@@ -170,7 +170,7 @@ public static partial class ScipJsonImporter
                 if (!TryReadSymbolRange(occurrence, out var occurrenceRange))
                     continue;
 
-                var targetQN = ResolveQualifiedName(context.ProjectName, relativePath, symbol);
+                var targetQN = ResolveQualifiedName(context.RepositoryName, relativePath, symbol);
                 GraphNode targetNode;
                 if (knownNodes.TryGetValue(targetQN, out var localTarget))
                 {
@@ -196,7 +196,7 @@ public static partial class ScipJsonImporter
                 var source = FindInnermostDefinition(definitions, occurrenceRange)
                     ?? new DefinitionNode(new GraphNode
                     {
-                        Project = context.ProjectName,
+                        Repository = context.RepositoryName,
                         Label = NodeLabel.File,
                         Name = Path.GetFileName(relativePath),
                         QualifiedName = fileQN,
@@ -222,7 +222,7 @@ public static partial class ScipJsonImporter
 
         foreach (var (symbol, info) in symbolInfos)
         {
-            if (knownNodes.TryGetValue(ToQualifiedName(context.ProjectName, symbol), out var definition))
+            if (knownNodes.TryGetValue(ToQualifiedName(context.RepositoryName, symbol), out var definition))
                 AddImplementationEdges(definition.Node, info);
         }
 
@@ -231,7 +231,7 @@ public static partial class ScipJsonImporter
             foreach (var (symbol, info) in infos)
             {
                 if (knownNodes.TryGetValue(
-                        ToLocalQualifiedName(context.ProjectName, relativePath, symbol), out var definition))
+                        ToLocalQualifiedName(context.RepositoryName, relativePath, symbol), out var definition))
                 {
                     AddImplementationEdges(definition.Node, info);
                 }
@@ -256,7 +256,7 @@ public static partial class ScipJsonImporter
 
                 // A local target resolves only within the implementing symbol's own document.
                 var targetQN = ResolveQualifiedName(
-                    context.ProjectName, sourceNode.FilePath ?? "", relationship.Symbol);
+                    context.RepositoryName, sourceNode.FilePath ?? "", relationship.Symbol);
                 if (!knownNodes.ContainsKey(targetQN))
                 {
                     if (IsLocalSymbol(relationship.Symbol))
@@ -383,7 +383,7 @@ public static partial class ScipJsonImporter
         Dictionary<string, GraphNode> externalNodes,
         List<GraphNode> nodes)
     {
-        var qualifiedName = ToExternalQualifiedName(context.ProjectName, symbol);
+        var qualifiedName = ToExternalQualifiedName(context.RepositoryName, symbol);
         if (externalNodes.TryGetValue(qualifiedName, out var existing))
             return existing;
 
@@ -407,7 +407,7 @@ public static partial class ScipJsonImporter
 
         var node = new GraphNode
         {
-            Project = context.ProjectName,
+            Repository = context.RepositoryName,
             Label = NodeLabel.ExternalSymbol,
             Name = name,
             QualifiedName = qualifiedName,
@@ -678,16 +678,16 @@ public static partial class ScipJsonImporter
             edges.Add(edge);
     }
 
-    private static string ToQualifiedName(string projectName, string symbol) =>
-        $"{projectName}:scip:{symbol}";
+    private static string ToQualifiedName(string repositoryName, string symbol) =>
+        $"{repositoryName}:scip:{symbol}";
 
-    private static string ToLocalQualifiedName(string projectName, string relativePath, string symbol) =>
-        $"{projectName}:scip-local:{relativePath}:{symbol}";
+    private static string ToLocalQualifiedName(string repositoryName, string relativePath, string symbol) =>
+        $"{repositoryName}:scip-local:{relativePath}:{symbol}";
 
-    private static string ResolveQualifiedName(string projectName, string relativePath, string symbol) =>
+    private static string ResolveQualifiedName(string repositoryName, string relativePath, string symbol) =>
         IsLocalSymbol(symbol)
-            ? ToLocalQualifiedName(projectName, relativePath, symbol)
-            : ToQualifiedName(projectName, symbol);
+            ? ToLocalQualifiedName(repositoryName, relativePath, symbol)
+            : ToQualifiedName(repositoryName, symbol);
 
     private static bool IsLocalSymbol(string symbol) =>
         symbol.StartsWith(LocalSymbolPrefix, StringComparison.Ordinal);
@@ -696,8 +696,8 @@ public static partial class ScipJsonImporter
     private static string SymbolProperty(string symbol) =>
         IsLocalSymbol(symbol) ? "scip_local_symbol" : "scip_symbol";
 
-    private static string ToExternalQualifiedName(string projectName, string symbol) =>
-        $"{projectName}:scip-external:{symbol}";
+    private static string ToExternalQualifiedName(string repositoryName, string symbol) =>
+        $"{repositoryName}:scip-external:{symbol}";
 
     private static string DeriveDisplayName(string symbol)
     {

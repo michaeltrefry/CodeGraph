@@ -11,7 +11,7 @@ namespace CodeGraph.Tests.Services;
 public class CodeGraphMcpServerTests
 {
     [Fact]
-    public async Task SearchProjects_ReturnsRepoUrlsAndSupportsPartialSearch()
+    public async Task SearchRepositories_ReturnsRepoUrlsAndSupportsPartialSearch()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -29,9 +29,9 @@ public class CodeGraphMcpServerTests
         });
         var sut = CreateServer(store);
 
-        var markdown = await sut.SearchProjects("Graph");
+        var markdown = await sut.SearchRepositories("Graph");
 
-        markdown.ShouldContain("## Indexed Projects (1)");
+        markdown.ShouldContain("## Indexed Repositories (1)");
         markdown.ShouldContain("- **CodeGraph** [C#, ASP.NET Web API] (indexed: 2026-05-01 12:30)");
         markdown.ShouldContain("  Repo: https://github.com/example/codegraph.git");
         markdown.ShouldNotContain("DateAndRate");
@@ -42,7 +42,7 @@ public class CodeGraphMcpServerTests
     /// add every other language with at least 10% of the non-blank LOC or at least 50 files.
     /// </summary>
     [Fact]
-    public async Task SearchProjects_TagsOtherSignificantLanguagesFromLanguageStats()
+    public async Task SearchRepositories_TagsOtherSignificantLanguagesFromLanguageStats()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -63,17 +63,17 @@ public class CodeGraphMcpServerTests
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "LensPlain", Language = "Rust" });
         var sut = CreateServer(store);
 
-        var markdown = await sut.SearchProjects("Lens");
+        var markdown = await sut.SearchRepositories("Lens");
 
         markdown.ShouldContain("- **LensWorks** [Rust, TypeScript, Swift, Cargo]");
         markdown.ShouldContain("- **LensPlain** [Rust]");
 #pragma warning disable CS0618
-        (await sut.ListProjects()).ShouldContain("- **LensWorks** [Rust, TypeScript, Swift, Cargo]");
+        (await sut.ListRepositories()).ShouldContain("- **LensWorks** [Rust, TypeScript, Swift, Cargo]");
 #pragma warning restore CS0618
     }
 
     [Fact]
-    public async Task SearchProjects_SupportsWildcardSearch()
+    public async Task SearchRepositories_SupportsWildcardSearch()
     {
         var store = new InMemoryGraphStore();
         await store.UpsertRepositoryAsync(new RepositoryEntity
@@ -93,23 +93,23 @@ public class CodeGraphMcpServerTests
         });
         var sut = CreateServer(store);
 
-        var markdown = await sut.SearchProjects("Code*");
+        var markdown = await sut.SearchRepositories("Code*");
 
-        markdown.ShouldContain("## Indexed Projects (2)");
+        markdown.ShouldContain("## Indexed Repositories (2)");
         markdown.ShouldContain("CodeGraph");
         markdown.ShouldContain("CodeFlow");
         markdown.ShouldNotContain("DateAndRate");
     }
 
     [Fact]
-    public void ListProjects_IsMarkedObsolete()
+    public void ListRepositories_IsMarkedObsolete()
     {
         var obsolete = typeof(CodeGraphMcpServer)
-            .GetMethod(nameof(CodeGraphMcpServer.ListProjects))!
+            .GetMethod(nameof(CodeGraphMcpServer.ListRepositories))!
             .GetCustomAttribute<ObsoleteAttribute>();
 
         obsolete.ShouldNotBeNull();
-        obsolete.Message.ShouldBe("Use search_projects instead.");
+        obsolete.Message.ShouldBe("Use search_repositories instead.");
     }
 
     private static CodeGraphMcpServer CreateServer(IGraphStore store) =>

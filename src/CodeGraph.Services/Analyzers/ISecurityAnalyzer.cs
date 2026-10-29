@@ -4,5 +4,5 @@ namespace CodeGraph.Services.Analyzers;
 
 public interface ISecurityAnalyzer
 {
-    Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default);
+    Task<SecurityScanResult> ScanAsync(string repositoryName, string repoPath, CancellationToken ct = default);
 }

@@ -14,18 +14,18 @@ public partial class GraphAssistant
             {
                 ["namePattern"] = Prop("string", "Name pattern to search for (use % as wildcard)"),
                 ["label"]       = PropEnum("Filter by node type", "Class","Method","Route","Service","Event","Queue","Table","Interface","Enum","Component","Job","NuGetPackage","Package","ExternalSymbol"),
-                ["project"]     = Prop("string", "Filter by project/repository name"),
+                ["repository"]     = Prop("string", "Filter by repository name"),
                 ["limit"]       = Prop("integer", "Max results (default 20)")
             },
             ["namePattern"]),
 
         new(
-            "list_projects",
-            "Obsolete. Use search_projects instead. Lists indexed repositories without git repository URLs.",
+            "list_repositories",
+            "Obsolete. Use search_repositories instead. Lists indexed repositories without git repository URLs.",
             new Dictionary<string, JsonElement>(), []),
 
         new(
-            "search_projects",
+            "search_repositories",
             "Search indexed repositories by partial or wildcard name with metadata including git repository URL.",
             new Dictionary<string, JsonElement>
             {
@@ -41,9 +41,9 @@ public partial class GraphAssistant
             "Get the natural-language description of a repository — what it does, its endpoints, dependencies.",
             new Dictionary<string, JsonElement>
             {
-                ["project"] = Prop("string", "Project/repository name")
+                ["repository"] = Prop("string", "Repository name")
             },
-            ["project"]),
+            ["repository"]),
 
         new(
             "trace_call_path",
@@ -53,7 +53,7 @@ public partial class GraphAssistant
                 ["functionName"] = Prop("string", "Function or method name to trace"),
                 ["direction"]    = PropEnum("Trace direction", "inbound", "outbound", "both"),
                 ["depth"]        = Prop("integer", "How many levels deep (default 3)"),
-                ["project"]      = Prop("string", "Filter by project")
+                ["repository"]      = Prop("string", "Filter by repository")
             },
             ["functionName"]),
 
@@ -63,7 +63,7 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>
             {
                 ["modelName"] = Prop("string", "Model/DTO/event class name to trace"),
-                ["project"]   = Prop("string", "Filter by project")
+                ["repository"]   = Prop("string", "Filter by repository")
             },
             ["modelName"]),
 
@@ -73,7 +73,7 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>
             {
                 ["name"]    = Prop("string", "Event, endpoint, or model name"),
-                ["project"] = Prop("string", "Filter by project")
+                ["repository"] = Prop("string", "Filter by repository")
             },
             ["name"]),
 
@@ -83,18 +83,18 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>
             {
                 ["name"]    = Prop("string", "Queue, exchange, or event name"),
-                ["project"] = Prop("string", "Filter by project")
+                ["repository"] = Prop("string", "Filter by repository")
             },
             ["name"]),
 
         new(
             "get_architecture",
-            "Get architecture overview for a project — node counts, hotspots, most implemented/inherited types, external package dependencies (NuGet/Cargo/SwiftPM), cross-repo dependencies.",
+            "Get architecture overview for a repository — node counts, hotspots, most implemented/inherited types, external package dependencies (NuGet/Cargo/SwiftPM), cross-repo dependencies.",
             new Dictionary<string, JsonElement>
             {
-                ["project"] = Prop("string", "Project name")
+                ["repository"] = Prop("string", "Repository name")
             },
-            ["project"]),
+            ["repository"]),
 
         new(
             "find_archival_candidates",
@@ -102,14 +102,14 @@ public partial class GraphAssistant
             new Dictionary<string, JsonElement>(), []),
 
         new(
-            "get_project_health",
-            "Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files, and per-project breakdowns.",
+            "get_repository_health",
+            "Get health scores, file-level hotspots, and AI-generated health analysis for a repository. Shows overall health (1-10), hotspot files, and per-repository breakdowns.",
             new Dictionary<string, JsonElement>
             {
-                ["project"]     = Prop("string", "Project/repository name"),
+                ["repository"]     = Prop("string", "Repository name"),
                 ["topHotspots"] = Prop("integer", "Number of top hotspot files to return (default 10)")
             },
-            ["project"]),
+            ["repository"]),
 
         new(
             "get_fleet_health",
@@ -132,15 +132,15 @@ public partial class GraphAssistant
 
         new(
             "get_code_snippet",
-            "Read source code from a repository file by project name and file path. Use when you know the file path but not a specific node ID.",
+            "Read source code from a repository file by repository name and file path. Use when you know the file path but not a specific node ID.",
             new Dictionary<string, JsonElement>
             {
-                ["project"]   = Prop("string", "Project/repository name"),
+                ["repository"]   = Prop("string", "Repository name"),
                 ["filePath"]  = Prop("string", "File path relative to repo root"),
                 ["startLine"] = Prop("integer", "Start line (0 for beginning)"),
                 ["endLine"]   = Prop("integer", "End line (0 for entire file)")
             },
-            ["project", "filePath"]),
+            ["repository", "filePath"]),
 
         new(
             "get_graph_schema",
@@ -154,7 +154,7 @@ public partial class GraphAssistant
 
         new(
             "get_convention",
-            "Read a convention document by slug. Conventions describe patterns like gateway calls, messaging, project structure, and other standards. Call list_conventions first to see available documents.",
+            "Read a convention document by slug. Conventions describe patterns like gateway calls, messaging, repository structure, and other standards. Call list_conventions first to see available documents.",
             new Dictionary<string, JsonElement>
             {
                 ["name"] = Prop("string", "Convention slug (e.g., 'gateway-pattern', 'messaging-pattern')")

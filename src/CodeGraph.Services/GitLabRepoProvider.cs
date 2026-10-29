@@ -25,24 +25,24 @@ public class GitLabRepoProvider(
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
     };
 
-    public async Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
+    public async Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default)
     {
         var url = $"{_gitLab.BaseUrl.TrimEnd('/')}/api/v4/projects?archived=false&order_by=last_activity_at&";
-        return await RequestProjects(url, ct);
+        return await RequestRepositories(url, ct);
     }
 
-    public async Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
+    public async Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default)
     {
         var url = $"{_gitLab.BaseUrl.TrimEnd('/')}/api/v4/search?scope=projects&search={searchTerm}&order_by=created_at&";
-        return await RequestProjects(url, ct);
+        return await RequestRepositories(url, ct);
     }
 
-    private async Task<List<DiscoveredProject>> RequestProjects(string baseUrl, CancellationToken ct = default)
+    private async Task<List<DiscoveredRepository>> RequestRepositories(string baseUrl, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_gitLab.PrivateToken))
             throw new InvalidOperationException("RepositorySource:GitLab:PrivateToken is not configured.");
 
-        var allProjects = new List<DiscoveredProject>();
+        var allRepositories = new List<DiscoveredRepository>();
         var page = 1;
         const int perPage = 25;
 
@@ -56,11 +56,11 @@ public class GitLabRepoProvider(
             using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
-            var projects = await response.Content.ReadFromJsonAsync<List<GitLabProjectDto>>(JsonOptions, ct);
-            if (projects is null || projects.Count == 0)
+            var repositories = await response.Content.ReadFromJsonAsync<List<GitLabProjectDto>>(JsonOptions, ct);
+            if (repositories is null || repositories.Count == 0)
                 break;
 
-            foreach (var p in projects)
+            foreach (var p in repositories)
             {
                 var namespacePath = p.PathWithNamespace ?? "";
                 var lastSlash = namespacePath.LastIndexOf('/');
@@ -69,11 +69,11 @@ public class GitLabRepoProvider(
                 var exclusionType = await exclusionService.GetExclusionTypeAsync(p.Name ?? "", sourceGroup);
                 if (exclusionType == "complete")
                 {
-                    logger.LogDebug("Skipping {Project} (excluded: complete)", p.PathWithNamespace);
+                    logger.LogDebug("Skipping {Repository} (excluded: complete)", p.PathWithNamespace);
                     continue;
                 }
 
-                allProjects.Add(new DiscoveredProject(
+                allRepositories.Add(new DiscoveredRepository(
                     p.Id,
                     p.Name ?? "",
                     p.PathWithNamespace ?? "",
@@ -91,9 +91,9 @@ public class GitLabRepoProvider(
             page = nextPage;
         }
 
-        logger.LogInformation("Discovered {Count} projects from GitLab", allProjects.Count);
+        logger.LogInformation("Discovered {Count} repositories from GitLab", allRepositories.Count);
 
-        return allProjects;
+        return allRepositories;
     }
 
     public async Task<ResolvedRepository> ResolveRepositoryAsync(
@@ -131,7 +131,7 @@ public class GitLabRepoProvider(
         if (!string.IsNullOrWhiteSpace(repoUrl))
             return repoUrl;
 
-        var discovered = await TrySearchProjectsAsync(repoName, ct);
+        var discovered = await TrySearchRepositoriesAsync(repoName, ct);
         var resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: false);
         if (!string.IsNullOrWhiteSpace(resolved))
         {
@@ -139,7 +139,7 @@ public class GitLabRepoProvider(
             return resolved;
         }
 
-        discovered = await DiscoverProjectsAsync(ct);
+        discovered = await DiscoverRepositoriesAsync(ct);
         resolved = ResolveExactMatchUrl(repoName, discovered, allowPartial: true);
         if (!string.IsNullOrWhiteSpace(resolved))
         {
@@ -151,11 +151,11 @@ public class GitLabRepoProvider(
         return null;
     }
 
-    private async Task<List<DiscoveredProject>> TrySearchProjectsAsync(string repoName, CancellationToken ct)
+    private async Task<List<DiscoveredRepository>> TrySearchRepositoriesAsync(string repoName, CancellationToken ct)
     {
         try
         {
-            return await SearchProjectsAsync(repoName, ct);
+            return await SearchRepositoriesAsync(repoName, ct);
         }
         catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
         {
@@ -166,15 +166,15 @@ public class GitLabRepoProvider(
         }
     }
 
-    private static string? ResolveExactMatchUrl(string repoName, IEnumerable<DiscoveredProject> projects, bool allowPartial)
+    private static string? ResolveExactMatchUrl(string repoName, IEnumerable<DiscoveredRepository> repositories, bool allowPartial)
     {
         var normalizedRepoName = NormalizeRepoName(repoName);
-        var exactMatches = FindDistinctUrls(projects,
+        var exactMatches = FindDistinctUrls(repositories,
             p => p.Name.Equals(repoName, StringComparison.OrdinalIgnoreCase));
         if (exactMatches.Count > 0)
             return ResolveSingleUrl(repoName, exactMatches);
 
-        var normalizedMatches = FindDistinctUrls(projects,
+        var normalizedMatches = FindDistinctUrls(repositories,
             p => NormalizeRepoName(p.Name).Equals(normalizedRepoName, StringComparison.Ordinal));
         if (normalizedMatches.Count > 0)
             return ResolveSingleUrl(repoName, normalizedMatches);
@@ -182,7 +182,7 @@ public class GitLabRepoProvider(
         if (!allowPartial)
             return null;
 
-        var partialMatches = FindDistinctUrls(projects,
+        var partialMatches = FindDistinctUrls(repositories,
             p =>
             {
                 var normalizedName = NormalizeRepoName(p.Name);
@@ -207,10 +207,10 @@ public class GitLabRepoProvider(
         };
     }
 
-    private static List<string> FindDistinctUrls(IEnumerable<DiscoveredProject> projects,
-        Func<DiscoveredProject, bool> predicate)
+    private static List<string> FindDistinctUrls(IEnumerable<DiscoveredRepository> repositories,
+        Func<DiscoveredRepository, bool> predicate)
     {
-        return projects
+        return repositories
             .Where(predicate)
             .Select(p => p.HttpUrlToRepo)
             .Where(url => !string.IsNullOrWhiteSpace(url))

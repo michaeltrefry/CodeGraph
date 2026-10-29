@@ -420,7 +420,7 @@ public sealed class RustProjectAnalyzerCapabilityTests
         public string ManifestPath => Path.Combine(_root, "Cargo.toml");
         public ExtractorContext Context => new()
         {
-            ProjectName = "RustCapabilityFixture",
+            RepositoryName = "RustCapabilityFixture",
             RootPath = _root
         };
 

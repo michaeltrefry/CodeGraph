@@ -13,7 +13,7 @@ namespace CodeGraph.Mcp.Hub;
 
 public sealed class McpHubService(
     IMcpHubStore store,
-    IProjectQueryService projectQuery,
+    IRepositoryQueryService repositoryQuery,
     IHttpClientFactory httpClientFactory,
     SensitiveColumnPolicy sensitiveColumnPolicy,
     MySqlSourceExposurePolicy sourceExposurePolicy,
@@ -291,7 +291,7 @@ public sealed class McpHubService(
         CancellationToken ct = default)
     {
         await EnsureProviderEnabledAsync("mysql", ct);
-        var result = await projectQuery.ListSchemasAsync(
+        var result = await repositoryQuery.ListSchemasAsync(
             search,
             server,
             database,
@@ -321,9 +321,9 @@ public sealed class McpHubService(
         if (string.IsNullOrWhiteSpace(name))
             return "name is required.";
 
-        var result = await projectQuery.GetSchemaCatalogAsync(name.Trim());
+        var result = await repositoryQuery.GetSchemaCatalogAsync(name.Trim());
         if (result is null)
-            return $"Schema project '{name}' was not found. Call mysql_list_schemas first.";
+            return $"Schema repository '{name}' was not found. Call mysql_list_schemas first.";
 
         if (!await IsSourceVisibleAsync("mysql", ct))
         {

@@ -1,11 +1,11 @@
 <div class="cg-page nl-page">
   <div class="nl-crumbs" aria-label="Node list path">
-    <a [routerLink]="projectBaseRoute()">{{ projectBaseLabel() }}</a>
+    <a [routerLink]="repositoryBaseRoute()">{{ repositoryBaseLabel() }}</a>
     <span class="nl-sep">/</span>
-    <a [routerLink]="[projectBaseRoute(), projectName()]">{{ projectName() }}</a>
+    <a [routerLink]="[repositoryBaseRoute(), repositoryName()]">{{ repositoryName() }}</a>
     @if (dotnetProject()) {
       <span class="nl-sep">/</span>
-      <a [routerLink]="[projectBaseRoute(), projectName(), 'nodes']"
+      <a [routerLink]="[repositoryBaseRoute(), repositoryName(), 'nodes']"
          [queryParams]="{ dotnetProject: dotnetProject() }">{{ dotnetProject() }}</a>
     }
     @if (label()) {
@@ -20,7 +20,7 @@
         @if (label()) { <span>{{ icon() }} {{ pluralize(label()) }}</span> }
         @else { <span>Nodes</span> }
       </h1>
-      <p>{{ dotnetProject() || projectName() }}</p>
+      <p>{{ dotnetProject() || repositoryName() }}</p>
     </div>
     @if (!loading()) {
       <span class="cg-count-pill">{{ displayTotal().toLocaleString() }} nodes</span>

@@ -17,7 +17,7 @@ namespace CodeGraph.Tests.Data;
 /// </summary>
 public class MariaDbManifestSliceTests
 {
-    private const string Project = ManifestSliceTrackingTests.Project;
+    private const string Repository = ManifestSliceTrackingTests.Repository;
 
     [Fact]
     public async Task IncrementalRuns_UnchangedManifests_KeepPackageRowIds_WhenConnectionIsConfigured()
@@ -50,14 +50,14 @@ public class MariaDbManifestSliceTests
                     new MySqlAnalysisStore(context), new MySqlMetricsStore(context),
                     new MySqlReviewStore(context), runner);
                 await ManifestSliceTrackingTests.Pipeline(store)
-                    .IndexProjectAsync(Project, root, ct: CancellationToken.None);
+                    .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
             }
 
             ManifestSliceTrackingTests.WriteRepository(root);
             await IndexAsync();
             var first = await ManifestRowsAsync(builder.ConnectionString);
             first.Keys.ShouldContain(qn => qn.StartsWith("package:cargo:", StringComparison.Ordinal));
-            first.Keys.ShouldContain($"{Project}:app/App.xcodeproj/project.pbxproj#target:App");
+            first.Keys.ShouldContain($"{Repository}:app/App.xcodeproj/project.pbxproj#target:App");
             (await ManifestHashPathsAsync(builder.ConnectionString))
                 .ShouldBe(ManifestSliceTrackingTests.TrackedManifests, ignoreOrder: true);
             var maxNodeId = await MaxNodeIdAsync(builder.ConnectionString);
@@ -75,8 +75,8 @@ public class MariaDbManifestSliceTests
             afterPin.Keys.ShouldContain(qn => qn.Contains("sparkle@2.11.0", StringComparison.Ordinal));
             foreach (var (qualifiedName, id) in first.Where(row => row.Key.StartsWith("package:cargo:", StringComparison.Ordinal)))
                 afterPin[qualifiedName].ShouldBe(id);
-            afterPin[$"{Project}:app/App.xcodeproj/project.pbxproj#target:App"]
-                .ShouldNotBe(first[$"{Project}:app/App.xcodeproj/project.pbxproj#target:App"]);
+            afterPin[$"{Repository}:app/App.xcodeproj/project.pbxproj#target:App"]
+                .ShouldNotBe(first[$"{Repository}:app/App.xcodeproj/project.pbxproj#target:App"]);
         }
         finally
         {
@@ -93,8 +93,8 @@ public class MariaDbManifestSliceTests
     {
         await using var conn = new MySqlConnection(connectionString);
         var rows = await conn.QueryAsync<(string QualifiedName, long Id)>(
-            "SELECT qualified_name AS QualifiedName, id AS Id FROM nodes WHERE project = @Project AND file_path IN @Paths",
-            new { Project, Paths = ManifestSliceTrackingTests.TrackedManifests });
+            "SELECT qualified_name AS QualifiedName, id AS Id FROM nodes WHERE repository = @Repository AND file_path IN @Paths",
+            new { Repository, Paths = ManifestSliceTrackingTests.TrackedManifests });
         return rows.ToDictionary(row => row.QualifiedName, row => row.Id);
     }
 
@@ -102,14 +102,14 @@ public class MariaDbManifestSliceTests
     {
         await using var conn = new MySqlConnection(connectionString);
         return (await conn.QueryAsync<string>(
-            "SELECT rel_path FROM file_hashes WHERE project = @Project AND rel_path IN @Paths",
-            new { Project, Paths = ManifestSliceTrackingTests.TrackedManifests })).ToList();
+            "SELECT rel_path FROM file_hashes WHERE repository = @Repository AND rel_path IN @Paths",
+            new { Repository, Paths = ManifestSliceTrackingTests.TrackedManifests })).ToList();
     }
 
     private static async Task<long> MaxNodeIdAsync(string connectionString)
     {
         await using var conn = new MySqlConnection(connectionString);
         return await conn.ExecuteScalarAsync<long>(
-            "SELECT COALESCE(MAX(id), 0) FROM nodes WHERE project = @Project", new { Project });
+            "SELECT COALESCE(MAX(id), 0) FROM nodes WHERE repository = @Repository", new { Repository });
     }
 }

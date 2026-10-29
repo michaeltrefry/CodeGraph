@@ -67,7 +67,7 @@ public partial class IndexingPipeline
     /// </param>
     /// <param name="incremental">A default-branch run that writes a file slice of the persisted graph.</param>
     internal async Task<SwiftRebinding> ResolveSwiftImportsAsync(
-        string projectName,
+        string repositoryName,
         GraphBuffer buffer,
         bool manifestsExtracted,
         bool incremental,
@@ -86,8 +86,8 @@ public partial class IndexingPipeline
         var providers = buffer.AllNodes.Where(IsSwiftModuleProvider).ToList();
         if (!manifestsExtracted)
         {
-            var persisted = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
-                .Concat(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Package, int.MaxValue))
+            var persisted = (await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Module, int.MaxValue))
+                .Concat(await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Package, int.MaxValue))
                 .Where(IsSwiftModuleProvider)
                 .Where(node => !excludedPersistedFiles.Contains(NormalizeRelativePath(node.FilePath ?? "")));
             providers = providers.Concat(persisted)
@@ -131,7 +131,7 @@ public partial class IndexingPipeline
 
         // One module edge per file and top-level module (`import M`, `import struct M.T` and
         // `import M.Sub` all import module M); the scoped symbols are listed on it.
-        var filePrefixLength = projectName.Length + 1;
+        var filePrefixLength = repositoryName.Length + 1;
         foreach (var group in imports.GroupBy(import =>
                      (import.FileQN, Module: SwiftModuleResolver.TopLevelModule(import.ImportedNamespace))))
         {
@@ -170,7 +170,7 @@ public partial class IndexingPipeline
         if (rebindPersisted)
         {
             var stored = await _store.FindEdgesByPropertyAsync(
-                projectName, [EdgeType.IMPORTS], SwiftImportProperty, ["module"], ct);
+                repositoryName, [EdgeType.IMPORTS], SwiftImportProperty, ["module"], ct);
             // One import can bind to several candidates; it is re-resolved once.
             foreach (var group in stored
                          .Where(edge => !excludedPersistedFiles.Contains(NormalizeRelativePath(edge.SourceFilePath ?? "")))
@@ -208,7 +208,7 @@ public partial class IndexingPipeline
                 continue;
             buffer.AddNode(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = NodeLabel.Module,
                 Name = name,
                 QualifiedName = qualifiedName,
@@ -227,7 +227,7 @@ public partial class IndexingPipeline
         IReadOnlyList<string> orphanCandidates = [];
         if (incremental && (swiftFilesReplaced || retracted.Count > 0))
         {
-            orphanCandidates = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
+            orphanCandidates = (await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Module, int.MaxValue))
                 .Select(node => node.QualifiedName)
                 .Where(IsExternalModuleStub)
                 .ToList();

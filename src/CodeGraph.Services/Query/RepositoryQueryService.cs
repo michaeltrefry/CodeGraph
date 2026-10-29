@@ -9,19 +9,19 @@ using System.Text.Json;
 
 namespace CodeGraph.Services.Query;
 
-public class ProjectQueryService(
+public class RepositoryQueryService(
     IGraphStore store,
-    IOptions<RepositorySourceOptions> sourceOptionsAccessor) : IProjectQueryService
+    IOptions<RepositorySourceOptions> sourceOptionsAccessor) : IRepositoryQueryService
 {
     private readonly RepositorySourceOptions sourceOptions = sourceOptionsAccessor.Value;
-    public async Task<ProjectListResponse> ListAsync(string? search, string? group, int page, int pageSize)
+    public async Task<RepositoryListResponse> ListAsync(string? search, string? group, int page, int pageSize)
     {
         var result = await store.SearchRepositoriesAsync(search, group, page, pageSize);
         var groups = (await store.GetDistinctGroupsAsync()).ToList();
 
-        var items = result.Items.Select(MapProjectListItem).ToList();
+        var items = result.Items.Select(MapRepositoryListItem).ToList();
 
-        return new ProjectListResponse(items, result.TotalCount, page, pageSize, groups);
+        return new RepositoryListResponse(items, result.TotalCount, page, pageSize, groups);
     }
 
     public async Task<SchemaListResponse> ListSchemasAsync(string? search, string? server, string? database, int page, int pageSize)
@@ -32,16 +32,16 @@ public class ProjectQueryService(
         var result = await store.SearchSchemaRepositoriesAsync(search, server, database, page, pageSize);
         var items = result.Items
             .Select(x => new SchemaListItem(
-                x.Project.Name,
+                x.Repository.Name,
                 x.ServerName,
                 x.DatabaseName,
                 x.TableCount,
                 x.ViewCount,
                 x.ProcedureCount,
-                x.Project.IndexedAt,
-                x.Project.Language,
-                x.Project.Framework,
-                x.Project.Properties))
+                x.Repository.IndexedAt,
+                x.Repository.Language,
+                x.Repository.Framework,
+                x.Repository.Properties))
             .ToList();
 
         return new SchemaListResponse(
@@ -58,12 +58,12 @@ public class ProjectQueryService(
 
     public async Task<SchemaCatalogResponse?> GetSchemaCatalogAsync(string name)
     {
-        var project = await store.GetRepositoryByName(name);
-        if (project is null || !IsDatabaseSchemaProject(project))
+        var repository = await store.GetRepositoryByName(name);
+        if (repository is null || !IsDatabaseSchemaRepository(repository))
             return null;
 
-        var serverName = GetStringProperty(project.Properties, "serverName") ?? project.SourceGroup ?? "";
-        var databaseName = GetStringProperty(project.Properties, "databaseName") ?? GetDatabaseNameFromProject(project.Name);
+        var serverName = GetStringProperty(repository.Properties, "serverName") ?? repository.SourceGroup ?? "";
+        var databaseName = GetStringProperty(repository.Properties, "databaseName") ?? GetDatabaseNameFromRepository(repository.Name);
 
         var tables = await store.FindNodesByLabelAsync(name, NodeLabel.Table);
         var views = await store.FindNodesByLabelAsync(name, NodeLabel.View);
@@ -102,42 +102,42 @@ public class ProjectQueryService(
         return new SchemaCatalogResponse(name, serverName, databaseName, tableResponses, viewResponses, procedureResponses);
     }
 
-    public async Task<ProjectDetailResponse?> GetDetailAsync(string name)
+    public async Task<RepositoryDetailResponse?> GetDetailAsync(string name)
     {
-        var project = await store.GetRepositoryByName(name);
+        var repository = await store.GetRepositoryByName(name);
 
-        if (project is null)
+        if (repository is null)
             return null;
 
         var summary = await store.GetRepositorySummaryAsync(name);
         var analyses = await store.GetProjectAnalysesAsync(name);
 
         var dotnetProjects = await store.GetNodeCountsByDotnetProjectAsync(name);
-        var nodeCounts = await store.GetNodeCountsByLabelForProjectAsync(name);
+        var nodeCounts = await store.GetNodeCountsByLabelForRepositoryAsync(name);
 
         var healthSummaries = await store.GetProjectHealthSummariesAsync(name);
         var repoHealth = healthSummaries.FirstOrDefault(h => string.IsNullOrEmpty(h.DotnetProject));
-        var dotnetSupport = ResolveDotnetSupport(project);
+        var dotnetSupport = ResolveDotnetSupport(repository);
 
         var crossRepoEdges = await store.FindCrossRepoEdgesAsync(name);
 
-        var inboundCount = crossRepoEdges.Count(e => e.TargetProject == name);
-        var outboundCount = crossRepoEdges.Count(e => e.SourceProject == name);
-        var inboundProjects = crossRepoEdges
-            .Where(e => e.TargetProject == name)
-            .Select(e => e.SourceProject)
+        var inboundCount = crossRepoEdges.Count(e => e.TargetRepository == name);
+        var outboundCount = crossRepoEdges.Count(e => e.SourceRepository == name);
+        var inboundRepositories = crossRepoEdges
+            .Where(e => e.TargetRepository == name)
+            .Select(e => e.SourceRepository)
             .Distinct()
             .OrderBy(p => p)
             .ToList();
-        var outboundProjects = crossRepoEdges
-            .Where(e => e.SourceProject == name)
-            .Select(e => e.TargetProject)
+        var outboundRepositories = crossRepoEdges
+            .Where(e => e.SourceRepository == name)
+            .Select(e => e.TargetRepository)
             .Distinct()
             .OrderBy(p => p)
             .ToList();
 
-        return new ProjectDetailResponse(
-            MapProjectListItem(project),
+        return new RepositoryDetailResponse(
+            MapRepositoryListItem(repository),
             dotnetSupport,
             MapSummary(summary),
             analyses.Select(MapAnalysis).ToList(),
@@ -145,27 +145,27 @@ public class ProjectQueryService(
             dotnetProjects,
             inboundCount,
             outboundCount,
-            inboundProjects,
-            outboundProjects,
+            inboundRepositories,
+            outboundRepositories,
             MapHealthSummary(repoHealth, dotnetSupport));
     }
 
-    public async Task<ProjectHealthResponse?> GetHealthAsync(string name)
+    public async Task<RepositoryHealthResponse?> GetHealthAsync(string name)
     {
-        var project = await store.GetRepositoryByName(name);
-        if (project is null)
+        var repository = await store.GetRepositoryByName(name);
+        if (repository is null)
             return null;
 
         var summaries = await store.GetProjectHealthSummariesAsync(name);
-        var dotnetSupport = ResolveDotnetSupport(project);
-        var secSummary = await store.GetProjectSecuritySummaryAsync(name);
+        var dotnetSupport = ResolveDotnetSupport(repository);
+        var secSummary = await store.GetRepositorySecuritySummaryAsync(name);
 
         if (summaries.Count == 0)
         {
             if (dotnetSupport is null && secSummary is null)
                 return null;
 
-            return new ProjectHealthResponse(
+            return new RepositoryHealthResponse(
                 null,
                 [],
                 [],
@@ -176,13 +176,13 @@ public class ProjectQueryService(
         }
 
         var repoSummary = summaries.FirstOrDefault(s => string.IsNullOrEmpty(s.DotnetProject));
-        var projectSummaries = summaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
+        var dotnetProjectSummaries = summaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
         var hotspots = await store.GetHotspotsAsync(name, 10);
         var analyses = await store.GetProjectHealthAnalysesAsync(name);
 
-        return new ProjectHealthResponse(
+        return new RepositoryHealthResponse(
             MapHealthSummary(repoSummary, dotnetSupport),
-            projectSummaries.Select(summary => MapHealthSummary(summary)).ToList()!,
+            dotnetProjectSummaries.Select(summary => MapHealthSummary(summary)).ToList()!,
             hotspots.Select(MapFileMetrics).ToList(),
             analyses.Select(MapHealthAnalysis).ToList(),
             secSummary is not null ? MapSecuritySummary(secSummary) : null,
@@ -231,9 +231,9 @@ public class ProjectQueryService(
         return batch is null ? null : MapBatch(batch);
     }
 
-    public async Task<ProjectSecurityResponse?> GetSecurityAsync(string name)
+    public async Task<RepositorySecurityResponse?> GetSecurityAsync(string name)
     {
-        var summary = await store.GetProjectSecuritySummaryAsync(name);
+        var summary = await store.GetRepositorySecuritySummaryAsync(name);
         if (summary is null) return null;
 
         var findings = await store.GetSecurityFindingsAsync(name);
@@ -241,7 +241,7 @@ public class ProjectQueryService(
             f.Category, f.Severity, f.Title, f.Description,
             f.FilePath, f.LineNumber, f.Package, f.PackageVersion, f.Advisory)).ToList();
 
-        return new ProjectSecurityResponse(
+        return new RepositorySecurityResponse(
             name, summary.SecurityScore, summary.CriticalCount, summary.HighCount,
             summary.MediumCount, summary.LowCount, mapped, summary.Analysis, summary.ComputedAt);
     }
@@ -253,17 +253,17 @@ public class ProjectQueryService(
 
     // --- Mapping helpers ---
 
-    internal static ProjectListItem MapProjectListItem(ProjectInfo p) =>
+    internal static RepositoryListItem MapRepositoryListItem(RepositoryInfo p) =>
         new(p.Name, p.RepoUrl, p.SourceGroup, p.LocalPath, p.LastCommitSha, p.IndexedAt,
             p.Language, p.Framework, p.IsFoundational, p.Properties);
 
-    internal static DotnetSupportInfo? ResolveDotnetSupport(ProjectInfo p) =>
+    internal static DotnetSupportInfo? ResolveDotnetSupport(RepositoryInfo p) =>
         DotnetSupportInspector.TryReadStoredSupport(p.Properties) ??
         DotnetSupportInspector.InspectRepository(p.LocalPath);
 
-    internal static ProjectSummaryResponse? MapSummary(ProjectSummary? s) =>
-        s is null ? null : new ProjectSummaryResponse(
-            s.Project, s.Summary, s.Confidence.ToString(), s.SourceHash,
+    internal static RepositorySummaryResponse? MapSummary(RepositorySummary? s) =>
+        s is null ? null : new RepositorySummaryResponse(
+            s.Repository, s.Summary, s.Confidence.ToString(), s.SourceHash,
             s.ModelUsed, s.CreatedAt, s.UpdatedAt);
 
     internal static ProjectAnalysisResponse MapAnalysis(StoredProjectAnalysis a) =>
@@ -288,13 +288,13 @@ public class ProjectQueryService(
             : baseOverallHealth;
 
         return new ProjectHealthSummary(
-            e.Id, e.Project, e.DotnetProject, adjustedHealth, e.TotalFiles,
+            e.Id, e.Repository, e.DotnetProject, adjustedHealth, e.TotalFiles,
             e.HotspotCount, e.AlertCount, e.TopHotspots, e.ComputedAt,
             baseOverallHealth, scorePenalty, ParseHistoryMaturity(e.HistoryMaturity));
     }
 
     internal static FileMetrics MapFileMetrics(FileMetricsEntity e) =>
-        new(e.Id, e.Project, e.FilePath, e.DotnetProject,
+        new(e.Id, e.Repository, e.FilePath, e.DotnetProject,
             e.Changes, e.LinesAdded, e.LinesRemoved, e.AuthorCount, e.LastChangeAt,
             e.ComplexityScore, e.MaxNestingDepth, e.DeepNestingLines, e.FunctionCount, e.LongestFunction,
             e.LintErrors, e.LintWarnings, e.TrustScore,
@@ -367,13 +367,13 @@ public class ProjectQueryService(
     }
 
     internal static ProjectHealthAnalysis MapHealthAnalysis(ProjectHealthAnalysisEntity e) =>
-        new(e.Id, e.Project, e.DotnetProject, e.Analysis, e.Confidence, e.ModelUsed, e.CreatedAt, e.UpdatedAt);
+        new(e.Id, e.Repository, e.DotnetProject, e.Analysis, e.Confidence, e.ModelUsed, e.CreatedAt, e.UpdatedAt);
 
     internal static AnalysisBatchResponse MapBatch(StoredAnalysisBatch b) =>
         new(b.Id, b.Repo, b.ProviderBatchId, b.ProviderName, b.ExecutionMode, b.IncludeAllSource,
             b.Status, b.RequestCount, b.CompletedCount, b.SubmittedAt, b.CompletedAt);
 
-    internal static ProjectSecuritySummary MapSecuritySummary(ProjectSecuritySummaryEntity e) =>
+    internal static RepositorySecuritySummary MapSecuritySummary(RepositorySecuritySummaryEntity e) =>
         new(e.SecurityScore, e.CriticalCount, e.HighCount, e.MediumCount, e.LowCount, e.ComputedAt);
 
     private static SchemaObjectResponse MapSchemaObject(
@@ -625,16 +625,16 @@ public class ProjectQueryService(
             parameters);
     }
 
-    private static bool IsDatabaseSchemaProject(ProjectInfo project) =>
-        project.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
-        GetStringProperty(project.Properties, "serverName") is not null ||
-        GetStringProperty(project.Properties, "databaseName") is not null;
+    private static bool IsDatabaseSchemaRepository(RepositoryInfo repository) =>
+        repository.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
+        GetStringProperty(repository.Properties, "serverName") is not null ||
+        GetStringProperty(repository.Properties, "databaseName") is not null;
 
-    private static string GetDatabaseNameFromProject(string projectName)
+    private static string GetDatabaseNameFromRepository(string repositoryName)
     {
-        var name = projectName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
-            ? projectName[3..]
-            : projectName;
+        var name = repositoryName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
+            ? repositoryName[3..]
+            : repositoryName;
         var slash = name.LastIndexOf('/');
         return slash >= 0 ? name[(slash + 1)..] : name;
     }

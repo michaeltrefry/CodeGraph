@@ -435,7 +435,7 @@ public class LmStudioAnalysisProviderTests
                 BatchId = batchId,
                 Sequence = 0,
                 CustomId = "req_1",
-                NodeLabel = "Demo.Project",
+                NodeLabel = "Demo.Repository",
                 RequestPayloadJson = JsonSerializer.Serialize(payload, CodeGraphJsonDefaults.CamelCase),
                 Status = "pending"
             }
@@ -524,7 +524,7 @@ public class LmStudioAnalysisProviderTests
                 BatchId = batchId,
                 Sequence = 0,
                 CustomId = "req_retry",
-                NodeLabel = "Demo.Project",
+                NodeLabel = "Demo.Repository",
                 RequestPayloadJson = JsonSerializer.Serialize(payload, CodeGraphJsonDefaults.CamelCase),
                 Status = "pending"
             }
@@ -611,7 +611,7 @@ public class LmStudioAnalysisProviderTests
                 BatchId = batchId,
                 Sequence = 0,
                 CustomId = customId,
-                NodeLabel = "Demo.Project",
+                NodeLabel = "Demo.Repository",
                 RequestPayloadJson = JsonSerializer.Serialize(payload, CodeGraphJsonDefaults.CamelCase),
                 Status = "pending"
             }

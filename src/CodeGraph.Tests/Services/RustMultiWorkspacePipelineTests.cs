@@ -19,7 +19,7 @@ namespace CodeGraph.Tests.Services;
 public class RustMultiWorkspacePipelineTests
 {
     [Fact]
-    public async Task IndexProjectAsync_TwoIndependentWorkspaces_AnalyzesEveryWorkspaceOnce()
+    public async Task IndexRepositoryAsync_TwoIndependentWorkspaces_AnalyzesEveryWorkspaceOnce()
     {
         var rootPath = CreateRepository();
         try
@@ -62,7 +62,7 @@ public class RustMultiWorkspacePipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_RootWorkspaceWithNestedMembers_AnalyzesOnlyTheRoot()
+    public async Task IndexRepositoryAsync_RootWorkspaceWithNestedMembers_AnalyzesOnlyTheRoot()
     {
         var rootPath = CreateRepository();
         try
@@ -83,7 +83,7 @@ public class RustMultiWorkspacePipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_RootPackageAndNestedIndependentWorkspace_AnalyzesBoth()
+    public async Task IndexRepositoryAsync_RootPackageAndNestedIndependentWorkspace_AnalyzesBoth()
     {
         var rootPath = CreateRepository();
         try
@@ -107,7 +107,7 @@ public class RustMultiWorkspacePipelineTests
     /// whole-workspace group and again under their own: 8 crates reported for 5.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_NestedStandalonePathDependencies_CountEachCrateOnce()
+    public async Task IndexRepositoryAsync_NestedStandalonePathDependencies_CountEachCrateOnce()
     {
         var rootPath = CreateRepository();
         try
@@ -164,7 +164,7 @@ public class RustMultiWorkspacePipelineTests
     /// its own root, analyzed (and counted) once, never folded into the workspace a second time.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_WorkspaceWithPathDependencyOutsideItsMembers_AnalyzesAndCountsTheCrateOnce()
+    public async Task IndexRepositoryAsync_WorkspaceWithPathDependencyOutsideItsMembers_AnalyzesAndCountsTheCrateOnce()
     {
         var rootPath = CreateRepository();
         try
@@ -222,7 +222,7 @@ public class RustMultiWorkspacePipelineTests
     /// duplicate Package definitions.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_WorkspacesUnderExcludedDirectories_AreNeitherAnalyzedNorEmittedAsPackages()
+    public async Task IndexRepositoryAsync_WorkspacesUnderExcludedDirectories_AreNeitherAnalyzedNorEmittedAsPackages()
     {
         var rootPath = CreateRepository();
         try
@@ -249,7 +249,7 @@ public class RustMultiWorkspacePipelineTests
     /// run, whose changed exclusions alter the extraction fingerprint.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_PreviouslyIndexedWorktreeWorkspace_IsRemovedOnceExcluded()
+    public async Task IndexRepositoryAsync_PreviouslyIndexedWorktreeWorkspace_IsRemovedOnceExcluded()
     {
         var rootPath = CreateRepository();
         try
@@ -302,7 +302,7 @@ public class RustMultiWorkspacePipelineTests
             cargoManifestExtractor: new CargoManifestExtractor(),
             diagnostics: diagnostics);
 
-        await pipeline.IndexProjectAsync("Multi", rootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("Multi", rootPath, ct: CancellationToken.None);
         return (recording, diagnostics, store);
     }
 
@@ -384,10 +384,10 @@ public class RustMultiWorkspacePipelineTests
             {
                 Nodes = crateLibs.Select(path => new GraphNode
                 {
-                    Project = context.ProjectName,
+                    Repository = context.RepositoryName,
                     Label = NodeLabel.Function,
                     Name = $"semantic_{CrateName(path)}",
-                    QualifiedName = $"{context.ProjectName}:semantic_{CrateName(path)}",
+                    QualifiedName = $"{context.RepositoryName}:semantic_{CrateName(path)}",
                     FilePath = path
                 }).ToList(),
                 ProcessedFiles = crateLibs,

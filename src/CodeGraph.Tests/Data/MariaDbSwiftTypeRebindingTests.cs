@@ -21,7 +21,7 @@ namespace CodeGraph.Tests.Data;
 /// </summary>
 public class MariaDbSwiftTypeRebindingTests
 {
-    private const string Project = "SwiftRepo";
+    private const string Repository = "SwiftRepo";
 
     [Fact]
     public async Task IncrementalRuns_RebindStubsKindsAndAmbiguity_WhenConnectionIsConfigured()
@@ -60,14 +60,14 @@ public class MariaDbSwiftTypeRebindingTests
                     Options.Create(new IndexingOptions { MaxParallelFiles = 2 }),
                     new LocalFileSystem(),
                     NullLogger<IndexingPipeline>.Instance);
-                await pipeline.IndexProjectAsync(Project, root,
+                await pipeline.IndexRepositoryAsync(Repository, root,
                     changedFilesOnly: changed.Length == 0 ? null : changed, ct: CancellationToken.None);
             }
 
             void Write(string path, string source) => File.WriteAllText(Path.Combine(root, path), source);
 
-            const string member = $"{Project}:Sources/Ext.swift#extension:Square#method:doubled()";
-            const string sub = $"{Project}:Sources/Sub.swift#type:Sub";
+            const string member = $"{Repository}:Sources/Ext.swift#extension:Square#method:doubled()";
+            const string sub = $"{Repository}:Sources/Sub.swift#type:Sub";
             Write("Sources/Ext.swift", "extension Square {\n    func doubled() {}\n}\n");
             Write("Sources/Sub.swift", "class Sub: Base {}\n");
             await IndexAsync();
@@ -83,8 +83,8 @@ public class MariaDbSwiftTypeRebindingTests
             await IndexAsync();
             (await RelationsAsync(builder.ConnectionString)).ShouldBe(
             [
-                ($"{Project}:Sources/Square.swift#type:Square", member, "DEFINES_METHOD"),
-                (sub, $"{Project}:Sources/Base.swift#type:Base", "IMPLEMENTS")
+                ($"{Repository}:Sources/Square.swift#type:Square", member, "DEFINES_METHOD"),
+                (sub, $"{Repository}:Sources/Base.swift#type:Base", "IMPLEMENTS")
             ], ignoreOrder: true);
             (await StubsAsync(builder.ConnectionString)).ShouldBeEmpty();
 
@@ -93,8 +93,8 @@ public class MariaDbSwiftTypeRebindingTests
             await IndexAsync();
             (await RelationsAsync(builder.ConnectionString)).ShouldBe(
             [
-                ($"{Project}:Sources/Ext.swift", member, "DEFINES_METHOD"),
-                (sub, $"{Project}:Sources/Base.swift#type:Base", "IMPLEMENTS")
+                ($"{Repository}:Sources/Ext.swift", member, "DEFINES_METHOD"),
+                (sub, $"{Repository}:Sources/Base.swift#type:Base", "IMPLEMENTS")
             ], ignoreOrder: true);
 
             // Both Squares and Base go away: back to stubs, with the guessed superclass kind.
@@ -159,13 +159,13 @@ public class MariaDbSwiftTypeRebindingTests
                         Options.Create(new IndexingOptions { MaxParallelFiles = 2 }),
                         new LocalFileSystem(),
                         NullLogger<IndexingPipeline>.Instance)
-                    .IndexProjectAsync(Project, root, ct: CancellationToken.None);
+                    .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
             }
 
             void Write(string path, string source) => File.WriteAllText(Path.Combine(root, path), source);
 
-            const string circle = $"{Project}:Sources/Circle.swift#type:Circle";
-            const string caller = $"{Project}:Sources/Use.swift#function:use()";
+            const string circle = $"{Repository}:Sources/Circle.swift#type:Circle";
+            const string caller = $"{Repository}:Sources/Use.swift#function:use()";
             Write("Sources/Circle.swift", "struct Circle {\n    init() {}\n    init(radius: Double) {}\n}\n");
             Write("Sources/Use.swift", "func use() { _ = Circle(radius: 1) }\n");
             await IndexAsync();
@@ -200,8 +200,8 @@ public class MariaDbSwiftTypeRebindingTests
             FROM edges e
             JOIN nodes s ON s.id = e.source_id
             JOIN nodes t ON t.id = e.target_id
-            WHERE e.project = @Project AND e.type = 'CALLS'
-            """, new { Project });
+            WHERE e.repository = @Repository AND e.type = 'CALLS'
+            """, new { Repository });
         return rows.Select(row => (row.Source, row.Target)).ToList();
     }
 
@@ -213,11 +213,11 @@ public class MariaDbSwiftTypeRebindingTests
             FROM edges e
             JOIN nodes s ON s.id = e.source_id
             JOIN nodes t ON t.id = e.target_id
-            WHERE e.project = @Project
+            WHERE e.repository = @Repository
               AND (e.type IN ('INHERITS', 'IMPLEMENTS')
                    OR (e.type IN ('DEFINES', 'DEFINES_METHOD')
                        AND (t.qualified_name LIKE '%#extension:%' OR s.qualified_name LIKE 'swift-external:%')))
-            """, new { Project });
+            """, new { Repository });
         return rows.Select(row => (row.Source, row.Target, row.Type)).ToList();
     }
 
@@ -225,7 +225,7 @@ public class MariaDbSwiftTypeRebindingTests
     {
         await using var conn = new MySqlConnection(connectionString);
         return (await conn.QueryAsync<string>(
-            "SELECT qualified_name FROM nodes WHERE project = @Project AND qualified_name LIKE 'swift-external:%'",
-            new { Project })).ToList();
+            "SELECT qualified_name FROM nodes WHERE repository = @Repository AND qualified_name LIKE 'swift-external:%'",
+            new { Repository })).ToList();
     }
 }

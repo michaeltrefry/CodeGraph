@@ -23,7 +23,7 @@ public class SearchService(IGraphStore store) : ISearchService
         // Search repos and nodes in parallel — both filtered at the store layer
         var reposTask = store.SearchRepositoriesAsync(search: query, pageSize: 50);
         var nodesTask = store.SearchNodesAsync(
-            project: null,
+            repository: null,
             namePattern: query,
             limit: 200,
             offset: 0);
@@ -49,7 +49,7 @@ public class SearchService(IGraphStore store) : ISearchService
                 Name: repo.Name,
                 Description: desc,
                 NodeLabel: null,
-                Project: repo.Name,
+                Repository: repo.Name,
                 NodeId: null,
                 QualifiedName: null));
         }
@@ -69,7 +69,7 @@ public class SearchService(IGraphStore store) : ISearchService
                 Name: node.Name,
                 Description: desc,
                 NodeLabel: node.Label.ToString(),
-                Project: node.Project,
+                Repository: node.Repository,
                 NodeId: node.Id,
                 QualifiedName: node.QualifiedName));
         }

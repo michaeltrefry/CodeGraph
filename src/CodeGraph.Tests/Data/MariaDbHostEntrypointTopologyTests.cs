@@ -14,7 +14,7 @@ namespace CodeGraph.Tests.Data;
 [Collection(nameof(HostEntrypointTopologyCollection))]
 public class MariaDbHostEntrypointTopologyTests
 {
-    private static readonly (string Name, string Project, int? Port)[] Hosts =
+    private static readonly (string Name, string Repository, int? Port)[] Hosts =
     [
         ("api", "CodeGraph.Api", 5037),
         ("indexer", "CodeGraph.Indexer.Host", 5042),
@@ -202,7 +202,7 @@ public class MariaDbHostEntrypointTopologyTests
     }
 
     private static HostProcess StartHost(
-        (string Name, string Project, int? Port) host,
+        (string Name, string Repository, int? Port) host,
         string repoRoot,
         string connectionString,
         string migrationsPath)
@@ -211,11 +211,11 @@ public class MariaDbHostEntrypointTopologyTests
         var assemblyPath = Path.Combine(
             repoRoot,
             "src",
-            host.Project,
+            host.Repository,
             "bin",
             configuration,
             "net10.0",
-            $"{host.Project}.dll");
+            $"{host.Repository}.dll");
         File.Exists(assemblyPath).ShouldBeTrue($"actual host assembly not found: {assemblyPath}");
 
         var startInfo = new ProcessStartInfo("dotnet")

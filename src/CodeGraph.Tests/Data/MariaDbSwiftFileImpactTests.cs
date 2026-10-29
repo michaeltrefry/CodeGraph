@@ -25,7 +25,7 @@ namespace CodeGraph.Tests.Data;
 /// </summary>
 public class MariaDbSwiftFileImpactTests
 {
-    private const string Project = "SwiftImpact";
+    private const string Repository = "SwiftImpact";
     private const string GreeterPath = "Sources/App/Greeter.swift";
 
     [Fact]
@@ -67,20 +67,20 @@ public class MariaDbSwiftFileImpactTests
                     Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
                     new LocalFileSystem(),
                     NullLogger<IndexingPipeline>.Instance)
-                .IndexProjectAsync(Project, root, ct: CancellationToken.None);
+                .IndexRepositoryAsync(Repository, root, ct: CancellationToken.None);
             var sha = new string('c', 40);
-            await store.UpsertRepositoryAsync(new RepositoryEntity { Name = Project, LocalPath = root, LastCommitSha = sha });
-            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = Project, LastCommitSha = sha });
+            await store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repository, LocalPath = root, LastCommitSha = sha });
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = sha });
 
             // The stored CALLS edge run -> greet.
-            var run = (await store.FindNodesByNameAsync(Project, "run")).ShouldHaveSingleItem();
-            var greet = (await store.FindNodesByNameAsync(Project, "greet")).ShouldHaveSingleItem();
+            var run = (await store.FindNodesByNameAsync(Repository, "run")).ShouldHaveSingleItem();
+            var greet = (await store.FindNodesByNameAsync(Repository, "greet")).ShouldHaveSingleItem();
             greet.FilePath.ShouldBe(GreeterPath);
             (await store.FindEdgesBySourceAsync(run.Id, EdgeType.CALLS)).Select(edge => edge.TargetId)
                 .ShouldBe([greet.Id]);
 
             var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
-            var report = (await impact.AnalyzeFileImpactAsync(Project, GreeterPath)).ShouldNotBeNull();
+            var report = (await impact.AnalyzeFileImpactAsync(Repository, GreeterPath)).ShouldNotBeNull();
             report.AffectedNodes.Select(node => node.Name).ShouldContain("run");
 
             var resolver = new CommitScopeResolver(
@@ -98,7 +98,7 @@ public class MariaDbSwiftFileImpactTests
                 null!,
                 impact,
                 commitScopes: resolver);
-            var answer = (await mcp.AnalyzeImpactFile(Project, GreeterPath)).StructuredContent!.Value;
+            var answer = (await mcp.AnalyzeImpactFile(Repository, GreeterPath)).StructuredContent!.Value;
             answer.GetProperty("found").GetBoolean().ShouldBeTrue();
             answer.GetProperty("totalAffected").GetInt32().ShouldBeGreaterThanOrEqualTo(1);
         }

@@ -48,7 +48,7 @@ public class CrossRepoLinker
     {
         _logger.LogInformation("Starting cross-repo linking");
 
-        var counts = await LinkCoreAsync(scopeProject: null, ct);
+        var counts = await LinkCoreAsync(scopeRepository: null, ct);
 
         _logger.LogInformation(
             "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic links",
@@ -56,48 +56,48 @@ public class CrossRepoLinker
     }
 
     /// <summary>
-    /// Incremental cross-repo linking scoped to a single project: removes this project's cross-repo
+    /// Incremental cross-repo linking scoped to a single repository: removes this repository's cross-repo
     /// edges, then re-creates the links in which it is the source or the target. Links between two
-    /// other projects are left as those projects' own runs wrote them.
+    /// other repositories are left as those repositories' own runs wrote them.
     /// Called by RepositoryIndexingCompletedConsumer after a repo is indexed.
     /// </summary>
     /// <remarks>
     /// Every pass reads compact projections streamed from the store (linking keys only), never the
-    /// full node/edge rows of every project: once one repository reached ~130k nodes / ~900k edges,
+    /// full node/edge rows of every repository: once one repository reached ~130k nodes / ~900k edges,
     /// loading all CALLS edges and all definition nodes with their properties for each small repo's
     /// post-index linking exhausted the indexer's managed heap. Passes run sequentially because the
     /// store's DbContext is not thread-safe.
     /// </remarks>
-    public async Task LinkForProjectAsync(string project, CancellationToken ct)
+    public async Task LinkForRepositoryAsync(string repository, CancellationToken ct)
     {
-        _logger.LogInformation("Running incremental cross-repo linking for {Project}", project);
+        _logger.LogInformation("Running incremental cross-repo linking for {Repository}", repository);
 
-        // Clear existing cross-repo edges for this project so stale links are removed
-        await _store.DeleteCrossRepoEdgesForProjectAsync(project);
+        // Clear existing cross-repo edges for this repository so stale links are removed
+        await _store.DeleteCrossRepoEdgesForRepositoryAsync(repository);
 
-        var counts = await LinkCoreAsync(project, ct);
+        var counts = await LinkCoreAsync(repository, ct);
 
         _logger.LogInformation(
-            "Incremental linking for {Project} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic",
-            project, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
+            "Incremental linking for {Repository} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic",
+            repository, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
     }
 
     private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust)> LinkCoreAsync(
-        string? scopeProject, CancellationToken ct)
+        string? scopeRepository, CancellationToken ct)
     {
-        var http = await LinkHttpRoutesAsync(scopeProject, ct);
-        var messaging = await LinkMessagingAsync(scopeProject, ct);
-        var nuget = await LinkNuGetPackagesAsync(scopeProject, ct);
-        var cargo = await LinkManifestPackagesAsync(Cargo, scopeProject, ct);
-        var swift = await LinkManifestPackagesAsync(SwiftPm, scopeProject, ct);
-        var rust = await LinkRustSymbolsAsync(scopeProject, ct);
+        var http = await LinkHttpRoutesAsync(scopeRepository, ct);
+        var messaging = await LinkMessagingAsync(scopeRepository, ct);
+        var nuget = await LinkNuGetPackagesAsync(scopeRepository, ct);
+        var cargo = await LinkManifestPackagesAsync(Cargo, scopeRepository, ct);
+        var swift = await LinkManifestPackagesAsync(SwiftPm, scopeRepository, ct);
+        var rust = await LinkRustSymbolsAsync(scopeRepository, ct);
         return (http, messaging, nuget, cargo, swift, rust);
     }
 
-    private static bool InScope(string? scopeProject, string sourceProject, string targetProject) =>
-        scopeProject is null ||
-        sourceProject.Equals(scopeProject, StringComparison.OrdinalIgnoreCase) ||
-        targetProject.Equals(scopeProject, StringComparison.OrdinalIgnoreCase);
+    private static bool InScope(string? scopeRepository, string sourceRepository, string targetRepository) =>
+        scopeRepository is null ||
+        sourceRepository.Equals(scopeRepository, StringComparison.OrdinalIgnoreCase) ||
+        targetRepository.Equals(scopeRepository, StringComparison.OrdinalIgnoreCase);
 
     private static async Task<List<T>> ToListAsync<T>(IAsyncEnumerable<T> rows, CancellationToken ct)
     {
@@ -107,10 +107,10 @@ public class CrossRepoLinker
         return list;
     }
 
-    private async Task<int> LinkHttpRoutesAsync(string? scopeProject, CancellationToken ct)
+    private async Task<int> LinkHttpRoutesAsync(string? scopeRepository, CancellationToken ct)
     {
-        // HTTP_CALLS edges with their source project, the target stub's qualified name (it may carry
-        // a concrete route project hint such as route:OrdersApi:GET:api/orders/{id}) and the call keys.
+        // HTTP_CALLS edges with their source repository, the target stub's qualified name (it may carry
+        // a concrete route repository hint such as route:OrdersApi:GET:api/orders/{id}) and the call keys.
         var httpCallEdges = await ToListAsync(_store.StreamLinkEdgesAsync(
             new LinkEdgeQuery([EdgeType.HTTP_CALLS])
             {
@@ -119,7 +119,7 @@ public class CrossRepoLinker
         if (httpCallEdges.Count == 0)
             return 0;
 
-        // Route keys across all projects (may be empty for gateway-only calls)
+        // Route keys across all repositories (may be empty for gateway-only calls)
         var routes = await ToListAsync(_store.StreamLinkNodesAsync(
             new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = ["http_method", "route_template"] }, ct), ct);
 
@@ -133,8 +133,8 @@ public class CrossRepoLinker
         var crossEdges = new List<CrossRepoEdge>();
 
         // Collect all known projects for DTO→project resolution
-        var projects = await _store.ListRepositoriesAsync();
-        var projectNames = projects.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var repositories = await _store.ListRepositoriesAsync();
+        var repositoryNames = repositories.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var edge in httpCallEdges)
         {
@@ -144,16 +144,16 @@ public class CrossRepoLinker
             if (isGatewayCall && requestDto is not null && !requestDto.StartsWith("route:"))
             {
                 var serviceName = edge.EdgeProperties.GetValueOrDefault("service_name");
-                var targetProject = ResolveGatewayTargetProject(serviceName, requestDto, projectNames);
-                if (targetProject is null)
+                var targetRepository = ResolveGatewayTargetRepository(serviceName, requestDto, repositoryNames);
+                if (targetRepository is null)
                     continue;
 
-                if (edge.SourceProject == targetProject ||
-                    !InScope(scopeProject, edge.SourceProject, targetProject))
+                if (edge.SourceRepository == targetRepository ||
+                    !InScope(scopeRepository, edge.SourceRepository, targetRepository))
                     continue;
 
                 crossEdges.Add(CreateCrossRepoEdge(
-                    edge.SourceProject, targetProject, edge.SourceId, edge.TargetId,
+                    edge.SourceRepository, targetRepository, edge.SourceId, edge.TargetId,
                     EdgeType.HTTP_CALLS, new()
                     {
                         ["request_dto"] = requestDto,
@@ -174,45 +174,45 @@ public class CrossRepoLinker
 
             // Try exact match first, then pattern match
             var matchedRoutes = FindMatchingRoutes(normalizedCall, httpMethod, urlPattern, routeLookup);
-            var targetProjectHint = ResolveHttpTargetProject(
+            var targetRepositoryHint = ResolveHttpTargetRepository(
                 edge.EdgeProperties.GetValueOrDefault("service_name"),
                 requestDto,
                 edge.TargetQualifiedName,
-                projectNames);
+                repositoryNames);
 
-            if (targetProjectHint is not null)
+            if (targetRepositoryHint is not null)
             {
                 matchedRoutes = matchedRoutes
-                    .Where(route => route.Project.Equals(targetProjectHint, StringComparison.OrdinalIgnoreCase))
+                    .Where(route => route.Repository.Equals(targetRepositoryHint, StringComparison.OrdinalIgnoreCase))
                     .ToList();
             }
             else
             {
-                var matchingProjects = matchedRoutes
-                    .Select(route => route.Project)
+                var matchingRepositories = matchedRoutes
+                    .Select(route => route.Repository)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                if (matchingProjects.Count > 1)
+                if (matchingRepositories.Count > 1)
                 {
                     _logger.LogDebug(
-                        "Skipping ambiguous HTTP route match for {Method} {UrlPattern}: matched {ProjectCount} projects ({Projects})",
+                        "Skipping ambiguous HTTP route match for {Method} {UrlPattern}: matched {RepositoryCount} repositories ({Repositories})",
                         httpMethod,
                         urlPattern,
-                        matchingProjects.Count,
-                        string.Join(", ", matchingProjects.Take(10)));
+                        matchingRepositories.Count,
+                        string.Join(", ", matchingRepositories.Take(10)));
                     continue;
                 }
             }
 
             foreach (var route in matchedRoutes)
             {
-                if (edge.SourceProject == route.Project ||
-                    !InScope(scopeProject, edge.SourceProject, route.Project))
+                if (edge.SourceRepository == route.Repository ||
+                    !InScope(scopeRepository, edge.SourceRepository, route.Repository))
                     continue;
 
                 crossEdges.Add(CreateCrossRepoEdge(
-                    edge.SourceProject, route.Project, edge.SourceId, route.Id,
+                    edge.SourceRepository, route.Repository, edge.SourceId, route.Id,
                     EdgeType.HTTP_CALLS, new()
                     {
                         ["http_method"] = httpMethod,
@@ -232,7 +232,7 @@ public class CrossRepoLinker
         return crossEdges.Count;
     }
 
-    private async Task<int> LinkMessagingAsync(string? scopeProject, CancellationToken ct)
+    private async Task<int> LinkMessagingAsync(string? scopeRepository, CancellationToken ct)
     {
         // Group consumers by the event type QN they consume
         var consumersByEvent = new Dictionary<string, List<LinkEdgeRow>>();
@@ -260,12 +260,12 @@ public class CrossRepoLinker
 
             foreach (var conEdge in consumers)
             {
-                if (conEdge.SourceProject == pubEdge.SourceProject ||
-                    !InScope(scopeProject, pubEdge.SourceProject, conEdge.SourceProject))
+                if (conEdge.SourceRepository == pubEdge.SourceRepository ||
+                    !InScope(scopeRepository, pubEdge.SourceRepository, conEdge.SourceRepository))
                     continue;
 
                 crossEdges.Add(CreateCrossRepoEdge(
-                    pubEdge.SourceProject, conEdge.SourceProject, pubEdge.SourceId, conEdge.SourceId,
+                    pubEdge.SourceRepository, conEdge.SourceRepository, pubEdge.SourceId, conEdge.SourceId,
                     EdgeType.PUBLISHES, new()
                     {
                         ["event_type"] = pubEdge.TargetQualifiedName,
@@ -283,7 +283,7 @@ public class CrossRepoLinker
         return crossEdges.Count;
     }
 
-    private async Task<int> LinkNuGetPackagesAsync(string? scopeProject, CancellationToken ct)
+    private async Task<int> LinkNuGetPackagesAsync(string? scopeRepository, CancellationToken ct)
     {
         // REFERENCES_PACKAGE edges whose target is a NuGetPackage node
         var refEdges = await ToListAsync(_store.StreamLinkEdgesAsync(
@@ -295,33 +295,33 @@ public class CrossRepoLinker
         if (refEdges.Count == 0)
             return 0;
 
-        // Get all known projects
-        var projects = await _store.ListRepositoriesAsync();
-        var projectNames = projects.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Get all known repositories
+        var repositories = await _store.ListRepositoriesAsync();
+        var repositoryNames = repositories.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Map package names to project names when the stripped package name resolves
+        // Map package names to repository names when the stripped package name resolves
         // to another indexed repository.
-        var packageToProject = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var packageToRepository = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var crossEdges = new List<CrossRepoEdge>();
 
         foreach (var edge in refEdges)
         {
-            if (!packageToProject.TryGetValue(edge.TargetName, out var targetProject))
+            if (!packageToRepository.TryGetValue(edge.TargetName, out var targetRepository))
             {
-                var candidateProject = DerivProjectFromPackage(edge.TargetName);
-                targetProject = candidateProject is not null && projectNames.Contains(candidateProject)
-                    ? candidateProject
+                var candidateRepository = DerivRepositoryFromPackage(edge.TargetName);
+                targetRepository = candidateRepository is not null && repositoryNames.Contains(candidateRepository)
+                    ? candidateRepository
                     : null;
-                packageToProject[edge.TargetName] = targetProject;
+                packageToRepository[edge.TargetName] = targetRepository;
             }
 
-            if (targetProject is null ||
-                edge.SourceProject == targetProject ||
-                !InScope(scopeProject, edge.SourceProject, targetProject))
+            if (targetRepository is null ||
+                edge.SourceRepository == targetRepository ||
+                !InScope(scopeRepository, edge.SourceRepository, targetRepository))
                 continue;
 
             crossEdges.Add(CreateCrossRepoEdge(
-                edge.SourceProject, targetProject, edge.SourceId, edge.TargetId,
+                edge.SourceRepository, targetRepository, edge.SourceId, edge.TargetId,
                 EdgeType.REFERENCES_PACKAGE, new()
                 {
                     ["package_name"] = edge.TargetName,
@@ -386,7 +386,7 @@ public class CrossRepoLinker
     /// repository's URL, or — for a path dependency that leaves its repository — by package name.
     /// </summary>
     private async Task<int> LinkManifestPackagesAsync(
-        PackageEcosystem ecosystem, string? scopeProject, CancellationToken ct)
+        PackageEcosystem ecosystem, string? scopeRepository, CancellationToken ct)
     {
         var definitions = await ToListAsync(_store.StreamLinkNodesAsync(
             new LinkNodeQuery([NodeLabel.Package])
@@ -409,16 +409,16 @@ public class CrossRepoLinker
             .GroupBy(node => node.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
 
-        // Repository URL → project, for git dependencies. A URL shared by several projects is ambiguous.
-        var repositoriesByGitUrl = (await _store.ListRepositoriesAsync())
+        // Repository URL → repository, for git dependencies. A URL shared by several repositories is ambiguous.
+        var gitUrlGroups = (await _store.ListRepositoriesAsync())
             .Select(repository => (repository.Name, Url: NormalizeGitUrl(repository.RepoUrl)))
             .Where(repository => repository.Url is not null)
             .GroupBy(repository => repository.Url!, StringComparer.Ordinal)
             .ToList();
-        var projectsByGitUrl = repositoriesByGitUrl
+        var repositoriesByGitUrl = gitUrlGroups
             .Where(group => group.Count() == 1)
             .ToDictionary(group => group.Key, group => group.Single().Name, StringComparer.Ordinal);
-        var ambiguousGitUrls = repositoriesByGitUrl
+        var ambiguousGitUrls = gitUrlGroups
             .Where(group => group.Count() > 1)
             .ToDictionary(group => group.Key, group => group.Select(repository => repository.Name).ToList(),
                 StringComparer.Ordinal);
@@ -426,9 +426,9 @@ public class CrossRepoLinker
 
         var crossEdges = new List<CrossRepoEdge>();
         var edgeKeys = new HashSet<string>(StringComparer.Ordinal);
-        // Declared (source project, target node) pairs, and pinned links held back until every
+        // Declared (source repository, target node) pairs, and pinned links held back until every
         // declared one is known.
-        var declaredTargets = new HashSet<(string Project, long TargetId)>();
+        var declaredTargets = new HashSet<(string Repository, long TargetId)>();
         var pinnedLinks = new List<CrossRepoEdge>();
         string[] targetPropertyKeys =
         [
@@ -468,7 +468,7 @@ public class CrossRepoLinker
                 var gitUrl = NormalizeGitUrl(dependency.GetValueOrDefault(ecosystem.RemoteUrlProperty));
                 if (gitUrl is null)
                     continue;
-                if (!projectsByGitUrl.TryGetValue(gitUrl, out var gitProject))
+                if (!repositoriesByGitUrl.TryGetValue(gitUrl, out var gitRepository))
                 {
                     if (ambiguousGitUrls.TryGetValue(gitUrl, out var sharing) && loggedAmbiguousUrls.Add(gitUrl))
                     {
@@ -482,10 +482,10 @@ public class CrossRepoLinker
                 }
 
                 candidates = ecosystem.RootManifest is { } rootManifest
-                    ? RootPackageOf(gitProject, rootManifest)
+                    ? RootPackageOf(gitRepository, rootManifest)
                     : definitionsByName.GetValueOrDefault(packageName) ?? [];
                 candidates = candidates
-                    .Where(candidate => candidate.Project.Equals(gitProject, StringComparison.OrdinalIgnoreCase))
+                    .Where(candidate => candidate.Repository.Equals(gitRepository, StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 if (candidates.Count == 0)
                     continue;
@@ -500,7 +500,7 @@ public class CrossRepoLinker
                 // match the package name, preferring a repository named like a directory on the path.
                 var segments = externalPath.Split('/');
                 var onPath = named
-                    .Where(candidate => segments.Contains(candidate.Project, StringComparer.OrdinalIgnoreCase))
+                    .Where(candidate => segments.Contains(candidate.Repository, StringComparer.OrdinalIgnoreCase))
                     .ToList();
                 if (onPath.Count == 0 && ecosystem.PathMatchNeedsRepositoryOnPath)
                     continue;
@@ -513,25 +513,25 @@ public class CrossRepoLinker
                 continue;
             }
 
-            var targetProjects = candidates
-                .Where(candidate => !candidate.Project.Equals(
-                    edge.SourceProject, StringComparison.OrdinalIgnoreCase))
-                .GroupBy(candidate => candidate.Project, StringComparer.OrdinalIgnoreCase)
+            var targetRepositories = candidates
+                .Where(candidate => !candidate.Repository.Equals(
+                    edge.SourceRepository, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(candidate => candidate.Repository, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            if (targetProjects.Count != 1)
+            if (targetRepositories.Count != 1)
             {
-                if (targetProjects.Count > 1)
+                if (targetRepositories.Count > 1)
                 {
                     _logger.LogDebug(
-                        "Skipping ambiguous {Ecosystem} match for {PackageKey}: {ProjectCount} projects",
+                        "Skipping ambiguous {Ecosystem} match for {PackageKey}: {RepositoryCount} repositories",
                         ecosystem.DisplayName,
                         packageKey,
-                        targetProjects.Count);
+                        targetRepositories.Count);
                 }
                 continue;
             }
 
-            var targetCandidates = targetProjects[0].ToList();
+            var targetCandidates = targetRepositories[0].ToList();
             var requestedVersion = dependency.GetValueOrDefault("version");
             var exactVersionCandidates = string.IsNullOrWhiteSpace(requestedVersion)
                 ? targetCandidates
@@ -549,14 +549,14 @@ public class CrossRepoLinker
             if (target is null)
             {
                 _logger.LogDebug(
-                    "Skipping ambiguous {Ecosystem} match for {PackageKey} within {Project}",
+                    "Skipping ambiguous {Ecosystem} match for {PackageKey} within {Repository}",
                     ecosystem.DisplayName,
                     packageKey,
-                    targetProjects[0].Key);
+                    targetRepositories[0].Key);
                 continue;
             }
 
-            if (!InScope(scopeProject, edge.SourceProject, target.Project))
+            if (!InScope(scopeRepository, edge.SourceRepository, target.Repository))
                 continue;
 
             var key = $"{edge.SourceId}\n{target.Id}\n{EdgeType.REFERENCES_PACKAGE}";
@@ -580,11 +580,11 @@ public class CrossRepoLinker
                 properties[kindProperty] = kind;
                 isPinned = kind == "pinned";
                 if (!isPinned)
-                    declaredTargets.Add((edge.SourceProject.ToLowerInvariant(), target.Id));
+                    declaredTargets.Add((edge.SourceRepository.ToLowerInvariant(), target.Id));
             }
 
             var link = CreateCrossRepoEdge(
-                edge.SourceProject, target.Project, edge.SourceId, target.Id, EdgeType.REFERENCES_PACKAGE, properties);
+                edge.SourceRepository, target.Repository, edge.SourceId, target.Id, EdgeType.REFERENCES_PACKAGE, properties);
             (isPinned ? pinnedLinks : crossEdges).Add(link);
         }
 
@@ -592,7 +592,7 @@ public class CrossRepoLinker
         // two); it is kept only where nothing declares it: an Xcode project's pins, or a
         // transitive pin.
         crossEdges.AddRange(pinnedLinks.Where(link =>
-            !declaredTargets.Contains((link.SourceProject.ToLowerInvariant(), link.TargetNodeId))));
+            !declaredTargets.Contains((link.SourceRepository.ToLowerInvariant(), link.TargetNodeId))));
 
         if (crossEdges.Count > 0)
         {
@@ -604,8 +604,8 @@ public class CrossRepoLinker
         return crossEdges.Count;
 
         // SwiftPM resolves a URL dependency to the package at the repository's root.
-        IReadOnlyList<LinkNodeRow> RootPackageOf(string project, string rootManifest) => definitions
-            .Where(candidate => candidate.Project.Equals(project, StringComparison.OrdinalIgnoreCase) &&
+        IReadOnlyList<LinkNodeRow> RootPackageOf(string repository, string rootManifest) => definitions
+            .Where(candidate => candidate.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) &&
                                 string.Equals(candidate.Properties.GetValueOrDefault("manifest_path"),
                                     rootManifest, StringComparison.Ordinal))
             .ToList();
@@ -650,12 +650,12 @@ public class CrossRepoLinker
 
     /// <summary>
     /// Links references to SCIP external symbols to the one definition carrying the same symbol in
-    /// another project. Three streamed passes keep memory proportional to the distinct referenced
+    /// another repository. Three streamed passes keep memory proportional to the distinct referenced
     /// symbols and their definitions, not to every CALLS edge and definition node in the graph:
     /// (1) collect the distinct referenced symbols, (2) keep only definitions of those symbols,
     /// (3) resolve each reference.
     /// </summary>
-    private async Task<int> LinkRustSymbolsAsync(string? scopeProject, CancellationToken ct)
+    private async Task<int> LinkRustSymbolsAsync(string? scopeRepository, CancellationToken ct)
     {
         var referencedSymbols = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var edge in _store.StreamLinkEdgesAsync(RustExternalReferenceQuery, ct).WithCancellation(ct))
@@ -704,35 +704,35 @@ public class CrossRepoLinker
                 continue;
             }
 
-            var targetProjects = candidates
-                .Where(candidate => !candidate.Project.Equals(
-                    edge.SourceProject, StringComparison.OrdinalIgnoreCase))
-                .GroupBy(candidate => candidate.Project, StringComparer.OrdinalIgnoreCase)
+            var targetRepositories = candidates
+                .Where(candidate => !candidate.Repository.Equals(
+                    edge.SourceRepository, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(candidate => candidate.Repository, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            if (targetProjects.Count != 1)
+            if (targetRepositories.Count != 1)
             {
-                if (targetProjects.Count > 1)
+                if (targetRepositories.Count > 1)
                 {
                     _logger.LogDebug(
-                        "Skipping ambiguous Rust SCIP symbol match for {Symbol}: {ProjectCount} projects",
+                        "Skipping ambiguous Rust SCIP symbol match for {Symbol}: {RepositoryCount} repositories",
                         symbol,
-                        targetProjects.Count);
+                        targetRepositories.Count);
                 }
                 continue;
             }
 
-            var targetCandidates = targetProjects[0].ToList();
+            var targetCandidates = targetRepositories[0].ToList();
             if (targetCandidates.Count != 1)
             {
                 _logger.LogDebug(
-                    "Skipping ambiguous Rust SCIP symbol match for {Symbol} within {Project}",
+                    "Skipping ambiguous Rust SCIP symbol match for {Symbol} within {Repository}",
                     symbol,
-                    targetProjects[0].Key);
+                    targetRepositories[0].Key);
                 continue;
             }
 
             var target = targetCandidates[0];
-            if (!InScope(scopeProject, edge.SourceProject, target.Project))
+            if (!InScope(scopeRepository, edge.SourceRepository, target.Repository))
                 continue;
 
             var key = $"{edge.SourceId}\n{target.Id}\n{edge.Type}";
@@ -740,8 +740,8 @@ public class CrossRepoLinker
                 continue;
 
             crossEdges.Add(CreateCrossRepoEdge(
-                edge.SourceProject,
-                target.Project,
+                edge.SourceRepository,
+                target.Repository,
                 edge.SourceId,
                 target.Id,
                 edge.Type,
@@ -765,11 +765,11 @@ public class CrossRepoLinker
     }
 
     private static CrossRepoEdge CreateCrossRepoEdge(
-        string sourceProject, string targetProject, long sourceNodeId, long targetNodeId,
+        string sourceRepository, string targetRepository, long sourceNodeId, long targetNodeId,
         EdgeType type, Dictionary<string, object> properties) => new()
     {
-        SourceProject = sourceProject,
-        TargetProject = targetProject,
+        SourceRepository = sourceRepository,
+        TargetRepository = targetRepository,
         SourceNodeId = sourceNodeId,
         TargetNodeId = targetNodeId,
         Type = type,
@@ -843,74 +843,74 @@ public class CrossRepoLinker
     }
 
     /// <summary>
-    /// Resolve target project for a gateway call.
+    /// Resolve target repository for a gateway call.
     /// Prefer an exact service-name match, then fall back to namespace-based derivation
     /// from the DTO type.
     /// </summary>
-    private static string? ResolveGatewayTargetProject(
-        string? serviceName, string dtoTypeQN, HashSet<string> projectNames)
+    private static string? ResolveGatewayTargetRepository(
+        string? serviceName, string dtoTypeQN, HashSet<string> repositoryNames)
     {
-        var serviceProject = ResolveProjectName(serviceName, projectNames);
-        if (serviceProject is not null)
-            return serviceProject;
+        var serviceRepository = ResolveRepositoryName(serviceName, repositoryNames);
+        if (serviceRepository is not null)
+            return serviceRepository;
 
         // Fall back to namespace convention
-        return DeriveProjectFromDtoType(dtoTypeQN, projectNames);
+        return DeriveRepositoryFromDtoType(dtoTypeQN, repositoryNames);
     }
 
-    private static string? ResolveHttpTargetProject(
+    private static string? ResolveHttpTargetRepository(
         string? serviceName,
         string? requestDto,
         string? targetQualifiedName,
-        HashSet<string> projectNames)
+        HashSet<string> repositoryNames)
     {
-        var serviceProject = ResolveProjectName(serviceName, projectNames);
-        if (serviceProject is not null)
-            return serviceProject;
+        var serviceRepository = ResolveRepositoryName(serviceName, repositoryNames);
+        if (serviceRepository is not null)
+            return serviceRepository;
 
         if (targetQualifiedName is not null)
         {
-            var routeProject = TryGetProjectFromRouteQualifiedName(targetQualifiedName);
-            if (routeProject is not null && projectNames.Contains(routeProject))
-                return routeProject;
+            var routeRepository = TryGetRepositoryFromRouteQualifiedName(targetQualifiedName);
+            if (routeRepository is not null && repositoryNames.Contains(routeRepository))
+                return routeRepository;
         }
 
         return string.IsNullOrWhiteSpace(requestDto)
             ? null
-            : DeriveProjectFromDtoType(requestDto, projectNames);
+            : DeriveRepositoryFromDtoType(requestDto, repositoryNames);
     }
 
-    private static string? ResolveProjectName(string? projectName, HashSet<string> projectNames)
+    private static string? ResolveRepositoryName(string? repositoryName, HashSet<string> repositoryNames)
     {
-        if (string.IsNullOrWhiteSpace(projectName))
+        if (string.IsNullOrWhiteSpace(repositoryName))
             return null;
 
-        if (projectNames.Contains(projectName))
-            return projectName;
+        if (repositoryNames.Contains(repositoryName))
+            return repositoryName;
 
-        var tcProjectName = $"TC.{projectName}";
-        return projectNames.Contains(tcProjectName)
-            ? tcProjectName
+        var tcRepositoryName = $"TC.{repositoryName}";
+        return repositoryNames.Contains(tcRepositoryName)
+            ? tcRepositoryName
             : null;
     }
 
-    private static string? TryGetProjectFromRouteQualifiedName(string qualifiedName)
+    private static string? TryGetRepositoryFromRouteQualifiedName(string qualifiedName)
     {
         var parts = qualifiedName.Split(':', 4);
         if (parts.Length < 4 || !parts[0].Equals("route", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var project = parts[1];
-        return string.IsNullOrWhiteSpace(project) || project == "*"
+        var repository = parts[1];
+        return string.IsNullOrWhiteSpace(repository) || repository == "*"
             ? null
-            : project;
+            : repository;
     }
 
     /// <summary>
-    /// Derive project name from a request DTO type's namespace.
+    /// Derive repository name from a request DTO type's namespace.
     /// Example: OrdersApi.Models.GetOrderRequest -> OrdersApi
     /// </summary>
-    private static string? DeriveProjectFromDtoType(string dtoTypeQN, HashSet<string> projectNames)
+    private static string? DeriveRepositoryFromDtoType(string dtoTypeQN, HashSet<string> repositoryNames)
     {
         // Walk up the namespace segments and try progressively broader candidates.
         // Example: OrdersApi.Models.GetOrderRequest
@@ -921,7 +921,7 @@ public class CrossRepoLinker
             var candidate = string.Join(".", parts[..i]);
 
             // Try the namespace segment directly
-            if (projectNames.Contains(candidate))
+            if (repositoryNames.Contains(candidate))
                 return candidate;
 
             // Try stripping known suffixes (.Models, .Contracts, .Client)
@@ -930,7 +930,7 @@ public class CrossRepoLinker
                 if (candidate.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
                 {
                     var stripped = candidate[..^suffix.Length];
-                    if (projectNames.Contains(stripped))
+                    if (repositoryNames.Contains(stripped))
                         return stripped;
                 }
             }
@@ -943,7 +943,7 @@ public class CrossRepoLinker
     /// Example:
     /// OrdersApi.Models -> OrdersApi
     /// </summary>
-    private static string? DerivProjectFromPackage(string packageName)
+    private static string? DerivRepositoryFromPackage(string packageName)
     {
         // Try removing common suffixes: .Models, .Contracts, .Client
         var suffixes = new[] { ".Models", ".Contracts", ".Client", ".Shared" };
@@ -953,7 +953,7 @@ public class CrossRepoLinker
                 return packageName[..^suffix.Length];
         }
 
-        // Maybe the package name IS the project name
+        // Maybe the package name IS the repository name
         return packageName;
     }
 }

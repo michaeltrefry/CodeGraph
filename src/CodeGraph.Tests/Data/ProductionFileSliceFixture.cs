@@ -11,10 +11,10 @@ internal static class ProductionFileSliceFixture
     internal static readonly string[] FilePaths = ["schema.sql", "page.cfm", "OrderService.cfc"];
 
     internal static async Task<(ProductionSlice Old, ProductionSlice New)> CreateAsync(
-        string project,
+        string repository,
         string rootPath)
     {
-        var context = new ExtractorContext { ProjectName = project, RootPath = rootPath };
+        var context = new ExtractorContext { RepositoryName = repository, RootPath = rootPath };
         var sql = new SqlExtractor(NullLogger<SqlExtractor>.Instance);
         var coldFusion = new ColdFusionExtractor(NullLogger<ColdFusionExtractor>.Instance);
 

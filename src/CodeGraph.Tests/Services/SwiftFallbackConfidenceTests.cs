@@ -54,7 +54,7 @@ public sealed class SwiftFallbackConfidenceTests : IDisposable
     public async Task Extractor_MarksEverySwiftNodeAsTreeSitterFallback_AndLeavesOtherLanguagesAlone()
     {
         var extractor = new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance);
-        var context = new ExtractorContext { ProjectName = Repo, RootPath = _root };
+        var context = new ExtractorContext { RepositoryName = Repo, RootPath = _root };
 
         var swift = await extractor.ExtractAsync(Path.Combine(_root, ShapePath), ShapeSource, context);
         swift.Nodes.Count.ShouldBeGreaterThan(4);
@@ -85,7 +85,7 @@ public sealed class SwiftFallbackConfidenceTests : IDisposable
     {
         Write(ShapePath, ShapeSource);
         Write(ToolPath, "def helper():\n    return 1\n");
-        await Pipeline().IndexProjectAsync(Repo, _root, ct: CancellationToken.None);
+        await Pipeline().IndexRepositoryAsync(Repo, _root, ct: CancellationToken.None);
 
         var swiftCode = Code(ShapePath);
         swiftCode.Select(node => node.Name).ShouldContain("area");
@@ -94,13 +94,13 @@ public sealed class SwiftFallbackConfidenceTests : IDisposable
         pythonCode.ShouldNotBeEmpty();
         pythonCode.ShouldAllBe(node => !GraphNodeConfidence.IsLowConfidence(node));
 
-        var search = await Mcp().SearchGraph("area", project: Repo);
+        var search = await Mcp().SearchGraph("area", repository: Repo);
         search.Text().ShouldContain("**area** (Method) — SwiftRepo [low confidence]");
         search.Text().ShouldContain("low-confidence node(s)");
         search.StructuredString("lowConfidence").ShouldBe("true");
         int.Parse(search.StructuredString("lowConfidenceCount")!).ShouldBeGreaterThan(0);
 
-        var python = await Mcp().SearchGraph("helper", project: Repo);
+        var python = await Mcp().SearchGraph("helper", repository: Repo);
         python.StructuredString("lowConfidence").ShouldBe("false");
 
         var impact = await Mcp().AnalyzeImpact("area", Repo);
@@ -123,7 +123,7 @@ public sealed class SwiftFallbackConfidenceTests : IDisposable
         var headSha = GitFixture.Run(_root, "rev-parse", "HEAD");
         GitFixture.Run(_root, "checkout", "-q", "main");
         await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repo, LocalPath = _root, LastCommitSha = baseSha });
-        await _store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repo, LastCommitSha = baseSha });
+        await _store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repo, LastCommitSha = baseSha });
 
         var overlays = new InMemoryBranchOverlayStore();
         var service = new BranchOverlayService(
