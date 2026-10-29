@@ -30,6 +30,9 @@ CREATE INDEX IF NOT EXISTS ix_knowledge_entries_rules ON knowledge_entries (proj
 -- The activities a session declared (start_session / get_briefing activity): rules are served when
 -- one of a rule's applies-when activities is among them. A comma list of snake_case names.
 ALTER TABLE work_sessions ADD COLUMN IF NOT EXISTS activities VARCHAR(255) NULL;
+-- The skills a session declared it has loaded (a JSON array of names): a rule addressed_by one of
+-- them is not served to it.
+ALTER TABLE work_sessions ADD COLUMN IF NOT EXISTS skills TEXT NULL;
 
 -- Every correction recorded into a lesson, as its evidence. correction_id is the id the write gave
 -- the correction (the lesson's own id for the first one). event_key identifies the source event
@@ -107,22 +110,44 @@ CREATE TABLE IF NOT EXISTS lesson_challenges (
 ) ENGINE=InnoDB;
 
 -- promote addressed_by: the lesson is addressed locally by a skill, instruction, hook, test or CI
--- gate (made outside CodeGraph; CodeGraph only records the link). It then leaves briefings (R27, R28).
+-- gate (made outside CodeGraph; CodeGraph only records the link). Scope in briefings (§5.7): a
+-- skill hides the rule from sessions that declare that skill loaded; an instruction or hook (with
+-- its harness) from sessions of that harness; a test or CI gate from every briefing (R27, R28).
+-- harness is '' for skills, tests and CI gates.
 CREATE TABLE IF NOT EXISTS lesson_addressed_by (
     entry_id CHAR(36) NOT NULL,
     kind VARCHAR(16) NOT NULL,
     name VARCHAR(255) NOT NULL,
+    harness VARCHAR(64) NOT NULL DEFAULT '',
     ref VARCHAR(500) NULL,
     author VARCHAR(255) NOT NULL,
     author_kind VARCHAR(16) NOT NULL DEFAULT 'user',
     author_session_id VARCHAR(64) NULL,
     created_at DATETIME(6) NOT NULL,
-    PRIMARY KEY (entry_id, kind, name),
+    PRIMARY KEY (entry_id, kind, name, harness),
     CONSTRAINT fk_lesson_addressed_by_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- The served-rule log (R26): which rules each session's briefings served, so a recurrence can be
--- read as with or without its rule served. One row per session and rule.
+-- Embeddings of lesson summaries for similarity (E5: embeddings find candidates, they never decide),
+-- per embedding model, written by the similarity lookup; summary_hash says which summary was embedded
+-- (a revised lesson is embedded again). vector is float32 little-endian.
+CREATE TABLE IF NOT EXISTS lesson_embeddings (
+    entry_id CHAR(36) NOT NULL,
+    model VARCHAR(128) NOT NULL,
+    summary_hash CHAR(64) NOT NULL,
+    dimensions INT NOT NULL,
+    vector LONGBLOB NOT NULL,
+    created_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (entry_id, model),
+    CONSTRAINT fk_lesson_embeddings_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- The served-rule log (R26): which rules each session's briefings served (or item briefs read with
+-- that session), so a recurrence can be read as with or without its rule served. One row per session
+-- and rule, so it is bounded by sessions x rules served (at most 10 per briefing); it is kept for the
+-- life of the rule (deleted with it) because the with/without-served signal and the unmatched view
+-- read its history. Sessions are never deleted today; a future session-pruning job should delete
+-- these rows with the session (session_id is the only attribution column here).
 CREATE TABLE IF NOT EXISTS lesson_served (
     session_id VARCHAR(64) NOT NULL,
     entry_id CHAR(36) NOT NULL,

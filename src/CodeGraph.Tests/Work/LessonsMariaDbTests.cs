@@ -56,8 +56,8 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
     private static List<JsonElement> Rules(JsonElement briefing) =>
         briefing.TryGetProperty("rules", out var rules) ? rules.EnumerateArray().ToList() : [];
 
-    private async Task<JsonElement> BriefingAsync(string project, string[]? activity, string? repository = null, string user = "bob") =>
-        (await db.CallAsync(WorkTools.StartSession, new { project, harness = "codex", repository, activity }, user)).GetProperty("briefing");
+    private async Task<JsonElement> BriefingAsync(string project, string[]? activity, string? repository = null, string user = "bob", string[]? skills = null, string harness = "codex") =>
+        (await db.CallAsync(WorkTools.StartSession, new { project, harness, repository, activity, skills }, user)).GetProperty("briefing");
 
     [Fact]
     public async Task Always_and_never_with_the_same_scope_stay_two_rules_both_served_with_the_contradiction_shown()
@@ -354,7 +354,9 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
         unaddressed.GetProperty("activity").GetString().ShouldBe("tracker_updates");
         var addressed = await PromoteAsync("addressed_by", new { addressed_by = new { kind = "skill", name = "shortcut-story", @ref = "abc123" } });
         addressed.GetProperty("entry").GetProperty("lesson").GetProperty("addressed_by").EnumerateArray().Single().GetProperty("name").GetString().ShouldBe("shortcut-story");
-        Rules(await BriefingAsync(key, ["tracker_updates"])).ShouldBeEmpty();
+        // A skill carries the rule only for sessions that load it.
+        Rules(await BriefingAsync(key, ["tracker_updates"], skills: ["Shortcut-Story"])).ShouldBeEmpty();
+        Rules(await BriefingAsync(key, ["tracker_updates"])).ShouldHaveSingleItem();
         (await db.CallAsync(WorkTools.Lessons, new { project = key, view = "unaddressed" })).GetProperty("groups").EnumerateArray().ShouldBeEmpty();
 
         // A lesson without an applies-when activity is not made a rule.

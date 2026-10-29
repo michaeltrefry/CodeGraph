@@ -16,14 +16,45 @@ public sealed partial class WorkService
 
     // ---- Similar lessons of a write ------------------------------------------------------------
 
-    /// <summary>The similar lessons of the lessons a write stored or merged into (candidates for same_as / contradicts), or null.</summary>
+    /// <summary>
+    /// The similar lessons of the lessons a write stored or merged into (candidates for same_as /
+    /// contradicts), or null. Embeddings find the candidates when an embedding provider is available
+    /// (E5: embeddings, no model call); the lexical score otherwise. Nothing is merged on similarity.
+    /// </summary>
     private async Task<IReadOnlyList<SimilarLessons>?> SimilarAsync(Guid projectId, IReadOnlyList<KnowledgeRow>? recorded, CancellationToken ct)
     {
-        var lessons = (recorded ?? []).Where(row => row.Kind == KnowledgeKind.Lesson).Select(row => row.Id).Distinct().ToList();
-        if (lessons.Count == 0)
+        var lessonIds = (recorded ?? []).Where(row => row.Kind == KnowledgeKind.Lesson).Select(row => row.Id).Distinct().ToList();
+        if (lessonIds.Count == 0)
             return null;
-        var similar = await Knowledge.FindSimilarLessonsAsync(projectId, lessons, ct);
+        var similar = await Knowledge.FindSimilarLessonsAsync(projectId, lessonIds, Embedder(), ct);
         return similar.Count == 0 ? null : similar;
+    }
+
+    private LessonEmbedder? Embedder()
+    {
+        if (embeddings is not { IsAvailable: true } provider)
+            return null;
+        return new LessonEmbedder(provider.ModelName, texts => provider.GenerateEmbeddings(texts), lessons.EmbeddingCandidateThreshold);
+    }
+
+    /// <summary>
+    /// Data for the caller about lessons it stored that stay task-scoped: a correction from the
+    /// human's prompt is a rule at once only with an applies-when activity (R24).
+    /// </summary>
+    private static IReadOnlyList<string>? LessonHints(IReadOnlyList<KnowledgeSpec> specs, IReadOnlyList<KnowledgeRow>? recorded)
+    {
+        var lessonSpecs = specs.Where(spec => spec.Kind == KnowledgeKind.Lesson).ToList();
+        var lessonRows = (recorded ?? []).Where(row => row.Kind == KnowledgeKind.Lesson).ToList();
+        if (lessonSpecs.Count == 0 || lessonSpecs.Count != lessonRows.Count)
+            return null;
+        var hints = lessonSpecs.Zip(lessonRows)
+            .Where(pair => pair.First.Details?.Source?.Kind == CorrectionSourceKind.Prompt &&
+                           pair.First.Details.AppliesWhen?.Activity is not { Count: > 0 } && pair.Second.Rule != true)
+            .Select(pair => $"Lesson {pair.Second.Id} (from the human's prompt) is stored task-scoped, not as a rule: it has no applies_when.activity. " +
+                            "Add applies_when.activity (record revise) to make it a rule served in briefings.")
+            .Distinct()
+            .ToList();
+        return hints.Count == 0 ? null : hints;
     }
 
     private static KnowledgeRow ToRow(KnowledgeView view) => new(view.Id, view.Kind, view.Summary, view.Confidence, view.Version);
@@ -42,17 +73,54 @@ public sealed partial class WorkService
         return (ReadLessonId(sameAs, $"{where}.same_as"), ReadLessonId(contradicts, $"{where}.contradicts"));
     }
 
+    /// <summary>Skill names as stored: trimmed, distinct ignoring case, at most 50 of at most 255 characters; null when not passed.</summary>
+    private static IReadOnlyList<string>? ReadSkills(IReadOnlyList<string>? skills, string argument)
+    {
+        if (skills is null)
+            return null;
+        if (skills.Count > LessonLimits.MaxSkills)
+            throw WorkException.Invalid($"{argument} holds at most {LessonLimits.MaxSkills} skill names. Nothing was changed.");
+        return skills.Select((skill, index) => Text(skill, $"{argument}[{index}]", LessonLimits.MaxNameLength))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     // ---- Briefing rules -----------------------------------------------------------------------------
 
     /// <summary>
+    /// The default activity of a session that declared none (B2, documented on start_session's
+    /// activity): derived from the status of the items it holds, deterministically: in_progress
+    /// means implementing, in_review means reviewing. Any other status implies nothing.
+    /// </summary>
+    internal static IReadOnlyList<LessonActivity> DerivedActivity(IEnumerable<WorkStatus> held) =>
+        held.Select(status => status switch
+            {
+                WorkStatus.InProgress => (LessonActivity?)LessonActivity.Implementing,
+                WorkStatus.InReview => LessonActivity.Reviewing,
+                _ => null
+            })
+            .OfType<LessonActivity>()
+            .Distinct()
+            .Order()
+            .ToList();
+
+    /// <summary>
     /// The briefing with its rules section: the rules whose applies-when matches the session (its
-    /// activity, repository, paths, harness), each with its contradictions and open challenges.
-    /// Without a declared activity no rule matches; rule_activities then names the activities the
-    /// project has rules for, so the agent can ask again with one.
+    /// activity, repository, paths, harness) and that no local fix carries for it (its skills, its
+    /// harness's instructions and hooks, any test or CI gate), each with its contradictions and open
+    /// challenges. Without a declared activity the activity is derived from the items the session
+    /// holds (derived_activity); without either no rule matches, and rule_activities names the
+    /// activities the project has rules for.
     /// </summary>
     private async Task<BriefingView> WithRulesAsync(BriefingView briefing, SessionView session, IReadOnlyList<string> paths, CancellationToken ct)
     {
         var activity = session.Activity ?? [];
+        IReadOnlyList<LessonActivity>? derived = null;
+        if (activity.Count == 0)
+        {
+            derived = DerivedActivity((briefing.MyWork ?? []).Select(item => item.Status));
+            activity = derived;
+        }
+
         if (activity.Count == 0)
         {
             var available = await Knowledge.ReadRuleActivitiesAsync(session.ProjectId, ct);
@@ -60,7 +128,9 @@ public sealed partial class WorkService
         }
 
         var rules = await Knowledge.ReadRulesAsync(
-            new RuleContext(session.ProjectId, activity, session.Repository, paths, session.Harness, LessonLimits.MaxBriefingRules), ct);
+            new RuleContext(session.ProjectId, activity, session.Repository, paths, session.Harness, LessonLimits.MaxBriefingRules, session.Skills), ct);
+        if (derived is { Count: > 0 })
+            briefing = briefing with { DerivedActivity = derived };
         if (rules.Count == 0)
             return briefing;
         // A rule linked to the session's item is shown once, among the rules.
@@ -82,11 +152,18 @@ public sealed partial class WorkService
         switch (request.Action)
         {
             case PromoteAction.AddressedBy when request.AddressedBy is null:
-                throw WorkException.Invalid("action addressed_by needs addressed_by {kind, name, ref}: what addresses the lesson. Nothing was changed.");
+                throw WorkException.Invalid("action addressed_by needs addressed_by {kind, name, ref, harness}: what addresses the lesson. Nothing was changed.");
             case PromoteAction.AddressedBy:
-                addressedBy = new AddressedBySpec(request.AddressedBy.Kind,
-                    Text(request.AddressedBy.Name, "addressed_by.name", LessonLimits.MaxNameLength),
-                    Optional(request.AddressedBy.Ref, "addressed_by.ref", KnowledgeLimits.MaxSourceRefLength));
+                var by = request.AddressedBy;
+                var carriedByHarness = by.Kind is AddressedByKind.Instruction or AddressedByKind.Hook;
+                if (carriedByHarness && by.Harness is null)
+                    throw WorkException.Invalid($"addressed_by of kind {WorkJson.Name(by.Kind)} needs harness: it hides the rule only from sessions of that harness. Nothing was changed.");
+                if (!carriedByHarness && by.Harness is not null)
+                    throw WorkException.Invalid($"addressed_by.harness goes with kind instruction or hook; a skill is scoped by the sessions that load it, a test or ci gate covers every session. Nothing was changed.");
+                addressedBy = new AddressedBySpec(by.Kind,
+                    Text(by.Name, "addressed_by.name", LessonLimits.MaxNameLength),
+                    Optional(by.Ref, "addressed_by.ref", KnowledgeLimits.MaxSourceRefLength),
+                    by.Harness is { } harness ? Text(harness, "addressed_by.harness", WorkSessionLimits.MaxHarnessLength).ToLowerInvariant() : null);
                 break;
             case PromoteAction.Reject when reason is null:
                 throw WorkException.Invalid("reject needs reason: it is recorded so the same lesson is not proposed again. Nothing was changed.");
@@ -165,9 +242,15 @@ public sealed partial class WorkService
         if (since is < 1 or > 3650)
             throw WorkException.Invalid("since_days must be 1 to 3650.");
         var offset = request.Cursor is { } cursor ? DecodeOffset(cursor, LessonsCursorKind, "lessons") : 0;
+        if (request.View == LessonsView.UnlearnedReviews && request.Activity is not null)
+            throw WorkException.Invalid("activity does not go with view unlearned_reviews: a review comment has no applies-when (source review or bot_review narrows it).");
+        if (request.View == LessonsView.UnlearnedReviews && request.Source is not (null or CorrectionSourceKind.Review or CorrectionSourceKind.BotReview))
+            throw WorkException.Invalid("With view unlearned_reviews, source is review (human reviews) or bot_review.");
 
         var page = await Knowledge.ReadLessonsAsync(new LessonsSpec(project.Id, request.View, request.Activity, request.Source, since, offset, limit), ct);
         var next = page.More ? EncodeCursor(LessonsCursorKind, (offset + limit).ToString(CultureInfo.InvariantCulture)) : null;
+        if (request.View == LessonsView.UnlearnedReviews)
+            return new LessonsResult(request.View, NextCursor: next, Reviews: page.Reviews ?? []);
         if (request.View != LessonsView.Unaddressed)
             return new LessonsResult(request.View, Items: page.Items, NextCursor: next);
 

@@ -83,7 +83,9 @@ public enum LessonsView
     /// <summary>Rules not addressed_by a local skill, hook or test, grouped by activity.</summary>
     Unaddressed,
     /// <summary>Rules not served to any session for since_days (or never).</summary>
-    Unmatched
+    Unmatched,
+    /// <summary>GitHub review evidence (reviews and review comments) no lesson was recorded from.</summary>
+    UnlearnedReviews
 }
 
 /// <summary>Settings of the learning loop, bound from configuration section <see cref="Section"/>.</summary>
@@ -93,6 +95,9 @@ public sealed class WorkLessonOptions
 
     /// <summary>Distinct correction events after which a lesson with an applies-when activity becomes a rule (default 2).</summary>
     public int RuleRecurrenceThreshold { get; set; } = 2;
+
+    /// <summary>Cosine similarity at or above which a lesson is listed as similar when an embedding provider is available (default 0.8).</summary>
+    public double EmbeddingCandidateThreshold { get; set; } = 0.8;
 }
 
 public static class LessonLimits
@@ -109,6 +114,11 @@ public static class LessonLimits
     public const int DefaultLimit = 20;
     public const int MaxLimit = 50;
     public const int DefaultUnmatchedDays = 30;
+    /// <summary>Open challenges shown per rule in a briefing or review-queue item (the rest are counted).</summary>
+    public const int MaxShownChallenges = 3;
+    public const int MaxSkills = 50;
+    /// <summary>Lessons of the pool embedded on one similarity call when they have no stored embedding yet.</summary>
+    public const int MaxEmbedPerCall = 200;
 }
 
 // ---- Inputs ---------------------------------------------------------------------------------------
@@ -145,6 +155,10 @@ public sealed class AddressedByInput
 
     [Description("Where it is: a commit, a path or a URL.")]
     public string? Ref { get; init; }
+
+    [Description("With kind instruction or hook (required, and only with those): the harness it lives in (such as claude-code); the rule is then not served to sessions of that harness. " +
+                 "A skill hides the rule from sessions that declare it in skills; a test or ci gate from every briefing.")]
+    public string? Harness { get; init; }
 }
 
 public sealed class ChallengeRequest : ISessionArguments
@@ -303,7 +317,7 @@ public sealed record ChallengeView(
     public string Entity => "challenge";
 }
 
-public sealed record AddressedByView(AddressedByKind Kind, string Name, string? Ref, WorkActor Author, DateTime CreatedAt);
+public sealed record AddressedByView(AddressedByKind Kind, string Name, string? Ref, WorkActor Author, DateTime CreatedAt, string? Harness = null);
 
 public sealed record LessonEventView(
     Guid CorrectionId,
@@ -343,7 +357,8 @@ public sealed record LessonView(
 /// <summary>A lesson similar to one just recorded: a merge or contradiction candidate. CodeGraph never decides (E5).</summary>
 /// <param name="Score">Lexical similarity 0..1 (Jaccard of the content words).</param>
 /// <param name="PossibleContradiction">One says never/not/don't and the other does not: likely a contradiction, not a duplicate.</param>
-public sealed record SimilarLesson(Guid Id, string Summary, double Score, long Version, LessonRuleState State, bool? PossibleContradiction = null);
+/// <param name="Method">embedding (cosine of the configured embedding model) or lexical (no embedding provider).</param>
+public sealed record SimilarLesson(Guid Id, string Summary, double Score, long Version, LessonRuleState State, bool? PossibleContradiction = null, string Method = "lexical");
 
 /// <summary>The similar lessons of one lesson a write recorded (or merged into).</summary>
 public sealed record SimilarLessons(Guid Entry, IReadOnlyList<SimilarLesson> Candidates);
@@ -357,7 +372,9 @@ public sealed record BriefingRule(
     IReadOnlyList<LessonActivity> Activity,
     int? Recurrence = null,
     IReadOnlyList<LessonLinkView>? Contradicts = null,
-    IReadOnlyList<BriefingChallenge>? Challenges = null);
+    IReadOnlyList<BriefingChallenge>? Challenges = null,
+    // Open challenges beyond the ones shown.
+    int? MoreChallenges = null);
 
 public sealed record BriefingChallenge(Guid Id, string Reason, IReadOnlyList<string> Evidence);
 
@@ -380,7 +397,12 @@ public sealed record LessonRow(
 
 public sealed record LessonGroup(LessonActivity Activity, IReadOnlyList<LessonRow> Lessons);
 
-public sealed record LessonsResult(LessonsView View, IReadOnlyList<LessonRow>? Items = null, IReadOnlyList<LessonGroup>? Groups = null, string? NextCursor = null);
+/// <summary>A GitHub review or review comment on an item of the project that no lesson names as its source (source.ref is its URL or id).</summary>
+public sealed record UnlearnedReview(Guid EvidenceId, string Item, GitHubEvidenceKind Kind, string AuthorLogin, string Source, string Priority, DateTime CreatedAt,
+    string? Url = null, string? ExternalId = null, string? ReviewState = null, string? Body = null);
+
+public sealed record LessonsResult(LessonsView View, IReadOnlyList<LessonRow>? Items = null, IReadOnlyList<LessonGroup>? Groups = null, string? NextCursor = null,
+    IReadOnlyList<UnlearnedReview>? Reviews = null);
 
 public static class ReviewKinds
 {
@@ -398,7 +420,8 @@ public sealed record ReviewItem(
     int Recurrence,
     DateTime Since,
     KnowledgeRow? Other = null,
-    IReadOnlyList<ChallengeView>? Challenges = null);
+    IReadOnlyList<ChallengeView>? Challenges = null,
+    int? MoreChallenges = null);
 
 public sealed record ReviewQueueResult(IReadOnlyList<ReviewItem> Items, string? NextCursor = null);
 

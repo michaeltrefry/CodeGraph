@@ -51,7 +51,9 @@ public interface IKnowledgeStore
     // ---- Lessons, rules and challenges (S9) -------------------------------------------------------
 
     /// <summary>The active lessons of the project lexically similar to each of <paramref name="entryIds"/> (candidates only; nothing is decided).</summary>
-    Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, CancellationToken ct = default);
+    /// <remarks>With <paramref name="embedder"/> the candidates are found by cosine similarity of stored embeddings (lessons without one are embedded and stored);
+    /// without it by the lexical score. Either way the polarity flag is lexical.</remarks>
+    Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, LessonEmbedder? embedder, CancellationToken ct = default);
 
     /// <summary>
     /// The rules to serve in a briefing: active, not addressed locally, with an applies-when activity
@@ -66,8 +68,8 @@ public interface IKnowledgeStore
     /// <summary>The served-rule log: the session's briefing served these rules now.</summary>
     Task LogServedRulesAsync(Guid sessionId, Guid projectId, IReadOnlyList<Guid> ruleIds, CancellationToken ct = default);
 
-    /// <summary>The activities a session declared (the rule filter of its briefings).</summary>
-    Task SetSessionActivityAsync(Guid sessionId, IReadOnlyList<LessonActivity> activity, CancellationToken ct = default);
+    /// <summary>The activities and the loaded skills a session declared (the rule filter of its briefings); a null list leaves that one unchanged.</summary>
+    Task SetSessionBriefingContextAsync(Guid sessionId, IReadOnlyList<LessonActivity>? activity, IReadOnlyList<string>? skills, CancellationToken ct = default);
 
     /// <summary>record relate: merge a lesson into another (same_as) or link the two as contradicting.</summary>
     Task<KnowledgeView> RelateLessonAsync(Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, CancellationToken ct = default);
@@ -95,13 +97,18 @@ public sealed record RuleContext(
     string? Repository,
     IReadOnlyList<string> Paths,
     string? Harness,
-    int Limit);
+    int Limit,
+    IReadOnlyList<string>? Skills = null);
 
-public sealed record AddressedBySpec(AddressedByKind Kind, string Name, string? Ref);
+/// <param name="Harness">Instruction and hook only: the harness that carries the fix.</param>
+public sealed record AddressedBySpec(AddressedByKind Kind, string Name, string? Ref, string? Harness = null);
+
+/// <summary>An embedding provider for lesson similarity (E5: embeddings, never a model call that decides).</summary>
+public sealed record LessonEmbedder(string Model, Func<IReadOnlyList<string>, IReadOnlyList<float[]>> Embed, double Threshold);
 
 public sealed record LessonsSpec(Guid ProjectId, LessonsView View, LessonActivity? Activity, CorrectionSourceKind? Source, int SinceDays, int Offset, int Limit);
 
-public sealed record LessonsPage(IReadOnlyList<LessonRow> Items, bool More);
+public sealed record LessonsPage(IReadOnlyList<LessonRow> Items, bool More, IReadOnlyList<UnlearnedReview>? Reviews = null);
 
 public sealed record ReviewQueuePage(IReadOnlyList<ReviewItem> Items, bool More);
 

@@ -524,7 +524,10 @@ internal static class SavePointText
     public const string BriefingPaths = "Paths the session works on, relative to the repository root: the briefing's knowledge section adds the decisions and rules scoped to them.";
     public const string BriefingActivity =
         "What the session is doing: planning, slicing, implementing, testing, reviewing, merging, releasing, tracker_updates, coordinating. The briefing's rules section serves " +
-        "the rules whose applies-when names one of these activities (and whose location, if any, matches). Kept on the session until a get_briefing passes another.";
+        "the rules whose applies-when names one of these activities (and whose location, if any, matches). Kept on the session until a get_briefing passes another. " +
+        "Left out: derived from the items the session holds (in_progress: implementing, in_review: reviewing), else no rule is served.";
+    public const string BriefingSkills =
+        "Names of the skills the session has loaded, at most 50: a rule addressed_by one of these skills is not served to it (the skill carries it). Kept on the session until a get_briefing passes others.";
 }
 
 internal static class LessonText
@@ -628,7 +631,9 @@ public sealed record KnowledgeView(
 
 /// <param name="Merged">true when the lesson was merged into an existing one (same_as, or an exact normalized match): Entry is that lesson.</param>
 /// <param name="Similar">Lessons similar to the one recorded: candidates for same_as or contradicts (record relate).</param>
-public sealed record RecordResult(bool Created, KnowledgeView Entry, KnowledgeRow? Superseded = null, bool? Merged = null, IReadOnlyList<SimilarLessons>? Similar = null);
+/// <param name="Hints">Data about what was stored, such as a prompt lesson kept task-scoped for want of an applies-when activity.</param>
+public sealed record RecordResult(bool Created, KnowledgeView Entry, KnowledgeRow? Superseded = null, bool? Merged = null, IReadOnlyList<SimilarLessons>? Similar = null,
+    IReadOnlyList<string>? Hints = null);
 
 public sealed record RecallResult(IReadOnlyList<object> Items, string? NextCursor = null);
 

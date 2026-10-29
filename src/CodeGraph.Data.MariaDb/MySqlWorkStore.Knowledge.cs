@@ -276,6 +276,10 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @by WHERE id = @id",
                     new { by = spec.Id, id = replaced.EntryId }, transaction, cancellationToken: ct));
+                // A lesson replacing a lesson (S9) takes over its corrections, recurrence, links, open
+                // challenges and rule status: a rule superseded by a new wording stays a rule.
+                if (old.Kind == "lesson" && spec.Kind == KnowledgeKind.Lesson)
+                    await TransferLessonAsync(connection, transaction, old, spec.Id, actor, now, uniteAppliesWhen: false, ct);
                 await InsertRevisionAsync(connection, transaction, replaced.EntryId, old.Revision, "superseded", actor, now, ct);
                 superseded = replaced.EntryId;
             }

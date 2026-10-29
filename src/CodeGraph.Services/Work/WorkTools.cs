@@ -40,8 +40,8 @@ public static class WorkTools
         " Save points: decisions, attempts, corrections (lessons) and findings (facts, gotchas, constraints) are stored as entries of the project's knowledge " +
         "in the same transaction as the write and echoed in recorded; recall and other sessions' briefings return them." +
         " A correction becomes a lesson: with same_as (an existing lesson's id) it is merged into that lesson as a recurrence with its evidence; with contradicts both are kept, linked and served together; " +
-        "otherwise an exact normalized match with overlapping applies-when merges, and anything else is new. Recurrence counts distinct source events (source.ref, else the session): " +
-        "the same correction reported twice from one event counts once. similar lists existing lessons that read alike (lexical, no model): candidates for same_as or contradicts " +
+        "otherwise an exact normalized match with overlapping applies-when merges, and anything else is new. Recurrence counts distinct source events (source.ref, else the session and item): a merge unites the applies-when; " +
+        "the same correction reported twice from one event counts once. similar lists existing lessons that read alike (by embedding when a provider is configured, else lexical; no model decides): candidates for same_as or contradicts " +
         "(record relate), never merged without the caller. A lesson from the human's prompt with an applies-when activity is a rule at once.";
 
     public const string Post = "post";
@@ -123,7 +123,9 @@ public static class WorkTools
             "first), knowledge: the active decisions, constraints and gotchas linked to its items, scoped to paths (passed here), to its repository, " +
             "or project-wide (lessons by item only), and rules: the lessons that are rules whose applies-when names one of the session's activity (passed here) " +
             "and whose location (repositories, paths, harness) matches, ranked by priority then recurrence, each with the lessons it contradicts and its open " +
-            "challenges; without an activity no rule is served and rule_activities names the activities the project has rules for. Every briefing logs the rules " +
+            "challenges; a rule addressed_by a skill the session declared in skills, by an instruction or hook of its harness, or by a test or ci gate is left out. " +
+            "Without an activity it is derived from the items the session holds (in_progress: implementing, in_review: reviewing; shown in derived_activity); without " +
+            "either no rule is served and rule_activities names the activities the project has rules for. Every briefing logs the rules " +
             "it served. Empty sections are left out and truncated names sections the budget shortened." + Errors,
             ReadOnly: false, Idempotent: false),
         new(EndSession, "End Session", typeof(EndSessionRequest),
@@ -133,7 +135,7 @@ public static class WorkTools
             ReadOnly: false, Idempotent: true),
         new(GetBriefing, "Get Briefing", typeof(GetBriefingRequest),
             "Fetch the session's briefing again (for example after context compaction), optionally including one item (focus) with its latest handoff. Same " +
-            "sections and budget rules as start_session; paths adds the knowledge scoped to them; activity replaces the session's activity (the rules filter). " +
+            "sections and budget rules as start_session; paths adds the knowledge scoped to them; activity and skills replace the session's (the rules filter), after every argument is checked. " +
             "Renews the session's heartbeat." + Errors,
             ReadOnly: false, Idempotent: true),
         new(Acquire, "Acquire Resource", typeof(AcquireRequest),
@@ -224,20 +226,24 @@ public static class WorkTools
             "Move a lesson between tiers (task-scoped, rule, addressed locally). propose: ask for it to become a rule (it waits in the review queue; it still becomes a " +
             "rule on recurrence). approve: it is a rule now. reject with reason: refuse rule status; it is not proposed again and recurrence does not promote it " +
             "(approve overrides). A rule needs an applies-when activity. addressed_by {kind skill, instruction, hook, test or ci, name, ref}: the lesson is addressed " +
-            "by a local fix made outside CodeGraph; it leaves briefings (CodeGraph never writes skills, hooks or tests). Anyone may do any of these; nothing waits " +
+            "by a local fix made outside CodeGraph (CodeGraph never writes skills, hooks or tests): a skill takes it out of briefings for sessions that declare " +
+            "that skill loaded, an instruction or hook (with harness) for sessions of that harness, a test or ci gate for every session; the same fix with a new " +
+            "ref updates the link. Anyone may do any of these; nothing waits " +
             "on it. Guarded by expected_version; a call that changes nothing answers the lesson with changed false. Answers the lesson with its lesson state." + Sessions + Errors,
             ReadOnly: false, Idempotent: true),
         new(Challenge, "Challenge Rule", typeof(ChallengeRequest),
             "Dispute an active rule with evidence, or resolve such a dispute. open {id, reason, evidence [{kind test_result, source, counter_example, link or other, " +
             "summary, ref}]}: the rule stays active and is served with the open challenge beside it; the challenge goes to the review queue. resolve {challenge_id, " +
             "expected_version (the rule's), outcome uphold, amend (with amend: summary, what, applies_when) or retract, reason}: the outcome is recorded on the " +
-            "challenge and as a revision of the rule. Nothing waits on a challenge. Answers the challenge and the rule." + Sessions + Errors,
-            ReadOnly: false, Idempotent: true),
+            "challenge and as a revision of the rule. Nothing waits on a challenge. open is safe to retry only with idempotency_key (a repeat answers the first " +
+            "challenge, created false); a resolved challenge refuses another resolve. Answers the challenge and the rule." + Sessions + Errors,
+            ReadOnly: false, Idempotent: false),
         new(Lessons, "Lessons", typeof(LessonsRequest),
             "Read the project's lessons for review and for updating skills by hand. view recently_learned: rules, newest first, with how they became rules " +
             "(human_prompt, recurrence, approved). recurrence: lessons that recurred, with recurrence while their rule was served to the recording session (text " +
             "alone is not working: a candidate for a local fix) and while it was not (its applies-when is probably wrong); CodeGraph takes no action on either. " +
-            "unaddressed: rules not addressed_by a local fix, grouped by activity. unmatched: rules no briefing served for since_days. Filters activity and source; " +
+            "unaddressed: rules not addressed_by a local fix, grouped by activity. unmatched: rules no briefing served for since_days. unlearned_reviews: GitHub " +
+            "reviews and review comments on the project's items that no lesson names as its source.ref (their URL or id), newest first. Filters activity and source; " +
             "pages of limit with next_cursor." + Sessions + Errors,
             ReadOnly: true, Idempotent: true),
         new(ReviewQueue, "Review Queue", typeof(ReviewQueueRequest),

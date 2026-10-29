@@ -76,6 +76,9 @@ public sealed class StartSessionRequest
     [Description(SavePointText.BriefingActivity)]
     public List<LessonActivity>? Activity { get; init; }
 
+    [Description(SavePointText.BriefingSkills)]
+    public List<string>? Skills { get; init; }
+
     [Description("Caller-chosen key: a repeat by the same identity answers the session the first call started, with created false.")]
     public string? IdempotencyKey { get; init; }
 }
@@ -123,6 +126,9 @@ public sealed class GetBriefingRequest : ISessionArguments
 
     [Description(SavePointText.BriefingActivity)]
     public List<LessonActivity>? Activity { get; init; }
+
+    [Description(SavePointText.BriefingSkills)]
+    public List<string>? Skills { get; init; }
 }
 
 public sealed class HandoffInput
@@ -165,7 +171,8 @@ public sealed record SessionView(
     DateTime StartedAt,
     DateTime LastSeenAt,
     DateTime? EndedAt = null,
-    IReadOnlyList<LessonActivity>? Activity = null)
+    IReadOnlyList<LessonActivity>? Activity = null,
+    IReadOnlyList<string>? Skills = null)
 {
     public string Kind => "session";
 }
@@ -195,7 +202,8 @@ public sealed record EndSessionResult(
     HandoffView? Handoff = null,
     IReadOnlyList<HoldView>? ReleasedHolds = null,
     IReadOnlyList<KnowledgeRow>? Recorded = null,
-    IReadOnlyList<SimilarLessons>? Similar = null);
+    IReadOnlyList<SimilarLessons>? Similar = null,
+    IReadOnlyList<string>? Hints = null);
 
 /// <summary>
 /// What the next holder of an item needs to continue it (§5.9): the previous holder, the branch and
@@ -233,7 +241,9 @@ public sealed record BriefingView(
     IReadOnlyList<OverlapWarning>? OverlapWarnings = null,
     IReadOnlyList<KnowledgeRow>? Knowledge = null,
     IReadOnlyList<BriefingRule>? Rules = null,
-    IReadOnlyList<LessonActivity>? RuleActivities = null);
+    IReadOnlyList<LessonActivity>? RuleActivities = null,
+    // The activity the rules were matched for when the session declared none: derived from the items it holds (in_progress: implementing, in_review: reviewing).
+    IReadOnlyList<LessonActivity>? DerivedActivity = null);
 
 public sealed record BriefingProject(string Key, string Name, IReadOnlyList<string>? Goals = null);
 

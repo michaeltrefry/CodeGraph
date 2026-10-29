@@ -121,13 +121,23 @@ public sealed partial class WorkService
         return rows.Count == 0 ? null : rows;
     }
 
-    // The knowledge of an item brief: linked to the item, scoped to its repository, or project-wide.
-    // Seam for S4: once items carry touches, pass them as the context's paths.
-    private async Task<IReadOnlyList<KnowledgeRow>?> ItemKnowledgeAsync(ItemView item, CancellationToken ct)
+    // The knowledge of an item brief: linked to the item, scoped to its touches, its repository, or
+    // project-wide; lessons beyond the item only as rules, in their own section (S9), matched like a
+    // briefing's: the session's activity (or the one the item's status implies), the item's
+    // repository and touches, the session's harness and skills. The rules served are logged for the session.
+    private async Task<ItemView> ItemBriefAsync(ItemView item, SessionView? session, CancellationToken ct)
     {
+        var paths = TouchedPaths(item.Touches);
         var rows = await Knowledge.ReadRelevantKnowledgeAsync(
-            new KnowledgeContext(item.ProjectId, item.Repository, TouchedPaths(item.Touches), [item.Id], BriefKinds, KnowledgeLimits.MaxBriefingEntries), ct);
-        return rows.Count == 0 ? null : rows;
+            new KnowledgeContext(item.ProjectId, item.Repository, paths, [item.Id], BriefKinds, KnowledgeLimits.MaxBriefingEntries, RulesServedApart: true), ct);
+        var activity = session?.Activity is { Count: > 0 } declared ? declared : DerivedActivity([item.Status]);
+        var rules = await Knowledge.ReadRulesAsync(
+            new RuleContext(item.ProjectId, activity, item.Repository, paths, session?.Harness, LessonLimits.MaxBriefingRules, session?.Skills), ct);
+        if (session is not null && rules.Count > 0)
+            await Knowledge.LogServedRulesAsync(Guid.Parse(session.Id), session.ProjectId, rules.Select(rule => rule.Id).ToList(), ct);
+        var ruleIds = rules.Select(rule => rule.Id).ToHashSet();
+        var knowledge = rows.Where(row => !ruleIds.Contains(row.Id)).ToList();
+        return item with { Knowledge = knowledge.Count == 0 ? null : knowledge, Rules = rules.Count == 0 ? null : rules };
     }
 
     // The item's touches (S4: paths and symbols) as knowledge paths: each that reads as a relative
@@ -162,7 +172,7 @@ public sealed partial class WorkService
             var spec = await ReadEntryAsync(entry, project, "entry", allowLinks: true, ct);
             var recorded = await Knowledge.RecordKnowledgeAsync(project.Id, spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
             return recorded.Entry.Kind == KnowledgeKind.Lesson
-                ? recorded with { Similar = await SimilarAsync(project.Id, [ToRow(recorded.Entry)], ct) }
+                ? recorded with { Similar = await SimilarAsync(project.Id, [ToRow(recorded.Entry)], ct), Hints = LessonHints([spec], [ToRow(recorded.Entry) with { Rule = recorded.Entry.Lesson?.State == LessonRuleState.Rule ? true : null }]) }
                 : recorded;
         }
 

@@ -80,12 +80,35 @@ public sealed partial class MySqlWorkStore
 
     // ---- Correction events --------------------------------------------------------------------
 
-    // The source event of a correction: its ref; else the session that recorded it (a correction
-    // reported in update_work and again in end_session is one event); else the correction itself.
-    private static string EventKey(KnowledgeSpec spec, WorkActor actor) =>
+    // The source event of a correction: its ref; else the session that recorded it and the item it
+    // is about (a correction reported in update_work and again in end_session on the same item is one
+    // event; the same lesson learned again on another item is another); else the correction itself.
+    private static string EventKey(KnowledgeSpec spec, WorkActor actor, Guid? item) =>
         spec.Details?.Source?.Ref is { Length: > 0 } reference ? "ref:" + reference.Trim().ToLowerInvariant()
-        : actor.SessionId is { Length: > 0 } session ? "session:" + session
+        : actor.SessionId is { Length: > 0 } session ? $"session:{session}:item:{(item is { } id ? id.ToString() : "none")}"
         : "correction:" + spec.Id;
+
+    /// <summary>
+    /// The applies-when of a lesson that absorbs a correction (B1): activities are triggers, so they
+    /// are united; a location dimension (repositories, paths, tools, harness) left open by either side
+    /// stays open, else the values are united.
+    /// </summary>
+    private static AppliesWhenView? UnionAppliesWhen(AppliesWhenView? a, AppliesWhenView? b)
+    {
+        static IReadOnlyList<string>? Open(IReadOnlyList<string>? x, IReadOnlyList<string>? y, StringComparer comparer) =>
+            x is not { Count: > 0 } || y is not { Count: > 0 } ? null : x.Union(y, comparer).ToList();
+
+        var activity = (a?.Activity ?? []).Union(b?.Activity ?? []).ToList();
+        var view = new AppliesWhenView(
+            activity.Count == 0 ? null : activity,
+            Open(a?.Repositories, b?.Repositories, StringComparer.OrdinalIgnoreCase),
+            Open(a?.Paths, b?.Paths, StringComparer.Ordinal),
+            Open(a?.Tools, b?.Tools, StringComparer.Ordinal),
+            a?.Harness is { } left && b?.Harness is { } right && string.Equals(left, right, StringComparison.OrdinalIgnoreCase) ? left : null);
+        return view == new AppliesWhenView() ? null : view;
+    }
+
+    private static string AppliesWhenJson(AppliesWhenView? view) => JsonSerializer.Serialize(view, WorkJson.Options);
 
     private static string Sha(string value) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
@@ -177,7 +200,7 @@ public sealed partial class MySqlWorkStore
                 since = rule ? now : (DateTime?)null, priority = LessonSimilarity.Priority(spec.Details?.Source?.Kind), id = spec.Id
             },
             transaction, cancellationToken: ct));
-        await InsertEventAsync(connection, transaction, project.Id, spec.Id, spec, EventKey(spec, actor), counted: true, ruleAtEvent: false, served: null, item, actor, now, ct);
+        await InsertEventAsync(connection, transaction, project.Id, spec.Id, spec, EventKey(spec, actor, item), counted: true, ruleAtEvent: false, served: null, item, actor, now, ct);
 
         if (spec.Contradicts is { } other)
         {
@@ -187,12 +210,16 @@ public sealed partial class MySqlWorkStore
         }
     }
 
-    /// <summary>A correction merged into <paramref name="target"/>: an event, and when it is a new event a recurrence (which may make it a rule).</summary>
+    /// <summary>
+    /// A correction merged into <paramref name="target"/>: an event; the correction's applies-when
+    /// united into the lesson's; and when it is a new event a recurrence. Promotion is evaluated after
+    /// both, so a prompt correction with an activity merged into a lesson without one makes it a rule at once (R24).
+    /// </summary>
     private async Task AddLessonEventAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, Guid target, KnowledgeSpec spec, Guid? item,
         WorkActor actor, DateTime now, CancellationToken ct)
     {
         var lesson = await RequireLessonAsync(connection, transaction, project.Id, target, "same_as", ct);
-        var key = EventKey(spec, actor);
+        var key = EventKey(spec, actor, item);
         var counted = !await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
             "SELECT EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @target AND event_hash = @hash AND counted = 1)",
             new { target, hash = Sha(key) }, transaction, cancellationToken: ct));
@@ -201,14 +228,90 @@ public sealed partial class MySqlWorkStore
             served = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
                 "SELECT EXISTS (SELECT 1 FROM lesson_served WHERE session_id = @session AND entry_id = @target)", new { session, target }, transaction, cancellationToken: ct));
         await InsertEventAsync(connection, transaction, project.Id, target, spec, key, counted, lesson.IsRule, served, item, actor, now, ct);
-        if (!counted)
+
+        var details = lesson.DetailsJson is { } json ? JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) ?? new KnowledgeDetails() : new KnowledgeDetails();
+        var union = UnionAppliesWhen(details.AppliesWhen, spec.Details?.AppliesWhen);
+        var widened = AppliesWhenJson(union) != AppliesWhenJson(details.AppliesWhen);
+        if (!counted && !widened)
             return;
 
+        if (widened)
+        {
+            var merged = details with { AppliesWhen = union };
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE knowledge_entries SET details_json = @details, activities = @activities WHERE id = @target",
+                new { details = DetailsJson(merged), activities = Activities(merged), target }, transaction, cancellationToken: ct));
+        }
+
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE knowledge_entries SET recurrence = COALESCE(recurrence, 0) + 1, priority = @priority, version = version + 1, revision = revision + 1, updated_at = @now WHERE id = @target",
-            new { priority = BestPriority(lesson.Priority, LessonSimilarity.Priority(spec.Details?.Source?.Kind)), now, target }, transaction, cancellationToken: ct));
+            "UPDATE knowledge_entries SET recurrence = COALESCE(recurrence, 0) + @step, priority = @priority, version = version + 1, revision = revision + 1, updated_at = @now WHERE id = @target",
+            new
+            {
+                step = counted ? 1 : 0,
+                priority = counted ? BestPriority(lesson.Priority, LessonSimilarity.Priority(spec.Details?.Source?.Kind)) : lesson.Priority ?? "normal",
+                now, target
+            },
+            transaction, cancellationToken: ct));
         await PromoteIfDueAsync(connection, transaction, target, now, spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct);
-        await InsertRevisionAsync(connection, transaction, target, lesson.Revision + 1, "recurred", actor, now, ct);
+        await InsertRevisionAsync(connection, transaction, target, lesson.Revision + 1, counted ? "recurred" : "widened", actor, now, ct);
+    }
+
+    /// <summary>
+    /// Moves a lesson's learning-loop state onto <paramref name="to"/> (record relate same_as, and a
+    /// lesson superseding one): its corrections become the target's (an event the target already
+    /// counts is not counted again), its contradiction links and open challenges move with it, the
+    /// target's recurrence and priority are recomputed, and a rule passes its rule state on. The
+    /// caller writes the revisions and the status of <paramref name="from"/>.
+    /// </summary>
+    private async Task TransferLessonAsync(MySqlConnection connection, MySqlTransaction transaction, KnowledgeEntryRow from, Guid to, WorkActor actor, DateTime now,
+        bool uniteAppliesWhen, CancellationToken ct)
+    {
+        var target = (await ReadKnowledgeRowAsync(connection, transaction, to, ct))!;
+        // A merge (not a replacement, whose content is its own) unites the merged lesson's applies-when into the target's.
+        if (uniteAppliesWhen)
+        {
+            static KnowledgeDetails Details(string? json) =>
+                json is null ? new KnowledgeDetails() : JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) ?? new KnowledgeDetails();
+            var targetDetails = Details(target.DetailsJson);
+            var union = UnionAppliesWhen(targetDetails.AppliesWhen, Details(from.DetailsJson).AppliesWhen);
+            if (AppliesWhenJson(union) != AppliesWhenJson(targetDetails.AppliesWhen))
+            {
+                var merged = targetDetails with { AppliesWhen = union };
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE knowledge_entries SET details_json = @details, activities = @activities WHERE id = @to",
+                    new { details = DetailsJson(merged), activities = Activities(merged), to }, transaction, cancellationToken: ct));
+            }
+        }
+
+        var targetEvents = (await ReadEventsAsync(connection, transaction, [to], ct))[to].Where(row => row.Counted).Select(row => row.EventHash).ToHashSet();
+        foreach (var moved in (await ReadEventsAsync(connection, transaction, [from.Id], ct))[from.Id])
+        {
+            var counted = moved.Counted && targetEvents.Add(moved.EventHash);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE lesson_events SET entry_id = @to, counted = @counted WHERE correction_id = @correction",
+                new { to, counted, correction = moved.CorrectionId }, transaction, cancellationToken: ct));
+        }
+
+        var links = (await ReadContradictionsAsync(connection, transaction, [from.Id], activeOnly: false, ct))[from.Id].Where(link => link.Id != to).ToList();
+        foreach (var link in links)
+            await LinkContradictionAsync(connection, transaction, to, link.Id, actor, now, ct);
+        await connection.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM lesson_links WHERE entry_id = @from OR other_id = @from", new { from = from.Id }, transaction, cancellationToken: ct));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE lesson_challenges SET entry_id = @to WHERE entry_id = @from AND status = 'open'", new { to, from = from.Id }, transaction, cancellationToken: ct));
+
+        var recurrence = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM lesson_events WHERE entry_id = @to AND counted = 1", new { to }, transaction, cancellationToken: ct));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE knowledge_entries SET recurrence = @recurrence, priority = @priority WHERE id = @to",
+            new { recurrence, priority = BestPriority(target.Priority, from.Priority), to }, transaction, cancellationToken: ct));
+        // A rule passes its status on: a rule merged into, or replaced by, a candidate keeps it a rule.
+        if (from.IsRule && !target.IsRule)
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE knowledge_entries SET rule_state = 'rule', rule_reason = @reason, rule_since = @since, rejected_reason = NULL WHERE id = @to",
+                new { reason = from.RuleReason, since = from.RuleSince ?? now, to }, transaction, cancellationToken: ct));
+        else
+            await PromoteIfDueAsync(connection, transaction, to, now, promptEvent: false, ct);
     }
 
     /// <summary>
@@ -299,11 +402,11 @@ public sealed partial class MySqlWorkStore
     {
         if (entryIds.Count == 0)
             return Array.Empty<(Guid, AddressedByView)>().ToLookup(pair => pair.Item1, pair => pair.Item2);
-        var rows = await connection.QueryAsync<(Guid EntryId, string Kind, string Name, string? Ref, string Author, string AuthorKind, string? AuthorSessionId, DateTime CreatedAt)>(new CommandDefinition(
-            "SELECT entry_id, kind, name, ref, author, author_kind, author_session_id, created_at FROM lesson_addressed_by WHERE entry_id IN @ids ORDER BY created_at, kind, name",
+        var rows = await connection.QueryAsync<(Guid EntryId, string Kind, string Name, string Harness, string? Ref, string Author, string AuthorKind, string? AuthorSessionId, DateTime CreatedAt)>(new CommandDefinition(
+            "SELECT entry_id, kind, name, harness, ref, author, author_kind, author_session_id, created_at FROM lesson_addressed_by WHERE entry_id IN @ids ORDER BY created_at, kind, name",
             new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct));
         return rows.ToLookup(row => row.EntryId, row => new AddressedByView(ParseName<AddressedByKind>(row.Kind), row.Name, row.Ref,
-            new WorkActor(row.Author, row.AuthorKind, row.AuthorSessionId), Utc(row.CreatedAt)));
+            new WorkActor(row.Author, row.AuthorKind, row.AuthorSessionId), Utc(row.CreatedAt), row.Harness.Length == 0 ? null : row.Harness));
     }
 
     private static async Task<Dictionary<Guid, (int Sessions, DateTime? Last)>> ReadServedAsync(MySqlConnection connection, MySqlTransaction? transaction, IReadOnlyList<Guid> entryIds, CancellationToken ct) =>
@@ -344,37 +447,62 @@ public sealed partial class MySqlWorkStore
     }
 
     // ---- Similarity -------------------------------------------------------------------------------
+    //
+    // Embeddings find candidates; they never decide (§5.7, E5). With an embedding provider each
+    // lesson's summary is embedded once per model and stored (lesson_embeddings, re-embedded when the
+    // summary changes); candidates are the lessons at or above the provider's cosine threshold. A
+    // lesson with no vector yet beyond this call's embedding allowance, or every lesson when there is
+    // no provider (or it fails), is compared by the lexical score. The polarity flag is lexical.
 
-    public async Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, CancellationToken ct = default)
+    private sealed record PoolLesson(Guid Id, string Summary, string SummaryHash, long Version, string? RuleState);
+
+    public async Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, LessonEmbedder? embedder, CancellationToken ct = default)
     {
         if (entryIds.Count == 0)
             return [];
         await using var connection = await OpenAsync(ct);
-        var pool = (await connection.QueryAsync<(Guid Id, string Summary, long Version, string? RuleState)>(new CommandDefinition(
-            "SELECT id, summary, version, rule_state FROM knowledge_entries WHERE project_id = @projectId AND kind = 'lesson' AND status = 'active' " +
+        var pool = (await connection.QueryAsync<PoolLesson>(new CommandDefinition(
+            "SELECT id, summary, summary_hash, version, rule_state FROM knowledge_entries WHERE project_id = @projectId AND kind = 'lesson' AND status = 'active' " +
             $"ORDER BY created_at DESC, id LIMIT {LessonLimits.MaxSimilarityScan}",
             new { projectId }, cancellationToken: ct))).ToList();
-        var subjects = (await connection.QueryAsync<(Guid Id, string Summary)>(new CommandDefinition(
-            "SELECT id, summary FROM knowledge_entries WHERE id IN @ids AND kind = 'lesson'", new { ids = entryIds.Distinct().Select(id => id.ToString()).ToArray() },
-            cancellationToken: ct))).ToDictionary(row => row.Id, row => row.Summary);
+        var subjects = (await connection.QueryAsync<PoolLesson>(new CommandDefinition(
+            "SELECT id, summary, summary_hash, version, rule_state FROM knowledge_entries WHERE id IN @ids AND kind = 'lesson'",
+            new { ids = entryIds.Distinct().Select(id => id.ToString()).ToArray() }, cancellationToken: ct))).ToDictionary(row => row.Id);
         var linked = await ReadContradictionsAsync(connection, null, subjects.Keys.ToList(), activeOnly: false, ct);
+        var vectors = embedder is null
+            ? null
+            : await LessonVectorsAsync(connection, subjects.Values.Concat(pool).DistinctBy(lesson => lesson.Id).ToList(), embedder, ct);
 
         var answered = new List<SimilarLessons>();
         foreach (var id in entryIds.Distinct())
         {
-            if (!subjects.TryGetValue(id, out var summary))
+            if (!subjects.TryGetValue(id, out var subject))
                 continue;
             var decided = linked[id].Select(link => link.Id).ToHashSet();
-            var negates = LessonSimilarity.Negates(summary);
+            var negates = LessonSimilarity.Negates(subject.Summary);
+            float[]? own = null;
+            vectors?.TryGetValue(id, out own);
             var candidates = pool
                 .Where(candidate => candidate.Id != id && !decided.Contains(candidate.Id))
-                .Select(candidate => (candidate, score: LessonSimilarity.Score(summary, candidate.Summary)))
-                .Where(pair => pair.score >= LessonSimilarity.CandidateThreshold)
-                .OrderByDescending(pair => pair.score).ThenBy(pair => pair.candidate.Id)
+                .Select(candidate =>
+                {
+                    float[]? other = null;
+                    if (own is not null && vectors!.TryGetValue(candidate.Id, out other))
+                    {
+                        var cosine = Math.Round(Cosine(own, other), 3);
+                        return (candidate, score: cosine, method: "embedding", passes: cosine >= embedder!.Threshold);
+                    }
+
+                    var lexical = LessonSimilarity.Score(subject.Summary, candidate.Summary);
+                    return (candidate, score: lexical, method: "lexical", passes: lexical >= LessonSimilarity.CandidateThreshold);
+                })
+                .Where(scored => scored.passes)
+                .OrderByDescending(scored => scored.score).ThenBy(scored => scored.candidate.Id)
                 .Take(LessonLimits.MaxSimilar)
-                .Select(pair => new SimilarLesson(pair.candidate.Id, pair.candidate.Summary, pair.score, pair.candidate.Version,
-                    pair.candidate.RuleState is { } state ? ParseName<LessonRuleState>(state) : LessonRuleState.Candidate,
-                    LessonSimilarity.Negates(pair.candidate.Summary) != negates ? true : null))
+                .Select(scored => new SimilarLesson(scored.candidate.Id, scored.candidate.Summary, scored.score, scored.candidate.Version,
+                    scored.candidate.RuleState is { } state ? ParseName<LessonRuleState>(state) : LessonRuleState.Candidate,
+                    LessonSimilarity.Negates(scored.candidate.Summary) != negates ? true : null,
+                    scored.method))
                 .ToList();
             if (candidates.Count > 0)
                 answered.Add(new SimilarLessons(id, candidates));
@@ -383,9 +511,81 @@ public sealed partial class MySqlWorkStore
         return answered;
     }
 
+    // The stored vectors of the lessons for the embedder's model, embedding (and storing) the ones
+    // missing or stale, subjects first, at most MaxEmbedPerCall. Null when the provider fails: the
+    // lookup then falls back to the lexical score; a write never fails for similarity.
+    private async Task<Dictionary<Guid, float[]>?> LessonVectorsAsync(MySqlConnection connection, IReadOnlyList<PoolLesson> lessons, LessonEmbedder embedder, CancellationToken ct)
+    {
+        var stored = (await connection.QueryAsync<(Guid EntryId, string SummaryHash, byte[] Vector)>(new CommandDefinition(
+            "SELECT entry_id, summary_hash, vector FROM lesson_embeddings WHERE model = @model AND entry_id IN @ids",
+            new { model = embedder.Model, ids = lessons.Select(lesson => lesson.Id.ToString()).ToArray() }, cancellationToken: ct))).ToList();
+        var hashes = lessons.ToDictionary(lesson => lesson.Id, lesson => lesson.SummaryHash);
+        var vectors = stored.Where(row => hashes.TryGetValue(row.EntryId, out var hash) && hash == row.SummaryHash)
+            .ToDictionary(row => row.EntryId, row => ToFloats(row.Vector));
+        var missing = lessons.Where(lesson => !vectors.ContainsKey(lesson.Id)).Take(LessonLimits.MaxEmbedPerCall).ToList();
+        if (missing.Count == 0)
+            return vectors;
+
+        IReadOnlyList<float[]> embedded;
+        try
+        {
+            embedded = embedder.Embed(missing.Select(lesson => lesson.Summary).ToList());
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(log, exception, "Lesson embedding with {Model} failed; similarity falls back to the lexical score.", embedder.Model);
+            return null;
+        }
+
+        if (embedded.Count != missing.Count)
+            return null;
+        var now = Now();
+        await connection.ExecuteAsync(new CommandDefinition(
+            "REPLACE INTO lesson_embeddings (entry_id, model, summary_hash, dimensions, vector, created_at) VALUES (@entryId, @model, @hash, @dimensions, @vector, @now)",
+            missing.Select((lesson, index) => new
+            {
+                entryId = lesson.Id, model = embedder.Model, hash = lesson.SummaryHash, dimensions = embedded[index].Length, vector = ToBytes(embedded[index]), now
+            }), cancellationToken: ct));
+        for (var index = 0; index < missing.Count; index++)
+            vectors[missing[index].Id] = embedded[index];
+        return vectors;
+    }
+
+    private static byte[] ToBytes(float[] vector)
+    {
+        var bytes = new byte[vector.Length * sizeof(float)];
+        Buffer.BlockCopy(vector, 0, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    private static float[] ToFloats(byte[] bytes)
+    {
+        var vector = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, vector, 0, vector.Length * sizeof(float));
+        return vector;
+    }
+
+    private static double Cosine(float[] a, float[] b)
+    {
+        if (a.Length != b.Length || a.Length == 0)
+            return 0;
+        double dot = 0, left = 0, right = 0;
+        for (var index = 0; index < a.Length; index++)
+        {
+            dot += a[index] * b[index];
+            left += a[index] * a[index];
+            right += b[index] * b[index];
+        }
+
+        return left == 0 || right == 0 ? 0 : dot / (Math.Sqrt(left) * Math.Sqrt(right));
+    }
+
     // ---- Rules in briefings ---------------------------------------------------------------------
 
-    private const string ServableRule = "e.project_id = @projectId AND e.kind = 'lesson' AND e.status = 'active' AND e.rule_state = 'rule' AND " + NotAddressed;
+    private const string ActiveRule = "e.project_id = @projectId AND e.kind = 'lesson' AND e.status = 'active' AND e.rule_state = 'rule'";
+
+    // Addressed locally, by scope (§5.7): a test or CI gate takes the rule out of every briefing.
+    private const string AddressedEverywhere = "EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id AND ab.kind IN ('test', 'ci'))";
 
     public async Task<IReadOnlyList<BriefingRule>> ReadRulesAsync(RuleContext context, CancellationToken ct = default)
     {
@@ -401,17 +601,53 @@ public sealed partial class MySqlWorkStore
             parameters.Add($"a{index}", JsonName(activity));
         }
 
+        // Addressed for this session: a skill it declared loaded, an instruction or hook of its harness.
+        var addressed = new List<string> { "ab.kind IN ('test', 'ci')" };
+        var skills = (context.Skills ?? []).Select(skill => skill.Trim().ToLowerInvariant()).Where(skill => skill.Length > 0).Distinct().ToArray();
+        if (skills.Length > 0)
+        {
+            addressed.Add("(ab.kind = 'skill' AND LOWER(ab.name) IN @skills)");
+            parameters.Add("skills", skills);
+        }
+
+        // The location filters in SQL, before the cap, so a matching rule is never crowded out.
+        var location = new StringBuilder();
+        const string repositories = "JSON_EXTRACT(e.details_json, '$.applies_when.repositories')";
+        const string harness = "JSON_VALUE(e.details_json, '$.applies_when.harness')";
+        if (context.Repository is { Length: > 0 } repository)
+        {
+            location.Append($" AND ({repositories} IS NULL OR JSON_CONTAINS(LOWER({repositories}), LOWER(JSON_QUOTE(@repository))))");
+            parameters.Add("repository", repository);
+        }
+        else
+        {
+            location.Append($" AND {repositories} IS NULL");
+        }
+
+        if (context.Harness is { Length: > 0 } sessionHarness)
+        {
+            addressed.Add("(ab.kind IN ('instruction', 'hook') AND LOWER(ab.harness) = LOWER(@harness))");
+            location.Append($" AND ({harness} IS NULL OR LOWER({harness}) = LOWER(@harness))");
+            parameters.Add("harness", sessionHarness);
+        }
+        else
+        {
+            location.Append($" AND {harness} IS NULL");
+        }
+
+        if (context.Paths.Count == 0)
+            location.Append(" AND JSON_EXTRACT(e.details_json, '$.applies_when.paths') IS NULL");
+
         var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
-            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE {ServableRule} AND ({string.Join(" OR ", clauses)}) ORDER BY e.updated_at DESC, e.id LIMIT {MaxRelevantCandidates}",
+            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE {ActiveRule} AND ({string.Join(" OR ", clauses)}){location} " +
+            $"AND NOT EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id AND ({string.Join(" OR ", addressed)})) " +
+            "ORDER BY CASE e.priority WHEN 'highest' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, COALESCE(e.recurrence, 1) DESC, e.updated_at DESC, e.id " +
+            $"LIMIT {MaxRelevantCandidates}",
             parameters, cancellationToken: ct))).ToList();
 
         var chosen = rows
             .Select(row => (row, details: row.DetailsJson is { } json ? JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) : null))
             .Where(pair => LocationMatches(pair.details?.AppliesWhen, context))
-            .OrderBy(pair => LessonSimilarity.PriorityRank(pair.row.Priority))
-            .ThenByDescending(pair => pair.row.Recurrence ?? 1)
-            .ThenByDescending(pair => pair.row.UpdatedAt)
-            .ThenBy(pair => pair.row.Id)
             .Take(context.Limit)
             .ToList();
         var ids = chosen.Select(pair => pair.row.Id).ToList();
@@ -420,18 +656,21 @@ public sealed partial class MySqlWorkStore
         return chosen.Select(pair =>
         {
             var links = contradicts[pair.row.Id].ToList();
-            var open = challenges[pair.row.Id].Select(challenge => new BriefingChallenge(challenge.Id, challenge.Reason,
+            var open = challenges[pair.row.Id].ToList();
+            var shown = open.Take(LessonLimits.MaxShownChallenges).Select(challenge => new BriefingChallenge(challenge.Id, challenge.Reason,
                 challenge.Evidence.Select(evidence => evidence.Ref is null ? evidence.Summary : $"{evidence.Summary} ({evidence.Ref})").ToList())).ToList();
             return new BriefingRule(pair.row.Id, pair.row.Summary, pair.row.Version, pair.row.Priority ?? "normal", pair.details?.AppliesWhen?.Activity ?? [],
                 pair.row.Recurrence is > 1 ? pair.row.Recurrence : null,
                 links.Count == 0 ? null : links,
-                open.Count == 0 ? null : open);
+                shown.Count == 0 ? null : shown,
+                open.Count > shown.Count ? open.Count - shown.Count : null);
         }).ToList();
     }
 
     // A rule's location (optional) must match the session: its repositories name the session's, one
     // of its paths covers a path the session works on, its harness is the session's. Tools are not
-    // known for a session, so a rule naming tools is served by activity and location alone.
+    // known for a session, so a rule naming tools is served by activity and location alone. (The
+    // query filters repositories and harness already; paths, being globs, are matched here.)
     private static bool LocationMatches(AppliesWhenView? appliesWhen, RuleContext context)
     {
         if (appliesWhen is null)
@@ -448,7 +687,8 @@ public sealed partial class MySqlWorkStore
     {
         await using var connection = await OpenAsync(ct);
         var lists = await connection.QueryAsync<string>(new CommandDefinition(
-            $"SELECT DISTINCT e.activities FROM knowledge_entries e WHERE {ServableRule} AND e.activities IS NOT NULL", new { projectId }, cancellationToken: ct));
+            $"SELECT DISTINCT e.activities FROM knowledge_entries e WHERE {ActiveRule} AND NOT {AddressedEverywhere} AND e.activities IS NOT NULL",
+            new { projectId }, cancellationToken: ct));
         return lists.SelectMany(list => list.Split(',', StringSplitOptions.RemoveEmptyEntries)).Distinct()
             .Select(ParseName<LessonActivity>).Order().ToList();
     }
@@ -465,12 +705,19 @@ public sealed partial class MySqlWorkStore
             ruleIds.Distinct().Select(entryId => new { session = sessionId.ToString(), entryId, projectId, now }), cancellationToken: ct));
     }
 
-    public async Task SetSessionActivityAsync(Guid sessionId, IReadOnlyList<LessonActivity> activity, CancellationToken ct = default)
+    public async Task SetSessionBriefingContextAsync(Guid sessionId, IReadOnlyList<LessonActivity>? activity, IReadOnlyList<string>? skills, CancellationToken ct = default)
     {
+        if (activity is null && skills is null)
+            return;
         await using var connection = await OpenAsync(ct);
+        var sets = new List<string>();
+        if (activity is not null)
+            sets.Add("activities = @activities");
+        if (skills is not null)
+            sets.Add("skills = @skills");
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE work_sessions SET activities = @activities WHERE id = @id",
-            new { activities = ActivityList(activity), id = sessionId.ToString() }, cancellationToken: ct));
+            $"UPDATE work_sessions SET {string.Join(", ", sets)} WHERE id = @id",
+            new { activities = ActivityList(activity), skills = SkillList(skills), id = sessionId.ToString() }, cancellationToken: ct));
     }
 
     private static string? ActivityList(IReadOnlyList<LessonActivity>? activity) =>
@@ -478,6 +725,12 @@ public sealed partial class MySqlWorkStore
 
     private static IReadOnlyList<LessonActivity>? ParseActivities(string? stored) =>
         string.IsNullOrEmpty(stored) ? null : stored.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(ParseName<LessonActivity>).ToList();
+
+    private static string? SkillList(IReadOnlyList<string>? skills) =>
+        skills is { Count: > 0 } ? JsonSerializer.Serialize(skills.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), WorkJson.Options) : null;
+
+    private static IReadOnlyList<string>? ParseSkills(string? stored) =>
+        string.IsNullOrEmpty(stored) ? null : JsonSerializer.Deserialize<List<string>>(stored, WorkJson.Options);
 
     // ---- record relate / acknowledge ----------------------------------------------------------------
 
@@ -513,41 +766,12 @@ public sealed partial class MySqlWorkStore
                 return linked;
             }
 
-            // same_as: the lesson is merged into the target. Its corrections become the target's
-            // (an event the target already counts is not counted again), its links and open
-            // challenges move with it, and it is superseded by the target.
+            // same_as: the lesson is merged into the target and superseded by it; its corrections,
+            // links, open challenges, applies-when and rule status pass to the target.
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @target, status_reason = @reason WHERE id = @entryId",
                 new { target = other, reason = $"Merged into {other}: the same lesson.", entryId }, transaction, cancellationToken: ct));
-            var targetEvents = (await ReadEventsAsync(connection, transaction, [other], ct))[other].Where(row => row.Counted).Select(row => row.EventHash).ToHashSet();
-            foreach (var moved in (await ReadEventsAsync(connection, transaction, [entryId], ct))[entryId])
-            {
-                var counted = moved.Counted && targetEvents.Add(moved.EventHash);
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE lesson_events SET entry_id = @target, counted = @counted WHERE correction_id = @correction",
-                    new { target = other, counted, correction = moved.CorrectionId }, transaction, cancellationToken: ct));
-            }
-
-            var links = (await ReadContradictionsAsync(connection, transaction, [entryId], activeOnly: false, ct))[entryId].Where(link => link.Id != other).ToList();
-            foreach (var link in links)
-                await LinkContradictionAsync(connection, transaction, other, link.Id, actor, now, ct);
-            await connection.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM lesson_links WHERE entry_id = @entryId OR other_id = @entryId", new { entryId }, transaction, cancellationToken: ct));
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE lesson_challenges SET entry_id = @target WHERE entry_id = @entryId AND status = 'open'", new { target = other, entryId }, transaction, cancellationToken: ct));
-
-            var recurrence = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
-                "SELECT COUNT(*) FROM lesson_events WHERE entry_id = @target AND counted = 1", new { target = other }, transaction, cancellationToken: ct));
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE knowledge_entries SET recurrence = @recurrence, priority = @priority WHERE id = @target",
-                new { recurrence, priority = BestPriority(target.Priority, before.Priority), target = other }, transaction, cancellationToken: ct));
-            // The merged lesson's rule status carries over: a rule merged into a candidate keeps it a rule.
-            if (before.IsRule && !target.IsRule)
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE knowledge_entries SET rule_state = 'rule', rule_reason = @reason, rule_since = @since, rejected_reason = NULL WHERE id = @target",
-                    new { reason = before.RuleReason, since = before.RuleSince ?? now, target = other }, transaction, cancellationToken: ct));
-            else
-                await PromoteIfDueAsync(connection, transaction, other, now, promptEvent: false, ct);
+            await TransferLessonAsync(connection, transaction, before, other, actor, now, uniteAppliesWhen: true, ct);
 
             await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "merged", actor, now, ct);
             await BumpLessonAsync(connection, transaction, target, "merged_into", actor, now, ct);
@@ -590,9 +814,11 @@ public sealed partial class MySqlWorkStore
                 PromoteAction.Propose => state == LessonRuleState.Proposed,
                 PromoteAction.Approve => state == LessonRuleState.Rule,
                 PromoteAction.Reject => state == LessonRuleState.Rejected,
+                // The same fix (kind, name, harness) with the same ref; a new ref updates the link.
                 _ => await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
-                    "SELECT EXISTS (SELECT 1 FROM lesson_addressed_by WHERE entry_id = @entryId AND kind = @kind AND name = @name)",
-                    new { entryId, kind = JsonName(addressedBy!.Kind), name = addressedBy.Name }, transaction, cancellationToken: ct))
+                    "SELECT EXISTS (SELECT 1 FROM lesson_addressed_by WHERE entry_id = @entryId AND kind = @kind AND name = @name AND harness = @harness AND ref <=> @ref)",
+                    new { entryId, kind = JsonName(addressedBy!.Kind), name = addressedBy.Name, harness = addressedBy.Harness ?? "", @ref = addressedBy.Ref },
+                    transaction, cancellationToken: ct))
             };
             if (unchanged)
             {
@@ -639,11 +865,12 @@ public sealed partial class MySqlWorkStore
                     break;
                 default:
                     await connection.ExecuteAsync(new CommandDefinition(
-                        "INSERT INTO lesson_addressed_by (entry_id, kind, name, ref, author, author_kind, author_session_id, created_at) " +
-                        "VALUES (@entryId, @kind, @name, @ref, @author, @authorKind, @session, @now)",
+                        "INSERT INTO lesson_addressed_by (entry_id, kind, name, harness, ref, author, author_kind, author_session_id, created_at) " +
+                        "VALUES (@entryId, @kind, @name, @harness, @ref, @author, @authorKind, @session, @now) " +
+                        "ON DUPLICATE KEY UPDATE ref = @ref, author = @author, author_kind = @authorKind, author_session_id = @session, created_at = @now",
                         new
                         {
-                            entryId, kind = JsonName(addressedBy!.Kind), name = addressedBy.Name, @ref = addressedBy.Ref,
+                            entryId, kind = JsonName(addressedBy!.Kind), name = addressedBy.Name, harness = addressedBy.Harness ?? "", @ref = addressedBy.Ref,
                             author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, now
                         },
                         transaction, cancellationToken: ct));
@@ -711,13 +938,15 @@ public sealed partial class MySqlWorkStore
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var found = await ReadChallengeRowAsync(connection, transaction, challengeId, ct)
                 ?? throw WorkException.NotFound($"There is no challenge {challengeId}.");
+            // Lock order: project, then the rule's knowledge row, then the challenge row. Holding the
+            // project serialises lesson writes, so the challenge's rule cannot move meanwhile.
             await HoldProjectAsync(connection, transaction, found.ProjectId, ct);
+            var ruleId = (await ReadChallengeRowAsync(connection, transaction, challengeId, ct))!.EntryId;
+            var before = await AdvanceKnowledgeAsync(connection, transaction, ruleId, expectedVersion, now, ct);
             var challenge = (await connection.QuerySingleAsync<ChallengeRow>(new CommandDefinition(
                 $"SELECT {ChallengeColumns} FROM lesson_challenges c WHERE c.id = @challengeId FOR UPDATE", new { challengeId }, transaction, cancellationToken: ct)));
             if (challenge.Status != "open")
                 throw new WorkException(WorkErrorCodes.Conflict, $"Challenge {challengeId} is already {challenge.Status}. Nothing was changed.", ToView(challenge));
-
-            var before = await AdvanceKnowledgeAsync(connection, transaction, challenge.EntryId, expectedVersion, now, ct);
             string action;
             switch (outcome)
             {
@@ -771,6 +1000,8 @@ public sealed partial class MySqlWorkStore
 
     public async Task<LessonsPage> ReadLessonsAsync(LessonsSpec spec, CancellationToken ct = default)
     {
+        if (spec.View == LessonsView.UnlearnedReviews)
+            return await ReadUnlearnedReviewsAsync(spec, ct);
         await using var connection = await OpenAsync(ct);
         var parameters = new DynamicParameters();
         parameters.Add("projectId", spec.ProjectId);
@@ -816,6 +1047,50 @@ public sealed partial class MySqlWorkStore
         var more = rows.Count > spec.Limit;
         rows = rows.Take(spec.Limit).ToList();
         return new LessonsPage(await LessonRowsAsync(connection, rows, ct), more);
+    }
+
+    // "Review comments with no lesson" (§5.7): the GitHub review evidence (S6) of the project's items
+    // (reviews with a body and review comments, of the current attempt) whose URL or id no correction
+    // names as its source.ref. Newest first. source review/bot_review narrows to human or bot reviews.
+    private sealed class UnlearnedRow
+    {
+        public Guid Id { get; init; }
+        public string ProjectKey { get; init; } = "";
+        public int Number { get; init; }
+        public string Kind { get; init; } = "";
+        public string AuthorLogin { get; init; } = "";
+        public string Source { get; init; } = "";
+        public string Priority { get; init; } = "";
+        public DateTime CreatedAt { get; init; }
+        public string? Url { get; init; }
+        public string? ExternalId { get; init; }
+        public string? ReviewState { get; init; }
+        public string? Body { get; init; }
+    }
+
+    private async Task<LessonsPage> ReadUnlearnedReviewsAsync(LessonsSpec spec, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        var source = spec.Source switch
+        {
+            CorrectionSourceKind.Review => GitHubEvidenceSources.Human,
+            CorrectionSourceKind.BotReview => GitHubEvidenceSources.Bot,
+            _ => null
+        };
+        var rows = (await connection.QueryAsync<UnlearnedRow>(new CommandDefinition(
+            "SELECT g.id, p.project_key, i.number, g.kind, g.author_login, g.source, g.priority, g.created_at, g.url, g.external_id, g.review_state, " +
+            "LEFT(g.body, 400) AS body FROM work_github_evidence g JOIN work_items i ON i.id = g.item_id JOIN work_projects p ON p.id = i.project_id " +
+            "WHERE i.project_id = @projectId AND g.superseded = 0 AND (g.kind = 'review_comment' OR (g.kind = 'review' AND g.body IS NOT NULL AND g.body <> '')) " +
+            (source is null ? "" : "AND g.source = @source ") +
+            "AND NOT EXISTS (SELECT 1 FROM lesson_events le WHERE le.project_id = i.project_id AND le.source_ref IS NOT NULL AND " +
+            "(LOWER(le.source_ref) = LOWER(g.url) OR le.source_ref = g.external_id)) " +
+            $"ORDER BY g.created_at DESC, g.id LIMIT {spec.Limit + 1} OFFSET {spec.Offset}",
+            new { projectId = spec.ProjectId, source }, cancellationToken: ct))).ToList();
+        var more = rows.Count > spec.Limit;
+        var reviews = rows.Take(spec.Limit).Select(row => new UnlearnedReview(
+            row.Id, WorkKeys.Item(row.ProjectKey, row.Number), ParseName<GitHubEvidenceKind>(row.Kind), row.AuthorLogin, row.Source, row.Priority, Utc(row.CreatedAt),
+            row.Url, row.ExternalId, row.ReviewState, row.Body)).ToList();
+        return new LessonsPage([], more, reviews);
     }
 
     private static async Task<IReadOnlyList<LessonRow>> LessonRowsAsync(MySqlConnection connection, IReadOnlyList<KnowledgeEntryRow> rows, CancellationToken ct)
@@ -866,7 +1141,9 @@ public sealed partial class MySqlWorkStore
         foreach (var row in challenged)
         {
             var open = challenges[row.Id].ToList();
-            items.Add(new ReviewItem(ReviewKinds.Challenge, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, open.Min(challenge => challenge.CreatedAt), Challenges: open));
+            var shown = open.Take(LessonLimits.MaxShownChallenges).ToList();
+            items.Add(new ReviewItem(ReviewKinds.Challenge, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, open.Min(challenge => challenge.CreatedAt),
+                Challenges: shown, MoreChallenges: open.Count > shown.Count ? open.Count - shown.Count : null));
         }
 
         // Lessons proposed for rule status.
