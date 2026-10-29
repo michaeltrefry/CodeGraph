@@ -165,14 +165,24 @@ public sealed partial class MySqlWorkStore
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE work_holds SET state = 'expired', ended_at = expires_at WHERE resource_id = @resourceId AND state = 'held' AND expires_at <= @now",
             new { resourceId = resource.Id, now }, transaction, cancellationToken: ct));
+        // The sessions of waiters that are gone are found with a plain read, so the UPDATE below
+        // touches work_holds only and never locks a session row (end_session holds a session row
+        // before it wants a resource row).
+        var goneSessions = (await connection.QueryAsync<string>(new CommandDefinition(
+            "SELECT DISTINCT h.session_id FROM work_holds h LEFT JOIN work_sessions s ON s.id = h.session_id " +
+            "WHERE h.resource_id = @resourceId AND h.state = 'waiting' AND h.session_id IS NOT NULL AND " +
+            "(s.id IS NULL OR s.ended_at IS NOT NULL OR s.last_seen_at <= @staleBefore)",
+            new { resourceId = resource.Id, staleBefore = StaleBefore(now) }, transaction, cancellationToken: ct))).ToArray();
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE work_holds h LEFT JOIN work_sessions s ON s.id = h.session_id SET h.state = 'cancelled', h.ended_at = @now " +
-            "WHERE h.resource_id = @resourceId AND h.state = 'waiting' AND (h.wait_expires_at <= @now OR " +
-            "(h.session_id IS NOT NULL AND (s.id IS NULL OR s.ended_at IS NOT NULL OR s.last_seen_at <= @staleBefore)))",
-            new { resourceId = resource.Id, now, staleBefore = StaleBefore(now) }, transaction, cancellationToken: ct));
+            "UPDATE work_holds SET state = 'cancelled', ended_at = @now " +
+            "WHERE resource_id = @resourceId AND state = 'waiting' AND (wait_expires_at <= @now OR session_id IN @goneSessions)",
+            new { resourceId = resource.Id, now, goneSessions = goneSessions.Length == 0 ? new[] { "" } : goneSessions }, transaction, cancellationToken: ct));
         await PromoteWaitersAsync(connection, transaction, resource, now, ct);
     }
 
+    // A waiter promoted here while it is not polling holds the slot from the promotion until its
+    // ttl runs out or it releases (documented in the acquire tool description): its entry was
+    // live and its session alive, and promotion cannot know whether it still wants the slot.
     private static async Task PromoteWaitersAsync(MySqlConnection connection, MySqlTransaction transaction, ResourceRow resource, DateTime now, CancellationToken ct)
     {
         var used = await connection.ExecuteScalarAsync<int>(new CommandDefinition(
@@ -208,19 +218,27 @@ public sealed partial class MySqlWorkStore
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(HoldIsolation, ct);
 
+            // Lock order (see the class comment): the item row, shared, before any resource row.
+            if (spec.ItemId is { } itemId &&
+                await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+                    "SELECT id FROM work_items WHERE id = @itemId LOCK IN SHARE MODE", new { itemId }, transaction, cancellationToken: ct)) is null)
+                throw WorkException.NotFound($"There is no item {itemId}.");
+
             // The resource is created by its first acquire. A concurrent first acquire waits on the
             // unique key and then finds the row; either way the row is then locked.
-            var created = await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT IGNORE INTO work_resources (id, project_id, name, capacity, labels_json, created_by, created_at) " +
-                "VALUES (@id, @projectId, @name, @capacity, @labels, @createdBy, @now)",
+            var newId = Guid.NewGuid();
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO work_resources (id, project_id, name, capacity, labels_json, created_by, created_at) " +
+                "VALUES (@id, @projectId, @name, @capacity, @labels, @createdBy, @now) ON DUPLICATE KEY UPDATE id = id",
                 new
                 {
-                    id = Guid.NewGuid(), projectId = spec.ProjectId, name = spec.Resource, capacity = spec.Capacity ?? 1,
+                    id = newId, projectId = spec.ProjectId, name = spec.Resource, capacity = spec.Capacity ?? 1,
                     labels = JsonSerializer.Serialize(spec.Labels ?? []), createdBy = actor.Name, now
-                }, transaction, cancellationToken: ct)) == 1;
+                }, transaction, cancellationToken: ct));
             var resourceId = await connection.ExecuteScalarAsync<Guid>(new CommandDefinition(
                 "SELECT id FROM work_resources WHERE project_id = @projectId AND name = @name", new { projectId = spec.ProjectId, name = spec.Resource },
                 transaction, cancellationToken: ct));
+            var created = resourceId == newId;
             await LockResourceAsync(connection, transaction, resourceId, ct);
             var resource = (await ReadResourceRowAsync(connection, transaction, resourceId, ct))!;
 
@@ -257,6 +275,8 @@ public sealed partial class MySqlWorkStore
                 if (grant || spec.Wait)
                 {
                     holdId = Guid.NewGuid();
+                    try
+                    {
                     await connection.ExecuteAsync(new CommandDefinition(
                         "INSERT INTO work_holds (id, resource_id, project_id, identity, session_id, item_id, purpose, priority, state, ttl_seconds, requested_at, " +
                         "wait_expires_at, granted_at, expires_at, key_hash) VALUES (@id, @resourceId, @projectId, @identity, @sessionId, @itemId, @purpose, @priority, " +
@@ -268,6 +288,14 @@ public sealed partial class MySqlWorkStore
                             ttl = spec.TtlSeconds, now, waitExpires = grant ? (DateTime?)null : now.AddSeconds(WorkHoldLimits.WaiterLingerSeconds),
                             grantedAt = grant ? now : (DateTime?)null, expires = grant ? now.AddSeconds(spec.TtlSeconds) : (DateTime?)null, keyHash = spec.KeyHash
                         }, transaction, cancellationToken: ct));
+                    }
+                    catch (MySqlException exception) when (exception.Number == MySqlDuplicateEntry && exception.Message.Contains("ux_work_holds_key", StringComparison.Ordinal))
+                    {
+                        // The same key raced in on another resource (on this one the resource row
+                        // serialises the calls and the key was found above): same refusal as the
+                        // sequential case. The whole call rolls back.
+                        throw WorkException.Invalid("idempotency_key was used for another resource. Nothing was changed.");
+                    }
                 }
             }
             else if (existing.State == WorkHoldStates.Waiting)
@@ -370,7 +398,7 @@ public sealed partial class MySqlWorkStore
         var found = await ReadHoldRowAsync(connection, transaction, holdId, ct)
             ?? throw WorkException.NotFound($"There is no hold {holdId}.");
         if (!string.Equals(found.Identity, actor.Name, StringComparison.Ordinal))
-            throw WorkException.Invalid($"Hold {holdId} belongs to another identity; only the identity that made a hold renews or releases it. Nothing was changed.");
+            throw WorkException.NotFound($"There is no hold {holdId} of yours.");
         await LockResourceAsync(connection, transaction, found.ResourceId, ct);
         return (await ReadResourceRowAsync(connection, transaction, found.ResourceId, ct))!;
     }
@@ -384,7 +412,7 @@ public sealed partial class MySqlWorkStore
     private async Task<IReadOnlyList<HoldView>> ReleaseSessionHoldsAsync(MySqlConnection connection, MySqlTransaction transaction, Guid sessionId, DateTime now, CancellationToken ct)
     {
         var resourceIds = (await connection.QueryAsync<Guid>(new CommandDefinition(
-            "SELECT DISTINCT resource_id FROM work_holds WHERE session_id = @sessionId AND state IN ('held', 'waiting') ORDER BY resource_id",
+            "SELECT DISTINCT resource_id FROM work_holds WHERE session_id = @sessionId AND state IN ('held', 'waiting') ORDER BY resource_id FOR UPDATE",
             new { sessionId = sessionId.ToString() }, transaction, cancellationToken: ct))).ToList();
         var released = new List<HoldView>();
         foreach (var resourceId in resourceIds)
@@ -393,18 +421,20 @@ public sealed partial class MySqlWorkStore
             var resource = (await ReadResourceRowAsync(connection, transaction, resourceId, ct))!;
             // The session's own entries end first, so a waiter of this session is reported cancelled
             // rather than swept as a dead waiter; a hold that already lapsed is expired, not released.
-            var rows = (await connection.QueryAsync<HoldRow>(new CommandDefinition(
-                HoldSelect + "WHERE h.resource_id = @resourceId AND h.session_id = @sessionId AND h.state IN ('held', 'waiting') ORDER BY h.seq",
+            // Locking reads: a repeatable-read snapshot could miss a hold or waiter created meanwhile.
+            var rows = (await connection.QueryAsync<Guid>(new CommandDefinition(
+                "SELECT id FROM work_holds WHERE resource_id = @resourceId AND session_id = @sessionId AND state IN ('held', 'waiting') ORDER BY seq FOR UPDATE",
                 new { resourceId, sessionId = sessionId.ToString() }, transaction, cancellationToken: ct))).ToList();
             await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE work_holds SET state = IF(state = 'held', IF(expires_at <= @now, 'expired', 'released'), 'cancelled'), " +
-                "ended_at = IF(state = 'held' AND expires_at <= @now, expires_at, @now) " +
+                // ended_at first: assignments are evaluated in order and the later ones see the new state.
+                "UPDATE work_holds SET ended_at = IF(state = 'held' AND expires_at <= @now, expires_at, @now), " +
+                "state = IF(state = 'held', IF(expires_at <= @now, 'expired', 'released'), 'cancelled') " +
                 "WHERE resource_id = @resourceId AND session_id = @sessionId AND state IN ('held', 'waiting')",
                 new { resourceId, sessionId = sessionId.ToString(), now }, transaction, cancellationToken: ct));
             await SweepResourceAsync(connection, transaction, resource, now, ct);
             foreach (var row in rows)
             {
-                var view = ToHoldView((await ReadHoldRowAsync(connection, transaction, row.Id, ct))!, now);
+                var view = ToHoldView((await ReadHoldRowAsync(connection, transaction, row, ct))!, now);
                 if (view.State is WorkHoldStates.Released or WorkHoldStates.Cancelled)
                     released.Add(view);
             }

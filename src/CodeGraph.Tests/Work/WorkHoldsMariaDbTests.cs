@@ -196,8 +196,8 @@ public sealed class WorkHoldsMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         foreach (var tool in new[] { WorkTools.RenewHold, WorkTools.Release })
         {
             var refused = await db.RefusedAsync(tool, new { hold_id = holdId }, "mallory");
-            refused.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
-            refused.Message.ShouldContain("another identity");
+            // Not revealed to a stranger: it is simply not found.
+            refused.Code.ShouldBe(WorkErrorCodes.NotFound);
         }
 
         (await db.RefusedAsync(WorkTools.RenewHold, new { hold_id = Guid.NewGuid().ToString() }, "alice")).Code.ShouldBe(WorkErrorCodes.NotFound);
@@ -247,6 +247,22 @@ public sealed class WorkHoldsMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
     }
 
     [Fact]
+    public async Task End_session_stamps_a_lapsed_unswept_hold_ended_at_its_expiry_and_does_not_report_it_released()
+    {
+        var project = await db.NewProjectAsync("HY");
+        var session = await StartAsync(project);
+        var holdId = HoldId(await AcquireAsync(project, "gpu:lapsed", session: session, ttl: 60));
+        db.Clock.Advance(TimeSpan.FromSeconds(300));
+
+        var ended = await db.CallAsync(WorkTools.EndSession, new { session_id = session }, "michael");
+        ended.TryGetProperty("released_holds", out _).ShouldBeFalse();
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var row = await connection.QuerySingleAsync<(string State, DateTime EndedAt, DateTime ExpiresAt)>(
+            "SELECT state, ended_at, expires_at FROM work_holds WHERE id = @holdId", new { holdId });
+        (row.State, row.EndedAt).ShouldBe(("expired", row.ExpiresAt));
+    }
+
+    [Fact]
     public async Task Concurrent_acquires_never_exceed_capacity()
     {
         var project = await db.NewProjectAsync("HC");
@@ -261,6 +277,26 @@ public sealed class WorkHoldsMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         (await connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM work_holds h JOIN work_resources r ON r.id = h.resource_id WHERE r.name = 'gpu:pool' AND r.project_id = (SELECT id FROM work_projects WHERE project_key = @project) AND h.state = 'held'",
             new { project })).ShouldBe(3);
+    }
+
+    [Fact]
+    public async Task One_idempotency_key_raced_onto_two_resources_is_refused_for_one_of_them_not_a_server_error()
+    {
+        var project = await db.NewProjectAsync("HZ");
+        var attempts = await Task.WhenAll(Enumerable.Range(0, 6).Select(index =>
+            Task.Run(async () =>
+            {
+                try
+                {
+                    return (await AcquireAsync(project, $"gpu:key{index % 2}", user: "alice", key: "same")).GetProperty("outcome").GetString();
+                }
+                catch (WorkException exception)
+                {
+                    return exception.Code;
+                }
+            })));
+        attempts.ShouldAllBe(code => code == "granted" || code == "held" || code == WorkErrorCodes.InvalidArgument);
+        attempts.ShouldContain("granted");
     }
 
     [Fact]

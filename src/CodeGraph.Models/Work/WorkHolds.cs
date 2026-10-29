@@ -14,9 +14,8 @@ public static class WorkHoldLimits
     public const int MaxCapacity = 1000;
     public const int MaxLabels = 20;
     public const int MaxLabelLength = 64;
-    public const int DefaultTtlSeconds = 3_600;
-    /// <summary>A hold lasts at most 24 hours from its grant or its latest renewal.</summary>
-    public const int MaxTtlSeconds = 86_400;
+    // A hold's ttl is 1 to WorkLimits.MaxClaimTtlSeconds (24 h) from its grant or latest renewal,
+    // default WorkLimits.DefaultClaimTtlSeconds: one source of truth with claims.
     /// <summary>
     /// A waiter whose acquire call has ended keeps its place in the queue for this long (and each
     /// poll, an acquire by the same holder, renews it), so a caller that polls does not lose its turn.

@@ -101,7 +101,7 @@ public static class WorkTools
             "Take a slot of a named resource of a project (a GPU, a runner, a staging database) for a purpose and a time: answers granted with your hold (id, expires_at), " +
             "or held with the resource's holders, their purposes and expiry. The resource is created by its first acquire (capacity default 1, labels). A full " +
             "resource with wait_seconds queues you: first come first served within a priority, and the answer carries your queue_position; ask again to " +
-            "keep your place and to learn when you were granted. A repeat by the same holder (session, or identity without one) answers its hold. A hold has its " +
+            "keep your place and to learn when you were granted. A waiter promoted while it is not polling holds the slot until its ttl runs out or it releases. A repeat by the same holder (session, or identity without one) answers its hold. A hold has its " +
             "own ttl_seconds (up to 24 hours) and is renewed with renew_hold, or `cg hold renew` from a shell loop; it is freed by release, end_session or " +
             "its ttl running out, and NOT because the session went quiet: a hold whose session is silent past the idle threshold is still held and reads " +
             "owner_unreachable (with owner_unreachable_since), never available. Holds are advisory: CodeGraph enforces nothing, an agent that ignores a hold " +

@@ -73,7 +73,7 @@ public sealed class WorkHoldsSurfacesTests(WorkDatabase db) : IClassFixture<Work
         (misspeltStatus, misspelt.GetProperty("code").GetString()).ShouldBe((400, "invalid_argument"));
         (await Post($"/api/work/holds/{holdId}/renew", new { hold_id = holdId })).Status.ShouldBe(400);
         (await Post($"/api/work/holds/{holdId}/renew", new { ttl_seconds = 5, session_id = Guid.NewGuid().ToString() })).Status.ShouldBe(400);
-        (await Post($"/api/work/holds/{holdId}/release", withToken: await host.CreateTokenAsync("mallory"))).Status.ShouldBe(400);
+        (await Post($"/api/work/holds/{holdId}/release", withToken: await host.CreateTokenAsync("mallory"))).Status.ShouldBe(404);
         (await Post($"/api/work/holds/{Guid.NewGuid()}/release")).Status.ShouldBe(404);
 
         var (releaseStatus, released) = await Post($"/api/work/holds/{holdId}/release");
