@@ -1,7 +1,12 @@
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
+using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Work;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Dapper;
 using MySqlConnector;
 using Shouldly;
@@ -67,6 +72,12 @@ public sealed class WorkMessageRetentionMariaDbTests(WorkDatabase db) : IClassFi
 
     private Task<MessageRetentionResult> PruneAsync(int batchSize = 1000) => db.Store.PruneMessagesAsync(DateTime.UtcNow - Window, batchSize);
 
+    private Task<int> ProjectMessagesAsync(string project) =>
+        QueryAsync<int>("SELECT COUNT(*) FROM work_messages m JOIN work_projects p ON p.id = m.project_id WHERE p.project_key = @project", new { project });
+
+    private Task<int> ProjectDeliveriesAsync(string project) =>
+        QueryAsync<int>("SELECT COUNT(*) FROM work_message_deliveries d JOIN work_projects p ON p.id = d.project_id WHERE p.project_key = @project", new { project });
+
     // A message that stays last in the store, so that the newest delivery and event rows are not the ones under test.
     private async Task PostFreshAsync(string project, string session) =>
         await PostAsync(new { project, to_session = session, body = "fresh" });
@@ -90,9 +101,10 @@ public sealed class WorkMessageRetentionMariaDbTests(WorkDatabase db) : IClassFi
 
         var result = await PruneAsync();
 
-        result.MessagesDeleted.ShouldBe(2);
+        result.MessagesDeleted.ShouldBeGreaterThanOrEqualTo(2);
         result.DeliveriesDeleted.ShouldBeGreaterThanOrEqualTo(2);
         result.EventsDeleted.ShouldBeGreaterThanOrEqualTo(4);
+        (await ProjectMessagesAsync(project)).ShouldBe(2); // the young read one and the fresh one
         foreach (var gone in new[] { oldRead, oldAnswered })
         {
             (await MessageCountAsync(gone)).ShouldBe(0);
@@ -125,13 +137,24 @@ public sealed class WorkMessageRetentionMariaDbTests(WorkDatabase db) : IClassFi
         foreach (var message in new[] { openQuestion, unread, onLiveItem, onDoneItem })
             await BackdateAsync(message, old);
 
-        (await PruneAsync()).MessagesDeleted.ShouldBe(0);
+        await PruneAsync();
         foreach (var message in new[] { openQuestion, unread, onLiveItem, onDoneItem })
             (await MessageCountAsync(message)).ShouldBe(1);
 
-        // The item finishes: its thread is history now, the open question and the unread message still are not.
-        await ExecuteAsync("UPDATE work_items SET status = 'complete' WHERE id = @itemId", new { itemId });
-        (await PruneAsync()).MessagesDeleted.ShouldBe(2);
+        // The item has just been completed: its thread is kept until it has been finished for longer than the window.
+        await ExecuteAsync("UPDATE work_items SET status = 'complete', updated_at = @now WHERE id = @itemId", new { itemId, now = DateTime.UtcNow });
+        await PruneAsync();
+        (await MessageCountAsync(onLiveItem)).ShouldBe(1);
+        (await MessageCountAsync(onDoneItem)).ShouldBe(1);
+
+        // Finished for longer than the window, but reopened since (status not finished): kept.
+        await ExecuteAsync("UPDATE work_items SET status = 'in_progress', updated_at = @then WHERE id = @itemId", new { itemId, then = DateTime.UtcNow - old });
+        await PruneAsync();
+        (await MessageCountAsync(onLiveItem)).ShouldBe(1);
+
+        // Finished for longer than the window: the thread is history now; the open question and the unread message still are not.
+        await ExecuteAsync("UPDATE work_items SET status = 'complete', updated_at = @then WHERE id = @itemId", new { itemId, then = DateTime.UtcNow - old });
+        await PruneAsync();
         (await MessageCountAsync(onLiveItem)).ShouldBe(0);
         (await MessageCountAsync(onDoneItem)).ShouldBe(0);
         (await MessageCountAsync(openQuestion)).ShouldBe(1);
@@ -159,7 +182,9 @@ public sealed class WorkMessageRetentionMariaDbTests(WorkDatabase db) : IClassFi
         var result = await PruneAsync();
 
         // The newest delivery (the unread message) and event stay, so the heads did not move.
-        result.MessagesDeleted.ShouldBe(2);
+        result.MessagesDeleted.ShouldBeGreaterThanOrEqualTo(2);
+        (await MessageCountAsync(readOne)).ShouldBe(0);
+        (await MessageCountAsync(readTwo)).ShouldBe(0);
         (await db.Store.GetInboxHeadAsync()).ShouldBe(headBefore);
         (await db.Store.GetMessageEventHeadAsync()).ShouldBe(eventHeadBefore);
         (await InboxIdsAsync(session)).ShouldBe([unread]);
@@ -174,8 +199,9 @@ public sealed class WorkMessageRetentionMariaDbTests(WorkDatabase db) : IClassFi
         (await db.Store.GetInboxHeadAsync()).ShouldBeGreaterThan(headBefore);
 
         // A second cleanup deletes no more messages (it may delete the one old event the first kept as the head), and the cursor still works.
-        var second = await PruneAsync();
-        (second.MessagesDeleted, second.DeliveriesDeleted).ShouldBe((0, 0));
+        var before = (await ProjectMessagesAsync(project), await ProjectDeliveriesAsync(project));
+        await PruneAsync();
+        (await ProjectMessagesAsync(project), await ProjectDeliveriesAsync(project)).ShouldBe(before);
         (await InboxIdsAsync(session, cursorBefore, includeRead: true)).ShouldBe([later]);
     }
 
@@ -228,9 +254,111 @@ public sealed class WorkMessageRetentionMariaDbTests(WorkDatabase db) : IClassFi
 
         var result = await PruneAsync(batchSize: 2);
 
-        result.MessagesDeleted.ShouldBe(7);
+        result.MessagesDeleted.ShouldBeGreaterThanOrEqualTo(7);
         foreach (var message in messages)
             (await MessageCountAsync(message)).ShouldBe(0);
         (await QueryAsync<int>("SELECT COUNT(*) FROM work_message_events WHERE message_id IN @messages", new { messages })).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task An_unread_delivery_to_a_session_dead_beyond_the_inheritance_window_is_prunable_but_one_still_inheritable_is_kept()
+    {
+        var project = await db.NewProjectAsync("RD");
+        var live = await StartAsync(project);
+        var longDead = await StartAsync(project);
+        var recentlyDead = await StartAsync(project);
+        await ExecuteAsync("UPDATE work_sessions SET ended_at = @at WHERE id = @id", new { at = DateTime.UtcNow - TimeSpan.FromDays(40), id = longDead });
+        await ExecuteAsync("UPDATE work_sessions SET ended_at = @at WHERE id = @id", new { at = DateTime.UtcNow - TimeSpan.FromDays(3), id = recentlyDead });
+        var toLongDead = await PostAsync(new { project, to_session = longDead, body = "nobody will read" });
+        var toRecentlyDead = await PostAsync(new { project, to_session = recentlyDead, body = "inheritable" });
+        var toLive = await PostAsync(new { project, to_session = live, body = "still unread by a live session" });
+        var toHuman = await PostAsync(new { project, to_human = true, body = "for the humans" });
+        await PostFreshAsync(project, live);
+        foreach (var message in new[] { toLongDead, toRecentlyDead, toLive, toHuman })
+            await BackdateAsync(message, Window + TimeSpan.FromDays(5));
+
+        await PruneAsync();
+
+        (await MessageCountAsync(toLongDead)).ShouldBe(0);
+        (await DeliveryCountAsync(toLongDead)).ShouldBe(0);
+        (await MessageCountAsync(toRecentlyDead)).ShouldBe(1);
+        (await MessageCountAsync(toLive)).ShouldBe(1);
+        (await MessageCountAsync(toHuman)).ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Posts_during_a_cleanup_lose_and_duplicate_no_delivery()
+    {
+        var project = await db.NewProjectAsync("RP");
+        var session = await StartAsync(project);
+        var old = new List<string>();
+        for (var i = 0; i < 30; i++)
+            old.Add(await PostAsync(new { project, to_session = session, body = $"old{i}" }));
+        await AckAllAsync(session, old.ToArray());
+        foreach (var message in old)
+            await BackdateAsync(message, Window + TimeSpan.FromDays(2));
+
+        var posting = Enumerable.Range(0, 20).Select(i => PostAsync(new { project, to_session = session, body = $"new{i}" })).ToArray();
+        var pruning = Task.Run(async () =>
+        {
+            for (var round = 0; round < 3; round++)
+                await PruneAsync(batchSize: 3);
+        });
+        await Task.WhenAll(posting.Append(pruning));
+
+        var posted = posting.Select(task => task.Result).ToList();
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var inbox = (await connection.QueryAsync<string>("SELECT CAST(message_id AS CHAR) FROM work_message_deliveries WHERE recipient = @session AND read_at IS NULL", new { session })).ToList();
+        inbox.Count.ShouldBe(20);
+        inbox.ShouldBe(posted, ignoreOrder: true);
+        (await QueryAsync<int>("SELECT COUNT(*) FROM work_message_deliveries WHERE message_id IN @posted", new { posted })).ShouldBe(20);
+        foreach (var message in old)
+            (await MessageCountAsync(message)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task A_retention_of_zero_days_disables_the_cleanup_and_the_options_bind_through_the_real_registration()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["CodeGraph:WorkMessageRetentionOptions:RetentionDays"] = "0",
+            ["CodeGraph:WorkMessageRetentionOptions:BatchSize"] = "7"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddCodeGraphOptions(configuration);
+        var bound = services.BuildServiceProvider().GetRequiredService<IOptions<WorkMessageRetentionOptions>>().Value;
+        bound.RetentionDays.ShouldBe(0);
+        bound.BatchSize.ShouldBe(7);
+        new WorkMessageRetentionOptions().RetentionDays.ShouldBe(30);
+
+        var project = await db.NewProjectAsync("RZ");
+        var session = await StartAsync(project);
+        var old = await PostAsync(new { project, to_session = session, body = "old" });
+        await AckAllAsync(session, old);
+        await PostFreshAsync(project, session);
+        await BackdateAsync(old, TimeSpan.FromDays(400));
+
+        var disabled = new WorkMessageRetentionService(db.Store, Options.Create(bound), NullLogger<WorkMessageRetentionService>.Instance);
+        (await disabled.CleanupAsync()).TotalRowsDeleted.ShouldBe(0);
+        (await MessageCountAsync(old)).ShouldBe(1);
+
+        var enabled = new WorkMessageRetentionService(db.Store, Options.Create(new WorkMessageRetentionOptions { RetentionDays = 30 }), NullLogger<WorkMessageRetentionService>.Instance);
+        await enabled.CleanupAsync();
+        (await MessageCountAsync(old)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task The_default_schedule_is_seeded_once_and_a_rerun_of_the_migration_leaves_an_operator_s_schedule_alone()
+    {
+        (await QueryAsync<int>("SELECT COUNT(*) FROM job_schedules WHERE job_type = 'PruneWorkMessages'")).ShouldBe(1);
+        (await QueryAsync<string>("SELECT cron_expression FROM job_schedules WHERE job_type = 'PruneWorkMessages'")).ShouldBe("30 3 * * *");
+
+        await ExecuteAsync("UPDATE job_schedules SET is_enabled = 0, cron_expression = '0 1 * * 0' WHERE job_type = 'PruneWorkMessages'");
+        var sql = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations/086_default_work_retention_schedules.sql"));
+        await ExecuteAsync(sql);
+
+        (await QueryAsync<int>("SELECT COUNT(*) FROM job_schedules WHERE job_type = 'PruneWorkMessages'")).ShouldBe(1);
+        (await QueryAsync<string>("SELECT cron_expression FROM job_schedules WHERE job_type = 'PruneWorkMessages'")).ShouldBe("0 1 * * 0");
+        (await QueryAsync<int>("SELECT is_enabled FROM job_schedules WHERE job_type = 'PruneWorkMessages'")).ShouldBe(0);
     }
 }
