@@ -177,7 +177,7 @@ public sealed partial class MySqlWorkStore
     }
 
     private const string AttemptColumns =
-        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, s.harness, s.model, s.host";
+        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host";
 
     private static Task<AttemptRow?> ActiveAttemptAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         connection.QueryFirstOrDefaultAsync<AttemptRow>(new CommandDefinition(

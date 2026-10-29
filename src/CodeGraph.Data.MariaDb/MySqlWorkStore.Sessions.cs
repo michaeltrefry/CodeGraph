@@ -106,8 +106,11 @@ public sealed partial class MySqlWorkStore
             if (row.EndedAt is { } ended)
                 throw WorkException.SessionUnusable(WorkErrorCodes.InvalidArgument, $"Session {sessionId} ended at {Utc(ended):O}. Start a new session with start_session.");
 
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE work_sessions SET last_seen_at = @now WHERE id = @id", new { id = sessionId.ToString(), now }, cancellationToken: ct));
+            // A session pruned between the read and this write is gone: nothing may then name it.
+            var renewed = await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_sessions SET last_seen_at = @now WHERE id = @id AND ended_at IS NULL", new { id = sessionId.ToString(), now }, cancellationToken: ct));
+            if (renewed == 0)
+                throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}. Start one with start_session.");
             // Only claims that are still live are renewed: one that lapsed stays lapsed, and the
             // session's next write on that item is refused claim_lost.
             await connection.ExecuteAsync(new CommandDefinition(
@@ -395,7 +398,7 @@ public sealed partial class MySqlWorkStore
     private static async Task<IReadOnlyList<HandoffView>> ReadHandoffsAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, int? limit, CancellationToken ct)
     {
         var rows = await connection.QueryAsync<HandoffRow>(new CommandDefinition(
-            "SELECT h.id, h.author, h.author_session_id, s.harness, h.done, h.decisions_json, h.open_issues_json, h.corrections_json, h.next_action, " +
+            "SELECT h.id, h.author, h.author_session_id, COALESCE(s.harness, h.author_harness) AS harness, h.done, h.decisions_json, h.open_issues_json, h.corrections_json, h.next_action, " +
             "h.branch, h.commit_sha, h.created_at FROM work_handoffs h LEFT JOIN work_sessions s ON s.id = h.author_session_id " +
             "WHERE h.item_id = @itemId ORDER BY h.created_at DESC, h.id" + (limit is { } count ? $" LIMIT {count}" : string.Empty),
             new { itemId }, transaction, cancellationToken: ct));
@@ -430,6 +433,16 @@ public sealed partial class MySqlWorkStore
             if (lastSession is not null && Guid.TryParse(lastSession, out var sessionId) &&
                 await ReadSessionRowAsync(connection, transaction, sessionId, ct) is { } session)
                 previous = new HolderView(session.Identity, lastSession, session.Harness, session.Model, session.Host);
+            if (previous is null)
+            {
+                // The claim rows (and the session) are gone after pruning; the latest attempt keeps the holder
+                // and, copied when its session was pruned, its harness, model and host.
+                var attempt = await connection.QueryFirstOrDefaultAsync<AttemptRow>(new CommandDefinition(
+                    $"SELECT {AttemptColumns} FROM work_attempts a LEFT JOIN work_sessions s ON s.id = a.session_id WHERE a.item_id = @id ORDER BY a.number DESC LIMIT 1",
+                    new { id = before.Id }, transaction, cancellationToken: ct));
+                if (attempt is not null)
+                    previous = new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host);
+            }
         }
 
         var (branches, prs) = await ReadWorkLinksAsync(connection, transaction, before.Id, ct);
@@ -444,7 +457,7 @@ public sealed partial class MySqlWorkStore
                     : ("1 = 1", new { id = before.Id, who = "" });
             var row = await connection.QueryFirstOrDefaultAsync<ChangeRow>(new CommandDefinition(
                 "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
-                "s.harness, s.model, s.host, c.changes, c.created_at FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id " +
+                "COALESCE(s.harness, c.actor_harness) AS harness, COALESCE(s.model, c.actor_model) AS model, COALESCE(s.host, c.actor_host) AS host, c.changes, c.created_at FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id " +
                 $"WHERE c.entity_id = @id AND {where} ORDER BY c.sequence DESC LIMIT 1",
                 parameters, transaction, cancellationToken: ct));
             last = row is null ? null : ToView(row);
@@ -546,7 +559,8 @@ public sealed partial class MySqlWorkStore
     private static async Task<bool> IsRecoverableAsync(MySqlConnection connection, ItemRow row, DateTime now, CancellationToken ct) =>
         WorkStatuses.Parse(row.Status) == WorkStatus.InProgress && !row.HasLiveClaim(now) &&
         (row.ClaimHolder is not null || await connection.ExecuteScalarAsync<long>(new CommandDefinition(
-            "SELECT COUNT(*) FROM work_session_claims WHERE item_id = @id", new { id = row.Id }, cancellationToken: ct)) > 0);
+            "SELECT (SELECT COUNT(*) FROM work_session_claims WHERE item_id = @id) + (SELECT COUNT(*) FROM work_attempts WHERE item_id = @id)",
+            new { id = row.Id }, cancellationToken: ct)) > 0);
 
     private async Task<BriefingItem> BriefingItemAsync(MySqlConnection connection, ItemRow row, bool recoverable, HolderView? previous, CancellationToken ct)
     {

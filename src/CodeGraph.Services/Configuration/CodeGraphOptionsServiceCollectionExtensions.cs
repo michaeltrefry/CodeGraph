@@ -85,6 +85,9 @@ public static class CodeGraphOptionsServiceCollectionExtensions
         services.AddOptions<AssistantRetentionOptions>()
             .Bind(root.GetSection(nameof(CodeGraphServiceSettings.AssistantRetentionOptions)));
 
+        services.AddOptions<WorkMessageRetentionOptions>()
+            .Bind(root.GetSection(nameof(CodeGraphServiceSettings.WorkMessageRetentionOptions)));
+
         services.AddOptions<BranchOverlayOptions>()
             .Bind(root.GetSection(nameof(CodeGraphServiceSettings.BranchOverlayOptions)))
             .Validate(options => options.TtlHours > 0, "Branch overlay TTL must be positive.")
