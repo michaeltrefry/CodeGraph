@@ -1,6 +1,7 @@
 using System.Reflection;
 using CodeGraph.Data;
 using CodeGraph.Services.Assistant;
+using CodeGraph.Services.Work;
 using ModelContextProtocol.Server;
 
 namespace CodeGraph.Mcp.Hub;
@@ -200,7 +201,22 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
         GetNativeToolDefinitions(typeof(CodeGraphMcpServer))
             .Concat(GetNativeToolDefinitions(typeof(MemoryMcpServer)))
             .Concat(GetNativeToolDefinitions(typeof(ConsolidatedMcpServer)))
-            .Concat(GetNativeToolDefinitions(typeof(OverlayMcpServer)));
+            .Concat(GetNativeToolDefinitions(typeof(OverlayMcpServer)))
+            .Concat(GetWorkToolDefinitions());
+
+    // The work tools are McpServerTool instances (WorkMcpTool), not attributed methods.
+    private static IEnumerable<McpHubToolDefinition> GetWorkToolDefinitions() =>
+        WorkTools.All.Select(tool => new McpHubToolDefinition(
+            tool.Name,
+            "codegraph",
+            tool.Title,
+            tool.Description,
+            tool.ReadOnly,
+            Destructive: false,
+            EnabledByDefault: true,
+            DefaultSelected: true,
+            AccessClass: tool.ReadOnly ? "read" : "write",
+            ProviderType: "native"));
 
     private static IEnumerable<McpHubToolDefinition> GetNativeToolDefinitions(Type type)
     {
