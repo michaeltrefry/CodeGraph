@@ -1,0 +1,81 @@
+{
+  "story": {
+    "app_url": "https://app.shortcut.com/trefry/story/7931",
+    "description": "## Goal\nProduce the **faithful, GPU-native quality go/no-go** for NVIDIA PiD as a Qwen-Image-VAE decoder replacement…",
+    "archived": false,
+    "started": true,
+    "story_links": [
+      { "entity_type": "story-link", "object_id": 7809, "verb": "relates to", "type": "subject", "updated_at": "2026-06-25T00:07:19Z", "id": 500003777, "subject_id": 7931, "subject_workflow_state_id": 500000010, "created_at": "2026-06-25T00:07:19Z" }
+    ],
+    "labels": [],
+    "story_type": "chore",
+    "custom_fields": [],
+    "linked_files": [],
+    "workflow_id": 500000005,
+    "started_at": "2026-06-25T00:20:28Z",
+    "completed_at": "2026-06-25T00:48:02Z",
+    "name": "PiD [Phase 0]: faithful CUDA quality go/no-go run — qwenimage PiD vs Qwen-VAE (Windows CUDA box)",
+    "completed": true,
+    "comments": [
+      {
+        "app_url": "https://app.shortcut.com/trefry/story/7931/pid-phase-0-faithful-cuda-quality-gonogo-run-qwenimage-pid-vs-qwenvae-windows-cuda-box#activity-7939",
+        "entity_type": "story-comment",
+        "deleted": false,
+        "story_id": 7931,
+        "author_id": "69f0ba01-654c-426b-b546-05dd508b2eab",
+        "updated_at": "2026-06-25T00:40:32Z",
+        "external_id": null,
+        "parent_id": null,
+        "id": 7939,
+        "position": 0,
+        "created_at": "2026-06-25T00:40:32Z",
+        "text": "author: claude\n\n## ✅ CUDA quality go/no-go: PiD output is CLEAN — the Mac grid-mesh + green cast were MPS op bugs. **GO on quality.**…"
+      }
+    ],
+    "blocker": false,
+    "branches": [],
+    "epic_id": 7840,
+    "external_links": [],
+    "requested_by_id": "69f08f42-a951-46b3-b1a0-897a12271e62",
+    "iteration_id": null,
+    "sub_task_story_ids": [],
+    "tasks": [],
+    "label_ids": [],
+    "workflow_state_id": 500000010,
+    "updated_at": "2026-06-25T00:48:02Z",
+    "pull_requests": [],
+    "follower_ids": ["69f0ba01-654c-426b-b546-05dd508b2eab", "69f08f42-a951-46b3-b1a0-897a12271e62"],
+    "owner_ids": [],
+    "external_id": null,
+    "id": 7931,
+    "parent_story_id": null,
+    "estimate": null,
+    "commits": [],
+    "files": [
+      {
+        "description": "",
+        "entity_type": "file",
+        "story_ids": [7931],
+        "name": "image-1782348054622.png",
+        "thumbnail_url": "https://media.app.shortcut.com/api/attachments/files/clubhouse-assets/69f08f42-5aa8-4153-a440-4cdffc48dcde/6a3c7a00-37b3-48ec-9615-15873da75a1e/thumb_image-1782348054622.png",
+        "size": 1735535,
+        "uploader_id": "69f08f42-a951-46b3-b1a0-897a12271e62",
+        "content_type": "image/png",
+        "updated_at": "2026-06-25T00:44:48Z",
+        "filename": "image-1782348054622.png",
+        "external_id": null,
+        "id": 7942,
+        "url": "https://media.app.shortcut.com/api/attachments/files/clubhouse-assets/69f08f42-5aa8-4153-a440-4cdffc48dcde/6a3c7a00-37b3-48ec-9615-15873da75a1e/image-1782348054622.png",
+        "created_at": "2026-06-25T00:44:48Z"
+      }
+    ],
+    "position": 52147481341,
+    "blocked": false,
+    "project_id": null,
+    "deadline": null,
+    "stats": { "num_related_documents": 0 },
+    "created_at": "2026-06-25T00:07:12Z",
+    "moved_at": "2026-06-25T00:48:02Z",
+    "team_id": null
+  }
+}

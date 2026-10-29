@@ -1,0 +1,59 @@
+{
+  "epic": {
+    "app_url": "https://app.shortcut.com/trefry/epic/26198",
+    "description": "Follow-up to Phase 5 (sc-26124) and the VM-move epic (sc-26578). The merge gate cannot verify macOS app-hosted tests locally…\n\n## Objective\n\nWorkers run as separate file and credential identities with a headless bootstrap — never inside the owner's or lwrunner's GUI session.\n\n## Requirements\n\n- **E1 Placement.** macOS app-hosted tests and iOS UI tests run on lwrunner…\n- **E2 Workflow provenance.** The workflow is the factory's own, read from a sealed factory workflow path…\n- **E3 Remote dispatch.** Exact base, head, test and recipe identity; bounded dispatch…\n\n## Epic acceptance tests\n\n1. **AT1 Deterministic tests.** `dotnet test` passes and the fake paths are covered, nothing skipped.\n2. **AT2 Live headless identity.** An authorized live run proves the worker's headless identity and slot cleanup.",
+    "archived": false,
+    "started": true,
+    "labels": [],
+    "project_ids": [],
+    "completed_at_override": null,
+    "started_at": "2026-10-23T13:24:55Z",
+    "completed_at": null,
+    "objective_ids": [],
+    "name": "Dark Factory: iOS gate checks on GitHub-hosted runners + isolated worker sessions",
+    "global_id": "v2:e:69f08f42-5aa8-4153-a440-4cdffc48dcde:26198",
+    "completed": false,
+    "comments": [
+      {
+        "app_url": "https://app.shortcut.com/trefry/epic/26198#activity-26736",
+        "entity_type": "epic-comment",
+        "deleted": false,
+        "author_id": "69f08f42-a951-46b3-b1a0-897a12271e62",
+        "comments": [],
+        "updated_at": "2026-10-22T17:18:29Z",
+        "external_id": null,
+        "id": 26736,
+        "created_at": "2026-10-22T17:18:29Z",
+        "text": "[author: claude]\nInput from epic sc-26578 (factory moved into a macOS VM guest), 2026-10-22, routed here by the owner.\n\nThe merge gate cannot verify macOS app-hosted tests…"
+      },
+      {
+        "app_url": "https://app.shortcut.com/trefry/epic/26198#activity-26925",
+        "entity_type": "epic-comment",
+        "deleted": false,
+        "author_id": "69f08f42-a951-46b3-b1a0-897a12271e62",
+        "comments": [],
+        "updated_at": "2026-10-24T16:54:01Z",
+        "external_id": null,
+        "id": 26925,
+        "created_at": "2026-10-24T16:54:01Z",
+        "text": "[author: claude]\nOwner decision (2026-10-24) routing for epic sc-26198:\n- Workers run as headless file/credential identities…"
+      }
+    ],
+    "state": "in progress",
+    "requested_by_id": "69f08f42-a951-46b3-b1a0-897a12271e62",
+    "epic_state_id": 500000003,
+    "label_ids": [],
+    "updated_at": "2026-10-24T23:04:25Z",
+    "follower_ids": ["69f08f42-a951-46b3-b1a0-897a12271e62"],
+    "owner_ids": [],
+    "external_id": null,
+    "id": 26198,
+    "position": 392,
+    "deadline": null,
+    "stats": { "num_related_documents": 0, "num_stories_total": 6, "num_stories_done": 5 },
+    "created_at": "2026-10-15T11:46:12Z",
+    "team_id": "6ac526c4-f2b5-4903-958f-d2d529d8bc8a",
+    "team_ids": ["6ac526c4-f2b5-4903-958f-d2d529d8bc8a"],
+    "objective_id": null
+  }
+}

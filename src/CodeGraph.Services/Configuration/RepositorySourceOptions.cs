@@ -93,6 +93,13 @@ public class GitHubSourceOptions
     /// Empty disables the webhook: every delivery is refused.
     /// </summary>
     public string WebhookSecret { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated GitHub logins whose reviews and review comments count as the owner's: stored
+    /// with high priority as work evidence (bots and other accounts are normal). The repository's
+    /// own owner login always counts.
+    /// </summary>
+    public string OwnerLogins { get; set; } = "";
 }
 
 public class FolderSourceOptions

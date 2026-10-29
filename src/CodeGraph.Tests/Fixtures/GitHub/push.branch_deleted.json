@@ -1,0 +1,29 @@
+{
+  "ref": "refs/heads/claude/__KEY__-evidence",
+  "before": "1111111111111111111111111111111111111111",
+  "after": "0000000000000000000000000000000000000000",
+  "created": false,
+  "deleted": true,
+  "repository": {
+    "id": 1001,
+    "name": "sceneworks",
+    "full_name": "michaeltrefry/sceneworks",
+    "private": true,
+    "owner": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "html_url": "https://github.com/michaeltrefry/sceneworks",
+    "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+    "default_branch": "main"
+  },
+  "pusher": {
+    "name": "claude-agent"
+  },
+  "sender": {
+    "login": "claude-agent",
+    "id": 77,
+    "type": "User"
+  }
+}

@@ -1,0 +1,134 @@
+<section class="cg-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Review queue</h1>
+      <p>Challenged rules, proposed rules, contradicting lessons and decisions agents made on their own, by priority then recurrence.</p>
+    </div>
+    <div class="cg-page-header-actions">
+      <label class="cg-field">
+        <span class="cg-field-label">Project</span>
+        <select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)">
+          @for (p of project.projects(); track p.key) {
+            <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
+          }
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <p class="adm-banner kn-banner">Nothing here blocks work. A challenged rule is still served, a proposed lesson still becomes a rule on recurrence and an agent's decision stands until you overturn it. Agents can settle any of these too.</p>
+
+  @if (project.error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p>
+  }
+  @if (error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p>
+  }
+  @if (notice()) {
+    <p class="adm-banner ok kn-banner" role="status">{{ notice() }}</p>
+  }
+
+  <div class="cg-card kn-list" aria-label="Review items">
+    @for (item of items(); track keyOf(item)) {
+      <article class="kn-row kn-static">
+        <div class="kn-meta">
+          <span class="cg-chip cg-chip-accent">{{ kindLabels[item.kind] }}</span>
+          <span class="cg-chip">{{ item.priority }}</span>
+          @if (item.recurrence > 1) { <span class="kn-numbers">{{ item.recurrence }}×</span> }
+          <span>since {{ item.since | date: 'medium' }}</span>
+        </div>
+        <span class="kn-summary">{{ item.entry.summary }}</span>
+        <div class="kn-meta">
+          <span>{{ item.entry.kind }}</span>
+          @if (item.entry.item) { <span>· {{ item.entry.item }}</span> }
+          <span>·</span>
+          <span class="kn-actor" [title]="actorTitle(item.author)">{{ actorLabel(item.author) }}</span>
+        </div>
+
+        @if (item.other; as other) {
+          <div class="kn-meta"><span class="cg-chip cg-chip-warn">contradicts</span></div>
+          <span class="kn-summary">{{ other.summary }}</span>
+          <div class="kn-meta"><span class="kn-actor" [title]="actorTitle(item.other_author)">{{ actorLabel(item.other_author) }}</span></div>
+        }
+
+        @for (c of challengesOf(item); track c.id) {
+          <div class="kn-challenge">
+            <div class="kn-meta">
+              <span class="cg-chip cg-chip-warn">challenge</span>
+              <span class="kn-actor" [title]="actorTitle(c.author)">{{ actorLabel(c.author) }}</span>
+              <span>· {{ c.created_at | date: 'medium' }}</span>
+            </div>
+            <p>{{ c.reason }}</p>
+            <ul>
+              @for (ev of c.evidence; track $index) {
+                <li>{{ words(ev.kind) }}: {{ ev.summary }}@if (ev.ref) { · <span class="cg-mono">{{ ev.ref }}</span> }</li>
+              }
+            </ul>
+            <div class="kn-actions">
+              <button class="cg-btn secondary" type="button" (click)="open(item, 'uphold', { challengeId: c.id })" [disabled]="busy()">Uphold rule</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'amend', { challengeId: c.id })" [disabled]="busy()">Amend rule</button>
+              <button class="cg-btn danger" type="button" (click)="open(item, 'retract', { challengeId: c.id })" [disabled]="busy()">Retract rule</button>
+            </div>
+            @if (form()?.challengeId === c.id) {
+              <ng-container *ngTemplateOutlet="formTpl; context: { item: item, action: form()!.action }" />
+            }
+          </div>
+        }
+        @if (item.more_challenges) {
+          <p class="cg-small cg-muted">{{ item.more_challenges }} more open challenges; resolve these first.</p>
+        }
+
+        @switch (item.kind) {
+          @case ('proposed_rule') {
+            <div class="kn-actions">
+              <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Approve</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'reject')" [disabled]="busy()">Reject…</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'amend')" [disabled]="busy()">Amend…</button>
+            </div>
+          }
+          @case ('autonomous_decision') {
+            <div class="kn-actions">
+              <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Approve</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'reject')" [disabled]="busy()">Reject…</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'amend')" [disabled]="busy()">Amend…</button>
+            </div>
+          }
+          @case ('contradiction') {
+            <div class="kn-actions">
+              <button class="cg-btn" type="button" (click)="open(item, 'retract', { side: 'entry' })" [disabled]="busy()">Retract the first…</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'retract', { side: 'other' })" [disabled]="busy()">Retract the second…</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'amend', { side: 'entry' })" [disabled]="busy()">Amend the first…</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'amend', { side: 'other' })" [disabled]="busy()">Amend the second…</button>
+              <button class="cg-btn" type="button" (click)="sameAs(item)" [disabled]="busy()">Same lesson: merge the first into the second</button>
+            </div>
+          }
+        }
+        @if (form()?.key === keyOf(item) && !form()?.challengeId) {
+          <ng-container *ngTemplateOutlet="formTpl; context: { item: item, action: form()!.action }" />
+        }
+      </article>
+    } @empty {
+      <p class="kn-empty">{{ loading() ? 'Loading…' : 'Nothing to review.' }}</p>
+    }
+    @if (nextCursor()) {
+      <div class="kn-more"><button class="cg-btn" type="button" (click)="load(true)" [disabled]="loading()">Load more</button></div>
+    }
+  </div>
+</section>
+
+<ng-template #formTpl let-item="item" let-action="action">
+  <form class="kn-form" (ngSubmit)="submit(item)">
+    @if (action === 'amend') {
+      <label class="cg-field"><span class="cg-field-label">Amended text</span>
+        <input class="cg-input" name="amendSummary" [(ngModel)]="amendSummary" maxlength="500" /></label>
+    }
+    @if (action !== 'amend' || form()?.challengeId) {
+      <label class="cg-field"><span class="cg-field-label">Reason</span>
+        <textarea class="cg-input" name="reason" [(ngModel)]="reason"></textarea></label>
+    }
+    <div class="kn-actions">
+      <button class="cg-btn primary" type="submit" [disabled]="busy()">{{ action === 'reject' ? 'Reject' : action === 'amend' ? 'Save amendment' : action === 'uphold' ? 'Uphold' : 'Retract' }}</button>
+      <button class="cg-btn" type="button" (click)="form.set(null)">Cancel</button>
+    </div>
+  </form>
+</ng-template>

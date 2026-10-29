@@ -133,3 +133,44 @@ The production compose override defines the healthchecks. Because every host app
 - Web: `GET http://127.0.0.1/` from nginx.
 
 When `CODEGRAPH_DEPLOY_ENABLED` is not `true`, the deploy job succeeds but emits a `Deployment skipped` notice and job summary.
+
+## GitHub webhook and work evidence
+
+`POST /api/webhooks/github` (signed with `CodeGraph:RepositorySource:GitHub:WebhookSecret`) queues the default-branch index on a push and, for work tracking, records evidence on work items. Subscribe the webhook to: **push** (all branches), **pull requests**, **pull request reviews**, **pull request review comments** and **issue comments**.
+
+- Branches, PR titles and PR bodies naming an item key (`SW-142`) or an imported alias (`sc-27866`) link to that item. The repository must belong to the item's project.
+- Forward moves only (In Progress on a push, In Review on an open PR); a merge flags `merged_awaiting_acceptance` and never completes the item; a PR closed unmerged returns an In Review item to Ready only when that PR is linked to the item's current attempt. Evidence of superseded attempts is recorded and moves nothing.
+- Reviews and comments are stored with source (human or bot) and priority. The repository owner's login counts as the owner automatically; for **organisation-owned repositories** set `CodeGraph:RepositorySource:GitHub:OwnerLogins` (comma-separated GitHub logins) so the owner's reviews are stored with high priority (bots and other accounts are normal).
+- Evidence that changes no link, status or claim (a comment, a review) is fed to the change feed but does not bump the item's version.
+
+### Redelivering a failed delivery
+
+GitHub does not retry failed deliveries on its own. A transient store failure (deadlock, lock wait, timeout) is retried three times inside the request; if it still fails the response is HTTP 500 and the delivery shows as failed. The handler is idempotent (the `X-GitHub-Delivery` id is the key, per item), so redelivering is always safe:
+
+- UI: repository (or organisation) **Settings > Webhooks > the webhook > Recent Deliveries**, open the failed delivery, **Redeliver**.
+- API: `gh api repos/OWNER/REPO/hooks/HOOK_ID/deliveries` lists deliveries (`status_code` not 2xx marks the failures); `gh api -X POST repos/OWNER/REPO/hooks/HOOK_ID/deliveries/DELIVERY_ID/attempts` redelivers one (organisation hooks: `orgs/ORG/hooks/...`).
+
+A redelivered push also resubmits the index run for the same head SHA, which the indexer already treats as a duplicate.
+
+## Work imports (Shortcut, KanbanBoard)
+
+The `WorkImport` job and the admin routes under `/api/work/imports` (sc-27876) bring the Shortcut workspace
+and the KanbanBoard "SceneWorks Code Review 2026-10-27" epic into the work tracker. Both sources are only read.
+
+- **Tokens:** MCP Hub credentials `shortcut/apiToken` (read access is enough) and `kanban/apiToken` (a read-scoped
+  KanbanBoard PAT). Nothing runs without them.
+- **Approval:** the admin routes take a web sign-in only, never a personal access token. `GET
+  /api/work/imports/shortcut/settings` returns the proposed team → project table. A dry run
+  (`POST .../shortcut/runs {"mode":"dry_run"}`) reports the mapping. `PUT .../shortcut/settings` with
+  `"approve": true` approves the table. Imports are refused until then.
+- **No seeded schedule:** no WorkImport schedule is seeded, because it needs the token and approved settings first.
+  After the full import (`{"mode":"import"}`), create a `WorkImport` schedule under Admin > Schedules. With no args it
+  runs the Shortcut delta sync (`updated_since` = start of the last completed import, plus that run's failures).
+  It runs until cutover. **Remove the delta schedule at cutover**: from then on, CodeGraph is the tracker.
+- **Attachments:** downloaded files live under `WorkImport:AttachmentStoragePath` (default `uploads/work-items`,
+  relative to `/app`; docker-compose sets `WorkImport__AttachmentStoragePath=/app/uploads/work-items` in both hosts). `docker-compose.yml` mounts the `codegraph-uploads` volume at `/app/uploads` in both
+  `codegraph-api` (serves the files) and `jobs` (downloads them). The production override inherits that mount,
+  which also persists wiki attachments (`uploads/wiki`) across redeploys. A record whose file is missing is
+  downloaded again on the next run.
+- **Until cutover:** a re-run is a three-way merge. Only fields that changed in Shortcut since the last run are
+  written; CodeGraph-side changes to the other fields survive. Shortcut wins a field both sides changed.

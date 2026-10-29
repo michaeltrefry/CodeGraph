@@ -16,6 +16,10 @@ public sealed record WorkActor(
 {
     public const string UserKind = "user";
     public const string SessionKind = "session";
+    /// <summary>A write made by CodeGraph itself, such as an import (<c>import:shortcut</c>).</summary>
+    public const string SystemKind = "system";
+    /// <summary>An imported comment written by an agent account (Claude, Codex) in the source tracker.</summary>
+    public const string AgentKind = "agent";
 }
 
 public sealed record RepositoryMemberView(string Repository, RepositoryRole Role);
@@ -55,7 +59,11 @@ public sealed record FeatureView(
     FeatureCompletionView? Completion = null,
     IReadOnlyList<string>? Goals = null,
     IReadOnlyList<RequirementView>? Requirements = null,
-    IReadOnlyList<string>? AcceptanceTests = null)
+    IReadOnlyList<string>? AcceptanceTests = null,
+    // Set on a feature imported from another tracker (sc-27876).
+    ImportedView? Imported = null,
+    // true while an imported open feature's requirements still live only in its description.
+    bool? RequirementsUnreconciled = null)
 {
     public string Kind => "feature";
 }
@@ -68,7 +76,10 @@ public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt,
 
 public sealed record LinkView(Guid Id, WorkLinkKind Kind, string Url, DateTime CreatedAt);
 
-public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null);
+/// <param name="AuthorKind">Set when the author is not a CodeGraph user: <c>agent</c> or <c>system</c> (an imported comment keeps its source author and time).</param>
+/// <param name="SourceCreatedAt">An imported comment's time in its source tracker, when it differs from CreatedAt (which keeps the item's comment order).</param>
+public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null, string? AuthorKind = null,
+    DateTime? SourceCreatedAt = null);
 
 public sealed record ItemView(
     Guid Id,
@@ -108,10 +119,15 @@ public sealed record ItemView(
     AcceptanceReportView? AcceptanceReport = null,
     IReadOnlyList<AttemptView>? Attempts = null,
     int? AttemptCount = null,
-    // Filled by the messages story (S7): open questions and requests about the item.
-    IReadOnlyList<object>? OpenMessages = null,
+    // The messages story (S7): open questions and requests about the item.
+    IReadOnlyList<MessageLine>? OpenMessages = null,
     // The knowledge relevant to the item (S5): linked to it, scoped to its touches, its repository or the project.
-    IReadOnlyList<KnowledgeRow>? Knowledge = null)
+    IReadOnlyList<KnowledgeRow>? Knowledge = null,
+    // The rules of the item brief (S9): matched like a briefing's (activity, location), the activity derived from the item's status unless the session declared one.
+    IReadOnlyList<BriefingRule>? Rules = null,
+    // Set on an item imported from another tracker (sc-27876): it may lack AC, repository, inherits and touches.
+    ImportedView? Imported = null,
+    IReadOnlyList<AttachmentView>? Attachments = null)
 {
     public string Kind => "item";
 }
@@ -147,7 +163,9 @@ public sealed record CreateWorkResult(
     ItemView? Item = null);
 
 /// <param name="Recorded">The knowledge entries the save-point fields stored with the write (S5).</param>
-public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null, IReadOnlyList<KnowledgeRow>? Recorded = null);
+public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null, IReadOnlyList<KnowledgeRow>? Recorded = null,
+    IReadOnlyList<SimilarLessons>? Similar = null,
+    IReadOnlyList<string>? Hints = null);
 
 /// <param name="Reused">true when this is the caller's existing claim or the allocation of a repeated key, not a new claim.</param>
 /// <param name="Reason">Why there is no item: <c>no_ready_work</c>.</param>

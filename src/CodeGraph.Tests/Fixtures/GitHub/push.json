@@ -1,0 +1,39 @@
+{
+  "ref": "refs/heads/claude/__KEY__-evidence",
+  "before": "0000000000000000000000000000000000000000",
+  "after": "1111111111111111111111111111111111111111",
+  "created": true,
+  "deleted": false,
+  "forced": false,
+  "repository": {
+    "id": 1001,
+    "name": "sceneworks",
+    "full_name": "michaeltrefry/sceneworks",
+    "private": true,
+    "owner": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "html_url": "https://github.com/michaeltrefry/sceneworks",
+    "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+    "default_branch": "main"
+  },
+  "pusher": {
+    "name": "claude-agent",
+    "email": "agent@example.com"
+  },
+  "sender": {
+    "login": "claude-agent",
+    "id": 77,
+    "type": "User"
+  },
+  "commits": [
+    { "id": "0000000000000000000000000000000000000abc", "message": "Add the evidence table\n\nlong body" },
+    { "id": "1111111111111111111111111111111111111111", "message": "Record GitHub evidence" }
+  ],
+  "head_commit": {
+    "id": "1111111111111111111111111111111111111111",
+    "message": "Record GitHub evidence"
+  }
+}

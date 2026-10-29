@@ -32,7 +32,10 @@ public sealed partial class WorkService(
     IOptions<WorkSessionOptions>? sessionOptions = null,
     WorkOverlaps? overlapDetector = null,
     Microsoft.Extensions.Logging.ILogger<WorkService>? logger = null,
-    IKnowledgeStore? knowledgeStore = null) : IWorkService
+    IKnowledgeStore? knowledgeStore = null,
+    // Lesson similarity (S9): the embedding provider (local ONNX in the hosts) and the lesson settings.
+    CodeGraph.Services.Embeddings.IEmbeddingService? embeddingService = null,
+    IOptions<WorkLessonOptions>? lessonOptions = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -49,6 +52,8 @@ public sealed partial class WorkService(
     private static readonly TimeSpan BriefingOverlapDeadline = TimeSpan.FromMilliseconds(800);
     private static readonly TimeSpan CallOverlapDeadline = TimeSpan.FromMilliseconds(300);
     private readonly WorkSessionOptions sessions = sessionOptions?.Value ?? new WorkSessionOptions();
+    private readonly WorkLessonOptions lessons = lessonOptions?.Value ?? new WorkLessonOptions();
+    private readonly CodeGraph.Services.Embeddings.IEmbeddingService? embeddings = embeddingService;
 
     private IWorkStore Store => store
         ?? throw new WorkStoreUnavailableException();
@@ -91,6 +96,13 @@ public sealed partial class WorkService(
             WorkTools.Record => WorkJson.Parse<RecordRequest>(arguments, tool),
             WorkTools.Recall => WorkJson.Parse<RecallRequest>(arguments, tool),
             WorkTools.ImportKnowledge => WorkJson.Parse<ImportKnowledgeRequest>(arguments, tool),
+            WorkTools.Post => WorkJson.Parse<PostRequest>(arguments, tool),
+            WorkTools.Inbox => WorkJson.Parse<InboxRequest>(arguments, tool),
+            WorkTools.Ack => WorkJson.Parse<AckRequest>(arguments, tool),
+            WorkTools.Promote => WorkJson.Parse<PromoteRequest>(arguments, tool),
+            WorkTools.Challenge => WorkJson.Parse<ChallengeRequest>(arguments, tool),
+            WorkTools.Lessons => WorkJson.Parse<LessonsRequest>(arguments, tool),
+            WorkTools.ReviewQueue => WorkJson.Parse<ReviewQueueRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -157,8 +169,19 @@ public sealed partial class WorkService(
             RecordRequest record => await RecordAsync(record, actor, session, ct),
             RecallRequest recall => await RecallAsync(recall, session, ct),
             ImportKnowledgeRequest import => await ImportKnowledgeAsync(import, actor, session, ct),
+            PostRequest post => await PostAsync(post, actor, session, ct),
+            InboxRequest inbox => await InboxAsync(inbox, actor, session, ct),
+            AckRequest ack => await AckAsync(ack, actor, session, ct),
+            PromoteRequest promote => await PromoteAsync(promote, actor, session, ct),
+            ChallengeRequest challenge => await ChallengeAsync(challenge, actor, session, ct),
+            LessonsRequest lessons => await LessonsAsync(lessons, session, ct),
+            ReviewQueueRequest review => await ReviewQueueAsync(review, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
+
+        // The briefing and the inbox carry their own unread count.
+        if (actor.SessionId is not null && request is not (GetBriefingRequest or InboxRequest))
+            result = await WithUnreadAsync(result, actor, session, ct);
         return (result, actor);
     }
 
@@ -235,7 +258,9 @@ public sealed partial class WorkService(
             repository,
             Optional(request.Branch, "branch", WorkSessionLimits.MaxBranchLength),
             Optional(request.Worktree, "worktree", WorkSessionLimits.MaxWorktreeLength),
-            Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength));
+            Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength),
+            request.Activity is { Count: > 0 } activity ? activity.Distinct().ToList() : null,
+            ReadSkills(request.Skills, "skills"));
         var created = await Store.StartSessionAsync(spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
         var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, briefingPaths, budget, ct);
         return new StartSessionResult(created.Created, created.Value, briefing);
@@ -259,7 +284,8 @@ public sealed partial class WorkService(
 
         var handoff = request.Handoff is { } input ? ReadHandoff(input, "handoff") : null;
         var ended = await Store.EndSessionAsync(sessionId, itemId, handoff, knowledge, actor, ct);
-        return ended with { Recorded = ended.Recorded ?? await RecordedAsync(knowledge, ct) };
+        var recorded = ended.Recorded ?? await RecordedAsync(knowledge, ct);
+        return ended with { Recorded = recorded, Similar = await SimilarAsync(session.ProjectId, recorded, ct), Hints = LessonHints(knowledge, recorded) };
     }
 
     private async Task<object> GetBriefingAsync(GetBriefingRequest request, WorkActor actor, CancellationToken ct)
@@ -267,6 +293,7 @@ public sealed partial class WorkService(
         var sessionId = SessionIdOf(request.SessionId);
         var budget = Budget(request.BudgetTokens);
         var paths = ReadPaths(request.Paths, "paths");
+        var skills = ReadSkills(request.Skills, "skills");
         Guid? focus = null;
         if (request.Item is { } item)
         {
@@ -275,15 +302,31 @@ public sealed partial class WorkService(
             focus = (await RequireOfProjectAsync(item, WorkEntityKind.Item, project, "item", ct)).Id;
         }
 
+        // Every argument is checked (item included) before the session's activity and skills are
+        // replaced: they are what the session does and has loaded now.
+        await Knowledge.SetSessionBriefingContextAsync(sessionId,
+            request.Activity is { Count: > 0 } activity ? activity.Distinct().ToList() : null, skills, ct);
+
         return await BriefingAsync(sessionId, focus, paths, budget, ct);
     }
 
     private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, IReadOnlyList<string> paths, int budget, CancellationToken ct)
     {
-        var briefing = await Store.ReadBriefingAsync(sessionId, focus, ct);
+        var read = await Store.ReadBriefingAsync(sessionId, focus, ct);
         var warnings = await TryOverlapWarningsAsync(sessionId, BriefingOverlapDeadline, ct);
-        if (warnings.Count > 0) briefing = briefing with { OverlapWarnings = warnings };
-        return WorkBriefings.Fit(briefing with { Knowledge = await BriefingKnowledgeAsync(sessionId, briefing, paths, ct) }, budget);
+        if (warnings.Count > 0) read = read with { OverlapWarnings = warnings };
+        read = read with { Knowledge = await BriefingKnowledgeAsync(sessionId, read, paths, ct) };
+        var session = await Store.GetSessionAsync(sessionId, ct);
+        if (session is not null)
+            read = await WithRulesAsync(read, session, paths, ct);
+        var briefing = WorkBriefings.Fit(read, budget);
+        // A message shown in a briefing is delivered (§5.9); one the budget cut is not.
+        if (briefing.Inbox?.Items is { Count: > 0 } shown)
+            await Store.MarkDeliveredAsync(sessionId.ToString(), shown.Select(line => line.Id).ToList(), ct);
+        // The served-rule log (R26): the rules this briefing actually carries, after the budget.
+        if (session is not null && briefing.Rules is { Count: > 0 } served)
+            await Knowledge.LogServedRulesAsync(sessionId, session.ProjectId, served.Select(rule => rule.Id).ToList(), ct);
+        return briefing;
     }
 
     private int Budget(int? requested)
@@ -533,7 +576,7 @@ public sealed partial class WorkService(
             _ => (object?)await Store.GetItemAsync(target.Id, request.Detail == WorkDetail.Full, ct)
         } ?? throw WorkException.NotFound($"There is no project, feature or item '{request.Id}'.");
         // The item brief (§5.2) carries the knowledge relevant to it (S5).
-        return found is ItemView item ? item with { Knowledge = await ItemKnowledgeAsync(item, ct) } : found;
+        return found is ItemView item ? await ItemBriefAsync(item, session, ct) : found;
     }
 
     private async Task<object> FindAsync(FindWorkRequest request, SessionView? session, CancellationToken ct)
@@ -666,7 +709,8 @@ public sealed partial class WorkService(
                 break;
         }
 
-        return result with { Recorded = await RecordedAsync(knowledge, ct) };
+        var recorded = await RecordedAsync(knowledge, ct);
+        return result with { Recorded = recorded, Similar = await SimilarAsync(target.ProjectId, recorded, ct), Hints = LessonHints(knowledge, recorded) };
     }
 
     private static DocumentPatchSpec ReadDocumentPatch(DocumentPatchInput input, string where)

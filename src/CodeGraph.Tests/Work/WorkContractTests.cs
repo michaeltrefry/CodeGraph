@@ -110,7 +110,7 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge"]);
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge", "post", "inbox", "ack", "promote", "challenge", "lessons", "review_queue"]);
         foreach (var tool in tools)
         {
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;
@@ -298,6 +298,7 @@ public sealed class WorkContractTests
     private sealed class UnreachableStore : IWorkStore
     {
         private static Exception Fail() => new InvalidOperationException("The store must not be reached.");
+        public Task<MessageRetentionResult> PruneMessagesAsync(DateTime cutoff, int batchSize, CancellationToken ct = default) => throw Fail();
         public Task<WorkCreated<ProjectView>> CreateProjectAsync(NewProjectSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
         public Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<WorkCreated<FeatureView>> CreateFeatureAsync(Guid projectId, NewFeatureSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
@@ -326,5 +327,21 @@ public sealed class WorkContractTests
         public Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<SyncPlanApplied> ApplyPlanAsync(Guid previewId, Guid? projectId, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<PostedMessage> PostMessageAsync(NewMessageSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
+        public Task<InboxPage> ReadInboxAsync(InboxQuery query, CancellationToken ct = default) => throw Fail();
+        public Task<long> GetInboxHeadAsync(CancellationToken ct = default) => throw Fail();
+        public Task<AckResult> AckAsync(AckSpec spec, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<int> CountUnreadAsync(string recipient, Guid projectId, CancellationToken ct = default) => throw Fail();
+        public Task MarkDeliveredAsync(string recipient, IReadOnlyList<Guid> messageIds, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<MessageEventView>> ReadMessageEventsAsync(Guid projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<long> GetMessageEventHeadAsync(CancellationToken ct = default) => throw Fail();
+        public Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<ChangeView>> ReadRecentChangesAsync(Guid projectId, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<ChangeView>> ReadEntityChangesAsync(Guid entityId, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default) => throw Fail();
     }
 }

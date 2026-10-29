@@ -344,7 +344,7 @@ public class JobScheduleServiceTests
         dispatcher.ExecutionKeys[2].ShouldNotBe(dispatcher.ExecutionKeys[0]);
     }
 
-    private static JobCommandDispatcher CreateDispatcher(IMcpDocService? mcpDocService = null)
+    private static JobCommandDispatcher CreateDispatcher(IMcpDocService? mcpDocService = null, RecordingWorkMessageRetentionService? workMessageRetention = null)
     {
         var indexerClient = new RecordingIndexerClient();
         return new JobCommandDispatcher(
@@ -355,7 +355,10 @@ public class JobScheduleServiceTests
             new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(mcpDocService ?? new RecordingMcpDocService()),
             new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()),
-            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()));
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
+            new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
+            new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
+            new WorkImportJob());
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

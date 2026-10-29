@@ -9,7 +9,7 @@ namespace CodeGraph.Data;
 /// <see cref="WorkException"/> carrying one of <see cref="WorkErrorCodes"/>. The specs passed in
 /// are already validated for shape by the service; the store checks what needs the database.
 /// </summary>
-public interface IWorkStore
+public interface IWorkStore : IWorkMessageStore
 {
     Task<WorkCreated<ProjectView>> CreateProjectAsync(NewProjectSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default);
 
@@ -73,6 +73,20 @@ public interface IWorkStore
     /// <summary>The project owning <paramref name="repository"/>, if exactly one does.</summary>
     Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
 
+    // ---- Read-only listings for the UI (sc-27874) ---------------------------------------------
+
+    /// <summary>The sessions of a project, most recently seen first: the live ones, or with <paramref name="liveOnly"/> false the ended and silent ones too.</summary>
+    Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default);
+
+    /// <summary>A page of a project's resources by name (after <paramref name="afterName"/>), each with its holders and queued waiters as of now. Nothing is swept or written.</summary>
+    Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default);
+
+    /// <summary>The newest <paramref name="limit"/> change feed entries of a project, oldest first (read only).</summary>
+    Task<IReadOnlyList<ChangeView>> ReadRecentChangesAsync(Guid projectId, int limit, CancellationToken ct = default);
+
+    /// <summary>The newest <paramref name="limit"/> change feed entries of one feature or item, oldest first (read only).</summary>
+    Task<IReadOnlyList<ChangeView>> ReadEntityChangesAsync(Guid entityId, int limit, CancellationToken ct = default);
+
     // ---- Resources and holds (sc-27872) -------------------------------------------------------
 
     /// <summary>
@@ -117,6 +131,27 @@ public interface IWorkStore
     /// identity's claims made without a session), marked delivered.
     /// </summary>
     Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default);
+
+    // ---- GitHub evidence (sc-27870) ----------------------------------------------------------
+
+    /// <summary>
+    /// Records one GitHub event on every item it names (by key or alias in the branch, PR title or PR
+    /// body, or by a PR the item links): links, forward-only status moves, merge and review evidence
+    /// (design §7). Each item is written in its own transaction with its change-feed entry, attributed
+    /// to the GitHub login; a delivery handled for an item already changes nothing. Evidence tied
+    /// only to superseded attempts is recorded and moves nothing.
+    /// </summary>
+    Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default);
+
+    /// <summary>The GitHub evidence of an item, newest first.</summary>
+    Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gives an item external aliases (an imported story's <c>sc-27866</c>), lower-cased; an alias
+    /// names one item (a repeat on the same item changes nothing, another item's is conflict).
+    /// A versioned, fed item write.
+    /// </summary>
+    Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default);
 }
 
 /// <summary>A requirement as a write names it (validated for shape).</summary>
@@ -193,7 +228,10 @@ public sealed record NewSessionSpec(
     string? Repository,
     string? Branch,
     string? Worktree,
-    string? Intent);
+    string? Intent,
+    // The activities the session declared (S9): its briefings serve the rules that apply to them.
+    IReadOnlyList<LessonActivity>? Activity = null,
+    IReadOnlyList<string>? Skills = null);
 
 public sealed record HandoffSpec(
     string? Done,

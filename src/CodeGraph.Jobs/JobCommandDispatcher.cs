@@ -13,7 +13,10 @@ public class JobCommandDispatcher(
     DetectCommunitiesJob detectCommunitiesJob,
     RegenerateMcpDocsJob regenerateMcpDocsJob,
     AssistantRetentionCleanupJob assistantRetentionCleanupJob,
-    IngestConventionEmbeddingsJob ingestConventionEmbeddingsJob) : IJobCommandDispatcher
+    IngestConventionEmbeddingsJob ingestConventionEmbeddingsJob,
+    PruneWorkSessionsJob pruneWorkSessionsJob,
+    PruneWorkMessagesJob pruneWorkMessagesJob,
+    WorkImportJob workImportJob) : IJobCommandDispatcher
 {
     public IReadOnlyList<string> GetSupportedJobTypes() => JobTypes.All;
 
@@ -29,6 +32,9 @@ public class JobCommandDispatcher(
             JobTypes.RegenerateMcpDocs => Serialize(new EmptyJobRequest()),
             JobTypes.AssistantRetentionCleanup => Serialize(new EmptyJobRequest()),
             JobTypes.IngestConventionEmbeddings => Serialize(new EmptyJobRequest()),
+            JobTypes.PruneWorkSessions => Serialize(new EmptyJobRequest()),
+            JobTypes.PruneWorkMessages => Serialize(new EmptyJobRequest()),
+            JobTypes.WorkImport => Serialize(DeserializeOrDefault<WorkImportJobRequest>(args)),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }
@@ -52,6 +58,9 @@ public class JobCommandDispatcher(
             JobTypes.RegenerateMcpDocs => regenerateMcpDocsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.AssistantRetentionCleanup => assistantRetentionCleanupJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.IngestConventionEmbeddings => ingestConventionEmbeddingsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
+            JobTypes.PruneWorkSessions => pruneWorkSessionsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
+            JobTypes.PruneWorkMessages => pruneWorkMessagesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
+            JobTypes.WorkImport => workImportJob.ExecuteAsync(Deserialize<WorkImportJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }

@@ -49,6 +49,7 @@ using CodeGraph.Services.Query;
 using CodeGraph.Services.Reviews;
 using CodeGraph.Services.WikiRag;
 using CodeGraph.Services.Work;
+using CodeGraph.Services.Work.Imports;
 
 namespace CodeGraph.Api;
 
@@ -124,6 +125,7 @@ public static class Startup
         services.AddTransient<IAssistantConfigurationService, AssistantConfigurationService>();
         services.AddTransient<IAssistantRunService, AssistantRunService>();
         services.AddTransient<IAssistantRetentionCleanupService, AssistantRetentionCleanupService>();
+        services.AddTransient<IWorkMessageRetentionService, WorkMessageRetentionService>();
         services.AddSingleton<IAssistantRunBackgroundRunner, AssistantRunBackgroundRunner>();
         services.AddTransient<CodeGraphDocGenerator>();
 
@@ -194,6 +196,7 @@ public static class Startup
         services.AddTransient<IAdminReportsService, AdminReportsService>();
         RegisterIndexerOperations(services, configuration);
         services.AddTransient<GitHubPushWebhookService>();
+        services.AddTransient<IGitHubWorkEvidenceService, GitHubWorkEvidenceService>();
         services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
@@ -207,6 +210,8 @@ public static class Startup
         // Sessions (S2): the idle threshold after which a silent session's claims lapse, and the
         // default briefing budget.
         services.Configure<CodeGraph.Models.Work.WorkSessionOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkSessionOptions.Section));
+        // Lessons (S9): the recurrence after which a lesson becomes a rule (default 2 distinct events).
+        services.Configure<CodeGraph.Models.Work.WorkLessonOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkLessonOptions.Section));
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<McpPersonalAccessTokenService>();
@@ -540,6 +545,8 @@ public static class Startup
             services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Api);
             services.AddSingleton<Neo4jSessionFactory>();
             services.AddTransient<INeo4jToMariaDbGraphExporter, Neo4jGraphStore>();
+            // Imports (sc-27876): the REST trigger and the WorkImport job write through the MariaDB work store.
+            services.AddCodeGraphWorkImports(configuration);
             return;
         }
 

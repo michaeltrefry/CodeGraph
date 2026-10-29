@@ -46,6 +46,10 @@ public static class CgRender
             foreach (var line in Item("suggested next", next))
                 yield return line;
 
+        if (briefing["inbox"] is JsonObject inbox)
+            foreach (var line in BriefingInbox(inbox))
+                yield return line;
+
         if (briefing["my_holds"] is JsonArray myHolds)
             foreach (var hold in myHolds.OfType<JsonObject>())
                 yield return "my hold: " + HoldLine(hold, withResource: true);
@@ -58,10 +62,19 @@ public static class CgRender
             foreach (var line in Resources(resources))
                 yield return line;
 
+        // Rules (S9): one line each, with what they conflict with and how often they are challenged.
+        if (briefing["rules"] is JsonArray rules)
+            foreach (var rule in rules.OfType<JsonObject>())
+            {
+                var conflicts = rule["contradicts"] is JsonArray links ? " · contradicts: " + string.Join("; ", links.Select(link => Str(link?["summary"]))) : "";
+                var challenged = rule["challenges"] is JsonArray open ? $" · challenged {open.Count + (rule["more_challenges"]?.GetValue<int>() ?? 0)}x" : "";
+                yield return $"rule ({Str(rule["priority"])}, {string.Join(",", (rule["activity"] as JsonArray ?? []).Select(Str))}): {Str(rule["summary"])}{conflicts}{challenged}";
+            }
+
         // Sections of later stories (S5, S7, S8) print as they appear; unknown ones as their JSON.
         foreach (var (name, value) in briefing.AsObject())
         {
-            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "truncated" or "my_holds" or "resources" or "overlap_warnings" || value is null)
+            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "inbox" or "truncated" or "my_holds" or "resources" or "overlap_warnings" or "rules" || value is null)
                 continue;
             yield return $"{name.Replace('_', ' ')}: {value.ToJsonString()}";
         }
@@ -110,10 +123,41 @@ public static class CgRender
         return $"{(withResource ? Str(hold["resource"]) + " " : "")}{state}{until} · {who} · {Str(hold["purpose"])}{item}";
     }
 
-    public static IEnumerable<string> Inbox(JsonNode? briefing)
+
+    // The briefing's inbox section: how many wait, and one line each for the first few.
+    private static IEnumerable<string> BriefingInbox(JsonObject inbox)
     {
-        if (briefing?["inbox"] is { } inbox)
-            yield return $"inbox: {inbox.ToJsonString()}";
+        yield return $"inbox: {Str(inbox["unread"])} unread";
+        if (inbox["items"] is JsonArray items)
+            foreach (var line in items.OfType<JsonObject>())
+                yield return $"  {MessageHead(line)}: {Str(line["summary"])}";
+    }
+
+    // The inbox tool's answer: a head line and the whole text of each message.
+    public static IEnumerable<string> Inbox(JsonNode? inbox)
+    {
+        if (inbox?["items"] is not JsonArray { Count: > 0 } items)
+            yield break;
+
+        yield return $"inbox: {items.Count} message{(items.Count == 1 ? "" : "s")}";
+        foreach (var message in items.OfType<JsonObject>())
+        {
+            var from = message["from"] as JsonObject;
+            var sender = Join(" ", Str(from?["name"]), from?["harness"] is { } harness ? $"({Str(harness)})" : "");
+            var state = message["state"] is { } open ? $", {Str(open)}" : "";
+            var item = message["item"] is { } key ? $" about {Str(key)}" : "";
+            var handed = message["handed_over"]?.GetValue<bool>() == true ? " (handed over)" : "";
+            var blocking = message["blocking"]?.GetValue<bool>() == true ? " (blocks the item)" : "";
+            yield return $"message {Str(message["id"])} [{Str(message["kind"])}{state}] from {sender}{item}{handed}{blocking}: {Str(message["body"])}";
+        }
+    }
+
+    private static string MessageHead(JsonObject line)
+    {
+        var state = line["state"] is { } open ? $", {Str(open)}" : "";
+        var item = line["item"] is { } key ? $" about {Str(key)}" : "";
+        var handed = line["handed_over"]?.GetValue<bool>() == true ? " (handed over)" : "";
+        return $"message {Str(line["id"])} [{Str(line["kind"])}{state}] from {Str(line["from"])}{item}{handed}";
     }
 
     public static IEnumerable<string> Ended(JsonNode? ended)

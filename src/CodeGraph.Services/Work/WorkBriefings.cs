@@ -9,7 +9,8 @@ namespace CodeGraph.Services.Work;
 /// divided by three, which over-counts typical English and JSON, so a briefing within its estimate
 /// stays within the budget. Long handoff texts are always cut; when the briefing is still over
 /// budget, sections are shortened from the lowest rank up (the suggestion, other sessions, busy resources, goals,
-/// the focus item, then my own work beyond the first item, then my holds) and named in <c>truncated</c>.
+/// the focus item, the inbox lines down to its count, then my own work beyond the first item, then my holds)
+/// and named in <c>truncated</c>.
 /// Empty sections are left out.
 /// </summary>
 public static class WorkBriefings
@@ -28,6 +29,16 @@ public static class WorkBriefings
             Focus = briefing.Focus is { } focus ? Shorten(focus) : null,
             SuggestedNext = briefing.SuggestedNext is { } next ? Shorten(next) : null,
             Knowledge = briefing.Knowledge?.Select(row => row with { Summary = CutTo(row.Summary, KnowledgeLimits.BriefingSummaryLength)! }).ToList(),
+            Rules = briefing.Rules?.Select(rule => rule with
+            {
+                Summary = CutTo(rule.Summary, KnowledgeLimits.BriefingSummaryLength)!,
+                Contradicts = rule.Contradicts?.Select(link => link with { Summary = CutTo(link.Summary, KnowledgeLimits.BriefingSummaryLength)! }).ToList(),
+                Challenges = rule.Challenges?.Select(challenge => challenge with
+                {
+                    Reason = CutTo(challenge.Reason, KnowledgeLimits.BriefingSummaryLength)!,
+                    Evidence = challenge.Evidence.Take(MaxHandoffListEntries).Select(evidence => CutTo(evidence, KnowledgeLimits.BriefingSummaryLength)!).ToList()
+                }).ToList()
+            }).ToList(),
             Truncated = null
         };
 
@@ -82,6 +93,14 @@ public static class WorkBriefings
             { Count: 1 } => view with { Knowledge = null },
             var rows => view with { Knowledge = rows.Take(rows.Count - 1).ToList() }
         }),
+        // Rules are ranked (priority, recurrence): the last goes first. A cut rule still shows in
+        // its contradicting partner's contradicts, so a conflict never disappears from view.
+        new("rules", view => view.Rules switch
+        {
+            null => null,
+            { Count: 1 } => view with { Rules = null },
+            var rules => view with { Rules = rules.Take(rules.Count - 1).ToList() }
+        }),
         new("project", view => view.Project.Goals switch
         {
             null => null,
@@ -93,6 +112,12 @@ public static class WorkBriefings
             null => null,
             { LatestHandoff: not null } focus => view with { Focus = focus with { LatestHandoff = null } },
             _ => view with { Focus = null }
+        }),
+        new("inbox", view => view.Inbox switch
+        {
+            { Items: { Count: > 1 } items } inbox => view with { Inbox = inbox with { Items = items.Take(items.Count - 1).ToList() } },
+            { Items: not null } inbox => view with { Inbox = inbox with { Items = null } },
+            _ => null
         }),
         new("my_work", view =>
         {

@@ -59,7 +59,7 @@ public sealed partial class MySqlWorkStore
     private const string HoldSelect =
         "SELECT h.id, h.seq, h.resource_id, r.name AS resource_name, p.project_key, h.identity, h.session_id, i.number AS item_number, " +
         "h.purpose, h.priority, h.state, h.ttl_seconds, h.requested_at, h.wait_expires_at, h.granted_at, h.expires_at, h.renewed_at, h.ended_at, " +
-        "s.harness AS session_harness, s.model AS session_model, s.host AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
+        "COALESCE(s.harness, h.harness) AS session_harness, COALESCE(s.model, h.model) AS session_model, COALESCE(s.host, h.host) AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
         "FROM work_holds h JOIN work_resources r ON r.id = h.resource_id JOIN work_projects p ON p.id = h.project_id " +
         "LEFT JOIN work_items i ON i.id = h.item_id LEFT JOIN work_sessions s ON s.id = h.session_id ";
 
@@ -150,6 +150,16 @@ public sealed partial class MySqlWorkStore
         }
 
         return views;
+    }
+
+    public async Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var resources = (await connection.QueryAsync<ResourceRow>(new CommandDefinition(
+            "SELECT r.id, r.project_id, p.project_key, r.name, r.capacity, r.labels_json FROM work_resources r JOIN work_projects p ON p.id = r.project_id " +
+            "WHERE r.project_id = @projectId AND (@afterName IS NULL OR r.name > @afterName) ORDER BY r.name LIMIT @limit",
+            new { projectId, afterName, limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize + 1) }, cancellationToken: ct))).ToList();
+        return await BuildResourceViewsAsync(connection, null, resources, Now(), ct);
     }
 
     // ---- Sweep -------------------------------------------------------------------------------------

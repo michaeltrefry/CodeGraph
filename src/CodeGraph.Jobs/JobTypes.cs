@@ -10,6 +10,9 @@ public static class JobTypes
     public const string RegenerateMcpDocs = "RegenerateMcpDocs";
     public const string AssistantRetentionCleanup = "AssistantRetentionCleanup";
     public const string IngestConventionEmbeddings = "IngestConventionEmbeddings";
+    public const string PruneWorkSessions = "PruneWorkSessions";
+    public const string PruneWorkMessages = "PruneWorkMessages";
+    public const string WorkImport = "WorkImport";
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -20,6 +23,9 @@ public static class JobTypes
         DetectCommunities,
         RegenerateMcpDocs,
         AssistantRetentionCleanup,
-        IngestConventionEmbeddings
+        IngestConventionEmbeddings,
+        PruneWorkSessions,
+        PruneWorkMessages,
+        WorkImport
     ];
 }

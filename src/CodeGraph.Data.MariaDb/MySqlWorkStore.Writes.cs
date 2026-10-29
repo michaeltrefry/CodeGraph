@@ -439,6 +439,8 @@ public sealed partial class MySqlWorkStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            // Taken only when a session claims the item (handover of its open messages), after the row locks below.
+            await using var messageLock = new MessageLockScope(connection, transaction);
 
             // An update that names a repository, or stores save points (S5: their scope reads the
             // membership and their rows reference the project), holds the project's row first, like
@@ -515,6 +517,7 @@ public sealed partial class MySqlWorkStore
             if (effective.FeatureId is { } featureId)
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
 
+            var handOver = false;
             var status = effective.Status ?? before.Status;
             var claimFields = ApplyClaim(beforeRow, effective.Claim, status, actor, now);
 
@@ -552,7 +555,10 @@ public sealed partial class MySqlWorkStore
             else if (actor.SessionId is { } claimingSession)
             {
                 if (effective.Claim is { Action: ClaimAction.Claim })
+                {
                     await OpenSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
+                    handOver = true;
+                }
                 else if (effective.Claim is { Action: ClaimAction.Release })
                     await CloseSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
             }
@@ -636,6 +642,9 @@ public sealed partial class MySqlWorkStore
             foreach (var change in extra)
                 changes.Add(change!.DeepClone());
 
+            // Last, after every row this write locks: the messages lock is then taken with no row lock to follow.
+            if (handOver)
+                await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
             await CommitAsync(connection, transaction,
                 [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes)],
                 actor, now, ct);
@@ -760,8 +769,9 @@ public sealed partial class MySqlWorkStore
     }
 
     private static async Task WriteLinksAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, IReadOnlyList<LinkSpec> add, IReadOnlyList<LinkSpec> remove, WorkActor actor, JsonArray extra, DateTime now, CancellationToken ct,
-        Guid? attemptId = null)
+        Guid? attemptId = null, IReadOnlySet<string>? historicalUrls = null)
     {
+        var importing = actor.Name.StartsWith("import:", StringComparison.Ordinal);
         // The item's row is held, so the link writes of one item run one at a time and two
         // identical adds never meet on the unique key.
         foreach (var link in remove)
@@ -786,12 +796,22 @@ public sealed partial class MySqlWorkStore
                 "SELECT COUNT(*) FROM work_item_links WHERE item_id = @itemId AND kind = @kind AND url_hash = @urlHash",
                 new { itemId, kind, urlHash }, transaction, cancellationToken: ct)) > 0;
             if (exists)
+            {
+                // A link an import wrote, added again by GitHub evidence or an agent, becomes theirs
+                // (sc-27876): it is no longer a historical PR of the source.
+                if (!importing)
+                    await connection.ExecuteAsync(new CommandDefinition(
+                        "UPDATE work_item_links SET created_by = @createdBy, historical = 0, attempt_id = COALESCE(@attemptId, attempt_id) " +
+                        "WHERE item_id = @itemId AND kind = @kind AND url_hash = @urlHash AND created_by LIKE 'import:%'",
+                        new { itemId, kind, urlHash, createdBy = actor.Name, attemptId }, transaction, cancellationToken: ct));
                 continue;
+            }
 
             var id = Guid.NewGuid();
+            var historical = importing && historicalUrls?.Contains(link.Url) == true;
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at, attempt_id) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now, @attemptId)",
-                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now, attemptId }, transaction, cancellationToken: ct));
+                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at, attempt_id, historical) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now, @attemptId, @historical)",
+                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now, attemptId, historical }, transaction, cancellationToken: ct));
             extra.Add(Change("link", null, attemptId is null ? new { id, kind, url = link.Url } : new { id, kind, url = link.Url, attempt = attemptId }));
         }
     }
@@ -998,6 +1018,7 @@ public sealed partial class MySqlWorkStore
             {
                 var now = Now();
                 await using var transaction = await connection.BeginTransactionAsync(ct);
+                await using var messageLock = new MessageLockScope(connection, transaction);
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET version = version WHERE id = @itemId", new { itemId }, transaction, cancellationToken: ct));
                 var before = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
@@ -1005,7 +1026,7 @@ public sealed partial class MySqlWorkStore
                     "SELECT COUNT(*) FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
                     "WHERE d.blocked_item_id = @itemId AND b.status <> 'complete' LOCK IN SHARE MODE",
                     new { itemId }, transaction, cancellationToken: ct));
-                if (unfinished > 0)
+                if (unfinished > 0 || await HasOpenBlockingQuestionAsync(connection, transaction, itemId, ct))
                     return null;
 
                 var status = recover ? "in_progress" : "ready";
@@ -1032,10 +1053,12 @@ public sealed partial class MySqlWorkStore
                 changes.Add(Change("version", before.Version, afterRow.Version));
                 foreach (var change in attemptChanges)
                     changes.Add(change!.DeepClone());
+                // Last, after every row this write locks: the messages lock is then taken with no row lock to follow.
+                await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
                 await CommitAsync(connection, transaction,
                     [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);
-                return new NextWorkResult(after, Reused: false, Recovery: recovery);
+                return new NextWorkResult(after with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) }, Reused: false, Recovery: recovery);
             }
             catch (MySqlException exception) when (exception.Number == MySqlDeadlock && attempt < DeadlockAttempts)
             {
