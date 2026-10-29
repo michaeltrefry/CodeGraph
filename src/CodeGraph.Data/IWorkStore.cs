@@ -228,7 +228,10 @@ public sealed record NewSessionSpec(
     string? Repository,
     string? Branch,
     string? Worktree,
-    string? Intent);
+    string? Intent,
+    // The activities the session declared (S9): its briefings serve the rules that apply to them.
+    IReadOnlyList<LessonActivity>? Activity = null,
+    IReadOnlyList<string>? Skills = null);
 
 public sealed record HandoffSpec(
     string? Done,

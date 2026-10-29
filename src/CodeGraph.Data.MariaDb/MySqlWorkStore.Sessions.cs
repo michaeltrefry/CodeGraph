@@ -34,11 +34,13 @@ public sealed partial class MySqlWorkStore
         public DateTime StartedAt { get; init; }
         public DateTime LastSeenAt { get; init; }
         public DateTime? EndedAt { get; init; }
+        public string? Activities { get; init; }
+        public string? Skills { get; init; }
     }
 
     private const string SessionColumns =
         "s.id, s.project_id, p.project_key, s.identity, s.harness, s.model, s.host, s.repository_name, s.branch, s.worktree, s.intent, " +
-        "s.started_at, s.last_seen_at, s.ended_at";
+        "s.started_at, s.last_seen_at, s.ended_at, s.activities, s.skills";
 
     private DateTime StaleBefore(DateTime now) => now.AddSeconds(-idleSeconds);
 
@@ -51,7 +53,8 @@ public sealed partial class MySqlWorkStore
 
     private SessionView ToView(SessionRow row, DateTime now) =>
         new(row.Id.ToString(), row.ProjectId, row.ProjectKey, row.Identity, row.Harness, row.Model, row.Host, row.RepositoryName, row.Branch,
-            row.Worktree, row.Intent, IsLive(row, now), Utc(row.StartedAt), Utc(row.LastSeenAt), row.EndedAt is { } ended ? Utc(ended) : null);
+            row.Worktree, row.Intent, IsLive(row, now), Utc(row.StartedAt), Utc(row.LastSeenAt), row.EndedAt is { } ended ? Utc(ended) : null,
+            ParseActivities(row.Activities), ParseSkills(row.Skills));
 
     private static WorkActor ActorOf(SessionRow row) =>
         new(row.Identity, WorkActor.SessionKind, row.Id.ToString(), row.Harness, row.Model, row.Host);
@@ -80,12 +83,12 @@ public sealed partial class MySqlWorkStore
 
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO work_sessions (id, project_id, identity, harness, model, host, repository_name, branch, worktree, intent, started_at, last_seen_at) " +
-                "VALUES (@id, @projectId, @identity, @harness, @model, @host, @repository, @branch, @worktree, @intent, @now, @now)",
+                "INSERT INTO work_sessions (id, project_id, identity, harness, model, host, repository_name, branch, worktree, intent, activities, skills, started_at, last_seen_at) " +
+                "VALUES (@id, @projectId, @identity, @harness, @model, @host, @repository, @branch, @worktree, @intent, @activities, @skills, @now, @now)",
                 new
                 {
                     id = id.ToString(), projectId = spec.ProjectId, identity = actor.Name, harness = spec.Harness, model = spec.Model, host = spec.Host,
-                    repository, branch = spec.Branch, worktree = spec.Worktree, intent = spec.Intent, now
+                    repository, branch = spec.Branch, worktree = spec.Worktree, intent = spec.Intent, activities = ActivityList(spec.Activity), skills = SkillList(spec.Skills), now
                 },
                 transaction, cancellationToken: ct));
             if (keyHash is not null)
