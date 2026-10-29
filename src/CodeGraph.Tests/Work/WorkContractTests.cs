@@ -298,6 +298,7 @@ public sealed class WorkContractTests
     private sealed class UnreachableStore : IWorkStore
     {
         private static Exception Fail() => new InvalidOperationException("The store must not be reached.");
+        public Task<MessageRetentionResult> PruneMessagesAsync(DateTime cutoff, int batchSize, CancellationToken ct = default) => throw Fail();
         public Task<WorkCreated<ProjectView>> CreateProjectAsync(NewProjectSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
         public Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<WorkCreated<FeatureView>> CreateFeatureAsync(Guid projectId, NewFeatureSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
@@ -337,5 +338,8 @@ public sealed class WorkContractTests
         public Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, CancellationToken ct = default) => throw Fail();
+        public Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default) => throw Fail();
     }
 }

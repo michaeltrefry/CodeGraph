@@ -396,7 +396,8 @@ public sealed partial class MySqlWorkStore(
     // claim in its history. An item a human moved to in progress is not "whose claim lapsed".
     private const string RecoverableCondition =
         "i.status = 'in_progress' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
-        "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id)) " +
+        "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id) " +
+        "OR EXISTS (SELECT 1 FROM work_attempts att WHERE att.item_id = i.id)) " +
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
         "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') AND NOT " + OpenBlockingQuestion;
 
@@ -536,7 +537,7 @@ public sealed partial class MySqlWorkStore(
             new { id = row.Id }, transaction, cancellationToken: ct)))
             .Select(link => new LinkView(link.Id, ParseName<WorkLinkKind>(link.Kind), link.Url, Utc(link.CreatedAt))).ToList();
         var comments = (await connection.QueryAsync<CommentRow>(new CommandDefinition(
-            "SELECT c.id, c.author, c.body, c.created_at, c.author_session_id, s.harness FROM work_item_comments c " +
+            "SELECT c.id, c.author, c.body, c.created_at, c.author_session_id, COALESCE(s.harness, c.author_harness) AS harness FROM work_item_comments c " +
             "LEFT JOIN work_sessions s ON s.id = c.author_session_id WHERE c.item_id = @id ORDER BY c.created_at, c.id",
             new { id = row.Id }, transaction, cancellationToken: ct)))
             .Select(comment => new CommentView(comment.Id, comment.Author, comment.Body, Utc(comment.CreatedAt), comment.AuthorSessionId, comment.Harness)).ToList();
@@ -619,6 +620,13 @@ public sealed partial class MySqlWorkStore(
         public Guid ProjectId { get; init; }
     }
 
+    private static async Task<TargetRow?> FindAliasAsync(MySqlConnection connection, string value, CancellationToken ct) =>
+        WorkReferences.NormalizeAlias(value) is { } alias
+            ? await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(
+                "SELECT 'item' AS kind, i.id, i.project_id FROM work_item_aliases a JOIN work_items i ON i.id = a.item_id WHERE a.alias = @alias",
+                new { alias }, cancellationToken: ct))
+            : null;
+
     public async Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
@@ -639,8 +647,15 @@ public sealed partial class MySqlWorkStore(
                 ? "SELECT 'item' AS kind, i.id, i.project_id FROM work_items i JOIN work_projects p ON p.id = i.project_id WHERE p.project_key = @projectKey AND i.number = @number"
                 : "SELECT 'feature' AS kind, f.id, f.project_id FROM work_features f JOIN work_projects p ON p.id = f.project_id WHERE p.project_key = @projectKey AND f.number = @number";
             var hit = await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(sql, new { projectKey, number }, cancellationToken: ct));
+            // An external alias (an imported story's sc-27866) resolves like a key (sc-27870).
+            if (hit is null && kind == WorkEntityKind.Item)
+                hit = await FindAliasAsync(connection, value, ct);
             return hit is null ? null : new WorkTarget(kind, hit.Id, hit.ProjectId);
         }
+
+        // sc-0012 (leading zeros) is not a key but names the alias sc-12.
+        if (await FindAliasAsync(connection, value, ct) is { } aliased)
+            return new WorkTarget(WorkEntityKind.Item, aliased.Id, aliased.ProjectId);
 
         var key = value.ToUpperInvariant();
         if (!WorkKeys.IsValidProjectKey(key))
@@ -867,7 +882,7 @@ public sealed partial class MySqlWorkStore(
         // The primary key (or ix_work_changes_project): a range and a limit, never an offset.
         var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
             "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
-            "s.harness, s.model, s.host, c.changes, c.created_at " +
+            "COALESCE(s.harness, c.actor_harness) AS harness, COALESCE(s.model, c.actor_model) AS model, COALESCE(s.host, c.actor_host) AS host, c.changes, c.created_at " +
             "FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id WHERE c.sequence > @afterSequence" +
             (projectId is null ? string.Empty : " AND c.project_id = @projectId") +
             " ORDER BY c.sequence LIMIT @limit",

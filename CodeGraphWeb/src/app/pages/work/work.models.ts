@@ -14,7 +14,7 @@ export const MESSAGE_KINDS: readonly MessageKind[] = ['info', 'question', 'reque
 
 export interface WorkActor {
   name: string;
-  kind: 'user' | 'session';
+  kind: 'user' | 'session' | 'system';
   session_id?: string;
   harness?: string;
   model?: string;
@@ -312,4 +312,22 @@ export function actorLabel(actor: Pick<WorkActor, 'name' | 'kind' | 'harness' | 
   const detail = [actor.harness, actor.model].filter(Boolean).join(' / ');
   const where = actor.host ? ` @ ${actor.host}` : '';
   return `${actor.name} (${detail}${where})`;
+}
+
+/** GitHub evidence of an item (S6): pushes, pull requests, reviews and comments, authored by a GitHub login. */
+export interface GitHubEvidence {
+  id: string;
+  kind: string;
+  repository?: string;
+  pull_request?: number;
+  url?: string;
+  author: string;
+  source: 'human' | 'bot' | string;
+  priority: string;
+  review_state?: string;
+  location?: string;
+  body?: string;
+  attempt_id?: string;
+  superseded: boolean;
+  created_at: string;
 }

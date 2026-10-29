@@ -1,0 +1,38 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 8,
+    "title": "__KEY__ discussion",
+    "body": "",
+    "html_url": "https://github.com/michaeltrefry/sceneworks/issues/8"
+  },
+  "comment": {
+    "id": 777002,
+    "body": "x",
+    "user": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "html_url": "https://github.com/michaeltrefry/sceneworks/issues/8#issuecomment-777002"
+  },
+  "repository": {
+    "id": 1001,
+    "name": "sceneworks",
+    "full_name": "michaeltrefry/sceneworks",
+    "private": true,
+    "owner": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "html_url": "https://github.com/michaeltrefry/sceneworks",
+    "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "michaeltrefry",
+    "id": 42,
+    "type": "User"
+  }
+}

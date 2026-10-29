@@ -5,7 +5,9 @@ using System.Text.Json.Serialization;
 using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
+using CodeGraph.Models.Work;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Work;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -18,13 +20,16 @@ public enum GitHubWebhookOutcome
     /// <summary>A valid delivery that does not refresh an indexed default branch.</summary>
     Ignored,
     /// <summary>The repository's incremental sync was queued (or already queued for this head SHA).</summary>
-    Queued
+    Queued,
+    /// <summary>A valid delivery recorded as work evidence (and not queued for indexing).</summary>
+    Recorded
 }
 
 public sealed record GitHubWebhookResult(
     GitHubWebhookOutcome Outcome,
     string Message,
-    IndexerAcceptedResponse? Accepted = null);
+    IndexerAcceptedResponse? Accepted = null,
+    GitHubEvidenceResult? Evidence = null);
 
 /// <summary>
 /// Turns a signed GitHub <c>push</c> delivery to an indexed repository's default branch into that
@@ -37,16 +42,24 @@ public sealed class GitHubPushWebhookService(
     IGraphStore graphStore,
     IExclusionService exclusionService,
     IIndexerOperationsService indexerOperations,
-    ILogger<GitHubPushWebhookService> logger)
+    ILogger<GitHubPushWebhookService> logger,
+    IGitHubWorkEvidenceService? workEvidence = null)
 {
     public const string RequestedBy = "github-webhook";
     private const string SignaturePrefix = "sha256=";
+
+    // The events that can be work evidence (sc-27870).
+    private static readonly HashSet<string> EvidenceEvents = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "push", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"
+    };
 
     public async Task<GitHubWebhookResult> HandleAsync(
         string? eventName,
         string? signatureHeader,
         byte[] body,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? deliveryId = null)
     {
         var secret = repositorySourceOptions.Value.GitHub.WebhookSecret;
         if (string.IsNullOrEmpty(secret))
@@ -61,6 +74,37 @@ public sealed class GitHubPushWebhookService(
             return new GitHubWebhookResult(GitHubWebhookOutcome.Unauthorized, "Missing or invalid signature.");
         }
 
+        // Indexing first and unchanged; work evidence is added on top of its answer.
+        var indexing = await HandleIndexingAsync(eventName, body, ct);
+        if (workEvidence is null || !EvidenceEvents.Contains(eventName ?? ""))
+            return indexing;
+
+        var evidence = await workEvidence.HandleAsync(eventName, body, deliveryId, await RepositoryNamesAsync(body), ct);
+        if (evidence.Items.Count == 0)
+            return indexing;
+
+        var summary = $"Recorded work evidence on {string.Join(", ", evidence.Items.Select(item => item.Key))}.";
+        return indexing.Outcome == GitHubWebhookOutcome.Ignored
+            ? new GitHubWebhookResult(GitHubWebhookOutcome.Recorded, summary, Evidence: evidence)
+            : indexing with { Evidence = evidence, Message = $"{indexing.Message} {summary}" };
+    }
+
+    // The names CodeGraph knows the payload's repository by, for matching a project's repositories.
+    private async Task<IReadOnlyList<string>> RepositoryNamesAsync(byte[] body)
+    {
+        try
+        {
+            var repository = JsonSerializer.Deserialize<EventEnvelope>(body)?.Repository;
+            return repository is null || await FindProjectAsync(repository) is not { } project ? [] : [project.Name];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private async Task<GitHubWebhookResult> HandleIndexingAsync(string? eventName, byte[] body, CancellationToken ct)
+    {
         if (!string.Equals(eventName, "push", StringComparison.OrdinalIgnoreCase))
             return Ignored($"Event '{eventName}' is not handled.");
 
@@ -178,6 +222,9 @@ public sealed class GitHubPushWebhookService(
         [property: JsonPropertyName("ref")] string? Ref,
         [property: JsonPropertyName("after")] string? After,
         [property: JsonPropertyName("deleted")] bool Deleted,
+        [property: JsonPropertyName("repository")] PushRepository? Repository);
+
+    private sealed record EventEnvelope(
         [property: JsonPropertyName("repository")] PushRepository? Repository);
 
     private sealed record PushRepository(

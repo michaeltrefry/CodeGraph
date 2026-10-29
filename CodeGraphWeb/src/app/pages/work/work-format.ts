@@ -1,4 +1,4 @@
-import { ItemView, MessageView, WorkActor, WorkChange } from './work.models';
+import { GitHubEvidence, ItemView, MessageView, WorkActor, WorkChange } from './work.models';
 
 function show(value: unknown): string {
   if (value === undefined || value === null) return '∅';
@@ -28,7 +28,7 @@ export function changeVerb(change: WorkChange): string {
   return KIND_LABELS[change.kind] ?? change.kind.replace(/_/g, ' ');
 }
 
-export type TimelineKind = 'status' | 'change' | 'comment' | 'handoff' | 'message' | 'attempt' | 'link' | 'acceptance';
+export type TimelineKind = 'github' | 'status' | 'change' | 'comment' | 'handoff' | 'message' | 'attempt' | 'link' | 'acceptance';
 
 export interface TimelineEntry {
   at: string;
@@ -49,7 +49,7 @@ const toMillis = (value: string): number => Date.parse(/Z$|[+-]\d\d:?\d\d$/.test
  * feed, comments, handoffs, execution attempts, links (PRs and branches), messages on its thread and
  * the acceptance report. Review evidence from GitHub (S6) joins here when its read route exists.
  */
-export function buildTimeline(item: ItemView, changes: readonly WorkChange[], messages: readonly MessageView[]): TimelineEntry[] {
+export function buildTimeline(item: ItemView, changes: readonly WorkChange[], messages: readonly MessageView[], evidence: readonly GitHubEvidence[] = []): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
   const add = (entry: Omit<TimelineEntry, 'sort'>) => entries.push({ ...entry, sort: toMillis(entry.at) });
   const person = (name: string, sessionId?: string, harness?: string) => ({ name, kind: (sessionId ? 'session' : 'user') as WorkActor['kind'], session_id: sessionId, harness });
@@ -98,6 +98,17 @@ export function buildTimeline(item: ItemView, changes: readonly WorkChange[], me
     add({ at: message.created_at, kind: 'message', actor: message.from, title: `${message.kind}${message.state ? ` (${message.state})` : ''}`, detail: message.body });
   }
 
+  for (const entry of evidence) {
+    add({
+      at: entry.created_at,
+      kind: 'github',
+      actor: { name: entry.author, kind: 'system' },
+      title: evidenceTitle(entry),
+      detail: [entry.body, entry.location && `at ${entry.location}`, entry.superseded && 'From a superseded attempt: moved nothing.'].filter(Boolean).join('\n') || undefined,
+      url: entry.url
+    });
+  }
+
   if (item.acceptance_report) {
     const report = item.acceptance_report;
     add({
@@ -110,4 +121,26 @@ export function buildTimeline(item: ItemView, changes: readonly WorkChange[], me
   }
 
   return entries.sort((a, b) => b.sort - a.sort);
+}
+
+const EVIDENCE_LABELS: Record<string, string> = {
+  push: 'Pushed commits',
+  pr_open: 'Pull request opened',
+  pr_opened: 'Pull request opened',
+  merge: 'Pull request merged',
+  pr_merged: 'Pull request merged',
+  pr_closed: 'Pull request closed without merging',
+  review: 'Review',
+  review_comment: 'Review comment',
+  issue_comment: 'Comment on the pull request'
+};
+
+/** One line for a GitHub evidence entry: what happened, on which pull request, and a review's verdict. */
+export function evidenceTitle(entry: GitHubEvidence): string {
+  const label = EVIDENCE_LABELS[entry.kind] ?? entry.kind.replace(/_/g, ' ');
+  const pull = entry.pull_request ? ` #${entry.pull_request}` : '';
+  const repository = entry.repository ? ` (${entry.repository})` : '';
+  const verdict = entry.review_state ? `: ${entry.review_state.replace(/_/g, ' ')}` : '';
+  const bot = entry.source === 'bot' ? ' [bot]' : '';
+  return `${label}${pull}${repository}${verdict}${bot}`;
 }

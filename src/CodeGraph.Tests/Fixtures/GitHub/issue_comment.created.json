@@ -1,0 +1,42 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 7,
+    "title": "__KEY__: record GitHub evidence",
+    "body": "Adds the evidence path.",
+    "html_url": "https://github.com/michaeltrefry/sceneworks/pull/7",
+    "pull_request": {
+      "html_url": "https://github.com/michaeltrefry/sceneworks/pull/7"
+    }
+  },
+  "comment": {
+    "id": 777001,
+    "body": "Looks good to me, merge when green.",
+    "user": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "author_association": "OWNER",
+    "html_url": "https://github.com/michaeltrefry/sceneworks/pull/7#issuecomment-777001"
+  },
+  "repository": {
+    "id": 1001,
+    "name": "sceneworks",
+    "full_name": "michaeltrefry/sceneworks",
+    "private": true,
+    "owner": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "html_url": "https://github.com/michaeltrefry/sceneworks",
+    "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "michaeltrefry",
+    "id": 42,
+    "type": "User"
+  }
+}

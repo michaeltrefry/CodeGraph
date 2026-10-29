@@ -100,6 +100,21 @@ public sealed class WorkViewsController(IServiceProvider services) : ControllerB
         return Json(new { items = page.Items, next_before = page.NextBefore });
     }
 
+    /// <summary>The GitHub evidence of an item (pushes, pull requests, reviews, comments), newest first: limit (default 50).</summary>
+    [HttpGet("items/{item}/github-evidence")]
+    public async Task<IActionResult> GitHubEvidence(string project, string item, [FromQuery] int? limit, CancellationToken ct)
+    {
+        if (Rejected(["limit"]) is { } rejected)
+            return rejected;
+        var (store, projectId, failure) = await ResolveProjectAsync(project, ct);
+        if (failure is not null)
+            return failure;
+        if (await store!.ResolveAsync(item, ct) is not { Kind: WorkEntityKind.Item } target || target.ProjectId != projectId)
+            return Refuse(WorkException.NotFound($"There is no item '{item.Trim()}' in project '{project.Trim()}'."));
+
+        return Json(new { items = await store.ListGitHubEvidenceAsync(target.Id, Math.Clamp(limit ?? WorkLimits.DefaultPageSize, 1, WorkLimits.MaxPageSize), ct) });
+    }
+
     // An unknown query parameter is refused rather than ignored, like the work tools' routes.
     private IActionResult? Rejected(string[] allowed)
     {

@@ -89,6 +89,33 @@ public sealed class WorkViewsRestMariaDbTests(WorkDatabase db) : IClassFixture<W
     }
 
     [Fact]
+    public async Task GitHub_evidence_of_an_item_is_listed_with_author_state_and_review_verdict()
+    {
+        var project = await db.NewProjectAsync("VG", "codegraph");
+        var key = (await db.NewItemAsync(project, "Evidence")).GetProperty("key").GetString()!;
+        var url = "https://github.com/o/r/pull/7";
+        await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.PullRequestMerged, ["codegraph"], [key], "octocat",
+            Branch: "claude/x", PullRequestUrl: url, PullRequestNumber: 7, Title: $"{key} add it", Url: url));
+        await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.Review, ["codegraph"], [key], "reviewer",
+            PullRequestUrl: url, PullRequestNumber: 7, Url: url, ReviewState: "changes_requested", Body: "Needs a test"));
+
+        var (status, body) = await Get($"/api/work/projects/{project}/items/{key}/github-evidence");
+        status.ShouldBe(200);
+        var items = body.GetProperty("items");
+        items.GetArrayLength().ShouldBeGreaterThanOrEqualTo(1);
+        var review = items.EnumerateArray().Single(entry => entry.GetProperty("kind").GetString() == "review");
+        review.GetProperty("author").GetString().ShouldEndWith("reviewer");
+        review.GetProperty("review_state").GetString().ShouldBe("changes_requested");
+        review.GetProperty("pull_request").GetInt32().ShouldBe(7);
+
+        (await Get($"/api/work/projects/{project}/items/{key}/github-evidence?bogus=1")).Status.ShouldBe(400);
+        (await Get($"/api/work/projects/{project}/items/NOPE-9/github-evidence")).Status.ShouldBe(404);
+        var other = await db.NewProjectAsync("VH");
+        (await Get($"/api/work/projects/{other}/items/{key}/github-evidence")).Status.ShouldBe(404);
+        (await host.SendAsync(HttpMethod.Get, $"/api/work/projects/{project}/items/{key}/github-evidence", token: token)).Status.ShouldBeOneOf(401, 403);
+    }
+
+    [Fact]
     public async Task The_listings_are_strict_and_for_signed_in_people_only()
     {
         var project = await db.NewProjectAsync("VX");

@@ -6,6 +6,7 @@ import {
   ChangesResult,
   FeatureView,
   FindResult,
+  GitHubEvidence,
   HoldView,
   ItemView,
   MessageView,
@@ -122,6 +123,10 @@ export class WorkApiService {
       before: filters.before,
       limit: filters.limit
     });
+  }
+
+  async githubEvidence(project: string, item: string): Promise<GitHubEvidence[]> {
+    return (await this.request<{ items: GitHubEvidence[] }>('GET', `/projects/${encodeURIComponent(project)}/items/${encodeURIComponent(item)}/github-evidence`)).items;
   }
 
   // ---- writes: the tools ---------------------------------------------------------------------

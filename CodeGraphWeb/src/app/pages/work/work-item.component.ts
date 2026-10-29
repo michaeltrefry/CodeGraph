@@ -7,7 +7,7 @@ import { buildTimeline } from './work-format';
 import { withDebounce } from './work-live.service';
 import { MessageComposerComponent, MessageListComponent } from './work-messages-ui';
 import { ActorComponent, AgoPipe, StatusComponent } from './work-shared';
-import { ItemView, MessageView, WORK_STATUSES, WorkApiError, WorkLink, WorkStatus } from './work.models';
+import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, WorkLink, WorkStatus } from './work.models';
 
 /** Item detail: the brief, acceptance, timeline, commits and PRs, messages, handoffs, attempts, and every write an agent can make. */
 @Component({
@@ -115,8 +115,19 @@ import { ItemView, MessageView, WORK_STATUSES, WorkApiError, WorkLink, WorkStatu
                 <label>URL or branch<input class="wrk-input" name="lurl" [(ngModel)]="linkUrl" /></label>
                 <button type="submit" class="wrk-btn" [disabled]="busy() || !linkUrl.trim()">Add link</button>
               </form>
-              <!-- S6: review evidence from GitHub is read with IWorkStore.ListGitHubEvidenceAsync, which has no REST route yet. -->
-              <p class="wrk-sub" data-testid="reviews-slot">Reviews: not shown yet. GitHub review evidence (S6) has no read route; it will appear here and on the timeline when it does.</p>
+              <h3 style="margin-top:10px">GitHub: pushes, pull requests and reviews</h3>
+              @if (evidence().length === 0) { <div class="wrk-empty" data-testid="evidence-empty">No GitHub activity recorded for this item.</div> }
+              <ul class="wrk-list" data-testid="evidence">
+                @for (e of evidence(); track e.id) {
+                  <li><div class="wrk-row"><span class="wrk-chip">{{ e.kind.replace('_', ' ') }}</span>
+                    <wrk-actor [actor]="{ name: e.author, kind: 'system' }" />
+                    @if (e.review_state) { <span class="wrk-chip" [attr.data-status]="e.review_state === 'approved' ? 'complete' : 'in_review'">{{ e.review_state.replace('_', ' ') }}</span> }
+                    @if (e.superseded) { <span class="wrk-chip">superseded attempt</span> }
+                    @if (e.url) { <a class="wrk-grow wrk-clip" [href]="e.url" target="_blank" rel="noopener noreferrer">{{ e.repository }}@if (e.pull_request) { #{{ e.pull_request }} }</a> }
+                    <span class="wrk-sub">{{ e.created_at | ago }}</span></div>
+                    @if (e.body) { <div class="wrk-pre wrk-sub">{{ e.body }}</div> }</li>
+                }
+              </ul>
             </section>
 
             <section class="wrk-card" aria-labelledby="wrk-h-ho">
@@ -231,11 +242,12 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
   readonly statuses = WORK_STATUSES;
   readonly item = signal<ItemView | null>(null);
   readonly messages = signal<MessageView[]>([]);
+  readonly evidence = signal<GitHubEvidence[]>([]);
   readonly dialog = signal<'' | 'edit'>('');
   readonly met = computed(() => (this.item()?.acceptance_criteria ?? []).filter(criterion => criterion.state === 'met').length);
   readonly timeline = computed(() => {
     const item = this.item();
-    return item ? buildTimeline(item, this.feed(), this.messages()) : [];
+    return item ? buildTimeline(item, this.feed(), this.messages(), this.evidence()) : [];
   });
   commentText = '';
   blocker = '';
@@ -278,8 +290,10 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
     try {
       const item = await this.api.get<ItemView>(key, 'full');
       const messages = await this.api.messages(item.project_key, { item: item.key, limit: 100 });
+      const evidence = await this.api.githubEvidence(item.project_key, item.key);
       this.item.set(item);
       this.messages.set(messages.items);
+      this.evidence.set(evidence);
       for (const criterion of item.acceptance_criteria ?? []) this.reportStates[criterion.id] ??= criterion.state;
     } catch (error) {
       this.error.set(error instanceof WorkApiError ? error : new WorkApiError(0, 'error', String(error)));

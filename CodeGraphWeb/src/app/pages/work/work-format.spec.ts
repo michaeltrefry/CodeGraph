@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTimeline, changeLines } from './work-format';
+import { buildTimeline, changeLines, evidenceTitle } from './work-format';
 import { fixtureItem } from './work-fixtures';
 import { timeAgo } from './work-shared';
 import { MessageView, WorkChange, actorLabel } from './work.models';
@@ -57,5 +57,28 @@ describe('formatting', () => {
     expect(timeAgo('2026-01-01T00:59:55', now)).toBe('just now');
     expect(timeAgo('2026-01-01T00:30:00Z', now)).toBe('30m ago');
     expect(timeAgo('2026-01-01T03:00:00Z', now)).toBe('in 2h');
+  });
+});
+
+describe('buildTimeline with GitHub evidence', () => {
+  const item = fixtureItem(7, { status: 'in_review' }, new Map());
+  const evidence = [
+    { id: 'e1', kind: 'review', repository: 'codegraph', pull_request: 9, url: 'https://github.com/o/r/pull/9', author: 'github:reviewer', source: 'human', priority: 'normal', review_state: 'changes_requested', body: 'Needs a test', superseded: false, created_at: '2026-01-02T13:00:00Z' },
+    { id: 'e2', kind: 'merge', repository: 'codegraph', pull_request: 9, author: 'github:octocat', source: 'human', priority: 'normal', superseded: true, created_at: '2026-01-02T14:00:00Z' }
+  ];
+
+  it('puts reviews and merges on the timeline with the GitHub author, verdict and link', () => {
+    const timeline = buildTimeline(item, [], [], evidence);
+    expect(timeline.map(entry => entry.kind)).toEqual(['github', 'github']);
+    expect(timeline[1].title).toBe('Review #9 (codegraph): changes requested');
+    expect(timeline[1].actor).toMatchObject({ name: 'github:reviewer', kind: 'system' });
+    expect(timeline[1].detail).toBe('Needs a test');
+    expect(timeline[1].url).toContain('/pull/9');
+    expect(timeline[0].detail).toContain('superseded attempt');
+  });
+
+  it('names evidence kinds and marks bots', () => {
+    expect(evidenceTitle({ ...evidence[0], source: 'bot', review_state: 'approved' })).toBe('Review #9 (codegraph): approved [bot]');
+    expect(evidenceTitle({ ...evidence[1], kind: 'pr_closed' })).toBe('Pull request closed without merging #9 (codegraph)');
   });
 });

@@ -106,8 +106,8 @@ public sealed partial class MySqlWorkStore
 
     private const string MessageColumns =
         "m.sequence, m.id, m.project_id, p.project_key, m.channel, m.item_id, m.feature_id, m.kind, m.state, m.blocking, m.to_session_id, m.to_human, m.resource_name, " +
-        "m.in_reply_to, m.body, m.sender_name, m.sender_kind, m.sender_session_id, ss.harness AS sender_harness, ss.model AS sender_model, ss.host AS sender_host, " +
-        "m.resolved_by, m.resolved_by_kind, m.resolved_by_session_id, rs.harness AS resolver_harness, rs.model AS resolver_model, rs.host AS resolver_host, " +
+        "m.in_reply_to, m.body, m.sender_name, m.sender_kind, m.sender_session_id, COALESCE(ss.harness, m.sender_harness) AS sender_harness, COALESCE(ss.model, m.sender_model) AS sender_model, COALESCE(ss.host, m.sender_host) AS sender_host, " +
+        "m.resolved_by, m.resolved_by_kind, m.resolved_by_session_id, COALESCE(rs.harness, m.resolved_by_harness) AS resolver_harness, COALESCE(rs.model, m.resolved_by_model) AS resolver_model, COALESCE(rs.host, m.resolved_by_host) AS resolver_host, " +
         "m.resolved_at, m.created_at, i.number AS item_number, f.number AS feature_number";
 
     private const string DeliveryColumns = ", d.sequence AS delivery_sequence, d.state AS delivery_state, d.handed_over AS delivery_handed_over";
@@ -757,7 +757,7 @@ public sealed partial class MySqlWorkStore
     {
         await using var connection = await OpenAsync(ct);
         var events = (await connection.QueryAsync<MessageEventRow>(new CommandDefinition(
-            "SELECT e.sequence, p.project_key, e.message_id, e.kind, e.recipient, e.actor_name, e.actor_kind, e.actor_session_id, s.harness, s.model, s.host, e.created_at " +
+            "SELECT e.sequence, p.project_key, e.message_id, e.kind, e.recipient, e.actor_name, e.actor_kind, e.actor_session_id, COALESCE(s.harness, e.actor_harness) AS harness, COALESCE(s.model, e.actor_model) AS model, COALESCE(s.host, e.actor_host) AS host, e.created_at " +
             "FROM work_message_events e JOIN work_projects p ON p.id = e.project_id LEFT JOIN work_sessions s ON s.id = e.actor_session_id " +
             "WHERE e.project_id = @projectId AND e.sequence > @afterSequence ORDER BY e.sequence LIMIT @limit",
             new { projectId, afterSequence, limit }, cancellationToken: ct))).ToList();

@@ -166,13 +166,13 @@ describe('WorkFeatureComponent board', () => {
 });
 
 describe('WorkItemComponent', () => {
-  it('shows who did what on the timeline, and where the review slot is', async () => {
+  it('shows who did what on the timeline, and GitHub reviews', async () => {
     const item = fiftyItemFeature()[1];
     item.comments = [{ id: 'c', author: 'michael', session_id: 's1', harness: 'claude-code', body: 'Started on the route', created_at: '2026-01-02T10:00:00Z' }];
     item.acceptance_criteria = [{ id: 'A1', text: 'Shows blocked items', state: 'unmet' }];
     const thread: MessageView = { id: 'm', project_key: 'W', channel: 'item', kind: 'question', from: { name: 'michael', kind: 'session', session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac' }, body: 'Which branch?', created_at: '2026-01-02T11:00:00Z', state: 'open', item: item.key };
     const entries: WorkChange[] = [{ sequence: 1, project_id: 'p', project_key: 'W', entity: 'item', entity_id: item.id, entity_key: item.key, kind: 'item_updated', actor: { name: 'michael', kind: 'session', session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac' }, changes: [{ field: 'status', old: 'ready', new: 'in_progress' }], created_at: '2026-01-02T09:00:00Z' }];
-    const api = { get: vi.fn().mockResolvedValue(item), messages: vi.fn().mockResolvedValue({ items: [thread] }), update: vi.fn() };
+    const api = { get: vi.fn().mockResolvedValue(item), messages: vi.fn().mockResolvedValue({ items: [thread] }), githubEvidence: vi.fn().mockResolvedValue([{ id: 'e1', kind: 'review', repository: 'codegraph', pull_request: 9, url: 'https://github.com/o/r/pull/9', author: 'github:reviewer', source: 'human', priority: 'normal', review_state: 'approved', superseded: false, created_at: '2026-01-02T13:00:00Z' }]), update: vi.fn() };
     await TestBed.configureTestingModule({ imports: [WorkItemComponent], providers: provideWork(api, item.key, entries) }).compileComponents();
     const fixture = TestBed.createComponent(WorkItemComponent);
     await settle(fixture);
@@ -182,14 +182,16 @@ describe('WorkItemComponent', () => {
     expect(timeline.textContent).toContain('claude-code / opus @ mac');
     expect(timeline.textContent).toContain('Status ready → in_progress');
     expect(root.textContent).toContain('Shows blocked items');
-    expect(root.querySelector('[data-testid="reviews-slot"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="evidence"]')?.textContent).toContain('github:reviewer');
+    expect(root.querySelector('[data-testid="evidence"]')?.textContent).toContain('approved');
+    expect(timeline.textContent).toContain('Review #9 (codegraph): approved');
     expect(api.get).toHaveBeenCalledWith(item.key, 'full');
   });
 
   it('writes with the version it read, and surfaces a refusal', async () => {
     const item = fiftyItemFeature()[1];
     const update = vi.fn().mockRejectedValue(new WorkApiError(409, 'conflict', 'stale'));
-    const api = { get: vi.fn().mockResolvedValue(item), messages: vi.fn().mockResolvedValue({ items: [] }), update };
+    const api = { get: vi.fn().mockResolvedValue(item), messages: vi.fn().mockResolvedValue({ items: [] }), githubEvidence: vi.fn().mockResolvedValue([]), update };
     await TestBed.configureTestingModule({ imports: [WorkItemComponent], providers: provideWork(api, item.key) }).compileComponents();
     const fixture = TestBed.createComponent(WorkItemComponent);
     await settle(fixture);

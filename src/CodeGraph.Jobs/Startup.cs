@@ -9,6 +9,7 @@ using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.WikiRag;
+using CodeGraph.Services.Work;
 using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Jobs;
@@ -25,9 +26,11 @@ public static class Startup
         services.AddSingleton<IFileSystem, LocalFileSystem>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<IAssistantRetentionCleanupService, AssistantRetentionCleanupService>();
+        services.AddTransient<IWorkMessageRetentionService, WorkMessageRetentionService>();
         services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
         services.AddTransient<IMarkdownWikiChunker, MarkdownWikiChunker>();
         services.AddTransient<IConventionEmbeddingService, ConventionEmbeddingService>();
+        services.Configure<CodeGraph.Models.Work.WorkSessionOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkSessionOptions.Section));
         services.AddCodeGraphJobScheduling();
         services.AddHostedService<ScheduleRunnerWorker>();
     }
