@@ -619,6 +619,13 @@ public sealed partial class MySqlWorkStore(
         public Guid ProjectId { get; init; }
     }
 
+    private static async Task<TargetRow?> FindAliasAsync(MySqlConnection connection, string value, CancellationToken ct) =>
+        WorkReferences.NormalizeAlias(value) is { } alias
+            ? await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(
+                "SELECT 'item' AS kind, i.id, i.project_id FROM work_item_aliases a JOIN work_items i ON i.id = a.item_id WHERE a.alias = @alias",
+                new { alias }, cancellationToken: ct))
+            : null;
+
     public async Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
@@ -639,8 +646,15 @@ public sealed partial class MySqlWorkStore(
                 ? "SELECT 'item' AS kind, i.id, i.project_id FROM work_items i JOIN work_projects p ON p.id = i.project_id WHERE p.project_key = @projectKey AND i.number = @number"
                 : "SELECT 'feature' AS kind, f.id, f.project_id FROM work_features f JOIN work_projects p ON p.id = f.project_id WHERE p.project_key = @projectKey AND f.number = @number";
             var hit = await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(sql, new { projectKey, number }, cancellationToken: ct));
+            // An external alias (an imported story's sc-27866) resolves like a key (sc-27870).
+            if (hit is null && kind == WorkEntityKind.Item)
+                hit = await FindAliasAsync(connection, value, ct);
             return hit is null ? null : new WorkTarget(kind, hit.Id, hit.ProjectId);
         }
+
+        // sc-0012 (leading zeros) is not a key but names the alias sc-12.
+        if (await FindAliasAsync(connection, value, ct) is { } aliased)
+            return new WorkTarget(WorkEntityKind.Item, aliased.Id, aliased.ProjectId);
 
         var key = value.ToUpperInvariant();
         if (!WorkKeys.IsValidProjectKey(key))

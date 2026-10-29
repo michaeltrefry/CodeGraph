@@ -117,6 +117,27 @@ public interface IWorkStore : IWorkMessageStore
     /// identity's claims made without a session), marked delivered.
     /// </summary>
     Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default);
+
+    // ---- GitHub evidence (sc-27870) ----------------------------------------------------------
+
+    /// <summary>
+    /// Records one GitHub event on every item it names (by key or alias in the branch, PR title or PR
+    /// body, or by a PR the item links): links, forward-only status moves, merge and review evidence
+    /// (design §7). Each item is written in its own transaction with its change-feed entry, attributed
+    /// to the GitHub login; a delivery handled for an item already changes nothing. Evidence tied
+    /// only to superseded attempts is recorded and moves nothing.
+    /// </summary>
+    Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default);
+
+    /// <summary>The GitHub evidence of an item, newest first.</summary>
+    Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gives an item external aliases (an imported story's <c>sc-27866</c>), lower-cased; an alias
+    /// names one item (a repeat on the same item changes nothing, another item's is conflict).
+    /// A versioned, fed item write.
+    /// </summary>
+    Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default);
 }
 
 /// <summary>A requirement as a write names it (validated for shape).</summary>
