@@ -221,6 +221,7 @@ public sealed record BriefingView(
     IReadOnlyList<string>? Truncated = null,
     IReadOnlyList<HoldView>? MyHolds = null,
     IReadOnlyList<ResourceView>? Resources = null,
+    IReadOnlyList<OverlapWarning>? OverlapWarnings = null,
     IReadOnlyList<KnowledgeRow>? Knowledge = null);
 
 public sealed record BriefingProject(string Key, string Name, IReadOnlyList<string>? Goals = null);

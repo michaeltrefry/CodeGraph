@@ -102,6 +102,12 @@ public static class WorkBriefings
                 return view with { MyWork = mine.Take(mine.Count - 1).ToList() };
             return mine[0].LatestHandoff is not null ? view with { MyWork = [mine[0] with { LatestHandoff = null }] } : view with { MyWork = null };
         }),
+        new("overlap_warnings", view => view.OverlapWarnings switch
+        {
+            null => null,
+            { Count: 1 } => view with { OverlapWarnings = null },
+            var warnings => view with { OverlapWarnings = warnings.Take(warnings.Count - 1).ToList() }
+        }),
         new("my_holds", view => view.MyHolds switch
         {
             null => null,
