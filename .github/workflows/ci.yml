@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       mariadb:
-        image: mariadb:11.4
+        image: mariadb:11.8
         env:
           MARIADB_ROOT_PASSWORD: codegraph_test!
         ports:
