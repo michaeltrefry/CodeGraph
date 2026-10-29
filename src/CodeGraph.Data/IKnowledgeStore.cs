@@ -42,10 +42,11 @@ public interface IKnowledgeStore
     /// (an active entry of the project of the same kind with the same normalized summary, or an
     /// earlier candidate of the batch). Without <paramref name="accept"/> it stores nothing. With it,
     /// it stores exactly the accepted candidates in one transaction, or refuses the call when any of
-    /// them would not be stored now (nothing is stored then either).
+    /// them would not be stored now (nothing is stored then either). A confirm repeated with the same
+    /// <paramref name="keyHash"/> stores nothing and answers the first confirm's result.
     /// </summary>
     Task<ImportKnowledgeResult> ImportKnowledgeAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
-        IReadOnlyList<int>? accept, WorkActor actor, CancellationToken ct = default);
+        IReadOnlyList<int>? accept, string? keyHash, WorkActor actor, CancellationToken ct = default);
 }
 
 /// <summary>

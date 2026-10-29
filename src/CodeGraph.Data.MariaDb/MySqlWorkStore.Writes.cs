@@ -245,6 +245,11 @@ public sealed partial class MySqlWorkStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            // Save points (S5) reference the project: hold its row before the feature's (project, then knowledge).
+            if (patch.Knowledge is { Count: > 0 } &&
+                await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+                    "SELECT project_id FROM work_features WHERE id = @featureId", new { featureId }, transaction, cancellationToken: ct)) is { } featureProject)
+                await HoldProjectAsync(connection, transaction, featureProject, ct);
             await AdvanceAsync(connection, transaction, "work_features", featureId, expectedVersion, now,
                 () => LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct), "Feature", ct);
 
@@ -400,9 +405,10 @@ public sealed partial class MySqlWorkStore
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
 
-            // An update that names a repository reads the project's membership, so it holds the
-            // project's row first, like the project update that may drop that repository.
-            if (patch.Repository is not null)
+            // An update that names a repository, or stores save points (S5: their scope reads the
+            // membership and their rows reference the project), holds the project's row first, like
+            // the project update that may drop that repository: project, then items, then knowledge.
+            if (patch.Repository is not null || patch.Knowledge is { Count: > 0 })
                 await HoldProjectAsync(connection, transaction, projectId, ct);
 
             // The rows of the item and of the blockers it adds, held in key order before anything is

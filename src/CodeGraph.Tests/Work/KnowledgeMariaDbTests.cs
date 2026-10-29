@@ -143,9 +143,54 @@ public sealed class KnowledgeMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         var brief = await db.CallAsync(WorkTools.GetWork, new { id = item.GetProperty("key").GetString() });
         brief.GetProperty("knowledge").GetArrayLength().ShouldBe(3);
 
-        // Ending again stores nothing more.
-        await db.CallAsync(WorkTools.EndSession, new { session_id = session, findings = new[] { new { kind = "fact", summary = "Repeat" } } }, "alice");
+        // A retried end (same save points) answers the ended session and what its end stored.
+        var retried = await db.CallAsync(WorkTools.EndSession, new
+        {
+            session_id = session,
+            findings = new[] { new { kind = "gotcha", summary = "Shortcut tools ignore unknown params and still report success" } }
+        }, "alice");
+        retried.GetProperty("session").GetProperty("live").GetBoolean().ShouldBeFalse();
+        retried.GetProperty("recorded").EnumerateArray().Single().GetProperty("id").GetString().ShouldBe(recorded[2].GetProperty("id").GetString());
+
+        // New save points on an ended session are refused, not dropped.
+        var refused = await db.RefusedAsync(WorkTools.EndSession, new { session_id = session, findings = new[] { new { kind = "fact", summary = "Too late" } } }, "alice");
+        refused.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        refused.Message.ShouldContain("has ended");
         (await CountAsync("SELECT COUNT(*) FROM knowledge_entries e JOIN work_projects p ON p.id = e.project_id WHERE p.project_key = @key", new { key })).ShouldBe(3);
+    }
+
+    [Fact]
+    public async Task A_briefing_finds_an_old_path_scoped_entry_behind_many_newer_ones_and_without_a_session_repository()
+    {
+        var key = await ProjectAsync("KO", dependencies: "inference");
+        var old = (await db.CallAsync(WorkTools.Record, new
+        {
+            project = key,
+            entry = new { kind = "constraint", summary = "The scheduler is single-writer", repositories = new[] { "inference" }, paths = new[] { "src/scheduler/mod.rs" } }
+        })).GetProperty("entry").GetProperty("id").GetString();
+
+        // 600 newer project-wide and path-scoped entries that do not match.
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+        {
+            var projectId = await connection.ExecuteScalarAsync<Guid>("SELECT id FROM work_projects WHERE project_key = @key", new { key });
+            await connection.ExecuteAsync(
+                "INSERT INTO knowledge_entries (id, project_id, kind, status, summary, summary_hash, confidence, verified_at, author, created_at, updated_at) " +
+                "SELECT UUID(), @projectId, 'decision', 'active', CONCAT('Noise ', seq), SHA2(seq, 256), 'medium', UTC_TIMESTAMP(6), 'alice', " +
+                "UTC_TIMESTAMP(6) + INTERVAL seq SECOND, UTC_TIMESTAMP(6) + INTERVAL seq SECOND FROM seq_1_to_600", new { projectId });
+            await connection.ExecuteAsync(
+                "INSERT INTO knowledge_entry_paths (entry_id, path, prefix) SELECT id, CONCAT('docs/', summary_hash), CONCAT('docs/', summary_hash) " +
+                "FROM knowledge_entries WHERE project_id = @projectId AND summary LIKE 'Noise 1%'", new { projectId });
+        }
+
+        // A session that names no repository still matches by path.
+        var started = await db.CallAsync(WorkTools.StartSession, new { project = key, harness = "codex", paths = new[] { "src/scheduler/mod.rs" } }, "alice");
+        var knowledge = started.GetProperty("briefing").GetProperty("knowledge").EnumerateArray().ToList();
+        knowledge.Count(row => row.GetProperty("id").GetString() == old).ShouldBe(1);
+        knowledge.Single(row => row.GetProperty("id").GetString() == old).GetProperty("match").GetString().ShouldBe("path");
+
+        // The same with the repository named.
+        var named = await db.CallAsync(WorkTools.StartSession, new { project = key, harness = "codex", repository = "inference", paths = new[] { "src/scheduler" } }, "alice");
+        named.GetProperty("briefing").GetProperty("knowledge").EnumerateArray().ShouldContain(row => row.GetProperty("id").GetString() == old);
     }
 
     [Fact]
@@ -182,6 +227,25 @@ public sealed class KnowledgeMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         misspelt.Message.ShouldContain("made_autonomously");
         var foreign = await db.RefusedAsync(WorkTools.Record, new { project = key, entry = new { kind = "fact", summary = "A fact", why_failed = "no" } });
         foreign.Message.ShouldContain("why_failed");
+    }
+
+    [Fact]
+    public async Task A_file_indexed_with_backslash_separators_is_verified_against_and_flagged_when_it_changes()
+    {
+        var key = await ProjectAsync("KW", dependencies: "sceneworks");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("INSERT INTO file_hashes (project, rel_path, content_hash) VALUES ('sceneworks', 'src\\\\Win\\\\Main.cs', 'h1')");
+
+        var entry = (await db.CallAsync(WorkTools.Record, new
+        {
+            project = key,
+            entry = new { kind = "gotcha", summary = "Main runs on the UI thread", repositories = new[] { "sceneworks" }, paths = new[] { "src/Win/Main.cs" } }
+        })).GetProperty("entry");
+        entry.GetProperty("verified_files").EnumerateArray().Single().GetProperty("path").GetString().ShouldBe("src\\Win\\Main.cs");
+        entry.GetProperty("possibly_stale").GetBoolean().ShouldBeFalse();
+
+        await connection.ExecuteAsync("UPDATE file_hashes SET content_hash = 'h2' WHERE project = 'sceneworks' AND rel_path = 'src\\\\Win\\\\Main.cs'");
+        Items(await db.CallAsync(WorkTools.Recall, new { id = entry.GetProperty("id").GetString() })).Single().GetProperty("possibly_stale").GetBoolean().ShouldBeTrue();
     }
 
     [Fact]
@@ -310,21 +374,28 @@ public sealed class KnowledgeMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         var token = preview.GetProperty("preview_token").GetString();
 
         // A token of another batch, or a candidate that would not be stored, refuses the confirm; nothing is stored.
-        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates = candidates.Take(7).ToArray(), confirm = true, accept = new[] { 0 }, preview_token = token }))
+        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates = candidates.Take(7).ToArray(), confirm = true, accept = new[] { 0 }, preview_token = token, idempotency_key = "imp-x" }))
             .Code.ShouldBe(WorkErrorCodes.Conflict);
-        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0, 2 }, preview_token = token }))
+        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0, 2 }, preview_token = token, idempotency_key = "imp-y" }))
             .Message.ShouldContain("candidate 2 is personal");
+        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0 }, preview_token = token }))
+            .Message.ShouldContain("idempotency_key");
         (await CountAsync("SELECT COUNT(*) FROM knowledge_entries")).ShouldBe(before);
 
-        var confirmed = await db.CallAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0, 7 }, preview_token = token });
+        var confirmed = await db.CallAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0, 7 }, preview_token = token, idempotency_key = "imp-1" });
         confirmed.GetProperty("stored").GetBoolean().ShouldBeTrue();
         confirmed.GetProperty("candidates").EnumerateArray().Count(candidate => candidate.GetProperty("outcome").GetString() == "stored").ShouldBe(2);
         (await CountAsync("SELECT COUNT(*) FROM knowledge_entries")).ShouldBe(before + 2);
         var imported = Items(await db.CallAsync(WorkTools.Recall, new { project = key, kind = new[] { "fact" }, detail = "full" })).Single();
         imported.GetProperty("source_file").GetString().ShouldBe("memory/runners.md");
 
-        // Confirming the same batch again would store duplicates: refused.
-        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0 }, preview_token = token }))
+        // A retried confirm (same key, say after a lost answer) answers the first result and stores nothing.
+        var retried = await db.CallAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0, 7 }, preview_token = token, idempotency_key = "imp-1" });
+        retried.GetRawText().ShouldBe(confirmed.GetRawText());
+        (await CountAsync("SELECT COUNT(*) FROM knowledge_entries")).ShouldBe(before + 2);
+
+        // Confirming the batch again under a new key would store duplicates: refused.
+        (await db.RefusedAsync(WorkTools.ImportKnowledge, new { project = key, candidates, confirm = true, accept = new[] { 0 }, preview_token = token, idempotency_key = "imp-2" }))
             .Message.ShouldContain("candidate 0 is duplicate");
     }
 }

@@ -370,10 +370,13 @@ public sealed partial class WorkService
             throw WorkException.Invalid($"candidates must hold 1 to {KnowledgeLimits.MaxImportCandidates} candidates; it holds {request.Candidates.Count}.");
 
         var confirm = request.Confirm ?? false;
-        if (!confirm && (request.Accept is not null || request.PreviewToken is not null))
-            throw WorkException.Invalid("accept and preview_token go with confirm true; a dry run (confirm false) takes neither and stores nothing.");
-        if (confirm && (request.Accept is not { Count: > 0 } || request.PreviewToken is null))
-            throw WorkException.Invalid("confirm true needs accept (the indexes of the candidates to store) and the preview_token of the dry run of this batch. Nothing was stored.");
+        if (!confirm && (request.Accept is not null || request.PreviewToken is not null || request.IdempotencyKey is not null))
+            throw WorkException.Invalid("accept, preview_token and idempotency_key go with confirm true; a dry run (confirm false) takes none of them and stores nothing.");
+        if (confirm && (request.Accept is not { Count: > 0 } || request.PreviewToken is null || request.IdempotencyKey is null))
+            throw WorkException.Invalid(
+                "confirm true needs accept (the indexes of the candidates to store), the preview_token of the dry run of this batch and an idempotency_key " +
+                "(so that a retried confirm answers the first one's result). Nothing was stored.");
+        var keyHash = confirm ? HashKey(actor, request.IdempotencyKey!) : null;
 
         var token = PreviewToken(project.Id, request.Candidates);
         if (confirm && !string.Equals(request.PreviewToken!.Trim(), token, StringComparison.Ordinal))
@@ -396,7 +399,7 @@ public sealed partial class WorkService
             }
         }
 
-        return await Knowledge.ImportKnowledgeAsync(project.Id, candidates, token, confirm ? request.Accept : null, actor, ct);
+        return await Knowledge.ImportKnowledgeAsync(project.Id, candidates, token, confirm ? request.Accept : null, keyHash, actor, ct);
     }
 
     // Binds a confirmation to the batch that was previewed (stateless: nothing is stored by a dry run).

@@ -472,6 +472,9 @@ public sealed class ImportKnowledgeRequest : ISessionArguments
 
     [Description("With confirm: the preview_token of the dry run of this same batch.")]
     public string? PreviewToken { get; init; }
+
+    [Description("With confirm (required): caller-chosen key, 1 to 128 printable ASCII characters. A repeat by the same identity in the project stores nothing and answers the first confirm's result.")]
+    public string? IdempotencyKey { get; init; }
 }
 
 public sealed class ImportCandidateInput

@@ -885,6 +885,9 @@ public partial class MySqlGraphStore(
             sql.AppendLine("ON DUPLICATE KEY UPDATE content_hash = VALUES(content_hash)");
             await conn.ExecuteAsync(sql.ToString(), parameters);
         }
+
+        // Knowledge entries waiting for these files' first hash take it as their baseline (sc-27869).
+        await KnowledgeBaselines.AdoptAsync(conn, null, project, hashes.ToList(), null, ct);
     }
 
     public async Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths)

@@ -161,4 +161,89 @@ public sealed class KnowledgeFreshnessMariaDbTests : IAsyncLifetime
         (await EntryAsync(later.GetProperty("id").GetString()!)).GetProperty("possibly_stale").GetBoolean().ShouldBeTrue();
         (await EntryAsync(greeter.GetProperty("id").GetString()!)).GetProperty("possibly_stale").GetBoolean().ShouldBeFalse();
     }
+
+    [Fact]
+    public async Task A_new_file_changed_twice_with_no_read_in_between_is_flagged_and_reads_write_nothing()
+    {
+        await IndexAsync(new string('a', 40));
+        await CallAsync(WorkTools.CreateWork, new { new_project = new { key = "TWICE", name = "Twice", repositories = new[] { new { repository = Repository, role = "owned" } } } });
+        var entry = (await CallAsync(WorkTools.Record, new
+        {
+            project = "TWICE",
+            entry = new { kind = "fact", summary = "Later is added next", repositories = new[] { Repository }, paths = new[] { LaterPath } }
+        })).GetProperty("entry").GetProperty("id").GetString()!;
+
+        // Added, indexed, changed, indexed, changed, indexed: no knowledge read in between.
+        await File.WriteAllTextAsync(Path.Combine(root, LaterPath), "func later() {}\n");
+        await IndexAsync(new string('b', 40));
+        await File.WriteAllTextAsync(Path.Combine(root, LaterPath), "func later() { run() }\n");
+        await IndexAsync(new string('c', 40));
+        await File.WriteAllTextAsync(Path.Combine(root, LaterPath), "func later() { run(); run() }\n");
+        await IndexAsync(new string('d', 40));
+
+        // The baseline is the first index's hash, so the entry is flagged; the read wrote nothing.
+        var before = await FilesSnapshotAsync();
+        (await EntryAsync(entry)).GetProperty("possibly_stale").GetBoolean().ShouldBeTrue();
+        await CallAsync(WorkTools.Recall, new { project = "TWICE", paths = new[] { LaterPath } });
+        (await FilesSnapshotAsync()).ShouldBe(before);
+    }
+
+    [Fact]
+    public async Task An_entry_scoped_to_a_graph_node_is_flagged_when_the_nodes_file_changes()
+    {
+        await IndexAsync(new string('a', 40));
+        await CallAsync(WorkTools.CreateWork, new { new_project = new { key = "NODES", name = "Nodes", repositories = new[] { new { repository = Repository, role = "owned" } } } });
+        long greet;
+        await using (var connection = new MySqlConnection(connectionString))
+            greet = await connection.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE project = @Repository AND name = 'greet'", new { Repository });
+
+        var entry = (await CallAsync(WorkTools.Record, new { project = "NODES", entry = new { kind = "decision", summary = "greet stays pure", nodes = new[] { greet } } }))
+            .GetProperty("entry");
+        entry.GetProperty("nodes").EnumerateArray().Single().GetProperty("qualified_name").GetString()!.ShouldContain("greet");
+        entry.GetProperty("verified_files").EnumerateArray().Single().GetProperty("path").GetString().ShouldBe(GreeterPath);
+        entry.GetProperty("possibly_stale").GetBoolean().ShouldBeFalse();
+        (await CallAsync(WorkTools.Recall, new { project = "NODES", nodes = new[] { greet } })).GetProperty("items").GetArrayLength().ShouldBe(1);
+
+        await File.WriteAllTextAsync(Path.Combine(root, GreeterPath), "struct Greeter {\n    func greet(name: String) -> String {\n        return name + \"!\"\n    }\n}\n");
+        await IndexAsync(new string('b', 40));
+        (await EntryAsync(entry.GetProperty("id").GetString()!)).GetProperty("possibly_stale").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Reads_neither_fail_nor_wait_while_an_index_write_holds_file_hashes_rows()
+    {
+        await IndexAsync(new string('a', 40));
+        await CallAsync(WorkTools.CreateWork, new { new_project = new { key = "LOCKS", name = "Locks", repositories = new[] { new { repository = Repository, role = "owned" } } } });
+        await CallAsync(WorkTools.CreateWork, new { project = "LOCKS", item = new { title = "Item", repository = Repository } });
+        await CallAsync(WorkTools.Record, new
+        {
+            project = "LOCKS",
+            entry = new { kind = "constraint", summary = "Pending baseline", repositories = new[] { Repository }, paths = new[] { "Sources/App/Pending.swift" } }
+        });
+
+        // An index write in flight: new and changed file_hashes rows, X-locked until it ends.
+        await using var index = new MySqlConnection(connectionString);
+        await index.OpenAsync();
+        await using var transaction = await index.BeginTransactionAsync();
+        await index.ExecuteAsync(
+            "INSERT INTO file_hashes (project, rel_path, content_hash) VALUES (@Repository, 'Sources/App/Pending.swift', 'pending')", new { Repository }, transaction);
+        await index.ExecuteAsync("UPDATE file_hashes SET content_hash = 'changing' WHERE project = @Repository", new { Repository }, transaction);
+
+        var reads = Task.WhenAll(
+            CallAsync(WorkTools.Recall, new { project = "LOCKS", paths = new[] { "Sources/App" } }),
+            CallAsync(WorkTools.GetWork, new { id = "LOCKS-1" }),
+            CallAsync(WorkTools.StartSession, new { project = "LOCKS", harness = "codex", repository = Repository, paths = new[] { "Sources/App/Pending.swift" } }));
+        (await Task.WhenAny(reads, Task.Delay(TimeSpan.FromSeconds(3)))).ShouldBe(reads, "the reads waited on the index write");
+        var answers = await reads;
+        answers[0].GetProperty("items").GetArrayLength().ShouldBe(1);
+        answers[2].GetProperty("briefing").TryGetProperty("knowledge", out var found).ShouldBeTrue(answers[2].GetRawText());
+        found.GetArrayLength().ShouldBe(1);
+        await transaction.RollbackAsync();
+    }
+
+    private async Task<List<(string Path, string? Hash)>> FilesSnapshotAsync()
+    {
+        await using var connection = new MySqlConnection(connectionString);
+        return (await connection.QueryAsync<(string Path, string? Hash)>("SELECT path, content_hash FROM knowledge_entry_files ORDER BY id")).ToList();
+    }
 }

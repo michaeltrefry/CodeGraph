@@ -13,10 +13,20 @@ namespace CodeGraph.Data.MariaDb;
 //
 // Freshness is computed from data the indexer already keeps: knowledge_entry_files holds the
 // file_hashes.content_hash of every indexed file an entry was verified against, and an entry reads
-// possibly_stale while any of them now has another hash or is no longer indexed. Nothing is crawled.
+// possibly_stale while any of them now has another hash or is no longer indexed. Nothing is crawled,
+// and reads never write: a file not indexed when its entry was recorded gets its baseline from the
+// index write that first stores it (KnowledgeBaselines, called by MySqlGraphStore).
+//
+// Lock order: project row, then work items, then knowledge rows. A write that stores knowledge holds
+// the project first (save points included).
+//
+// Change feed: record (entry, supersede, revise, retract, verify) writes no work_changes entry; the
+// feed (E7) covers projects, features and items, and save points written by update_work on one of
+// them appear in that entity's entry as a "knowledge" change.
 public sealed partial class MySqlWorkStore : IKnowledgeStore
 {
     private const string KnowledgeOperation = "knowledge";
+    private const string ImportOperation = "knowledge_import";
     private const int RecallBatch = 200;
     private const int MaxRecallScan = 5_000;
     private const int MaxRelevantCandidates = 500;
@@ -73,6 +83,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         public DateTime CreatedAt { get; init; }
         public DateTime UpdatedAt { get; init; }
         public long Stale { get; init; }
+
+        // Set only by the briefing's query of entries without paths: 1 when the entry names no repository.
+        public long ProjectWide { get; init; }
+
+        // Set only by the repeated-end check.
+        public string? SummaryHash { get; init; }
 
         public bool PossiblyStale => Stale != 0;
 
@@ -168,6 +184,31 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         }
 
         return superseded;
+    }
+
+    /// <summary>
+    /// The save points of a repeated end_session: each must be an entry the session already stored
+    /// (same kind and normalized summary), answered as its row. Anything else is refused: an ended
+    /// session stores nothing more.
+    /// </summary>
+    private static async Task<IReadOnlyList<KnowledgeRow>> RequireRepeatedSavePointsAsync(MySqlConnection connection, MySqlTransaction transaction,
+        SessionRow session, IReadOnlyList<KnowledgeSpec> knowledge, CancellationToken ct)
+    {
+        var stored = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
+            $"SELECT {KnowledgeColumns}, e.summary_hash AS summary_hash {KnowledgeFrom} WHERE e.author_session_id = @session ORDER BY e.created_at",
+            new { session = session.Id }, transaction, cancellationToken: ct))).ToList();
+        var rows = new List<KnowledgeRow>();
+        foreach (var spec in knowledge)
+        {
+            var match = stored.FirstOrDefault(row => row.Kind == JsonName(spec.Kind) && row.SummaryHash == KnowledgePaths.HashSummary(spec.Summary));
+            if (match is null)
+                throw WorkException.Invalid(
+                    $"Session {session.Id} has ended, so its save points can no longer be stored ('{spec.Summary}' is not one its end stored). " +
+                    "Record it with record, or in a new session. Nothing was changed.");
+            rows.Add(ToRow(match));
+        }
+
+        return rows;
     }
 
     public Task<KnowledgeView> ReviseKnowledgeAsync(Guid entryId, long expectedVersion, KnowledgeSpec state, WorkActor actor, CancellationToken ct = default) =>
@@ -335,8 +376,10 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     /// <summary>
     /// The files the entry is verified against, with their indexed content hash now: its concrete
     /// paths (not globs) in its repositories (the project's when it names none) and its nodes' files.
-    /// A path not indexed yet in a repository the entry names is kept with a NULL hash, baselined by
-    /// the first read after it is indexed (<see cref="AdoptBaselinesAsync"/>).
+    /// A path not indexed yet in a repository the entry names (or a node's file) is kept with a NULL
+    /// hash and baselined by the index write that first stores the file (<see cref="KnowledgeBaselines"/>).
+    /// A found file is stored in the spelling file_hashes uses, so the freshness join is exact; paths
+    /// are looked up in both separator spellings.
     /// </summary>
     private static async Task SnapshotFilesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, Guid projectId,
         IReadOnlyList<string> repositories, IReadOnlyList<string> paths, IReadOnlyList<NodeRef> nodes, CancellationToken ct)
@@ -357,16 +400,21 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             .ToList();
         if (lookups.Count > 0)
         {
+            var variants = lookups.SelectMany(lookup => new[] { lookup.path.Replace('\\', '/'), lookup.path.Replace('/', '\\') }).Distinct(StringComparer.Ordinal).ToArray();
             var found = (await connection.QueryAsync<(string Project, string RelPath, string ContentHash)>(new CommandDefinition(
-                "SELECT project, rel_path, content_hash FROM file_hashes WHERE project IN @repositories AND rel_path IN @paths",
-                new { repositories = lookups.Select(lookup => lookup.repository).Distinct().ToArray(), paths = lookups.Select(lookup => lookup.path).Distinct().ToArray() },
+                "SELECT project, rel_path, content_hash FROM file_hashes WHERE project IN @repositories AND rel_path IN @variants",
+                new { repositories = lookups.Select(lookup => lookup.repository).Distinct().ToArray(), variants },
                 transaction, cancellationToken: ct))).ToList();
             foreach (var (repository, path) in lookups)
             {
-                var hash = found.FirstOrDefault(row => row.Project == repository && row.RelPath == path).ContentHash;
+                var forward = path.Replace('\\', '/');
+                var row = found.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Project, repository, StringComparison.OrdinalIgnoreCase) && candidate.RelPath.Replace('\\', '/') == forward);
                 var named = repositories.Contains(repository, StringComparer.Ordinal) || nodes.Any(node => node.Repository == repository && node.FilePath == path);
-                if (hash is not null || named)
-                    files[(repository, path)] = hash;
+                if (row.ContentHash is not null)
+                    files[(repository, row.RelPath)] = row.ContentHash;
+                else if (named)
+                    files[(repository, forward)] = null;
             }
         }
 
@@ -384,25 +432,6 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             ? null
             : await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
                 "SELECT last_commit_sha FROM repositories WHERE name = @name", new { name = scoped[0] }, transaction, cancellationToken: ct));
-    }
-
-    // Files that were not indexed when their entry was verified take the hash of their first index,
-    // at the next read of the project's knowledge. Best effort: a read never fails or waits on it
-    // (a baseline left unadopted is adopted by a later read).
-    private static async Task AdoptBaselinesAsync(MySqlConnection connection, Guid projectId, CancellationToken ct)
-    {
-        try
-        {
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE knowledge_entry_files kf JOIN knowledge_entries e ON e.id = kf.entry_id " +
-                "JOIN file_hashes h ON h.project = kf.repository_name AND h.rel_path = kf.path " +
-                "SET kf.content_hash = h.content_hash WHERE kf.content_hash IS NULL AND e.project_id = @projectId",
-                new { projectId }, commandTimeout: 5, cancellationToken: ct));
-        }
-        catch (MySqlException exception) when (exception.Number is MySqlDeadlock or MySqlLockWaitTimeout || exception.ErrorCode == MySqlErrorCode.QueryInterrupted ||
-                                               exception.InnerException is TimeoutException)
-        {
-        }
     }
 
     // ---- Reads -------------------------------------------------------------------------------
@@ -506,11 +535,6 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     public async Task<KnowledgeView?> GetKnowledgeAsync(Guid entryId, bool withRevisions, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
-            "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, cancellationToken: ct));
-        if (projectId is null)
-            return null;
-        await AdoptBaselinesAsync(connection, projectId.Value, ct);
         return await LoadKnowledgeViewAsync(connection, null, entryId, withRevisions, ct);
     }
 
@@ -527,8 +551,8 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<RecallPage> RecallAsync(RecallSpec spec, CancellationToken ct = default)
     {
+        // Reads write nothing: baselines are adopted at index time (KnowledgeBaselines).
         await using var connection = await OpenAsync(ct);
-        await AdoptBaselinesAsync(connection, spec.ProjectId, ct);
 
         var where = new StringBuilder("e.project_id = @projectId AND e.status IN @statuses");
         var parameters = new DynamicParameters();
@@ -667,47 +691,60 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<IReadOnlyList<KnowledgeRow>> ReadRelevantKnowledgeAsync(KnowledgeContext context, CancellationToken ct = default)
     {
+        // Reads write nothing: baselines are adopted at index time (KnowledgeBaselines). Each tier is
+        // its own query, filtered in SQL, so a matching entry is never crowded out by newer unrelated ones.
         await using var connection = await OpenAsync(ct);
-        await AdoptBaselinesAsync(connection, context.ProjectId, ct);
-        var candidates = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
-            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind IN @kinds AND (" +
-            "e.item_id IN @items OR NOT EXISTS (SELECT 1 FROM knowledge_entry_repositories r WHERE r.entry_id = e.id) " +
-            "OR EXISTS (SELECT 1 FROM knowledge_entry_repositories r WHERE r.entry_id = e.id AND r.repository_name = @repository)) " +
-            $"ORDER BY e.updated_at DESC, e.id LIMIT {MaxRelevantCandidates}",
-            new
-            {
-                projectId = context.ProjectId, kinds = context.Kinds.Select(JsonName).ToArray(),
-                items = context.ItemIds.Select(id => id.ToString()).ToArray(), repository = context.Repository ?? ""
-            },
-            cancellationToken: ct))).ToList();
-        var paths = (await ReadEntryPathsAsync(connection, null, candidates.Select(row => row.Id).ToList(), ct)).ToLookup(path => path.EntryId, path => path.Path);
-        var repositoryRows = candidates.Count == 0
-            ? []
-            : (await connection.QueryAsync<(Guid EntryId, string RepositoryName)>(new CommandDefinition(
-                "SELECT entry_id, repository_name FROM knowledge_entry_repositories WHERE entry_id IN @ids",
-                new { ids = candidates.Select(row => row.Id.ToString()).ToArray() }, cancellationToken: ct))).ToList();
-        var repositories = repositoryRows.ToLookup(row => row.EntryId, row => row.RepositoryName);
+        var parameters = new DynamicParameters();
+        parameters.Add("projectId", context.ProjectId);
+        parameters.Add("kinds", context.Kinds.Select(JsonName).ToArray());
+        parameters.Add("items", context.ItemIds.Select(id => id.ToString()).ToArray());
+        var repository = string.IsNullOrWhiteSpace(context.Repository) ? null : context.Repository.Trim();
+        parameters.Add("repository", repository ?? "");
+        const string active = "e.project_id = @projectId AND e.status = 'active' AND e.kind IN @kinds";
+        const string hasPaths = "EXISTS (SELECT 1 FROM knowledge_entry_paths kp WHERE kp.entry_id = e.id)";
+        const string unscoped = "NOT EXISTS (SELECT 1 FROM knowledge_entry_repositories r WHERE r.entry_id = e.id)";
+        const string inRepository = "EXISTS (SELECT 1 FROM knowledge_entry_repositories r WHERE r.entry_id = e.id AND r.repository_name = @repository)";
+        var notItem = context.ItemIds.Count == 0 ? "" : " AND (e.item_id IS NULL OR e.item_id NOT IN @items)";
 
         var ranked = new List<(KnowledgeEntryRow Row, int Tier, string Match)>();
-        foreach (var row in candidates)
+        if (context.ItemIds.Count > 0)
         {
-            var entryPaths = paths[row.Id].ToList();
-            if (row.ItemId is { } item && context.ItemIds.Contains(item))
+            foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
+                $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE {active} AND e.item_id IN @items ORDER BY e.updated_at DESC, e.id LIMIT {context.Limit}",
+                parameters, cancellationToken: ct)))
                 ranked.Add((row, 0, "item"));
-            else if (entryPaths.Count > 0)
-            {
-                // A path-scoped entry is relevant only to work on one of its paths.
-                if (entryPaths.Any(path => context.Paths.Any(query => KnowledgePaths.Covers(path, query))))
-                    ranked.Add((row, 1, "path"));
-            }
-            // An attempt belongs to the work it was tried on: only by item or path.
-            else if (row.Kind == JsonName(KnowledgeKind.Attempt))
-                continue;
-            else if (repositories[row.Id].Any())
-                ranked.Add((row, 2, "repository"));
-            else
-                ranked.Add((row, 3, "project"));
         }
+
+        if (context.Paths.Count > 0)
+        {
+            // Prefilter on each path's literal prefix (a superset of what Covers accepts), then match.
+            var clauses = new List<string>();
+            for (var index = 0; index < context.Paths.Count; index++)
+            {
+                clauses.Add($"@q{index} LIKE CONCAT(kp.prefix, '%') OR kp.prefix LIKE @qp{index}");
+                parameters.Add($"q{index}", context.Paths[index]);
+                parameters.Add($"qp{index}", EscapeLike(KnowledgePaths.Prefix(context.Paths[index])) + "%");
+            }
+
+            // A session without a repository matches path-scoped entries in any repository of the project.
+            var scope = repository is null ? "" : $" AND ({unscoped} OR {inRepository})";
+            var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
+                $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE {active}{notItem}{scope} AND EXISTS (SELECT 1 FROM knowledge_entry_paths kp " +
+                $"WHERE kp.entry_id = e.id AND ({string.Join(" OR ", clauses)})) ORDER BY e.updated_at DESC, e.id LIMIT {MaxRelevantCandidates}",
+                parameters, cancellationToken: ct))).ToList();
+            var paths = (await ReadEntryPathsAsync(connection, null, rows.Select(row => row.Id).ToList(), ct)).ToLookup(path => path.EntryId, path => path.Path);
+            foreach (var row in rows.Where(row => paths[row.Id].Any(path => context.Paths.Any(query => KnowledgePaths.Covers(path, query)))).Take(context.Limit))
+                ranked.Add((row, 1, "path"));
+        }
+
+        // Entries without paths: scoped to the repository, or project-wide. An attempt belongs to the
+        // work it was tried on, so only by item or path. A path-scoped entry is relevant only to its paths.
+        var wide = repository is null ? unscoped : $"({unscoped} OR {inRepository})";
+        foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
+            $"SELECT {KnowledgeColumns}, {unscoped} AS project_wide {KnowledgeFrom} WHERE {active}{notItem} AND e.kind <> 'attempt' AND NOT {hasPaths} AND {wide} " +
+            $"ORDER BY project_wide, e.updated_at DESC, e.id LIMIT {context.Limit}",
+            parameters, cancellationToken: ct)))
+            ranked.Add((row, row.ProjectWide != 0 ? 3 : 2, row.ProjectWide != 0 ? "project" : "repository"));
 
         return ranked
             .OrderBy(entry => entry.Tier)
@@ -722,7 +759,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     // ---- Import (§10.3) --------------------------------------------------------------------------
 
     public Task<ImportKnowledgeResult> ImportKnowledgeAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
-        IReadOnlyList<int>? accept, WorkActor actor, CancellationToken ct = default) =>
+        IReadOnlyList<int>? accept, string? keyHash, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -731,6 +768,14 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             var project = accept is null
                 ? await ReadProjectRowAsync(connection, transaction, projectId, ct) ?? throw WorkException.NotFound($"There is no project {projectId}.")
                 : await HoldProjectAsync(connection, transaction, projectId, ct);
+
+            // A repeated confirm (held project row: the first one has committed) answers the first result.
+            if (accept is not null && keyHash is not null &&
+                await FindKeyAsync(connection, transaction, projectId, ImportOperation, keyHash, ct) is { ResultJson: { } first })
+            {
+                await transaction.CommitAsync(ct);
+                return JsonSerializer.Deserialize<ImportKnowledgeResult>(first, WorkJson.Options)!;
+            }
 
             var outcomes = new List<ImportCandidateResult>();
             var seen = new Dictionary<(KnowledgeKind Kind, string Hash), int>();
@@ -761,12 +806,15 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             var stored = new Dictionary<Guid, KnowledgeRow>();
             foreach (var spec in specs)
                 stored[spec.Id] = ToRow((await ReadKnowledgeRowAsync(connection, transaction, spec.Id, ct))!);
-            await transaction.CommitAsync(ct);
 
-            return new ImportKnowledgeResult(true, previewToken, outcomes.Select(outcome =>
+            var result = new ImportKnowledgeResult(true, previewToken, outcomes.Select(outcome =>
                 accepted.Contains(outcome.Index)
                     ? outcome with { Outcome = ImportOutcomes.Stored, Entry = stored[candidates.First(candidate => candidate.Index == outcome.Index).Spec!.Id] }
                     : outcome).ToList());
+            if (keyHash is not null)
+                await InsertKeyAsync(connection, transaction, projectId, ImportOperation, keyHash, null, JsonSerializer.Serialize(result, WorkJson.Options), now, ct);
+            await transaction.CommitAsync(ct);
+            return result;
         }, ct);
 
     private async Task<ImportCandidateResult> PreviewCandidateAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project,

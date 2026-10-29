@@ -59,8 +59,17 @@ public static class KnowledgePaths
         return false;
     }
 
-    public static bool Matches(string glob, string path) =>
-        Regex.IsMatch(path, ToRegex(glob), RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    public static bool Matches(string glob, string path)
+    {
+        try
+        {
+            return Regex.IsMatch(path, ToRegex(glob), RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            throw WorkException.Invalid($"The glob '{glob}' took too long to match '{path}'; use a simpler glob (fewer '**' and '*').");
+        }
+    }
 
     private static string ToRegex(string glob)
     {

@@ -173,7 +173,7 @@ public sealed partial class WorkService(
 
         var handoff = request.Handoff is { } input ? ReadHandoff(input, "handoff") : null;
         var ended = await Store.EndSessionAsync(sessionId, itemId, handoff, knowledge, actor, ct);
-        return ended with { Recorded = await RecordedAsync(knowledge, ct) };
+        return ended with { Recorded = ended.Recorded ?? await RecordedAsync(knowledge, ct) };
     }
 
     private async Task<object> GetBriefingAsync(GetBriefingRequest request, WorkActor actor, CancellationToken ct)

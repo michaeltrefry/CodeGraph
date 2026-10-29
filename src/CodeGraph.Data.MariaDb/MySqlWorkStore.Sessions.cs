@@ -150,9 +150,18 @@ public sealed partial class MySqlWorkStore
             if (session.EndedAt is not null)
             {
                 // A repeat (say, after a lost answer): the session as it ended, nothing written again.
+                // Save points passed to an ended session must be the ones its end stored (a retry);
+                // new ones would be dropped silently, so they are refused.
+                IReadOnlyList<KnowledgeRow>? repeated = null;
+                if (knowledge is { Count: > 0 })
+                    repeated = await RequireRepeatedSavePointsAsync(connection, transaction, session, knowledge, ct);
                 await transaction.CommitAsync(ct);
-                return new EndSessionResult(ToView(session, now), []);
+                return new EndSessionResult(ToView(session, now), [], Recorded: repeated);
             }
+
+            // Save points (S5) reference the project: hold its row before the items' (project, items, knowledge).
+            if (knowledge is { Count: > 0 })
+                await HoldProjectAsync(connection, transaction, session.ProjectId, ct);
 
             var sessionActor = ActorOf(session);
             var held = (await connection.QueryAsync<Guid>(new CommandDefinition(

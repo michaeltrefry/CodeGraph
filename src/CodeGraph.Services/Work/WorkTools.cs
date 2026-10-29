@@ -108,7 +108,9 @@ public static class WorkTools
             "paths/globs and graph nodes, with confidence; supersedes replaces an active entry (it becomes superseded, linked to the new one). revise: a new " +
             "revision of an active entry. retract: mark one wrong (kept, status retracted). verify: re-baseline it against its files. Entries are never edited " +
             "in place; every write adds a revision. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
-            "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry." + Sessions + Errors,
+            "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry. record " +
+            "(entry, supersede, revise, retract, verify) writes no changes entry: the change feed covers projects, features and items; save points stored by " +
+            "update_work on one of those appear in its entry as a knowledge change." + Sessions + Errors,
             ReadOnly: false, Idempotent: false),
         new(Recall, "Recall Knowledge", typeof(RecallRequest),
             "Search the project's knowledge: by kind, repository, paths (an entry's path or glob covering one, or lying below one), graph nodes, item, " +
