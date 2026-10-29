@@ -125,6 +125,7 @@ public static class Startup
         services.AddTransient<IAssistantConfigurationService, AssistantConfigurationService>();
         services.AddTransient<IAssistantRunService, AssistantRunService>();
         services.AddTransient<IAssistantRetentionCleanupService, AssistantRetentionCleanupService>();
+        services.AddTransient<IWorkMessageRetentionService, WorkMessageRetentionService>();
         services.AddSingleton<IAssistantRunBackgroundRunner, AssistantRunBackgroundRunner>();
         services.AddTransient<CodeGraphDocGenerator>();
 

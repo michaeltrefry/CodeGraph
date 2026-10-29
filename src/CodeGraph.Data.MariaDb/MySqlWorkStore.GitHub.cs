@@ -142,7 +142,10 @@ public sealed partial class MySqlWorkStore
         if (hasPr)
         {
             parameters.Add("prHash", HashUrl(spec.PullRequestUrl!));
-            clauses.Add("EXISTS (SELECT 1 FROM work_item_links l WHERE l.item_id = i.id AND l.kind = 'pr' AND l.url_hash = @prHash)");
+            // An imported item (sc-27876) carries the historical PR links of its source tracker: a later
+            // event on such a PR must not move it, so links the import wrote do not match. The item is
+            // moved when an event names it (its sc-NNNN alias, or its key), or by a PR linked since.
+            clauses.Add("EXISTS (SELECT 1 FROM work_item_links l WHERE l.item_id = i.id AND l.kind = 'pr' AND l.url_hash = @prHash AND l.created_by NOT LIKE 'import:%')");
         }
 
         await using var connection = await OpenAsync(ct);
