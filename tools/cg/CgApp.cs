@@ -18,11 +18,20 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
 {
     public static readonly TimeSpan Deadline = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// The hard budget from entry to the answer: leaves the rest of the 2 s deadline for the
+    /// process start and for writing the one line. A watchdog enforces it, so a stuck DNS lookup or
+    /// a handler that ignores cancellation cannot hold the agent past it.
+    /// </summary>
+    public static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(1500);
+
     public const string Usage =
         "usage: cg brief [--budget N] [--item KEY] | cg inbox | cg end [--item KEY] [--done TEXT] [--next TEXT] [--decision TEXT]... " +
         "[--open TEXT]... [--correction TEXT]... [--branch NAME] [--commit SHA]\n" +
         "environment: CODEGRAPH_URL (API base URL), CODEGRAPH_TOKEN (personal access token), CODEGRAPH_PROJECT, CODEGRAPH_HARNESS, " +
-        "CODEGRAPH_MODEL, CODEGRAPH_INTENT, CODEGRAPH_REPOSITORY, CODEGRAPH_BRANCH, CODEGRAPH_SESSION_ID, CODEGRAPH_SESSION_FILE";
+        "CODEGRAPH_MODEL, CODEGRAPH_INTENT, CODEGRAPH_REPOSITORY, CODEGRAPH_BRANCH, CODEGRAPH_SESSION_ID, CODEGRAPH_SESSION_FILE, " +
+        "CODEGRAPH_HARNESS_SESSION (the harness's own session id, to keep one cg session per harness session; read from CLAUDE_CODE_SESSION_ID " +
+        "or CODEX_THREAD_ID when unset), CODEGRAPH_GIT (git executable)";
 
     private string? Env(string name) => environment.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value) ? value.Trim() : null;
 
@@ -34,28 +43,27 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
             return args.Length == 0 ? 2 : 0;
         }
 
-        Options options;
-        try
-        {
-            options = Options.Parse(args);
-        }
-        catch (ArgumentException exception)
-        {
-            error.WriteLine($"cg: {exception.Message}");
-            error.WriteLine(Usage);
-            return 2;
-        }
-
-        using var deadline = new CancellationTokenSource(Deadline);
+        // The watchdog starts here, before the arguments are read.
+        var watchdog = Task.Delay(Budget);
+        using var deadline = new CancellationTokenSource(Budget);
         var lines = new List<string>();
         try
         {
-            await (options.Command switch
+            var work = RunCommandAsync(args, lines, deadline.Token);
+            if (await Task.WhenAny(work, watchdog) != work)
             {
-                "brief" => BriefAsync(options, lines, deadline.Token),
-                "inbox" => InboxAsync(lines, deadline.Token),
-                _ => EndAsync(options, lines, deadline.Token)
-            });
+                // The work did not end in time (a lookup that ignores cancellation, say): give up on
+                // it, stop its git child, and say so in one line.
+                deadline.Cancel();
+                KillProbe();
+                lines = [Unreachable(new OperationCanceledException())];
+            }
+            else
+            {
+                var exit = await work;
+                if (exit != 0)
+                    return exit;
+            }
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or OperationCanceledException or IOException)
         {
@@ -77,12 +85,44 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         return 0;
     }
 
+    // Runs the command; 2 for a usage error (already reported), else 0.
+    private async Task<int> RunCommandAsync(string[] args, List<string> lines, CancellationToken ct)
+    {
+        Options options;
+        try
+        {
+            options = Options.Parse(args);
+        }
+        catch (ArgumentException exception)
+        {
+            error.WriteLine($"cg: {exception.Message}");
+            error.WriteLine(Usage);
+            return 2;
+        }
+
+        await (options.Command switch
+        {
+            "brief" => BriefAsync(options, lines, ct),
+            "inbox" => InboxAsync(lines, ct),
+            _ => EndAsync(options, lines, ct)
+        });
+        return 0;
+    }
+
     private string Unreachable(Exception exception)
     {
         var reason = exception is TaskCanceledException or OperationCanceledException
             ? $"no answer within {Deadline.TotalSeconds:0} s"
             : exception.InnerException?.Message ?? exception.Message;
-        return $"codegraph: unreachable at {Env("CODEGRAPH_URL")} ({OneLine(reason)})";
+        return $"codegraph: unreachable at {DisplayUrl(Env("CODEGRAPH_URL"))} ({OneLine(reason)})";
+    }
+
+    // The URL without userinfo, query or fragment: a token or password in it is never echoed.
+    private static string DisplayUrl(string? url)
+    {
+        if (url is null || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return "CODEGRAPH_URL";
+        return $"{uri.Scheme}://{uri.Host}{(uri.IsDefaultPort ? "" : ":" + uri.Port)}{uri.AbsolutePath}";
     }
 
     // ---- Commands -------------------------------------------------------------------------------
@@ -108,8 +148,9 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
                 return;
             }
 
-            // An ended, unknown or foreign session: start a new one below. Anything else is reported.
-            if (status is not (400 or 404))
+            // An unknown, ended or foreign session (the API's session_unusable reason): start a new
+            // one below. Any other refusal (an unknown --item, say) is reported and the session kept.
+            if (status is not (400 or 404) || body?["reason"]?.GetValue<string>() != "session_unusable")
                 throw ApiException.From(status, body);
         }
 
@@ -250,10 +291,22 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
 
     // ---- Session file and environment -----------------------------------------------------------
 
+    private string Harness() => Env("CODEGRAPH_HARNESS") ?? DetectHarness();
+
+    // The harness's own session id, so two sessions of one harness in one checkout stay apart too.
+    // CLAUDE_CODE_SESSION_ID is set in Claude Code's shell, CODEX_THREAD_ID in Codex's.
+    private string? HarnessSession() =>
+        Env("CODEGRAPH_HARNESS_SESSION") ?? Env("CLAUDE_CODE_SESSION_ID") ?? Env("CODEX_THREAD_ID") ?? Env("CODEX_SESSION_ID");
+
     private string SessionFile() =>
         Env("CODEGRAPH_SESSION_FILE") ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codegraph", "sessions",
-            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Directory.GetCurrentDirectory())))[..16]);
+            Env("HOME") ?? Env("USERPROFILE") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codegraph", "sessions",
+            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"{Harness()}\n{HarnessSession()}\n{Directory.GetCurrentDirectory()}")))[..16]);
+
+    // Next to the session file: the harness that started the session, so a file shared by another
+    // harness is never reused for this one.
+    private string HarnessFile() => SessionFile() + ".harness";
 
     private string? ReadSessionId()
     {
@@ -262,7 +315,12 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         try
         {
             var file = SessionFile();
-            return File.Exists(file) && File.ReadAllText(file).Trim() is { Length: > 0 } id ? id : null;
+            if (!File.Exists(file) || File.ReadAllText(file).Trim() is not { Length: > 0 } id)
+                return null;
+            var harnessFile = HarnessFile();
+            if (File.Exists(harnessFile) && File.ReadAllText(harnessFile).Trim() != Harness())
+                return null;
+            return id;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -275,8 +333,13 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         try
         {
             var file = SessionFile();
-            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-            File.WriteAllText(file, sessionId + "\n");
+            var directory = Path.GetDirectoryName(file)!;
+            if (OperatingSystem.IsWindows())
+                Directory.CreateDirectory(directory);
+            else
+                Directory.CreateDirectory(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            WritePrivate(file, sessionId + "\n");
+            WritePrivate(HarnessFile(), Harness() + "\n");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -284,11 +347,34 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         }
     }
 
+    // Owner-only (0600) on Unix, also for a file that already existed.
+    private static void WritePrivate(string file, string text)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(file, text);
+            return;
+        }
+
+        using (var stream = new FileStream(file, new FileStreamOptions
+        {
+            Mode = FileMode.Create,
+            Access = FileAccess.Write,
+            UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+        }))
+        {
+            stream.Write(Encoding.UTF8.GetBytes(text));
+        }
+
+        File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+
     private void DeleteSessionFile()
     {
         try
         {
             File.Delete(SessionFile());
+            File.Delete(HarnessFile());
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -300,43 +386,54 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         : environment.Keys.Any(name => name.StartsWith("CODEX_", StringComparison.Ordinal)) ? "codex"
         : "shell";
 
-    // The repository (top-level folder name), branch and worktree from git, within the deadline.
-    private static async Task<(string? Repository, string? Branch, string? Worktree)> ProbeGitAsync(CancellationToken ct)
+    private Process? probe;
+
+    private void KillProbe()
     {
         try
         {
-            using var process = Process.Start(new ProcessStartInfo("git", "rev-parse --show-toplevel --abbrev-ref HEAD")
+            probe?.Kill(entireProcessTree: true);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+        }
+    }
+
+    // The repository (top-level folder name), branch and worktree from git, within the deadline.
+    // The git child is killed whenever it has not finished by then: at its own 700 ms limit, at the
+    // overall deadline or when the watchdog gives up.
+    private async Task<(string? Repository, string? Branch, string? Worktree)> ProbeGitAsync(CancellationToken ct)
+    {
+        try
+        {
+            probe = Process.Start(new ProcessStartInfo(Env("CODEGRAPH_GIT") ?? "git", "rev-parse --show-toplevel --abbrev-ref HEAD")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false
             });
-            if (process is null)
+            if (probe is null)
                 return (null, null, null);
 
-            using var probe = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            probe.CancelAfter(TimeSpan.FromMilliseconds(700));
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limit.CancelAfter(TimeSpan.FromMilliseconds(700));
             try
             {
-                var text = await process.StandardOutput.ReadToEndAsync(probe.Token);
-                await process.WaitForExitAsync(probe.Token);
-                if (process.ExitCode != 0)
+                var text = await probe.StandardOutput.ReadToEndAsync(limit.Token);
+                await probe.WaitForExitAsync(limit.Token);
+                if (probe.ExitCode != 0)
                     return (null, null, null);
                 var parts = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 var top = parts.Length > 0 ? parts[0] : null;
                 var branch = parts.Length > 1 && parts[1] != "HEAD" ? parts[1] : null;
                 return (top is null ? null : Path.GetFileName(top), branch, top);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                try
-                {
-                    process.Kill();
-                }
-                catch (InvalidOperationException)
-                {
-                }
-
+                KillProbe();
+                // Past the overall deadline the caller gives up; at the probe's own limit the
+                // brief goes on without git's answer.
+                ct.ThrowIfCancellationRequested();
                 return (null, null, null);
             }
         }

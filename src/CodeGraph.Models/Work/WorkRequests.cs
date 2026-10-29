@@ -164,6 +164,9 @@ public sealed class GetWorkRequest : ISessionArguments
 
     [Description("Key (SW, SW-142, SW-F12) or id of a project, feature or item.")]
     public required string Id { get; init; }
+
+    [Description("summary (default): an item carries its latest handoff and handoff_count. full: an item carries its whole handoff history, newest first.")]
+    public WorkDetail? Detail { get; init; }
 }
 
 public sealed class FindWorkRequest : ISessionArguments

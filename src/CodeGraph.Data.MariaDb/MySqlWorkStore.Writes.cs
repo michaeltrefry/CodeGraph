@@ -456,11 +456,19 @@ public sealed partial class MySqlWorkStore
 
             var status = effective.Status ?? before.Status;
             var claimFields = ApplyClaim(beforeRow, effective.Claim, status, actor, now);
-            if (actor.SessionId is { } claimingSession)
+            // Finishing an item (by anyone) ends every session's claim on it: a session that held it
+            // and writes later is not told claim_lost for a claim that was never taken from it (E1).
+            if (WorkStatuses.IsFinished(status))
+            {
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE work_session_claims SET released_at = @now WHERE item_id = @itemId AND released_at IS NULL",
+                    new { itemId, now }, transaction, cancellationToken: ct));
+            }
+            else if (actor.SessionId is { } claimingSession)
             {
                 if (effective.Claim is { Action: ClaimAction.Claim })
                     await OpenSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
-                else if (effective.Claim is { Action: ClaimAction.Release } || WorkStatuses.IsFinished(status))
+                else if (effective.Claim is { Action: ClaimAction.Release })
                     await CloseSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
             }
 

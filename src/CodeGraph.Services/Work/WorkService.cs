@@ -78,17 +78,24 @@ public sealed class WorkService(
 
         // The heartbeat (§5.4): a call carrying a session renews it and its live claims first, and
         // everything the call writes is attributed to that session.
+        SessionView? session = null;
         if (request is ISessionArguments { SessionId: { } sessionId })
-            actor = await Store.TouchSessionAsync(SessionIdOf(sessionId), actor, ct);
+        {
+            var id = SessionIdOf(sessionId);
+            actor = await Store.TouchSessionAsync(id, actor, ct);
+            // A session works within its project (E2); the briefing and end_session see only that project.
+            if (request is not GetBriefingRequest)
+                session = await Store.GetSessionAsync(id, ct);
+        }
 
         return request switch
         {
-            CreateWorkRequest create => await CreateAsync(arguments, create, actor, ct),
-            GetWorkRequest get => await GetAsync(get, ct),
-            FindWorkRequest find => await FindAsync(find, ct),
-            UpdateWorkRequest update => await UpdateAsync(update, actor, ct),
-            NextWorkRequest next => await NextAsync(next, actor, ct),
-            ChangesRequest changes => await ChangesAsync(changes, ct),
+            CreateWorkRequest create => await CreateAsync(arguments, create, actor, session, ct),
+            GetWorkRequest get => await GetAsync(get, session, ct),
+            FindWorkRequest find => await FindAsync(find, session, ct),
+            UpdateWorkRequest update => await UpdateAsync(update, actor, session, ct),
+            NextWorkRequest next => await NextAsync(next, actor, session, ct),
+            ChangesRequest changes => await ChangesAsync(changes, session, ct),
             GetBriefingRequest briefing => await GetBriefingAsync(briefing, actor, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
@@ -99,7 +106,7 @@ public sealed class WorkService(
     private static Guid SessionIdOf(string value) =>
         Guid.TryParse(value.Trim(), out var id)
             ? id
-            : throw WorkException.Invalid($"session_id '{value}' is not a session id; pass the id start_session answered.");
+            : throw WorkException.SessionUnusable(WorkErrorCodes.InvalidArgument, $"session_id '{value}' is not a session id; pass the id start_session answered.");
 
     private async Task<object> StartSessionAsync(StartSessionRequest request, WorkActor actor, CancellationToken ct)
     {
@@ -138,7 +145,7 @@ public sealed class WorkService(
     {
         var sessionId = SessionIdOf(request.SessionId);
         var session = await Store.GetSessionAsync(sessionId, ct)
-            ?? throw WorkException.NotFound($"There is no session {sessionId}.");
+            ?? throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}.");
         if (request.Item is not null && request.Handoff is null)
             throw WorkException.Invalid("item names the item a handoff is about; pass handoff with it. Nothing was changed.");
 
@@ -208,7 +215,7 @@ public sealed class WorkService(
 
     // ---- create_work -------------------------------------------------------------------------
 
-    private async Task<object> CreateAsync(JsonElement raw, CreateWorkRequest request, WorkActor actor, CancellationToken ct)
+    private async Task<object> CreateAsync(JsonElement raw, CreateWorkRequest request, WorkActor actor, SessionView? session, CancellationToken ct)
     {
         var chosen = new[]
         {
@@ -230,6 +237,7 @@ public sealed class WorkService(
         }
 
         var project = await RequireProjectAsync(request.Project, "project", ct);
+        await RequireSessionProjectAsync(session, project.Id, ct);
         if (request.Feature is { } feature)
         {
             var created = await Store.CreateFeatureAsync(project.Id, ReadFeature(feature, "feature"), actor, keyHash, ct);
@@ -378,18 +386,19 @@ public sealed class WorkService(
 
     // ---- get_work / find_work ----------------------------------------------------------------
 
-    private async Task<object> GetAsync(GetWorkRequest request, CancellationToken ct)
+    private async Task<object> GetAsync(GetWorkRequest request, SessionView? session, CancellationToken ct)
     {
         var target = await RequireAsync(request.Id, "id", ct);
+        await RequireSessionProjectAsync(session, target.ProjectId, ct);
         return target.Kind switch
         {
             WorkEntityKind.Project => await Store.GetProjectAsync(target.Id, ct),
             WorkEntityKind.Feature => await Store.GetFeatureAsync(target.Id, ct),
-            _ => (object?)await Store.GetItemAsync(target.Id, ct)
+            _ => (object?)await Store.GetItemAsync(target.Id, request.Detail == WorkDetail.Full, ct)
         } ?? throw WorkException.NotFound($"There is no project, feature or item '{request.Id}'.");
     }
 
-    private async Task<object> FindAsync(FindWorkRequest request, CancellationToken ct)
+    private async Task<object> FindAsync(FindWorkRequest request, SessionView? session, CancellationToken ct)
     {
         var kind = request.Kind ?? WorkEntityKind.Item;
         var limit = request.Limit ?? WorkLimits.DefaultPageSize;
@@ -414,6 +423,7 @@ public sealed class WorkService(
         else
         {
             project = await RequireProjectAsync(request.Project, "project", ct);
+            await RequireSessionProjectAsync(session, project.Id, ct);
         }
 
         Guid? featureId = request.Feature is { } feature ? (await RequireOfProjectAsync(feature, WorkEntityKind.Feature, project!, "feature", ct)).Id : null;
@@ -447,9 +457,10 @@ public sealed class WorkService(
         "add_links", "remove_links", "comment", "claim", "renew_claim", "release_claim", "handoff", "clear"
     ];
 
-    private async Task<object> UpdateAsync(UpdateWorkRequest request, WorkActor actor, CancellationToken ct)
+    private async Task<object> UpdateAsync(UpdateWorkRequest request, WorkActor actor, SessionView? session, CancellationToken ct)
     {
         var target = await RequireAsync(request.Id, "id", ct);
+        await RequireSessionProjectAsync(session, target.ProjectId, ct);
         // The fields this call sets: everything it passed with a value, besides the address.
         var passed = JsonSerializer.SerializeToNode(request, WorkJson.Options)!.AsObject()
             .Select(property => property.Key)
@@ -560,9 +571,10 @@ public sealed class WorkService(
 
     // ---- next_work ---------------------------------------------------------------------------
 
-    private async Task<object> NextAsync(NextWorkRequest request, WorkActor actor, CancellationToken ct)
+    private async Task<object> NextAsync(NextWorkRequest request, WorkActor actor, SessionView? session, CancellationToken ct)
     {
         var project = await RequireProjectAsync(request.Project, "project", ct);
+        await RequireSessionProjectAsync(session, project.Id, ct);
         var marker = ClaimMarker(request.Marker, actor, "marker");
         await RefuseSessionMarkerAsync(marker, actor, "marker", ct);
         return await Store.NextWorkAsync(new NextWorkSpec(
@@ -578,7 +590,7 @@ public sealed class WorkService(
 
     // ---- changes -----------------------------------------------------------------------------
 
-    private async Task<object> ChangesAsync(ChangesRequest request, CancellationToken ct)
+    private async Task<object> ChangesAsync(ChangesRequest request, SessionView? session, CancellationToken ct)
     {
         var limit = request.Limit ?? WorkLimits.DefaultPageSize;
         if (limit is < 1 or > WorkLimits.MaxPageSize)
@@ -590,6 +602,8 @@ public sealed class WorkService(
             throw WorkException.Invalid("Pass cursor or from_start, not both.");
 
         Guid? projectId = request.Project is { } project ? (await RequireProjectAsync(project, "project", ct)).Id : null;
+        if (projectId is { } scoped)
+            await RequireSessionProjectAsync(session, scoped, ct);
 
         long after;
         if (request.Cursor is { } cursor)
@@ -625,6 +639,17 @@ public sealed class WorkService(
     }
 
     // ---- Resolution --------------------------------------------------------------------------
+
+    /// <summary>A session works within its project (E2): a call naming another project's work is refused.</summary>
+    private async Task RequireSessionProjectAsync(SessionView? session, Guid projectId, CancellationToken ct)
+    {
+        if (session is null || session.ProjectId == projectId)
+            return;
+        var other = await Store.GetProjectAsync(projectId, ct);
+        throw WorkException.Invalid(
+            $"session_id belongs to a session of project {session.ProjectKey}, but this call is about project {other?.Key ?? projectId.ToString()}. " +
+            "A session works within its own project; start a session for the other project. Nothing was changed.");
+    }
 
     private async Task<WorkTarget> RequireAsync(string idOrKey, string argument, CancellationToken ct)
     {

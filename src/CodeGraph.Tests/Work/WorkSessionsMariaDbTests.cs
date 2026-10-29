@@ -372,4 +372,157 @@ public sealed class WorkSessionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
             cut.GetProperty("truncated").EnumerateArray().Select(name => name.GetString()).ShouldContain("other_sessions");
         }
     }
+
+    [Fact]
+    public async Task A_returning_session_that_lost_its_item_cannot_write_its_handoff_onto_it_but_may_onto_an_unclaimed_one()
+    {
+        var project = await db.NewProjectAsync("EL");
+        var key = (await db.NewItemAsync(project, "Recovered elsewhere")).GetProperty("key").GetString()!;
+        var first = await StartAsync(project, "claude-code");
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = first }, "michael");
+        await UpdateAsSessionAsync(key, first, new { status = "in_progress" });
+        db.Clock.Advance(PastIdle);
+
+        var second = await StartAsync(project, "codex", user: "bob");
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = second }, "bob");
+
+        // The killed session returns and ends: refused claim_lost naming bob, nothing written.
+        var lost = await db.RefusedAsync(WorkTools.EndSession, new { session_id = first, handoff = new { done = "Stale view of the world." }, item = key }, "michael");
+        lost.Code.ShouldBe(WorkErrorCodes.ClaimLost);
+        lost.Message.ShouldContain("bob");
+        lost.Message.ShouldContain(second);
+        var item = await db.CallAsync(WorkTools.GetWork, new { id = key });
+        item.TryGetProperty("handoffs", out _).ShouldBeFalse();
+        item.GetProperty("claim").GetProperty("session_id").GetString().ShouldBe(second);
+        // Without naming the item, the one the session held is the target: the same refusal.
+        (await db.RefusedAsync(WorkTools.EndSession, new { session_id = first, handoff = new { done = "Still stale." } }, "michael")).Code.ShouldBe(WorkErrorCodes.ClaimLost);
+        // The session was not ended by the refusal, and may end without a handoff on that item.
+        (await db.CallAsync(WorkTools.EndSession, new { session_id = first }, "michael")).GetProperty("session").GetProperty("live").GetBoolean().ShouldBeFalse();
+
+        // An item that merely went unclaimed still takes the handoff.
+        var quiet = (await db.NewItemAsync(project, "Quiet")).GetProperty("key").GetString()!;
+        var third = await StartAsync(project, "claude-code");
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = third }, "michael");
+        db.Clock.Advance(PastIdle);
+        var handed = await db.CallAsync(WorkTools.EndSession, new { session_id = third, handoff = new { done = "Written to an unclaimed item." }, item = quiet }, "michael");
+        handed.GetProperty("handoff").GetProperty("done").GetString().ShouldBe("Written to an unclaimed item.");
+    }
+
+    [Fact]
+    public async Task An_item_finished_by_someone_else_does_not_make_the_holders_next_write_claim_lost()
+    {
+        var project = await db.NewProjectAsync("FN");
+        var key = (await db.NewItemAsync(project, "Finished by bob")).GetProperty("key").GetString()!;
+        var first = await StartAsync(project, "claude-code");
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = first }, "michael");
+        await UpdateAsSessionAsync(key, first, new { status = "in_progress" });
+        db.Clock.Advance(PastIdle);
+
+        var second = await StartAsync(project, "codex", user: "bob");
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = second }, "bob");
+        await UpdateAsSessionAsync(key, second, new { status = "complete" }, "bob");
+
+        // E1: claim_lost means a claim taken from the session. Finishing the item closed every
+        // session's claim on it, so the first session's write is an ordinary write.
+        var commented = await UpdateAsSessionAsync(key, first, new { comment = "Late note." });
+        commented.GetProperty("status").GetString().ShouldBe("complete");
+        commented.GetProperty("comments").GetArrayLength().ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task An_in_progress_item_that_was_never_claimed_is_not_recoverable_but_a_lapsed_one_is()
+    {
+        var project = await db.NewProjectAsync("NR");
+        var moved = (await db.NewItemAsync(project, "Moved by hand", status: "in_progress")).GetProperty("key").GetString()!;
+        var session = await StartAsync(project, "claude-code");
+
+        var next = await db.CallAsync(WorkTools.NextWork, new { project, session_id = session }, "michael");
+        next.TryGetProperty("item", out _).ShouldBeFalse();
+        next.GetProperty("reason").GetString().ShouldBe("no_ready_work");
+        var briefing = await db.CallAsync(WorkTools.GetBriefing, new { session_id = session, item = moved }, "michael");
+        briefing.TryGetProperty("suggested_next", out _).ShouldBeFalse();
+        briefing.GetProperty("focus").TryGetProperty("recoverable", out _).ShouldBeFalse();
+
+        // An item that was claimed, moved on and lapsed is offered, labelled recovered.
+        var worked = (await db.NewItemAsync(project, "Claimed then lost")).GetProperty("key").GetString()!;
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = session }, "michael");
+        await UpdateAsSessionAsync(worked, session, new { status = "in_progress" });
+        db.Clock.Advance(PastIdle);
+        var other = await StartAsync(project, "codex", user: "bob");
+        var recovered = await db.CallAsync(WorkTools.NextWork, new { project, session_id = other }, "bob");
+        recovered.GetProperty("item").GetProperty("key").GetString().ShouldBe(worked);
+        recovered.TryGetProperty("recovery", out _).ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Write_answers_carry_the_latest_handoff_and_a_count_and_the_whole_history_only_on_request()
+    {
+        var project = await db.NewProjectAsync("HO");
+        var key = (await db.NewItemAsync(project, "Many handoffs")).GetProperty("key").GetString()!;
+        var session = await StartAsync(project, "claude-code");
+        await db.CallAsync(WorkTools.NextWork, new { project, session_id = session }, "michael");
+        JsonElement last = default;
+        for (var round = 1; round <= 3; round++)
+            last = await UpdateAsSessionAsync(key, session, new { status = "in_progress", handoff = new { done = $"Round {round}." } });
+
+        last.GetProperty("handoff_count").GetInt32().ShouldBe(3);
+        last.GetProperty("handoffs").EnumerateArray().Select(handoff => handoff.GetProperty("done").GetString()).ShouldBe(["Round 3."]);
+
+        var summary = await db.CallAsync(WorkTools.GetWork, new { id = key });
+        summary.GetProperty("handoff_count").GetInt32().ShouldBe(3);
+        summary.GetProperty("handoffs").GetArrayLength().ShouldBe(1);
+        var listed = await db.CallAsync(WorkTools.FindWork, new { project, detail = "full" });
+        listed.GetProperty("items").EnumerateArray().Single().GetProperty("handoffs").GetArrayLength().ShouldBe(1);
+
+        var full = await db.CallAsync(WorkTools.GetWork, new { id = key, detail = "full" });
+        full.GetProperty("handoff_count").GetInt32().ShouldBe(3);
+        full.GetProperty("handoffs").EnumerateArray().Select(handoff => handoff.GetProperty("done").GetString()).ShouldBe(["Round 3.", "Round 2.", "Round 1."]);
+    }
+
+    [Fact]
+    public async Task A_session_works_only_within_its_own_project_and_the_refusal_names_both()
+    {
+        var home = await db.NewProjectAsync("HP");
+        var away = await db.NewProjectAsync("AW");
+        var foreignItem = (await db.NewItemAsync(away, "Not yours")).GetProperty("key").GetString()!;
+        var session = await StartAsync(home, "claude-code");
+
+        var calls = new (string Tool, object Arguments)[]
+        {
+            (WorkTools.GetWork, new { id = foreignItem, session_id = session }),
+            (WorkTools.NextWork, new { project = away, session_id = session }),
+            (WorkTools.UpdateWork, new { id = foreignItem, expected_version = 1, session_id = session, claim = new { } }),
+            (WorkTools.FindWork, new { project = away, session_id = session }),
+            (WorkTools.CreateWork, new { project = away, item = new { title = "x" }, session_id = session }),
+            (WorkTools.Changes, new { project = away, session_id = session })
+        };
+        foreach (var (tool, arguments) in calls)
+        {
+            var refused = await db.RefusedAsync(tool, arguments, "michael");
+            refused.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+            refused.Message.ShouldContain(home);
+            refused.Message.ShouldContain(away);
+        }
+
+        // Nothing was claimed in the other project, and the same calls without a session are fine.
+        (await db.CallAsync(WorkTools.GetWork, new { id = foreignItem })).TryGetProperty("claim", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task A_refusal_to_use_a_session_is_marked_so_clients_can_tell_it_from_other_refusals()
+    {
+        var project = await db.NewProjectAsync("SU");
+        var session = await StartAsync(project, "claude-code");
+
+        (await db.RefusedAsync(WorkTools.GetBriefing, new { session_id = Guid.NewGuid().ToString() }, "michael")).Reason.ShouldBe(WorkErrorReasons.SessionUnusable);
+        (await db.RefusedAsync(WorkTools.GetBriefing, new { session_id = session }, "mallory")).Reason.ShouldBe(WorkErrorReasons.SessionUnusable);
+        (await db.RefusedAsync(WorkTools.GetBriefing, new { session_id = "nope" }, "michael")).Reason.ShouldBe(WorkErrorReasons.SessionUnusable);
+        await db.CallAsync(WorkTools.EndSession, new { session_id = session }, "michael");
+        (await db.RefusedAsync(WorkTools.GetBriefing, new { session_id = session }, "michael")).Reason.ShouldBe(WorkErrorReasons.SessionUnusable);
+
+        var live = await StartAsync(project, "codex");
+        var unknownItem = await db.RefusedAsync(WorkTools.GetBriefing, new { session_id = live, item = "SU-9999" }, "michael");
+        unknownItem.Code.ShouldBe(WorkErrorCodes.NotFound);
+        unknownItem.Reason.ShouldBeNull();
+    }
 }

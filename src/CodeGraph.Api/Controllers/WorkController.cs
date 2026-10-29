@@ -233,7 +233,7 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
 
     private static ContentResult Refuse(WorkException exception, int? status = null) => new()
     {
-        Content = JsonSerializer.Serialize(new WorkError(exception.Code, exception.Message, exception.Current), WorkJson.Options),
+        Content = JsonSerializer.Serialize(new WorkError(exception.Code, exception.Message, exception.Current, exception.Reason), WorkJson.Options),
         ContentType = "application/json",
         StatusCode = status ?? StatusFor(exception.Code)
     };

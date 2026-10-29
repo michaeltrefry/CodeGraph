@@ -34,7 +34,8 @@ public interface IWorkStore
 
     Task<FeatureView?> GetFeatureAsync(Guid featureId, CancellationToken ct = default);
 
-    Task<ItemView?> GetItemAsync(Guid itemId, CancellationToken ct = default);
+    /// <summary>An item with its latest handoff and the handoff count, or, with <paramref name="fullHandoffs"/>, every handoff.</summary>
+    Task<ItemView?> GetItemAsync(Guid itemId, bool fullHandoffs, CancellationToken ct = default);
 
     Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default);
 

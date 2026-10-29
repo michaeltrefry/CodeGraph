@@ -44,7 +44,7 @@ public static class WorkTools
             ReadOnly: false, Idempotent: true),
         new(GetWork, "Get Work", typeof(GetWorkRequest),
             "Get one project, feature or item by key (SW, SW-F12, SW-142) or id, in full: an item with its blockers and dependents (and their status), " +
-            "derived blocked state (blocked_reason waiting, or cancelled_prerequisite when a blocker is closed), live claim, links and comments; a feature with " +
+            "derived blocked state (blocked_reason waiting, or cancelled_prerequisite when a blocker is closed), live claim, links, comments, its latest handoff and handoff_count (detail full: every handoff, newest first); a feature with " +
             "its documents and item counts; a project with its goals, repositories and item counts. Every object carries version, the expected_version of update_work." + Errors,
             ReadOnly: true, Idempotent: true),
         new(FindWork, "Find Work", typeof(FindWorkRequest),
@@ -84,7 +84,7 @@ public static class WorkTools
             "default) is presumed dead and its claims lapse. The briefing is data within budget_tokens (default 1500): the project and its goals, the items " +
             "this session holds with their latest handoff, the other live sessions of the project and what they hold, and one suggested next item (recoverable " +
             "first); empty sections are left out and truncated names sections the budget shortened." + Errors,
-            ReadOnly: false, Idempotent: true),
+            ReadOnly: false, Idempotent: false),
         new(EndSession, "End Session", typeof(EndSessionRequest),
             "End a session: record the handoff (done, decisions, open issues, corrections, next action, branch, commit) on item, or on the one item the session " +
             "holds, and release every claim of the session. An in-progress item it released is then recoverable by the next session, with the handoff. Answers " +
@@ -93,7 +93,7 @@ public static class WorkTools
         new(GetBriefing, "Get Briefing", typeof(GetBriefingRequest),
             "Fetch the session's briefing again (for example after context compaction), optionally including one item (focus) with its latest handoff. Same " +
             "sections and budget rules as start_session. Renews the session's heartbeat." + Errors,
-            ReadOnly: true, Idempotent: true)
+            ReadOnly: false, Idempotent: true)
     ];
 
     public static WorkToolDefinition? Find(string name) => All.FirstOrDefault(tool => tool.Name == name);

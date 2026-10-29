@@ -90,7 +90,8 @@ public sealed record ItemView(
     string CreatedBy,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    IReadOnlyList<HandoffView>? Handoffs = null)
+    IReadOnlyList<HandoffView>? Handoffs = null,
+    int? HandoffCount = null)
 {
     public string Kind => "item";
 }
@@ -146,4 +147,4 @@ public sealed record ChangeView(
 
 public sealed record ChangesResult(IReadOnlyList<ChangeView> Items, string NextCursor);
 
-public sealed record WorkError(string Code, string Message, object? Current = null);
+public sealed record WorkError(string Code, string Message, object? Current = null, string? Reason = null);

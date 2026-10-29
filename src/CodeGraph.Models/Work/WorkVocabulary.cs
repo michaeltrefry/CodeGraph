@@ -85,13 +85,28 @@ public static class WorkErrorCodes
 public sealed class WorkStoreUnavailableException()
     : InvalidOperationException("Work tracking needs the MariaDB storage provider; this deployment runs without it.");
 
-/// <summary>A refused work call. <see cref="Code"/> is one of <see cref="WorkErrorCodes"/>.</summary>
-public sealed class WorkException(string code, string message, object? current = null) : Exception(message)
+/// <summary>Sub-reasons a refusal may carry besides its code (see <see cref="WorkException.Reason"/>).</summary>
+public static class WorkErrorReasons
 {
+    public const string SessionUnusable = "session_unusable";
+}
+
+/// <summary>A refused work call. <see cref="Code"/> is one of <see cref="WorkErrorCodes"/>.</summary>
+public sealed class WorkException(string code, string message, object? current = null, string? reason = null) : Exception(message)
+{
+    /// <summary>
+    /// A stable sub-reason of the code, outside the closed code vocabulary, for the refusals a client
+    /// acts on: <see cref="WorkErrorReasons.SessionUnusable"/>.
+    /// </summary>
+    public string? Reason { get; } = reason;
+
     public string Code { get; } = code;
 
     /// <summary>The object as it is now, for a <c>conflict</c> on <c>expected_version</c>.</summary>
     public object? Current { get; } = current;
+
+    /// <summary>The session in session_id cannot be used: unknown, ended, malformed or another identity's.</summary>
+    public static WorkException SessionUnusable(string code, string message) => new(code, message, reason: WorkErrorReasons.SessionUnusable);
 
     public static WorkException Invalid(string message) => new(WorkErrorCodes.InvalidArgument, message);
 

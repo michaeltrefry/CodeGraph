@@ -309,7 +309,7 @@ public sealed class WorkContractTests
         public Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default) => throw Fail();
         public Task<ProjectView?> GetProjectAsync(Guid projectId, CancellationToken ct = default) => throw Fail();
         public Task<FeatureView?> GetFeatureAsync(Guid featureId, CancellationToken ct = default) => throw Fail();
-        public Task<ItemView?> GetItemAsync(Guid itemId, CancellationToken ct = default) => throw Fail();
+        public Task<ItemView?> GetItemAsync(Guid itemId, bool fullHandoffs, CancellationToken ct = default) => throw Fail();
         public Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default) => throw Fail();
         public Task<long> GetChangeHeadAsync(CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<ChangeView>> ReadChangesAsync(Guid? projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();

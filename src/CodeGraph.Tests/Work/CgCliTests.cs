@@ -156,6 +156,291 @@ public sealed class CgCliTests
         }
     }
 
+    private static Dictionary<string, string?> HomeEnv(string home, string harness, string? harnessSession = null)
+    {
+        var environment = Env("http://codegraph.test");
+        environment.Remove("CODEGRAPH_SESSION_FILE");
+        environment["HOME"] = home;
+        environment["CODEGRAPH_HARNESS"] = harness;
+        if (harnessSession is not null)
+            environment["CODEGRAPH_HARNESS_SESSION"] = harnessSession;
+        return environment;
+    }
+
+    private static string NewHome() => Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"cg-home-{Guid.NewGuid():N}")).FullName;
+
+    private static StubHandler SessionServer(List<string> requests) => new(request =>
+    {
+        requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+        var id = request.Method == HttpMethod.Post ? Guid.NewGuid().ToString() : request.RequestUri.Segments[^2].TrimEnd('/');
+        var briefing = "{\"session_id\":\"" + id + "\",\"budget_tokens\":1500,\"estimated_tokens\":10,\"project\":{\"key\":\"SW\",\"name\":\"SceneWorks\"}}";
+        return (HttpStatusCode.OK, request.Method == HttpMethod.Post ? "{\"created\":true,\"session\":{\"id\":\"" + id + "\"},\"briefing\":" + briefing + "}" : briefing);
+    });
+
+    [Fact]
+    public async Task Two_harnesses_in_one_checkout_get_distinct_sessions_and_each_is_reused_by_its_own_harness()
+    {
+        var home = NewHome();
+        var requests = new List<string>();
+        var handler = SessionServer(requests);
+        try
+        {
+            var claude = (await RunAsync(HomeEnv(home, "claude-code"), handler, "brief")).Lines[0];
+            var codex = (await RunAsync(HomeEnv(home, "codex"), handler, "brief")).Lines[0];
+            claude.ShouldNotBe(codex);
+            requests.ShouldBe(["POST /api/work/sessions", "POST /api/work/sessions"]);
+
+            // Each harness finds its own session again.
+            (await RunAsync(HomeEnv(home, "claude-code"), handler, "brief")).Lines[0].ShouldBe(claude);
+            (await RunAsync(HomeEnv(home, "codex"), handler, "brief")).Lines[0].ShouldBe(codex);
+            requests.Count(request => request.StartsWith("GET")).ShouldBe(2);
+
+            // Two sessions of one harness (the harness's own session ids) stay apart too.
+            var other = (await RunAsync(HomeEnv(home, "claude-code", "claude-session-2"), handler, "brief")).Lines[0];
+            other.ShouldNotBe(claude);
+            (await RunAsync(HomeEnv(home, "claude-code", "claude-session-2"), handler, "brief")).Lines[0].ShouldBe(other);
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task The_harnesses_own_session_variables_key_the_session_file()
+    {
+        var home = NewHome();
+        var handler = SessionServer([]);
+        try
+        {
+            async Task<string> Brief(string name, string value)
+            {
+                var environment = HomeEnv(home, "shell");
+                environment[name] = value;
+                return (await RunAsync(environment, handler, "brief")).Lines[0];
+            }
+
+            var a = await Brief("CLAUDE_CODE_SESSION_ID", "one");
+            (await Brief("CLAUDE_CODE_SESSION_ID", "two")).ShouldNotBe(a);
+            (await Brief("CLAUDE_CODE_SESSION_ID", "one")).ShouldBe(a);
+            var codex = await Brief("CODEX_THREAD_ID", "thread-1");
+            codex.ShouldNotBe(a);
+            (await Brief("CODEX_THREAD_ID", "thread-1")).ShouldBe(codex);
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_session_file_another_harness_wrote_is_not_reused()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"cg-test-{Guid.NewGuid():N}");
+        var requests = new List<string>();
+        var handler = SessionServer(requests);
+        Dictionary<string, string?> For(string harness)
+        {
+            var environment = Env("http://codegraph.test", file);
+            environment["CODEGRAPH_HARNESS"] = harness;
+            return environment;
+        }
+
+        try
+        {
+            var claude = (await RunAsync(For("claude-code"), handler, "brief")).Lines[0];
+            var codex = (await RunAsync(For("codex"), handler, "brief")).Lines[0];
+
+            codex.ShouldNotBe(claude);
+            requests.ShouldBe(["POST /api/work/sessions", "POST /api/work/sessions"]);
+        }
+        finally
+        {
+            File.Delete(file);
+            File.Delete(file + ".harness");
+        }
+    }
+
+    [Fact]
+    public async Task A_refusal_that_is_not_about_the_session_is_reported_and_the_session_file_kept()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"cg-test-{Guid.NewGuid():N}");
+        var sessionId = Guid.NewGuid().ToString();
+        await File.WriteAllTextAsync(file, sessionId + "\n");
+        var requests = new List<string>();
+        var handler = new StubHandler(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+            return (HttpStatusCode.NotFound, """{"code":"not_found","message":"There is no project, feature or item 'SW-9999'."}""");
+        });
+        try
+        {
+            var (exit, lines, _) = await RunAsync(Env("http://codegraph.test", file), handler, "brief", "--item", "SW-9999");
+
+            exit.ShouldBe(0);
+            lines.ShouldBe(["codegraph: not_found: There is no project, feature or item 'SW-9999'."]);
+            requests.ShouldBe([$"GET /api/work/sessions/{sessionId}/briefing"]);
+            (await File.ReadAllTextAsync(file)).Trim().ShouldBe(sessionId);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, "not_found")]
+    [InlineData(HttpStatusCode.BadRequest, "invalid_argument")]
+    public async Task An_unknown_ended_or_foreign_session_starts_a_new_one_and_replaces_the_file(HttpStatusCode status, string code)
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"cg-test-{Guid.NewGuid():N}");
+        var stale = Guid.NewGuid().ToString();
+        var fresh = Guid.NewGuid().ToString();
+        await File.WriteAllTextAsync(file, stale + "\n");
+        var requests = new List<string>();
+        var handler = new StubHandler(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+            return request.Method == HttpMethod.Get
+                ? (status, $$"""{"code":"{{code}}","message":"Session {{stale}} ended.","reason":"session_unusable"}""")
+                : (HttpStatusCode.OK, "{\"created\":true,\"session\":{\"id\":\"" + fresh + "\"},\"briefing\":{\"session_id\":\"" + fresh + "\",\"budget_tokens\":1500,\"estimated_tokens\":1,\"project\":{\"key\":\"SW\",\"name\":\"S\"}}}");
+        });
+        try
+        {
+            await RunAsync(Env("http://codegraph.test", file), handler, "brief");
+
+            requests.ShouldBe([$"GET /api/work/sessions/{stale}/briefing", "POST /api/work/sessions"]);
+            (await File.ReadAllTextAsync(file)).Trim().ShouldBe(fresh);
+        }
+        finally
+        {
+            File.Delete(file);
+            File.Delete(file + ".harness");
+        }
+    }
+
+    [Fact]
+    public async Task A_handler_that_ignores_cancellation_is_given_up_on_by_the_watchdog_with_one_line()
+    {
+        var never = new TaskCompletionSource<HttpResponseMessage>();
+        var handler = new DelegateHandler((_, _) => never.Task);
+        var environment = Env("http://codegraph.test");
+        environment["CODEGRAPH_SESSION_ID"] = Guid.NewGuid().ToString();
+
+        var watch = Stopwatch.StartNew();
+        var (exit, lines, _) = await RunAsync(environment, handler, "brief");
+        watch.Stop();
+
+        exit.ShouldBe(0);
+        lines.Count.ShouldBe(1);
+        lines[0].ShouldStartWith("codegraph: unreachable at http://codegraph.test/");
+        lines[0].ShouldContain("no answer within 2 s");
+        watch.Elapsed.ShouldBeLessThan(CgApp.Deadline);
+    }
+
+    [Fact]
+    public async Task The_git_probe_child_is_killed_when_the_overall_budget_ends_first()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var directory = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"cg-git-{Guid.NewGuid():N}")).FullName;
+        var pidFile = Path.Combine(directory, "pid");
+        var git = Path.Combine(directory, "git");
+        await File.WriteAllTextAsync(git, $"#!/bin/sh\necho $$ > '{pidFile}'\nexec sleep 30\n");
+        File.SetUnixFileMode(git, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var session = Path.Combine(directory, "session");
+        await File.WriteAllTextAsync(session, Guid.NewGuid() + "\n");
+        // The briefing GET takes 1.1 s and answers that the session is gone: the git probe then
+        // starts with less than its own 700 ms left of the overall budget.
+        var handler = new DelegateHandler(async (_, _) =>
+        {
+            await Task.Delay(1100);
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("""{"code":"not_found","message":"gone","reason":"session_unusable"}""", Encoding.UTF8, "application/json")
+            };
+        });
+        var environment = Env("http://codegraph.test", session);
+        environment["CODEGRAPH_GIT"] = git;
+        try
+        {
+            var (exit, lines, _) = await RunAsync(environment, handler, "brief");
+
+            exit.ShouldBe(0);
+            lines.Count.ShouldBe(1);
+            var pid = int.Parse((await File.ReadAllTextAsync(pidFile)).Trim());
+            var alive = true;
+            for (var attempt = 0; attempt < 20 && alive; attempt++)
+            {
+                try
+                {
+                    alive = !Process.GetProcessById(pid).HasExited;
+                }
+                catch (ArgumentException)
+                {
+                    alive = false;
+                }
+
+                if (alive)
+                    await Task.Delay(100);
+            }
+
+            alive.ShouldBeFalse();
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task The_unreachable_line_never_echoes_credentials_in_the_url()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        var environment = Env($"http://svc-user:hunter2@127.0.0.1:{port}/api?token=abc#frag");
+        environment["CODEGRAPH_SESSION_ID"] = Guid.NewGuid().ToString();
+
+        var (_, lines, _) = await RunAsync(environment, null, "brief");
+
+        lines.Count.ShouldBe(1);
+        lines[0].ShouldStartWith($"codegraph: unreachable at http://127.0.0.1:{port}/api (");
+        foreach (var secret in new[] { "svc-user", "hunter2", "token", "abc", "frag" })
+            lines[0].ShouldNotContain(secret);
+    }
+
+    [Fact]
+    public async Task The_session_directory_and_files_are_private_to_the_owner_on_unix()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var home = NewHome();
+        try
+        {
+            await RunAsync(HomeEnv(home, "codex"), SessionServer([]), "brief");
+
+            var directory = Path.Combine(home, ".codegraph", "sessions");
+            File.GetUnixFileMode(directory).ShouldBe(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var files = Directory.GetFiles(directory);
+            files.Length.ShouldBe(2);
+            foreach (var file in files)
+                File.GetUnixFileMode(file).ShouldBe(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
+    private sealed class DelegateHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
+    }
+
     private sealed class StubHandler(Func<HttpRequestMessage, (HttpStatusCode Status, string Body)> answer) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

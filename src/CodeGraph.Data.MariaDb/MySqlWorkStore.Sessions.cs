@@ -101,7 +101,7 @@ public sealed partial class MySqlWorkStore
             var now = Now();
             var row = await RequireOwnSessionAsync(connection, null, sessionId, actor, ct);
             if (row.EndedAt is { } ended)
-                throw WorkException.Invalid($"Session {sessionId} ended at {Utc(ended):O}. Start a new session with start_session.");
+                throw WorkException.SessionUnusable(WorkErrorCodes.InvalidArgument, $"Session {sessionId} ended at {Utc(ended):O}. Start a new session with start_session.");
 
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_sessions SET last_seen_at = @now WHERE id = @id", new { id = sessionId.ToString(), now }, cancellationToken: ct));
@@ -117,9 +117,9 @@ public sealed partial class MySqlWorkStore
     private static async Task<SessionRow> RequireOwnSessionAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid sessionId, WorkActor actor, CancellationToken ct)
     {
         var row = await ReadSessionRowAsync(connection, transaction, sessionId, ct)
-            ?? throw WorkException.NotFound($"There is no session {sessionId}. Start one with start_session.");
+            ?? throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}. Start one with start_session.");
         if (!string.Equals(row.Identity, actor.Name, StringComparison.Ordinal))
-            throw WorkException.Invalid($"Session {sessionId} belongs to another identity; a session is used only by the identity that started it.");
+            throw WorkException.SessionUnusable(WorkErrorCodes.InvalidArgument, $"Session {sessionId} belongs to another identity; a session is used only by the identity that started it.");
         return row;
     }
 
@@ -189,6 +189,14 @@ public sealed partial class MySqlWorkStore
             if (touched.Length > 0)
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET version = version WHERE id IN @touched", new { touched }, transaction, cancellationToken: ct));
+
+            // A session that lost its claim on the handoff's item to another holder must not write
+            // onto it: refused claim_lost naming the holder, nothing written, the session stays open.
+            // An item that is merely unclaimed now may still take the handoff.
+            if (target is { } handoffItem && await HasOpenSessionClaimAsync(connection, transaction, sessionId.ToString(), handoffItem, ct) &&
+                await ReadItemRowAsync(connection, transaction, handoffItem, ct) is { } handoffRow &&
+                handoffRow.HasLiveClaim(now) && handoffRow.ClaimSessionId != sessionId.ToString())
+                throw await ClaimLostAsync(connection, transaction, handoffRow, now, ct);
 
             var entries = new List<PendingChange>();
             var released = new List<WorkRow>();
@@ -409,7 +417,7 @@ public sealed partial class MySqlWorkStore
         await using var connection = await OpenAsync(ct);
         var now = Now();
         var session = await ReadSessionRowAsync(connection, null, sessionId, ct)
-            ?? throw WorkException.NotFound($"There is no session {sessionId}.");
+            ?? throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}.");
         var project = (await ReadProjectRowAsync(connection, null, session.ProjectId, ct))!;
         var goals = JsonSerializer.Deserialize<List<string>>(project.GoalsJson) ?? [];
 
@@ -428,7 +436,7 @@ public sealed partial class MySqlWorkStore
         {
             if (focusRow.ProjectId != session.ProjectId)
                 throw WorkException.Invalid($"{focusRow.Key} is not an item of {project.ProjectKey}, the session's project.");
-            focus = await BriefingItemAsync(connection, focusRow, recoverable: IsRecoverable(focusRow, now), previous: null, ct);
+            focus = await BriefingItemAsync(connection, focusRow, recoverable: await IsRecoverableAsync(connection, focusRow, now, ct), previous: null, ct);
         }
 
         // Other live sessions of the project and the items they hold; the session's repository and
@@ -466,8 +474,12 @@ public sealed partial class MySqlWorkStore
             suggested);
     }
 
-    private static bool IsRecoverable(ItemRow row, DateTime now) =>
-        WorkStatuses.Parse(row.Status) == WorkStatus.InProgress && !row.HasLiveClaim(now);
+    // In progress, no live claim, and a claim in its history (§5.9: "whose claim lapsed"): an item a
+    // human moved to in progress, never claimed, is not recoverable.
+    private static async Task<bool> IsRecoverableAsync(MySqlConnection connection, ItemRow row, DateTime now, CancellationToken ct) =>
+        WorkStatuses.Parse(row.Status) == WorkStatus.InProgress && !row.HasLiveClaim(now) &&
+        (row.ClaimHolder is not null || await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM work_session_claims WHERE item_id = @id", new { id = row.Id }, cancellationToken: ct)) > 0);
 
     private async Task<BriefingItem> BriefingItemAsync(MySqlConnection connection, ItemRow row, bool recoverable, HolderView? previous, CancellationToken ct)
     {
