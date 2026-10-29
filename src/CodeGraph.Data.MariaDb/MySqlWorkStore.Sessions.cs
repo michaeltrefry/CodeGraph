@@ -133,6 +133,18 @@ public sealed partial class MySqlWorkStore
         return row is null ? null : ToView(row, Now());
     }
 
+    public async Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var now = Now();
+        var rows = await connection.QueryAsync<SessionRow>(new CommandDefinition(
+            $"SELECT {SessionColumns} FROM work_sessions s JOIN work_projects p ON p.id = s.project_id WHERE s.project_id = @projectId " +
+            (liveOnly ? "AND s.ended_at IS NULL AND s.last_seen_at > @staleBefore " : "") +
+            "ORDER BY s.last_seen_at DESC LIMIT @limit",
+            new { projectId, staleBefore = StaleBefore(now), limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize) }, cancellationToken: ct));
+        return rows.Select(row => ToView(row, now)).ToList();
+    }
+
     public async Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);

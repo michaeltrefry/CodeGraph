@@ -334,5 +334,8 @@ public sealed class WorkContractTests
         public Task MarkDeliveredAsync(string recipient, IReadOnlyList<Guid> messageIds, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<MessageEventView>> ReadMessageEventsAsync(Guid projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
         public Task<long> GetMessageEventHeadAsync(CancellationToken ct = default) => throw Fail();
+        public Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, CancellationToken ct = default) => throw Fail();
     }
 }

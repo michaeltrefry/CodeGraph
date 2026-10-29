@@ -32,6 +32,12 @@ public interface IWorkMessageStore
 
     /// <summary>The newest message event sequence, 0 when none.</summary>
     Task<long> GetMessageEventHeadAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// A read-only listing of a project's messages for the UI (sc-27874), newest first, whatever the
+    /// channel and whoever they were delivered to. Changes nothing, not even a delivery state.
+    /// </summary>
+    Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default);
 }
 
 /// <param name="ItemId">The item whose thread this is, or null.</param>
@@ -59,3 +65,24 @@ public sealed record InboxPage(IReadOnlyList<MessageView> Items, long LastSequen
 
 /// <param name="Messages">Messages to mark read, or null; <paramref name="UpTo"/> then names a delivery sequence.</param>
 public sealed record AckSpec(Guid ProjectId, string Recipient, IReadOnlyList<Guid>? Messages, long? UpTo, MessageResolution? Resolution);
+
+/// <param name="Channel">Only this channel (<see cref="MessageChannels"/>), or null.</param>
+/// <param name="ItemId">Only the thread of this item.</param>
+/// <param name="FeatureId">Only messages about this feature.</param>
+/// <param name="Resource">Only messages on this resource channel.</param>
+/// <param name="OpenOnly">Only questions and requests that are still open.</param>
+/// <param name="ToHuman">Only messages addressed to the humans.</param>
+/// <param name="Before">Only messages older than this message sequence (a page cursor), or null.</param>
+public sealed record MessageListQuery(
+    Guid ProjectId,
+    string? Channel,
+    Guid? ItemId,
+    Guid? FeatureId,
+    string? Resource,
+    bool OpenOnly,
+    bool ToHuman,
+    long? Before,
+    int Limit);
+
+/// <param name="NextBefore">The cursor of the next (older) page, or null on the last page.</param>
+public sealed record MessageListPage(IReadOnlyList<MessageView> Items, string? NextBefore);

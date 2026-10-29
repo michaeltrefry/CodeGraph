@@ -73,6 +73,14 @@ public interface IWorkStore : IWorkMessageStore
     /// <summary>The project owning <paramref name="repository"/>, if exactly one does.</summary>
     Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
 
+    // ---- Read-only listings for the UI (sc-27874) ---------------------------------------------
+
+    /// <summary>The sessions of a project, most recently seen first: the live ones, or with <paramref name="liveOnly"/> false the ended and silent ones too.</summary>
+    Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default);
+
+    /// <summary>Every resource of a project with its holders and queued waiters as of now. Nothing is swept or written.</summary>
+    Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, CancellationToken ct = default);
+
     // ---- Resources and holds (sc-27872) -------------------------------------------------------
 
     /// <summary>
