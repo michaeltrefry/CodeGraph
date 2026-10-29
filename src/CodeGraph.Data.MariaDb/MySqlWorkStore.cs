@@ -631,6 +631,11 @@ public sealed partial class MySqlWorkStore(
                 ? "SELECT 'item' AS kind, i.id, i.project_id FROM work_items i JOIN work_projects p ON p.id = i.project_id WHERE p.project_key = @projectKey AND i.number = @number"
                 : "SELECT 'feature' AS kind, f.id, f.project_id FROM work_features f JOIN work_projects p ON p.id = f.project_id WHERE p.project_key = @projectKey AND f.number = @number";
             var hit = await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(sql, new { projectKey, number }, cancellationToken: ct));
+            // An external alias (an imported story's sc-27866) resolves like a key (sc-27870).
+            if (hit is null && kind == WorkEntityKind.Item)
+                hit = await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(
+                    "SELECT 'item' AS kind, i.id, i.project_id FROM work_item_aliases a JOIN work_items i ON i.id = a.item_id WHERE a.alias = @alias",
+                    new { alias = value.ToLowerInvariant() }, cancellationToken: ct));
             return hit is null ? null : new WorkTarget(kind, hit.Id, hit.ProjectId);
         }
 

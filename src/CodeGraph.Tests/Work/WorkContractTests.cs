@@ -325,5 +325,8 @@ public sealed class WorkContractTests
         public Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<SyncPlanApplied> ApplyPlanAsync(Guid previewId, Guid? projectId, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default) => throw Fail();
     }
 }

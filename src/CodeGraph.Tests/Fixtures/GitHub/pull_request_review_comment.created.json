@@ -1,0 +1,92 @@
+{
+  "action": "created",
+  "comment": {
+    "id": 666001,
+    "pull_request_review_id": 555002,
+    "path": "src/Evidence.cs",
+    "line": 42,
+    "body": "Possible null dereference here.",
+    "user": {
+      "login": "coderabbitai[bot]",
+      "id": 88,
+      "type": "Bot"
+    },
+    "author_association": "NONE",
+    "html_url": "https://github.com/michaeltrefry/sceneworks/pull/7#discussion_r666001"
+  },
+  "pull_request": {
+    "url": "https://api.github.com/repos/michaeltrefry/sceneworks/pulls/7",
+    "id": 9007,
+    "number": 7,
+    "state": "open",
+    "locked": false,
+    "title": "__KEY__: record GitHub evidence",
+    "user": {
+      "login": "claude-agent",
+      "id": 77,
+      "type": "User"
+    },
+    "body": "Adds the evidence path.\n\nCloses __KEY__.",
+    "draft": false,
+    "html_url": "https://github.com/michaeltrefry/sceneworks/pull/7",
+    "head": {
+      "label": "michaeltrefry:claude/__KEY__-evidence",
+      "ref": "claude/__KEY__-evidence",
+      "sha": "1111111111111111111111111111111111111111",
+      "repo": {
+        "id": 1001,
+        "name": "sceneworks",
+        "full_name": "michaeltrefry/sceneworks",
+        "private": true,
+        "owner": {
+          "login": "michaeltrefry",
+          "id": 42,
+          "type": "User"
+        },
+        "html_url": "https://github.com/michaeltrefry/sceneworks",
+        "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+        "default_branch": "main"
+      }
+    },
+    "base": {
+      "label": "michaeltrefry:main",
+      "ref": "main",
+      "sha": "2222222222222222222222222222222222222222",
+      "repo": {
+        "id": 1001,
+        "name": "sceneworks",
+        "full_name": "michaeltrefry/sceneworks",
+        "private": true,
+        "owner": {
+          "login": "michaeltrefry",
+          "id": 42,
+          "type": "User"
+        },
+        "html_url": "https://github.com/michaeltrefry/sceneworks",
+        "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+        "default_branch": "main"
+      }
+    },
+    "merged": false,
+    "merged_by": null
+  },
+  "repository": {
+    "id": 1001,
+    "name": "sceneworks",
+    "full_name": "michaeltrefry/sceneworks",
+    "private": true,
+    "owner": {
+      "login": "michaeltrefry",
+      "id": 42,
+      "type": "User"
+    },
+    "html_url": "https://github.com/michaeltrefry/sceneworks",
+    "clone_url": "https://github.com/michaeltrefry/sceneworks.git",
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "coderabbitai[bot]",
+    "id": 88,
+    "type": "Bot"
+  }
+}
