@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
 using Microsoft.Extensions.Options;
@@ -64,6 +65,9 @@ public sealed partial class WorkService(
             WorkTools.StartSession => WorkJson.Parse<StartSessionRequest>(arguments, tool),
             WorkTools.EndSession => WorkJson.Parse<EndSessionRequest>(arguments, tool),
             WorkTools.GetBriefing => WorkJson.Parse<GetBriefingRequest>(arguments, tool),
+            WorkTools.Acquire => WorkJson.Parse<AcquireRequest>(arguments, tool),
+            WorkTools.RenewHold => WorkJson.Parse<RenewHoldRequest>(arguments, tool),
+            WorkTools.Release => WorkJson.Parse<ReleaseHoldRequest>(arguments, tool),
             WorkTools.SyncPlan => WorkJson.Parse<SyncPlanRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
@@ -75,6 +79,12 @@ public sealed partial class WorkService(
             case EndSessionRequest end:
                 // Not a heartbeat: ending an ended session must answer it, not refuse it.
                 return await EndSessionAsync(end, actor, ct);
+            case RenewHoldRequest renew:
+                // Not a heartbeat either (sc-27872): a hold's renewals are its own, so a shell loop
+                // renewing a hold never makes a silent session look alive.
+                return await RenewHoldAsync(renew, actor, ct);
+            case ReleaseHoldRequest release:
+                return await ReleaseHoldAsync(release, actor, ct);
         }
 
         var (result, caller) = await RunToolAsync(arguments, request, actor, ct);
@@ -120,6 +130,7 @@ public sealed partial class WorkService(
             NextWorkRequest next => await NextAsync(next, actor, session, ct),
             ChangesRequest changes => await ChangesAsync(changes, session, ct),
             GetBriefingRequest briefing => await GetBriefingAsync(briefing, actor, ct),
+            AcquireRequest acquire => await AcquireAsync(acquire, actor, session, ct),
             SyncPlanRequest sync => await SyncPlanAsync(arguments, sync, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
@@ -879,6 +890,77 @@ public sealed partial class WorkService(
             request.Type,
             request.Label?.Trim()), actor, ct);
     }
+
+    // ---- Resources and holds -----------------------------------------------------------------
+
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$")]
+    private static partial Regex ResourceNamePattern();
+
+    private async Task<object> AcquireAsync(AcquireRequest request, WorkActor actor, SessionView? session, CancellationToken ct)
+    {
+        Guid projectId;
+        if (request.Project is { } projectArgument)
+        {
+            projectId = (await RequireProjectAsync(projectArgument, "project", ct)).Id;
+            await RequireSessionProjectAsync(session, projectId, ct);
+        }
+        else
+        {
+            projectId = session?.ProjectId
+                ?? throw WorkException.Invalid("project is required without session_id: the key (such as SW) or id of the Project the resource belongs to. Nothing was changed.");
+        }
+
+        var name = request.Resource.Trim();
+        if (!ResourceNamePattern().IsMatch(name))
+            throw WorkException.Invalid($"resource must be 1 to {WorkHoldLimits.MaxResourceNameLength} characters of letters, digits and . _ : / @ + -, starting with a letter or digit (such as gpu:4090-box). Nothing was changed.");
+        var wait = request.WaitSeconds ?? 0;
+        if (wait is < 0 or > WorkLimits.MaxWaitSeconds)
+            throw WorkException.Invalid($"wait_seconds must be 0 to {WorkLimits.MaxWaitSeconds}.");
+        if (request.Capacity is < 1 or > WorkHoldLimits.MaxCapacity)
+            throw WorkException.Invalid($"capacity must be 1 to {WorkHoldLimits.MaxCapacity}.");
+
+        IReadOnlyList<string>? labels = null;
+        if (request.Labels is { } given)
+        {
+            if (given.Any(label => string.IsNullOrWhiteSpace(label) || label.Trim().Length > WorkHoldLimits.MaxLabelLength || label.Any(char.IsControl)))
+                throw WorkException.Invalid($"Every label must be 1 to {WorkHoldLimits.MaxLabelLength} characters without control characters.");
+            labels = given.Select(label => label.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (labels.Count > WorkHoldLimits.MaxLabels)
+                throw WorkException.Invalid($"labels holds at most {WorkHoldLimits.MaxLabels} labels.");
+        }
+
+        Guid? itemId = request.Item is { } item
+            ? (await RequireOfProjectAsync(item, WorkEntityKind.Item, new WorkTarget(WorkEntityKind.Project, projectId, projectId), "item", ct)).Id
+            : null;
+        var spec = new AcquireSpec(
+            projectId, name, Ttl(request.TtlSeconds, "ttl_seconds"), Text(request.Purpose, "purpose", WorkHoldLimits.MaxPurposeLength), itemId, wait > 0,
+            request.Priority ?? WorkPriority.Medium, request.Capacity, labels, request.IdempotencyKey is { } key ? HashKey(actor, key) : null);
+
+        // A waiting caller polls: each round is a call that renews its place in the queue, and the
+        // slot goes to the front of the queue the moment one frees, whoever is polling.
+        var result = await Store.AcquireAsync(spec, actor, ct);
+        var deadline = clock.GetUtcNow().AddSeconds(wait);
+        while (result.Hold is { State: WorkHoldStates.Waiting } && clock.GetUtcNow() < deadline)
+        {
+            await Task.Delay(PollInterval, ct);
+            result = await Store.AcquireAsync(spec, actor, ct);
+        }
+
+        return result;
+    }
+
+    private async Task<object> RenewHoldAsync(RenewHoldRequest request, WorkActor actor, CancellationToken ct)
+    {
+        var holdId = HoldIdOf(request.HoldId);
+        int? ttl = request.TtlSeconds is null ? null : Ttl(request.TtlSeconds, "ttl_seconds");
+        return await Store.RenewHoldAsync(holdId, ttl, actor, ct);
+    }
+
+    private async Task<object> ReleaseHoldAsync(ReleaseHoldRequest request, WorkActor actor, CancellationToken ct) =>
+        await Store.ReleaseHoldAsync(HoldIdOf(request.HoldId), actor, ct);
+
+    private static Guid HoldIdOf(string value) =>
+        Guid.TryParse(value.Trim(), out var id) ? id : throw WorkException.Invalid($"hold_id '{value}' is not a hold id; pass the id acquire answered.");
 
     // ---- changes -----------------------------------------------------------------------------
 

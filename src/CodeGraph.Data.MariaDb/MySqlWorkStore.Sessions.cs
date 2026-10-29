@@ -249,9 +249,11 @@ public sealed partial class MySqlWorkStore
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_sessions SET ended_at = @now, last_seen_at = @now WHERE id = @id",
                 new { id = sessionId.ToString(), now }, transaction, cancellationToken: ct));
+            // Holds of resources end with the session (sc-27872): only here and on release or ttl, never on silence.
+            var releasedHolds = await ReleaseSessionHoldsAsync(connection, transaction, sessionId, now, ct);
             var ended = (await ReadSessionRowAsync(connection, transaction, sessionId, ct))!;
             await CommitAsync(connection, transaction, entries, sessionActor, now, ct);
-            return new EndSessionResult(ToView(ended, now), released, written);
+            return new EndSessionResult(ToView(ended, now), released, written, releasedHolds.Count == 0 ? null : releasedHolds);
         }, ct);
 
     // ---- Session claims ------------------------------------------------------------------------
@@ -479,6 +481,7 @@ public sealed partial class MySqlWorkStore
         }).ToList();
 
         var suggested = await SuggestAsync(connection, session, now, ct);
+        var (myHolds, busyResources) = await ReadBriefingHoldsAsync(connection, session, now, ct);
 
         return new BriefingView(
             sessionId.ToString(), 0, 0,
@@ -486,7 +489,9 @@ public sealed partial class MySqlWorkStore
             myWork.Count == 0 ? null : myWork,
             focus,
             otherSessions.Count == 0 ? null : otherSessions,
-            suggested);
+            suggested,
+            MyHolds: myHolds,
+            Resources: busyResources);
     }
 
     // In progress, no live claim, and a claim in its history (§5.9: "whose claim lapsed"): an item a

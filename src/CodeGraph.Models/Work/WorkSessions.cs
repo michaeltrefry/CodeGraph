@@ -161,7 +161,7 @@ public sealed record HolderView(string Identity, string? SessionId = null, strin
 
 public sealed record StartSessionResult(bool Created, SessionView Session, BriefingView Briefing);
 
-public sealed record EndSessionResult(SessionView Session, IReadOnlyList<WorkRow> Released, HandoffView? Handoff = null);
+public sealed record EndSessionResult(SessionView Session, IReadOnlyList<WorkRow> Released, HandoffView? Handoff = null, IReadOnlyList<HoldView>? ReleasedHolds = null);
 
 /// <summary>
 /// What the next holder of an item needs to continue it (§5.9): the previous holder, the branch and
@@ -192,7 +192,9 @@ public sealed record BriefingView(
     BriefingItem? Focus = null,
     IReadOnlyList<BriefingSession>? OtherSessions = null,
     BriefingItem? SuggestedNext = null,
-    IReadOnlyList<string>? Truncated = null);
+    IReadOnlyList<string>? Truncated = null,
+    IReadOnlyList<HoldView>? MyHolds = null,
+    IReadOnlyList<ResourceView>? Resources = null);
 
 public sealed record BriefingProject(string Key, string Name, IReadOnlyList<string>? Goals = null);
 

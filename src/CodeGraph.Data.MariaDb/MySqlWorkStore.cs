@@ -21,7 +21,8 @@ namespace CodeGraph.Data.MariaDb;
 /// see what earlier holders committed and the version decides between concurrent updates.</item>
 /// <item>Locks are taken in one order everywhere: a named lock (dependency adds, next_work, project
 /// creates) before the transaction, then the project's row, then rows of work_items (several at
-/// once in key order), then the change-feed lock.</item>
+/// once in key order), then the rows of work_resources (sc-27872: after items, before the
+/// change-feed lock; hold rows are changed only under their resource's row), then the change-feed lock.</item>
 /// <item>The change-feed entries are inserted and committed under the named lock
 /// <see cref="ChangeLockName"/>, so a higher sequence always commits later and a reader's cursor
 /// never skips an entry.</item>
