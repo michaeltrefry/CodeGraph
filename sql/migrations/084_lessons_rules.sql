@@ -152,13 +152,13 @@ CREATE TABLE IF NOT EXISTS lesson_addressed_by (
 
 -- Embeddings of lesson summaries for similarity (E5: embeddings find candidates, they never decide),
 -- per embedding model, written by the similarity lookup; summary_hash says which summary was embedded
--- (a revised lesson is embedded again). vector is float32 little-endian.
+-- (a revised lesson is embedded again). embedding is float32 little-endian.
 CREATE TABLE IF NOT EXISTS lesson_embeddings (
     entry_id CHAR(36) NOT NULL,
     model VARCHAR(128) NOT NULL,
     summary_hash CHAR(64) NOT NULL,
     dimensions INT NOT NULL,
-    vector LONGBLOB NOT NULL,
+    embedding LONGBLOB NOT NULL,
     created_at DATETIME(6) NOT NULL,
     PRIMARY KEY (entry_id, model),
     CONSTRAINT fk_lesson_embeddings_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
