@@ -14,8 +14,9 @@ namespace CodeGraph.Data.MariaDb;
 // Ordering. Every INSERT into work_messages / work_message_deliveries / work_message_events and the
 // COMMIT run while the writer holds the named lock MessageLockName, so a higher sequence is always
 // committed later and an inbox cursor never skips a row (the idea of the change feed's lock).
-// Lock order, everywhere: row locks of work_items / work_projects first (in id order), then
-// MessageLockName, then the change-feed lock (the commit of an entry). Code holding MessageLockName
+// Lock order, everywhere: the project's row, then rows of work_items (in id order), then (where a
+// call touches resources) work_resources and work_holds, then MessageLockName, then the change-feed
+// lock (the commit of an entry). The attempt rows of a claim are written before the messages lock. Code holding MessageLockName
 // takes no further row lock on work_items, work_projects or work_sessions (it reads them without
 // locking, or on a second connection), and the tables of messages have no foreign keys, so no
 // writer waits for a row while another waits for the lock. Every taker acquires the lock inside its

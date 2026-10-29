@@ -21,7 +21,8 @@ namespace CodeGraph.Data.MariaDb;
 /// see what earlier holders committed and the version decides between concurrent updates.</item>
 /// <item>Locks are taken in one order everywhere: a named lock (dependency adds, next_work, project
 /// creates) before the transaction, then the project's row, then rows of work_items (several at
-/// once in key order), then the change-feed lock.</item>
+/// once in key order), then the rows of work_resources (sc-27872: after items, before the
+/// change-feed lock; hold rows are changed only under their resource's row), then the change-feed lock.</item>
 /// <item>The change-feed entries are inserted and committed under the named lock
 /// <see cref="ChangeLockName"/>, so a higher sequence always commits later and a reader's cursor
 /// never skips an entry.</item>
@@ -321,6 +322,11 @@ public sealed partial class MySqlWorkStore(
         public string CreatedBy { get; init; } = "";
         public DateTime CreatedAt { get; init; }
         public DateTime UpdatedAt { get; init; }
+        public string? GoalsJson { get; init; }
+        public string? RequirementsJson { get; init; }
+        public string? AcceptanceTestsJson { get; init; }
+
+        public string Key => WorkKeys.Feature(ProjectKey, Number);
     }
 
     private sealed class ItemRow
@@ -347,6 +353,13 @@ public sealed partial class MySqlWorkStore(
         public string CreatedBy { get; init; } = "";
         public DateTime CreatedAt { get; init; }
         public DateTime UpdatedAt { get; init; }
+        public string? PlanRef { get; init; }
+        public string? Goal { get; init; }
+        public string? AcceptanceJson { get; init; }
+        public string? InheritsJson { get; init; }
+        public string? TouchesJson { get; init; }
+        public string? AcceptanceReportJson { get; init; }
+        public bool MergedAwaitingAcceptance { get; init; }
 
         public string Key => WorkKeys.Item(ProjectKey, Number);
 
@@ -356,10 +369,12 @@ public sealed partial class MySqlWorkStore(
     private const string ItemColumns =
         "i.id, i.project_id, p.project_key, i.number, i.feature_id, i.item_type, i.title, i.description, i.status, i.priority, " +
         "i.sort_order, i.labels, i.repository_name, i.claim_holder, i.claim_marker, i.claim_session_id, i.claimed_at, " +
-        "i.claim_expires_at, i.version, i.created_by, i.created_at, i.updated_at";
+        "i.claim_expires_at, i.version, i.created_by, i.created_at, i.updated_at, " +
+        "i.plan_ref, i.goal, i.acceptance_json, i.inherits_json, i.touches_json, i.acceptance_report_json, i.merged_awaiting_acceptance";
 
     private const string FeatureColumns =
-        "f.id, f.project_id, p.project_key, f.number, f.title, f.description, f.version, f.created_by, f.created_at, f.updated_at";
+        "f.id, f.project_id, p.project_key, f.number, f.title, f.description, f.version, f.created_by, f.created_at, f.updated_at, " +
+        "f.goals_json, f.requirements_json, f.acceptance_tests_json";
 
     private const string ProjectColumns =
         "p.id, p.project_key, p.name, p.description, p.goals_json, p.next_item_number, p.next_feature_number, p.version, p.created_by, p.created_at, p.updated_at";
@@ -447,10 +462,14 @@ public sealed partial class MySqlWorkStore(
         var counts = withCounts
             ? await CountsAsync(connection, transaction, "feature_id = @id", featureId, ct)
             : null;
+        var (status, completion, requirements) = await CompletionAsync(connection, transaction, row, ct);
+        var goals = ReadList<string>(row.GoalsJson);
+        var tests = ReadList<string>(row.AcceptanceTestsJson);
         return new FeatureView(
             row.Id, WorkKeys.Feature(row.ProjectKey, row.Number), row.ProjectId, row.ProjectKey, row.Title, row.Description,
             documents.Select(document => new DocumentView(document.Id, document.Title, document.Body, document.Position, Utc(document.CreatedAt), Utc(document.UpdatedAt))).ToList(),
-            row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt), counts);
+            row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt), counts,
+            status, completion, goals.Count == 0 ? null : goals, requirements.Count == 0 ? null : requirements, tests.Count == 0 ? null : tests);
     }
 
     private sealed class DocumentRow
@@ -524,12 +543,27 @@ public sealed partial class MySqlWorkStore(
                 "SELECT COUNT(*) FROM work_handoffs WHERE item_id = @id", new { id = row.Id }, transaction, cancellationToken: ct));
 
         EntityRef? feature = null;
+        IReadOnlyList<RequirementView> requirements = [];
         if (row.FeatureId is { } featureId)
         {
-            var featureRow = await connection.QuerySingleAsync<(int Number, string Title)>(new CommandDefinition(
-                "SELECT number, title FROM work_features WHERE id = @featureId", new { featureId }, transaction, cancellationToken: ct));
+            var featureRow = await connection.QuerySingleAsync<(int Number, string Title, string? RequirementsJson)>(new CommandDefinition(
+                "SELECT number, title, requirements_json FROM work_features WHERE id = @featureId", new { featureId }, transaction, cancellationToken: ct));
             feature = new EntityRef(featureId, WorkKeys.Feature(row.ProjectKey, featureRow.Number), featureRow.Title);
+            requirements = ReadList<RequirementView>(featureRow.RequirementsJson);
         }
+
+        // The brief (sc-27868): criteria, the requirements the item inherits as its feature states
+        // them, what it touches, and its execution attempts (the latest three, all with detail full).
+        var criteria = ReadList<AcceptanceCriterionView>(row.AcceptanceJson);
+        var inherits = ReadList<string>(row.InheritsJson);
+        var inherited = inherits.Select(id => requirements.FirstOrDefault(requirement => requirement.Id == id)).OfType<RequirementView>().ToList();
+        var touches = ReadList<string>(row.TouchesJson);
+        var attempts = await ReadAttemptsAsync(connection, transaction, row.Id, fullHandoffs ? null : 3, ct);
+        var attemptCount = fullHandoffs
+            ? attempts.Count
+            : (int)await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                "SELECT COUNT(*) FROM work_attempts WHERE item_id = @id", new { id = row.Id }, transaction, cancellationToken: ct));
+        var report = row.AcceptanceReportJson is { } reportJson ? JsonSerializer.Deserialize<AcceptanceReportView>(reportJson, WorkJson.Options) : null;
 
         var unfinished = blockedBy.Where(blocker => blocker.Status != WorkStatus.Complete).ToList();
         // An open blocking question to the human blocks the item too; a dependency's reason comes first.
@@ -548,7 +582,16 @@ public sealed partial class MySqlWorkStore(
                 ? new ClaimView(row.ClaimHolder!, row.ClaimMarker!, Utc(row.ClaimedAt!.Value), Utc(row.ClaimExpiresAt!.Value), row.ClaimSessionId)
                 : null,
             links, comments, row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt),
-            handoffs.Count == 0 ? null : handoffs, handoffCount == 0 ? null : handoffCount);
+            handoffs.Count == 0 ? null : handoffs, handoffCount == 0 ? null : handoffCount,
+            row.PlanRef, row.Goal,
+            criteria.Count == 0 ? null : criteria,
+            inherits.Count == 0 ? null : inherits,
+            inherited.Count == 0 ? null : inherited,
+            touches.Count == 0 ? null : touches,
+            row.MergedAwaitingAcceptance ? true : null,
+            report,
+            attempts.Count == 0 ? null : attempts,
+            attemptCount == 0 ? null : attemptCount);
     }
 
     private static DependencyView ToView(DependencyRow row) =>
@@ -612,15 +655,25 @@ public sealed partial class MySqlWorkStore(
     public async Task<FeatureView?> GetFeatureAsync(Guid featureId, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await LoadFeatureViewAsync(connection, null, featureId, withCounts: true, ct);
+        // One snapshot for the feature, its counts and its derived completion, so the status never
+        // mixes item states from before and after a concurrent write.
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        var view = await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: true, ct);
+        await transaction.CommitAsync(ct);
+        return view;
     }
 
     public async Task<ItemView?> GetItemAsync(Guid itemId, bool fullHandoffs, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        var view = await LoadItemViewAsync(connection, null, itemId, ct, fullHandoffs);
+        // One snapshot for the whole brief.
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        var view = await LoadItemViewAsync(connection, transaction, itemId, ct, fullHandoffs);
         // The brief carries the thread's open questions and requests (§5.9), whoever reads it.
-        return view is null ? null : view with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) };
+        if (view is not null)
+            view = view with { OpenMessages = await ReadOpenMessagesAsync(connection, transaction, itemId, ct) };
+        await transaction.CommitAsync(ct);
+        return view;
     }
 
     public async Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default)

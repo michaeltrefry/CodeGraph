@@ -66,6 +66,15 @@ public sealed class NewFeatureInput
 
     [Description("Documents of the feature (design notes, plans).")]
     public List<DocumentInput>? Documents { get; init; }
+
+    [Description("Goals of the feature, one line each.")]
+    public List<string>? Goals { get; init; }
+
+    [Description("Numbered requirements (E1..En) every item of the feature serves through inherits.")]
+    public List<RequirementInput>? Requirements { get; init; }
+
+    [Description("Acceptance tests of the feature, one per entry.")]
+    public List<string>? AcceptanceTests { get; init; }
 }
 
 public sealed class DocumentInput
@@ -106,6 +115,18 @@ public sealed class NewItemInput
 
     [Description("Explicit order within a priority, lowest first (default 0). next_work orders by priority, then order, then creation.")]
     public int? Order { get; init; }
+
+    [Description(WorkRequestText.Goal)]
+    public string? Goal { get; init; }
+
+    [Description(WorkRequestText.AcceptanceCriteria)]
+    public List<AcceptanceCriterionInput>? AcceptanceCriteria { get; init; }
+
+    [Description(WorkRequestText.Inherits)]
+    public List<string>? Inherits { get; init; }
+
+    [Description(WorkRequestText.Touches)]
+    public List<string>? Touches { get; init; }
 }
 
 public sealed class PlanInput
@@ -127,6 +148,13 @@ public sealed class PlanFeatureInput
     public string? Description { get; init; }
 
     public List<DocumentInput>? Documents { get; init; }
+
+    public List<string>? Goals { get; init; }
+
+    [Description("Numbered requirements (E1..En); items of the plan name the ones they serve in inherits.")]
+    public List<RequirementInput>? Requirements { get; init; }
+
+    public List<string>? AcceptanceTests { get; init; }
 }
 
 public sealed class PlanItemInput
@@ -155,6 +183,18 @@ public sealed class PlanItemInput
     public List<string>? BlockedBy { get; init; }
 
     public int? Order { get; init; }
+
+    [Description(WorkRequestText.Goal)]
+    public string? Goal { get; init; }
+
+    [Description(WorkRequestText.AcceptanceCriteria)]
+    public List<AcceptanceCriterionInput>? AcceptanceCriteria { get; init; }
+
+    [Description("Requirements (E2) of the item's plan feature that it serves.")]
+    public List<string>? Inherits { get; init; }
+
+    [Description(WorkRequestText.Touches)]
+    public List<string>? Touches { get; init; }
 }
 
 public sealed class GetWorkRequest : ISessionArguments
@@ -165,7 +205,7 @@ public sealed class GetWorkRequest : ISessionArguments
     [Description("Key (SW, SW-142, SW-F12) or id of a project, feature or item.")]
     public required string Id { get; init; }
 
-    [Description("summary (default): an item carries its latest handoff and handoff_count. full: an item carries its whole handoff history, newest first.")]
+    [Description("summary (default): an item carries its latest handoff and handoff_count, and its latest three attempts and attempt_count. full: its whole handoff and attempt history, newest first.")]
     public WorkDetail? Detail { get; init; }
 }
 
@@ -235,8 +275,32 @@ public sealed class UpdateWorkRequest : ISessionArguments
     [Description("Project, feature or item: new description.")]
     public string? Description { get; init; }
 
-    [Description("Project: replaces the goals.")]
+    [Description("Project or feature: replaces the goals.")]
     public List<string>? Goals { get; init; }
+
+    [Description("Feature: replaces the active requirements (E1..En), in order. Every active requirement left out must be named in drop_requirements.")]
+    public List<RequirementInput>? Requirements { get; init; }
+
+    [Description("Feature: active requirements to drop, each with the decision that drops it.")]
+    public List<DropRequirementInput>? DropRequirements { get; init; }
+
+    [Description("Feature: replaces the acceptance tests.")]
+    public List<string>? AcceptanceTests { get; init; }
+
+    [Description("Item: " + WorkRequestText.Goal)]
+    public string? Goal { get; init; }
+
+    [Description("Item: replaces the acceptance criteria. " + WorkRequestText.AcceptanceCriteria)]
+    public List<AcceptanceCriterionInput>? AcceptanceCriteria { get; init; }
+
+    [Description("Item: replaces " + WorkRequestText.Inherits)]
+    public List<string>? Inherits { get; init; }
+
+    [Description("Item: replaces " + WorkRequestText.Touches)]
+    public List<string>? Touches { get; init; }
+
+    [Description("Item: the acceptance report the item is marked complete with (only with status complete, or on a complete item): a summary and the state and evidence of named criteria. Optional; not validated.")]
+    public AcceptanceReportInput? AcceptanceReport { get; init; }
 
     [Description("Project: replaces the member repositories. An owned repository that items still name cannot be removed.")]
     public List<RepositoryMemberInput>? Repositories { get; init; }
@@ -295,7 +359,7 @@ public sealed class UpdateWorkRequest : ISessionArguments
     [Description("Item: the state of the work as the caller leaves it (done, decisions, open issues, corrections, next action, branch, commit), stored on the item and shown to its next holder.")]
     public HandoffInput? Handoff { get; init; }
 
-    [Description("Optional fields to empty: description (any kind); labels, repository, feature (item).")]
+    [Description("Optional fields to empty: description (any kind); goals, acceptance_tests (feature); labels, repository, feature, goal, acceptance_criteria, inherits, touches (item).")]
     public List<string>? Clear { get; init; }
 }
 
@@ -388,4 +452,12 @@ internal static class WorkRequestText
 {
     public const string SessionId =
         "Id of the caller's session (from start_session). Renews the session's heartbeat, attributes the call to it, and binds claims to it.";
+
+    public const string Goal = "What the item is for, at most 2000 characters.";
+
+    public const string AcceptanceCriteria = "At most 3 acceptance criteria (plan 1 to 3; an item may have none, for backward compatibility), each with text and optionally id, state (unmet or met) and evidence.";
+
+    public const string Inherits = "the requirements (E2) of the item's feature that the item serves; a feature is complete only when every active requirement is inherited by a complete item.";
+
+    public const string Touches = "the paths and symbols the item is expected to touch, at most 50 of up to 512 characters.";
 }

@@ -9,8 +9,8 @@
 -- are AUTO_INCREMENT, and every INSERT into them and the COMMIT run while the writer holds the named
 -- lock 'codegraph_work_messages' (scoped to the database like the change-feed lock, see
 -- MySqlWorkStore.ServerLockName). A higher sequence is therefore always committed later, and a
--- reader's cursor never skips a row. Lock order: row locks of work_items / work_projects (in id
--- order), then the messages lock, then the change-feed lock; code holding the messages lock takes no
+-- reader's cursor never skips a row. Lock order: the project's row, rows of work_items (in id
+-- order), work_resources then work_holds where a call uses them, then the messages lock, then the change-feed lock; code holding the messages lock takes no
 -- further row lock on work_items, work_projects or work_sessions. A post to an item's thread holds the
 -- item's row (shared; exclusive when it opens or closes a blocking question) before the lock.
 
