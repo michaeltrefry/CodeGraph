@@ -225,7 +225,7 @@
           <section class="rdh-section">
             <div class="rdh-section-head">
               <div>
-                <div class="rdh-section-title">Project vitality</div>
+                <div class="rdh-section-title">Repository vitality</div>
                 <p class="rdh-section-sub cg-muted">Team activity and firefighting context.</p>
               </div>
               <span class="cg-chip cg-chip-accent">{{ vitalityLabel(vitality.activityStatus) }}</span>
@@ -335,10 +335,10 @@
           }
         }
 
-        @if (h.projectHealths.length > 0) {
+        @if (h.dotnetProjectHealths.length > 0) {
           <section class="rdh-section">
             <div class="rdh-section-title">Per-project health</div>
-            @for (ph of h.projectHealths; track ph.dotnetProject) {
+            @for (ph of h.dotnetProjectHealths; track ph.dotnetProject) {
               <div class="rdh-project-row">
                 <div class="rdh-project-head">
                   <span class="cg-mono">{{ ph.dotnetProject }}</span>

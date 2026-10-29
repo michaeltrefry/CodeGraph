@@ -124,9 +124,9 @@
               <div class="cp-section">
                 <div class="cp-section-label">Members</div>
                 <div class="cp-list">
-                  @for (member of detail.members; track member.projectName) {
-                    <button class="cp-list-row" type="button" (click)="navigateToRepo(member.projectName)">
-                      <span class="cg-mono cp-list-name">{{ member.projectName }}</span>
+                  @for (member of detail.members; track member.repositoryName) {
+                    <button class="cp-list-row" type="button" (click)="navigateToRepo(member.repositoryName)">
+                      <span class="cg-mono cp-list-name">{{ member.repositoryName }}</span>
                       @if (member.betweennessCentrality > 0.01) {
                         <span class="cg-chip cg-chip-warn cg-chip-dot">bridge</span>
                       }
@@ -184,10 +184,10 @@
                     </div>
                   </div>
                   <div class="cp-list">
-                    @for (member of detail.members; track member.projectName) {
+                    @for (member of detail.members; track member.repositoryName) {
                       <button class="cp-list-row" type="button"
-                              (click)="navigateToRepo(member.projectName); $event.stopPropagation()">
-                        <span class="cg-mono cp-list-name">{{ member.projectName }}</span>
+                              (click)="navigateToRepo(member.repositoryName); $event.stopPropagation()">
+                        <span class="cg-mono cp-list-name">{{ member.repositoryName }}</span>
                         @if (member.betweennessCentrality > 0.01) {
                           <span class="cg-chip cg-chip-warn cg-chip-dot">bridge</span>
                         }

@@ -22,7 +22,7 @@
 .clusters-page .detail-panel,
 .clusters-page .cluster-card,
 .repo-header .label-tile,
-.repo-header .project-tile {
+.repo-header .repository-tile {
   background: var(--cg-surface-bg);
   border: 1px solid var(--cg-border-default);
   border-radius: var(--cg-radius-md);
@@ -93,7 +93,7 @@
 .clusters-page .connection-row,
 .clusters-page .cluster-card,
 .repo-header .label-tile,
-.repo-header .project-tile-link {
+.repo-header .repository-tile-link {
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
@@ -104,7 +104,7 @@
 .clusters-page .connection-row:hover,
 .clusters-page .cluster-card:hover,
 .repo-header .label-tile:hover,
-.repo-header .project-tile-link:hover {
+.repo-header .repository-tile-link:hover {
   background: var(--cg-surface-subtle);
 }
 

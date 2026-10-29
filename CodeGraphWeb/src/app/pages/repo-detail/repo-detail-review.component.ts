@@ -31,7 +31,7 @@ export class RepoDetailReviewComponent implements OnChanges {
   private api = inject(ApiService);
   private router = inject(Router);
 
-  @Input() projectName = '';
+  @Input() repositoryName = '';
   @Input() review: RepositoryReviewResponse | null = null;
   @Input() reviewRunning = false;
   @Input() reviewLoading = false;
@@ -46,7 +46,7 @@ export class RepoDetailReviewComponent implements OnChanges {
   readonly categoryLabels = CATEGORY_LABELS;
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['projectName']) {
+    if (changes['repositoryName']) {
       this.reviewOpen.set(true);
       this.expandedReviewProject.set(null);
     }
@@ -68,7 +68,7 @@ export class RepoDetailReviewComponent implements OnChanges {
     const target = event.currentTarget as HTMLElement;
     target.classList.add('finding-location-loading');
 
-    this.api.findNodeByFile(this.projectName, filePath, lineNumber ?? undefined).subscribe({
+    this.api.findNodeByFile(this.repositoryName, filePath, lineNumber ?? undefined).subscribe({
       next: res => {
         target.classList.remove('finding-location-loading');
         const queryParams = lineNumber ? { line: lineNumber } : {};

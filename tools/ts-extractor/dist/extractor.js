@@ -52,7 +52,7 @@ const PRIMITIVE_TYPES = new Set([
     'string', 'number', 'boolean', 'any', 'void',
     'null', 'undefined', 'never', 'unknown', 'object',
 ]);
-function extractProject(projectName, rootPath, tsconfigPath, log = () => { }, includedFiles) {
+function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { }, includedFiles) {
     const nodes = [];
     const edges = [];
     const workspacePackages = [];
@@ -112,12 +112,12 @@ function extractProject(projectName, rootPath, tsconfigPath, log = () => { }, in
             filePath.includes('.generated.'))
             continue;
         const fileT0 = Date.now();
-        const fileQN = `${projectName}:${filePath}`;
+        const fileQN = `${repositoryName}:${filePath}`;
         extractImports(sourceFile, fileQN, unresolvedImports);
-        extractClasses(sourceFile, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
+        extractClasses(sourceFile, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
         extractInterfaces(sourceFile, filePath, nodes);
         extractEnums(sourceFile, filePath, nodes);
-        extractAngularRoutes(sourceFile, projectName, filePath, nodes, edges);
+        extractAngularRoutes(sourceFile, repositoryName, filePath, nodes, edges);
         const fileMs = Date.now() - fileT0;
         processedFiles.push(filePath);
         filesProcessed++;
@@ -126,7 +126,7 @@ function extractProject(projectName, rootPath, tsconfigPath, log = () => { }, in
     }
     diag(`extractionLoop: ${filesProcessed} files in ${Date.now() - t0}ms`);
     t0 = Date.now();
-    const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(projectName, rootPath, tsconfigPath, sourceFiles, log, scope);
+    const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(repositoryName, rootPath, tsconfigPath, sourceFiles, log, scope);
     nodes.push(...workspaceResolution.nodes);
     edges.push(...workspaceResolution.edges);
     workspacePackages.push(...workspaceResolution.workspacePackages);
@@ -151,12 +151,12 @@ function extractImports(sourceFile, fileQN, unresolvedImports) {
     }
 }
 // ── Classes ───────────────────────────────────────────────────────────────────
-function extractClasses(sourceFile, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots) {
+function extractClasses(sourceFile, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots) {
     for (const cls of sourceFile.getClasses()) {
-        extractClass(cls, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
+        extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
     }
 }
-function extractClass(cls, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots) {
+function extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots) {
     const name = cls.getName();
     if (!name)
         return;
@@ -350,7 +350,7 @@ function extractEnums(sourceFile, filePath, nodes) {
     }
 }
 // ── Angular Routes ────────────────────────────────────────────────────────────
-function extractAngularRoutes(sourceFile, projectName, filePath, nodes, edges) {
+function extractAngularRoutes(sourceFile, repositoryName, filePath, nodes, edges) {
     for (const varDecl of sourceFile.getVariableDeclarations()) {
         const typeText = varDecl.getTypeNode()?.getText() ?? '';
         if (!typeText.includes('Routes') && !typeText.includes('Route[]'))
@@ -373,7 +373,7 @@ function extractAngularRoutes(sourceFile, projectName, filePath, nodes, edges) {
             }
             if (!componentName)
                 continue;
-            const routeQN = `route:${projectName}:GET:${routePath || '/'}`;
+            const routeQN = `route:${repositoryName}:GET:${routePath || '/'}`;
             nodes.push({
                 label: 'Route',
                 name: `GET /${routePath}`,

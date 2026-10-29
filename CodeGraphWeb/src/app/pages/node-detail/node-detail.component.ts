@@ -42,15 +42,15 @@ export class NodeDetailComponent implements OnInit, AfterViewChecked {
   readonly sourceViewer = viewChild<ElementRef<HTMLElement>>('sourceViewer');
 
   sectionRoot() {
-    return this.detail()?.node.project.startsWith('db:') ? '/schemas' : '/repos';
+    return this.detail()?.node.repository.startsWith('db:') ? '/schemas' : '/repos';
   }
 
   sectionLabel() {
-    return this.detail()?.node.project.startsWith('db:') ? 'Schemas' : 'Repositories';
+    return this.detail()?.node.repository.startsWith('db:') ? 'Schemas' : 'Repositories';
   }
 
-  projectRoute(projectName: string) {
-    return [projectName.startsWith('db:') ? '/schemas' : '/repos', projectName];
+  repositoryRoute(repositoryName: string) {
+    return [repositoryName.startsWith('db:') ? '/schemas' : '/repos', repositoryName];
   }
 
   sourceLines = computed<SourceLine[]>(() => {
@@ -98,7 +98,7 @@ export class NodeDetailComponent implements OnInit, AfterViewChecked {
       next: d => {
         this.detail.set(d);
         this.loading.set(false);
-        this.chatContext.setNode(d.node.id, d.node.name, d.node.label, d.node.project);
+        this.chatContext.setNode(d.node.id, d.node.name, d.node.label, d.node.repository);
         if (d.node.filePath) this.loadSource(id);
       },
       error: () => this.loading.set(false)

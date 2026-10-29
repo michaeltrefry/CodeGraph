@@ -15,7 +15,7 @@ export const BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 
 const defaultLogsDir = path.join(__dirname, '..', 'logs');
 
-function openLogFile(logsDir: string, projectName: string): fs.WriteStream {
+function openLogFile(logsDir: string, repositoryName: string): fs.WriteStream {
   fs.mkdirSync(logsDir, { recursive: true });
   const now = new Date();
   const ts = now.getFullYear().toString()
@@ -23,7 +23,7 @@ function openLogFile(logsDir: string, projectName: string): fs.WriteStream {
     + String(now.getDate()).padStart(2, '0')
     + String(now.getHours()).padStart(2, '0')
     + String(now.getMinutes()).padStart(2, '0');
-  const safeName = projectName.replace(/[^A-Za-z0-9._-]/g, '_');
+  const safeName = repositoryName.replace(/[^A-Za-z0-9._-]/g, '_');
   const file = path.join(logsDir, `${ts}-${safeName}.log`);
   return fs.createWriteStream(file, { flags: 'w' });
 }
@@ -48,8 +48,8 @@ export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
   app.post<{ Body: ExtractProjectRequest; Reply: ExtractProjectResponse }>(
     '/extract-project',
     async (request, reply) => {
-      const { projectName, rootPath, tsconfigPath } = request.body;
-      const logStream = openLogFile(logsDir, projectName);
+      const { repositoryName, rootPath, tsconfigPath } = request.body;
+      const logStream = openLogFile(logsDir, repositoryName);
       const log = (msg: string) => {
         const line = `[${new Date().toISOString()}] ${msg}`;
         logStream.write(line + '\n');
@@ -58,10 +58,10 @@ export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
 
       try {
         const includedFiles = readIncludedFiles(request.body);
-        log(`Starting extraction: ${projectName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? '(disk walk)'}`);
+        log(`Starting extraction: ${repositoryName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? '(disk walk)'}`);
 
         const t0 = Date.now();
-        const result = extractProject(projectName, rootPath, tsconfigPath, log, includedFiles);
+        const result = extractProject(repositoryName, rootPath, tsconfigPath, log, includedFiles);
         const elapsed = Date.now() - t0;
 
         // Log diagnostics

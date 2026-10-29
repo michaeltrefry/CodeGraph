@@ -1,6 +1,6 @@
 import { Component, Input, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { CONFIDENCE_COLORS, LABEL_ICONS, ProjectDetailResponse, StoredProjectAnalysis } from '../../core/models';
+import { CONFIDENCE_COLORS, LABEL_ICONS, RepositoryDetailResponse, StoredProjectAnalysis } from '../../core/models';
 
 interface RepoProjectEntry {
   projectName: string;
@@ -16,8 +16,8 @@ import { MarkdownComponent } from '../../shared/markdown.component';
   styleUrl: './repo-detail-projects.component.scss'
 })
 export class RepoDetailProjectsComponent {
-  @Input() projectName = '';
-  @Input() detail: ProjectDetailResponse | null = null;
+  @Input() repositoryName = '';
+  @Input() detail: RepositoryDetailResponse | null = null;
 
   expandedAnalysis = signal<string | null>(null);
 
@@ -28,8 +28,8 @@ export class RepoDetailProjectsComponent {
     this.expandedAnalysis.update(current => current === projectName ? null : projectName);
   }
 
-  projectNodesRoute(projectName: string) {
-    return [projectName.startsWith('db:') ? '/schemas' : '/repos', projectName, 'nodes'];
+  repositoryNodesRoute(repositoryName: string) {
+    return [repositoryName.startsWith('db:') ? '/schemas' : '/repos', repositoryName, 'nodes'];
   }
 
   projectEntries(): RepoProjectEntry[] {

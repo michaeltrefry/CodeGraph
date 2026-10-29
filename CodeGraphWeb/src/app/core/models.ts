@@ -1,6 +1,6 @@
 // Mirrors the C# DTOs from the API
 
-export interface ProjectInfo {
+export interface RepositoryInfo {
   name: string;
   repoUrl?: string;
   sourceGroup?: string;
@@ -39,7 +39,7 @@ export interface SchemaListResponse {
 }
 
 export interface SchemaCatalogResponse {
-  projectName: string;
+  repositoryName: string;
   serverName: string;
   databaseName: string;
   tables: SchemaObject[];
@@ -544,8 +544,8 @@ export interface DotnetSupportInfo {
   targetFrameworks: DotnetTargetFrameworkSupportInfo[];
 }
 
-export interface ProjectSummary {
-  project: string;
+export interface RepositorySummary {
+  repository: string;
   summary: string;
   confidence: 'low' | 'medium' | 'high';
   sourceHash: string;
@@ -584,7 +584,7 @@ export interface StoredProjectAnalysis {
 
 export interface GraphNode {
   id: number;
-  project: string;
+  repository: string;
   dotnetProject?: string;
   label: string;
   name: string;
@@ -605,8 +605,8 @@ export interface EdgeSummary {
   neighborName?: string;
   neighborQualifiedName?: string;
   neighborLabel?: string;
-  neighborProject?: string;
-  isCrossProject: boolean;
+  neighborRepository?: string;
+  isCrossRepository: boolean;
   properties: Record<string, unknown>;
 }
 
@@ -614,8 +614,8 @@ export interface CrossRepoEdgeSummary {
   edgeId: number;
   type: string;
   direction: 'inbound' | 'outbound';
-  sourceProject: string;
-  targetProject: string;
+  sourceRepository: string;
+  targetRepository: string;
   neighborNodeId: number;
   neighborName?: string;
   neighborQualifiedName?: string;
@@ -623,8 +623,8 @@ export interface CrossRepoEdgeSummary {
   properties: Record<string, unknown>;
 }
 
-export interface ProjectListResponse {
-  items: ProjectInfo[];
+export interface RepositoryListResponse {
+  items: RepositoryInfo[];
   total: number;
   page: number;
   pageSize: number;
@@ -632,7 +632,7 @@ export interface ProjectListResponse {
 }
 
 export interface ProjectHealthSummary {
-  project: string;
+  repository: string;
   dotnetProject?: string;
   overallHealth: number;
   totalFiles: number;
@@ -668,7 +668,7 @@ export interface RepositoryVitalitySummary {
 }
 
 export interface ProjectHealthAnalysis {
-  project: string;
+  repository: string;
   dotnetProject?: string;
   analysis: string;
   confidence: 'low' | 'medium' | 'high';
@@ -677,7 +677,7 @@ export interface ProjectHealthAnalysis {
   updatedAt: string;
 }
 
-export interface ProjectSecuritySummary {
+export interface RepositorySecuritySummary {
   securityScore: number;
   criticalCount: number;
   highCount: number;
@@ -698,8 +698,8 @@ export interface SecurityFinding {
   advisory?: string;
 }
 
-export interface ProjectSecurityResponse {
-  project: string;
+export interface RepositorySecurityResponse {
+  repository: string;
   securityScore: number;
   criticalCount: number;
   highCount: number;
@@ -722,7 +722,7 @@ export interface StartRepositoryReviewResponse {
 
 export interface ProjectReviewRunResponse {
   id: number;
-  project: string;
+  repository: string;
   projectName: string;
   reviewedCommitSha?: string;
   status: string;
@@ -823,7 +823,7 @@ export interface ProjectDiagnosticResponse {
 }
 
 export interface ProjectDiagnosticsResponse {
-  project: string;
+  repository: string;
   dotnetProject?: string;
   errorCount: number;
   warningCount: number;
@@ -831,12 +831,12 @@ export interface ProjectDiagnosticsResponse {
   diagnostics: ProjectDiagnosticResponse[];
 }
 
-export interface ProjectHealthResponse {
+export interface RepositoryHealthResponse {
   repoHealth?: ProjectHealthSummary;
-  projectHealths: ProjectHealthSummary[];
+  dotnetProjectHealths: ProjectHealthSummary[];
   topHotspots: FileMetrics[];
   analyses: ProjectHealthAnalysis[];
-  securitySummary?: ProjectSecuritySummary;
+  securitySummary?: RepositorySecuritySummary;
   dotnetSupport?: DotnetSupportInfo;
   repositoryVitality?: RepositoryVitalitySummary;
 }
@@ -920,17 +920,17 @@ export interface FileMetrics {
   recurringChurnScore: number;
 }
 
-export interface ProjectDetailResponse {
-  project: ProjectInfo;
+export interface RepositoryDetailResponse {
+  repository: RepositoryInfo;
   dotnetSupport?: DotnetSupportInfo;
-  summary?: ProjectSummary;
+  summary?: RepositorySummary;
   analyses: StoredProjectAnalysis[];
   nodeCounts: Record<string, number>;
   dotnetProjects: Record<string, Record<string, number>>;
   inboundEdgeCount: number;
   outboundEdgeCount: number;
-  inboundProjects: string[];
-  outboundProjects: string[];
+  inboundRepositories: string[];
+  outboundRepositories: string[];
   health?: ProjectHealthSummary;
 }
 
@@ -1197,13 +1197,13 @@ export interface ClusterSummary {
 export interface ClusterOverviewResponse {
   clusters: ClusterSummary[];
   modularity: number;
-  totalProjects: number;
-  clusteredProjects: number;
+  totalRepositories: number;
+  clusteredRepositories: number;
   computedAt?: string;
 }
 
 export interface ClusterMember {
-  projectName: string;
+  repositoryName: string;
   betweennessCentrality: number;
   internalEdges: number;
   externalEdges: number;
@@ -1421,7 +1421,7 @@ export interface AffectedNode {
   name: string;
   qualifiedName: string;
   label: string;
-  project: string;
+  repository: string;
   dotnetProject?: string;
   filePath?: string;
   depth: number;
@@ -1431,8 +1431,8 @@ export interface AffectedNode {
 }
 
 export interface CrossRepoImpact {
-  sourceProject: string;
-  targetProject: string;
+  sourceRepository: string;
+  targetRepository: string;
   edgeType: string;
   affectedNodeCount: number;
 }
@@ -1444,7 +1444,7 @@ export interface ImpactSummary {
   highCount: number;
   mediumCount: number;
   lowCount: number;
-  affectedProjects: string[];
+  affectedRepositories: string[];
 }
 
 export interface ImpactReport {
@@ -1491,11 +1491,11 @@ export interface UnifiedSearchResponse {
 }
 
 export interface SearchResultItem {
-  type: 'repository' | 'project' | 'node';
+  type: 'repository' | 'node';
   name: string;
   description?: string;
   nodeLabel?: string;
-  project?: string;
+  repository?: string;
   nodeId?: number;
   qualifiedName?: string;
 }

@@ -14,7 +14,7 @@
       </div>
       <button class="im-btn" type="button"
               (click)="analyze()"
-              [disabled]="loading() || !nodeName() || !projectName()">
+              [disabled]="loading() || !nodeName() || !repositoryName()">
         @if (loading()) { <span class="im-spinner"></span> Re-running… }
         @else { ↻ Re-run }
       </button>
@@ -24,14 +24,14 @@
   <section class="im-form-card">
     <div class="im-form-row">
       <div class="im-field">
-        <label class="im-field-label">Project</label>
+        <label class="im-field-label">Repository</label>
         <app-typeahead
-          [searchFn]="searchProjects"
+          [searchFn]="searchRepositories"
           [placeholder]="'e.g. TC.OrdersApi'"
           [minChars]="2"
-          [ngModel]="projectName()"
-          (ngModelChange)="projectName.set($event)"
-          (selected)="onProjectSelected($event)" />
+          [ngModel]="repositoryName()"
+          (ngModelChange)="repositoryName.set($event)"
+          (selected)="onRepositorySelected($event)" />
       </div>
       <div class="im-field im-field-wide">
         <label class="im-field-label">Node</label>
@@ -45,7 +45,7 @@
       </div>
       <button class="im-btn primary" type="button"
               (click)="analyze()"
-              [disabled]="loading() || !nodeName() || !projectName()">
+              [disabled]="loading() || !nodeName() || !repositoryName()">
         Analyze
       </button>
     </div>
@@ -97,7 +97,7 @@
                 @if (isCrossRepo(n)) {
                   <span class="cg-chip cg-chip-accent">cross-repo</span>
                 }
-                <span class="im-tree-project cg-faint cg-xsmall cg-mono">{{ n.project }}</span>
+                <span class="im-tree-repository cg-faint cg-xsmall cg-mono">{{ n.repository }}</span>
                 <span class="im-risk-pill" [attr.data-risk]="n.risk.toLowerCase()">
                   {{ riskPillLabel(n.risk) }}
                 </span>
@@ -116,8 +116,8 @@
               <div class="im-detail-sep"></div>
 
               <div class="im-kv-list">
-                <div class="im-kv"><span>Project</span>
-                  <a class="cg-mono-link cg-small" [routerLink]="['/repos', sel.project]">{{ sel.project }}</a>
+                <div class="im-kv"><span>Repository</span>
+                  <a class="cg-mono-link cg-small" [routerLink]="['/repos', sel.repository]">{{ sel.repository }}</a>
                 </div>
                 <div class="im-kv"><span>Kind</span>
                   <span class="cg-mono cg-small">{{ sel.label }}</span>
@@ -173,7 +173,7 @@
             <a class="im-changed-row" [routerLink]="['/nodes', n.nodeId]">
               <span class="cg-mono-link">{{ n.name }}</span>
               <span class="cg-chip cg-chip-mono">{{ n.label }}</span>
-              <span class="cg-muted cg-xsmall">{{ n.project }}</span>
+              <span class="cg-muted cg-xsmall">{{ n.repository }}</span>
             </a>
           }
         </div>
@@ -197,10 +197,10 @@
               </tr>
             </thead>
             <tbody>
-              @for (c of r.crossRepoImpacts; track c.sourceProject + c.targetProject) {
+              @for (c of r.crossRepoImpacts; track c.sourceRepository + c.targetRepository) {
                 <tr>
-                  <td><a class="cg-mono-link" [routerLink]="['/repos', c.sourceProject]">{{ c.sourceProject }}</a></td>
-                  <td><a class="cg-mono-link" [routerLink]="['/repos', c.targetProject]">{{ c.targetProject }}</a></td>
+                  <td><a class="cg-mono-link" [routerLink]="['/repos', c.sourceRepository]">{{ c.sourceRepository }}</a></td>
+                  <td><a class="cg-mono-link" [routerLink]="['/repos', c.targetRepository]">{{ c.targetRepository }}</a></td>
                   <td><span class="cg-mono cg-small">{{ c.edgeType }}</span></td>
                   <td class="cg-cell-num">{{ c.affectedNodeCount }}</td>
                 </tr>
@@ -211,14 +211,14 @@
       </section>
     }
 
-    @if (r.summary.affectedProjects.length > 1) {
+    @if (r.summary.affectedRepositories.length > 1) {
       <section class="im-sub-card">
         <div class="im-sub-card-head">
-          <span class="im-label-sm">Affected projects</span>
-          <span class="cg-chip cg-chip-mono">{{ r.summary.affectedProjects.length }}</span>
+          <span class="im-label-sm">Affected repositories</span>
+          <span class="cg-chip cg-chip-mono">{{ r.summary.affectedRepositories.length }}</span>
         </div>
-        <div class="im-project-chips">
-          @for (p of r.summary.affectedProjects; track p) {
+        <div class="im-repository-chips">
+          @for (p of r.summary.affectedRepositories; track p) {
             <a class="cg-chip cg-chip-mono" [routerLink]="['/repos', p]">{{ p }}</a>
           }
         </div>

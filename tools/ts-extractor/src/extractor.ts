@@ -42,7 +42,7 @@ interface ApiContractInfo {
 }
 
 export function extractProject(
-  projectName: string,
+  repositoryName: string,
   rootPath: string,
   tsconfigPath: string,
   log: (msg: string) => void = () => {},
@@ -119,13 +119,13 @@ export function extractProject(
     ) continue;
 
     const fileT0 = Date.now();
-    const fileQN = `${projectName}:${filePath}`;
+    const fileQN = `${repositoryName}:${filePath}`;
 
     extractImports(sourceFile, fileQN, unresolvedImports);
-    extractClasses(sourceFile, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
+    extractClasses(sourceFile, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
     extractInterfaces(sourceFile, filePath, nodes);
     extractEnums(sourceFile, filePath, nodes);
-    extractAngularRoutes(sourceFile, projectName, filePath, nodes, edges);
+    extractAngularRoutes(sourceFile, repositoryName, filePath, nodes, edges);
 
     const fileMs = Date.now() - fileT0;
     processedFiles.push(filePath);
@@ -136,7 +136,7 @@ export function extractProject(
 
   t0 = Date.now();
   const workspaceResolution = analyzeWorkspaceImports(
-    projectName,
+    repositoryName,
     rootPath,
     tsconfigPath,
     sourceFiles,
@@ -178,7 +178,7 @@ function extractImports(
 
 function extractClasses(
   sourceFile: SourceFile,
-  projectName: string,
+  repositoryName: string,
   filePath: string,
   nodes: GraphNodeDto[],
   edges: PendingEdgeDto[],
@@ -187,13 +187,13 @@ function extractClasses(
   typeRoots: string[],
 ): void {
   for (const cls of sourceFile.getClasses()) {
-    extractClass(cls, projectName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
+    extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
   }
 }
 
 function extractClass(
   cls: ClassDeclaration,
-  projectName: string,
+  repositoryName: string,
   filePath: string,
   nodes: GraphNodeDto[],
   edges: PendingEdgeDto[],
@@ -419,7 +419,7 @@ function extractEnums(
 
 function extractAngularRoutes(
   sourceFile: SourceFile,
-  projectName: string,
+  repositoryName: string,
   filePath: string,
   nodes: GraphNodeDto[],
   edges: PendingEdgeDto[],
@@ -446,7 +446,7 @@ function extractAngularRoutes(
 
       if (!componentName) continue;
 
-      const routeQN = `route:${projectName}:GET:${routePath || '/'}`;
+      const routeQN = `route:${repositoryName}:GET:${routePath || '/'}`;
       nodes.push({
         label: 'Route',
         name: `GET /${routePath}`,

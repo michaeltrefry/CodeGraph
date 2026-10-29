@@ -2,8 +2,8 @@
   <div class="cg-breadcrumb schema-detail-breadcrumb">
     <a routerLink="/schemas">Schemas</a>
     <span>/</span>
-    <span class="current">{{ projectName() }}</span>
+    <span class="current">{{ repositoryName() }}</span>
   </div>
 
-  <app-schema-catalog [projectName]="projectName()" />
+  <app-schema-catalog [repositoryName]="repositoryName()" />
 </div>

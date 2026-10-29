@@ -10,7 +10,7 @@ import { SchemasComponent } from './schemas.component';
 describe('SchemasComponent', () => {
   let api: {
     listSchemas: ReturnType<typeof vi.fn>;
-    deleteProject: ReturnType<typeof vi.fn>;
+    deleteRepository: ReturnType<typeof vi.fn>;
   };
   let auth: {
     enabled: ReturnType<typeof signal<boolean>>;
@@ -51,7 +51,7 @@ describe('SchemasComponent', () => {
   beforeEach(() => {
     api = {
       listSchemas: vi.fn().mockReturnValue(of(response([emptySchema, populatedSchema]))),
-      deleteProject: vi.fn().mockReturnValue(of(void 0))
+      deleteRepository: vi.fn().mockReturnValue(of(void 0))
     };
     auth = {
       enabled: signal(true),
@@ -77,7 +77,7 @@ describe('SchemasComponent', () => {
 
     expect(component.isAdmin()).toBe(false);
     component.deleteSchema(emptySchema);
-    expect(api.deleteProject).not.toHaveBeenCalled();
+    expect(api.deleteRepository).not.toHaveBeenCalled();
   });
 
   it('confirms the exact schema, deletes it, and refreshes the list', () => {
@@ -92,7 +92,7 @@ describe('SchemasComponent', () => {
       "Delete indexed schema 'db:CodeGraph-MariaDb:codegraph' from CodeGraph?\n\n" +
       "This removes only CodeGraph's indexed graph data. It does not delete the source database."
     );
-    expect(api.deleteProject).toHaveBeenCalledWith('db:CodeGraph-MariaDb:codegraph');
+    expect(api.deleteRepository).toHaveBeenCalledWith('db:CodeGraph-MariaDb:codegraph');
     expect(component.items()).toEqual([populatedSchema]);
     expect(component.notice()).toBe("Deleted indexed schema 'db:CodeGraph-MariaDb:codegraph'.");
     expect(component.deletingSchema()).toBeNull();
@@ -100,7 +100,7 @@ describe('SchemasComponent', () => {
 
   it('keeps the schema visible and reports a failed deletion', () => {
     vi.stubGlobal('confirm', vi.fn(() => true));
-    api.deleteProject.mockReturnValue(throwError(() => new Error('failed')));
+    api.deleteRepository.mockReturnValue(throwError(() => new Error('failed')));
     component.items.set([emptySchema, populatedSchema]);
 
     component.deleteSchema(emptySchema);

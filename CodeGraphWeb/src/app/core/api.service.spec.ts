@@ -58,7 +58,7 @@ describe('ApiService streaming requests', () => {
     await expect(generator.next()).rejects.toThrow('HTTP 401');
 
     expect(fetch).toHaveBeenCalledWith(
-      'http://localhost:5037/api/projects/CodeGraph/code-review/42/stream',
+      'http://localhost:5037/api/repositories/CodeGraph/code-review/42/stream',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({

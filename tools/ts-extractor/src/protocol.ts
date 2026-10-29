@@ -1,5 +1,5 @@
 export interface ExtractProjectRequest {
-  projectName: string;
+  repositoryName: string;
   rootPath: string;
   tsconfigPath: string;
   /**

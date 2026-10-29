@@ -116,7 +116,7 @@ export class SchemasComponent implements OnInit {
     this.deletingSchema.set(schema.name);
     this.error.set('');
     this.notice.set('');
-    this.api.deleteProject(schema.name).subscribe({
+    this.api.deleteRepository(schema.name).subscribe({
       next: () => {
         this.deletingSchema.set(null);
         this.notice.set(`Deleted indexed schema '${schema.name}'.`);

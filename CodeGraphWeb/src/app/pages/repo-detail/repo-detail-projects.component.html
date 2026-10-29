@@ -12,7 +12,7 @@
             <div class="rdp-project-head" (click)="toggleAnalysis(entry.projectName)">
               @if (getDotnetProject(entry.projectName); as proj) {
                 <a class="cg-mono-link rdp-project-name"
-                   [routerLink]="projectNodesRoute(projectName)"
+                   [routerLink]="repositoryNodesRoute(repositoryName)"
                    [queryParams]="{ dotnetProject: proj.name }"
                    (click)="$event.stopPropagation()">
                   {{ entry.projectName }}
@@ -47,7 +47,7 @@
                 @if (getDotnetProject(entry.projectName); as proj) {
                   <div class="rdp-label-row">
                     @for (lbl of proj.labels; track lbl[0]) {
-                      <a [routerLink]="projectNodesRoute(projectName)"
+                      <a [routerLink]="repositoryNodesRoute(repositoryName)"
                          [queryParams]="{ dotnetProject: proj.name, label: lbl[0] }"
                          class="rdp-label-chip">
                         <span class="rdp-label-icon">{{ labelIcons[lbl[0]] || '•' }}</span>

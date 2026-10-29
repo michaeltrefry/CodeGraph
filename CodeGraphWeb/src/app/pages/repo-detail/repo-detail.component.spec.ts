@@ -9,15 +9,15 @@ import { ChatContextService } from '../../core/chat-context.service';
 import {
   AnalysisBatchStatus,
   IndexerRunResponse,
-  ProjectDetailResponse,
-  ProjectHealthResponse,
-  ProjectSecurityResponse
+  RepositoryDetailResponse,
+  RepositoryHealthResponse,
+  RepositorySecurityResponse
 } from '../../core/models';
 import { RepoDetailComponent } from './repo-detail.component';
 
-function createDetail(name: string): ProjectDetailResponse {
+function createDetail(name: string): RepositoryDetailResponse {
   return {
-    project: {
+    repository: {
       name,
       isFoundational: false,
       properties: {}
@@ -27,15 +27,15 @@ function createDetail(name: string): ProjectDetailResponse {
     dotnetProjects: {},
     inboundEdgeCount: 0,
     outboundEdgeCount: 0,
-    inboundProjects: [],
-    outboundProjects: []
+    inboundRepositories: [],
+    outboundRepositories: []
   };
 }
 
-function createHealth(name: string): ProjectHealthResponse {
+function createHealth(name: string): RepositoryHealthResponse {
   return {
     repoHealth: {
-      project: name,
+      repository: name,
       overallHealth: 8.5,
       totalFiles: 1,
       hotspotCount: 0,
@@ -44,15 +44,15 @@ function createHealth(name: string): ProjectHealthResponse {
       baseOverallHealth: 8.5,
       scorePenalty: 0
     },
-    projectHealths: [],
+    dotnetProjectHealths: [],
     topHotspots: [],
     analyses: []
   };
 }
 
-function createSecurity(project: string): ProjectSecurityResponse {
+function createSecurity(repository: string): RepositorySecurityResponse {
   return {
-    project,
+    repository,
     securityScore: 9,
     criticalCount: 0,
     highCount: 0,
@@ -82,9 +82,9 @@ function createBatchStatus(repo: string): AnalysisBatchStatus {
 function createComponent() {
   const paramMap$ = new Subject<ReturnType<typeof convertToParamMap>>();
   const queryParamMap$ = new Subject<ReturnType<typeof convertToParamMap>>();
-  const detailSubjects = new Map<string, Subject<ProjectDetailResponse>>();
-  const healthSubjects = new Map<string, Subject<ProjectHealthResponse>>();
-  const securitySubjects = new Map<string, Subject<ProjectSecurityResponse>>();
+  const detailSubjects = new Map<string, Subject<RepositoryDetailResponse>>();
+  const healthSubjects = new Map<string, Subject<RepositoryHealthResponse>>();
+  const securitySubjects = new Map<string, Subject<RepositorySecurityResponse>>();
   const readmeSubjects = new Map<string, Subject<{ content: string }>>();
   const batchSubjects = new Map<string, Subject<AnalysisBatchStatus>>();
   const runSubjects = new Map<number, Subject<IndexerRunResponse>>();
@@ -97,10 +97,10 @@ function createComponent() {
   };
 
   const api = {
-    getProject: vi.fn((name: string) => getSubject(detailSubjects, name).asObservable()),
-    getProjectHealth: vi.fn((name: string) => getSubject(healthSubjects, name).asObservable()),
-    getProjectSecurity: vi.fn((name: string) => getSubject(securitySubjects, name).asObservable()),
-    getProjectReadme: vi.fn((name: string) => getSubject(readmeSubjects, name).asObservable()),
+    getRepository: vi.fn((name: string) => getSubject(detailSubjects, name).asObservable()),
+    getRepositoryHealth: vi.fn((name: string) => getSubject(healthSubjects, name).asObservable()),
+    getRepositorySecurity: vi.fn((name: string) => getSubject(securitySubjects, name).asObservable()),
+    getRepositoryReadme: vi.fn((name: string) => getSubject(readmeSubjects, name).asObservable()),
     getBatchStatus: vi.fn((name: string) => getSubject(batchSubjects, name).asObservable()),
     getIndexerRun: vi.fn((id: number) => {
       const subject = runSubjects.get(id) ?? new Subject<IndexerRunResponse>();
@@ -111,7 +111,7 @@ function createComponent() {
     getLatestRepositoryReview: vi.fn().mockReturnValue(throwError(() => ({ status: 404 }))),
     getRepositoryReview: vi.fn(),
     getProjectDiagnostics: vi.fn().mockReturnValue(of({
-      project: 'repo',
+      repository: 'repo',
       errorCount: 0,
       warningCount: 0,
       infoCount: 0,
@@ -119,7 +119,7 @@ function createComponent() {
     })),
     startRepositoryReview: vi.fn().mockReturnValue(of({ reviewRunId: 100, status: 'queued' })),
     reAnalyze: vi.fn(),
-    deleteProject: vi.fn(),
+    deleteRepository: vi.fn(),
     streamRepositoryReview: vi.fn()
   };
 
@@ -199,9 +199,9 @@ describe('RepoDetailComponent', () => {
     batchSubjects.get('repo-a')?.next(createBatchStatus('repo-a'));
 
     expect(component.name()).toBe('repo-b');
-    expect(component.detail()?.project.name).toBe('repo-b');
-    expect(component.health()?.repoHealth?.project).toBe('repo-b');
-    expect(component.security()?.project).toBe('repo-b');
+    expect(component.detail()?.repository.name).toBe('repo-b');
+    expect(component.health()?.repoHealth?.repository).toBe('repo-b');
+    expect(component.security()?.repository).toBe('repo-b');
     expect(component.readme()).toBe('repo-b readme');
     expect(component.batchStatus()?.repo).toBe('repo-b');
     expect(component.loading()).toBe(false);

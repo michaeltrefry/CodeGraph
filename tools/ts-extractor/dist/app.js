@@ -51,7 +51,7 @@ const linter_1 = require("./linter");
  */
 exports.BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 const defaultLogsDir = path.join(__dirname, '..', 'logs');
-function openLogFile(logsDir, projectName) {
+function openLogFile(logsDir, repositoryName) {
     fs.mkdirSync(logsDir, { recursive: true });
     const now = new Date();
     const ts = now.getFullYear().toString()
@@ -59,7 +59,7 @@ function openLogFile(logsDir, projectName) {
         + String(now.getDate()).padStart(2, '0')
         + String(now.getHours()).padStart(2, '0')
         + String(now.getMinutes()).padStart(2, '0');
-    const safeName = projectName.replace(/[^A-Za-z0-9._-]/g, '_');
+    const safeName = repositoryName.replace(/[^A-Za-z0-9._-]/g, '_');
     const file = path.join(logsDir, `${ts}-${safeName}.log`);
     return fs.createWriteStream(file, { flags: 'w' });
 }
@@ -78,8 +78,8 @@ function buildApp(logsDir = defaultLogsDir) {
     const app = (0, fastify_1.default)({ logger: false, bodyLimit: exports.BODY_LIMIT_BYTES });
     app.get('/health', async () => ({ status: 'ok' }));
     app.post('/extract-project', async (request, reply) => {
-        const { projectName, rootPath, tsconfigPath } = request.body;
-        const logStream = openLogFile(logsDir, projectName);
+        const { repositoryName, rootPath, tsconfigPath } = request.body;
+        const logStream = openLogFile(logsDir, repositoryName);
         const log = (msg) => {
             const line = `[${new Date().toISOString()}] ${msg}`;
             logStream.write(line + '\n');
@@ -87,9 +87,9 @@ function buildApp(logsDir = defaultLogsDir) {
         };
         try {
             const includedFiles = readIncludedFiles(request.body);
-            log(`Starting extraction: ${projectName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? '(disk walk)'}`);
+            log(`Starting extraction: ${repositoryName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? '(disk walk)'}`);
             const t0 = Date.now();
-            const result = (0, extractor_1.extractProject)(projectName, rootPath, tsconfigPath, log, includedFiles);
+            const result = (0, extractor_1.extractProject)(repositoryName, rootPath, tsconfigPath, log, includedFiles);
             const elapsed = Date.now() - t0;
             // Log diagnostics
             const edgeTypes = {};

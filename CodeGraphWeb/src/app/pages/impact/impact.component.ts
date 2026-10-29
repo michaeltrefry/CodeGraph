@@ -23,7 +23,7 @@ export class ImpactComponent {
 
   // Form inputs
   nodeName = signal('');
-  projectName = signal('');
+  repositoryName = signal('');
   depth = signal(3);
 
   // Results
@@ -54,8 +54,8 @@ export class ImpactComponent {
   primaryChanged = computed(() => this.report()?.changedNodes[0] ?? null);
 
   // Typeahead search functions
-  searchProjects = (query: string): Observable<TypeaheadItem[]> =>
-    this.api.listProjects(query, undefined, 1, 25).pipe(
+  searchRepositories = (query: string): Observable<TypeaheadItem[]> =>
+    this.api.listRepositories(query, undefined, 1, 25).pipe(
       map(r => r.items.map(p => ({
         value: p.name,
         label: p.name,
@@ -64,8 +64,8 @@ export class ImpactComponent {
     );
 
   searchNodes = (query: string): Observable<TypeaheadItem[]> => {
-    const project = this.projectName() || undefined;
-    return this.api.searchNodes(query, project, undefined, 1, 25).pipe(
+    const repository = this.repositoryName() || undefined;
+    return this.api.searchNodes(query, repository, undefined, 1, 25).pipe(
       map(r => r.items.map(n => ({
         value: n.qualifiedName || n.name,
         label: n.name,
@@ -76,28 +76,28 @@ export class ImpactComponent {
   };
 
   ngOnInit() {
-    // Read query params to support linking: /impact?project=X&node=Y
+    // Read query params to support linking: /impact?repository=X&node=Y
     this.route.queryParams
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(params => {
         if (params['node']) this.nodeName.set(params['node']);
-        if (params['project']) this.projectName.set(params['project']);
+        if (params['repository']) this.repositoryName.set(params['repository']);
         if (params['depth']) this.depth.set(+params['depth']);
-        if (params['node'] && params['project']) this.analyze();
+        if (params['node'] && params['repository']) this.analyze();
       });
   }
 
   analyze() {
     const node = this.nodeName().trim();
-    const project = this.projectName().trim();
-    if (!node || !project) return;
+    const repository = this.repositoryName().trim();
+    if (!node || !repository) return;
 
     this.loading.set(true);
     this.error.set(null);
     this.searched.set(true);
     this.selectedNodeId.set(null);
 
-    this.api.getImpact(project, node, this.depth()).subscribe({
+    this.api.getImpact(repository, node, this.depth()).subscribe({
       next: report => {
         this.report.set(report);
         this.loading.set(false);
@@ -115,7 +115,7 @@ export class ImpactComponent {
   setDepth(d: number) {
     if (d === this.depth()) return;
     this.depth.set(d);
-    if (this.nodeName() && this.projectName()) this.analyze();
+    if (this.nodeName() && this.repositoryName()) this.analyze();
   }
 
   select(nodeId: number) {
@@ -124,7 +124,7 @@ export class ImpactComponent {
 
   isCrossRepo(n: AffectedNode): boolean {
     const primary = this.primaryChanged();
-    return !!primary && n.project !== primary.project;
+    return !!primary && n.repository !== primary.repository;
   }
 
   riskPillLabel(risk: RiskLevel): string {
@@ -142,8 +142,8 @@ export class ImpactComponent {
     return Array.from({ length: depth }, (_, i) => i === depth - 1 ? '└' : ' ');
   }
 
-  onProjectSelected(value: string) {
-    this.projectName.set(value);
+  onRepositorySelected(value: string) {
+    this.repositoryName.set(value);
   }
 
   onNodeSelected(value: string) {

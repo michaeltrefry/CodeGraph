@@ -4,12 +4,12 @@ import { of, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiService } from '../../core/api.service';
 import { ChatContextService } from '../../core/chat-context.service';
-import { GraphNode, ProjectDetailResponse } from '../../core/models';
+import { GraphNode, RepositoryDetailResponse } from '../../core/models';
 import { NodeListComponent } from './node-list.component';
 
-function createDetail(name: string): ProjectDetailResponse {
+function createDetail(name: string): RepositoryDetailResponse {
   return {
-    project: {
+    repository: {
       name,
       isFoundational: false,
       properties: {}
@@ -22,15 +22,15 @@ function createDetail(name: string): ProjectDetailResponse {
     dotnetProjects: {},
     inboundEdgeCount: 0,
     outboundEdgeCount: 0,
-    inboundProjects: [],
-    outboundProjects: []
+    inboundRepositories: [],
+    outboundRepositories: []
   };
 }
 
 function createNode(overrides: Partial<GraphNode>): GraphNode {
   return {
     id: 1,
-    project: 'AgentHarness',
+    repository: 'AgentHarness',
     label: 'Class',
     name: 'AgentHarness',
     qualifiedName: 'AgentHarness',
@@ -45,8 +45,8 @@ function createNode(overrides: Partial<GraphNode>): GraphNode {
 
 function createComponent(apiOverrides: Partial<ApiService>) {
   const api = {
-    getProjectNodes: vi.fn().mockReturnValue(of({ items: [], total: 0, page: 1, pageSize: 10000 })),
-    getProject: vi.fn().mockReturnValue(of(createDetail('AgentHarness'))),
+    getRepositoryNodes: vi.fn().mockReturnValue(of({ items: [], total: 0, page: 1, pageSize: 10000 })),
+    getRepository: vi.fn().mockReturnValue(of(createDetail('AgentHarness'))),
     ...apiOverrides
   };
 
@@ -71,9 +71,9 @@ function createComponent(apiOverrides: Partial<ApiService>) {
 }
 
 describe('NodeListComponent', () => {
-  it('does not report no nodes when the project detail says indexed nodes exist', () => {
+  it('does not report no nodes when the repository detail says indexed nodes exist', () => {
     const { component } = createComponent({
-      getProjectNodes: vi.fn().mockReturnValue(of({ items: [], total: 3580, page: 1, pageSize: 10000 }))
+      getRepositoryNodes: vi.fn().mockReturnValue(of({ items: [], total: 3580, page: 1, pageSize: 10000 }))
     } as Partial<ApiService>);
 
     component.ngOnInit();
@@ -84,7 +84,7 @@ describe('NodeListComponent', () => {
 
   it('shows a load failure instead of a false empty state when the nodes request fails', () => {
     const { component } = createComponent({
-      getProjectNodes: vi.fn().mockReturnValue(throwError(() => new Error('request failed')))
+      getRepositoryNodes: vi.fn().mockReturnValue(throwError(() => new Error('request failed')))
     } as Partial<ApiService>);
 
     component.ngOnInit();
@@ -107,7 +107,7 @@ describe('NodeListComponent', () => {
       qualifiedName: 'AgentHarness.HarnessRunner.Run'
     });
     const { component } = createComponent({
-      getProjectNodes: vi.fn().mockReturnValue(of({ items: [classNode, methodNode], total: 2, page: 1, pageSize: 10000 }))
+      getRepositoryNodes: vi.fn().mockReturnValue(of({ items: [classNode, methodNode], total: 2, page: 1, pageSize: 10000 }))
     } as Partial<ApiService>);
 
     component.ngOnInit();
@@ -123,7 +123,7 @@ describe('NodeListComponent', () => {
       name: `Node${index + 1}`,
       qualifiedName: `AgentHarness.Node${index + 1}`
     }));
-    const getProjectNodes = vi.fn((_name: string, _label: string | undefined, _dotnetProject: string | undefined, page: number, pageSize: number) => {
+    const getRepositoryNodes = vi.fn((_name: string, _label: string | undefined, _dotnetProject: string | undefined, page: number, pageSize: number) => {
       const start = (page - 1) * pageSize;
       return of({
         items: nodes.slice(start, start + pageSize),
@@ -132,13 +132,13 @@ describe('NodeListComponent', () => {
         pageSize
       });
     });
-    const { component } = createComponent({ getProjectNodes } as Partial<ApiService>);
+    const { component } = createComponent({ getRepositoryNodes } as Partial<ApiService>);
 
     component.ngOnInit();
 
-    expect(getProjectNodes).toHaveBeenCalledTimes(2);
-    expect(getProjectNodes).toHaveBeenNthCalledWith(1, 'AgentHarness', undefined, undefined, 1, 500);
-    expect(getProjectNodes).toHaveBeenNthCalledWith(2, 'AgentHarness', undefined, undefined, 2, 500);
+    expect(getRepositoryNodes).toHaveBeenCalledTimes(2);
+    expect(getRepositoryNodes).toHaveBeenNthCalledWith(1, 'AgentHarness', undefined, undefined, 1, 500);
+    expect(getRepositoryNodes).toHaveBeenNthCalledWith(2, 'AgentHarness', undefined, undefined, 2, 500);
     expect(component.loading()).toBe(false);
     expect(component.total()).toBe(501);
     expect(component.allNodes()).toHaveLength(501);

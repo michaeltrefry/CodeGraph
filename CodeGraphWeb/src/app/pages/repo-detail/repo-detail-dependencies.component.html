@@ -6,14 +6,14 @@
           <h2 class="rdd-card-title">Inbound</h2>
           <div class="rdd-card-meta">
             <span class="cg-chip cg-chip-mono">{{ d.inboundEdgeCount }} edges</span>
-            <span class="cg-muted cg-xsmall">from {{ d.inboundProjects.length }} {{ d.inboundProjects.length === 1 ? 'repo' : 'repos' }}</span>
+            <span class="cg-muted cg-xsmall">from {{ d.inboundRepositories.length }} {{ d.inboundRepositories.length === 1 ? 'repo' : 'repos' }}</span>
           </div>
         </header>
-        @if (d.inboundProjects.length > 0) {
+        @if (d.inboundRepositories.length > 0) {
           <ul class="rdd-list">
-            @for (p of d.inboundProjects; track p) {
+            @for (p of d.inboundRepositories; track p) {
               <li>
-                <a class="cg-mono-link rdd-list-link" [routerLink]="projectRoute(p)">
+                <a class="cg-mono-link rdd-list-link" [routerLink]="repositoryRoute(p)">
                   <span class="rdd-list-arrow">←</span>
                   {{ p }}
                 </a>
@@ -30,14 +30,14 @@
           <h2 class="rdd-card-title">Outbound</h2>
           <div class="rdd-card-meta">
             <span class="cg-chip cg-chip-mono">{{ d.outboundEdgeCount }} edges</span>
-            <span class="cg-muted cg-xsmall">to {{ d.outboundProjects.length }} {{ d.outboundProjects.length === 1 ? 'repo' : 'repos' }}</span>
+            <span class="cg-muted cg-xsmall">to {{ d.outboundRepositories.length }} {{ d.outboundRepositories.length === 1 ? 'repo' : 'repos' }}</span>
           </div>
         </header>
-        @if (d.outboundProjects.length > 0) {
+        @if (d.outboundRepositories.length > 0) {
           <ul class="rdd-list">
-            @for (p of d.outboundProjects; track p) {
+            @for (p of d.outboundRepositories; track p) {
               <li>
-                <a class="cg-mono-link rdd-list-link" [routerLink]="projectRoute(p)">
+                <a class="cg-mono-link rdd-list-link" [routerLink]="repositoryRoute(p)">
                   <span class="rdd-list-arrow">→</span>
                   {{ p }}
                 </a>
@@ -58,7 +58,7 @@
         </header>
         <div class="rdd-label-grid">
           @for (entry of nodeLabelEntries(); track entry[0]) {
-            <a [routerLink]="projectNodesRoute(projectName)"
+            <a [routerLink]="repositoryNodesRoute(repositoryName)"
                [queryParams]="{ label: entry[0] }"
                class="rdd-label-tile">
               <span class="rdd-label-icon">{{ labelIcons[entry[0]] || '•' }}</span>

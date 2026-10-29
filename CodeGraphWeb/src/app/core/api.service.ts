@@ -4,11 +4,11 @@ import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 import { AuthService } from './auth.service';
 import {
-  ProjectListResponse,
-  ProjectDetailResponse,
+  RepositoryListResponse,
+  RepositoryDetailResponse,
   SchemaCatalogResponse,
   SchemaListResponse,
-  ProjectHealthResponse,
+  RepositoryHealthResponse,
   AnalysisBatchStatus,
   NodeListResponse,
   NodeDetailResponse,
@@ -33,7 +33,7 @@ import {
   WikiAttachment,
   NodeSourceResponse,
   UnifiedSearchResponse,
-  ProjectSecurityResponse,
+  RepositorySecurityResponse,
   ClusterOverviewResponse,
   ClusterDetailResponse,
   ClusterGraphResponse,
@@ -82,12 +82,12 @@ export class ApiService {
   private http = inject(HttpClient);
   private auth = inject(AuthService);
 
-  // Projects
-  listProjects(search?: string, group?: string, page = 1, pageSize = 25): Observable<ProjectListResponse> {
+  // Repositories
+  listRepositories(search?: string, group?: string, page = 1, pageSize = 25): Observable<RepositoryListResponse> {
     let params = new HttpParams().set('page', page).set('pageSize', pageSize);
     if (search) params = params.set('search', search);
     if (group) params = params.set('group', group);
-    return this.http.get<ProjectListResponse>(`${API}/projects`, { params });
+    return this.http.get<RepositoryListResponse>(`${API}/repositories`, { params });
   }
 
   listSchemas(search?: string, server?: string, database?: string, page = 1, pageSize = 25): Observable<SchemaListResponse> {
@@ -102,23 +102,23 @@ export class ApiService {
     return this.http.get<SchemaCatalogResponse>(`${API}/schemas/${encodeURIComponent(name)}/catalog`);
   }
 
-  getProject(name: string): Observable<ProjectDetailResponse> {
-    return this.http.get<ProjectDetailResponse>(`${API}/projects/${encodeURIComponent(name)}`);
+  getRepository(name: string): Observable<RepositoryDetailResponse> {
+    return this.http.get<RepositoryDetailResponse>(`${API}/repositories/${encodeURIComponent(name)}`);
   }
 
-  getProjectHealth(name: string): Observable<ProjectHealthResponse> {
-    return this.http.get<ProjectHealthResponse>(
-      `${API}/projects/${encodeURIComponent(name)}/health`);
+  getRepositoryHealth(name: string): Observable<RepositoryHealthResponse> {
+    return this.http.get<RepositoryHealthResponse>(
+      `${API}/repositories/${encodeURIComponent(name)}/health`);
   }
 
-  getProjectSecurity(name: string): Observable<ProjectSecurityResponse> {
-    return this.http.get<ProjectSecurityResponse>(
-      `${API}/projects/${encodeURIComponent(name)}/security`);
+  getRepositorySecurity(name: string): Observable<RepositorySecurityResponse> {
+    return this.http.get<RepositorySecurityResponse>(
+      `${API}/repositories/${encodeURIComponent(name)}/security`);
   }
 
   getBatchStatus(name: string): Observable<AnalysisBatchStatus> {
     return this.http.get<AnalysisBatchStatus>(
-      `${API}/projects/${encodeURIComponent(name)}/batch-status`);
+      `${API}/repositories/${encodeURIComponent(name)}/batch-status`);
   }
 
   reAnalyze(repo: string): Observable<IndexerAcceptedResponse> {
@@ -126,42 +126,42 @@ export class ApiService {
       ? globalThis.crypto.randomUUID()
       : `reanalyze-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     return this.http.post<IndexerAcceptedResponse>(
-      `${API}/projects/ReAnalyze`,
+      `${API}/repositories/ReAnalyze`,
       { repo },
       { headers: new HttpHeaders({ 'Idempotency-Key': submissionKey }) });
   }
 
-  getProjectReadme(name: string): Observable<{ content: string }> {
+  getRepositoryReadme(name: string): Observable<{ content: string }> {
     return this.http.get<{ content: string }>(
-      `${API}/projects/${encodeURIComponent(name)}/readme`);
+      `${API}/repositories/${encodeURIComponent(name)}/readme`);
   }
 
   startRepositoryReview(repo: string, mode = 'full'): Observable<StartRepositoryReviewResponse> {
     return this.http.post<StartRepositoryReviewResponse>(
-      `${API}/projects/${encodeURIComponent(repo)}/code-review`,
+      `${API}/repositories/${encodeURIComponent(repo)}/code-review`,
       { mode });
   }
 
   getLatestRepositoryReview(repo: string): Observable<RepositoryReviewResponse> {
     return this.http.get<RepositoryReviewResponse>(
-      `${API}/projects/${encodeURIComponent(repo)}/code-review/latest`);
+      `${API}/repositories/${encodeURIComponent(repo)}/code-review/latest`);
   }
 
   getRepositoryReview(repo: string, reviewRunId: number): Observable<RepositoryReviewResponse> {
     return this.http.get<RepositoryReviewResponse>(
-      `${API}/projects/${encodeURIComponent(repo)}/code-review/${reviewRunId}`);
+      `${API}/repositories/${encodeURIComponent(repo)}/code-review/${reviewRunId}`);
   }
 
   startProjectReview(repo: string, projectName: string, mode = 'standard'): Observable<StartProjectReviewResponse> {
     return this.http.post<StartProjectReviewResponse>(
-      `${API}/projects/${encodeURIComponent(repo)}/reviews`,
+      `${API}/repositories/${encodeURIComponent(repo)}/reviews`,
       { projectName, mode });
   }
 
   getLatestProjectReview(repo: string, projectName: string): Observable<ProjectReviewResponse> {
     const params = new HttpParams().set('projectName', projectName);
     return this.http.get<ProjectReviewResponse>(
-      `${API}/projects/${encodeURIComponent(repo)}/reviews/latest`,
+      `${API}/repositories/${encodeURIComponent(repo)}/reviews/latest`,
       { params });
   }
 
@@ -169,33 +169,33 @@ export class ApiService {
     let params = new HttpParams();
     if (dotnetProject) params = params.set('dotnetProject', dotnetProject);
     return this.http.get<ProjectDiagnosticsResponse>(
-      `${API}/projects/${encodeURIComponent(repo)}/diagnostics`,
+      `${API}/repositories/${encodeURIComponent(repo)}/diagnostics`,
       { params });
   }
 
-  deleteProject(name: string): Observable<void> {
-    return this.http.delete<void>(`${API}/projects/${encodeURIComponent(name)}`);
+  deleteRepository(name: string): Observable<void> {
+    return this.http.delete<void>(`${API}/repositories/${encodeURIComponent(name)}`);
   }
 
   // Impact analysis (blast radius)
-  getImpact(project: string, node: string, depth = 3): Observable<ImpactReport> {
+  getImpact(repository: string, node: string, depth = 3): Observable<ImpactReport> {
     const params = new HttpParams().set('node', node).set('depth', depth);
     return this.http.get<ImpactReport>(
-      `${API}/projects/${encodeURIComponent(project)}/impact`, { params });
+      `${API}/repositories/${encodeURIComponent(repository)}/impact`, { params });
   }
 
-  getFileImpact(project: string, path: string, depth = 3): Observable<ImpactReport> {
+  getFileImpact(repository: string, path: string, depth = 3): Observable<ImpactReport> {
     const params = new HttpParams().set('path', path).set('depth', depth);
     return this.http.get<ImpactReport>(
-      `${API}/projects/${encodeURIComponent(project)}/impact/file`, { params });
+      `${API}/repositories/${encodeURIComponent(repository)}/impact/file`, { params });
   }
 
-  getProjectNodes(name: string, label?: string, dotnetProject?: string, page = 1, pageSize = 50): Observable<NodeListResponse> {
+  getRepositoryNodes(name: string, label?: string, dotnetProject?: string, page = 1, pageSize = 50): Observable<NodeListResponse> {
     let params = new HttpParams().set('page', page).set('pageSize', pageSize);
     if (label) params = params.set('label', label);
     if (dotnetProject) params = params.set('dotnetProject', dotnetProject);
     return this.http.get<NodeListResponse>(
-      `${API}/projects/${encodeURIComponent(name)}/nodes`, { params });
+      `${API}/repositories/${encodeURIComponent(name)}/nodes`, { params });
   }
 
   // Nodes
@@ -211,15 +211,15 @@ export class ApiService {
     return this.http.get<NodeSourceResponse>(`${API}/nodes/${id}/source`);
   }
 
-  findNodeByFile(project: string, filePath: string, line?: number): Observable<{ nodeId: number }> {
-    let params = new HttpParams().set('project', project).set('filePath', filePath);
+  findNodeByFile(repository: string, filePath: string, line?: number): Observable<{ nodeId: number }> {
+    let params = new HttpParams().set('repository', repository).set('filePath', filePath);
     if (line) params = params.set('line', line);
     return this.http.get<{ nodeId: number }>(`${API}/nodes/by-file`, { params });
   }
 
-  searchNodes(q: string, project?: string, label?: string, page = 1, pageSize = 25): Observable<NodeListResponse> {
+  searchNodes(q: string, repository?: string, label?: string, page = 1, pageSize = 25): Observable<NodeListResponse> {
     let params = new HttpParams().set('q', q).set('page', page).set('pageSize', pageSize);
-    if (project) params = params.set('project', project);
+    if (repository) params = params.set('repository', repository);
     if (label) params = params.set('label', label);
     return this.http.get<NodeListResponse>(`${API}/nodes/search`, { params });
   }
@@ -722,7 +722,7 @@ export class ApiService {
 
   async *streamProjectReview(repo: string, reviewRunId: number, signal?: AbortSignal): AsyncGenerator<ProjectReviewStreamEvent> {
     const response = await fetch(
-      `${API}/projects/${encodeURIComponent(repo)}/reviews/${reviewRunId}/stream`,
+      `${API}/repositories/${encodeURIComponent(repo)}/reviews/${reviewRunId}/stream`,
       {
         method: 'GET',
         headers: await this.fetchHeaders({ Accept: 'text/event-stream' }),
@@ -760,7 +760,7 @@ export class ApiService {
 
   async *streamRepositoryReview(repo: string, reviewRunId: number, signal?: AbortSignal): AsyncGenerator<RepositoryReviewStreamEvent> {
     const response = await fetch(
-      `${API}/projects/${encodeURIComponent(repo)}/code-review/${reviewRunId}/stream`,
+      `${API}/repositories/${encodeURIComponent(repo)}/code-review/${reviewRunId}/stream`,
       {
         method: 'GET',
         headers: await this.fetchHeaders({ Accept: 'text/event-stream' }),

@@ -7,9 +7,9 @@
     <nav class="nd-breadcrumb" aria-label="Node location">
       <a [routerLink]="sectionRoot()">{{ sectionLabel() }}</a>
       <span class="sep">/</span>
-      <a [routerLink]="projectRoute(d.node.project)">{{ d.node.project }}</a>
+      <a [routerLink]="repositoryRoute(d.node.repository)">{{ d.node.repository }}</a>
       <span class="sep">/</span>
-      <a [routerLink]="[sectionRoot(), d.node.project, 'nodes']"
+      <a [routerLink]="[sectionRoot(), d.node.repository, 'nodes']"
          [queryParams]="{ label: d.node.label }">
         {{ icon(d.node.label) }} {{ d.node.label }}s
       </a>
@@ -42,7 +42,7 @@
         }
 
         <div class="nd-subtitle cg-muted cg-small">
-          <a class="nd-subtitle-link" [routerLink]="projectRoute(d.node.project)">{{ d.node.project }}</a>
+          <a class="nd-subtitle-link" [routerLink]="repositoryRoute(d.node.repository)">{{ d.node.repository }}</a>
           @if (sourceLocation(); as loc) {
             <span class="sep">&middot;</span>
             <span class="cg-mono">{{ loc }}</span>
@@ -120,8 +120,8 @@
                   <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborId]">
                     <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
                     <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborId }}</span>
-                    @if (edge.isCrossProject) {
-                      <span class="cg-chip cg-chip-accent">{{ edge.neighborProject }}</span>
+                    @if (edge.isCrossRepository) {
+                      <span class="cg-chip cg-chip-accent">{{ edge.neighborRepository }}</span>
                     }
                     @if (edge.neighborQualifiedName && edge.neighborQualifiedName !== edge.neighborName) {
                       <span class="nd-edge-qn cg-faint cg-xsmall cg-mono">{{ edge.neighborQualifiedName }}</span>
@@ -141,7 +141,7 @@
                   <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborNodeId]">
                     <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
                     <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborNodeId }}</span>
-                    <span class="cg-chip cg-chip-accent">{{ edge.targetProject }}</span>
+                    <span class="cg-chip cg-chip-accent">{{ edge.targetRepository }}</span>
                     <span class="cg-chip cg-chip-mono">{{ edge.type }}</span>
                   </a>
                 }
@@ -168,8 +168,8 @@
                   <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborId]">
                     <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
                     <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborId }}</span>
-                    @if (edge.isCrossProject) {
-                      <span class="cg-chip cg-chip-accent">{{ edge.neighborProject }}</span>
+                    @if (edge.isCrossRepository) {
+                      <span class="cg-chip cg-chip-accent">{{ edge.neighborRepository }}</span>
                     }
                     @if (edge.neighborQualifiedName && edge.neighborQualifiedName !== edge.neighborName) {
                       <span class="nd-edge-qn cg-faint cg-xsmall cg-mono">{{ edge.neighborQualifiedName }}</span>
@@ -189,7 +189,7 @@
                   <a class="nd-edge-row" [routerLink]="['/nodes', edge.neighborNodeId]">
                     <span class="nd-edge-icon">{{ icon(edge.neighborLabel) }}</span>
                     <span class="nd-edge-name">{{ edge.neighborName ?? '#' + edge.neighborNodeId }}</span>
-                    <span class="cg-chip cg-chip-accent">{{ edge.sourceProject }}</span>
+                    <span class="cg-chip cg-chip-accent">{{ edge.sourceRepository }}</span>
                     <span class="cg-chip cg-chip-mono">{{ edge.type }}</span>
                   </a>
                 }
