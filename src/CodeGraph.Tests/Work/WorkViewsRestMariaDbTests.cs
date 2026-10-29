@@ -99,7 +99,7 @@ public sealed class WorkViewsRestMariaDbTests(WorkDatabase db) : IClassFixture<W
         await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.Review, ["codegraph"], [key], "reviewer",
             PullRequestUrl: url, PullRequestNumber: 7, Url: url, ReviewState: "changes_requested", Body: "Needs a test"));
 
-        await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.Push, ["codegraph"], ["claude/x"], "pusher",
+        await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.Push, ["codegraph"], [key], "pusher",
             Branch: "claude/x", BranchUrl: "https://github.com/o/r/tree/claude/x", Url: "https://github.com/o/r/commit/abcdef1234567", ExternalId: "abcdef1234567",
             Body: "abcdef1234567 Add the thing"));
 
