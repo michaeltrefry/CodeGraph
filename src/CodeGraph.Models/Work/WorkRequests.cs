@@ -7,8 +7,11 @@ namespace CodeGraph.Models.Work;
 // and any value of the wrong JSON type. A property left out or passed as null is not set.
 // Names are snake_case on the wire (the naming policy of WorkJson.Options).
 
-public sealed class CreateWorkRequest
+public sealed class CreateWorkRequest : ISessionArguments
 {
+    [Description(WorkRequestText.SessionId)]
+    public string? SessionId { get; init; }
+
     [Description("Key (e.g. SW) or id of the Project to create the feature, item or plan in. Not passed with new_project.")]
     public string? Project { get; init; }
 
@@ -154,14 +157,23 @@ public sealed class PlanItemInput
     public int? Order { get; init; }
 }
 
-public sealed class GetWorkRequest
+public sealed class GetWorkRequest : ISessionArguments
 {
+    [Description(WorkRequestText.SessionId)]
+    public string? SessionId { get; init; }
+
     [Description("Key (SW, SW-142, SW-F12) or id of a project, feature or item.")]
     public required string Id { get; init; }
+
+    [Description("summary (default): an item carries its latest handoff and handoff_count. full: an item carries its whole handoff history, newest first.")]
+    public WorkDetail? Detail { get; init; }
 }
 
-public sealed class FindWorkRequest
+public sealed class FindWorkRequest : ISessionArguments
 {
+    [Description(WorkRequestText.SessionId)]
+    public string? SessionId { get; init; }
+
     [Description("item (default), feature or project.")]
     public WorkEntityKind? Kind { get; init; }
 
@@ -203,8 +215,11 @@ public sealed class FindWorkRequest
     public string? Cursor { get; init; }
 }
 
-public sealed class UpdateWorkRequest
+public sealed class UpdateWorkRequest : ISessionArguments
 {
+    [Description(WorkRequestText.SessionId)]
+    public string? SessionId { get; init; }
+
     [Description("Key (SW, SW-142, SW-F12) or id of the project, feature or item to change.")]
     public required string Id { get; init; }
 
@@ -277,6 +292,9 @@ public sealed class UpdateWorkRequest
     [Description("Item: release the caller's claim under marker.")]
     public ReleaseClaimInput? ReleaseClaim { get; init; }
 
+    [Description("Item: the state of the work as the caller leaves it (done, decisions, open issues, corrections, next action, branch, commit), stored on the item and shown to its next holder.")]
+    public HandoffInput? Handoff { get; init; }
+
     [Description("Optional fields to empty: description (any kind); labels, repository, feature (item).")]
     public List<string>? Clear { get; init; }
 }
@@ -302,30 +320,34 @@ public sealed class LinkInput
 
 public sealed class ClaimInput
 {
-    [Description("Caller-chosen id of the claim, such as a run id, at most 200 characters, compared exactly.")]
-    public required string Marker { get; init; }
+    [Description("Caller-chosen id of the claim, such as a run id, at most 200 characters, compared exactly. Required without session_id; left out with session_id (the session is the marker).")]
+    public string? Marker { get; init; }
 
-    [Description("Seconds until the claim lapses unless renewed, 1 to 86400 (default 3600).")]
+    [Description("Seconds until the claim lapses unless renewed, 1 to 86400 (default 3600). Not with session_id: a session's claim lasts while the session is live.")]
     public int? TtlSeconds { get; init; }
 }
 
 public sealed class ReleaseClaimInput
 {
-    public required string Marker { get; init; }
+    [Description("The marker of the claim. Required without session_id; left out with session_id.")]
+    public string? Marker { get; init; }
 }
 
-public sealed class NextWorkRequest
+public sealed class NextWorkRequest : ISessionArguments
 {
+    [Description(WorkRequestText.SessionId)]
+    public string? SessionId { get; init; }
+
     [Description("Key or id of the Project.")]
     public required string Project { get; init; }
 
-    [Description("Caller-chosen id of the claim, such as a run id, at most 200 characters, compared exactly. The claim belongs to the caller's identity and this marker.")]
-    public required string Marker { get; init; }
+    [Description("Caller-chosen id of the claim, such as a run id, at most 200 characters, compared exactly. The claim belongs to the caller's identity and this marker. Required without session_id; left out with session_id (the claim is bound to the session).")]
+    public string? Marker { get; init; }
 
-    [Description("Seconds until the claim lapses unless renewed, 1 to 86400 (default 3600).")]
+    [Description("Seconds until the claim lapses unless renewed, 1 to 86400 (default 3600). Not with session_id: a session's claim lasts while the session is live.")]
     public int? TtlSeconds { get; init; }
 
-    [Description("false (default): when the caller already holds a live claim under marker in this project, return it instead of claiming another. true: claim an additional item.")]
+    [Description("false (default): when the caller already holds a live claim (under marker, or of its session) in this project, return it instead of claiming another. true: claim an additional item.")]
     public bool? Another { get; init; }
 
     [Description("Caller-chosen key: a repeat by the same identity in this project returns the same allocation, even after the first answer was lost.")]
@@ -341,8 +363,11 @@ public sealed class NextWorkRequest
     public string? Label { get; init; }
 }
 
-public sealed class ChangesRequest
+public sealed class ChangesRequest : ISessionArguments
 {
+    [Description(WorkRequestText.SessionId)]
+    public string? SessionId { get; init; }
+
     [Description("Key or id of a Project: only its entries. One cursor works with any project or none.")]
     public string? Project { get; init; }
 
@@ -357,4 +382,10 @@ public sealed class ChangesRequest
 
     [Description("Wait up to this many seconds (at most 55) for an entry after cursor before answering with none.")]
     public int? WaitSeconds { get; init; }
+}
+
+internal static class WorkRequestText
+{
+    public const string SessionId =
+        "Id of the caller's session (from start_session). Renews the session's heartbeat, attributes the call to it, and binds claims to it.";
 }

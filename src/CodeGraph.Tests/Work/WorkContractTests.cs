@@ -110,7 +110,7 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes"]);
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing"]);
         foreach (var tool in tools)
         {
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;
@@ -309,9 +309,15 @@ public sealed class WorkContractTests
         public Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default) => throw Fail();
         public Task<ProjectView?> GetProjectAsync(Guid projectId, CancellationToken ct = default) => throw Fail();
         public Task<FeatureView?> GetFeatureAsync(Guid featureId, CancellationToken ct = default) => throw Fail();
-        public Task<ItemView?> GetItemAsync(Guid itemId, CancellationToken ct = default) => throw Fail();
+        public Task<ItemView?> GetItemAsync(Guid itemId, bool fullHandoffs, CancellationToken ct = default) => throw Fail();
         public Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default) => throw Fail();
         public Task<long> GetChangeHeadAsync(CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<ChangeView>> ReadChangesAsync(Guid? projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
+        public Task<WorkActor> TouchSessionAsync(Guid sessionId, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default) => throw Fail();
+        public Task<BriefingView> ReadBriefingAsync(Guid sessionId, Guid? focusItemId, CancellationToken ct = default) => throw Fail();
+        public Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default) => throw Fail();
     }
 }

@@ -33,7 +33,58 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
     [HttpPost("next")]
     public Task<IActionResult> Next() => RunBodyAsync(WorkTools.NextWork);
 
-    /// <summary>changes: project, cursor, from_start, limit, wait_seconds as query parameters.</summary>
+    /// <summary>start_session.</summary>
+    [HttpPost("sessions")]
+    public Task<IActionResult> StartSession() => RunBodyAsync(WorkTools.StartSession);
+
+    /// <summary>end_session: the body holds item and handoff (or is empty); the session id is the path.</summary>
+    [HttpPost("sessions/{sessionId}/end")]
+    public async Task<IActionResult> EndSession(string sessionId)
+    {
+        if (await DeniedAsync(WorkTools.EndSession) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        if (Request.ContentLength == 0 || (Request.ContentLength is null && !Request.HasJsonContentType()))
+        {
+            arguments = new JsonObject();
+        }
+        else
+        {
+            var (body, refusal) = await ReadBodyAsync(WorkTools.EndSession);
+            if (refusal is not null)
+                return refusal;
+            if (body.TryGetProperty("session_id", out _))
+                return Refuse(WorkException.Invalid("Pass the session id in the path, not in the body."));
+            arguments = JsonObject.Create(body)!;
+        }
+
+        arguments["session_id"] = sessionId;
+        return await RunAsync(WorkTools.EndSession, JsonSerializer.SerializeToElement(arguments));
+    }
+
+    /// <summary>get_briefing: budget_tokens and item as query parameters; the session id is the path.</summary>
+    [HttpGet("sessions/{sessionId}/briefing")]
+    public async Task<IActionResult> Briefing(string sessionId)
+    {
+        if (await DeniedAsync(WorkTools.GetBriefing) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        try
+        {
+            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item"], integers: ["budget_tokens"], booleans: []);
+        }
+        catch (WorkException exception)
+        {
+            return Refuse(exception);
+        }
+
+        arguments["session_id"] = sessionId;
+        return await RunAsync(WorkTools.GetBriefing, JsonSerializer.SerializeToElement(arguments));
+    }
+
+    /// <summary>changes: project, cursor, from_start, limit, wait_seconds (and session_id) as query parameters.</summary>
     [HttpGet("changes")]
     public async Task<IActionResult> Changes()
     {
@@ -44,7 +95,8 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         try
         {
             arguments = QueryArguments(
-                strings: ["project", "cursor"],
+                WorkTools.Changes,
+                strings: ["project", "cursor", "session_id"],
                 integers: ["limit", "wait_seconds"],
                 booleans: ["from_start"]);
         }
@@ -56,15 +108,25 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         return await RunAsync(WorkTools.Changes, JsonSerializer.SerializeToElement(arguments));
     }
 
-    /// <summary>get_work.</summary>
+    /// <summary>get_work: the id is the path; session_id may be a query parameter.</summary>
     [HttpGet("{id}")]
     public async Task<IActionResult> Get(string id)
     {
         if (await DeniedAsync(WorkTools.GetWork) is { } denied)
             return denied;
-        if (Request.Query.Count > 0)
-            return Refuse(WorkException.Invalid($"get_work takes no query parameters ({string.Join(", ", Request.Query.Keys)}). Its only argument is the id in the path."));
-        return await RunAsync(WorkTools.GetWork, JsonSerializer.SerializeToElement(new JsonObject { ["id"] = id }));
+
+        JsonObject arguments;
+        try
+        {
+            arguments = QueryArguments(WorkTools.GetWork, strings: ["session_id"], integers: [], booleans: []);
+        }
+        catch (WorkException exception)
+        {
+            return Refuse(exception);
+        }
+
+        arguments["id"] = id;
+        return await RunAsync(WorkTools.GetWork, JsonSerializer.SerializeToElement(arguments));
     }
 
     /// <summary>update_work: the body holds every argument but id, which is the path.</summary>
@@ -171,14 +233,14 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
 
     private static ContentResult Refuse(WorkException exception, int? status = null) => new()
     {
-        Content = JsonSerializer.Serialize(new WorkError(exception.Code, exception.Message, exception.Current), WorkJson.Options),
+        Content = JsonSerializer.Serialize(new WorkError(exception.Code, exception.Message, exception.Current, exception.Reason), WorkJson.Options),
         ContentType = "application/json",
         StatusCode = status ?? StatusFor(exception.Code)
     };
 
     // The query as tool arguments: an unknown parameter is refused like an unknown argument, and a
     // value that is not of its type is refused rather than dropped.
-    private JsonObject QueryArguments(string[] strings, string[] integers, string[] booleans)
+    private JsonObject QueryArguments(string tool, string[] strings, string[] integers, string[] booleans)
     {
         var arguments = new JsonObject();
         foreach (var (name, values) in Request.Query)
@@ -195,7 +257,7 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
             else if (booleans.Contains(name))
                 arguments[name] = bool.TryParse(value, out var flag) ? flag : throw WorkException.Invalid($"Query parameter '{name}' must be true or false.");
             else
-                throw WorkException.Invalid($"changes has no argument '{name}'. Its arguments are: {string.Join(", ", strings.Concat(integers).Concat(booleans))}.");
+                throw WorkException.Invalid($"{tool} has no query parameter '{name}'. Its query parameters are: {string.Join(", ", strings.Concat(integers).Concat(booleans))}.");
         }
 
         return arguments;
