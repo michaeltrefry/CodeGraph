@@ -31,7 +31,8 @@ public class GitHubWebhookController(GitHubPushWebhookService webhookService) : 
                 Request.Headers["X-GitHub-Event"].ToString(),
                 Request.Headers["X-Hub-Signature-256"].ToString(),
                 buffer.ToArray(),
-                ct);
+                ct,
+                Request.Headers["X-GitHub-Delivery"].ToString());
         }
         catch (IndexerClientException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
         {
@@ -43,7 +44,8 @@ public class GitHubWebhookController(GitHubPushWebhookService webhookService) : 
         return result.Outcome switch
         {
             GitHubWebhookOutcome.Unauthorized => Unauthorized(new { error = "invalid_signature", message = result.Message }),
-            GitHubWebhookOutcome.Queued => Accepted(result.Accepted?.RunStatusUrl, new { status = "queued", message = result.Message, run = result.Accepted }),
+            GitHubWebhookOutcome.Queued => Accepted(result.Accepted?.RunStatusUrl, new { status = "queued", message = result.Message, run = result.Accepted, evidence = result.Evidence?.Items }),
+            GitHubWebhookOutcome.Recorded => Ok(new { status = "recorded", message = result.Message, evidence = result.Evidence?.Items }),
             _ => Ok(new { status = "ignored", message = result.Message })
         };
     }

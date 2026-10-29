@@ -63,6 +63,7 @@ public sealed partial class MySqlWorkStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            await using var messageLock = new MessageLockScope(connection, transaction);
             // Holding the project's row makes a keyed repeat find the first call's session.
             await HoldProjectAsync(connection, transaction, spec.ProjectId, ct);
             if (keyHash is not null && await FindKeyAsync(connection, transaction, spec.ProjectId, SessionOperation, keyHash, ct) is { EntityId: { } existing })
@@ -92,6 +93,8 @@ public sealed partial class MySqlWorkStore
             if (keyHash is not null)
                 await InsertKeyAsync(connection, transaction, spec.ProjectId, SessionOperation, keyHash, id, null, now, ct);
 
+            // The unread direct messages of earlier sessions of this project and repository (§5.9).
+            await InheritDirectMessagesAsync(connection, transaction, messageLock, spec.ProjectId, repository, new WorkActor(actor.Name, WorkActor.SessionKind, id.ToString()), now, ct);
             var row = (await ReadSessionRowAsync(connection, transaction, id, ct))!;
             await transaction.CommitAsync(ct);
             return new WorkCreated<SessionView>(true, ToView(row, now));
@@ -525,6 +528,7 @@ public sealed partial class MySqlWorkStore
         }).ToList();
 
         var suggested = await SuggestAsync(connection, session, now, ct);
+        var inbox = await ReadBriefingInboxAsync(connection, session.ProjectId, sessionId.ToString(), ct);
         var (myHolds, busyResources) = await ReadBriefingHoldsAsync(connection, session, now, ct);
 
         return new BriefingView(
@@ -534,6 +538,7 @@ public sealed partial class MySqlWorkStore
             focus,
             otherSessions.Count == 0 ? null : otherSessions,
             suggested,
+            inbox,
             MyHolds: myHolds,
             Resources: busyResources);
     }

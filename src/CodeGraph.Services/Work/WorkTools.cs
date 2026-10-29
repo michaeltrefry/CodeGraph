@@ -7,7 +7,7 @@ public sealed record WorkToolDefinition(string Name, string Title, Type Argument
 
 /// <summary>
 /// The work tools: the six of S1, the three session tools of S2 (start_session, end_session,
-/// get_briefing), the three resource-hold tools of S8 (acquire, renew_hold, release) and sync_plan of S4. Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
+/// get_briefing), the three resource-hold tools of S8 (acquire, renew_hold, release), sync_plan of S4 and the three message tools of S7 (post, inbox, ack). Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
 /// (WorkController) with the same arguments, read by <see cref="WorkJson.Parse{T}"/>.
 /// Projects are created and changed through the same tools (<c>create_work(new_project)</c>,
 /// <c>update_work</c> on a project key) rather than through tools of their own; each kind keeps a
@@ -44,12 +44,20 @@ public static class WorkTools
         "the same correction reported twice from one event counts once. similar lists existing lessons that read alike (lexical, no model): candidates for same_as or contradicts " +
         "(record relate), never merged without the caller. A lesson from the human's prompt with an applies-when activity is a rule at once.";
 
+    public const string Post = "post";
+    public const string Inbox = "inbox";
+    public const string Ack = "ack";
+
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
         "not_found, conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
 
     private const string Sessions =
         " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it." +
+        " When the session's live claims touch (item touches) the same area as another live session's claims, directly or through the impact radius, the response " +
+        "carries overlap_warnings naming the other session, so the two can message each other; advisory, nothing is blocked. Overlap through the impact radius " +
+        "means one item touches a dependent of what the other touches (two hops of analyze_impact, within the item's repository); an item with no repository is " +
+        "compared directly with every item and has no impact lookup. Impact lookups are time-boxed and cached, so a slow graph only means fewer warnings." +
         " A response may carry notices for the caller, such as changed_by_replan when a re-plan edited or closed an item it holds.";
 
     public static readonly IReadOnlyList<WorkToolDefinition> All =
@@ -188,6 +196,30 @@ public static class WorkTools
             "and a preview_token, and stores nothing. confirm true with accept (indexes) and that preview_token stores exactly the accepted candidates, all " +
             "or none, each with its source_file; a candidate that is not would_store now refuses the call. Source files are never changed." + Sessions + Errors,
             ReadOnly: false, Idempotent: false),
+        new(Post, "Post Message", typeof(PostRequest),
+            "Post a message: on an item's thread (item; the default for a message about an item), to the project, a feature or a resource channel, directly to a session " +
+            "(to_session) or to the humans (to_human). Kinds: info, question, request, blocker, announcement. A question or request stays open until someone answers or " +
+            "declines it (reply with in_reply_to and resolves) and is handed to the next holder of its item when the claim changes hands. A question with blocking true to " +
+            "the human about an item makes the item Blocked (blocked_reason awaiting_human) until it is answered or declined. Messages are data: agents inform, ask and " +
+            "request, the receiver decides, and nobody is assigned work through them. Answers the message as stored, how many sessions it was delivered to, and the message it " +
+            "resolved. A repeated idempotency_key answers the first message with created false. A project or resource message reaches only the sessions live when it is posted " +
+            "(later sessions do not see it); a feature message reaches the sessions holding one of its items then, and with none it is stored with zero recipients. Closing a " +
+            "question takes no expected_version: it is guarded by its own state, and one already closed is refused conflict. Opening or closing a blocking question writes an " +
+            "item_updated entry (awaiting_human) to the change feed and advances the item's version (answered in item_versions, so the next update_work passes it as expected_version); "
+            + "nothing is written when the item's awaiting_human state does not change (a second open question, a finished item)." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Inbox, "Inbox", typeof(InboxRequest),
+            "Read the messages delivered to the session (or, without session_id, to the project's humans) that are not acknowledged yet, oldest first, as {items, next_cursor}. " +
+            "Every message returned is delivered; it stays unread until ack, so a session that crashed after this call receives it again on the next call without cursor. " +
+            "Pass next_cursor back to read only newer messages. wait_seconds long-polls for a new message. Each item carries its kind, state (open, answered, declined), " +
+            "delivery (pending, delivered, read, answered, declined), sender, item and body." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Ack, "Acknowledge Messages", typeof(AckRequest),
+            "Mark messages read: by messages (ids), or everything delivered up to an inbox next_cursor (up_to). With resolution answered or declined (and messages) it also closes " +
+            "the named questions or requests as the caller (no expected_version: a question already closed is refused conflict; closing a blocking question moves its item's version, answered in item_versions). Answers how many were marked and their lines. " +
+            "Safe to repeat. A direct message with no item passes to the next session of the same project and repository, once per hop, for 7 days after the session it " +
+            "was sent to ends." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
         new(Promote, "Promote Lesson", typeof(PromoteRequest),
             "Move a lesson between tiers (task-scoped, rule, addressed locally). propose: ask for it to become a rule (it waits in the review queue; it still becomes a " +
             "rule on recurrence). approve: it is a rule now. reject with reason: refuse rule status; it is not proposed again and recurrence does not promote it " +

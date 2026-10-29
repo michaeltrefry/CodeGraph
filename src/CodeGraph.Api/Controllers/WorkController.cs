@@ -161,6 +161,38 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         return await RunAsync(WorkTools.GetBriefing, JsonSerializer.SerializeToElement(arguments));
     }
 
+    /// <summary>post.</summary>
+    [HttpPost("messages")]
+    public Task<IActionResult> Post() => RunBodyAsync(WorkTools.Post);
+
+    /// <summary>ack.</summary>
+    [HttpPost("ack")]
+    public Task<IActionResult> Ack() => RunBodyAsync(WorkTools.Ack);
+
+    /// <summary>inbox: session_id, project, cursor, include_read, limit, wait_seconds as query parameters.</summary>
+    [HttpGet("inbox")]
+    public async Task<IActionResult> Inbox()
+    {
+        if (await DeniedAsync(WorkTools.Inbox) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        try
+        {
+            arguments = QueryArguments(
+                WorkTools.Inbox,
+                strings: ["session_id", "project", "cursor"],
+                integers: ["limit", "wait_seconds"],
+                booleans: ["include_read"]);
+        }
+        catch (WorkException exception)
+        {
+            return Refuse(exception);
+        }
+
+        return await RunAsync(WorkTools.Inbox, JsonSerializer.SerializeToElement(arguments));
+    }
+
     /// <summary>acquire: a hold on a resource.</summary>
     [HttpPost("holds")]
     public Task<IActionResult> Acquire() => RunBodyAsync(WorkTools.Acquire);

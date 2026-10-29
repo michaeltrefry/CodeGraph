@@ -392,7 +392,7 @@ public sealed partial class MySqlWorkStore(
     private const string AvailableCondition =
         "i.status = 'ready' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
-        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') AND NOT " + OpenBlockingQuestion;
 
     // The condition, on alias i, for an item next_work recovers at @now (§5.9): in progress, every
     // blocker complete, and no live claim (its claim lapsed with its session, or was released).
@@ -402,11 +402,12 @@ public sealed partial class MySqlWorkStore(
         "i.status = 'in_progress' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
         "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id)) " +
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
-        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') AND NOT " + OpenBlockingQuestion;
 
+    // Blocked by an unfinished blocker, or by an open question to the human that blocks it (sc-27871).
     private const string BlockedCondition =
-        "EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
-        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+        "(EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') OR " + OpenBlockingQuestion + ")";
 
     private static Task<ItemRow?> ReadItemRowAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         connection.QuerySingleOrDefaultAsync<ItemRow>(new CommandDefinition(
@@ -574,16 +575,18 @@ public sealed partial class MySqlWorkStore(
         var report = row.AcceptanceReportJson is { } reportJson ? JsonSerializer.Deserialize<AcceptanceReportView>(reportJson, WorkJson.Options) : null;
 
         var unfinished = blockedBy.Where(blocker => blocker.Status != WorkStatus.Complete).ToList();
-        string? reason = unfinished.Count == 0 ? null
-            : unfinished.Any(blocker => blocker.Status == WorkStatus.Closed) ? "cancelled_prerequisite"
-            : "waiting";
+        // An open blocking question to the human blocks the item too; a dependency's reason comes first.
+        var awaitingHuman = await HasOpenBlockingQuestionAsync(connection, transaction, row.Id, ct);
+        string? reason = unfinished.Count > 0
+            ? unfinished.Any(blocker => blocker.Status == WorkStatus.Closed) ? "cancelled_prerequisite" : "waiting"
+            : awaitingHuman ? "awaiting_human" : null;
 
         return new ItemView(
             row.Id, row.Key, row.ProjectId, row.ProjectKey, feature,
             ParseName<WorkItemType>(row.ItemType), row.Title, row.Description,
             WorkStatuses.Parse(row.Status), ParseName<WorkPriority>(row.Priority), row.SortOrder,
             SplitLabels(row.Labels), row.RepositoryName,
-            unfinished.Count > 0, reason, blockedBy, blocks,
+            unfinished.Count > 0 || awaitingHuman, reason, blockedBy, blocks,
             row.HasLiveClaim(now)
                 ? new ClaimView(row.ClaimHolder!, row.ClaimMarker!, Utc(row.ClaimedAt!.Value), Utc(row.ClaimExpiresAt!.Value), row.ClaimSessionId)
                 : null,
@@ -620,6 +623,13 @@ public sealed partial class MySqlWorkStore(
         public Guid ProjectId { get; init; }
     }
 
+    private static async Task<TargetRow?> FindAliasAsync(MySqlConnection connection, string value, CancellationToken ct) =>
+        WorkReferences.NormalizeAlias(value) is { } alias
+            ? await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(
+                "SELECT 'item' AS kind, i.id, i.project_id FROM work_item_aliases a JOIN work_items i ON i.id = a.item_id WHERE a.alias = @alias",
+                new { alias }, cancellationToken: ct))
+            : null;
+
     public async Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
@@ -640,8 +650,15 @@ public sealed partial class MySqlWorkStore(
                 ? "SELECT 'item' AS kind, i.id, i.project_id FROM work_items i JOIN work_projects p ON p.id = i.project_id WHERE p.project_key = @projectKey AND i.number = @number"
                 : "SELECT 'feature' AS kind, f.id, f.project_id FROM work_features f JOIN work_projects p ON p.id = f.project_id WHERE p.project_key = @projectKey AND f.number = @number";
             var hit = await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(sql, new { projectKey, number }, cancellationToken: ct));
+            // An external alias (an imported story's sc-27866) resolves like a key (sc-27870).
+            if (hit is null && kind == WorkEntityKind.Item)
+                hit = await FindAliasAsync(connection, value, ct);
             return hit is null ? null : new WorkTarget(kind, hit.Id, hit.ProjectId);
         }
+
+        // sc-0012 (leading zeros) is not a key but names the alias sc-12.
+        if (await FindAliasAsync(connection, value, ct) is { } aliased)
+            return new WorkTarget(WorkEntityKind.Item, aliased.Id, aliased.ProjectId);
 
         var key = value.ToUpperInvariant();
         if (!WorkKeys.IsValidProjectKey(key))
@@ -675,6 +692,9 @@ public sealed partial class MySqlWorkStore(
         // One snapshot for the whole brief.
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         var view = await LoadItemViewAsync(connection, transaction, itemId, ct, fullHandoffs);
+        // The brief carries the thread's open questions and requests (§5.9), whoever reads it.
+        if (view is not null)
+            view = view with { OpenMessages = await ReadOpenMessagesAsync(connection, transaction, itemId, ct) };
         await transaction.CommitAsync(ct);
         return view;
     }
