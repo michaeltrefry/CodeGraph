@@ -157,6 +157,18 @@ public sealed class WorkPlanningMariaDbTests(WorkDatabase db) : IClassFixture<Wo
     }
 
     [Fact]
+    public async Task An_expired_preview_is_refused_conflict_and_changes_nothing()
+    {
+        var (_, feature, items) = await NewPlanAsync("EX");
+        var preview = await PreviewAsync(feature, new { items = Items(items, new { @ref = "late", title = "Too late" }) });
+        db.Clock.Advance(TimeSpan.FromSeconds(WorkLimits.PlanPreviewSeconds + 1));
+        var refused = await db.RefusedAsync(WorkTools.SyncPlan, new { confirm = preview.GetProperty("preview_token").GetString() });
+        refused.Code.ShouldBe(WorkErrorCodes.Conflict);
+        refused.Message.ShouldContain("expired");
+        (await db.CallAsync(WorkTools.GetWork, new { id = feature })).GetProperty("completion").GetProperty("items").GetInt32().ShouldBe(3);
+    }
+
+    [Fact]
     public async Task A_preview_lists_every_change_and_refuses_cycles_silent_drops_and_completion_without_writing()
     {
         var (project, feature, items) = await NewPlanAsync("PV");

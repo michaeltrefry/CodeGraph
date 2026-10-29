@@ -310,11 +310,20 @@ public sealed partial class MySqlWorkStore
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_notices SET delivered_at = @now WHERE id IN @ids", new { now, ids = rows.Select(row => row.Id).ToArray() }, transaction, cancellationToken: ct));
             await transaction.CommitAsync(ct);
+            // Retention: a delivered notice is kept a week (the item's comment keeps the record).
+            await connection.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM work_notices WHERE delivered_at < @cutoff", new { cutoff = now.AddDays(-NoticeRetentionDays) }, cancellationToken: ct));
             return (IReadOnlyList<NoticeView>)rows.Select(row => JsonSerializer.Deserialize<NoticeView>(row.BodyJson, WorkJson.Options)!).ToList();
         }, ct);
     }
 
     // ---- sync_plan ---------------------------------------------------------------------------
+
+    private const int NoticeRetentionDays = 7;
+
+    // A preview (applied or not) is kept a day past its expiry: long enough for a repeated confirm
+    // to answer the first apply, short enough that 2 MB plans do not pile up.
+    private const int PreviewRetentionHours = 24;
 
     /// <summary>What a preview is bound to: the feature's version, every item in scope and the edges into them.</summary>
     private sealed record PlanVersions(long FeatureVersion, Dictionary<Guid, long> Items, string EdgesHash);
@@ -743,6 +752,8 @@ public sealed partial class MySqlWorkStore
                 },
                 transaction, cancellationToken: ct));
             await transaction.CommitAsync(ct);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM work_plan_previews WHERE expires_at < @cutoff", new { cutoff = now.AddHours(-PreviewRetentionHours) }, cancellationToken: ct));
             return ToPreview(diff, id.ToString(), expiresAt, now);
         }, ct);
 
