@@ -56,6 +56,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IAdminReportsStore, MySqlAdminReportsStore>();
         services.AddTransient<IApplicationLogStore, MySqlApplicationLogStore>();
         services.AddTransient<IWorkStore, MySqlWorkStore>();
+        services.AddTransient<IWorkSessionPruner, MySqlWorkStore>();
 
         return services;
     }

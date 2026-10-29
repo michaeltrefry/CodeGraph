@@ -15,6 +15,15 @@ public sealed class WorkSessionOptions
 
     /// <summary>The token budget of a briefing when the call names none.</summary>
     public int DefaultBriefingTokens { get; set; } = 1500;
+
+    /// <summary>
+    /// The PruneWorkSessions job deletes a session that ended, or was last seen, longer ago than this
+    /// many days (default 30), unless something durable still refers to it (sc-27882).
+    /// </summary>
+    public int RetentionDays { get; set; } = 30;
+
+    /// <summary>Sessions deleted per transaction by the prune job.</summary>
+    public int PruneBatchSize { get; set; } = 500;
 }
 
 /// <summary>A tool argument type that can carry the caller's session.</summary>

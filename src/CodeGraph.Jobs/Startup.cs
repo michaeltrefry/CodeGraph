@@ -28,6 +28,7 @@ public static class Startup
         services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
         services.AddTransient<IMarkdownWikiChunker, MarkdownWikiChunker>();
         services.AddTransient<IConventionEmbeddingService, ConventionEmbeddingService>();
+        services.Configure<CodeGraph.Models.Work.WorkSessionOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkSessionOptions.Section));
         services.AddCodeGraphJobScheduling();
         services.AddHostedService<ScheduleRunnerWorker>();
     }

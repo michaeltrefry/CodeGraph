@@ -81,6 +81,21 @@ public class JobCommandDispatcherTests
         indexerClient.DetectCommunitiesCalls.ShouldBe(1);
     }
 
+    internal static JobCommandDispatcher CreateDispatcherWith(RecordingWorkSessionPruner pruner, CodeGraph.Models.Work.WorkSessionOptions sessionOptions)
+    {
+        var indexerClient = new RecordingIndexerClient();
+        return new JobCommandDispatcher(
+            new DiscoverRepositoriesJob(indexerClient, NullLogger<DiscoverRepositoriesJob>.Instance),
+            new ReIndexAllRepositoriesJob(indexerClient),
+            new ProcessBatchAnalysisJob(indexerClient),
+            new LinkAndDetectJob(indexerClient),
+            new DetectCommunitiesJob(indexerClient),
+            new RegenerateMcpDocsJob(new RecordingMcpDocService()),
+            new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()),
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
+            new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)));
+    }
+
     private static JobCommandDispatcher CreateDispatcher(
         RecordingAssistantRetentionCleanupService? cleanupService = null,
         RecordingIndexerClient? indexerClient = null)
@@ -97,7 +112,8 @@ public class JobCommandDispatcherTests
             new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(new RecordingMcpDocService()),
             new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()),
-            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()));
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
+            new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

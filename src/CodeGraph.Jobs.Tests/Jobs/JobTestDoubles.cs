@@ -432,3 +432,15 @@ internal static class JobScheduleEntityCloneExtensions
         UpdatedAtUtc = entity.UpdatedAtUtc
     };
 }
+
+internal sealed class RecordingWorkSessionPruner : CodeGraph.Data.IWorkSessionPruner
+{
+    public List<(DateTime Cutoff, int BatchSize)> Calls { get; } = [];
+    public CodeGraph.Data.WorkSessionPruneResult Result { get; set; } = new(3, 5, 1);
+
+    public Task<CodeGraph.Data.WorkSessionPruneResult> PruneSessionsAsync(DateTime cutoffUtc, int batchSize, CancellationToken ct = default)
+    {
+        Calls.Add((cutoffUtc, batchSize));
+        return Task.FromResult(Result);
+    }
+}
