@@ -12,24 +12,25 @@ using Shouldly;
 namespace CodeGraph.Tests.Data;
 
 /// <summary>
-/// 090_rename_project_to_repository.sql (sc-27867): the columns that held a repository name are
-/// renamed with their rows, foreign keys and cascade intact, the work Projects of 073-089 keep their
+/// 092_rename_project_to_repository.sql (sc-27867): the columns that held a repository name are
+/// renamed with their rows, foreign keys and cascade intact, the work Projects of 073-091 keep their
 /// repository links, and the renamed MCP tools keep the admin-owned catalog state and the token
 /// grants of the tools they replace.
 /// </summary>
 public sealed class MariaDbRepositoryRenameMigrationTests
 {
-    private const string RenameMigration = "090_rename_project_to_repository.sql";
+    private const string RenameMigration = "092_rename_project_to_repository.sql";
 
-    // The database already ran every earlier migration, including the work tracking chain 073-089,
-    // as a production database has; the rename is numbered last so a fresh database runs it last too.
+    // The database already ran every earlier migration (the work tracking chain 073-089 and the 091
+    // column fix), as a production database has; the rename is numbered last so a fresh database
+    // runs it last too.
     [Fact]
     public async Task RenameMigration_KeepsRowsCascadeHubStateAndGrantsAcrossRestartsAndSeeding()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();
         var builder = new MySqlConnectionStringBuilder(connectionString)
         {
-            Database = $"cg_mig_090_{Guid.NewGuid():N}"
+            Database = $"cg_mig_092_{Guid.NewGuid():N}"
         };
         var sourceMigrations = Path.GetFullPath(
             Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations"));
