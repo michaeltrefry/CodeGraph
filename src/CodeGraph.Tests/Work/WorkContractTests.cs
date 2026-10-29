@@ -334,5 +334,8 @@ public sealed class WorkContractTests
         public Task MarkDeliveredAsync(string recipient, IReadOnlyList<Guid> messageIds, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<MessageEventView>> ReadMessageEventsAsync(Guid projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
         public Task<long> GetMessageEventHeadAsync(CancellationToken ct = default) => throw Fail();
+        public Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default) => throw Fail();
     }
 }
