@@ -64,7 +64,7 @@ public static class WorkTools
     [
         new(CreateWork, "Create Work", typeof(CreateWorkRequest),
             "Create work in a Project: a new_project; or, in project, one feature (with documents), one item, or a whole plan. " +
-            "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, up to 3 acceptance_criteria (0 allowed for backward compatibility), inherits (requirements of their feature) and touches. " +
+            "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, up to 10 acceptance_criteria (0 allowed for backward compatibility), inherits (requirements of their feature) and touches. " +
             "A plan is all-or-nothing: features (with documents) and items with caller refs (kept, so sync_plan can re-plan by them), an item naming its feature by ref and its blockers by ref in blocked_by; " +
             "a malformed item, a duplicate ref, an unknown ref or a dependency cycle (refused cycle) creates nothing. A plan holds at most 200 items, 20 features, " +
             "20 documents, 500 dependencies and 2 MB of JSON, and needs idempotency_key. Answers the created object (with created), or for a plan the id and key " +

@@ -338,12 +338,17 @@ public sealed class WorkPlanningMariaDbTests(WorkDatabase db) : IClassFixture<Wo
             id = items["b"], expected_version = (await db.CallAsync(WorkTools.GetWork, new { id = items["b"] })).GetProperty("version").GetInt64(),
             status = "complete", acceptance_report = new { criteria = new[] { new { id = "AC9", state = "met" } } }
         })).Message.ShouldContain("AC9");
-        // More than three criteria are refused.
+        // Ten criteria are accepted; more than ten are refused.
+        (await db.CallAsync(WorkTools.CreateWork, new
+        {
+            project = target.ProjectId.ToString(),
+            item = new { title = "Ten", acceptance_criteria = Enumerable.Range(1, 10).Select(n => new { text = n.ToString() }).ToArray() }
+        })).GetProperty("item").GetProperty("acceptance_criteria").GetArrayLength().ShouldBe(10);
         (await db.RefusedAsync(WorkTools.CreateWork, new
         {
             project = target.ProjectId.ToString(),
-            item = new { title = "Too many", acceptance_criteria = new[] { new { text = "1" }, new { text = "2" }, new { text = "3" }, new { text = "4" } } }
-        })).Message.ShouldContain("1 to 3");
+            item = new { title = "Too many", acceptance_criteria = Enumerable.Range(1, 11).Select(n => new { text = n.ToString() }).ToArray() }
+        })).Message.ShouldContain("1 to 10");
     }
 
     [Fact]
