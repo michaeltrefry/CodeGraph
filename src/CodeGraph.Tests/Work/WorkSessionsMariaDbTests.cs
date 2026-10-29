@@ -311,6 +311,10 @@ public sealed class WorkSessionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         marker.Message.ShouldContain("bound to the session");
         (await db.RefusedAsync(WorkTools.NextWork, new { project, session_id = session, ttl_seconds = 60 }, "michael")).Code.ShouldBe(WorkErrorCodes.InvalidArgument);
         (await db.RefusedAsync(WorkTools.NextWork, new { project }, "michael")).Message.ShouldContain("marker is required");
+        // A session id passed as a marker, without session_id, would be a claim that only looks like the session's.
+        (await db.RefusedAsync(WorkTools.NextWork, new { project, marker = session }, "michael")).Message.ShouldContain("pass it as session_id");
+        var version = (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        (await db.RefusedAsync(WorkTools.UpdateWork, new { id = key, expected_version = version, claim = new { marker = session } }, "michael")).Message.ShouldContain("pass it as session_id");
         var unknown = await db.RefusedAsync(WorkTools.StartSession, new { project, harness = "codex", modle = "x" }, "michael");
         unknown.Message.ShouldContain("modle");
         unknown.Message.ShouldContain("model");

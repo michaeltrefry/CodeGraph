@@ -523,6 +523,8 @@ public sealed class WorkService(
             : request.RenewClaim is { } renew ? new ClaimSpec(ClaimAction.Renew, ClaimMarker(renew.Marker, actor, "renew_claim.marker"), ClaimTtl(renew.TtlSeconds, actor, "renew_claim.ttl_seconds"))
             : request.ReleaseClaim is { } release ? new ClaimSpec(ClaimAction.Release, ClaimMarker(release.Marker, actor, "release_claim.marker"), 0)
             : null;
+        if (claim is { Action: not ClaimAction.Release })
+            await RefuseSessionMarkerAsync(claim.Marker, actor, claim.Action == ClaimAction.Claim ? "claim.marker" : "renew_claim.marker", ct);
 
         var add = new List<Guid>();
         foreach (var blocker in request.AddBlockedBy ?? [])
@@ -561,9 +563,11 @@ public sealed class WorkService(
     private async Task<object> NextAsync(NextWorkRequest request, WorkActor actor, CancellationToken ct)
     {
         var project = await RequireProjectAsync(request.Project, "project", ct);
+        var marker = ClaimMarker(request.Marker, actor, "marker");
+        await RefuseSessionMarkerAsync(marker, actor, "marker", ct);
         return await Store.NextWorkAsync(new NextWorkSpec(
             project.Id,
-            ClaimMarker(request.Marker, actor, "marker"),
+            marker,
             ClaimTtl(request.TtlSeconds, actor, "ttl_seconds"),
             request.Another ?? false,
             request.IdempotencyKey is { } key ? HashKey(actor, key) : null,
@@ -708,6 +712,14 @@ public sealed class WorkService(
         return marker is null
             ? throw WorkException.Invalid($"{argument} is required without session_id: the caller-chosen id of the claim (or pass session_id). Nothing was changed.")
             : Marker(marker, argument);
+    }
+
+    // A session's id passed as a marker without session_id would make a claim that looks like the
+    // session's but is not bound to it (no heartbeat, recovery or claim_lost): refused, naming the fix.
+    private async Task RefuseSessionMarkerAsync(string marker, WorkActor actor, string argument, CancellationToken ct)
+    {
+        if (actor.SessionId is null && Guid.TryParse(marker, out var id) && await Store.GetSessionAsync(id, ct) is not null)
+            throw WorkException.Invalid($"{argument} is the id of session {id}: pass it as session_id (and leave the marker out) so the claim is bound to the session. Nothing was changed.");
     }
 
     private static int ClaimTtl(int? value, WorkActor actor, string argument)
