@@ -56,7 +56,7 @@ const KINDS = ['goal', 'decision', 'constraint', 'fact', 'gotcha', 'attempt', 'a
       </form>
     </details>
   `,
-  styles: [`.wrk-acquire { margin-top: 10px; } .wrk-acquire summary { cursor: pointer; color: var(--accent-ink); }`]
+  styles: [`.wrk-acquire { margin-top: 10px; } .wrk-acquire summary { cursor: pointer; color: var(--wrk-link); }`]
 })
 export class KnowledgeComponent extends WorkPageBase implements OnInit {
   readonly project = input.required<string>();

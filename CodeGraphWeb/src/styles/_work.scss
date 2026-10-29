@@ -8,8 +8,11 @@
 .wrk-page h1 { font-size: var(--fs-h2); font-weight: 600; letter-spacing: -0.02em; color: var(--text); margin: 0; }
 .wrk-page h2 { font-size: var(--fs-lg); font-weight: 600; color: var(--text); margin: 0 0 8px; }
 .wrk-page h3 { font-size: var(--fs-md); font-weight: 600; color: var(--text); margin: 0 0 6px; }
-.wrk-page a { color: var(--accent-ink); text-decoration: none; }
+.wrk-page { --wrk-link: color-mix(in oklab, var(--accent) 62%, var(--text)); }
+.wrk-page a { color: var(--wrk-link); text-decoration: none; }
 .wrk-page a:hover { text-decoration: underline; }
+.wrk-page a.wrk-btn { color: var(--text); text-decoration: none; display: inline-block; }
+.wrk-page a.wrk-btn:hover { text-decoration: none; }
 .wrk-page code, .wrk-mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 
 .wrk-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 14px; }
@@ -57,7 +60,7 @@
 .wrk-btn:focus-visible, .wrk-input:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .wrk-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .wrk-btn-primary:hover:not(:disabled) { background: color-mix(in oklab, var(--accent) 88%, black); }
-.wrk-btn-quiet { background: transparent; border-color: transparent; color: var(--accent-ink); padding: 2px 6px; }
+.wrk-btn-quiet { background: transparent; border-color: transparent; color: var(--wrk-link); padding: 2px 6px; }
 .wrk-btn-danger { color: var(--sem-red); }
 
 .wrk-input { font: inherit; font-size: var(--fs-md); padding: 5px 8px; border-radius: var(--radius); border: 1px solid var(--border-2); background: var(--bg); color: var(--text); min-width: 0; }
@@ -65,7 +68,7 @@ textarea.wrk-input { width: 100%; resize: vertical; font-family: inherit; }
 .wrk-form { display: grid; gap: 8px; }
 .wrk-form label { display: grid; gap: 3px; font-size: var(--fs-sm); color: var(--muted); }
 .wrk-form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
-.wrk-form-row > label { flex: 1; min-width: 120px; }
+.wrk-form-row > label { flex: 1; min-width: 120px; display: grid; gap: 3px; font-size: var(--fs-sm); color: var(--muted); }
 
 .wrk-error { background: var(--err-bg); border: 1px solid color-mix(in oklab, var(--sem-red) 50%, var(--border)); border-radius: var(--radius); padding: 8px 10px; color: var(--text); margin: 8px 0; font-size: var(--fs-sm); }
 .wrk-conflict { background: var(--warn-bg); border: 1px solid color-mix(in oklab, var(--sem-amber) 55%, var(--border)); border-radius: var(--radius); padding: 8px 10px; color: var(--text); margin: 8px 0; font-size: var(--fs-sm); }
@@ -102,7 +105,8 @@ textarea.wrk-input { width: 100%; resize: vertical; font-family: inherit; }
 .wrk-tile a { color: var(--text); font-weight: 500; }
 
 /* Dependency graph */
-.wrk-graph-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; height: 520px; }
+.wrk-graph-tools { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.wrk-graph-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; height: 560px; }
 .wrk-graph-wrap svg { width: 100%; height: 100%; display: block; cursor: grab; }
 .wrk-g-edge { fill: none; stroke: var(--border-2); stroke-width: 1.4; }
 .wrk-g-edge.critical { stroke: var(--accent); stroke-width: 2.6; }
@@ -149,7 +153,9 @@ textarea.wrk-input { width: 100%; resize: vertical; font-family: inherit; }
 
 .wrk-diff { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-2); }
 .wrk-diff del { color: var(--sem-red); text-decoration: line-through; }
+.wrk-diff del { margin: 0 4px; }
 .wrk-diff ins { color: var(--sem-green); text-decoration: none; }
+.wrk-diff ins::before { content: '→ '; color: var(--muted); }
 
 .wrk-dialog-back { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 50; overflow: auto; }
 .wrk-dialog { background: var(--surface); border: 1px solid var(--border-2); border-radius: var(--radius-lg); padding: 16px 18px; width: min(680px, 100%); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }

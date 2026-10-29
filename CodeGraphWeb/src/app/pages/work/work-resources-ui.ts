@@ -28,10 +28,10 @@ import { HoldView, ResourceView, WORK_PRIORITIES, WorkPriority } from './work.mo
                 <wrk-actor [actor]="hold.holder" />
                 <span class="wrk-chip" data-status="in_progress">holds</span>
                 @if (hold.owner_unreachable) { <span class="wrk-chip wrk-chip-blocked" title="Its session is silent; the slot stays held until it expires or is released.">owner unreachable</span> }
-                <span class="wrk-sub wrk-grow">{{ hold.purpose }}</span>
-                @if (hold.item) { <a [routerLink]="['/work/items', hold.item]">{{ hold.item }}</a> }
               </div>
               <div class="wrk-row">
+                <span class="wrk-sub">{{ hold.purpose }}</span>
+                @if (hold.item) { <a [routerLink]="['/work/items', hold.item]">{{ hold.item }}</a> }
                 <span class="wrk-sub">expires {{ hold.expires_at | ago }}</span>
                 <button type="button" class="wrk-btn" [disabled]="busy()" (click)="renew(hold)">Renew</button>
                 <button type="button" class="wrk-btn" [disabled]="busy()" (click)="release(hold)">Release</button>
@@ -43,7 +43,9 @@ import { HoldView, ResourceView, WORK_PRIORITIES, WorkPriority } from './work.mo
               <div class="wrk-row">
                 <wrk-actor [actor]="hold.holder" />
                 <span class="wrk-chip wrk-chip-open">waiting #{{ hold.queue_position }}</span>
-                <span class="wrk-sub wrk-grow">{{ hold.purpose }} ({{ hold.priority }})</span>
+              </div>
+              <div class="wrk-row">
+                <span class="wrk-sub">{{ hold.purpose }} ({{ hold.priority }})</span>
                 <button type="button" class="wrk-btn" [disabled]="busy()" (click)="release(hold)">Leave queue</button>
               </div>
             </li>
@@ -71,7 +73,7 @@ import { HoldView, ResourceView, WORK_PRIORITIES, WorkPriority } from './work.mo
       </form>
     </details>
   `,
-  styles: [`.wrk-resource { padding: 8px 0; border-top: 1px solid var(--hairline); } .wrk-resource:first-of-type { border-top: 0; } .wrk-acquire { margin-top: 10px; } .wrk-acquire summary { cursor: pointer; color: var(--accent-ink); }`]
+  styles: [`.wrk-resource { padding: 8px 0; border-top: 1px solid var(--hairline); } .wrk-resource:first-of-type { border-top: 0; } .wrk-acquire { margin-top: 10px; } .wrk-acquire summary { cursor: pointer; color: var(--wrk-link); }`]
 })
 export class ResourcesComponent extends WorkPageBase {
   readonly project = input.required<string>();

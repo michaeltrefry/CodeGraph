@@ -43,7 +43,8 @@ export interface WorkGraph {
 
 export const NODE_WIDTH = 176;
 export const NODE_HEIGHT = 40;
-const COLUMN_GAP = 64;
+const COLUMN_GAP = 44;
+const MAX_ROWS = 12;
 const ROW_GAP = 14;
 const MARGIN = 24;
 
@@ -130,13 +131,28 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
     };
   });
 
-  // Rows within a layer by key order, so the picture is stable between refreshes.
+  // Rows within a layer by key order, so the picture is stable between refreshes. A layer taller than
+  // MAX_ROWS wraps into further columns so a wide feature does not become one tall strip.
   const layers = nodes.reduce((count, node) => Math.max(count, node.layer + 1), 0);
-  const rows = new Array<number>(layers).fill(0);
+  const perLayer = new Array<number>(layers).fill(0);
+  for (const node of nodes) perLayer[node.layer]++;
+  const columnsOf = perLayer.map(count => Math.max(1, Math.ceil(count / MAX_ROWS)));
+  const firstColumn: number[] = [];
+  columnsOf.reduce((start, columns, layer) => {
+    firstColumn[layer] = start;
+    return start + columns;
+  }, 0);
+  const placed = new Array<number>(layers).fill(0);
+  let tallest = 1;
   for (const node of [...nodes].sort((a, b) => a.layer - b.layer || compareKeys(a.key, b.key))) {
-    node.x = MARGIN + node.layer * (NODE_WIDTH + COLUMN_GAP);
-    node.y = MARGIN + rows[node.layer]++ * (NODE_HEIGHT + ROW_GAP);
+    const index = placed[node.layer]++;
+    const column = firstColumn[node.layer] + Math.floor(index / MAX_ROWS);
+    const row = index % MAX_ROWS;
+    node.x = MARGIN + column * (NODE_WIDTH + COLUMN_GAP);
+    node.y = MARGIN + row * (NODE_HEIGHT + ROW_GAP);
+    tallest = Math.max(tallest, row + 1);
   }
+  const totalColumns = columnsOf.reduce((sum, columns) => sum + columns, 0);
 
   const edges: GraphEdge[] = [];
   for (const item of items) {
@@ -166,8 +182,8 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
     criticalPath,
     parallelSets,
     layers,
-    width: MARGIN * 2 + layers * NODE_WIDTH + Math.max(0, layers - 1) * COLUMN_GAP,
-    height: MARGIN * 2 + Math.max(1, ...rows) * NODE_HEIGHT + Math.max(0, Math.max(1, ...rows) - 1) * ROW_GAP
+    width: MARGIN * 2 + totalColumns * NODE_WIDTH + Math.max(0, totalColumns - 1) * COLUMN_GAP,
+    height: MARGIN * 2 + tallest * NODE_HEIGHT + Math.max(0, tallest - 1) * ROW_GAP
   };
 }
 

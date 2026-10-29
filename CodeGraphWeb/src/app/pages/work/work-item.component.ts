@@ -224,7 +224,7 @@ import { ItemView, MessageView, WORK_STATUSES, WorkApiError, WorkLink, WorkStatu
       }
     </div>
   `,
-  styles: [`.wrk-acquire { margin-top: 10px; } .wrk-acquire summary { cursor: pointer; color: var(--accent-ink); }`]
+  styles: [`.wrk-acquire { margin-top: 10px; } .wrk-acquire summary { cursor: pointer; color: var(--wrk-link); }`]
 })
 export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);

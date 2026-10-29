@@ -20,6 +20,13 @@ import { ItemView } from './work.models';
       <span><i data-k="cancelled"></i>cancelled prerequisite</span>
       <span><i data-k="critical"></i>critical path</span>
     </div>
+    <div class="wrk-graph-tools">
+      <button type="button" class="wrk-btn" (click)="zoomBy(1.3)" aria-label="Zoom in">+</button>
+      <button type="button" class="wrk-btn" (click)="zoomBy(1 / 1.3)" aria-label="Zoom out">−</button>
+      <button type="button" class="wrk-btn" (click)="fit(0.12)">Fit all</button>
+      <button type="button" class="wrk-btn" (click)="fit()">Reset</button>
+      <span class="wrk-sub">Scroll to zoom, drag to pan, Enter on an item opens it.</span>
+    </div>
     <div class="wrk-graph-wrap">
       <svg #svg role="img" [attr.aria-label]="summary()"></svg>
     </div>
@@ -67,6 +74,7 @@ export class DependencyGraphComponent implements AfterViewInit, OnDestroy {
   });
   private ready = false;
   private zoomed?: { x: number; y: number; k: number };
+  private behavior?: d3.ZoomBehavior<SVGSVGElement, unknown>;
 
   constructor() {
     effect(() => {
@@ -94,7 +102,6 @@ export class DependencyGraphComponent implements AfterViewInit, OnDestroy {
   private draw(graph: WorkGraph): void {
     const svg = d3.select(this.svg().nativeElement);
     svg.selectAll('*').remove();
-    svg.attr('viewBox', `0 0 ${Math.max(graph.width, 200)} ${Math.max(graph.height, 100)}`);
     const defs = svg.append('defs');
     defs.append('marker').attr('id', 'wrk-arrow').attr('viewBox', '0 0 10 10').attr('refX', 9).attr('refY', 5).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto-start-reverse')
       .append('path').attr('d', 'M0,0 L10,5 L0,10 z').attr('fill', 'currentColor').style('color', 'var(--muted)');
@@ -147,15 +154,32 @@ export class DependencyGraphComponent implements AfterViewInit, OnDestroy {
 
     try {
       const behavior = d3.zoom<SVGSVGElement, unknown>()
-        .scaleExtent([0.3, 3])
+        .scaleExtent([0.2, 3])
         .on('zoom', event => {
           this.zoomed = { x: event.transform.x, y: event.transform.y, k: event.transform.k };
           layer.attr('transform', event.transform.toString());
         });
+      this.behavior = behavior;
       svg.call(behavior);
       if (this.zoomed) svg.call(behavior.transform, d3.zoomIdentity.translate(this.zoomed.x, this.zoomed.y).scale(this.zoomed.k));
+      else this.fit();
     } catch {
       // Zoom needs layout APIs; the graph is still drawn without it.
     }
+  }
+
+  zoomBy(factor: number): void {
+    if (this.behavior) d3.select(this.svg().nativeElement).call(this.behavior.scaleBy, factor);
+  }
+
+  /** Scales the graph into view, but by default never below a size the items can be read at; the rest is panned to. */
+  fit(minimum = 0.55): void {
+    if (!this.behavior) return;
+    const element = this.svg().nativeElement;
+    const graph = this.graph();
+    const width = element.clientWidth || 1000;
+    const height = element.clientHeight || 520;
+    const scale = Math.min(1, Math.max(minimum, Math.min(width / Math.max(graph.width, 1), height / Math.max(graph.height, 1))));
+    d3.select(element).call(this.behavior.transform, d3.zoomIdentity.translate(8, 8).scale(scale));
   }
 }

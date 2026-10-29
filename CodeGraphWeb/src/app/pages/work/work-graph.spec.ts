@@ -53,6 +53,8 @@ describe('buildWorkGraph for a 50-item feature', () => {
 
   it('lays out layers left to right without overlap', () => {
     for (const edge of graph.edges) expect(node(edge.from).x).toBeLessThan(node(edge.to).x);
+    // The twenty items with nothing in front of them wrap into two columns of at most twelve.
+    expect(Math.max(...graph.nodes.map(candidate => candidate.y))).toBeLessThanOrEqual(24 + 11 * 54);
     const cells = new Set(graph.nodes.map(candidate => `${candidate.x}:${candidate.y}`));
     expect(cells.size).toBe(50);
     expect(graph.layers).toBe(15);
