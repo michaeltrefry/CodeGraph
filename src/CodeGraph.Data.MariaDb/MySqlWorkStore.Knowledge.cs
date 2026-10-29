@@ -18,8 +18,9 @@ namespace CodeGraph.Data.MariaDb;
 // commit, best effort, from whichever of the index write and the knowledge write commits later
 // (KnowledgeBaselines, called by MySqlGraphStore and by the wrappers below).
 //
-// Lock order: project row, then work items, then knowledge rows. A write that stores knowledge holds
-// the project first (save points included).
+// Lock order (the store's, see MySqlWorkStore): project, feature, items, resources and holds, then
+// knowledge rows, then the change-feed lock. A write that stores knowledge holds the project first
+// (save points included) and inserts its entries after its item, resource and hold writes.
 //
 // Change feed: record (entry, supersede, revise, retract, verify) writes no work_changes entry; the
 // feed (E7) covers projects, features and items, and save points written by update_work on one of

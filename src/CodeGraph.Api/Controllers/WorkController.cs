@@ -33,6 +33,10 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
     [HttpPost("next")]
     public Task<IActionResult> Next() => RunBodyAsync(WorkTools.NextWork);
 
+    /// <summary>sync_plan: a preview (feature and plan) or its confirmation (confirm).</summary>
+    [HttpPost("plans/sync")]
+    public Task<IActionResult> SyncPlan() => RunBodyAsync(WorkTools.SyncPlan);
+
     /// <summary>start_session.</summary>
     [HttpPost("sessions")]
     public Task<IActionResult> StartSession() => RunBodyAsync(WorkTools.StartSession);
@@ -122,6 +126,18 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         return await RunAsync(WorkTools.GetBriefing, JsonSerializer.SerializeToElement(arguments));
     }
 
+    /// <summary>acquire: a hold on a resource.</summary>
+    [HttpPost("holds")]
+    public Task<IActionResult> Acquire() => RunBodyAsync(WorkTools.Acquire);
+
+    /// <summary>renew_hold: the body holds ttl_seconds (or is empty); the hold id is the path.</summary>
+    [HttpPost("holds/{holdId}/renew")]
+    public Task<IActionResult> RenewHold(string holdId) => RunWithPathIdAsync(WorkTools.RenewHold, "hold_id", holdId);
+
+    /// <summary>release: the body is empty; the hold id is the path.</summary>
+    [HttpPost("holds/{holdId}/release")]
+    public Task<IActionResult> ReleaseHold(string holdId) => RunWithPathIdAsync(WorkTools.Release, "hold_id", holdId);
+
     /// <summary>changes: project, cursor, from_start, limit, wait_seconds (and session_id) as query parameters.</summary>
     [HttpGet("changes")]
     public async Task<IActionResult> Changes()
@@ -183,6 +199,31 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         var arguments = JsonObject.Create(body)!;
         arguments["id"] = id;
         return await RunAsync(WorkTools.UpdateWork, JsonSerializer.SerializeToElement(arguments));
+    }
+
+    // A tool whose id is in the path and whose other arguments (if any) are the body, which may be empty.
+    private async Task<IActionResult> RunWithPathIdAsync(string tool, string argument, string id)
+    {
+        if (await DeniedAsync(tool) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        if (Request.ContentLength == 0 || (Request.ContentLength is null && !Request.HasJsonContentType()))
+        {
+            arguments = new JsonObject();
+        }
+        else
+        {
+            var (body, refusal) = await ReadBodyAsync(tool);
+            if (refusal is not null)
+                return refusal;
+            if (body.TryGetProperty(argument, out _))
+                return Refuse(WorkException.Invalid($"Pass {argument} in the path, not in the body."));
+            arguments = JsonObject.Create(body)!;
+        }
+
+        arguments[argument] = id;
+        return await RunAsync(tool, JsonSerializer.SerializeToElement(arguments));
     }
 
     private async Task<IActionResult> RunBodyAsync(string tool)

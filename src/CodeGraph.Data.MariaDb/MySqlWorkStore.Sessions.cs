@@ -226,11 +226,20 @@ public sealed partial class MySqlWorkStore
                         new { id }, transaction, cancellationToken: ct));
                 }
 
+                // The session's attempt on the item (sc-27868) keeps the handoff and ends with the claim.
+                var attempt = await ActiveAttemptAsync(connection, transaction, id, ct);
+                if (attempt is not null && attempt.SessionId != sessionId.ToString())
+                    attempt = null;
                 if (id == target)
                 {
                     written = await InsertHandoffAsync(connection, transaction, id, handoff!, sessionActor, now, ct);
                     changes.Add(Change("handoff", (JsonNode?)null, JsonValue.Create(written.Id.ToString())));
+                    if (attempt is not null)
+                        await AttachHandoffAsync(connection, transaction, attempt, written.Id, handoff!.Branch, ct);
                 }
+
+                if (releases && attempt is not null)
+                    await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, "The session ended and released the claim.", now, changes, ct);
 
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET version = version + 1, updated_at = @now WHERE id = @id", new { id, now }, transaction, cancellationToken: ct));
@@ -244,10 +253,13 @@ public sealed partial class MySqlWorkStore
             }
 
             // The save-point fields (S5), in this transaction: linked to the handoff's item, else the
-            // item named, else the one item the session holds; scoped by default to that item's repository.
+            // item named, else the one item the session holds (read before the session's claims are
+            // closed below); scoped by default to that item's repository.
+            Guid? linked = null;
+            string? linkedRepository = null;
             if (knowledge is { Count: > 0 })
             {
-                var linked = target ?? itemId;
+                linked = target ?? itemId;
                 if (linked is null)
                 {
                     var open = (await connection.QueryAsync<Guid>(new CommandDefinition(
@@ -256,18 +268,14 @@ public sealed partial class MySqlWorkStore
                     linked = open.Count == 1 ? open[0] : null;
                 }
 
-                string? repository = null;
                 if (linked is { } linkedItem)
                 {
                     var linkedRow = await ReadItemRowAsync(connection, transaction, linkedItem, ct)
                         ?? throw WorkException.NotFound($"There is no item {linkedItem}.");
                     if (linkedRow.ProjectId != session.ProjectId)
                         throw WorkException.Invalid($"{linkedRow.Key} belongs to another project than the session. Nothing was changed.");
-                    repository = linkedRow.RepositoryName;
+                    linkedRepository = linkedRow.RepositoryName;
                 }
-
-                var project = (await ReadProjectRowAsync(connection, transaction, session.ProjectId, ct))!;
-                await InsertKnowledgeAsync(connection, transaction, project, knowledge, linked, null, repository, sessionActor, now, ct);
             }
 
             await connection.ExecuteAsync(new CommandDefinition(
@@ -276,9 +284,18 @@ public sealed partial class MySqlWorkStore
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_sessions SET ended_at = @now, last_seen_at = @now WHERE id = @id",
                 new { id = sessionId.ToString(), now }, transaction, cancellationToken: ct));
+            // Holds of resources end with the session (sc-27872): only here and on release or ttl, never on silence.
+            var releasedHolds = await ReleaseSessionHoldsAsync(connection, transaction, sessionId, now, ct);
+            // Knowledge rows come after resources and holds in the lock order (S5).
+            if (knowledge is { Count: > 0 })
+            {
+                var project = (await ReadProjectRowAsync(connection, transaction, session.ProjectId, ct))!;
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, linked, null, linkedRepository, sessionActor, now, ct);
+            }
+
             var ended = (await ReadSessionRowAsync(connection, transaction, sessionId, ct))!;
             await CommitAsync(connection, transaction, entries, sessionActor, now, ct);
-            return new EndSessionResult(ToView(ended, now), released, written);
+            return new EndSessionResult(ToView(ended, now), released, written, releasedHolds.Count == 0 ? null : releasedHolds);
         }, ct);
 
     // ---- Session claims ------------------------------------------------------------------------
@@ -430,8 +447,14 @@ public sealed partial class MySqlWorkStore
             last = row is null ? null : ToView(row);
         }
 
-        return new RecoveryView(previous, branches, prs, handoff, last);
+        return new RecoveryView(previous, branches, prs, handoff, last, Unmet(before));
     }
+
+    /// <summary>The acceptance criteria of an item not yet reported met, or null when there are none.</summary>
+    private static IReadOnlyList<AcceptanceCriterionView>? Unmet(ItemRow row) =>
+        ReadList<AcceptanceCriterionView>(row.AcceptanceJson).Where(criterion => criterion.State == AcceptanceState.Unmet).ToList() is { Count: > 0 } unmet
+            ? unmet
+            : null;
 
     private static async Task<(IReadOnlyList<string>? Branches, IReadOnlyList<string>? Prs)> ReadWorkLinksAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct)
     {
@@ -500,6 +523,7 @@ public sealed partial class MySqlWorkStore
         }).ToList();
 
         var suggested = await SuggestAsync(connection, session, now, ct);
+        var (myHolds, busyResources) = await ReadBriefingHoldsAsync(connection, session, now, ct);
 
         return new BriefingView(
             sessionId.ToString(), 0, 0,
@@ -507,7 +531,9 @@ public sealed partial class MySqlWorkStore
             myWork.Count == 0 ? null : myWork,
             focus,
             otherSessions.Count == 0 ? null : otherSessions,
-            suggested);
+            suggested,
+            MyHolds: myHolds,
+            Resources: busyResources);
     }
 
     // In progress, no live claim, and a claim in its history (§5.9: "whose claim lapsed"): an item a
@@ -523,7 +549,7 @@ public sealed partial class MySqlWorkStore
         var handoff = (await ReadHandoffsAsync(connection, null, row.Id, limit: 1, ct)).FirstOrDefault();
         return new BriefingItem(
             row.Key, row.Title, WorkStatuses.Parse(row.Status), ParseName<WorkPriority>(row.Priority), row.RepositoryName,
-            recoverable ? true : null, branches, prs, handoff, previous);
+            recoverable ? true : null, branches, prs, handoff, previous, Unmet(row));
     }
 
     /// <summary>

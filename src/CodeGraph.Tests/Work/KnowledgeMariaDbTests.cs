@@ -230,6 +230,29 @@ public sealed class KnowledgeMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
     }
 
     [Fact]
+    public async Task The_item_brief_carries_knowledge_scoped_to_the_items_touches()
+    {
+        var key = await ProjectAsync("KT", dependencies: "mlx-rs");
+        var matching = (await db.CallAsync(WorkTools.Record, new
+        {
+            project = key,
+            entry = new { kind = "constraint", summary = "The allocator is not thread-safe", paths = new[] { "src/alloc/**" } }
+        })).GetProperty("entry").GetProperty("id").GetString();
+        await db.CallAsync(WorkTools.Record, new { project = key, entry = new { kind = "constraint", summary = "Docs build with mdbook", paths = new[] { "docs" } } });
+        var item = (await db.CallAsync(WorkTools.CreateWork, new
+        {
+            project = key,
+            item = new { title = "Pool allocations", touches = new[] { "src/alloc/pool.rs", "Allocator::new" } }
+        })).GetProperty("item");
+
+        var brief = await db.CallAsync(WorkTools.GetWork, new { id = item.GetProperty("key").GetString() });
+        var knowledge = brief.GetProperty("knowledge").EnumerateArray().ToList();
+        knowledge.Single().GetProperty("id").GetString().ShouldBe(matching);
+        knowledge[0].GetProperty("match").GetString().ShouldBe("path");
+        brief.GetProperty("touches").GetArrayLength().ShouldBe(2);
+    }
+
+    [Fact]
     public async Task A_file_indexed_with_backslash_separators_is_verified_against_and_flagged_when_it_changes()
     {
         var key = await ProjectAsync("KW", dependencies: "sceneworks");

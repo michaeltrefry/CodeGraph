@@ -125,9 +125,20 @@ public sealed partial class WorkService
     private async Task<IReadOnlyList<KnowledgeRow>?> ItemKnowledgeAsync(ItemView item, CancellationToken ct)
     {
         var rows = await Knowledge.ReadRelevantKnowledgeAsync(
-            new KnowledgeContext(item.ProjectId, item.Repository, [], [item.Id], BriefKinds, KnowledgeLimits.MaxBriefingEntries), ct);
+            new KnowledgeContext(item.ProjectId, item.Repository, TouchedPaths(item.Touches), [item.Id], BriefKinds, KnowledgeLimits.MaxBriefingEntries), ct);
         return rows.Count == 0 ? null : rows;
     }
+
+    // The item's touches (S4: paths and symbols) as knowledge paths: each that reads as a relative
+    // path, in its stored form. A symbol matches only an entry scoped to that same text.
+    private static IReadOnlyList<string> TouchedPaths(IReadOnlyList<string>? touches) =>
+        (touches ?? [])
+            .Select(KnowledgePaths.Normalize)
+            .OfType<string>()
+            .Where(path => path.Length <= KnowledgeLimits.MaxPathLength)
+            .Distinct(StringComparer.Ordinal)
+            .Take(KnowledgeLimits.MaxPaths)
+            .ToList();
 
     // ---- record ------------------------------------------------------------------------------------
 
