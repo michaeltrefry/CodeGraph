@@ -48,6 +48,7 @@ using CodeGraph.Services.Prompts;
 using CodeGraph.Services.Query;
 using CodeGraph.Services.Reviews;
 using CodeGraph.Services.WikiRag;
+using CodeGraph.Services.Work;
 
 namespace CodeGraph.Api;
 
@@ -196,6 +197,9 @@ public static class Startup
         services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
+        // Work tracking (agent coordination S1). IWorkStore is registered with the MariaDB
+        // provider only; without it the work tools answer "unavailable".
+        services.AddTransient<IWorkService, WorkService>();
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<McpPersonalAccessTokenService>();
@@ -352,6 +356,9 @@ public static class Startup
         .WithTools<ConsolidatedMcpServer>()
         .WithTools<McpHubServer>()
         .WithTools<OverlayMcpServer>()
+        // The work tools read their raw arguments strictly (WorkJson), so they are registered as
+        // tool instances with generated schemas rather than as attribute-bound methods.
+        .WithTools(WorkMcpTool.CreateAll())
         .WithResources<CodeGraphMcpResources>();
     }
 
