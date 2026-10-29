@@ -453,6 +453,118 @@ public sealed class WorkMessagesMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         Ids(await InboxAsync(live)).ShouldBe([liveMessage]);
     }
 
+    [Fact]
+    public async Task A_direct_message_passes_on_again_when_the_session_that_inherited_it_crashes_before_acknowledging()
+    {
+        var project = await db.NewProjectAsync("DC");
+        var a = await StartAsync(project, "claude-code", repository: "sceneworks");
+        var message = IdOf(await PostAsync(new { project, to_session = a, body = "Run the migration." }));
+        await db.CallAsync(WorkTools.EndSession, new { session_id = a }, "michael");
+
+        var second = await StartAsync(project, "codex", repository: "sceneworks");
+        Ids(await InboxAsync(second)).ShouldBe([message]);
+        // The second session crashes without acknowledging.
+        db.Clock.Advance(PastIdle);
+
+        var third = await StartAsync(project, "codex", repository: "sceneworks");
+        var inherited = await InboxAsync(third);
+        Ids(inherited).ShouldBe([message]);
+        inherited.GetProperty("items")[0].GetProperty("handed_over").GetBoolean().ShouldBeTrue();
+        // Once per new session: a fourth finds the third live and holding it.
+        Ids(await InboxAsync(await StartAsync(project, "codex", repository: "sceneworks"))).ShouldBeEmpty();
+
+        // A message the inheriting session acknowledged is not passed on when it crashes.
+        var fresh = await StartAsync(project, "claude-code", repository: "inference");
+        var read = IdOf(await PostAsync(new { project, to_session = fresh, body = "Read it." }));
+        await db.CallAsync(WorkTools.EndSession, new { session_id = fresh }, "michael");
+        var heir = await StartAsync(project, "codex", repository: "inference");
+        await db.CallAsync(WorkTools.Ack, new { session_id = heir, messages = new[] { read } }, "michael");
+        db.Clock.Advance(PastIdle);
+        Ids(await InboxAsync(await StartAsync(project, "codex", repository: "inference"))).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Opening_and_closing_a_blocking_question_is_a_change_feed_entry_and_moves_the_item_version()
+    {
+        var project = await db.NewProjectAsync("BF");
+        var key = (await db.NewItemAsync(project, "Feed")).GetProperty("key").GetString()!;
+        var version = (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        var question = IdOf(await PostAsync(new { project, item = key, to_human = true, kind = "question", blocking = true, body = "Key?" }));
+
+        var opened = (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        opened.ShouldBe(version + 1);
+        await db.CallAsync(WorkTools.Post, new { project, in_reply_to = question, resolves = "answered", body = "Here." }, "dana");
+        (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64().ShouldBe(opened + 1);
+
+        var entries = (await db.AllChangesAsync(project)).Where(entry => entry.GetProperty("entity_key").GetString() == key && entry.GetProperty("kind").GetString() == "item_updated").ToList();
+        var flags = entries.Select(entry => entry.GetProperty("changes").EnumerateArray().Single(change => change.GetProperty("field").GetString() == "awaiting_human"))
+            .Select(change => (change.GetProperty("old").GetBoolean(), change.GetProperty("new").GetBoolean())).ToList();
+        flags.ShouldBe([(false, true), (true, false)]);
+
+        // Closing through ack with a resolution writes its entry too.
+        var second = IdOf(await PostAsync(new { project, item = key, to_human = true, kind = "question", blocking = true, body = "Again?" }));
+        await db.CallAsync(WorkTools.Ack, new { project, messages = new[] { second }, resolution = "declined" }, "dana");
+        (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key && entry.GetProperty("kind").GetString() == "item_updated").ShouldBe(4);
+    }
+
+    [Fact]
+    public async Task A_finished_item_is_not_reported_blocked_by_a_question_left_open()
+    {
+        var project = await db.NewProjectAsync("BC");
+        var key = (await db.NewItemAsync(project, "Finished")).GetProperty("key").GetString()!;
+        await PostAsync(new { project, item = key, to_human = true, kind = "question", blocking = true, body = "Still needed?" });
+        (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("blocked").GetBoolean().ShouldBeTrue();
+
+        await db.UpdateAsync(key, new { status = "complete" });
+
+        var done = await db.CallAsync(WorkTools.GetWork, new { id = key });
+        done.GetProperty("blocked").GetBoolean().ShouldBeFalse();
+        done.TryGetProperty("blocked_reason", out _).ShouldBeFalse();
+        (await db.CallAsync(WorkTools.FindWork, new { project, status = new[] { "complete" } })).GetProperty("items")[0].GetProperty("blocked").GetBoolean().ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task Ack_refuses_a_cursor_ahead_of_the_store()
+    {
+        var project = await db.NewProjectAsync("AH");
+        var s = await StartAsync(project, "claude-code");
+        var ahead = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("ib:999999999")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        (await db.RefusedAsync(WorkTools.Ack, new { session_id = s, up_to = ahead }, "michael")).Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task A_reply_to_ones_own_message_or_to_a_message_a_person_sent_goes_to_the_original_recipients()
+    {
+        var project = await db.NewProjectAsync("RE");
+        var a = await StartAsync(project, "claude-code");
+        var b = await StartAsync(project, "codex", "bob");
+        var bystander = await StartAsync(project, "codex", "carol");
+
+        // A session replies to its own direct message: to the same recipient, not to every live session.
+        var own = IdOf(await db.CallAsync(WorkTools.Post, new { session_id = a, to_session = b, kind = "question", body = "Ready?" }, "michael"));
+        var followUp = await db.CallAsync(WorkTools.Post, new { session_id = a, in_reply_to = own, body = "Ping." }, "michael");
+        followUp.GetProperty("message").GetProperty("to_session_id").GetString().ShouldBe(b);
+        followUp.GetProperty("recipients").GetInt32().ShouldBe(1);
+        Ids(await InboxAsync(bystander, user: "carol")).ShouldBeEmpty();
+
+        // A person replies to a message a person sent to a session: to that session, not the humans' inbox.
+        var fromPerson = IdOf(await PostAsync(new { project, to_session = b, kind = "request", body = "Please look." }, "alice"));
+        var reply = await db.CallAsync(WorkTools.Post, new { project, in_reply_to = fromPerson, body = "Any news?" }, "dana");
+        reply.GetProperty("message").GetProperty("to_session_id").GetString().ShouldBe(b);
+        reply.GetProperty("message").TryGetProperty("to_human", out _).ShouldBeFalse();
+        Ids(await db.CallAsync(WorkTools.Inbox, new { project }, "dana")).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task A_feature_message_with_no_current_holder_is_stored_with_zero_recipients()
+    {
+        var project = await db.NewProjectAsync("FZ");
+        var feature = (await db.CallAsync(WorkTools.CreateWork, new { project, feature = new { title = "Empty" } })).GetProperty("feature").GetProperty("key").GetString()!;
+        var posted = await PostAsync(new { project, feature, body = "Anyone?" });
+        posted.GetProperty("recipients").GetInt32().ShouldBe(0);
+        posted.GetProperty("message").GetProperty("channel").GetString().ShouldBe("feature");
+    }
+
     // ---- Unread, briefing, human ---------------------------------------------------------------------------
 
     [Fact]

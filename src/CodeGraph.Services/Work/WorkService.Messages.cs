@@ -176,6 +176,8 @@ public sealed partial class WorkService
         {
             if (!long.TryParse(DecodeCursor(request.UpTo!, InboxCursorKind, "inbox"), NumberStyles.None, CultureInfo.InvariantCulture, out var cursor))
                 throw WorkException.Invalid("up_to is not a cursor of inbox; pass a next_cursor of inbox unchanged.");
+            if (cursor > await Store.GetInboxHeadAsync(ct))
+                throw WorkException.Invalid("up_to is ahead of the newest message of the store (the database was restored to an earlier state). Pass a next_cursor of inbox.");
             upTo = cursor;
         }
 

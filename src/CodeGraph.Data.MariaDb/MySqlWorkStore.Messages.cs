@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
 using Dapper;
@@ -13,12 +14,17 @@ namespace CodeGraph.Data.MariaDb;
 // Ordering. Every INSERT into work_messages / work_message_deliveries / work_message_events and the
 // COMMIT run while the writer holds the named lock MessageLockName, so a higher sequence is always
 // committed later and an inbox cursor never skips a row (the idea of the change feed's lock).
-// Lock order: row locks of work_items / work_projects first, then MessageLockName; code holding
-// MessageLockName reads those tables without locking, and the tables of messages have no foreign
-// keys, so no writer waits for a row while another waits for the lock. A post or an ack takes the
-// lock before its transaction (RunAsync); a session's claim of an item and start_session take it
-// inside their transaction, after their row locks, through a MessageLockScope that releases it
-// after the commit.
+// Lock order, everywhere: row locks of work_items / work_projects first (in id order), then
+// MessageLockName, then the change-feed lock (the commit of an entry). Code holding MessageLockName
+// takes no further row lock on work_items, work_projects or work_sessions (it reads them without
+// locking, or on a second connection), and the tables of messages have no foreign keys, so no
+// writer waits for a row while another waits for the lock. Every taker acquires the lock inside its
+// transaction through a MessageLockScope, which releases it after the commit.
+//
+// A post to an item's thread holds that item's row (shared, or exclusive when it opens or closes a
+// blocking question) before the lock. A claim holds the item's row exclusively. So a claim either
+// commits before a post (the post then sees the new holder) or after it (the claim's handover sees
+// the post), which is what lets a claim skip the lock when an unlocked look finds nothing to hand over.
 public sealed partial class MySqlWorkStore
 {
     public const string MessageLockName = "codegraph_work_messages";
@@ -26,7 +32,7 @@ public sealed partial class MySqlWorkStore
 
     // The condition, on alias i, for an item with an open question to the human that blocks it.
     private const string OpenBlockingQuestion =
-        "EXISTS (SELECT 1 FROM work_messages bq WHERE bq.item_id = i.id AND bq.blocking = 1 AND bq.state = 'open')";
+        "(i.status NOT IN ('complete', 'closed') AND EXISTS (SELECT 1 FROM work_messages bq WHERE bq.item_id = i.id AND bq.blocking = 1 AND bq.state = 'open'))";
 
     private static string RecipientOf(WorkActor actor) => actor.SessionId ?? MessageChannels.HumanRecipient;
 
@@ -67,6 +73,7 @@ public sealed partial class MySqlWorkStore
         public string ProjectKey { get; init; } = "";
         public string Channel { get; init; } = "";
         public Guid? ItemId { get; init; }
+        public Guid? FeatureId { get; init; }
         public string Kind { get; init; } = "";
         public string? State { get; init; }
         public bool Blocking { get; init; }
@@ -97,7 +104,7 @@ public sealed partial class MySqlWorkStore
     }
 
     private const string MessageColumns =
-        "m.sequence, m.id, m.project_id, p.project_key, m.channel, m.item_id, m.kind, m.state, m.blocking, m.to_session_id, m.to_human, m.resource_name, " +
+        "m.sequence, m.id, m.project_id, p.project_key, m.channel, m.item_id, m.feature_id, m.kind, m.state, m.blocking, m.to_session_id, m.to_human, m.resource_name, " +
         "m.in_reply_to, m.body, m.sender_name, m.sender_kind, m.sender_session_id, ss.harness AS sender_harness, ss.model AS sender_model, ss.host AS sender_host, " +
         "m.resolved_by, m.resolved_by_kind, m.resolved_by_session_id, rs.harness AS resolver_harness, rs.model AS resolver_model, rs.host AS resolver_host, " +
         "m.resolved_at, m.created_at, i.number AS item_number, f.number AS feature_number";
@@ -191,12 +198,66 @@ public sealed partial class MySqlWorkStore
 
     // ---- post ------------------------------------------------------------------------------------
 
+    // A reply with no target of its own is routed to who the message it answers was for.
+    private static bool HasExplicitTarget(NewMessageSpec spec) =>
+        spec.ItemId is not null || spec.FeatureId is not null || spec.Resource is not null || spec.ToSession is not null || spec.ToHuman;
+
+    /// <summary>
+    /// Holds the rows of these items, in id order: exclusively where the call opens or closes a
+    /// blocking question (it bumps the item), shared where it only writes on the item's thread (so a
+    /// claim of the item cannot slip between the post and its handover).
+    /// </summary>
+    private static async Task HoldItemsAsync(MySqlConnection connection, MySqlTransaction transaction, IReadOnlyDictionary<Guid, bool> exclusive, CancellationToken ct)
+    {
+        foreach (var (id, bump) in exclusive.OrderBy(entry => entry.Key.ToString(), StringComparer.Ordinal))
+        {
+            if (bump)
+                await connection.ExecuteAsync(new CommandDefinition("UPDATE work_items SET version = version WHERE id = @id", new { id }, transaction, cancellationToken: ct));
+            else
+                await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition("SELECT id FROM work_items WHERE id = @id LOCK IN SHARE MODE", new { id }, transaction, cancellationToken: ct));
+        }
+    }
+
+    /// <summary>
+    /// A blocking question to the human opened or was closed: the item's derived Blocked state
+    /// changed, so the item's version moves and the change feed says so. The caller holds the item's
+    /// row exclusively and the messages lock.
+    /// </summary>
+    private static async Task<PendingChange> AwaitingHumanChangeAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, bool opened, DateTime now, CancellationToken ct)
+    {
+        var before = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+        var open = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM work_messages WHERE item_id = @itemId AND blocking = 1 AND state = 'open'", new { itemId }, transaction, cancellationToken: ct));
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE work_items SET version = version + 1, updated_at = @now WHERE id = @itemId", new { itemId, now }, transaction, cancellationToken: ct));
+        var after = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+        var changes = new JsonArray
+        {
+            Change("awaiting_human", opened ? open > 1 : open + 1 > 0, open > 0),
+            Change("version", before.Version, after.Version)
+        };
+        return new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes);
+    }
+
     public Task<PostedMessage> PostMessageAsync(NewMessageSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
-        RunAsync([MessageLockName], async connection =>
+        RunAsync([], async connection =>
         {
             var now = Now();
+            // Which item rows this call needs, known before anything is locked: the item's message
+            // rows and the parent's item never change.
+            var parentBefore = spec.InReplyTo is { } parentName ? await ReadMessageRowAsync(connection, null, parentName, ct) : null;
+            var threadItem = spec.ItemId ?? (parentBefore is not null && !HasExplicitTarget(spec) ? parentBefore.ItemId : null);
+            var holds = new Dictionary<Guid, bool>();
+            if (threadItem is { } thread)
+                holds[thread] = spec.Blocking;
+            if (spec.Resolves is not null && parentBefore is { Blocking: true, ItemId: { } blockedItem })
+                holds[blockedItem] = true;
+
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            // The first read comes after the lock, so it sees every claim, post and answer committed before it.
+            await using var messageLock = new MessageLockScope(connection, transaction);
+            await HoldItemsAsync(connection, transaction, holds, ct);
+            // The first consistent read comes after the lock, so it sees every claim, post and answer committed before it.
+            await messageLock.AcquireAsync(ct);
             if (keyHash is not null && await FindKeyAsync(connection, transaction, spec.ProjectId, MessageOperation, keyHash, ct) is { EntityId: { } existing })
             {
                 var earlier = (await ReadMessageRowAsync(connection, transaction, existing, ct))!;
@@ -210,9 +271,13 @@ public sealed partial class MySqlWorkStore
                     "SELECT COUNT(*) FROM work_projects WHERE id = @projectId", new { spec.ProjectId }, transaction, cancellationToken: ct)) == 0)
                 throw WorkException.NotFound($"There is no project {spec.ProjectId}.");
 
-            // A reply without a target goes to the message it answers: its sender, about its item.
+            // A reply without a target goes to who the message it answers was for: its sender when that
+            // is another session; otherwise (the caller's own message, or one a person sent) the
+            // recipients the original named, so neither a project broadcast nor the humans' inbox again.
             MessageRow? parent = null;
             var itemId = spec.ItemId;
+            var featureId = spec.FeatureId;
+            var resource = spec.Resource;
             var toSession = spec.ToSession?.ToString();
             var toHuman = spec.ToHuman;
             if (spec.InReplyTo is { } parentId)
@@ -220,14 +285,29 @@ public sealed partial class MySqlWorkStore
                 parent = await ReadMessageRowAsync(connection, transaction, parentId, ct);
                 if (parent is null || parent.ProjectId != spec.ProjectId)
                     throw WorkException.NotFound($"There is no message {parentId} in this project. Nothing was changed.");
-                var explicitTarget = spec.ItemId is not null || spec.FeatureId is not null || spec.Resource is not null || spec.ToSession is not null || spec.ToHuman;
-                if (!explicitTarget)
+                if (!HasExplicitTarget(spec))
                 {
                     itemId = parent.ItemId;
                     if (parent.SenderSessionId is { } sender && sender != actor.SessionId)
+                    {
                         toSession = sender;
-                    else if (parent.SenderSessionId is null)
+                    }
+                    else if (parent.SenderSessionId is null && actor.SessionId is not null)
+                    {
+                        // A session answering a person writes to the humans.
                         toHuman = true;
+                    }
+                    else
+                    {
+                        if (parent.ToSessionId is { } original && original != actor.SessionId)
+                            toSession = original;
+                        else if (parent.ToHuman && actor.SessionId is not null)
+                            toHuman = true;
+                        else if (parent.FeatureId is not null)
+                            featureId = parent.FeatureId;
+                        else if (parent.ResourceName is not null)
+                            resource = parent.ResourceName;
+                    }
                 }
             }
 
@@ -240,13 +320,15 @@ public sealed partial class MySqlWorkStore
 
             var channel = toHuman ? MessageChannels.Human
                 : toSession is not null ? MessageChannels.Session
-                : spec.FeatureId is not null ? MessageChannels.Feature
-                : spec.Resource is not null ? MessageChannels.Resource
+                : featureId is not null ? MessageChannels.Feature
+                : resource is not null ? MessageChannels.Resource
                 : itemId is not null ? MessageChannels.Item
                 : MessageChannels.Project;
 
             // Who gets a copy now. Others reach the message later: the next holder of the item
-            // (handover), the next session of a project and repository (direct messages).
+            // (handover), the next session of a project and repository (direct messages). A project
+            // or resource message reaches only the sessions live now; a feature message the sessions
+            // holding one of its items now (none: a message with no recipient, kept and visible).
             var recipientIds = new List<string>();
             if (toHuman)
             {
@@ -256,14 +338,14 @@ public sealed partial class MySqlWorkStore
             {
                 recipientIds.Add(toSession);
             }
-            else if (spec.FeatureId is { } featureId)
+            else if (featureId is { } feature)
             {
                 recipientIds.AddRange(await connection.QueryAsync<string>(new CommandDefinition(
-                    "SELECT DISTINCT i.claim_session_id FROM work_items i WHERE i.feature_id = @featureId AND i.claim_session_id IS NOT NULL " +
+                    "SELECT DISTINCT i.claim_session_id FROM work_items i WHERE i.feature_id = @feature AND i.claim_session_id IS NOT NULL " +
                     "AND i.claim_holder IS NOT NULL AND i.claim_expires_at > @now AND i.status NOT IN ('complete', 'closed')",
-                    new { featureId, now }, transaction, cancellationToken: ct)));
+                    new { feature, now }, transaction, cancellationToken: ct)));
             }
-            else if (spec.Resource is not null || itemId is null)
+            else if (resource is not null || itemId is null)
             {
                 recipientIds.AddRange(await connection.QueryAsync<string>(new CommandDefinition(
                     "SELECT id FROM work_sessions WHERE project_id = @projectId AND ended_at IS NULL AND last_seen_at > @staleBefore",
@@ -288,7 +370,7 @@ public sealed partial class MySqlWorkStore
                 "VALUES (@id, @projectId, @channel, @itemId, @featureId, @resource, @toSession, @toHuman, @kind, @state, @blocking, @inReplyTo, @body, @name, @actorKind, @session, @now)",
                 new
                 {
-                    id, projectId = spec.ProjectId, channel, itemId, featureId = spec.FeatureId, resource = spec.Resource, toSession, toHuman,
+                    id, projectId = spec.ProjectId, channel, itemId, featureId, resource, toSession, toHuman,
                     kind = JsonName(spec.Kind), state, blocking = spec.Blocking, inReplyTo = spec.InReplyTo, body = spec.Body,
                     name = actor.Name, actorKind = actor.Kind, session = actor.SessionId, now
                 },
@@ -299,22 +381,29 @@ public sealed partial class MySqlWorkStore
             if (keyHash is not null)
                 await InsertKeyAsync(connection, transaction, spec.ProjectId, MessageOperation, keyHash, id, null, now, ct);
 
+            var entries = new List<PendingChange>();
+            if (spec.Blocking && itemId is { } blocked)
+                entries.Add(await AwaitingHumanChangeAsync(connection, transaction, blocked, opened: true, now, ct));
+
             MessageRow? resolved = null;
             if (spec.Resolves is { } resolution)
             {
                 await ResolveAsync(connection, transaction, parent!, resolution, actor, now, ct);
-                resolved = await ReadMessageRowAsync(connection, transaction, parent!.Id, ct);
+                if (parent!.Blocking && parent.ItemId is { } unblocked)
+                    entries.Add(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct));
+                resolved = await ReadMessageRowAsync(connection, transaction, parent.Id, ct);
             }
 
             var row = (await ReadMessageRowAsync(connection, transaction, id, ct))!;
-            await transaction.CommitAsync(ct);
+            await CommitAsync(connection, transaction, entries, actor, now, ct);
             return new PostedMessage(true, ToView(row), recipientIds.Count, resolved is null ? null : ToView(resolved));
         }, ct);
 
     /// <summary>
     /// Closes an open question or request as <paramref name="actor"/>: the message, and the actor's
-    /// own delivery (made if it has none). Refused conflict when it is closed already. The caller
-    /// holds the messages lock.
+    /// own delivery (made if it has none). Takes no expected_version: the UPDATE is guarded by
+    /// state = 'open', and a message closed already is refused conflict. The caller holds the messages
+    /// lock (and, for a blocking question, its item's row).
     /// </summary>
     private static async Task ResolveAsync(
         MySqlConnection connection, MySqlTransaction transaction, MessageRow message, MessageResolution resolution, WorkActor actor, DateTime now, CancellationToken ct)
@@ -365,24 +454,22 @@ public sealed partial class MySqlWorkStore
         // Delivered now; read only by ack, so a session that crashes before it replays these.
         var pending = rows.Where(row => row.DeliveryState == "pending").Select(row => row.Id).ToArray();
         if (pending.Length > 0)
-            await MarkDeliveredCoreAsync(connection, query.Recipient, pending, Now(), ct);
+            await MarkDeliveredAsync(query.Recipient, pending, ct);
 
         var views = rows.Select(row => ToView(row) with { Delivery = row.DeliveryState == "pending" ? DeliveryState.Delivered : ParseName<DeliveryState>(row.DeliveryState!) }).ToList();
         return new InboxPage(views, rows[^1].DeliverySequence!.Value);
     }
 
-    private static Task MarkDeliveredCoreAsync(MySqlConnection connection, string recipient, IReadOnlyCollection<Guid> messageIds, DateTime now, CancellationToken ct) =>
-        connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE work_message_deliveries SET state = 'delivered', delivered_at = @now " +
-            "WHERE recipient = @recipient AND message_id IN @messageIds AND state = 'pending'",
-            new { recipient, messageIds, now }, cancellationToken: ct));
-
+    // Under the deadlock retry like every write: a victim is run again, then refused busy.
     public async Task MarkDeliveredAsync(string recipient, IReadOnlyList<Guid> messageIds, CancellationToken ct = default)
     {
         if (messageIds.Count == 0)
             return;
-        await using var connection = await OpenAsync(ct);
-        await MarkDeliveredCoreAsync(connection, recipient, messageIds, Now(), ct);
+        var now = Now();
+        await RunAsync([], connection => connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE work_message_deliveries SET state = 'delivered', delivered_at = @now " +
+            "WHERE recipient = @recipient AND message_id IN @messageIds AND state = 'pending'",
+            new { recipient, messageIds, now }, cancellationToken: ct)), ct);
     }
 
     public async Task<long> GetInboxHeadAsync(CancellationToken ct = default)
@@ -405,11 +492,24 @@ public sealed partial class MySqlWorkStore
     // ---- ack -------------------------------------------------------------------------------------
 
     public Task<AckResult> AckAsync(AckSpec spec, WorkActor actor, CancellationToken ct = default) =>
-        RunAsync([MessageLockName], async connection =>
+        RunAsync([], async connection =>
         {
             var now = Now();
+            // Closing a blocking question bumps its item, so that item's row comes first.
+            var holds = new Dictionary<Guid, bool>();
+            if (spec is { Resolution: not null, Messages: { } named })
+            {
+                foreach (var messageId in named.Distinct())
+                    if (await ReadMessageRowAsync(connection, null, messageId, ct) is { Blocking: true, ItemId: { } blockedItem })
+                        holds[blockedItem] = true;
+            }
+
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            await using var messageLock = new MessageLockScope(connection, transaction);
+            await HoldItemsAsync(connection, transaction, holds, ct);
+            await messageLock.AcquireAsync(ct);
             var acked = new List<Guid>();
+            var entries = new List<PendingChange>();
 
             if (spec.Messages is { } ids)
             {
@@ -438,6 +538,8 @@ public sealed partial class MySqlWorkStore
                         if (!again)
                         {
                             await ResolveAsync(connection, transaction, message, resolution, actor, now, ct);
+                            if (message.Blocking && message.ItemId is { } unblocked)
+                                entries.Add(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct));
                             if (!acked.Contains(messageId))
                                 acked.Add(messageId);
                         }
@@ -467,7 +569,7 @@ public sealed partial class MySqlWorkStore
                 lines.Add(ToLine(row));
             }
 
-            await transaction.CommitAsync(ct);
+            await CommitAsync(connection, transaction, entries, actor, now, ct);
             return new AckResult(acked.Count, lines);
         }, ct);
 
@@ -498,6 +600,19 @@ public sealed partial class MySqlWorkStore
         if (actor.SessionId is not { } session)
             return;
 
+        // An unlocked look first, on a second connection (current data, whatever this transaction has
+        // read): a post to the item's thread holds the item's row shared, so every post that
+        // committed before this claim's row lock is seen here, and one that follows sees the new
+        // holder. Only when something is open is the lock taken and the look repeated under it.
+        await using (var look = await OpenAsync(ct))
+        {
+            if (await look.ExecuteScalarAsync<long>(new CommandDefinition(
+                    "SELECT EXISTS (SELECT 1 FROM work_messages m WHERE m.item_id = @itemId AND m.state = 'open' AND m.kind IN ('question', 'request') " +
+                    "AND m.to_human = 0 AND (m.sender_session_id IS NULL OR m.sender_session_id <> @session))",
+                    new { itemId, session }, cancellationToken: ct)) == 0)
+                return;
+        }
+
         await scope.AcquireAsync(ct);
         var open = (await connection.QueryAsync<(Guid Id, Guid ProjectId)>(new CommandDefinition(
             "SELECT m.id, m.project_id FROM work_messages m WHERE m.item_id = @itemId AND m.state = 'open' AND m.kind IN ('question', 'request') " +
@@ -512,23 +627,50 @@ public sealed partial class MySqlWorkStore
     }
 
     /// <summary>
-    /// A new session of a project and repository inherits the unread direct messages (no item) of the
-    /// sessions that ended, or fell silent past the idle threshold, within the last seven days; each
-    /// message passes to exactly one later session (§5.9). The caller holds the project's row.
+    /// The unread (or still open) direct messages with no item that a new session of a project and
+    /// repository inherits (§5.9): deliveries to a session that ended, or fell silent past the idle
+    /// threshold, whose message was sent to a session of the same repository that ended within the
+    /// last seven days (the window runs from that original session's end, so a message passed on to a
+    /// session that then crashed can pass on again). Each source delivery passes once (handed_to);
+    /// a new session never gets one it holds already. Read on a connection of its own, so what it
+    /// sees is current whatever the calling transaction has read.
+    /// </summary>
+    private async Task<List<(long Sequence, Guid MessageId)>> InheritableDeliveriesAsync(Guid projectId, string session, string? repository, DateTime now, CancellationToken ct)
+    {
+        await using var look = await OpenAsync(ct);
+        return (await look.QueryAsync<(long Sequence, Guid MessageId)>(new CommandDefinition(
+            "SELECT d.sequence, d.message_id FROM work_message_deliveries d JOIN work_messages m ON m.id = d.message_id " +
+            "JOIN work_sessions holder ON holder.id = d.recipient JOIN work_sessions original ON original.id = m.to_session_id " +
+            "WHERE d.project_id = @projectId AND d.handed_to IS NULL AND d.recipient <> @session AND m.item_id IS NULL AND m.to_session_id IS NOT NULL " +
+            "AND (holder.ended_at IS NOT NULL OR holder.last_seen_at <= @staleBefore) " +
+            "AND COALESCE(original.ended_at, original.last_seen_at) > @retentionStart AND original.repository_name <=> @repository " +
+            "AND (d.read_at IS NULL OR m.state = 'open') " +
+            "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries own WHERE own.message_id = d.message_id AND own.recipient = @session) ORDER BY d.sequence",
+            new { projectId, session, staleBefore = StaleBefore(now), retentionStart = now - WorkMessageLimits.DirectMessageRetention, repository },
+            cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>
+    /// A new session inherits what <see cref="InheritableDeliveriesAsync"/> finds, exactly once. An
+    /// unlocked look decides whether the messages lock is needed at all; under it the look is repeated
+    /// and only the delivery rows are locked. The caller holds the project's row.
     /// </summary>
     private async Task InheritDirectMessagesAsync(
         MySqlConnection connection, MySqlTransaction transaction, MessageLockScope scope, Guid projectId, string? repository, WorkActor actor, DateTime now, CancellationToken ct)
     {
         var session = actor.SessionId!;
+        if ((await InheritableDeliveriesAsync(projectId, session, repository, now, ct)).Count == 0)
+            return;
+
         await scope.AcquireAsync(ct);
+        var candidates = (await InheritableDeliveriesAsync(projectId, session, repository, now, ct)).Select(entry => entry.Sequence).ToArray();
+        if (candidates.Length == 0)
+            return;
+
+        // Only the delivery rows are locked; sessions are read without locks.
         var inherited = (await connection.QueryAsync<(long Sequence, Guid MessageId)>(new CommandDefinition(
-            "SELECT d.sequence, d.message_id FROM work_message_deliveries d JOIN work_messages m ON m.id = d.message_id JOIN work_sessions s ON s.id = d.recipient " +
-            "WHERE d.project_id = @projectId AND d.handed_to IS NULL AND d.recipient <> @session AND m.item_id IS NULL AND m.to_session_id = d.recipient " +
-            "AND (s.ended_at IS NOT NULL OR s.last_seen_at <= @staleBefore) AND COALESCE(s.ended_at, s.last_seen_at) > @retentionStart " +
-            "AND s.repository_name <=> @repository AND (d.read_at IS NULL OR m.state = 'open') " +
-            "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries own WHERE own.message_id = d.message_id AND own.recipient = @session) ORDER BY d.sequence FOR UPDATE",
-            new { projectId, session, staleBefore = StaleBefore(now), retentionStart = now - WorkMessageLimits.DirectMessageRetention, repository },
-            transaction, cancellationToken: ct))).ToList();
+            "SELECT sequence, message_id FROM work_message_deliveries WHERE sequence IN @candidates AND handed_to IS NULL ORDER BY sequence FOR UPDATE",
+            new { candidates }, transaction, cancellationToken: ct))).ToList();
         foreach (var (sequence, messageId) in inherited)
         {
             await connection.ExecuteAsync(new CommandDefinition(
@@ -552,7 +694,8 @@ public sealed partial class MySqlWorkStore
 
     private static async Task<bool> HasOpenBlockingQuestionAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         await connection.ExecuteScalarAsync<long>(new CommandDefinition(
-            "SELECT COUNT(*) FROM work_messages WHERE item_id = @itemId AND blocking = 1 AND state = 'open'",
+            "SELECT COUNT(*) FROM work_messages m JOIN work_items i ON i.id = m.item_id WHERE m.item_id = @itemId AND m.blocking = 1 AND m.state = 'open' " +
+            "AND i.status NOT IN ('complete', 'closed')",
             new { itemId }, transaction, cancellationToken: ct)) > 0;
 
     /// <summary>The briefing's inbox: the unacknowledged count and the oldest few, as lines; null when nothing waits.</summary>
