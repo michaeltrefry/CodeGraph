@@ -15,6 +15,7 @@ public class CodeGraphServiceSettings
     public McpOptions McpOptions { get; set; } = new();
     public AuthOptions AuthOptions { get; set; } = new();
     public AssistantRetentionOptions AssistantRetentionOptions { get; set; } = new();
+    public WorkMessageRetentionOptions WorkMessageRetentionOptions { get; set; } = new();
     public BranchOverlayOptions BranchOverlayOptions { get; set; } = new();
 }
 
@@ -75,5 +76,13 @@ public class AssistantRetentionOptions
     public int ChatMessageRetentionDays { get; set; } = 180;
     public int DebugExchangeRetentionDays { get; set; } = 30;
     public int DebugTraceAuditRetentionDays { get; set; } = 180;
+    public int BatchSize { get; set; } = 1000;
+}
+
+/// <summary>Retention of agent-coordination messages, deliveries and message events (sc-27887).</summary>
+public class WorkMessageRetentionOptions
+{
+    /// <summary>Age after which read and resolved messages and message events are deleted; 0 or less disables the cleanup.</summary>
+    public int RetentionDays { get; set; } = 30;
     public int BatchSize { get; set; } = 1000;
 }
