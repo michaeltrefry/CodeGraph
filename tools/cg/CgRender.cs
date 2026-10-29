@@ -62,10 +62,19 @@ public static class CgRender
             foreach (var line in Resources(resources))
                 yield return line;
 
+        // Rules (S9): one line each, with what they conflict with and how often they are challenged.
+        if (briefing["rules"] is JsonArray rules)
+            foreach (var rule in rules.OfType<JsonObject>())
+            {
+                var conflicts = rule["contradicts"] is JsonArray links ? " · contradicts: " + string.Join("; ", links.Select(link => Str(link?["summary"]))) : "";
+                var challenged = rule["challenges"] is JsonArray open ? $" · challenged {open.Count + (rule["more_challenges"]?.GetValue<int>() ?? 0)}x" : "";
+                yield return $"rule ({Str(rule["priority"])}, {string.Join(",", (rule["activity"] as JsonArray ?? []).Select(Str))}): {Str(rule["summary"])}{conflicts}{challenged}";
+            }
+
         // Sections of later stories (S5, S7, S8) print as they appear; unknown ones as their JSON.
         foreach (var (name, value) in briefing.AsObject())
         {
-            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "inbox" or "truncated" or "my_holds" or "resources" or "overlap_warnings" || value is null)
+            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "inbox" or "truncated" or "my_holds" or "resources" or "overlap_warnings" or "rules" || value is null)
                 continue;
             yield return $"{name.Replace('_', ' ')}: {value.ToJsonString()}";
         }

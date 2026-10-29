@@ -212,6 +212,7 @@ public sealed class WorkSessionPruningMariaDbTests(WorkDatabase db) : IClassFixt
             ["work_messages.to_session_id"] = "a delivery address, not attribution; the recipient is kept while a message is inheritable",
             ["work_message_deliveries.recipient"] = "a delivery address; rows for pruned recipients are left to the message retention of S7a",
             ["knowledge_entries.author_session_id"] = "entries carry author_harness, author_model and author_host from their own write",
+            ["lesson_served.session_id"] = "serve bookkeeping (which session a rule was served to), not attribution; kept after the session is pruned so served history stays",
         };
         var attributed = MySqlWorkStore.AttributedColumns.ToDictionary(a => $"{a.Table}.{a.Session}");
         await using var connection = await OpenAsync();

@@ -64,4 +64,49 @@ public sealed class KnowledgeRestMariaDbTests(WorkDatabase db) : IClassFixture<W
         (deniedStatus, denied.GetProperty("code").GetString()).ShouldBe((403, "tool_not_entitled"));
         (await Call(HttpMethod.Post, "/api/work/knowledge/recall", new { project = key }, as_: readOnly)).Status.ShouldBe(200);
     }
+
+    [Fact]
+    public async Task Promote_challenge_lessons_review_queue_and_the_briefing_activity_are_reachable_over_rest()
+    {
+        var key = "KL" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        (await Call(HttpMethod.Post, "/api/work", new { new_project = new { key, name = "Lessons over REST" } })).Status.ShouldBe(200);
+        var (_, rule) = await Call(HttpMethod.Post, "/api/work/knowledge", new
+        {
+            project = key,
+            entry = new { kind = "lesson", summary = "Never push to main", source = new { kind = "prompt" }, applies_when = new { activity = new[] { "merging" } } }
+        });
+        var ruleId = rule.GetProperty("entry").GetProperty("id").GetString();
+        var (_, candidate) = await Call(HttpMethod.Post, "/api/work/knowledge", new
+        {
+            project = key,
+            entry = new { kind = "lesson", summary = "Squash fixups before review", source = new { kind = "agent" }, applies_when = new { activity = new[] { "reviewing" } } }
+        });
+        var candidateEntry = candidate.GetProperty("entry");
+
+        var (promoteStatus, promoted) = await Call(HttpMethod.Post, $"/api/work/knowledge/{candidateEntry.GetProperty("id").GetString()}/promote",
+            new { expected_version = candidateEntry.GetProperty("version").GetInt64(), action = "propose" });
+        promoteStatus.ShouldBe(200);
+        promoted.GetProperty("entry").GetProperty("lesson").GetProperty("state").GetString().ShouldBe("proposed");
+
+        var (challengeStatus, _) = await Call(HttpMethod.Post, "/api/work/knowledge/challenges",
+            new { open = new { id = ruleId, reason = "Release branches need it", evidence = new[] { new { kind = "link", summary = "RELEASING.md", @ref = "docs/RELEASING.md" } } } });
+        challengeStatus.ShouldBe(200);
+
+        var (queueStatus, queue) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&limit=10");
+        queueStatus.ShouldBe(200);
+        queue.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("kind").GetString()).ShouldBe(["challenge", "proposed_rule"]);
+        (await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&lmit=10")).Status.ShouldBe(400);
+
+        var (lessonsStatus, lessons) = await Call(HttpMethod.Post, "/api/work/knowledge/lessons", new { project = key, view = "recently_learned" });
+        lessonsStatus.ShouldBe(200);
+        lessons.GetProperty("items").EnumerateArray().Single().GetProperty("id").GetString().ShouldBe(ruleId);
+
+        var (_, started) = await Call(HttpMethod.Post, "/api/work/sessions", new { project = key, harness = "shell" });
+        var session = started.GetProperty("session").GetProperty("id").GetString();
+        started.GetProperty("briefing").GetProperty("rule_activities").EnumerateArray().Select(value => value.GetString()).ShouldBe(["merging"]);
+        var (_, briefing) = await Call(HttpMethod.Get, $"/api/work/sessions/{session}/briefing", query: "?activity=merging,testing");
+        var served = briefing.GetProperty("rules").EnumerateArray().Single();
+        served.GetProperty("id").GetString().ShouldBe(ruleId);
+        served.GetProperty("challenges").GetArrayLength().ShouldBe(1);
+    }
 }

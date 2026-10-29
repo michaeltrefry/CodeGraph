@@ -37,8 +37,12 @@ public sealed partial class MySqlWorkStore(
     IOptions<MariaDbStorageOptions> optionsAccessor,
     TimeProvider? timeProvider = null,
     IOptions<WorkSessionOptions>? sessionOptions = null,
-    Microsoft.Extensions.Logging.ILogger<MySqlWorkStore>? logger = null) : IWorkStore
+    Microsoft.Extensions.Logging.ILogger<MySqlWorkStore>? logger = null,
+    IOptions<WorkLessonOptions>? lessonOptions = null) : IWorkStore
 {
+    // Distinct correction events after which a lesson with an applies-when activity becomes a rule (S9).
+    private readonly int ruleThreshold = Math.Max(1, lessonOptions?.Value.RuleRecurrenceThreshold ?? new WorkLessonOptions().RuleRecurrenceThreshold);
+
     private readonly Microsoft.Extensions.Logging.ILogger log = logger ?? (Microsoft.Extensions.Logging.ILogger)Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
     public const string ChangeLockName = "codegraph_work_changes";
     public const string DependencyLockName = "codegraph_work_dependencies";

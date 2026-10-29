@@ -121,6 +121,8 @@ public sealed record ItemView(
     IReadOnlyList<MessageLine>? OpenMessages = null,
     // The knowledge relevant to the item (S5): linked to it, scoped to its touches, its repository or the project.
     IReadOnlyList<KnowledgeRow>? Knowledge = null,
+    // The rules of the item brief (S9): matched like a briefing's (activity, location), the activity derived from the item's status unless the session declared one.
+    IReadOnlyList<BriefingRule>? Rules = null,
     // Set on an item imported from another tracker (sc-27876): it may lack AC, repository, inherits and touches.
     ImportedView? Imported = null,
     IReadOnlyList<AttachmentView>? Attachments = null)
@@ -159,7 +161,9 @@ public sealed record CreateWorkResult(
     ItemView? Item = null);
 
 /// <param name="Recorded">The knowledge entries the save-point fields stored with the write (S5).</param>
-public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null, IReadOnlyList<KnowledgeRow>? Recorded = null);
+public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null, IReadOnlyList<KnowledgeRow>? Recorded = null,
+    IReadOnlyList<SimilarLessons>? Similar = null,
+    IReadOnlyList<string>? Hints = null);
 
 /// <param name="Reused">true when this is the caller's existing claim or the allocation of a repeated key, not a new claim.</param>
 /// <param name="Reason">Why there is no item: <c>no_ready_work</c>.</param>
