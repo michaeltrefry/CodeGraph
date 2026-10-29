@@ -84,6 +84,46 @@ public class JobCommandDispatcherTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_DispatchesWorkImportJob_DefaultingToTheShortcutDeltaSync()
+    {
+        var runner = new RecordingWorkImportRunner();
+        var dispatcher = CreateDispatcher(importRunner: runner);
+
+        var normalized = dispatcher.NormalizeArgsJson(JobTypes.WorkImport, null);
+        var result = await dispatcher.ExecuteAsync(JobTypes.WorkImport, normalized);
+        var dryRun = await dispatcher.ExecuteAsync(JobTypes.WorkImport, """{"source":"kanban","mode":"dry_run"}""");
+
+        result.Success.ShouldBeTrue();
+        runner.Calls[0].ShouldBe(("shortcut", "delta", "job:WorkImport"));
+        runner.Calls[1].ShouldBe(("kanban", "dry_run", "job:WorkImport"));
+        dryRun.Message.ShouldContain("completed");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WorkImportReportsAFailedRunAsAFailure()
+    {
+        var dispatcher = CreateDispatcher(importRunner: new RecordingWorkImportRunner { Status = Models.Work.ImportRunStatuses.Failed });
+
+        var result = await dispatcher.ExecuteAsync(JobTypes.WorkImport, "{}");
+
+        result.Success.ShouldBeFalse();
+        result.Message.ShouldContain("failed");
+    }
+
+    private sealed class RecordingWorkImportRunner : Services.Work.Imports.IWorkImportRunner
+    {
+        public List<(string Source, string? Mode, string User)> Calls { get; } = [];
+        public string Status { get; init; } = Models.Work.ImportRunStatuses.Completed;
+
+        public Task<Models.Work.ImportRunView> RunAsync(string source, string? modeName, DateTime? updatedSince, string user, CancellationToken ct)
+        {
+            Calls.Add((source, modeName, user));
+            return Task.FromResult(new Models.Work.ImportRunView(Guid.NewGuid(), source, Models.Work.ImportMode.DryRun, Status, user, DateTime.UtcNow, DateTime.UtcNow,
+                updatedSince, new Models.Work.ImportReport(), Status == Models.Work.ImportRunStatuses.Failed ? "boom" : null));
+        }
+    }
+
+    [Fact]
     public async Task ExecuteAsync_DispatchesDetectCommunitiesThroughIndexerClient()
     {
         var indexerClient = new RecordingIndexerClient();
@@ -109,13 +149,15 @@ public class JobCommandDispatcherTests
             new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()),
             new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
             new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)),
-            new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()));
+            new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()),
+            new WorkImportJob());
     }
 
     private static JobCommandDispatcher CreateDispatcher(
         RecordingAssistantRetentionCleanupService? cleanupService = null,
         RecordingIndexerClient? indexerClient = null,
-        RecordingWorkMessageRetentionService? workMessageRetention = null)
+        RecordingWorkMessageRetentionService? workMessageRetention = null,
+        Services.Work.Imports.IWorkImportRunner? importRunner = null)
     {
         indexerClient ??= new RecordingIndexerClient
         {
@@ -131,7 +173,8 @@ public class JobCommandDispatcherTests
             new AssistantRetentionCleanupJob(cleanupService ?? new RecordingAssistantRetentionCleanupService()),
             new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
-            new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()));
+            new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
+            new WorkImportJob(importRunner));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

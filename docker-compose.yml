@@ -7,6 +7,8 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
+      # One root for imported work-item files in both hosts (on the codegraph-uploads volume).
+      WorkImport__AttachmentStoragePath: ${CODEGRAPH_WORK_ATTACHMENT_PATH:-/app/uploads/work-items}
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       CodeGraph__TsPort: ${CodeGraph__TsPort:-3100}
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
@@ -93,6 +95,9 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
+      # Wiki attachments (uploads/wiki) and imported work-item files (uploads/work-items, sc-27876):
+      # shared by the API, which serves them, and the Jobs host, whose WorkImport job downloads them.
+      - codegraph-uploads:/app/uploads
     restart: unless-stopped
     depends_on:
       codegraph-metrics:
@@ -241,6 +246,8 @@ services:
       context: .
       dockerfile: Dockerfile.jobs
     environment:
+      # One root for imported work-item files in both hosts (on the codegraph-uploads volume).
+      WorkImport__AttachmentStoragePath: ${CODEGRAPH_WORK_ATTACHMENT_PATH:-/app/uploads/work-items}
       DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Development}
       CodeGraph__StorageOptions__Provider: ${CodeGraph__StorageOptions__Provider:-MariaDb}
       CodeGraph__StorageOptions__MariaDbConnectionString: ${CodeGraph__StorageOptions__MariaDbConnectionString:-Server=mariadb;Port=3306;Database=codegraph;User ID=codegraph;Password=codegraph_test!;}
@@ -305,6 +312,9 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
+      # Wiki attachments (uploads/wiki) and imported work-item files (uploads/work-items, sc-27876):
+      # shared by the API, which serves them, and the Jobs host, whose WorkImport job downloads them.
+      - codegraph-uploads:/app/uploads
     restart: unless-stopped
     depends_on:
       codegraph-indexer:
@@ -326,3 +336,4 @@ services:
 volumes:
   codegraph-cargo-registry:
   codegraph-cargo-git:
+  codegraph-uploads:

@@ -1,0 +1,17 @@
+{
+  "id": 5558,
+  "name": "SceneWorks: Candle-enabled Windows desktop packaging (CUDA-only) — ship the native worker in the Tauri installer",
+  "app_url": "https://app.shortcut.com/trefry/epic/5558",
+  "description": "Ship the native worker in the Tauri installer…",
+  "archived": false,
+  "completed": true,
+  "state": "done",
+  "epic_state_id": 500000004,
+  "team_id": "69f08f42-4c78-4015-8da6-0abb1fe0825f",
+  "objective_id": null,
+  "owner_ids": [],
+  "created_at": "2026-05-20T10:00:00Z",
+  "updated_at": "2026-10-04T13:25:04Z",
+  "completed_at": "2026-10-04T13:25:04Z",
+  "comments": []
+}

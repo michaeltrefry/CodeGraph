@@ -334,6 +334,8 @@ public sealed partial class MySqlWorkStore(
         public string? GoalsJson { get; init; }
         public string? RequirementsJson { get; init; }
         public string? AcceptanceTestsJson { get; init; }
+        public string? ImportedJson { get; init; }
+        public bool RequirementsUnreconciled { get; init; }
 
         public string Key => WorkKeys.Feature(ProjectKey, Number);
     }
@@ -369,6 +371,7 @@ public sealed partial class MySqlWorkStore(
         public string? TouchesJson { get; init; }
         public string? AcceptanceReportJson { get; init; }
         public bool MergedAwaitingAcceptance { get; init; }
+        public string? ImportedJson { get; init; }
 
         public string Key => WorkKeys.Item(ProjectKey, Number);
 
@@ -379,11 +382,11 @@ public sealed partial class MySqlWorkStore(
         "i.id, i.project_id, p.project_key, i.number, i.feature_id, i.item_type, i.title, i.description, i.status, i.priority, " +
         "i.sort_order, i.labels, i.repository_name, i.claim_holder, i.claim_marker, i.claim_session_id, i.claimed_at, " +
         "i.claim_expires_at, i.version, i.created_by, i.created_at, i.updated_at, " +
-        "i.plan_ref, i.goal, i.acceptance_json, i.inherits_json, i.touches_json, i.acceptance_report_json, i.merged_awaiting_acceptance";
+        "i.plan_ref, i.goal, i.acceptance_json, i.inherits_json, i.touches_json, i.acceptance_report_json, i.merged_awaiting_acceptance, i.imported_json";
 
     private const string FeatureColumns =
         "f.id, f.project_id, p.project_key, f.number, f.title, f.description, f.version, f.created_by, f.created_at, f.updated_at, " +
-        "f.goals_json, f.requirements_json, f.acceptance_tests_json";
+        "f.goals_json, f.requirements_json, f.acceptance_tests_json, f.imported_json, f.requirements_unreconciled";
 
     private const string ProjectColumns =
         "p.id, p.project_key, p.name, p.description, p.goals_json, p.next_item_number, p.next_feature_number, p.version, p.created_by, p.created_at, p.updated_at";
@@ -479,8 +482,14 @@ public sealed partial class MySqlWorkStore(
             row.Id, WorkKeys.Feature(row.ProjectKey, row.Number), row.ProjectId, row.ProjectKey, row.Title, row.Description,
             documents.Select(document => new DocumentView(document.Id, document.Title, document.Body, document.Position, Utc(document.CreatedAt), Utc(document.UpdatedAt))).ToList(),
             row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt), counts,
-            status, completion, goals.Count == 0 ? null : goals, requirements.Count == 0 ? null : requirements, tests.Count == 0 ? null : tests);
+            status, completion, goals.Count == 0 ? null : goals, requirements.Count == 0 ? null : requirements, tests.Count == 0 ? null : tests,
+            ReadImported(row.ImportedJson),
+            // Reconciled once a planning agent has given the feature structured requirements.
+            row.RequirementsUnreconciled && requirements.Count == 0 ? true : null);
     }
+
+    private static ImportedView? ReadImported(string? json) =>
+        string.IsNullOrEmpty(json) ? null : JsonSerializer.Deserialize<ImportedView>(json, WorkJson.Options);
 
     private sealed class DocumentRow
     {
@@ -517,6 +526,19 @@ public sealed partial class MySqlWorkStore(
         public DateTime CreatedAt { get; init; }
         public string? AuthorSessionId { get; init; }
         public string? Harness { get; init; }
+        public string AuthorKind { get; init; } = "";
+        public DateTime? SourceCreatedAt { get; init; }
+    }
+
+    private sealed class AttachmentRow
+    {
+        public Guid Id { get; init; }
+        public string Filename { get; init; } = "";
+        public string ContentType { get; init; } = "";
+        public long SizeBytes { get; init; }
+        public string? StoragePath { get; init; }
+        public string? SkippedReason { get; init; }
+        public DateTime CreatedAt { get; init; }
     }
 
     private async Task<ItemView?> LoadItemViewAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct, bool fullHandoffs = false)
@@ -541,10 +563,18 @@ public sealed partial class MySqlWorkStore(
             new { id = row.Id }, transaction, cancellationToken: ct)))
             .Select(link => new LinkView(link.Id, ParseName<WorkLinkKind>(link.Kind), link.Url, Utc(link.CreatedAt))).ToList();
         var comments = (await connection.QueryAsync<CommentRow>(new CommandDefinition(
-            "SELECT c.id, c.author, c.body, c.created_at, c.author_session_id, COALESCE(s.harness, c.author_harness) AS harness FROM work_item_comments c " +
+            "SELECT c.id, c.author, c.author_kind, c.body, c.created_at, c.source_created_at, c.author_session_id, COALESCE(s.harness, c.author_harness) AS harness FROM work_item_comments c " +
             "LEFT JOIN work_sessions s ON s.id = c.author_session_id WHERE c.item_id = @id ORDER BY c.created_at, c.id",
             new { id = row.Id }, transaction, cancellationToken: ct)))
-            .Select(comment => new CommentView(comment.Id, comment.Author, comment.Body, Utc(comment.CreatedAt), comment.AuthorSessionId, comment.Harness)).ToList();
+            .Select(comment => new CommentView(comment.Id, comment.Author, comment.Body, Utc(comment.CreatedAt), comment.AuthorSessionId, comment.Harness,
+                comment.AuthorKind is WorkActor.AgentKind or WorkActor.SystemKind ? comment.AuthorKind : null,
+                comment.SourceCreatedAt is { } source && source != comment.CreatedAt ? Utc(source) : null)).ToList();
+        var attachments = row.ImportedJson is null
+            ? []
+            : (await connection.QueryAsync<AttachmentRow>(new CommandDefinition(
+                "SELECT id, filename, content_type, size_bytes, storage_path, skipped_reason, created_at FROM work_item_attachments WHERE item_id = @id ORDER BY created_at, id",
+                new { id = row.Id }, transaction, cancellationToken: ct)))
+            .Select(file => new AttachmentView(file.Id, file.Filename, file.ContentType, file.SizeBytes, file.StoragePath is not null, Utc(file.CreatedAt), file.SkippedReason)).ToList();
         // E4: the latest handoff and a count; the whole history only when asked for.
         var handoffs = await ReadHandoffsAsync(connection, transaction, row.Id, limit: fullHandoffs ? null : 1, ct);
         var handoffCount = fullHandoffs
@@ -601,7 +631,9 @@ public sealed partial class MySqlWorkStore(
             row.MergedAwaitingAcceptance ? true : null,
             report,
             attempts.Count == 0 ? null : attempts,
-            attemptCount == 0 ? null : attemptCount);
+            attemptCount == 0 ? null : attemptCount,
+            Imported: ReadImported(row.ImportedJson),
+            Attachments: attachments.Count == 0 ? null : attachments);
     }
 
     private static DependencyView ToView(DependencyRow row) =>

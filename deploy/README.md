@@ -149,3 +149,26 @@ GitHub does not retry failed deliveries on its own. A transient store failure (d
 - API: `gh api repos/OWNER/REPO/hooks/HOOK_ID/deliveries` lists deliveries (`status_code` not 2xx marks the failures); `gh api -X POST repos/OWNER/REPO/hooks/HOOK_ID/deliveries/DELIVERY_ID/attempts` redelivers one (organisation hooks: `orgs/ORG/hooks/...`).
 
 A redelivered push also resubmits the index run for the same head SHA, which the indexer already treats as a duplicate.
+
+## Work imports (Shortcut, KanbanBoard)
+
+The `WorkImport` job and the admin routes under `/api/work/imports` (sc-27876) bring the Shortcut workspace
+and the KanbanBoard "SceneWorks Code Review 2026-10-27" epic into the work tracker. Both sources are only read.
+
+- **Tokens:** MCP Hub credentials `shortcut/apiToken` (read access is enough) and `kanban/apiToken` (a read-scoped
+  KanbanBoard PAT). Nothing runs without them.
+- **Approval:** the admin routes take a web sign-in only, never a personal access token. `GET
+  /api/work/imports/shortcut/settings` returns the proposed team → project table. A dry run
+  (`POST .../shortcut/runs {"mode":"dry_run"}`) reports the mapping. `PUT .../shortcut/settings` with
+  `"approve": true` approves the table. Imports are refused until then.
+- **No seeded schedule:** no WorkImport schedule is seeded, because it needs the token and approved settings first.
+  After the full import (`{"mode":"import"}`), create a `WorkImport` schedule under Admin > Schedules. With no args it
+  runs the Shortcut delta sync (`updated_since` = start of the last completed import, plus that run's failures).
+  It runs until cutover. **Remove the delta schedule at cutover**: from then on, CodeGraph is the tracker.
+- **Attachments:** downloaded files live under `WorkImport:AttachmentStoragePath` (default `uploads/work-items`,
+  relative to `/app`; docker-compose sets `WorkImport__AttachmentStoragePath=/app/uploads/work-items` in both hosts). `docker-compose.yml` mounts the `codegraph-uploads` volume at `/app/uploads` in both
+  `codegraph-api` (serves the files) and `jobs` (downloads them). The production override inherits that mount,
+  which also persists wiki attachments (`uploads/wiki`) across redeploys. A record whose file is missing is
+  downloaded again on the next run.
+- **Until cutover:** a re-run is a three-way merge. Only fields that changed in Shortcut since the last run are
+  written; CodeGraph-side changes to the other fields survive. Shortcut wins a field both sides changed.

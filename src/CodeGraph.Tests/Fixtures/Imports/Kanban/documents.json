@@ -1,0 +1,4 @@
+[
+  {"id":"dc1fd42b-99f3-4023-9804-3c3f18a2c64f","epicId":"25860fbc-3b64-4c44-8dea-7e1bc8723a7c","title":"Requirements","body":"# Requirements: SceneWorks Code Review 2026-10-27 remediation\n\n## Goal\nResolve the findings in CODE_REVIEW_2026-10-27.md…\n\n## Requirements\n1. Every High finding is fixed or explicitly accepted with a written reason on its card.\n2. Duplicated helpers are consolidated into a single public sceneworks-core module…","createdAtUtc":"2026-10-27T19:41:15.436505+00:00","updatedAtUtc":"2026-10-27T19:41:15.436505+00:00"},
+  {"id":"6a3264dc-84c9-4cae-b4bb-bcc4a4f2ce54","epicId":"25860fbc-3b64-4c44-8dea-7e1bc8723a7c","title":"Implementation plan","body":"# Implementation plan\n\n274 cards (F-001..F-274)…\n\n## Slice 1 - Security (do first)\nF-001 and F-002 (one root cause: loopback trust with no Origin/Host validation)…","createdAtUtc":"2026-10-27T19:41:15.436506+00:00","updatedAtUtc":"2026-10-27T19:50:15.89967+00:00"}
+]

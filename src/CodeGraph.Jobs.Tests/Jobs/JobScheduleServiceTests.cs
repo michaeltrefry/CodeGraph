@@ -357,7 +357,8 @@ public class JobScheduleServiceTests
             new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()),
             new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
-            new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()));
+            new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
+            new WorkImportJob());
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

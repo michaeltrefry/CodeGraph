@@ -10,6 +10,7 @@ using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.WikiRag;
 using CodeGraph.Services.Work;
+using CodeGraph.Services.Work.Imports;
 using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Jobs;
@@ -65,6 +66,8 @@ public static class Startup
                 options.EncryptionKey = storageOptions.MariaDbEncryptionKey;
             });
             services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Jobs);
+            // Imports (sc-27876) write through the MariaDB work store.
+            services.AddCodeGraphWorkImports(configuration);
             return;
         }
 

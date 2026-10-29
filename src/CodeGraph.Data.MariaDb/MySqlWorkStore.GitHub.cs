@@ -143,7 +143,11 @@ public sealed partial class MySqlWorkStore
         if (hasPr)
         {
             parameters.Add("prHash", HashUrl(spec.PullRequestUrl!));
-            clauses.Add("EXISTS (SELECT 1 FROM work_item_links l WHERE l.item_id = i.id AND l.kind = 'pr' AND l.url_hash = @prHash)");
+            // An imported item (sc-27876) carries the PR links of its source tracker. A PR that was
+            // already merged or closed there (a historical link) must not move it later; a PR that was
+            // in flight at import time links like any other. A historical link stops being one when
+            // GitHub evidence or an agent adds it again.
+            clauses.Add("EXISTS (SELECT 1 FROM work_item_links l WHERE l.item_id = i.id AND l.kind = 'pr' AND l.url_hash = @prHash AND l.historical = 0)");
         }
 
         await using var connection = await OpenAsync(ct);

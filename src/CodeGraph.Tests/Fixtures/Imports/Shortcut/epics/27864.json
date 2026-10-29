@@ -1,0 +1,17 @@
+{
+  "id": 27864,
+  "name": "CodeGraph agent coordination — projects, work, knowledge and messages for autonomous agents",
+  "app_url": "https://app.shortcut.com/trefry/epic/27864",
+  "description": "## Requirements\n\n- **E1** Strict, closed error vocabulary…\n- **E2** Idempotent writes…\n- **E3** Every write is attributed…\n- **E7** Every write lands in the change feed…",
+  "archived": false,
+  "completed": false,
+  "state": "in progress",
+  "epic_state_id": 500000003,
+  "team_id": "69f090da-4d9c-47cb-902d-d49fa77af7da",
+  "objective_id": null,
+  "owner_ids": [],
+  "requested_by_id": "69f08f42-a951-46b3-b1a0-897a12271e62",
+  "created_at": "2026-10-29T13:20:00Z",
+  "updated_at": "2026-10-29T17:55:58Z",
+  "comments": []
+}

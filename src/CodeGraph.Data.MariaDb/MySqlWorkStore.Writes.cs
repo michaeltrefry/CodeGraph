@@ -769,8 +769,9 @@ public sealed partial class MySqlWorkStore
     }
 
     private static async Task WriteLinksAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, IReadOnlyList<LinkSpec> add, IReadOnlyList<LinkSpec> remove, WorkActor actor, JsonArray extra, DateTime now, CancellationToken ct,
-        Guid? attemptId = null)
+        Guid? attemptId = null, IReadOnlySet<string>? historicalUrls = null)
     {
+        var importing = actor.Name.StartsWith("import:", StringComparison.Ordinal);
         // The item's row is held, so the link writes of one item run one at a time and two
         // identical adds never meet on the unique key.
         foreach (var link in remove)
@@ -795,12 +796,22 @@ public sealed partial class MySqlWorkStore
                 "SELECT COUNT(*) FROM work_item_links WHERE item_id = @itemId AND kind = @kind AND url_hash = @urlHash",
                 new { itemId, kind, urlHash }, transaction, cancellationToken: ct)) > 0;
             if (exists)
+            {
+                // A link an import wrote, added again by GitHub evidence or an agent, becomes theirs
+                // (sc-27876): it is no longer a historical PR of the source.
+                if (!importing)
+                    await connection.ExecuteAsync(new CommandDefinition(
+                        "UPDATE work_item_links SET created_by = @createdBy, historical = 0, attempt_id = COALESCE(@attemptId, attempt_id) " +
+                        "WHERE item_id = @itemId AND kind = @kind AND url_hash = @urlHash AND created_by LIKE 'import:%'",
+                        new { itemId, kind, urlHash, createdBy = actor.Name, attemptId }, transaction, cancellationToken: ct));
                 continue;
+            }
 
             var id = Guid.NewGuid();
+            var historical = importing && historicalUrls?.Contains(link.Url) == true;
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at, attempt_id) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now, @attemptId)",
-                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now, attemptId }, transaction, cancellationToken: ct));
+                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at, attempt_id, historical) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now, @attemptId, @historical)",
+                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now, attemptId, historical }, transaction, cancellationToken: ct));
             extra.Add(Change("link", null, attemptId is null ? new { id, kind, url = link.Url } : new { id, kind, url = link.Url, attempt = attemptId }));
         }
     }
