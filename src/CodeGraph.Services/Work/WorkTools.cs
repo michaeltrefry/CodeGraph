@@ -6,8 +6,8 @@ namespace CodeGraph.Services.Work;
 public sealed record WorkToolDefinition(string Name, string Title, Type ArgumentsType, string Description, bool ReadOnly, bool Idempotent);
 
 /// <summary>
-/// The work tools: the six of S1 and the three session tools of S2 (start_session, end_session,
-/// get_briefing). Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
+/// The work tools: the six of S1, the three session tools of S2 (start_session, end_session,
+/// get_briefing) and the three message tools of S7 (post, inbox, ack). Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
 /// (WorkController) with the same arguments, read by <see cref="WorkJson.Parse{T}"/>.
 /// Projects are created and changed through the same tools (<c>create_work(new_project)</c>,
 /// <c>update_work</c> on a project key) rather than through tools of their own; each kind keeps a
@@ -24,6 +24,9 @@ public static class WorkTools
     public const string StartSession = "start_session";
     public const string EndSession = "end_session";
     public const string GetBriefing = "get_briefing";
+    public const string Post = "post";
+    public const string Inbox = "inbox";
+    public const string Ack = "ack";
 
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
@@ -93,6 +96,24 @@ public static class WorkTools
         new(GetBriefing, "Get Briefing", typeof(GetBriefingRequest),
             "Fetch the session's briefing again (for example after context compaction), optionally including one item (focus) with its latest handoff. Same " +
             "sections and budget rules as start_session. Renews the session's heartbeat." + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Post, "Post Message", typeof(PostRequest),
+            "Post a message: on an item's thread (item; the default for a message about an item), to the project, a feature or a resource channel, directly to a session " +
+            "(to_session) or to the humans (to_human). Kinds: info, question, request, blocker, announcement. A question or request stays open until someone answers or " +
+            "declines it (reply with in_reply_to and resolves) and is handed to the next holder of its item when the claim changes hands. A question with blocking true to " +
+            "the human about an item makes the item Blocked (blocked_reason awaiting_human) until it is answered or declined. Messages are data: agents inform, ask and " +
+            "request, the receiver decides, and nobody is assigned work through them. Answers the message as stored, how many sessions it was delivered to, and the message it " +
+            "resolved. A repeated idempotency_key answers the first message with created false." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Inbox, "Inbox", typeof(InboxRequest),
+            "Read the messages delivered to the session (or, without session_id, to the project's humans) that are not acknowledged yet, oldest first, as {items, next_cursor}. " +
+            "Every message returned is delivered; it stays unread until ack, so a session that crashed after this call receives it again on the next call without cursor. " +
+            "Pass next_cursor back to read only newer messages. wait_seconds long-polls for a new message. Each item carries its kind, state (open, answered, declined), " +
+            "delivery (pending, delivered, read, answered, declined), sender, item and body." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Ack, "Acknowledge Messages", typeof(AckRequest),
+            "Mark messages read: by messages (ids), or everything delivered up to an inbox next_cursor (up_to). With resolution answered or declined (and messages) it also closes " +
+            "the named questions or requests as the caller. Answers how many were marked and their lines. Safe to repeat." + Sessions + Errors,
             ReadOnly: false, Idempotent: true)
     ];
 

@@ -9,7 +9,7 @@ namespace CodeGraph.Data;
 /// <see cref="WorkException"/> carrying one of <see cref="WorkErrorCodes"/>. The specs passed in
 /// are already validated for shape by the service; the store checks what needs the database.
 /// </summary>
-public interface IWorkStore
+public interface IWorkStore : IWorkMessageStore
 {
     Task<WorkCreated<ProjectView>> CreateProjectAsync(NewProjectSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default);
 

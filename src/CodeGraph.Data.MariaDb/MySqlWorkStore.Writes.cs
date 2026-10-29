@@ -383,6 +383,8 @@ public sealed partial class MySqlWorkStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            // Taken only when a session claims the item (handover of its open messages), after the row locks below.
+            await using var messageLock = new MessageLockScope(connection, transaction);
 
             // An update that names a repository reads the project's membership, so it holds the
             // project's row first, like the project update that may drop that repository.
@@ -467,7 +469,10 @@ public sealed partial class MySqlWorkStore
             else if (actor.SessionId is { } claimingSession)
             {
                 if (effective.Claim is { Action: ClaimAction.Claim })
+                {
                     await OpenSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
+                    await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
+                }
                 else if (effective.Claim is { Action: ClaimAction.Release })
                     await CloseSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
             }
@@ -875,6 +880,7 @@ public sealed partial class MySqlWorkStore
             {
                 var now = Now();
                 await using var transaction = await connection.BeginTransactionAsync(ct);
+                await using var messageLock = new MessageLockScope(connection, transaction);
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET version = version WHERE id = @itemId", new { itemId }, transaction, cancellationToken: ct));
                 var before = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
@@ -882,7 +888,7 @@ public sealed partial class MySqlWorkStore
                     "SELECT COUNT(*) FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
                     "WHERE d.blocked_item_id = @itemId AND b.status <> 'complete' LOCK IN SHARE MODE",
                     new { itemId }, transaction, cancellationToken: ct));
-                if (unfinished > 0)
+                if (unfinished > 0 || await HasOpenBlockingQuestionAsync(connection, transaction, itemId, ct))
                     return null;
 
                 var status = recover ? "in_progress" : "ready";
@@ -897,7 +903,11 @@ public sealed partial class MySqlWorkStore
 
                 var recovery = recover ? await LoadRecoveryAsync(connection, transaction, before, ct) : null;
                 if (actor.SessionId is { } sessionId)
+                {
                     await OpenSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
+                    await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
+                }
+
                 if (spec.KeyHash is { } keyHash)
                     await InsertKeyAsync(connection, transaction, spec.ProjectId, NextWorkOperation, keyHash, itemId, null, now, ct);
 
@@ -908,7 +918,7 @@ public sealed partial class MySqlWorkStore
                 await CommitAsync(connection, transaction,
                     [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);
-                return new NextWorkResult(after, Reused: false, Recovery: recovery);
+                return new NextWorkResult(after with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) }, Reused: false, Recovery: recovery);
             }
             catch (MySqlException exception) when (exception.Number == MySqlDeadlock && attempt < DeadlockAttempts)
             {

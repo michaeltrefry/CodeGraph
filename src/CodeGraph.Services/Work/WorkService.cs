@@ -24,7 +24,7 @@ public interface IWorkService
 /// database (ported from KanbanBoard's TryNew / EpicPlans.ReadAsync / IdempotencyKeys), resolution
 /// of keys and ids, and the change feed's cursor and long-poll. The store does the rest.
 /// </summary>
-public sealed class WorkService(
+public sealed partial class WorkService(
     IWorkStore? store = null,
     TimeProvider? timeProvider = null,
     IOptions<WorkSessionOptions>? sessionOptions = null) : IWorkService
@@ -64,6 +64,9 @@ public sealed class WorkService(
             WorkTools.StartSession => WorkJson.Parse<StartSessionRequest>(arguments, tool),
             WorkTools.EndSession => WorkJson.Parse<EndSessionRequest>(arguments, tool),
             WorkTools.GetBriefing => WorkJson.Parse<GetBriefingRequest>(arguments, tool),
+            WorkTools.Post => WorkJson.Parse<PostRequest>(arguments, tool),
+            WorkTools.Inbox => WorkJson.Parse<InboxRequest>(arguments, tool),
+            WorkTools.Ack => WorkJson.Parse<AckRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -88,7 +91,7 @@ public sealed class WorkService(
                 session = await Store.GetSessionAsync(id, ct);
         }
 
-        return request switch
+        var result = request switch
         {
             CreateWorkRequest create => await CreateAsync(arguments, create, actor, session, ct),
             GetWorkRequest get => await GetAsync(get, session, ct),
@@ -97,8 +100,16 @@ public sealed class WorkService(
             NextWorkRequest next => await NextAsync(next, actor, session, ct),
             ChangesRequest changes => await ChangesAsync(changes, session, ct),
             GetBriefingRequest briefing => await GetBriefingAsync(briefing, actor, ct),
+            PostRequest post => await PostAsync(post, actor, session, ct),
+            InboxRequest inbox => await InboxAsync(inbox, actor, session, ct),
+            AckRequest ack => await AckAsync(ack, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
+
+        // The briefing and the inbox carry their own count.
+        return actor.SessionId is not null && request is not (GetBriefingRequest or InboxRequest)
+            ? await WithUnreadAsync(result, actor, session, ct)
+            : result;
     }
 
     // ---- Sessions ----------------------------------------------------------------------------
@@ -175,8 +186,14 @@ public sealed class WorkService(
         return await BriefingAsync(sessionId, focus, budget, ct);
     }
 
-    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, int budget, CancellationToken ct) =>
-        WorkBriefings.Fit(await Store.ReadBriefingAsync(sessionId, focus, ct), budget);
+    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, int budget, CancellationToken ct)
+    {
+        var briefing = WorkBriefings.Fit(await Store.ReadBriefingAsync(sessionId, focus, ct), budget);
+        // A message shown in a briefing is delivered (§5.9); one the budget cut is not.
+        if (briefing.Inbox?.Items is { Count: > 0 } shown)
+            await Store.MarkDeliveredAsync(sessionId.ToString(), shown.Select(line => line.Id).ToList(), ct);
+        return briefing;
+    }
 
     private int Budget(int? requested)
     {

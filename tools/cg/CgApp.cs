@@ -26,7 +26,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
     public static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(1500);
 
     public const string Usage =
-        "usage: cg brief [--budget N] [--item KEY] | cg inbox | cg end [--item KEY] [--done TEXT] [--next TEXT] [--decision TEXT]... " +
+        "usage: cg brief [--budget N] [--item KEY] | cg inbox [--ack] | cg end [--item KEY] [--done TEXT] [--next TEXT] [--decision TEXT]... " +
         "[--open TEXT]... [--correction TEXT]... [--branch NAME] [--commit SHA]\n" +
         "environment: CODEGRAPH_URL (API base URL), CODEGRAPH_TOKEN (personal access token), CODEGRAPH_PROJECT, CODEGRAPH_HARNESS, " +
         "CODEGRAPH_MODEL, CODEGRAPH_INTENT, CODEGRAPH_REPOSITORY, CODEGRAPH_BRANCH, CODEGRAPH_SESSION_ID, CODEGRAPH_SESSION_FILE, " +
@@ -103,7 +103,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         await (options.Command switch
         {
             "brief" => BriefAsync(options, lines, ct),
-            "inbox" => InboxAsync(lines, ct),
+            "inbox" => InboxAsync(options, lines, ct),
             _ => EndAsync(options, lines, ct)
         });
         return 0;
@@ -179,18 +179,28 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         lines.AddRange(CgRender.Briefing(started?["briefing"]));
     }
 
-    // S2 has no inbox; the briefing carries an inbox section once messages exist (S7), and
-    // cg inbox prints it. Without a session or an inbox it prints nothing.
-    private async Task InboxAsync(List<string> lines, CancellationToken ct)
+    // The messages delivered to the session that were not acknowledged yet, one block per message
+    // (the inbox tool without waiting). With --ack they are marked read once printed, so a hook
+    // that injects them into the agent's context shows each message once; without it a crash
+    // before the agent saw them replays them on the next call. Without a session or messages it
+    // prints nothing.
+    private async Task InboxAsync(Options options, List<string> lines, CancellationToken ct)
     {
         using var http = Client(lines);
         if (http is null || ReadSessionId() is not { } sessionId)
             return;
 
-        var (status, body) = await SendAsync(http, HttpMethod.Get, $"api/work/sessions/{Uri.EscapeDataString(sessionId)}/briefing", null, ct);
+        var (status, body) = await SendAsync(http, HttpMethod.Get, $"api/work/inbox?session_id={Uri.EscapeDataString(sessionId)}&limit=20", null, ct);
         if (status != 200)
             throw ApiException.From(status, body);
         lines.AddRange(CgRender.Inbox(body));
+
+        if (options.Ack && body?["items"] is JsonArray { Count: > 0 } && body["next_cursor"]?.GetValue<string>() is { } cursor)
+        {
+            var (ackStatus, acked) = await SendAsync(http, HttpMethod.Post, "api/work/ack", new JsonObject { ["session_id"] = sessionId, ["up_to"] = cursor }, ct);
+            if (ackStatus != 200)
+                throw ApiException.From(ackStatus, acked);
+        }
     }
 
     private async Task EndAsync(Options options, List<string> lines, CancellationToken ct)
@@ -447,6 +457,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
 
     private sealed record Options(string Command)
     {
+        public bool Ack { get; private set; }
         public int? Budget { get; private set; }
         public string? Item { get; private set; }
         public string? Done { get; private set; }
@@ -473,6 +484,12 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
             for (var index = 1; index < args.Length; index++)
             {
                 var flag = args[index];
+                if (command == "inbox" && flag == "--ack")
+                {
+                    options.Ack = true;
+                    continue;
+                }
+
                 if (!allowed.Contains(flag))
                     throw new ArgumentException($"cg {command} takes no '{flag}'");
                 if (index + 1 >= args.Length)

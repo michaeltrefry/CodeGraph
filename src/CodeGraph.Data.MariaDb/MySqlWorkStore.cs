@@ -368,7 +368,7 @@ public sealed partial class MySqlWorkStore(
     private const string AvailableCondition =
         "i.status = 'ready' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
-        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') AND NOT " + OpenBlockingQuestion;
 
     // The condition, on alias i, for an item next_work recovers at @now (§5.9): in progress, every
     // blocker complete, and no live claim (its claim lapsed with its session, or was released).
@@ -378,11 +378,12 @@ public sealed partial class MySqlWorkStore(
         "i.status = 'in_progress' AND (i.claim_holder IS NULL OR i.claim_expires_at IS NULL OR i.claim_expires_at <= @now) " +
         "AND (i.claim_holder IS NOT NULL OR EXISTS (SELECT 1 FROM work_session_claims sc WHERE sc.item_id = i.id)) " +
         "AND NOT EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
-        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') AND NOT " + OpenBlockingQuestion;
 
+    // Blocked by an unfinished blocker, or by an open question to the human that blocks it (sc-27871).
     private const string BlockedCondition =
-        "EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
-        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete')";
+        "(EXISTS (SELECT 1 FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
+        "WHERE d.blocked_item_id = i.id AND b.status <> 'complete') OR " + OpenBlockingQuestion + ")";
 
     private static Task<ItemRow?> ReadItemRowAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         connection.QuerySingleOrDefaultAsync<ItemRow>(new CommandDefinition(
@@ -531,16 +532,18 @@ public sealed partial class MySqlWorkStore(
         }
 
         var unfinished = blockedBy.Where(blocker => blocker.Status != WorkStatus.Complete).ToList();
-        string? reason = unfinished.Count == 0 ? null
-            : unfinished.Any(blocker => blocker.Status == WorkStatus.Closed) ? "cancelled_prerequisite"
-            : "waiting";
+        // An open blocking question to the human blocks the item too; a dependency's reason comes first.
+        var awaitingHuman = await HasOpenBlockingQuestionAsync(connection, transaction, row.Id, ct);
+        string? reason = unfinished.Count > 0
+            ? unfinished.Any(blocker => blocker.Status == WorkStatus.Closed) ? "cancelled_prerequisite" : "waiting"
+            : awaitingHuman ? "awaiting_human" : null;
 
         return new ItemView(
             row.Id, row.Key, row.ProjectId, row.ProjectKey, feature,
             ParseName<WorkItemType>(row.ItemType), row.Title, row.Description,
             WorkStatuses.Parse(row.Status), ParseName<WorkPriority>(row.Priority), row.SortOrder,
             SplitLabels(row.Labels), row.RepositoryName,
-            unfinished.Count > 0, reason, blockedBy, blocks,
+            unfinished.Count > 0 || awaitingHuman, reason, blockedBy, blocks,
             row.HasLiveClaim(now)
                 ? new ClaimView(row.ClaimHolder!, row.ClaimMarker!, Utc(row.ClaimedAt!.Value), Utc(row.ClaimExpiresAt!.Value), row.ClaimSessionId)
                 : null,
@@ -615,7 +618,9 @@ public sealed partial class MySqlWorkStore(
     public async Task<ItemView?> GetItemAsync(Guid itemId, bool fullHandoffs, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await LoadItemViewAsync(connection, null, itemId, ct, fullHandoffs);
+        var view = await LoadItemViewAsync(connection, null, itemId, ct, fullHandoffs);
+        // The brief carries the thread's open questions and requests (§5.9), whoever reads it.
+        return view is null ? null : view with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) };
     }
 
     public async Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default)

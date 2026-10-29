@@ -91,7 +91,8 @@ public sealed record ItemView(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     IReadOnlyList<HandoffView>? Handoffs = null,
-    int? HandoffCount = null)
+    int? HandoffCount = null,
+    IReadOnlyList<MessageLine>? OpenMessages = null)
 {
     public string Kind => "item";
 }
