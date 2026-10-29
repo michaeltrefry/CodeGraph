@@ -70,6 +70,9 @@ public sealed class StartSessionRequest
     [Description("Token budget of the briefing returned, 200 to 20000 (default 1500).")]
     public int? BudgetTokens { get; init; }
 
+    [Description(SavePointText.BriefingPaths)]
+    public List<string>? Paths { get; init; }
+
     [Description("Caller-chosen key: a repeat by the same identity answers the session the first call started, with created false.")]
     public string? IdempotencyKey { get; init; }
 }
@@ -84,6 +87,21 @@ public sealed class EndSessionRequest : ISessionArguments
 
     [Description("State of the item as the session leaves it; stored on the item and shown to the next session that picks it up.")]
     public HandoffInput? Handoff { get; init; }
+
+    // Save points (§5.8, S5): stored in the same transaction as the end, linked to item (or the one
+    // item the session holds), scoped like the save points of update_work.
+
+    [Description(SavePointText.Decisions)]
+    public List<DecisionInput>? Decisions { get; init; }
+
+    [Description(SavePointText.Attempts)]
+    public List<AttemptInput>? Attempts { get; init; }
+
+    [Description(SavePointText.Corrections)]
+    public List<CorrectionInput>? Corrections { get; init; }
+
+    [Description(SavePointText.Findings)]
+    public List<FindingInput>? Findings { get; init; }
 }
 
 public sealed class GetBriefingRequest : ISessionArguments
@@ -96,6 +114,9 @@ public sealed class GetBriefingRequest : ISessionArguments
 
     [Description("Key or id of an item of the project to include in the briefing (focus), with its latest handoff.")]
     public string? Item { get; init; }
+
+    [Description(SavePointText.BriefingPaths)]
+    public List<string>? Paths { get; init; }
 }
 
 public sealed class HandoffInput
@@ -161,7 +182,12 @@ public sealed record HolderView(string Identity, string? SessionId = null, strin
 
 public sealed record StartSessionResult(bool Created, SessionView Session, BriefingView Briefing);
 
-public sealed record EndSessionResult(SessionView Session, IReadOnlyList<WorkRow> Released, HandoffView? Handoff = null, IReadOnlyList<HoldView>? ReleasedHolds = null);
+public sealed record EndSessionResult(
+    SessionView Session,
+    IReadOnlyList<WorkRow> Released,
+    HandoffView? Handoff = null,
+    IReadOnlyList<HoldView>? ReleasedHolds = null,
+    IReadOnlyList<KnowledgeRow>? Recorded = null);
 
 /// <summary>
 /// What the next holder of an item needs to continue it (§5.9): the previous holder, the branch and
@@ -192,10 +218,12 @@ public sealed record BriefingView(
     BriefingItem? Focus = null,
     IReadOnlyList<BriefingSession>? OtherSessions = null,
     BriefingItem? SuggestedNext = null,
+    BriefingInbox? Inbox = null,
     IReadOnlyList<string>? Truncated = null,
     IReadOnlyList<HoldView>? MyHolds = null,
     IReadOnlyList<ResourceView>? Resources = null,
-    IReadOnlyList<OverlapWarning>? OverlapWarnings = null);
+    IReadOnlyList<OverlapWarning>? OverlapWarnings = null,
+    IReadOnlyList<KnowledgeRow>? Knowledge = null);
 
 public sealed record BriefingProject(string Key, string Name, IReadOnlyList<string>? Goals = null);
 

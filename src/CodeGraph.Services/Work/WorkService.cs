@@ -31,7 +31,8 @@ public sealed partial class WorkService(
     TimeProvider? timeProvider = null,
     IOptions<WorkSessionOptions>? sessionOptions = null,
     WorkOverlaps? overlapDetector = null,
-    Microsoft.Extensions.Logging.ILogger<WorkService>? logger = null) : IWorkService
+    Microsoft.Extensions.Logging.ILogger<WorkService>? logger = null,
+    IKnowledgeStore? knowledgeStore = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -50,6 +51,12 @@ public sealed partial class WorkService(
     private readonly WorkSessionOptions sessions = sessionOptions?.Value ?? new WorkSessionOptions();
 
     private IWorkStore Store => store
+        ?? throw new WorkStoreUnavailableException();
+
+    // The knowledge store (S5) is the work store on MariaDB; it is taken from the work store when
+    // not passed on its own.
+    private IKnowledgeStore Knowledge => knowledgeStore
+        ?? store as IKnowledgeStore
         ?? throw new WorkStoreUnavailableException();
 
     /// <summary>The identity a write is attributed to (E3): the authenticated user, or <c>anonymous</c>.</summary>
@@ -81,6 +88,12 @@ public sealed partial class WorkService(
             WorkTools.RenewHold => WorkJson.Parse<RenewHoldRequest>(arguments, tool),
             WorkTools.Release => WorkJson.Parse<ReleaseHoldRequest>(arguments, tool),
             WorkTools.SyncPlan => WorkJson.Parse<SyncPlanRequest>(arguments, tool),
+            WorkTools.Record => WorkJson.Parse<RecordRequest>(arguments, tool),
+            WorkTools.Recall => WorkJson.Parse<RecallRequest>(arguments, tool),
+            WorkTools.ImportKnowledge => WorkJson.Parse<ImportKnowledgeRequest>(arguments, tool),
+            WorkTools.Post => WorkJson.Parse<PostRequest>(arguments, tool),
+            WorkTools.Inbox => WorkJson.Parse<InboxRequest>(arguments, tool),
+            WorkTools.Ack => WorkJson.Parse<AckRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -144,8 +157,18 @@ public sealed partial class WorkService(
             GetBriefingRequest briefing => await GetBriefingAsync(briefing, actor, ct),
             AcquireRequest acquire => await AcquireAsync(acquire, actor, session, ct),
             SyncPlanRequest sync => await SyncPlanAsync(arguments, sync, actor, session, ct),
+            RecordRequest record => await RecordAsync(record, actor, session, ct),
+            RecallRequest recall => await RecallAsync(recall, session, ct),
+            ImportKnowledgeRequest import => await ImportKnowledgeAsync(import, actor, session, ct),
+            PostRequest post => await PostAsync(post, actor, session, ct),
+            InboxRequest inbox => await InboxAsync(inbox, actor, session, ct),
+            AckRequest ack => await AckAsync(ack, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
+
+        // The briefing and the inbox carry their own unread count.
+        if (actor.SessionId is not null && request is not (GetBriefingRequest or InboxRequest))
+            result = await WithUnreadAsync(result, actor, session, ct);
         return (result, actor);
     }
 
@@ -213,6 +236,7 @@ public sealed partial class WorkService(
         }
 
         var budget = Budget(request.BudgetTokens);
+        var briefingPaths = ReadPaths(request.Paths, "paths");
         var spec = new NewSessionSpec(
             projectId,
             Text(request.Harness, "harness", WorkSessionLimits.MaxHarnessLength),
@@ -223,7 +247,7 @@ public sealed partial class WorkService(
             Optional(request.Worktree, "worktree", WorkSessionLimits.MaxWorktreeLength),
             Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength));
         var created = await Store.StartSessionAsync(spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
-        var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, budget, ct);
+        var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, briefingPaths, budget, ct);
         return new StartSessionResult(created.Created, created.Value, briefing);
     }
 
@@ -232,8 +256,9 @@ public sealed partial class WorkService(
         var sessionId = SessionIdOf(request.SessionId);
         var session = await Store.GetSessionAsync(sessionId, ct)
             ?? throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}.");
-        if (request.Item is not null && request.Handoff is null)
-            throw WorkException.Invalid("item names the item a handoff is about; pass handoff with it. Nothing was changed.");
+        var knowledge = ReadSavePoints(request.Decisions, request.Attempts, request.Corrections, request.Findings, linkedItem: null);
+        if (request.Item is not null && request.Handoff is null && knowledge.Count == 0)
+            throw WorkException.Invalid("item names the item a handoff (or the save-point fields) is about; pass handoff, decisions, attempts, corrections or findings with it. Nothing was changed.");
 
         Guid? itemId = null;
         if (request.Item is { } item)
@@ -243,13 +268,15 @@ public sealed partial class WorkService(
         }
 
         var handoff = request.Handoff is { } input ? ReadHandoff(input, "handoff") : null;
-        return await Store.EndSessionAsync(sessionId, itemId, handoff, actor, ct);
+        var ended = await Store.EndSessionAsync(sessionId, itemId, handoff, knowledge, actor, ct);
+        return ended with { Recorded = ended.Recorded ?? await RecordedAsync(knowledge, ct) };
     }
 
     private async Task<object> GetBriefingAsync(GetBriefingRequest request, WorkActor actor, CancellationToken ct)
     {
         var sessionId = SessionIdOf(request.SessionId);
         var budget = Budget(request.BudgetTokens);
+        var paths = ReadPaths(request.Paths, "paths");
         Guid? focus = null;
         if (request.Item is { } item)
         {
@@ -258,14 +285,19 @@ public sealed partial class WorkService(
             focus = (await RequireOfProjectAsync(item, WorkEntityKind.Item, project, "item", ct)).Id;
         }
 
-        return await BriefingAsync(sessionId, focus, budget, ct);
+        return await BriefingAsync(sessionId, focus, paths, budget, ct);
     }
 
-    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, int budget, CancellationToken ct)
+    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, IReadOnlyList<string> paths, int budget, CancellationToken ct)
     {
-        var briefing = await Store.ReadBriefingAsync(sessionId, focus, ct);
+        var read = await Store.ReadBriefingAsync(sessionId, focus, ct);
         var warnings = await TryOverlapWarningsAsync(sessionId, BriefingOverlapDeadline, ct);
-        return WorkBriefings.Fit(warnings.Count == 0 ? briefing : briefing with { OverlapWarnings = warnings }, budget);
+        if (warnings.Count > 0) read = read with { OverlapWarnings = warnings };
+        var briefing = WorkBriefings.Fit(read with { Knowledge = await BriefingKnowledgeAsync(sessionId, read, paths, ct) }, budget);
+        // A message shown in a briefing is delivered (§5.9); one the budget cut is not.
+        if (briefing.Inbox?.Items is { Count: > 0 } shown)
+            await Store.MarkDeliveredAsync(sessionId.ToString(), shown.Select(line => line.Id).ToList(), ct);
+        return briefing;
     }
 
     private int Budget(int? requested)
@@ -508,12 +540,14 @@ public sealed partial class WorkService(
     {
         var target = await RequireAsync(request.Id, "id", ct);
         await RequireSessionProjectAsync(session, target.ProjectId, ct);
-        return target.Kind switch
+        var found = target.Kind switch
         {
             WorkEntityKind.Project => await Store.GetProjectAsync(target.Id, ct),
             WorkEntityKind.Feature => await Store.GetFeatureAsync(target.Id, ct),
             _ => (object?)await Store.GetItemAsync(target.Id, request.Detail == WorkDetail.Full, ct)
         } ?? throw WorkException.NotFound($"There is no project, feature or item '{request.Id}'.");
+        // The item brief (§5.2) carries the knowledge relevant to it (S5).
+        return found is ItemView item ? item with { Knowledge = await ItemKnowledgeAsync(item, ct) } : found;
     }
 
     private async Task<object> FindAsync(FindWorkRequest request, SessionView? session, CancellationToken ct)
@@ -567,14 +601,16 @@ public sealed partial class WorkService(
 
     // ---- update_work -------------------------------------------------------------------------
 
-    private static readonly string[] ProjectFields = ["name", "description", "goals", "repositories", "clear"];
+    // Declared before the lists that spread it (static initializers run in textual order).
+    private static readonly string[] SavePointFields = ["decisions", "attempts", "corrections", "findings"];
+    private static readonly string[] ProjectFields = ["name", "description", "goals", "repositories", "clear", .. SavePointFields];
     private static readonly string[] FeatureFields =
-        ["title", "description", "add_documents", "update_documents", "goals", "requirements", "drop_requirements", "acceptance_tests", "clear"];
+        ["title", "description", "add_documents", "update_documents", "goals", "requirements", "drop_requirements", "acceptance_tests", "clear", .. SavePointFields];
     private static readonly string[] ItemFields =
     [
         "title", "description", "type", "status", "priority", "labels", "repository", "feature", "order", "add_blocked_by", "remove_blocked_by",
         "add_links", "remove_links", "comment", "claim", "renew_claim", "release_claim", "handoff",
-        "goal", "acceptance_criteria", "inherits", "touches", "acceptance_report", "clear"
+        "goal", "acceptance_criteria", "inherits", "touches", "acceptance_report", "clear", .. SavePointFields
     ];
 
     private async Task<object> UpdateAsync(UpdateWorkRequest request, WorkActor actor, SessionView? session, CancellationToken ct)
@@ -607,18 +643,23 @@ public sealed partial class WorkService(
         if (both.Count > 0)
             throw WorkException.Invalid($"{string.Join(", ", both)} is both passed and named in clear. Nothing was changed.");
 
+        // The save-point fields (S5) are stored by the same write, in its transaction.
+        var knowledge = ReadSavePoints(request.Decisions, request.Attempts, request.Corrections, request.Findings, linkedItem: null);
+        UpdateWorkResult result;
         switch (target.Kind)
         {
             case WorkEntityKind.Project:
-                return new UpdateWorkResult(Project: await Store.UpdateProjectAsync(target.Id, request.ExpectedVersion, new ProjectPatchSpec(
+                result = new UpdateWorkResult(Project: await Store.UpdateProjectAsync(target.Id, request.ExpectedVersion, new ProjectPatchSpec(
                     request.Name is { } name ? Text(name, "name", WorkLimits.MaxProjectNameLength) : null,
                     OptionalText(request.Description, "description"),
                     clear.Contains("description"),
                     request.Goals is { } goals ? ReadGoals(goals, "goals") : null,
-                    request.Repositories is { } repositories ? ReadRepositories(repositories, "repositories") : null), actor, ct));
+                    request.Repositories is { } repositories ? ReadRepositories(repositories, "repositories") : null,
+                    knowledge), actor, ct));
+                break;
 
             case WorkEntityKind.Feature:
-                return new UpdateWorkResult(Feature: await Store.UpdateFeatureAsync(target.Id, request.ExpectedVersion, new FeaturePatchSpec(
+                result = new UpdateWorkResult(Feature: await Store.UpdateFeatureAsync(target.Id, request.ExpectedVersion, new FeaturePatchSpec(
                     request.Title is { } title ? Text(title, "title", WorkLimits.MaxTitleLength) : null,
                     OptionalText(request.Description, "description"),
                     clear.Contains("description"),
@@ -629,11 +670,17 @@ public sealed partial class WorkService(
                     request.Requirements is { } requirements ? ReadRequirements(requirements, "requirements") : null,
                     request.DropRequirements is { } drops ? ReadDrops(drops, request.Requirements, "drop_requirements") : null,
                     request.AcceptanceTests is { } tests ? NonEmptyList(ReadTexts(tests, "acceptance_tests", WorkLimits.MaxAcceptanceTests, WorkLimits.MaxAcceptanceTestLength), "acceptance_tests") : null,
-                    clear.Contains("acceptance_tests")), actor, ct));
+                    clear.Contains("acceptance_tests"),
+                    knowledge), actor, ct));
+                break;
 
             default:
-                return new UpdateWorkResult(Item: await Store.UpdateItemAsync(target.Id, request.ExpectedVersion, await ReadItemPatchAsync(request, target, clear, actor, ct), actor, ct));
+                var patch = await ReadItemPatchAsync(request, target, clear, actor, ct) with { Knowledge = knowledge };
+                result = new UpdateWorkResult(Item: await Store.UpdateItemAsync(target.Id, request.ExpectedVersion, patch, actor, ct));
+                break;
         }
+
+        return result with { Recorded = await RecordedAsync(knowledge, ct) };
     }
 
     private static DocumentPatchSpec ReadDocumentPatch(DocumentPatchInput input, string where)
