@@ -90,7 +90,7 @@ public sealed class GitHubWorkEvidenceService : IGitHubWorkEvidenceService
                     return null;
 
                 var branch = reference["refs/heads/".Length..];
-                var pusher = Str(Obj(root, "pusher"), "name") ?? sender;
+                var pusher = sender ?? Str(Obj(root, "pusher"), "name");
                 if (pusher is null || htmlUrl is null)
                     return null;
 

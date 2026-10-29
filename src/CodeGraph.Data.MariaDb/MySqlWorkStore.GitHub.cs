@@ -32,6 +32,11 @@ public sealed partial class MySqlWorkStore
         public string Outcome { get; init; } = "";
     }
 
+    private sealed class LinkAttempt
+    {
+        public Guid? AttemptId { get; init; }
+    }
+
     private sealed class EvidenceRow
     {
         public Guid Id { get; init; }
@@ -57,19 +62,51 @@ public sealed partial class MySqlWorkStore
         public DateTime CreatedAt { get; init; }
     }
 
+    public const int EvidenceAttempts = 3;
+
     public async Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default)
     {
-        var targets = await FindEvidenceTargetsAsync(spec, ct);
+        var targets = await RetryTransientAsync(() => FindEvidenceTargetsAsync(spec, ct), EvidenceAttempts, null, ct);
         var results = new List<GitHubEvidenceItemResult>();
         foreach (var itemId in targets)
         {
-            var result = await RecordGitHubEvidenceForItemAsync(itemId, spec, ct);
+            var result = await RetryTransientAsync(() => RecordGitHubEvidenceForItemAsync(itemId, spec, ct), EvidenceAttempts, null, ct);
             if (result is not null)
                 results.Add(result);
         }
 
         return new GitHubEvidenceResult(results);
     }
+
+    /// <summary>
+    /// Runs <paramref name="body"/> again (up to <paramref name="attempts"/> times, with a short
+    /// growing pause) when it failed for a transient reason: the store's busy refusal (deadlocks and
+    /// lock waits that outlasted the store's own retries) or a transient MySQL error. GitHub does not
+    /// redeliver on its own, so a webhook write gets a few tries before it fails. Every webhook write
+    /// is idempotent, so a repeat is safe.
+    /// </summary>
+    public static async Task<T> RetryTransientAsync<T>(Func<Task<T>> body, int attempts, Func<TimeSpan, Task>? pause, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await body();
+            }
+            catch (Exception exception) when (attempt < attempts && IsTransient(exception))
+            {
+                var wait = TimeSpan.FromMilliseconds(200 * attempt);
+                await (pause?.Invoke(wait) ?? Task.Delay(wait, ct));
+            }
+        }
+    }
+
+    private static bool IsTransient(Exception exception) => exception switch
+    {
+        WorkException work => work.Code == WorkErrorCodes.Busy,
+        MySqlException mysql => mysql.IsTransient || mysql.Number is MySqlDeadlock or MySqlLockWaitTimeout,
+        _ => false
+    };
 
     /// <summary>
     /// The items an event names: a key or alias in its texts of an item whose project holds the
@@ -159,6 +196,14 @@ public sealed partial class MySqlWorkStore
                 ? tied[0].Id
                 : tied.FirstOrDefault(tie => tie.Outcome == "active")?.Id ?? tied.FirstOrDefault()?.Id ?? active?.Id;
 
+            // A PR closed unmerged may return the item only when this PR was linked to it already
+            // and belongs to its current attempt: a stale PR of an earlier attempt, or a foreign PR
+            // that merely mentions the key, is recorded as evidence and moves nothing.
+            var linkedPr = string.IsNullOrEmpty(spec.PullRequestUrl) ? null : await connection.QuerySingleOrDefaultAsync<LinkAttempt>(new CommandDefinition(
+                "SELECT attempt_id FROM work_item_links WHERE item_id = @itemId AND kind = 'pr' AND url_hash = @hash",
+                new { itemId, hash = HashUrl(spec.PullRequestUrl) }, transaction, cancellationToken: ct));
+            var ownsCurrentAttempt = linkedPr is not null && (active is null || linkedPr.AttemptId == active.Id);
+
             // Links: a push links its branch; every PR event links the PR.
             var links = new List<LinkSpec>();
             if (spec.Kind == GitHubEvidenceKind.Push && !string.IsNullOrEmpty(spec.BranchUrl))
@@ -187,7 +232,7 @@ public sealed partial class MySqlWorkStore
                             status = WorkStatus.InReview;
                         merged = true;
                         break;
-                    case GitHubEvidenceKind.PullRequestClosed when status == WorkStatus.InReview:
+                    case GitHubEvidenceKind.PullRequestClosed when status == WorkStatus.InReview && ownsCurrentAttempt:
                         status = WorkStatus.Ready;
                         returned = true;
                         break;
@@ -218,10 +263,8 @@ public sealed partial class MySqlWorkStore
                     attemptId = await DraftAbandonedAttemptAsync(connection, transaction, itemId, actor, spec, reason, now, extra, ct);
                 }
 
-                // The item goes back to the queue: its claim ends with the attempt.
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE work_session_claims SET released_at = @now WHERE item_id = @itemId AND released_at IS NULL",
-                    new { itemId, now }, transaction, cancellationToken: ct));
+                // The item goes back to the queue: its claim is cleared below, as a lapse does. The
+                // session's own claim rows stay open, so its next write is refused claim_lost.
             }
 
             if (evidenceKind is not null)
@@ -246,10 +289,18 @@ public sealed partial class MySqlWorkStore
                 return new GitHubEvidenceItemResult(itemId, before.Key, "unchanged", before.Status, before.Status, superseded);
             }
 
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE work_items SET version = version + 1, updated_at = @now WHERE id = @itemId", new { itemId, now }, transaction, cancellationToken: ct));
+            // Evidence that changes no link, status, merge flag, claim or attempt (a review, a comment,
+            // a merge record on an item that has it all already) is still fed, attributed and
+            // exactly once, but does not bump the item's version: a bot's comment must not make the
+            // agent working on the item fail its next expected_version. Such an entry carries no
+            // version change; the version it describes is the item's current, unbumped one.
+            var bumps = changes.Any(change => change!["field"]!.GetValue<string>() is not "evidence");
+            if (bumps)
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE work_items SET version = version + 1, updated_at = @now WHERE id = @itemId", new { itemId, now }, transaction, cancellationToken: ct));
             var after = (await LoadItemViewAsync(connection, transaction, itemId, ct))!;
-            changes.Add(Change("version", before.Version, after.Version));
+            if (bumps)
+                changes.Add(Change("version", before.Version, after.Version));
             await CommitAsync(connection, transaction,
                 [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes)],
                 actor, now, ct);
@@ -349,14 +400,14 @@ public sealed partial class MySqlWorkStore
             row.Location, row.Body, row.AttemptId, row.Superseded, Utc(row.CreatedAt))).ToList();
     }
 
-    private static readonly Regex AliasPattern = new("^[a-z][a-z0-9]{1,9}-[0-9]{1,10}$", RegexOptions.Compiled);
 
     public async Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default)
     {
-        var normalized = aliases.Select(alias => alias.Trim().ToLowerInvariant()).Distinct().ToList();
-        var invalid = normalized.Where(alias => !AliasPattern.IsMatch(alias)).ToList();
+        // Leading zeros in the number do not make another alias: sc-0012 is sc-12.
+        var normalized = aliases.Select(alias => WorkReferences.NormalizeAlias(alias) ?? alias.Trim()).Distinct().ToList();
+        var invalid = normalized.Where(alias => WorkReferences.NormalizeAlias(alias) != alias).ToList();
         if (invalid.Count > 0)
-            throw WorkException.Invalid($"Aliases look like 'sc-27866' (letters and digits, a hyphen, digits); not: {string.Join(", ", invalid)}. Nothing was changed.");
+            throw WorkException.Invalid($"Aliases look like 'sc-27866' (letters and digits, a hyphen, a number above zero); not: {string.Join(", ", invalid)}. Nothing was changed.");
 
         return await RunAsync([], async connection =>
         {
@@ -369,6 +420,14 @@ public sealed partial class MySqlWorkStore
             var extra = new JsonArray();
             foreach (var alias in normalized)
             {
+                // An alias that reads as the key of an item would be matched as that item.
+                var separator = alias.IndexOf('-');
+                var keyed = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                    "SELECT COUNT(*) FROM work_items i JOIN work_projects p ON p.id = i.project_id WHERE p.project_key = @prefix AND i.number = @number",
+                    new { prefix = alias[..separator].ToUpperInvariant(), number = int.Parse(alias[(separator + 1)..]) }, transaction, cancellationToken: ct));
+                if (keyed > 0)
+                    throw WorkException.Invalid($"'{alias}' is the key of an item: an alias cannot be one. Nothing was changed.");
+
                 var owner = await connection.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
                     "SELECT item_id FROM work_item_aliases WHERE alias = @alias", new { alias }, transaction, cancellationToken: ct));
                 if (owner == itemId)

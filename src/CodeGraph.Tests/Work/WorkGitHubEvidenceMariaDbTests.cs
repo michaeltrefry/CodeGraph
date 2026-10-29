@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Work;
 using Dapper;
@@ -203,6 +204,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
     {
         var (_, key, _) = await NewReadyItemAsync("in_review");
         var pull = NewPullRequest();
+        await SendAsync("pull_request", "pull_request.opened", key, pull);
         await SendAsync("pull_request", "pull_request.closed.unmerged", key, pull);
 
         var item = await GetAsync(key);
@@ -247,7 +249,8 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         var evidence = await db.Store.ListGitHubEvidenceAsync(id, 10);
         evidence.Select(entry => entry.Kind).ShouldBe(["merge", "review", "pr_closed"], ignoreOrder: true);
         evidence.ShouldAllBe(entry => entry.Superseded);
-        before.GetProperty("version").GetInt64().ShouldBeLessThan(item.GetProperty("version").GetInt64());
+        // Superseded evidence is recorded and fed, but the item itself did not change: no version bump.
+        item.GetProperty("version").GetInt64().ShouldBe(before.GetProperty("version").GetInt64());
     }
 
     [Fact]
@@ -364,6 +367,167 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         (await SendAsync("pull_request", "pull_request.opened", key, pull, edit: text => text.Replace("\"opened\"", "\"labeled\""))).Items.ShouldBeEmpty();
         Status(await GetAsync(key)).ShouldBe("ready");
         (await service.HandleAsync("push", Encoding.UTF8.GetBytes("not json"), "x", [])).Items.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task A_PR_closed_unmerged_clears_the_claim_but_leaves_the_sessions_claim_open_so_its_next_write_is_refused_claim_lost()
+    {
+        var project = "GS" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await db.CallAsync(WorkTools.CreateWork, new
+        {
+            new_project = new { key = project, name = "Session project", repositories = new[] { new { repository = "sceneworks", role = "dependency" } } }
+        });
+        var item = Key(await db.NewItemAsync(project, "Held by a session"));
+        var started = await db.CallAsync(WorkTools.StartSession, new { project, harness = "claude-code", host = "dev-mac" }, "michael");
+        var session = started.GetProperty("session").GetProperty("id").GetString()!;
+        var current = await GetAsync(item);
+        await db.CallAsync(WorkTools.UpdateWork, new
+        {
+            id = item, expected_version = current.GetProperty("version").GetInt64(), session_id = session, status = "in_progress", claim = new { }
+        }, "michael");
+        var pull = NewPullRequest();
+        await SendAsync("push", "push", item, pull);
+        await SendAsync("pull_request", "pull_request.opened", item, pull);
+        Status(await GetAsync(item)).ShouldBe("in_review");
+
+        await SendAsync("pull_request", "pull_request.closed.unmerged", item, pull);
+
+        var returned = await GetAsync(item);
+        Status(returned).ShouldBe("ready");
+        returned.TryGetProperty("claim", out _).ShouldBeFalse();
+        var lost = await db.RefusedAsync(WorkTools.UpdateWork, new
+        {
+            id = item, expected_version = returned.GetProperty("version").GetInt64(), session_id = session, status = "in_progress"
+        }, "michael");
+        lost.Code.ShouldBe(WorkErrorCodes.ClaimLost);
+    }
+
+    [Fact]
+    public async Task A_stale_PR_of_an_abandoned_attempt_closing_moves_nothing_while_a_later_attempt_is_In_Review()
+    {
+        var (_, key, id) = await NewReadyItemAsync();
+        var first = NewPullRequest();
+        var second = NewPullRequest();
+        await db.UpdateAsync(key, new { status = "in_progress", claim = new { marker = "run-1" } }, "michael");
+        await SendAsync("push", "push", key, first);
+        await SendAsync("pull_request", "pull_request.opened", key, first);
+        // The first attempt ends abandoned and a second agent takes the item with a PR of its own.
+        await db.UpdateAsync(key, new { release_claim = new { marker = "run-1" } }, "michael");
+        await db.UpdateAsync(key, new { status = "in_progress", claim = new { marker = "run-2" } }, "bob");
+        await SendAsync("pull_request", "pull_request.opened", key, second, edit: text => text.Replace("claude/", "other/"));
+        Status(await GetAsync(key)).ShouldBe("in_review");
+
+        var stale = await SendAsync("pull_request", "pull_request.closed.unmerged", key, first);
+
+        stale.Items.Single().To.ShouldBe(WorkStatus.InReview);
+        var item = await GetAsync(key);
+        Status(item).ShouldBe("in_review");
+        item.GetProperty("claim").GetProperty("holder").GetString().ShouldBe("bob");
+        item.GetProperty("attempts").EnumerateArray().Select(attempt => attempt.GetProperty("outcome").GetString()).ShouldBe(["active", "abandoned"]);
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).ShouldContain(entry => entry.Kind == "pr_closed");
+
+        // The current attempt's own PR does return it.
+        (await SendAsync("pull_request", "pull_request.closed.unmerged", key, second)).Items.Single().To.ShouldBe(WorkStatus.Ready);
+    }
+
+    [Fact]
+    public async Task A_foreign_PR_that_mentions_the_key_and_closes_unmerged_moves_nothing()
+    {
+        var (_, key, id) = await NewReadyItemAsync("in_review");
+        await db.UpdateAsync(key, new { claim = new { marker = "run-1" } }, "michael");
+
+        var result = await SendAsync("pull_request", "pull_request.closed.unmerged", key, NewPullRequest());
+
+        result.Items.Single().To.ShouldBe(WorkStatus.InReview);
+        var item = await GetAsync(key);
+        Status(item).ShouldBe("in_review");
+        item.GetProperty("claim").GetProperty("holder").GetString().ShouldBe("michael");
+        item.GetProperty("attempts").EnumerateArray().Single().GetProperty("outcome").GetString().ShouldBe("active");
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single().Kind.ShouldBe("pr_closed");
+    }
+
+    [Fact]
+    public async Task Evidence_that_changes_no_link_or_status_is_fed_without_bumping_the_version_so_a_bot_comment_edit_causes_no_conflict()
+    {
+        var (project, key, id) = await NewReadyItemAsync();
+        var pull = NewPullRequest();
+        await SendAsync("push", "push", key, pull);
+        await SendAsync("pull_request", "pull_request.opened", key, pull);
+        var version = (await GetAsync(key)).GetProperty("version").GetInt64();
+        var feed = (await db.AllChangesAsync(project)).Count;
+
+        await SendAsync("pull_request_review_comment", "pull_request_review_comment.created", key, pull);
+        await SendAsync("pull_request_review_comment", "pull_request_review_comment.created", key, pull,
+            edit: text => text.Replace("\"created\"", "\"edited\"").Replace("Possible null dereference here.", "Possible null dereference, now fixed."));
+
+        // Both are in the feed once each, attributed to the bot; the version did not move.
+        var entries = (await db.AllChangesAsync(project)).Skip(feed).ToList();
+        entries.Count.ShouldBe(2);
+        entries.ShouldAllBe(entry => entry.GetProperty("actor").GetProperty("name").GetString() == "github:coderabbitai[bot]");
+        entries.ShouldAllBe(entry => entry.GetProperty("changes").EnumerateArray().All(change => change.GetProperty("field").GetString() == "evidence"));
+        (await GetAsync(key)).GetProperty("version").GetInt64().ShouldBe(version);
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single().Body.ShouldBe("Possible null dereference, now fixed.");
+
+        // The agent working on the item writes with the version it read.
+        var updated = await db.CallAsync(WorkTools.UpdateWork, new { id = key, expected_version = version, comment = "Addressed the review." }, "alice");
+        updated.GetProperty("item").GetProperty("version").GetInt64().ShouldBe(version + 1);
+    }
+
+    [Fact]
+    public async Task The_push_actor_is_the_sender_not_the_pusher_name()
+    {
+        var (project, key, _) = await NewReadyItemAsync();
+
+        await SendAsync("push", "push", key, NewPullRequest(), edit: text => text.Replace("\"name\": \"claude-agent\"", "\"name\": \"someone-else\""));
+
+        (await db.AllChangesAsync(project)).Last(entry => entry.GetProperty("entity_key").GetString() == key)
+            .GetProperty("actor").GetProperty("name").GetString().ShouldBe("github:claude-agent");
+    }
+
+    [Fact]
+    public async Task An_alias_cannot_be_an_item_key_and_leading_zeros_do_not_make_another_alias()
+    {
+        var (_, key, id) = await NewReadyItemAsync();
+        var number = Random.Shared.Next(100000, 999999);
+        var actor = new WorkActor("importer");
+
+        (await Should.ThrowAsync<WorkException>(() => db.Store.AddItemAliasesAsync(id, [key], actor))).Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        (await Should.ThrowAsync<WorkException>(() => db.Store.AddItemAliasesAsync(id, [key.ToLowerInvariant()], actor))).Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        (await Should.ThrowAsync<WorkException>(() => db.Store.AddItemAliasesAsync(id, ["sc-0"], actor))).Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+
+        var padded = $"SC-00{number}";
+        await db.Store.AddItemAliasesAsync(id, [padded], actor);
+        var version = (await db.Store.AddItemAliasesAsync(id, [$"sc-{number}"], actor)).Version;
+        (await db.Store.AddItemAliasesAsync(id, [$"sc-000{number}"], actor)).Version.ShouldBe(version);
+        (await db.Store.ResolveAsync($"sc-{number}"))!.Id.ShouldBe(id);
+        (await db.Store.ResolveAsync($"SC-000{number}"))!.Id.ShouldBe(id);
+
+        // A branch named with the padded form matches the one stored alias.
+        var result = await SendAsync("push", "push", $"sc-0{number}", NewPullRequest());
+        result.Items.Single().Key.ShouldBe(key);
+    }
+
+    [Fact]
+    public async Task Transient_failures_are_retried_three_times_and_other_failures_are_not()
+    {
+        var calls = 0;
+        var paused = new List<TimeSpan>();
+        Task Pause(TimeSpan wait) { paused.Add(wait); return Task.CompletedTask; }
+
+        var recovered = await MySqlWorkStore.RetryTransientAsync(() =>
+            ++calls < 3 ? throw WorkException.Busy("locked") : Task.FromResult("done"), 3, Pause, default);
+        recovered.ShouldBe("done");
+        calls.ShouldBe(3);
+        paused.Count.ShouldBe(2);
+
+        calls = 0;
+        (await Should.ThrowAsync<WorkException>(() => MySqlWorkStore.RetryTransientAsync<string>(() => { calls++; throw WorkException.Busy("locked"); }, 3, Pause, default)))
+            .Code.ShouldBe(WorkErrorCodes.Busy);
+        calls.ShouldBe(3);
+
+        calls = 0;
+        await Should.ThrowAsync<WorkException>(() => MySqlWorkStore.RetryTransientAsync<string>(() => { calls++; throw WorkException.Invalid("no"); }, 3, Pause, default));
+        calls.ShouldBe(1);
     }
 
     [Fact]

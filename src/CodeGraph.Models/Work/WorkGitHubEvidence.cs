@@ -110,6 +110,22 @@ public static partial class WorkReferences
     [GeneratedRegex(@"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-([0-9]{1,10})(?![A-Za-z0-9])")]
     private static partial Regex ReferencePattern();
 
+    [GeneratedRegex(@"^([a-z][a-z0-9]{1,9})-([0-9]{1,10})$")]
+    private static partial Regex AliasPattern();
+
+    /// <summary>
+    /// The stored form of an alias: lower case, no leading zeros in the number (<c>SC-0012</c> is
+    /// <c>sc-12</c>); null when the text is not an alias or its number is not above zero.
+    /// </summary>
+    public static string? NormalizeAlias(string? alias)
+    {
+        var match = AliasPattern().Match(alias?.Trim().ToLowerInvariant() ?? "");
+        if (!match.Success || !int.TryParse(match.Groups[2].Value, out var number) || number <= 0)
+            return null;
+
+        return $"{match.Groups[1].Value}-{number}";
+    }
+
     /// <summary>
     /// The candidate references (<c>SW-142</c>, <c>sc-27866</c>) in a text, lower-cased and distinct.
     /// Whether one names an item is for the store to say.
