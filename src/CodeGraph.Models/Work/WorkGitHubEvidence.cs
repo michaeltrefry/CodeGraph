@@ -101,7 +101,8 @@ public sealed record GitHubEvidenceView(
     string? Body,
     Guid? AttemptId,
     bool Superseded,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    string? ExternalId = null);
 
 public static partial class WorkReferences
 {

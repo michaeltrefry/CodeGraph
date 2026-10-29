@@ -60,6 +60,26 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/impact/impact.component').then(m => m.ImpactComponent)
       },
       {
+        path: 'work',
+        loadComponent: () => import('./pages/work/work-now.component').then(m => m.WorkNowComponent)
+      },
+      {
+        path: 'work/messages',
+        loadComponent: () => import('./pages/work/work-messages.component').then(m => m.WorkMessagesComponent)
+      },
+      {
+        path: 'work/projects/:key',
+        loadComponent: () => import('./pages/work/work-project.component').then(m => m.WorkProjectComponent)
+      },
+      {
+        path: 'work/features/:key',
+        loadComponent: () => import('./pages/work/work-feature.component').then(m => m.WorkFeatureComponent)
+      },
+      {
+        path: 'work/items/:key',
+        loadComponent: () => import('./pages/work/work-item.component').then(m => m.WorkItemComponent)
+      },
+      {
         path: 'ask',
         loadComponent: () => import('./pages/ask/ask.component').then(m => m.AskComponent)
       },

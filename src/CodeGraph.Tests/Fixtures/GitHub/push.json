@@ -28,6 +28,10 @@
     "id": 77,
     "type": "User"
   },
+  "commits": [
+    { "id": "0000000000000000000000000000000000000abc", "message": "Add the evidence table\n\nlong body" },
+    { "id": "1111111111111111111111111111111111111111", "message": "Record GitHub evidence" }
+  ],
   "head_commit": {
     "id": "1111111111111111111111111111111111111111",
     "message": "Record GitHub evidence"

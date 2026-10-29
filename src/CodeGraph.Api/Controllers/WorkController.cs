@@ -229,7 +229,7 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         return await RunAsync(WorkTools.Changes, JsonSerializer.SerializeToElement(arguments));
     }
 
-    /// <summary>get_work: the id is the path; session_id may be a query parameter.</summary>
+    /// <summary>get_work: the id is the path; session_id and detail (summary or full) may be query parameters.</summary>
     [HttpGet("{id}")]
     public async Task<IActionResult> Get(string id)
     {
@@ -239,7 +239,7 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         JsonObject arguments;
         try
         {
-            arguments = QueryArguments(WorkTools.GetWork, strings: ["session_id"], integers: [], booleans: []);
+            arguments = QueryArguments(WorkTools.GetWork, strings: ["session_id", "detail"], integers: [], booleans: []);
         }
         catch (WorkException exception)
         {

@@ -18,6 +18,10 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
 {
     private readonly GitHubWorkEvidenceService service = GitHubWorkEvidenceService.ForStore(db.Store);
 
+    // The tests below are about merges, closes and reviews; pushes have a test of their own.
+    private async Task<IReadOnlyList<GitHubEvidenceView>> WithoutPushesAsync(Guid id) =>
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Where(entry => entry.Kind != "push").ToList();
+
     private static string Key(JsonElement element) => element.GetProperty("key").GetString()!;
 
     private static string Status(JsonElement element) => element.GetProperty("status").GetString()!;
@@ -105,7 +109,49 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         var written = feed.Skip(1).ToList();
         written.ShouldAllBe(entry => entry.GetProperty("actor").GetProperty("kind").GetString() == "system");
         written.Select(entry => entry.GetProperty("actor").GetProperty("name").GetString()).ShouldBe(["github:claude-agent", "github:claude-agent", "github:michaeltrefry"]);
-        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single().Kind.ShouldBe("merge");
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Select(entry => entry.Kind).OrderBy(kind => kind).ToList().ShouldBe(["merge", "push"]);
+    }
+
+    [Fact]
+    public async Task A_push_stores_its_head_SHA_and_commits_and_a_redelivery_stays_one_row()
+    {
+        var (_, key, id) = await NewReadyItemAsync();
+        var pull = NewPullRequest();
+        var delivery = Guid.NewGuid().ToString();
+
+        await SendAsync("push", "push", key, pull, delivery);
+        await SendAsync("push", "push", key, pull, delivery);
+        await SendAsync("push", "push", key, pull, Guid.NewGuid().ToString());
+
+        var push = (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single();
+        push.Kind.ShouldBe("push");
+        push.ExternalId.ShouldBe("1111111111111111111111111111111111111111");
+        push.Author.ShouldBe("claude-agent");
+        push.Url!.ShouldEndWith("/commit/1111111111111111111111111111111111111111");
+        push.Body!.Split('\n').ShouldBe(["0000000000000000000000000000000000000abc Add the evidence table", "1111111111111111111111111111111111111111 Record GitHub evidence"]);
+        push.AttemptId.ShouldBe((await db.Store.GetItemAsync(id, false))!.Attempts?.FirstOrDefault()?.Id);
+        Status(await GetAsync(key)).ShouldBe("in_progress");
+    }
+
+    [Fact]
+    public async Task A_new_push_is_fed_like_a_review_without_bumping_the_version_and_a_repeat_changes_nothing()
+    {
+        var (project, key, id) = await NewReadyItemAsync();
+        var pull = NewPullRequest();
+        await SendAsync("push", "push", key, pull);
+        var version = (await GetAsync(key)).GetProperty("version").GetInt64();
+        var entries = (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key);
+        string Newer(string text) => text.Replace("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
+
+        var second = await SendAsync("push", "push", key, pull, edit: Newer);
+        second.Items.Single().Result.ShouldBe("applied");
+        (await GetAsync(key)).GetProperty("version").GetInt64().ShouldBe(version);
+        (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key).ShouldBe(entries + 1);
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Count(entry => entry.Kind == "push").ShouldBe(2);
+
+        var repeat = await SendAsync("push", "push", key, pull, edit: Newer);
+        repeat.Items.Single().Result.ShouldBe("unchanged");
+        (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key).ShouldBe(entries + 1);
     }
 
     [Fact]
@@ -191,7 +237,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         attempt.GetProperty("outcome").GetString().ShouldBe("abandoned");
         attempt.GetProperty("reason").GetString()!.ShouldContain("closed without merging");
         attempt.GetProperty("reason").GetString()!.ShouldContain("the approach moved to a webhook queue");
-        var evidence = (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single();
+        var evidence = (await WithoutPushesAsync(id)).Single();
         evidence.Kind.ShouldBe("pr_closed");
         evidence.Body!.ShouldContain("Abandoned: the approach moved to a webhook queue.");
         // The item is claimable again: another agent can take it.
@@ -246,7 +292,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         Status(item).ShouldBe("in_progress");
         item.TryGetProperty("merged_awaiting_acceptance", out _).ShouldBeFalse();
         item.GetProperty("attempts").EnumerateArray().Single().GetProperty("outcome").GetString().ShouldBe("superseded");
-        var evidence = await db.Store.ListGitHubEvidenceAsync(id, 10);
+        var evidence = await WithoutPushesAsync(id);
         evidence.Select(entry => entry.Kind).ShouldBe(["merge", "review", "pr_closed"], ignoreOrder: true);
         evidence.ShouldAllBe(entry => entry.Superseded);
         // Superseded evidence is recorded and fed, but the item itself did not change: no version bump.
@@ -331,7 +377,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         await SendAsync("issue_comment", "issue_comment.created", key, pull);
 
         Status(await GetAsync(key)).ShouldBe("in_review");
-        var evidence = await db.Store.ListGitHubEvidenceAsync(id, 10);
+        var evidence = await WithoutPushesAsync(id);
         evidence.Count.ShouldBe(3);
         var review = evidence.Single(entry => entry.Kind == "review");
         (review.Author, review.Source, review.Priority, review.ReviewState).ShouldBe(("michaeltrefry", "human", "high", "changes_requested"));
@@ -345,12 +391,12 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         feed.Select(entry => entry.GetProperty("actor").GetProperty("name").GetString()).ShouldBe(["github:michaeltrefry", "github:coderabbitai[bot]", "github:michaeltrefry"]);
         await SendAsync("pull_request_review", "pull_request_review.submitted", key, pull);
         (await db.AllChangesAsync(project)).Count.ShouldBe(feedBefore + 3);
-        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Count.ShouldBe(3);
+        (await WithoutPushesAsync(id)).Count.ShouldBe(3);
 
         // An edited review is the same evidence, updated once.
         await SendAsync("pull_request_review", "pull_request_review.submitted", key, pull,
             edit: text => text.Replace("\"submitted\"", "\"edited\"").Replace("do not restate", "never restate"));
-        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single(entry => entry.Kind == "review").Body!.ShouldContain("never restate");
+        (await WithoutPushesAsync(id)).Single(entry => entry.Kind == "review").Body!.ShouldContain("never restate");
 
         // A comment on a plain issue is not evidence.
         (await SendAsync("issue_comment", "issue_comment.on_issue", key, pull)).Items.ShouldBeEmpty();
@@ -424,7 +470,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         Status(item).ShouldBe("in_review");
         item.GetProperty("claim").GetProperty("holder").GetString().ShouldBe("bob");
         item.GetProperty("attempts").EnumerateArray().Select(attempt => attempt.GetProperty("outcome").GetString()).ShouldBe(["active", "abandoned"]);
-        (await db.Store.ListGitHubEvidenceAsync(id, 10)).ShouldContain(entry => entry.Kind == "pr_closed");
+        (await WithoutPushesAsync(id)).ShouldContain(entry => entry.Kind == "pr_closed");
 
         // The current attempt's own PR does return it.
         (await SendAsync("pull_request", "pull_request.closed.unmerged", key, second)).Items.Single().To.ShouldBe(WorkStatus.Ready);
@@ -443,7 +489,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         Status(item).ShouldBe("in_review");
         item.GetProperty("claim").GetProperty("holder").GetString().ShouldBe("michael");
         item.GetProperty("attempts").EnumerateArray().Single().GetProperty("outcome").GetString().ShouldBe("active");
-        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single().Kind.ShouldBe("pr_closed");
+        (await WithoutPushesAsync(id)).Single().Kind.ShouldBe("pr_closed");
     }
 
     [Fact]
@@ -466,7 +512,7 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
         entries.ShouldAllBe(entry => entry.GetProperty("actor").GetProperty("name").GetString() == "github:coderabbitai[bot]");
         entries.ShouldAllBe(entry => entry.GetProperty("changes").EnumerateArray().All(change => change.GetProperty("field").GetString() == "evidence"));
         (await GetAsync(key)).GetProperty("version").GetInt64().ShouldBe(version);
-        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Single().Body.ShouldBe("Possible null dereference, now fixed.");
+        (await WithoutPushesAsync(id)).Single().Body.ShouldBe("Possible null dereference, now fixed.");
 
         // The agent working on the item writes with the version it read.
         var updated = await db.CallAsync(WorkTools.UpdateWork, new { id = key, expected_version = version, comment = "Addressed the review." }, "alice");
