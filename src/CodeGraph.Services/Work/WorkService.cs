@@ -30,7 +30,7 @@ public sealed partial class WorkService(
     IWorkStore? store = null,
     TimeProvider? timeProvider = null,
     IOptions<WorkSessionOptions>? sessionOptions = null,
-    CodeGraph.Services.Analyzers.IImpactAnalysisService? impact = null,
+    WorkOverlaps? overlapDetector = null,
     Microsoft.Extensions.Logging.ILogger<WorkService>? logger = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
@@ -38,7 +38,15 @@ public sealed partial class WorkService(
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
-    private readonly WorkOverlaps overlaps = new(impact, logger);
+    private readonly WorkOverlaps overlaps = overlapDetector ?? new WorkOverlaps();
+
+    /// <summary>The overlap detector (impact radius and cache) this service runs with.</summary>
+    public WorkOverlaps Overlaps => overlaps;
+
+    // Overlap warnings must never push a call past cg's 1.5 s watchdog: direct overlaps are always
+    // reported, the graph is consulted only within these deadlines.
+    private static readonly TimeSpan BriefingOverlapDeadline = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan CallOverlapDeadline = TimeSpan.FromMilliseconds(300);
     private readonly WorkSessionOptions sessions = sessionOptions?.Value ?? new WorkSessionOptions();
 
     private IWorkStore Store => store
@@ -155,14 +163,14 @@ public sealed partial class WorkService(
         if (actor.SessionId is not { } sessionId || request is GetBriefingRequest || !Guid.TryParse(sessionId, out var id))
             return result;
 
-        var warnings = await TryOverlapWarningsAsync(id, ct);
+        var warnings = await TryOverlapWarningsAsync(id, CallOverlapDeadline, ct);
         if (warnings.Count == 0 || JsonSerializer.SerializeToNode(result, result.GetType(), WorkJson.Options) as JsonObject is not { } node)
             return result;
         node["overlap_warnings"] = JsonSerializer.SerializeToNode(warnings, WorkJson.Options);
         return node;
     }
 
-    private async Task<IReadOnlyList<OverlapWarning>> TryOverlapWarningsAsync(Guid sessionId, CancellationToken ct)
+    private async Task<IReadOnlyList<OverlapWarning>> TryOverlapWarningsAsync(Guid sessionId, TimeSpan deadline, CancellationToken ct)
     {
         try
         {
@@ -170,7 +178,7 @@ public sealed partial class WorkService(
             if (session is null)
                 return [];
             var areas = await Store.ReadLiveWorkAreasAsync(session.ProjectId, ct);
-            return areas.Count < 2 ? [] : await overlaps.WarningsForAsync(sessionId.ToString(), areas, ct);
+            return areas.Count < 2 ? [] : await overlaps.WarningsForAsync(sessionId.ToString(), areas, deadline, ct);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -256,7 +264,7 @@ public sealed partial class WorkService(
     private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, int budget, CancellationToken ct)
     {
         var briefing = await Store.ReadBriefingAsync(sessionId, focus, ct);
-        var warnings = await TryOverlapWarningsAsync(sessionId, ct);
+        var warnings = await TryOverlapWarningsAsync(sessionId, BriefingOverlapDeadline, ct);
         return WorkBriefings.Fit(warnings.Count == 0 ? briefing : briefing with { OverlapWarnings = warnings }, budget);
     }
 

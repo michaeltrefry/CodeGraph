@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Analyzers;
@@ -6,47 +7,119 @@ using Microsoft.Extensions.Logging;
 namespace CodeGraph.Services.Work;
 
 /// <summary>
+/// A short-lived, size-bounded, process-wide cache of what a touched file or symbol reaches in the
+/// graph, shared by every <see cref="WorkOverlaps"/> (register it as a singleton). Negative
+/// results and failed lookups are cached too, so a repeated work-tool call does not walk the graph
+/// again within <see cref="Ttl"/>; a lookup cut short by a deadline is not cached.
+/// </summary>
+public sealed class OverlapImpactCache(TimeProvider? clock = null, int maxEntries = 2_000, TimeSpan? ttl = null)
+{
+    private readonly TimeProvider clock = clock ?? TimeProvider.System;
+    private readonly ConcurrentDictionary<(string Repository, string Touch, int Depth), (DateTimeOffset Expires, HashSet<(string Repository, string Text)> Reached)> entries = new();
+
+    public TimeSpan Ttl { get; } = ttl ?? TimeSpan.FromSeconds(60);
+
+    public int Count => entries.Count;
+
+    public bool TryGet((string Repository, string Touch, int Depth) key, out HashSet<(string Repository, string Text)> reached)
+    {
+        if (entries.TryGetValue(key, out var entry) && entry.Expires > clock.GetUtcNow())
+        {
+            reached = entry.Reached;
+            return true;
+        }
+
+        reached = [];
+        return false;
+    }
+
+    public void Set((string Repository, string Touch, int Depth) key, HashSet<(string Repository, string Text)> reached)
+    {
+        if (entries.Count >= maxEntries)
+        {
+            // Bounded: drop the lapsed entries, and if the cache is still full, the whole of it.
+            var now = clock.GetUtcNow();
+            foreach (var stale in entries.Where(pair => pair.Value.Expires <= now).Select(pair => pair.Key).ToList())
+                entries.TryRemove(stale, out _);
+            if (entries.Count >= maxEntries)
+                entries.Clear();
+        }
+
+        entries[key] = (clock.GetUtcNow() + Ttl, reached);
+    }
+}
+
+/// <summary>
 /// Overlap of the work areas of live sessions (design §5.6, R21): the claimed items' touches
 /// (paths, directories, globs, symbols) overlap directly, or one touches something inside the
 /// other's impact radius, taken from the same <see cref="IImpactAnalysisService"/> that backs
 /// analyze_impact and scoped to the item's repository. Advisory: it only informs (E6).
-/// The graph is consulted only for pairs that do not overlap directly, to a fixed depth, for a
-/// bounded number of touches, within a wall-clock budget, and each lookup once per call; past the
-/// budget or on any graph failure only direct overlaps are reported.
+/// <list type="bullet">
+/// <item>Direct overlaps are always computed, whatever the deadline.</item>
+/// <item>The graph is consulted only for pairs that do not overlap directly, to depth
+/// <see cref="WorkOverlapLimits.ImpactDepth"/>, for at most <see cref="WorkOverlapLimits.MaxTouchesResolved"/>
+/// touches per item, one lookup at a time (the graph store's context is not safe for concurrent
+/// use), and each lookup is checked against the deadline before it starts and abandoned at it.
+/// Results are cached across calls, failures and misses included; past the deadline, or on a
+/// graph failure, only what is already known is reported.</item>
+/// <item>Impact is the dependents of what a touch names (who calls, uses, inherits or consumes it,
+/// two hops), not what it depends on: a touch of one item inside the other's blast radius, either way round.</item>
+/// <item>An item with no repository is compared directly with every item whatever its repository
+/// (its paths cannot be told apart), and is never looked up in the graph.</item>
+/// </list>
 /// </summary>
-public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, ILogger? logger = null)
+public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, OverlapImpactCache? sharedCache = null, ILogger<WorkOverlaps>? logger = null)
 {
-    /// <summary>The warnings for <paramref name="sessionId"/> against every other session's area, in item order.</summary>
-    public async Task<IReadOnlyList<OverlapWarning>> WarningsForAsync(string sessionId, IReadOnlyList<WorkArea> areas, CancellationToken ct = default)
+    private readonly OverlapImpactCache cache = sharedCache ?? new OverlapImpactCache();
+
+    /// <summary>Whether overlaps through the impact radius can be found at all (an impact service is wired).</summary>
+    public bool HasImpact => impact is not null;
+
+    public OverlapImpactCache Cache => cache;
+
+    /// <summary>
+    /// The warnings for <paramref name="sessionId"/> against every other session's area, in item
+    /// order, computed within <paramref name="deadline"/> (direct overlaps are never cut).
+    /// </summary>
+    public async Task<IReadOnlyList<OverlapWarning>> WarningsForAsync(string sessionId, IReadOnlyList<WorkArea> areas, TimeSpan? deadline = null, CancellationToken ct = default)
     {
         var mine = areas.Where(area => area.SessionId == sessionId).ToList();
         var others = areas.Where(area => area.SessionId != sessionId).ToList();
         if (mine.Count == 0 || others.Count == 0)
             return [];
 
-        var warnings = new List<OverlapWarning>();
-        var cache = new Dictionary<(string Repository, string Touch), Task<HashSet<(string Repository, string Text)>>>();
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        budget.CancelAfter(WorkOverlapLimits.ImpactBudgetMilliseconds);
-
+        var found = new List<(WorkArea Yours, WorkArea Theirs, string Kind, string Via)>();
+        var remaining = new List<(WorkArea Yours, WorkArea Theirs)>();
         foreach (var yours in mine)
         {
             foreach (var theirs in others)
             {
-                if (warnings.Count >= WorkOverlapLimits.MaxWarnings)
-                    return warnings;
                 if (FindDirect(yours, theirs) is { } direct)
-                {
-                    warnings.Add(Warn(OverlapKinds.Direct, yours, theirs, direct));
-                    continue;
-                }
-
-                if (await FindThroughImpactAsync(yours, theirs, cache, budget.Token) is { } through)
-                    warnings.Add(Warn(OverlapKinds.Impact, yours, theirs, through));
+                    found.Add((yours, theirs, OverlapKinds.Direct, direct));
+                else
+                    remaining.Add((yours, theirs));
             }
         }
 
-        return warnings;
+        if (impact is not null && remaining.Count > 0 && found.Count < WorkOverlapLimits.MaxWarnings)
+        {
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(deadline ?? TimeSpan.FromMilliseconds(WorkOverlapLimits.ImpactBudgetMilliseconds));
+            var resolved = new Dictionary<(string Repository, string Touch), HashSet<(string Repository, string Text)>>();
+            foreach (var (yours, theirs) in remaining)
+            {
+                if (budget.IsCancellationRequested || found.Count >= WorkOverlapLimits.MaxWarnings)
+                    break;
+                if (await FindThroughImpactAsync(yours, theirs, resolved, budget.Token) is { } through)
+                    found.Add((yours, theirs, OverlapKinds.Impact, through));
+            }
+        }
+
+        return found
+            .OrderBy(entry => entry.Yours.ItemKey, StringComparer.Ordinal).ThenBy(entry => entry.Theirs.ItemKey, StringComparer.Ordinal)
+            .Take(WorkOverlapLimits.MaxWarnings)
+            .Select(entry => Warn(entry.Kind, entry.Yours, entry.Theirs, entry.Via))
+            .ToList();
     }
 
     private static OverlapWarning Warn(string kind, WorkArea yours, WorkArea theirs, string via)
@@ -78,7 +151,8 @@ public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, ILogger?
     /// <summary>
     /// Whether two touches name overlapping things: equal (ignoring case and the spelling of
     /// separators), one a directory containing the other, a glob matching the other, two globs
-    /// whose literal prefixes nest, or the same symbol.
+    /// whose literal prefixes nest, or symbols that are the same or nest (<c>App.Greeter</c> holds
+    /// <c>App.Greeter.Greet</c>; <c>a::b</c> holds <c>a::b::c</c>).
     /// </summary>
     public static bool TouchesOverlap(string x, string y)
     {
@@ -102,7 +176,7 @@ public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, ILogger?
             return GlobMatches(a, b);
         if (bGlob)
             return GlobMatches(b, a);
-        return Contains(a, b) || Contains(b, a);
+        return Contains(a, b) || Contains(b, a) || NestedSymbols(a, b) || NestedSymbols(b, a);
     }
 
     private static string Normalize(string touch)
@@ -116,6 +190,11 @@ public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, ILogger?
     // a is a directory holding b.
     private static bool Contains(string directory, string path) =>
         path.StartsWith(directory.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase);
+
+    // Symbols (no path separator): outer is a qualified-name prefix of inner.
+    private static bool NestedSymbols(string outer, string inner) =>
+        !outer.Contains('/') && !inner.Contains('/') &&
+        (inner.StartsWith(outer + ".", StringComparison.OrdinalIgnoreCase) || inner.StartsWith(outer + "::", StringComparison.OrdinalIgnoreCase));
 
     private static string LiteralPrefix(string glob)
     {
@@ -132,30 +211,19 @@ public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, ILogger?
     // ---- Impact radius ------------------------------------------------------------------------------
 
     private async Task<string?> FindThroughImpactAsync(
-        WorkArea yours, WorkArea theirs, Dictionary<(string Repository, string Touch), Task<HashSet<(string Repository, string Text)>>> cache, CancellationToken ct)
+        WorkArea yours, WorkArea theirs, Dictionary<(string Repository, string Touch), HashSet<(string Repository, string Text)>> resolved, CancellationToken ct)
     {
-        if (impact is null || yours.Repository is null || theirs.Repository is null)
+        if (yours.Repository is null || theirs.Repository is null)
             return null;
 
-        // What each item's touches reach, in either direction: a touch of one inside the other's blast radius.
+        // A touch of one inside the blast radius of a touch of the other, either way round.
         foreach (var (from, to) in new[] { (yours, theirs), (theirs, yours) })
         {
             foreach (var touch in from.Touches.Take(WorkOverlapLimits.MaxTouchesResolved))
             {
-                HashSet<(string Repository, string Text)> reached;
-                try
-                {
-                    reached = await ReachedAsync(from.Repository!, touch, cache, ct);
-                }
-                catch (Exception exception) when (exception is OperationCanceledException or TimeoutException)
-                {
+                var reached = await ReachedAsync(from.Repository!, touch, resolved, ct);
+                if (reached is null)
                     return null;
-                }
-                catch (Exception exception)
-                {
-                    logger?.LogWarning(exception, "Impact lookup for overlap warnings failed for {Touch}; reporting direct overlaps only.", touch);
-                    return null;
-                }
 
                 foreach (var other in to.Touches)
                 {
@@ -170,21 +238,48 @@ public sealed class WorkOverlaps(IImpactAnalysisService? impact = null, ILogger?
         return null;
     }
 
-    private Task<HashSet<(string Repository, string Text)>> ReachedAsync(
-        string repository, string touch, Dictionary<(string Repository, string Touch), Task<HashSet<(string Repository, string Text)>>> cache, CancellationToken ct)
+    // Null when the budget ran out before the lookup could finish: nothing is known, nothing cached.
+    private async Task<HashSet<(string Repository, string Text)>?> ReachedAsync(
+        string repository, string touch, Dictionary<(string Repository, string Touch), HashSet<(string Repository, string Text)>> resolved, CancellationToken ct)
     {
-        var key = (repository.ToLowerInvariant(), touch);
-        if (!cache.TryGetValue(key, out var task))
-            cache[key] = task = ResolveAsync(repository, touch, ct);
-        return task;
+        var local = (repository.ToLowerInvariant(), touch);
+        if (resolved.TryGetValue(local, out var known))
+            return known;
+
+        var key = (local.Item1, touch, WorkOverlapLimits.ImpactDepth);
+        if (cache.TryGet(key, out var cached))
+            return resolved[local] = cached;
+
+        // An expired budget stops work before the next lookup begins.
+        if (ct.IsCancellationRequested)
+            return null;
+        try
+        {
+            var reached = await LookUpAsync(repository, touch, ct);
+            cache.Set(key, reached);
+            return resolved[local] = reached;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception exception)
+        {
+            // A failed lookup is remembered as reaching nothing, so a broken graph is not retried on every call.
+            logger?.LogWarning(exception, "Impact lookup for overlap warnings failed for {Touch}; reporting what is known.", touch);
+            cache.Set(key, []);
+            return resolved[local] = [];
+        }
     }
 
     // The files and symbols in the blast radius of one touch: as a file first, then as a symbol.
-    private async Task<HashSet<(string Repository, string Text)>> ResolveAsync(string repository, string touch, CancellationToken ct)
+    // The impact service takes no token, so a lookup past the budget is abandoned, not cancelled.
+    private async Task<HashSet<(string Repository, string Text)>> LookUpAsync(string repository, string touch, CancellationToken ct)
     {
         var path = Normalize(touch);
         var report = await impact!.AnalyzeFileImpactAsync(repository, path, WorkOverlapLimits.ImpactDepth).WaitAsync(ct);
-        report ??= await impact.AnalyzeImpactAsync(touch.Trim(), repository, WorkOverlapLimits.ImpactDepth).WaitAsync(ct);
+        if (report is null && !ct.IsCancellationRequested)
+            report = await impact.AnalyzeImpactAsync(touch.Trim(), repository, WorkOverlapLimits.ImpactDepth).WaitAsync(ct);
 
         var reached = new HashSet<(string Repository, string Text)>();
         if (report is null)

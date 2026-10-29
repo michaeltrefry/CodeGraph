@@ -11,6 +11,8 @@ using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Services.Work;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
@@ -39,6 +41,12 @@ public sealed class WorkOverlapUnitTests
     [InlineData("Ns.Greeter.Greet", "Ns.Greeter.Run", false)]
     [InlineData(".github/ci.yml", ".github/ci.yml", true)]
     [InlineData(".github/ci.yml", "github/ci.yml", false)]
+    [InlineData("App.Greeter", "App.Greeter.Greet", true)]
+    [InlineData("App.Greeter.Greet", "App.Greeter", true)]
+    [InlineData("App.Greeter", "App.GreeterFactory.Make", false)]
+    [InlineData("crate::a::b", "crate::a::b::run", true)]
+    [InlineData("crate::a", "crate::ab::run", false)]
+    [InlineData("App.Greeter", "src/App.Greeter.cs", false)]
     public void Touches_overlap_when_equal_nested_globbed_or_the_same_symbol(string x, string y, bool expected)
     {
         WorkOverlaps.TouchesOverlap(x, y).ShouldBe(expected);
@@ -107,6 +115,77 @@ public sealed class WorkOverlapUnitTests
         (await new WorkOverlaps(broken).WarningsForAsync("c1", withDirect)).ShouldHaveSingleItem().Kind.ShouldBe("direct");
     }
 
+    [Fact]
+    public async Task A_slow_graph_costs_at_most_the_deadline_and_leaves_the_direct_warnings_and_an_unfinished_lookup_is_not_cached()
+    {
+        var impact = new FakeImpact(("sceneworks", "src/Core.cs"), [("sceneworks", "src/Caller.cs", "App.Caller.Run")]) { Delay = TimeSpan.FromSeconds(2) };
+        var areas = new[]
+        {
+            Area("c1", "SW-1", "sceneworks", "src/Core.cs", "src/shared.cs"),
+            Area("x1", "SW-2", "sceneworks", "src/Caller.cs", "src/shared.cs"),
+            Area("x2", "SW-3", "sceneworks", "src/Other.cs")
+        };
+        var overlaps = new WorkOverlaps(impact);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var warnings = await overlaps.WarningsForAsync("c1", areas, TimeSpan.FromMilliseconds(300));
+        watch.Stop();
+
+        watch.Elapsed.ShouldBeLessThan(TimeSpan.FromMilliseconds(1200));
+        warnings.ShouldHaveSingleItem().Kind.ShouldBe("direct");
+        overlaps.Cache.Count.ShouldBe(0);
+        // Only the lookup that was running began: the expired budget stopped the rest.
+        impact.Lookups.Count.ShouldBeLessThanOrEqualTo(1);
+    }
+
+    [Fact]
+    public async Task A_second_call_within_the_ttl_is_served_from_the_cache_including_misses_and_failures()
+    {
+        var impact = new FakeImpact(("sceneworks", "src/Core.cs"), [("sceneworks", "src/Caller.cs", "App.Caller.Run")]) { Delay = TimeSpan.FromMilliseconds(50) };
+        var clock = new TestClock();
+        var cache = new OverlapImpactCache(clock, ttl: TimeSpan.FromSeconds(60));
+        var areas = new[] { Area("c1", "SW-1", "sceneworks", "src/Core.cs"), Area("x1", "SW-2", "sceneworks", "src/Caller.cs"), Area("x2", "SW-3", "sceneworks", "src/Miss.cs") };
+
+        (await new WorkOverlaps(impact, cache).WarningsForAsync("c1", areas)).Count.ShouldBe(1);
+        var lookups = impact.Lookups.Count;
+        lookups.ShouldBeGreaterThan(0);
+
+        var again = await new WorkOverlaps(impact, cache).WarningsForAsync("c1", areas);
+        again.Count.ShouldBe(1);
+        impact.Lookups.Count.ShouldBe(lookups);
+
+        // After the ttl it looks again.
+        clock.Advance(TimeSpan.FromSeconds(61));
+        await new WorkOverlaps(impact, cache).WarningsForAsync("c1", areas);
+        impact.Lookups.Count.ShouldBeGreaterThan(lookups);
+
+        // A failing graph is remembered too.
+        var broken = new FakeImpact(throws: true);
+        var failures = new OverlapImpactCache(clock);
+        var pair = new[] { Area("c1", "SW-1", "sceneworks", "src/a.cs"), Area("x1", "SW-2", "sceneworks", "src/b.cs") };
+        await new WorkOverlaps(broken, failures).WarningsForAsync("c1", pair);
+        var failed = broken.Lookups.Count;
+        await new WorkOverlaps(broken, failures).WarningsForAsync("c1", pair);
+        broken.Lookups.Count.ShouldBe(failed);
+    }
+
+    [Fact]
+    public async Task A_cache_is_bounded()
+    {
+        var cache = new OverlapImpactCache(maxEntries: 3);
+        for (var index = 0; index < 10; index++)
+            cache.Set(("r", $"t{index}", 2), []);
+        cache.Count.ShouldBeLessThanOrEqualTo(3);
+        await Task.CompletedTask;
+    }
+
+    private sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset now = DateTimeOffset.UtcNow;
+        public void Advance(TimeSpan by) => now += by;
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
     private sealed class FakeImpact : IImpactAnalysisService
     {
         private readonly (string Repository, string Touch) from;
@@ -128,6 +207,8 @@ public sealed class WorkOverlapUnitTests
 
         public List<string> Lookups { get; } = [];
 
+        public TimeSpan Delay { get; init; }
+
         private ImpactReport? Report(string repository, string touch)
         {
             Lookups.Add(touch);
@@ -140,11 +221,17 @@ public sealed class WorkOverlapUnitTests
         }
 
         // A file lookup answers only for the touch registered as a file; a symbol only for a symbol.
-        public Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null) =>
-            Task.FromResult(from.Touch.Contains('/') ? Report(project, filePath) : NoteMiss(filePath));
+        public async Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null)
+        {
+            await Task.Delay(Delay);
+            return from.Touch.Contains('/') ? Report(project, filePath) : NoteMiss(filePath);
+        }
 
-        public Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null) =>
-            Task.FromResult(Report(project ?? "", qualifiedName));
+        public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null)
+        {
+            await Task.Delay(Delay);
+            return Report(project ?? "", qualifiedName);
+        }
 
         private ImpactReport? NoteMiss(string touch)
         {
@@ -205,7 +292,7 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
         await store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repository, LastCommitSha = sha });
 
         var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
-        service = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }), impact);
+        service = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }), new WorkOverlaps(impact));
     }
 
     public Task DisposeAsync()
@@ -294,6 +381,59 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
     }
 
     [Fact]
+    public async Task Get_briefing_with_a_slow_graph_answers_within_the_cg_budget_with_the_direct_warnings()
+    {
+        var slow = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            new WorkOverlaps(new SlowImpact()));
+        async Task<JsonElement> Slow(string tool, object arguments)
+        {
+            var result = await slow.ExecuteAsync(tool, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), new WorkActor("michael"));
+            return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
+        }
+
+        var project = await ProjectAsync("OS", "mlx-rs");
+        var first = await ItemAsync(project, "First", ["src/shared.cs", "src/a.cs"], "mlx-rs");
+        var second = await ItemAsync(project, "Second", ["src/shared.cs"], "mlx-rs");
+        var third = await ItemAsync(project, "Third", ["src/b.cs"], "mlx-rs");
+        var sessions = new List<string>();
+        foreach (var (item, harness) in new[] { (first, "claude-code"), (second, "codex"), (third, "gemini") })
+        {
+            var session = (await Slow(WorkTools.StartSession, new { project, harness })).GetProperty("session").GetProperty("id").GetString()!;
+            var version = (await Slow(WorkTools.GetWork, new { id = item })).GetProperty("version").GetInt64();
+            await Slow(WorkTools.UpdateWork, new { id = item, expected_version = version, session_id = session, claim = new { } });
+            sessions.Add(session);
+        }
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var briefing = await Slow(WorkTools.GetBriefing, new { session_id = sessions[0] });
+        watch.Stop();
+
+        watch.Elapsed.ShouldBeLessThan(TimeSpan.FromMilliseconds(1400));
+        var warning = briefing.GetProperty("overlap_warnings").EnumerateArray().Single();
+        (warning.GetProperty("kind").GetString(), warning.GetProperty("other_session_id").GetString()).ShouldBe(("direct", sessions[1]));
+
+        var call = System.Diagnostics.Stopwatch.StartNew();
+        await Slow(WorkTools.GetWork, new { id = first, session_id = sessions[0] });
+        call.Stop();
+        call.Elapsed.ShouldBeLessThan(TimeSpan.FromMilliseconds(1000));
+    }
+
+    private sealed class SlowImpact : IImpactAnalysisService
+    {
+        public async Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            return null;
+        }
+
+        public async Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            return null;
+        }
+    }
+
+    [Fact]
     public async Task Items_touching_the_same_file_warn_directly_and_a_silent_session_does_not_warn()
     {
         var project = await ProjectAsync("OD", "inference");
@@ -309,5 +449,35 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
         // Claude goes silent past the idle threshold: its claim lapses with it, and codex hears no more of it.
         db.Clock.Advance(TimeSpan.FromSeconds(WorkDatabase.IdleSeconds + 5));
         (await CallAsync(WorkTools.GetWork, new { id = second, session_id = codex })).TryGetProperty("overlap_warnings", out _).ShouldBeFalse();
+    }
+}
+
+/// <summary>The detector is wired as production wires it: the API's own service registration.</summary>
+public sealed class WorkOverlapWiringTests
+{
+    [Fact]
+    public async Task The_api_registration_gives_the_work_service_an_impact_analysis_and_one_shared_cache()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CodeGraph:AnalysisOptions:DefaultProvider"] = "anthropic",
+                ["CodeGraph:StorageOptions:Provider"] = "Neo4j",
+                ["CodeGraph:RepositorySource:Provider"] = "Folder",
+                ["CodeGraph:RepositorySource:Folder:RootPath"] = "/tmp"
+            })
+            .Build();
+        CodeGraph.Api.Startup.ConfigureServices(services, configuration);
+
+        await using var provider = services.BuildServiceProvider();
+        using var first = provider.CreateScope();
+        using var second = provider.CreateScope();
+        var a = (WorkService)first.ServiceProvider.GetRequiredService<IWorkService>();
+        var b = (WorkService)second.ServiceProvider.GetRequiredService<IWorkService>();
+
+        a.Overlaps.HasImpact.ShouldBeTrue();
+        b.Overlaps.HasImpact.ShouldBeTrue();
+        a.Overlaps.Cache.ShouldBeSameAs(b.Overlaps.Cache);
     }
 }
