@@ -35,6 +35,8 @@ public static class WorkTools
 
     private const string Sessions =
         " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it." +
+        " When the session's live claims touch (item touches) the same area as another live session's claims, directly or through the impact radius, the response " +
+        "carries overlap_warnings naming the other session, so the two can message each other; advisory, nothing is blocked." +
         " A response may carry notices for the caller, such as changed_by_replan when a re-plan edited or closed an item it holds.";
 
     public static readonly IReadOnlyList<WorkToolDefinition> All =

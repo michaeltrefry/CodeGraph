@@ -322,6 +322,7 @@ public sealed class WorkContractTests
         public Task<AcquireResult> AcquireAsync(AcquireSpec spec, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<HoldView> RenewHoldAsync(Guid holdId, int? ttlSeconds, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<ReleaseResult> ReleaseHoldAsync(Guid holdId, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<WorkArea>> ReadLiveWorkAreasAsync(Guid projectId, CancellationToken ct = default) => throw Fail();
         public Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<SyncPlanApplied> ApplyPlanAsync(Guid previewId, Guid? projectId, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default) => throw Fail();
