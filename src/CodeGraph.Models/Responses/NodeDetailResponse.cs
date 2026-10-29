@@ -17,8 +17,8 @@ public record EdgeSummary(
     string? NeighborName,
     string? NeighborQualifiedName,
     string? NeighborLabel,
-    string? NeighborProject,
-    bool IsCrossProject,
+    string? NeighborRepository,
+    bool IsCrossRepository,
     Dictionary<string, object> Properties);
 
 public record NodeSourceResponse(
@@ -36,8 +36,8 @@ public record CrossRepoEdgeSummary(
     long EdgeId,
     string Type,
     string Direction,
-    string SourceProject,
-    string TargetProject,
+    string SourceRepository,
+    string TargetRepository,
     long NeighborNodeId,
     string? NeighborName,
     string? NeighborQualifiedName,

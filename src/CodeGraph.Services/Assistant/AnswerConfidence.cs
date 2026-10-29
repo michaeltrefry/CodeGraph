@@ -16,7 +16,7 @@ public static class AnswerConfidence
 
     public static int Count(IEnumerable<GraphNode?> nodes) => nodes
         .OfType<GraphNode>()
-        .DistinctBy(node => (node.Project, node.Id, node.QualifiedName))
+        .DistinctBy(node => (node.Repository, node.Id, node.QualifiedName))
         .Count(GraphNodeConfidence.IsLowConfidence);
 
     /// <summary>The answer-level line, or null when <paramref name="count"/> is zero.</summary>

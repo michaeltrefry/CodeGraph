@@ -372,18 +372,18 @@ The authoritative REST contract is the Swagger UI at [http://localhost:5037/swag
 
 | Route | Purpose |
 |---|---|
-| `GET /api/projects` | List repositories with search, grouping, and pagination |
-| `GET /api/projects/{name}` | Repository detail |
-| `GET /api/projects/{name}/health` | Health, hotspots, security summary, .NET support, vitality |
-| `GET /api/projects/{name}/security` | Expanded security findings |
-| `GET /api/projects/{name}/metrics` | File metrics |
-| `GET /api/projects/{name}/hotspots` | Top hotspots |
-| `GET /api/projects/{name}/nodes` | Repository nodes by label/project |
-| `GET /api/projects/{name}/readme` | Stored README content for an indexed repo |
-| `GET /api/projects/{name}/impact` | Impact analysis by node name |
-| `GET /api/projects/{name}/impact/file` | Impact analysis by file path |
-| `POST /api/projects/ReAnalyze` | Trigger re-analysis for a repository |
-| `DELETE /api/projects/{name}` | Remove an indexed repository |
+| `GET /api/repositories` | List repositories with search, grouping, and pagination |
+| `GET /api/repositories/{name}` | Repository detail |
+| `GET /api/repositories/{name}/health` | Health, hotspots, security summary, .NET support, vitality |
+| `GET /api/repositories/{name}/security` | Expanded security findings |
+| `GET /api/repositories/{name}/metrics` | File metrics |
+| `GET /api/repositories/{name}/hotspots` | Top hotspots |
+| `GET /api/repositories/{name}/nodes` | Repository nodes by label/.NET project |
+| `GET /api/repositories/{name}/readme` | Stored README content for an indexed repo |
+| `GET /api/repositories/{name}/impact` | Impact analysis by node name |
+| `GET /api/repositories/{name}/impact/file` | Impact analysis by file path |
+| `POST /api/repositories/ReAnalyze` | Trigger re-analysis for a repository |
+| `DELETE /api/repositories/{name}` | Remove an indexed repository |
 | `GET /api/graph/overview` | Cross-repo graph overview |
 | `GET /api/search` | Search repositories and nodes |
 | `GET /api/nodes/by-file` | Nodes for a file |
@@ -413,14 +413,14 @@ A Swift `import M` (also `@testable import M`) binds to the repository's own mod
 
 | Route | Purpose |
 |---|---|
-| `POST /api/projects/{repo}/reviews` | Start a project-level review |
-| `GET /api/projects/{repo}/reviews/latest?projectName=...` | Latest project review |
-| `GET /api/projects/{repo}/reviews/{reviewRunId}/stream` | SSE stream for a project review |
-| `GET /api/projects/{repo}/diagnostics` | Project diagnostics and review prep data |
-| `POST /api/projects/{repo}/code-review` | Start a repository-level review |
-| `GET /api/projects/{repo}/code-review/latest` | Latest repository review |
-| `GET /api/projects/{repo}/code-review/{reviewRunId}` | Repository review detail |
-| `GET /api/projects/{repo}/code-review/{reviewRunId}/stream` | SSE stream for a repository review |
+| `POST /api/repositories/{repo}/reviews` | Start a project-level review |
+| `GET /api/repositories/{repo}/reviews/latest?projectName=...` | Latest review of one .NET project (`projectName` is the project, not the repository) |
+| `GET /api/repositories/{repo}/reviews/{reviewRunId}/stream` | SSE stream for a project review |
+| `GET /api/repositories/{repo}/diagnostics` | Project diagnostics and review prep data |
+| `POST /api/repositories/{repo}/code-review` | Start a repository-level review |
+| `GET /api/repositories/{repo}/code-review/latest` | Latest repository review |
+| `GET /api/repositories/{repo}/code-review/{reviewRunId}` | Repository review detail |
+| `GET /api/repositories/{repo}/code-review/{reviewRunId}/stream` | SSE stream for a repository review |
 
 ### Memory
 
@@ -512,7 +512,7 @@ Example client config:
 ### Graph tools
 
 - `get_graph_schema`
-- `list_projects`
+- `list_repositories`
 - `search_graph`
 - `get_service_summary`
 - `trace_call_path`
@@ -520,7 +520,7 @@ Example client config:
 - `find_consumers`
 - `find_publishers`
 - `get_architecture`
-- `get_project_health`
+- `get_repository_health`
 - `get_fleet_health`
 - `find_archival_candidates`
 - `get_service_clusters`

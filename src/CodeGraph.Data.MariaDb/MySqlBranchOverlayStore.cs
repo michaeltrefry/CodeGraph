@@ -28,7 +28,7 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
 
     private const string OverlayColumns = """
         id AS Id,
-        project AS Project,
+        repository AS Repository,
         requested_ref AS RequestedRef,
         head_sha AS HeadSha,
         base_sha AS BaseSha,
@@ -53,10 +53,10 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
         var conn = await GetOpenConnectionAsync(ct);
         var id = await conn.ExecuteScalarAsync<long>(new CommandDefinition("""
             INSERT INTO branch_overlays
-                (project, requested_ref, head_sha, base_sha, status, error, requested_by_username,
+                (repository, requested_ref, head_sha, base_sha, status, error, requested_by_username,
                  indexer_run_id, created_at)
             VALUES
-                (@Project, @RequestedRef, @HeadSha, @BaseSha, @Status, @Error, @RequestedByUsername,
+                (@Repository, @RequestedRef, @HeadSha, @BaseSha, @Status, @Error, @RequestedByUsername,
                  @IndexerRunId, @CreatedAt);
             SELECT LAST_INSERT_ID();
             """, overlay, cancellationToken: ct));
@@ -74,7 +74,7 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
 
     public async Task<IReadOnlyList<BranchOverlayEntity>> FindOverlaysByShaAsync(
         string sha,
-        string? project,
+        string? repository,
         CancellationToken ct = default)
     {
         var conn = await GetOpenConnectionAsync(ct);
@@ -82,9 +82,9 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
             SELECT {OverlayColumns}
             FROM branch_overlays
             WHERE (head_sha = @Sha OR (head_sha IS NULL AND requested_ref = @Sha))
-              AND (@Project IS NULL OR project = @Project)
+              AND (@Repository IS NULL OR repository = @Repository)
             ORDER BY created_at DESC, id DESC
-            """, new { Sha = sha, Project = project }, cancellationToken: ct))).ToList();
+            """, new { Sha = sha, Repository = repository }, cancellationToken: ct))).ToList();
     }
 
     public async Task SetOverlayRunAsync(long overlayId, long indexerRunId, CancellationToken ct = default)
@@ -279,7 +279,7 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
     {
         var conn = await GetOpenConnectionAsync(ct);
         var rows = await conn.QueryAsync<OverlayNodeRow>(new CommandDefinition("""
-            SELECT n.id AS Id, o.project AS Project, n.dotnet_project AS DotnetProject, n.label AS Label,
+            SELECT n.id AS Id, o.repository AS Repository, n.dotnet_project AS DotnetProject, n.label AS Label,
                    n.name AS Name, n.qualified_name AS QualifiedName, n.file_path AS FilePath,
                    n.start_line AS StartLine, n.end_line AS EndLine, n.properties AS Properties
             FROM branch_overlay_nodes n
@@ -291,7 +291,7 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
         return rows.Select(row => new GraphNode
         {
             Id = row.Id,
-            Project = row.Project,
+            Repository = row.Repository,
             DotnetProject = row.DotnetProject,
             Label = Enum.Parse<NodeLabel>(row.Label),
             Name = row.Name,
@@ -355,12 +355,12 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
         return ids;
     }
 
-    public async Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string project, CancellationToken ct = default)
+    public async Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string repository, CancellationToken ct = default)
     {
         // GET_LOCK is session-scoped, so the lock lives on this store's connection, which stays
         // open for the scope; every query made while holding it runs on the same session.
         var conn = await GetOpenConnectionAsync(ct);
-        var lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"overlay-request:{project}")));
+        var lockName = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"overlay-request:{repository}")));
         var acquired = await conn.ExecuteScalarAsync<long?>(new CommandDefinition(
             "SELECT GET_LOCK(@LockName, @WaitSeconds)",
             new { LockName = lockName, WaitSeconds = RequestLockWaitSeconds },
@@ -369,7 +369,7 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
             commandTimeout: RequestLockWaitSeconds + 15,
             cancellationToken: ct));
         if (acquired != 1)
-            throw new TimeoutException($"Timed out waiting for the overlay request lock for '{project}'.");
+            throw new TimeoutException($"Timed out waiting for the overlay request lock for '{repository}'.");
         return new OverlayRequestLock(conn, lockName);
     }
 
@@ -424,7 +424,7 @@ public class MySqlBranchOverlayStore(CodeGraphDbContext db) : IBranchOverlayStor
     private sealed class OverlayNodeRow
     {
         public long Id { get; init; }
-        public string Project { get; init; } = "";
+        public string Repository { get; init; } = "";
         public string? DotnetProject { get; init; }
         public string Label { get; init; } = "";
         public string Name { get; init; } = "";

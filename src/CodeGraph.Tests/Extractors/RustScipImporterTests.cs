@@ -9,7 +9,7 @@ public class RustScipImporterTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "DemoRust",
+        RepositoryName = "DemoRust",
         RootPath = "/repo"
     };
 
@@ -338,7 +338,7 @@ public class RustScipImporterTests
                 }
                 """;
 
-            var result = ScipJsonImporter.Import(json, new ExtractorContext { ProjectName = "DemoRust", RootPath = root });
+            var result = ScipJsonImporter.Import(json, new ExtractorContext { RepositoryName = "DemoRust", RootPath = root });
 
             string? Abi(string name) => result.Nodes.Single(node => node.Name == name)
                 .Properties.GetValueOrDefault(CodeGraph.Services.Pipeline.CallLanguages.AbiProperty)?.ToString();
@@ -397,7 +397,7 @@ public class RustScipImporterTests
                 }
                 """;
 
-            var node = ScipJsonImporter.Import(json, new ExtractorContext { ProjectName = "DemoRust", RootPath = root })
+            var node = ScipJsonImporter.Import(json, new ExtractorContext { RepositoryName = "DemoRust", RootPath = root })
                 .Nodes.Single(node => node.Name == "open");
 
             node.Properties[CodeGraph.Services.Pipeline.CallLanguages.AbiProperty].ShouldBe("Rust");

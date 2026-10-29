@@ -7,9 +7,9 @@ public sealed record ResolvedRepository(
     string? SourceGroup);
 
 /// <summary>
-/// A discovered project from a repository source provider.
+/// A discovered repository from a repository source provider.
 /// </summary>
-public record DiscoveredProject(
+public record DiscoveredRepository(
     int Id,
     string Name,
     string PathWithNamespace,
@@ -40,11 +40,11 @@ public interface IRepoProvider
     Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default);
 
     /// <summary>
-    /// Discovers all projects visible to the configured credentials, excluding configured groups.
+    /// Discovers all repositories visible to the configured credentials, excluding configured groups.
     /// </summary>
-    Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default);
+    Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default);
 
-    Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default);
+    Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default);
 }
 
 internal static class RepositoryIdentity

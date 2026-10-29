@@ -20,7 +20,7 @@ using Shouldly;
 
 namespace CodeGraph.Tests.Services;
 
-public class ProjectServiceTests
+public class RepositoryServiceTests
 {
     [Fact]
     public async Task ProcessRepository_FolderProviderCarriesCanonicalIdentityIntoTrustPolicy()
@@ -49,14 +49,14 @@ public class ProjectServiceTests
                     new LintResultCache(),
                     new DiagnosticDetailCache()));
             var provider = CreateFolderProvider(providerRoot);
-            var service = new ProjectService(
+            var service = new RepositoryService(
                 store,
                 new RecordingBatchAnalysisService(store),
                 new NoOpMessageBus(),
                 provider,
                 pipeline,
                 options,
-                NullLogger<ProjectService>.Instance);
+                NullLogger<RepositoryService>.Instance);
 
             await service.ProcessRepository(new ProcessRepository
             {
@@ -101,14 +101,14 @@ public class ProjectServiceTests
                     NullLogger<SolutionAnalyzer>.Instance,
                     new LintResultCache(),
                     new DiagnosticDetailCache()));
-            var service = new ProjectService(
+            var service = new RepositoryService(
                 store,
                 new RecordingBatchAnalysisService(store),
                 new NoOpMessageBus(),
                 CreateFolderProvider(providerRoot),
                 pipeline,
                 options,
-                NullLogger<ProjectService>.Instance);
+                NullLogger<RepositoryService>.Instance);
 
             var exception = await Should.ThrowAsync<InvalidOperationException>(() =>
                 service.ProcessRepository(new ProcessRepository
@@ -150,21 +150,21 @@ public class ProjectServiceTests
                 options,
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
-            await pipeline.IndexProjectAsync("SceneWorks", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("SceneWorks", rootPath, ct: CancellationToken.None);
 
             File.Delete(stalePath);
             await File.WriteAllTextAsync(Path.Combine(rootPath, "main.rs"), "pub fn axum_sidecar() {}\n");
 
             var analysis = new RecordingBatchAnalysisService(store);
             var bus = new RecordingMessageBus();
-            var service = new ProjectService(
+            var service = new RepositoryService(
                 store,
                 analysis,
                 bus,
                 new FixedRepoProvider(rootPath),
                 pipeline,
                 options,
-                NullLogger<ProjectService>.Instance);
+                NullLogger<RepositoryService>.Instance);
 
             var responses = await Task.WhenAll(
                 service.ReAnalyzeRepository("SceneWorks"),
@@ -195,16 +195,16 @@ public class ProjectServiceTests
     }
 
     [Fact]
-    public async Task ProjectIndexingLock_SerializesAcrossStoreInstances()
+    public async Task RepositoryIndexingLock_SerializesAcrossStoreInstances()
     {
         var firstStore = new InMemoryGraphStore();
         var secondStore = new InMemoryGraphStore();
-        var firstLock = await firstStore.AcquireProjectIndexingLockAsync("SharedRepo");
+        var firstLock = await firstStore.AcquireRepositoryIndexingLockAsync("SharedRepo");
 
         var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondTask = Task.Run(async () =>
         {
-            await using var secondLock = await secondStore.AcquireProjectIndexingLockAsync("SharedRepo");
+            await using var secondLock = await secondStore.AcquireRepositoryIndexingLockAsync("SharedRepo");
             secondEntered.SetResult();
         });
 
@@ -457,13 +457,13 @@ public class ProjectServiceTests
             {
                 Name = "inference", RepoUrl = rootPath, ShouldIndex = true, SkipIfUpToDate = true
             };
-            ProjectService Service() => CreateService(store, extractor, rootPath, maxConsecutiveFailures: 2, bus, analysis: analysis);
+            RepositoryService Service() => CreateService(store, extractor, rootPath, maxConsecutiveFailures: 2, bus, analysis: analysis);
 
             await Service().ProcessRepository(routine);
             await store.SetVitalsVersionAsync("inference", VitalsAnalyzer.Version - 1);
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {
-                Project = "inference", OverallHealth = 6.0, ComputedAt = DateTime.UtcNow.AddDays(-1)
+                Repository = "inference", OverallHealth = 6.0, ComputedAt = DateTime.UtcNow.AddDays(-1)
             });
 
             for (var attempt = 1; attempt <= 2; attempt++)
@@ -517,10 +517,10 @@ public class ProjectServiceTests
     public async Task PostIndexConsumer_BlendsSecurityOnlyIntoSummariesWrittenByThisRun(bool vitalsRefreshOnly, string vitals)
     {
         var store = new InMemoryGraphStore();
-        await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "inference", LastCommitSha = "abc", Status = "idle" });
+        await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = "inference", LastCommitSha = "abc", Status = "idle" });
         await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
         {
-            Project = "inference", DotnetProject = "Old", OverallHealth = 6.0, ComputedAt = DateTime.UtcNow.AddDays(-1)
+            Repository = "inference", DotnetProject = "Old", OverallHealth = 6.0, ComputedAt = DateTime.UtcNow.AddDays(-1)
         });
         var message = new RepositoryIndexingCompleted
         {
@@ -667,26 +667,26 @@ public class ProjectServiceTests
 
     private sealed class FailingVitalsAnalyzer : IVitalsAnalyzer
     {
-        public Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default) =>
+        public Task ComputeMetricsAsync(string repositoryName, string repoPath, CancellationToken ct = default) =>
             throw new IOException("simulated: git history could not be read");
 
-        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default) => Task.CompletedTask;
+        public Task AnalyzeHealthAsync(string repositoryName, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     /// <summary>Writes one fresh repository-level summary (health 4.0), like a real vitals run.</summary>
     private sealed class SummaryWritingVitalsAnalyzer(IGraphStore store, bool fail) : IVitalsAnalyzer
     {
-        public async Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
+        public async Task ComputeMetricsAsync(string repositoryName, string repoPath, CancellationToken ct = default)
         {
             await store.UpsertProjectHealthSummaryAsync(new ProjectHealthSummaryEntity
             {
-                Project = projectName, OverallHealth = 4.0, ComputedAt = DateTime.UtcNow
+                Repository = repositoryName, OverallHealth = 4.0, ComputedAt = DateTime.UtcNow
             });
             if (fail)
                 throw new IOException("simulated: failed after writing the repository summary");
         }
 
-        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default) => Task.CompletedTask;
+        public Task AnalyzeHealthAsync(string repositoryName, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     /// <summary>A sync that does not want vitals never triggers a vitals-only refresh.</summary>
@@ -726,7 +726,7 @@ public class ProjectServiceTests
 
     private sealed class NoLintRunner : ILintRunner
     {
-        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default) =>
+        public Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
     }
 
@@ -735,7 +735,7 @@ public class ProjectServiceTests
         private int _scans;
         public int Scans => _scans;
 
-        public Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default)
+        public Task<SecurityScanResult> ScanAsync(string repositoryName, string repoPath, CancellationToken ct = default)
         {
             Interlocked.Increment(ref _scans);
             return Task.FromResult(new SecurityScanResult(10, 0, 0, 0, 0, []));
@@ -821,7 +821,7 @@ public class ProjectServiceTests
         public void StopApplication() => _stopping.Cancel();
     }
 
-    private static ProjectService CreateService(
+    private static RepositoryService CreateService(
         InMemoryGraphStore store, ICodeExtractor extractor, string rootPath, int maxConsecutiveFailures,
         IMessageBus? messageBus = null, Microsoft.Extensions.Hosting.IHostApplicationLifetime? hostLifetime = null,
         IBatchAnalysisService? analysis = null)
@@ -832,7 +832,7 @@ public class ProjectServiceTests
             MaxParallelRepos = 1,
             MaxConsecutiveIndexFailures = maxConsecutiveFailures
         });
-        return new ProjectService(
+        return new RepositoryService(
             store,
             analysis ?? new RecordingBatchAnalysisService(store),
             messageBus ?? new NoOpMessageBus(),
@@ -840,7 +840,7 @@ public class ProjectServiceTests
             new IndexingPipeline(store, [extractor], options, new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance),
             options,
-            NullLogger<ProjectService>.Instance,
+            NullLogger<RepositoryService>.Instance,
             hostLifetime);
     }
 
@@ -909,10 +909,10 @@ public class ProjectServiceTests
                 [
                     new GraphNode
                     {
-                        Project = context.ProjectName,
+                        Repository = context.RepositoryName,
                         Label = NodeLabel.Class,
                         Name = name,
-                        QualifiedName = $"{context.ProjectName}.{name}",
+                        QualifiedName = $"{context.RepositoryName}.{name}",
                         FilePath = Path.GetRelativePath(context.RootPath, filePath),
                         StartLine = 1,
                         EndLine = 1
@@ -941,10 +941,10 @@ public class ProjectServiceTests
                 [
                     new GraphNode
                     {
-                        Project = context.ProjectName,
+                        Repository = context.RepositoryName,
                         Label = NodeLabel.Class,
                         Name = name,
-                        QualifiedName = $"{context.ProjectName}.{name}",
+                        QualifiedName = $"{context.RepositoryName}.{name}",
                         FilePath = relativePath,
                         StartLine = 1,
                         EndLine = 1
@@ -992,13 +992,13 @@ public class ProjectServiceTests
             string? repoUrl,
             CancellationToken ct = default) => Task.FromResult(rootPath);
 
-        public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default) =>
-            Task.FromResult(new List<DiscoveredProject>());
+        public Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default) =>
+            Task.FromResult(new List<DiscoveredRepository>());
 
-        public Task<List<DiscoveredProject>> SearchProjectsAsync(
+        public Task<List<DiscoveredRepository>> SearchRepositoriesAsync(
             string searchTerm,
             CancellationToken ct = default) =>
-            Task.FromResult(new List<DiscoveredProject>());
+            Task.FromResult(new List<DiscoveredRepository>());
     }
 
     private sealed class RecordingMessageBus : IMessageBus
@@ -1023,7 +1023,7 @@ public class ProjectServiceTests
         public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) =>
             Task.FromResult<string?>(null);
 
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) =>
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) =>
             Task.FromResult(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() =>
@@ -1053,7 +1053,7 @@ public class ProjectServiceTests
             CancellationToken ct = default)
         {
             SubmissionCount++;
-            NodesAtSubmission = await store.GetAllNodesByProjectAsync(repoName);
+            NodesAtSubmission = await store.GetAllNodesByRepositoryAsync(repoName);
             await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
             {
                 Repo = repoName,

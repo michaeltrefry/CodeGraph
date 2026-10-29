@@ -3,15 +3,15 @@ using CodeGraph.Models;
 namespace CodeGraph.Data;
 
 /// <summary>
-/// Storage operations for AI analysis results: summaries, project analyses,
+/// Storage operations for AI analysis results: summaries, repository analyses,
 /// batch tracking, node analysis, and graph context queries for prompt building.
 /// </summary>
 public interface IAnalysisStore
 {
     // Summaries
-    Task UpsertRepositorySummaryAsync(string project, string summary,
+    Task UpsertRepositorySummaryAsync(string repository, string summary,
         ConfidenceLevel confidence, string sourceHash, string? modelUsed = null);
-    Task<ProjectSummary?> GetRepositorySummaryAsync(string project);
+    Task<RepositorySummary?> GetRepositorySummaryAsync(string repository);
 
     // Per-project analyses
     Task UpsertProjectAnalysisAsync(string repo, StoredProjectAnalysis analysis);
@@ -34,40 +34,40 @@ public interface IAnalysisStore
     Task<Dictionary<long, StoredNodeAnalysis>> GetNodeAnalysesBatchAsync(IReadOnlyList<long> nodeIds);
 
     // Graph context for batch prompt building
-    Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string project);
+    Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string repository);
     Task<IReadOnlyList<NodeEntity>> GetChildNodesAsync(long parentNodeId);
     Task<IReadOnlyList<EdgeEntity>> GetOutboundEdgesAsync(long nodeId);
     Task<IReadOnlyList<EdgeEntity>> GetInboundEdgesAsync(long nodeId);
-    Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project);
-    Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project);
+    Task<IReadOnlyList<NodeEntity>> GetAllNodesByRepositoryAsync(string repository);
+    Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByRepositoryAsync(string repository);
     Task<IReadOnlyList<EdgeEntity>> GetEdgesForNodesAsync(IReadOnlyList<long> nodeIds);
 
     /// <summary>
-    /// Edges whose source or target node belongs to <paramref name="project"/>, without their
+    /// Edges whose source or target node belongs to <paramref name="repository"/>, without their
     /// properties (<see cref="EdgeEntity.Properties"/> is null). Same edge set as
-    /// <see cref="GetEdgesForNodesAsync"/> over every node of the project, at a fraction of the memory.
+    /// <see cref="GetEdgesForNodesAsync"/> over every node of the repository, at a fraction of the memory.
     /// </summary>
-    async Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForProjectAsync(string project)
+    async Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForRepositoryAsync(string repository)
     {
-        var nodeIds = (await GetAllNodesByProjectAsync(project)).Select(node => node.Id).ToList();
+        var nodeIds = (await GetAllNodesByRepositoryAsync(repository)).Select(node => node.Id).ToList();
         return (await GetEdgesForNodesAsync(nodeIds))
             .Select(edge => new EdgeEntity
             {
-                Id = edge.Id, Project = edge.Project, SourceId = edge.SourceId, TargetId = edge.TargetId, Type = edge.Type
+                Id = edge.Id, Repository = edge.Repository, SourceId = edge.SourceId, TargetId = edge.TargetId, Type = edge.Type
             })
             .ToList();
     }
 
     /// <summary>
-    /// The project's File nodes plus every node flagged do-not-trust, without properties
+    /// The repository's File nodes plus every node flagged do-not-trust, without properties
     /// (<see cref="NodeEntity.Properties"/> is null) — what vitals needs, not the whole graph.
     /// </summary>
-    async Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string project) =>
-        (await GetAllNodesByProjectAsync(project))
+    async Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string repository) =>
+        (await GetAllNodesByRepositoryAsync(repository))
             .Where(node => node.Label == "File" || node.DoNotTrust)
             .Select(node => new NodeEntity
             {
-                Id = node.Id, Project = node.Project, DotnetProject = node.DotnetProject, Label = node.Label,
+                Id = node.Id, Repository = node.Repository, DotnetProject = node.DotnetProject, Label = node.Label,
                 Name = node.Name, QualifiedName = node.QualifiedName, FilePath = node.FilePath,
                 StartLine = node.StartLine, EndLine = node.EndLine, DoNotTrust = node.DoNotTrust
             })

@@ -39,7 +39,7 @@ public class PostIndexConsumerTests
                 var store = new PoisonableGraphStore(failures);
                 store.AddNode(new GraphNode
                 {
-                    Project = Repo, Label = NodeLabel.Class, Name = "Cli", QualifiedName = "Cli"
+                    Repository = Repo, Label = NodeLabel.Class, Name = "Cli", QualifiedName = "Cli"
                 });
                 return store;
             })
@@ -134,7 +134,7 @@ public class PostIndexConsumerTests
                 var store = new InMemoryGraphStore();
                 store.AddNode(new GraphNode
                 {
-                    Project = Repo, Label = NodeLabel.Class, Name = "Cli", QualifiedName = "Cli"
+                    Repository = Repo, Label = NodeLabel.Class, Name = "Cli", QualifiedName = "Cli"
                 });
                 return store;
             })
@@ -168,13 +168,13 @@ public class PostIndexConsumerTests
 
     private sealed class RecordingVitalsAnalyzer(ConcurrentQueue<string> calls) : IVitalsAnalyzer
     {
-        public Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
+        public Task ComputeMetricsAsync(string repositoryName, string repoPath, CancellationToken ct = default)
         {
             calls.Enqueue("metrics");
             return Task.CompletedTask;
         }
 
-        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default)
+        public Task AnalyzeHealthAsync(string repositoryName, CancellationToken ct = default)
         {
             calls.Enqueue("health");
             return Task.CompletedTask;
@@ -185,16 +185,16 @@ public class PostIndexConsumerTests
     {
         public bool Poisoned { get; set; }
 
-        public override Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string project)
+        public override Task<IReadOnlyList<ProjectHealthSummaryEntity>> GetProjectHealthSummariesAsync(string repository)
         {
             ThrowIfPoisoned(nameof(GetProjectHealthSummariesAsync));
-            return base.GetProjectHealthSummariesAsync(project);
+            return base.GetProjectHealthSummariesAsync(repository);
         }
 
-        public override Task<Dictionary<string, int>> GetNodeCountsByLabelForProjectAsync(string project)
+        public override Task<Dictionary<string, int>> GetNodeCountsByLabelForRepositoryAsync(string repository)
         {
-            ThrowIfPoisoned(nameof(GetNodeCountsByLabelForProjectAsync));
-            return base.GetNodeCountsByLabelForProjectAsync(project);
+            ThrowIfPoisoned(nameof(GetNodeCountsByLabelForRepositoryAsync));
+            return base.GetNodeCountsByLabelForRepositoryAsync(repository);
         }
 
         private void ThrowIfPoisoned(string operation)
@@ -209,18 +209,18 @@ public class PostIndexConsumerTests
 
     private sealed class ContextPoisoningVitalsAnalyzer(IGraphStore store) : IVitalsAnalyzer
     {
-        public Task ComputeMetricsAsync(string projectName, string repoPath, CancellationToken ct = default)
+        public Task ComputeMetricsAsync(string repositoryName, string repoPath, CancellationToken ct = default)
         {
             ((PoisonableGraphStore)store).Poisoned = true;
             throw new OutOfMemoryException("simulated: allocation failed while a query was in flight");
         }
 
-        public Task AnalyzeHealthAsync(string projectName, CancellationToken ct = default) => Task.CompletedTask;
+        public Task AnalyzeHealthAsync(string repositoryName, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class CleanSecurityAnalyzer : ISecurityAnalyzer
     {
-        public Task<SecurityScanResult> ScanAsync(string projectName, string repoPath, CancellationToken ct = default) =>
+        public Task<SecurityScanResult> ScanAsync(string repositoryName, string repoPath, CancellationToken ct = default) =>
             Task.FromResult(new SecurityScanResult(10, 0, 0, 0, 0, []));
     }
 

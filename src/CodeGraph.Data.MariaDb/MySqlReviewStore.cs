@@ -7,14 +7,14 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
 {
     private static readonly string[] StartedStatuses = ["running", "completed", "failed"];
 
-    public async Task DeleteProjectDiagnosticsAsync(string project)
+    public async Task DeleteProjectDiagnosticsAsync(string repository)
     {
         await db.ProjectDiagnostics
-            .Where(d => d.Project == project)
+            .Where(d => d.Repository == repository)
             .ExecuteDeleteAsync();
     }
 
-    public async Task UpsertProjectDiagnosticsBatchAsync(string project, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+    public async Task UpsertProjectDiagnosticsBatchAsync(string repository, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
     {
         if (diagnostics.Count == 0)
         {
@@ -23,7 +23,7 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
 
         foreach (var diagnostic in diagnostics)
         {
-            diagnostic.Project = project;
+            diagnostic.Repository = repository;
             diagnostic.DiagnosticKey = ProjectDiagnosticKey.EnsureWithinLimit(diagnostic.DiagnosticKey);
         }
 
@@ -36,9 +36,9 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
         if (keys.Count > 0)
         {
             await db.ProjectDiagnostics
-                .Where(d => d.Project == project && keys.Contains(d.DiagnosticKey))
+                .Where(d => d.Repository == repository && keys.Contains(d.DiagnosticKey))
                 .ExecuteDeleteAsync();
-            DetachTrackedProjectDiagnostics(project, keys);
+            DetachTrackedProjectDiagnostics(repository, keys);
         }
 
         db.ProjectDiagnostics.AddRange(diagnostics);
@@ -46,10 +46,10 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
     }
 
     public async Task<IReadOnlyList<ProjectDiagnosticEntity>> GetProjectDiagnosticsAsync(
-        string project, string? dotnetProject = null)
+        string repository, string? dotnetProject = null)
     {
         var query = db.ProjectDiagnostics.AsNoTracking()
-            .Where(d => d.Project == project);
+            .Where(d => d.Repository == repository);
 
         if (dotnetProject is not null)
         {
@@ -134,9 +134,9 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
         => await db.ProjectReviewRuns.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == reviewRunId);
 
-    public async Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string project, string projectName)
+    public async Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string repository, string projectName)
         => await db.ProjectReviewRuns.AsNoTracking()
-            .Where(r => r.Project == project && r.ProjectName == projectName)
+            .Where(r => r.Repository == repository && r.ProjectName == projectName)
             .OrderByDescending(r => r.CreatedAt)
             .ThenByDescending(r => r.Id)
             .FirstOrDefaultAsync();
@@ -282,10 +282,10 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
             .ThenBy(s => s.Id)
             .ToListAsync();
 
-    private void DetachTrackedProjectDiagnostics(string project, IReadOnlyCollection<string> diagnosticKeys)
+    private void DetachTrackedProjectDiagnostics(string repository, IReadOnlyCollection<string> diagnosticKeys)
     {
         var entries = db.ChangeTracker.Entries<ProjectDiagnosticEntity>()
-            .Where(e => e.Entity.Project == project && diagnosticKeys.Contains(e.Entity.DiagnosticKey))
+            .Where(e => e.Entity.Repository == repository && diagnosticKeys.Contains(e.Entity.DiagnosticKey))
             .ToList();
 
         foreach (var entry in entries)

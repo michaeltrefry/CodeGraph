@@ -21,7 +21,7 @@ internal sealed class FakeRustToolchain : IDisposable
     public string ManifestPath => Path.Combine(RootPath, "Cargo.toml");
     public string ToolDirectory => Path.Combine(_root, "tools");
     public string CargoLogPath => Path.Combine(_root, "cargo.log");
-    public string ProjectJsonDirectory => Path.Combine(_root, "project-json");
+    public string ProjectJsonDirectory => Path.Combine(_root, "repository-json");
 
     /// <summary>Created by the fake rust-analyzer once a slow crate's group is recorded and sleeping.</summary>
     public string SlowAnalyzerStartedPath => Path.Combine(_root, "slow-analyzer-started");

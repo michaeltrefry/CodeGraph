@@ -28,11 +28,11 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
 
     /// <summary>
     /// The per-package rule on its own (no whole-folder signal beside packages/): packages.config
-    /// lives in the project directory and each <c>&lt;Id&gt;.&lt;Version&gt;</c> directory holds its
+    /// lives in the repository directory and each <c>&lt;Id&gt;.&lt;Version&gt;</c> directory holds its
     /// own <c>.nupkg</c>. A solution beside packages/ would skip the whole folder (see below).
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_RestoredNuGetPackageDirectories_AreExcluded()
+    public async Task IndexRepositoryAsync_RestoredNuGetPackageDirectories_AreExcluded()
     {
         Write("src/App/packages.config", """<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>""");
         Write("src/App/Program.cs", "class Program {}\n");
@@ -51,7 +51,7 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
     /// <summary>
     /// Whole-folder signals. The .NET solution signals (.sln/.slnx, NuGet.Config, .nuget/) cover a
     /// committed restore folder whose *.nupkg files are gitignored (NuGet 3+ with packages.config in
-    /// the project directories and no repositories.config).
+    /// the repository directories and no repositories.config).
     /// </summary>
     [Theory]
     [InlineData("packages.config")]
@@ -64,7 +64,7 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
     [InlineData("nuget.config")]
     [InlineData(".nuget/NuGet.Config")]
     [InlineData(".nuget/packages.config")]
-    public async Task IndexProjectAsync_RestoreFolderMarkedAsAWhole_IsExcluded(string marker)
+    public async Task IndexRepositoryAsync_RestoreFolderMarkedAsAWhole_IsExcluded(string marker)
     {
         Write(marker, "<repositories />\n");
         Write("App/Program.cs", "class Program {}\n");
@@ -78,7 +78,7 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
 
     /// <summary>Paket restores into packages/&lt;Id&gt;/ holding &lt;Id&gt;.&lt;Version&gt;.nupkg.</summary>
     [Fact]
-    public async Task IndexProjectAsync_PaketRestoreFolder_IsExcluded()
+    public async Task IndexRepositoryAsync_PaketRestoreFolder_IsExcluded()
     {
         Write("paket.dependencies", "source https://api.nuget.org/v3/index.json\nnuget FSharp.Core\n");
         Write("src/App/Program.cs", "class Program {}\n");
@@ -92,7 +92,7 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
 
     /// <summary>Visual Studio restores into Packages/ as well; its package directories are skipped.</summary>
     [Fact]
-    public async Task IndexProjectAsync_CapitalisedRestoreFolder_SkipsItsPackageDirectories()
+    public async Task IndexRepositoryAsync_CapitalisedRestoreFolder_SkipsItsPackageDirectories()
     {
         Write("src/App/Program.cs", "class Program {}\n");
         Write("Packages/jQuery.3.4.1/jQuery.3.4.1.nupkg", "nupkg");
@@ -113,7 +113,7 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task IndexProjectAsync_SolutionBesideAJsMonorepo_KeepsTheWorkspacePackages(bool withRestoredPackage)
+    public async Task IndexRepositoryAsync_SolutionBesideAJsMonorepo_KeepsTheWorkspacePackages(bool withRestoredPackage)
     {
         Write("Tools.sln", "Microsoft Visual Studio Solution File\n");
         Write("package.json", """{ "name": "mono", "workspaces": ["packages/*"] }""");
@@ -134,7 +134,7 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_SwiftPackagesDirectory_IsIndexedAndLinksTheLocalPackage()
+    public async Task IndexRepositoryAsync_SwiftPackagesDirectory_IsIndexedAndLinksTheLocalPackage()
     {
         Write("Package.swift", """
             // swift-tools-version:5.9
@@ -216,11 +216,11 @@ public class NuGetPackagesDirectoryPipelineTests : IDisposable
             && pattern.Contains("package.json"));
     }
 
-    private async Task<(InMemoryGraphStore Store, IndexingPipeline Pipeline)> IndexAsync(string project = "Legacy")
+    private async Task<(InMemoryGraphStore Store, IndexingPipeline Pipeline)> IndexAsync(string repository = "Legacy")
     {
         var store = new InMemoryGraphStore();
         var pipeline = CreatePipeline(store);
-        await pipeline.IndexProjectAsync(project, _rootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync(repository, _rootPath, ct: CancellationToken.None);
         return (store, pipeline);
     }
 

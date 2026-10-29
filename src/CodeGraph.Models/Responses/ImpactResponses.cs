@@ -33,7 +33,7 @@ public record AffectedNode(
     string Name,
     string QualifiedName,
     string Label,
-    string Project,
+    string Repository,
     string? DotnetProject,
     string? FilePath,
     int Depth,
@@ -43,8 +43,8 @@ public record AffectedNode(
     bool LowConfidence = false);
 
 public record CrossRepoImpact(
-    string SourceProject,
-    string TargetProject,
+    string SourceRepository,
+    string TargetRepository,
     string EdgeType,
     int AffectedNodeCount);
 
@@ -55,7 +55,7 @@ public record ImpactSummary(
     int HighCount,
     int MediumCount,
     int LowCount,
-    IReadOnlyList<string> AffectedProjects,
+    IReadOnlyList<string> AffectedRepositories,
     int LowConfidenceCount = 0);
 
 public enum RiskLevel

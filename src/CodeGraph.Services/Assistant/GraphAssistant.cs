@@ -523,8 +523,8 @@ public partial class GraphAssistant(
         return name switch
         {
             "search_graph" => await SearchGraphAsync(input),
-            "list_projects" => await ListProjectsAsync(),
-            "search_projects" => await SearchProjectsAsync(input),
+            "list_repositories" => await ListRepositoriesAsync(),
+            "search_repositories" => await SearchRepositoriesAsync(input),
             "get_service_summary" => await GetServiceSummaryAsync(input),
             "trace_call_path" => await TraceCallPathAsync(input),
             "trace_data_lineage" => await TraceDataLineageAsync(input),
@@ -532,7 +532,7 @@ public partial class GraphAssistant(
             "find_publishers" => await FindPublishersAsync(input),
             "get_architecture" => await GetArchitectureAsync(input),
             "find_archival_candidates" => await FindArchivalCandidatesAsync(),
-            "get_project_health" => await GetProjectHealthAsync(input),
+            "get_repository_health" => await GetRepositoryHealthAsync(input),
             "get_fleet_health" => await GetFleetHealthAsync(input),
             "read_node_source" => await ReadNodeSourceAsync(input),
             "get_code_snippet" => await GetCodeSnippetAsync(input),

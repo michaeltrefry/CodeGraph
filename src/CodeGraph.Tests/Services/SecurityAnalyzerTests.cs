@@ -496,13 +496,13 @@ public class SecurityAnalyzerTests
         };
 
         var result = SecurityAnalyzer.IsTestProjectFile(
-            "src/MyProject/MyProject.csproj",
+            "src/MyRepository/MyRepository.csproj",
             """
-            <Project>
+            <Repository>
               <PropertyGroup>
                 <IsTestProject>true</IsTestProject>
               </PropertyGroup>
-            </Project>
+            </Repository>
             """,
             refs);
 
@@ -519,8 +519,8 @@ public class SecurityAnalyzerTests
         };
 
         var result = SecurityAnalyzer.IsTestProjectFile(
-            "src/MyProject/MyProject.csproj",
-            "<Project />",
+            "src/MyRepository/MyRepository.csproj",
+            "<Repository />",
             refs);
 
         result.ShouldBeTrue();
@@ -913,7 +913,7 @@ public class SecurityAnalyzerTests
 
         await ScanAsync();
 
-        var summary = await _store.GetProjectSecuritySummaryAsync("TestProject");
+        var summary = await _store.GetRepositorySecuritySummaryAsync("TestProject");
         summary.ShouldNotBeNull();
         summary.SecurityScore.ShouldBeLessThan(10.0);
         summary.CriticalCount.ShouldBeGreaterThan(0);

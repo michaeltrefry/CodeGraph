@@ -131,7 +131,7 @@ public class IndexedLanguageCatalogTests
             var pipeline = new IndexingPipeline(store, extractors,
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }), new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
-            await pipeline.IndexProjectAsync("Parity", root, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("Parity", root, ct: CancellationToken.None);
             var discovered = (await store.GetFileHashesAsync("Parity")).Keys.ToHashSet(StringComparer.Ordinal);
             // A replacing run records the hash of every discovered file, extracted or not, so it
             // shows discovery itself rather than discovery filtered by extraction dispatch.
@@ -139,7 +139,7 @@ public class IndexedLanguageCatalogTests
             await new IndexingPipeline(replaceStore, extractors,
                     Options.Create(new IndexingOptions { MaxParallelFiles = 1 }), new LocalFileSystem(),
                     NullLogger<IndexingPipeline>.Instance)
-                .IndexProjectAsync("Replace", root, replaceExistingGraph: true, ct: CancellationToken.None);
+                .IndexRepositoryAsync("Replace", root, replaceExistingGraph: true, ct: CancellationToken.None);
             var discoveredByReplace = (await replaceStore.GetFileHashesAsync("Replace")).Keys.ToHashSet(StringComparer.Ordinal);
 
             // A change list (incremental and overlay runs) names files without discovery's filter:
@@ -151,7 +151,7 @@ public class IndexedLanguageCatalogTests
             var changeListPipeline = new IndexingPipeline(new InMemoryGraphStore(), recording,
                 Options.Create(new IndexingOptions { MaxParallelFiles = 1 }), new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
-            await changeListPipeline.IndexProjectAsync("ChangeList", root, changedFilesOnly: files, ct: CancellationToken.None);
+            await changeListPipeline.IndexRepositoryAsync("ChangeList", root, changedFilesOnly: files, ct: CancellationToken.None);
             var extractedFiles = extracted
                 .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
                 .ToHashSet(StringComparer.Ordinal);

@@ -56,7 +56,7 @@ public class GraphBuffer
     /// Resolve pending edges: map QN references to node IDs.
     /// </summary>
     public IReadOnlyList<GraphEdge> ResolveEdges(
-        string project, Dictionary<string, long> qnToId, ILogger? logger = null)
+        string repository, Dictionary<string, long> qnToId, ILogger? logger = null)
     {
         var resolved = new List<GraphEdge>();
         var droppedByType = new Dictionary<EdgeType, int>();
@@ -64,14 +64,14 @@ public class GraphBuffer
 
         foreach (var pending in _pendingEdges)
         {
-            var hasSource = qnToId.TryGetValue(GraphNodeKey.Create(project, pending.SourceQN), out var sourceId);
-            var hasTarget = qnToId.TryGetValue(GraphNodeKey.Create(project, pending.TargetQN), out var targetId);
+            var hasSource = qnToId.TryGetValue(GraphNodeKey.Create(repository, pending.SourceQN), out var sourceId);
+            var hasTarget = qnToId.TryGetValue(GraphNodeKey.Create(repository, pending.TargetQN), out var targetId);
 
             if (hasSource && hasTarget)
             {
                 resolved.Add(new GraphEdge
                 {
-                    Project = project,
+                    Repository = repository,
                     SourceId = sourceId,
                     TargetId = targetId,
                     Type = pending.Type,

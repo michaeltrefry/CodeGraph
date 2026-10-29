@@ -18,11 +18,11 @@ namespace CodeGraph.Tests.Extractors;
 /// </summary>
 public class SwiftTypeSemanticsTests
 {
-    private const string Project = "SwiftRepo";
+    private const string Repository = "SwiftRepo";
 
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 
@@ -347,8 +347,8 @@ public class SwiftTypeSemanticsTests
         }
         """;
 
-    private const string MQ = $"{Project}:Sources/Models.swift";
-    private const string EQ = $"{Project}:Sources/Extras.swift";
+    private const string MQ = $"{Repository}:Sources/Models.swift";
+    private const string EQ = $"{Repository}:Sources/Extras.swift";
 
     private static (string Source, string Target, EdgeType Type)[] SquareEdges(string square) =>
     [
@@ -451,12 +451,12 @@ public class SwiftTypeSemanticsTests
         public ILogger<IndexingPipeline>? Logger { get; set; }
 
         public Task IndexAsync(params string[] changedFiles) =>
-            Pipeline(Store, Logger).IndexProjectAsync(Project, root,
+            Pipeline(Store, Logger).IndexRepositoryAsync(Repository, root,
                 changedFilesOnly: changedFiles.Length == 0 ? null : changedFiles,
                 ct: CancellationToken.None);
 
         public Task<BranchOverlaySlice> OverlayAsync(IReadOnlyCollection<string> changed, IReadOnlyCollection<string> removed) =>
-            Pipeline(Store).ExtractOverlayAsync(Project, root, changed, removed, [], CancellationToken.None);
+            Pipeline(Store).ExtractOverlayAsync(Repository, root, changed, removed, [], CancellationToken.None);
 
         public long Id(string qualifiedName) => Store.Nodes.Single(node => node.QualifiedName == qualifiedName).Id;
     }
@@ -483,7 +483,7 @@ public class SwiftTypeSemanticsTests
     }
 
     [Fact]
-    public Task IndexProject_CrossFileExtensionMembersAndRelationsResolveToTheRealTypes() =>
+    public Task IndexRepository_CrossFileExtensionMembersAndRelationsResolveToTheRealTypes() =>
         WithRepoAsync(async repo =>
         {
             await repo.IndexAsync();
@@ -500,7 +500,7 @@ public class SwiftTypeSemanticsTests
         });
 
     [Fact]
-    public Task IndexProject_IncrementalRuns_KeepEveryBindingExact() =>
+    public Task IndexRepository_IncrementalRuns_KeepEveryBindingExact() =>
         WithRepoAsync(async repo =>
         {
             await repo.IndexAsync();
@@ -519,7 +519,7 @@ public class SwiftTypeSemanticsTests
             await repo.Write("Sources/Models.swift", ModelsSource.Replace(SquareDeclaration, ""))
                 .Write("Sources/Square.swift", SquareDeclaration + "\n")
                 .IndexAsync();
-            ShouldHaveExactly(repo.Store, BaselineEdges($"{Project}:Sources/Square.swift#type:Square"));
+            ShouldHaveExactly(repo.Store, BaselineEdges($"{Repository}:Sources/Square.swift#type:Square"));
 
             // The type is deleted: its members and conformance fall back to an external stub.
             await repo.Delete("Sources/Square.swift").IndexAsync("Sources/Square.swift");
@@ -529,19 +529,19 @@ public class SwiftTypeSemanticsTests
             // It comes back, then is deleted again and noticed by a routine full scan
             // (no change list): the same fallback as a reported deletion.
             await repo.Write("Sources/Square.swift", SquareDeclaration + "\n").IndexAsync();
-            ShouldHaveExactly(repo.Store, BaselineEdges($"{Project}:Sources/Square.swift#type:Square"));
+            ShouldHaveExactly(repo.Store, BaselineEdges($"{Repository}:Sources/Square.swift#type:Square"));
             await repo.Delete("Sources/Square.swift").IndexAsync();
             ShouldHaveExactly(repo.Store, BaselineEdges("swift-external:Square"));
             Stubs(repo.Store)["swift-external:Square"].ShouldBe(NodeLabel.Class);
 
             // It comes back: bound again, and the stub is gone.
             await repo.Write("Sources/Square.swift", SquareDeclaration + "\n").IndexAsync();
-            ShouldHaveExactly(repo.Store, BaselineEdges($"{Project}:Sources/Square.swift#type:Square"));
+            ShouldHaveExactly(repo.Store, BaselineEdges($"{Repository}:Sources/Square.swift#type:Square"));
             Stubs(repo.Store).ShouldNotContainKey("swift-external:Square");
         });
 
     [Fact]
-    public Task IndexProject_ExtensionRemovedFromItsFile_TakesItsEdgesAndOrphanedStubAlong() =>
+    public Task IndexRepository_ExtensionRemovedFromItsFile_TakesItsEdgesAndOrphanedStubAlong() =>
         WithRepoAsync(async repo =>
         {
             await repo.IndexAsync();
@@ -557,31 +557,31 @@ public class SwiftTypeSemanticsTests
         });
 
     [Fact]
-    public Task IndexProject_TypeAddedLater_RebindsStubMembersAndRemovesTheStub() =>
+    public Task IndexRepository_TypeAddedLater_RebindsStubMembersAndRemovesTheStub() =>
         WithRepoAsync(async repo =>
         {
             await repo.Write("Sources/Ext.swift", "extension Square {\n    func doubled() {}\n}\n").IndexAsync();
-            const string member = $"{Project}:Sources/Ext.swift#extension:Square#method:doubled()";
+            const string member = $"{Repository}:Sources/Ext.swift#extension:Square#method:doubled()";
             ShouldHaveExactly(repo.Store, [("swift-external:Square", member, EdgeType.DEFINES_METHOD)]);
 
             await repo.Write("Sources/Square.swift", "struct Square {}\n").IndexAsync();
 
             ShouldHaveExactly(repo.Store,
-                [($"{Project}:Sources/Square.swift#type:Square", member, EdgeType.DEFINES_METHOD)]);
+                [($"{Repository}:Sources/Square.swift#type:Square", member, EdgeType.DEFINES_METHOD)]);
             repo.Store.Nodes.ShouldNotContain(node => node.QualifiedName == "swift-external:Square");
         }, baseline: false);
 
     [Fact]
-    public Task IndexProject_SupertypeDeclaredLater_TakesItsKind_AndTheGuessReturnsWhenItGoes() =>
+    public Task IndexRepository_SupertypeDeclaredLater_TakesItsKind_AndTheGuessReturnsWhenItGoes() =>
         WithRepoAsync(async repo =>
         {
-            const string sub = $"{Project}:Sources/Sub.swift#type:Sub";
+            const string sub = $"{Repository}:Sources/Sub.swift#type:Sub";
             await repo.Write("Sources/Sub.swift", "class Sub: Base {}\n").IndexAsync();
             ShouldHaveExactly(repo.Store, [(sub, "swift-external:Base", EdgeType.INHERITS)]);
 
             // Base turns out to be a protocol declared in the repository.
             await repo.Write("Sources/Base.swift", "protocol Base {}\n").IndexAsync();
-            ShouldHaveExactly(repo.Store, [(sub, $"{Project}:Sources/Base.swift#type:Base", EdgeType.IMPLEMENTS)]);
+            ShouldHaveExactly(repo.Store, [(sub, $"{Repository}:Sources/Base.swift#type:Base", EdgeType.IMPLEMENTS)]);
             repo.Store.Nodes.ShouldNotContain(node => node.QualifiedName == "swift-external:Base");
 
             // Base leaves the repository again: back to the name-based guess.
@@ -593,14 +593,14 @@ public class SwiftTypeSemanticsTests
         }, baseline: false);
 
     [Fact]
-    public Task IndexProject_AmbiguityAppearsAndResolves_MembersMoveBetweenFileAndType() =>
+    public Task IndexRepository_AmbiguityAppearsAndResolves_MembersMoveBetweenFileAndType() =>
         WithRepoAsync(async repo =>
         {
             await repo.IndexAsync();
 
             // A second top-level Square makes the extended type ambiguous.
             await repo.Write("Sources/Other.swift", "struct Square {}\n").IndexAsync();
-            const string extras = $"{Project}:Sources/Extras.swift";
+            const string extras = $"{Repository}:Sources/Extras.swift";
             (string, string, EdgeType)[] fallback =
             [
                 (extras, $"{EQ}#extension:Square#method:init(unit:Void)", EdgeType.DEFINES_METHOD),
@@ -612,7 +612,7 @@ public class SwiftTypeSemanticsTests
             (string, string, EdgeType)[] candidateConformances =
             [
                 ($"{MQ}#type:Square", $"{MQ}#type:Describable", EdgeType.IMPLEMENTS),
-                ($"{Project}:Sources/Other.swift#type:Square", $"{MQ}#type:Describable", EdgeType.IMPLEMENTS)
+                ($"{Repository}:Sources/Other.swift#type:Square", $"{MQ}#type:Describable", EdgeType.IMPLEMENTS)
             ];
             ShouldHaveExactly(repo.Store, fallback.Concat(candidateConformances).Concat(OtherExtrasEdges));
             foreach (var (source, target, type) in candidateConformances)
@@ -631,7 +631,7 @@ public class SwiftTypeSemanticsTests
         });
 
     [Fact]
-    public Task IndexProject_AmbiguousNames_AreReportedAsAWarningListingAtMostTwentyPaths() =>
+    public Task IndexRepository_AmbiguousNames_AreReportedAsAWarningListingAtMostTwentyPaths() =>
         WithRepoAsync(async repo =>
         {
             var names = Enumerable.Range(0, 22).Select(i => $"T{i:00}").ToList();
@@ -653,7 +653,7 @@ public class SwiftTypeSemanticsTests
         }, baseline: false);
 
     [Fact]
-    public Task IndexProject_UnqualifiedNamesBindOnlyToTopLevelTypes() =>
+    public Task IndexRepository_UnqualifiedNamesBindOnlyToTopLevelTypes() =>
         WithRepoAsync(async repo =>
         {
             await repo.Write("Sources/Feature.swift", "enum Feature {\n    struct View {}\n}\n")
@@ -663,17 +663,17 @@ public class SwiftTypeSemanticsTests
 
             ShouldHaveExactly(repo.Store,
             [
-                ("swift-external:View", $"{Project}:Sources/Card.swift#extension:View#method:card()", EdgeType.DEFINES_METHOD),
-                ($"{Project}:Sources/Home.swift#type:Home", "swift-external:View", EdgeType.IMPLEMENTS)
+                ("swift-external:View", $"{Repository}:Sources/Card.swift#extension:View#method:card()", EdgeType.DEFINES_METHOD),
+                ($"{Repository}:Sources/Home.swift#type:Home", "swift-external:View", EdgeType.IMPLEMENTS)
             ]);
             Stubs(repo.Store)["swift-external:View"].ShouldBe(NodeLabel.Interface);
         }, baseline: false);
 
     [Fact]
-    public Task IndexProject_QualifiedProtocolAndConstrainedExtensions_BindExactly() =>
+    public Task IndexRepository_QualifiedProtocolAndConstrainedExtensions_BindExactly() =>
         WithRepoAsync(async repo =>
         {
-            const string outer = $"{Project}:Sources/Outer.swift";
+            const string outer = $"{Repository}:Sources/Outer.swift";
             await repo.Write("Sources/Outer.swift", """
                     protocol Describable {}
                     protocol Greeter {
@@ -698,7 +698,7 @@ public class SwiftTypeSemanticsTests
                     """)
                 .IndexAsync();
 
-            const string ext = $"{Project}:Sources/Extensions.swift";
+            const string ext = $"{Repository}:Sources/Extensions.swift";
             ShouldHaveExactly(repo.Store,
             [
                 ($"{outer}#type:Outer#type:Inner", $"{ext}#extension:Outer.Inner#method:label()", EdgeType.DEFINES_METHOD),
@@ -711,7 +711,7 @@ public class SwiftTypeSemanticsTests
         }, baseline: false);
 
     [Fact]
-    public Task IndexProject_IncrementalRun_UsesBatchedLookups() =>
+    public Task IndexRepository_IncrementalRun_UsesBatchedLookups() =>
         WithRepoAsync(async repo =>
         {
             await repo.IndexAsync();
@@ -729,7 +729,7 @@ public class SwiftTypeSemanticsTests
                 ["FindEdgesByPropertyAsync"] = 3
             }, ignoreOrder: true);
             ShouldHaveExactly(repo.Store, BaselineEdges($"{MQ}#type:Square")
-                .Append(($"{Project}:Sources/More.swift#type:More", $"{MQ}#type:Describable", EdgeType.IMPLEMENTS)));
+                .Append(($"{Repository}:Sources/More.swift#type:More", $"{MQ}#type:Describable", EdgeType.IMPLEMENTS)));
         });
 
     // ── Overlays ────────────────────────────────────────────────────
@@ -738,7 +738,7 @@ public class SwiftTypeSemanticsTests
         Repo repo, BranchOverlaySlice slice, params (string Path, string Kind)[] files) =>
         OverlayGraphView.CreateAsync(
             repo.Store,
-            new BranchOverlayEntity { Id = 1, Project = Project, HeadSha = "head", BaseSha = "base" },
+            new BranchOverlayEntity { Id = 1, Repository = Repository, HeadSha = "head", BaseSha = "base" },
             files.Select(file => new BranchOverlayFileEntity
             {
                 OverlayId = 1, FilePath = file.Path, ChangeKind = file.Kind
@@ -767,8 +767,8 @@ public class SwiftTypeSemanticsTests
         WithRepoAsync(async repo =>
         {
             await repo.Write("Sources/Ext.swift", "extension Square {\n    func doubled() {}\n}\n").IndexAsync();
-            const string member = $"{Project}:Sources/Ext.swift#extension:Square#method:doubled()";
-            const string square = $"{Project}:Sources/Square.swift#type:Square";
+            const string member = $"{Repository}:Sources/Ext.swift#extension:Square#method:doubled()";
+            const string square = $"{Repository}:Sources/Square.swift#type:Square";
             var memberId = repo.Id(member);
 
             repo.Write("Sources/Square.swift", "struct Square {}\n");
@@ -785,7 +785,7 @@ public class SwiftTypeSemanticsTests
             var owners = await view.FindEdgesByTargetAsync(memberId, EdgeType.DEFINES_METHOD);
             var ownerNodes = await view.FindNodesByIdBatchAsync(owners.Select(edge => edge.SourceId).ToList());
             ownerNodes.Values.Select(node => node.QualifiedName).ShouldBe([square]);
-            (await view.FindNodeByQualifiedNameAsync(Project, "swift-external:Square")).ShouldBeNull();
+            (await view.FindNodeByQualifiedNameAsync(Repository, "swift-external:Square")).ShouldBeNull();
         }, baseline: false);
 
     [Fact]
@@ -804,7 +804,7 @@ public class SwiftTypeSemanticsTests
             var view = await ViewAsync(repo, slice, ("Sources/Other.swift", BranchOverlayChangeKinds.Added));
             var owners = await view.FindEdgesByTargetAsync(memberId, EdgeType.DEFINES_METHOD);
             var ownerNodes = await view.FindNodesByIdBatchAsync(owners.Select(edge => edge.SourceId).ToList());
-            ownerNodes.Values.Select(node => node.QualifiedName).ShouldBe([$"{Project}:Sources/Extras.swift"]);
+            ownerNodes.Values.Select(node => node.QualifiedName).ShouldBe([$"{Repository}:Sources/Extras.swift"]);
         });
 
     [Fact]
@@ -819,7 +819,7 @@ public class SwiftTypeSemanticsTests
             slice.Nodes.ShouldContain(node =>
                 node.QualifiedName == "swift-external:ObservableObject" && node.Label == NodeLabel.Interface);
             var view = await ViewAsync(repo, slice, ("Sources/Model.swift", BranchOverlayChangeKinds.Added));
-            var model = await view.FindNodeByQualifiedNameAsync(Project, $"{Project}:Sources/Model.swift#type:Model");
+            var model = await view.FindNodeByQualifiedNameAsync(Repository, $"{Repository}:Sources/Model.swift#type:Model");
             model.ShouldNotBeNull();
             var implemented = await view.FindEdgesBySourceAsync(model.Id, EdgeType.IMPLEMENTS);
             var targets = await view.FindNodesByIdBatchAsync(implemented.Select(edge => edge.TargetId).ToList());

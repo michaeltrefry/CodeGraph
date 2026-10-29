@@ -20,7 +20,7 @@ public class RepositoryEntity
 public class NodeEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string? DotnetProject { get; set; }
     public string Label { get; set; } = "";
     public string Name { get; set; } = "";
@@ -35,7 +35,7 @@ public class NodeEntity
 public class EdgeEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public long SourceId { get; set; }
     public long TargetId { get; set; }
     public string Type { get; set; } = "";
@@ -45,8 +45,8 @@ public class EdgeEntity
 public class CrossRepoEdgeEntity
 {
     public long Id { get; set; }
-    public string SourceProject { get; set; } = "";
-    public string TargetProject { get; set; } = "";
+    public string SourceRepository { get; set; } = "";
+    public string TargetRepository { get; set; } = "";
     public long SourceNodeId { get; set; }
     public long TargetNodeId { get; set; }
     public string Type { get; set; } = "";
@@ -55,7 +55,7 @@ public class CrossRepoEdgeEntity
 
 public class FileHashEntity
 {
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string RelPath { get; set; } = "";
     public string ContentHash { get; set; } = "";
 
@@ -68,7 +68,7 @@ public sealed record FileHashRecord(string ContentHash, string? ExtractionVersio
 
 public class RepositorySummaryEntity
 {
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string Summary { get; set; } = "";
     public string Confidence { get; set; } = "medium";
     public string SourceHash { get; set; } = "";
@@ -95,7 +95,7 @@ public class ProjectAnalysisEntity
 
 public class SyncStateEntity
 {
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public DateTime? LastSyncAt { get; set; }
     public string? LastCommitSha { get; set; }
     public string Status { get; set; } = "idle";
@@ -207,7 +207,7 @@ public class NodeAnalysisEntity
 public class FileMetricsEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string FilePath { get; set; } = "";
     public string? DotnetProject { get; set; }
 
@@ -266,7 +266,7 @@ public class FileMetricsEntity
 public class ProjectHealthSummaryEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string? DotnetProject { get; set; }
 
     public double OverallHealth { get; set; } = 5.0;
@@ -295,7 +295,7 @@ public class ProjectHealthSummaryEntity
 public class ProjectHealthAnalysisEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string? DotnetProject { get; set; }
     public string Analysis { get; set; } = "";
     public string Confidence { get; set; } = "medium";
@@ -307,7 +307,7 @@ public class ProjectHealthAnalysisEntity
 public class SecurityFindingEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string? DotnetProject { get; set; }
     public string Category { get; set; } = "";
     public string Severity { get; set; } = "medium";
@@ -323,7 +323,7 @@ public class SecurityFindingEntity
 
 public class ProjectDiagnosticEntity
 {
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string? DotnetProject { get; set; }
     public string Source { get; set; } = "roslyn";
     public string DiagnosticKey { get; set; } = "";
@@ -340,7 +340,7 @@ public class ProjectDiagnosticEntity
 public class ProjectReviewRunEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string ProjectName { get; set; } = "";
     public string? ReviewedCommitSha { get; set; }
     public string Status { get; set; } = "queued";
@@ -422,10 +422,10 @@ public class RepositoryReviewFindingEntity
     public string? ProvenanceJson { get; set; }
 }
 
-public class ProjectSecuritySummaryEntity
+public class RepositorySecuritySummaryEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public double SecurityScore { get; set; } = 10.0;
     public int CriticalCount { get; set; }
     public int HighCount { get; set; }

@@ -206,7 +206,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             admin,
-            new RecordingProjectService());
+            new RecordingRepositoryService());
         await executor.ExecuteAsync(
             new IndexerRunLease((await runs.GetIndexerRunAsync(accepted.RunId!.Value))!, "worker", 1));
 
@@ -262,7 +262,7 @@ public class StandaloneIndexerOperationsServiceTests
             CreatedAt = DateTime.UtcNow
         });
         var schemaExtractor = new RecordingDatabaseSchemaExtractor();
-        var executor = new IndexerRunExecutor(sources, schemaExtractor, new RecordingAdminService(), new RecordingProjectService());
+        var executor = new IndexerRunExecutor(sources, schemaExtractor, new RecordingAdminService(), new RecordingRepositoryService());
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var message = await executor.ExecuteAsync(lease);
@@ -285,7 +285,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             new RecordingAdminService(),
-            new RecordingProjectService());
+            new RecordingRepositoryService());
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var ex = await Should.ThrowAsync<InvalidOperationException>(() => executor.ExecuteAsync(lease));
@@ -311,7 +311,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             admin,
-            new RecordingProjectService());
+            new RecordingRepositoryService());
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var message = await executor.ExecuteAsync(lease);
@@ -332,17 +332,17 @@ public class StandaloneIndexerOperationsServiceTests
             Status = "running",
             CreatedAt = DateTime.UtcNow
         });
-        var projects = new RecordingProjectService { Batch = CreateBatch("SceneWorks") };
+        var repositories = new RecordingRepositoryService { Batch = CreateBatch("SceneWorks") };
         var executor = new IndexerRunExecutor(
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             new RecordingAdminService(),
-            projects);
+            repositories);
         var lease = new IndexerRunLease((await runs.GetIndexerRunAsync(runId))!, "worker", 1);
 
         var message = await executor.ExecuteAsync(lease);
 
-        projects.LastReanalyzedRepo.ShouldBe("SceneWorks");
+        repositories.LastReanalyzedRepo.ShouldBe("SceneWorks");
         message.ShouldContain("batch 11");
         message.ShouldContain("pending");
     }
@@ -351,7 +351,7 @@ public class StandaloneIndexerOperationsServiceTests
     public async Task StartBranchOverlayAsync_QueuesRetrySafeRunAndReportsQueuedOverlay()
     {
         var graph = new InMemoryGraphStore();
-        graph.AddProject("OverlayRepo");
+        graph.AddRepository("OverlayRepo");
         var overlayStore = new InMemoryBranchOverlayStore();
         var overlays = new BranchOverlayService(
             overlayStore,
@@ -549,7 +549,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             new RecordingAdminService(),
-            new FailingProjectService(new RustSemanticIndexingException(
+            new FailingRepositoryService(new RustSemanticIndexingException(
                 "rust_semantic_command_timeout",
                 "rust-analyzer timed out")));
         var worker = CreateWorker(services);
@@ -582,7 +582,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             new RecordingAdminService(),
-            configure: collection => collection.AddScoped<IProjectService, RustFallbackProjectService>());
+            configure: collection => collection.AddScoped<IRepositoryService, RustFallbackProjectService>());
         var worker = CreateWorker(services);
 
         (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
@@ -620,7 +620,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             new RecordingAdminService(),
-            configure: collection => collection.AddScoped<IProjectService, RustOutcomesProjectService>());
+            configure: collection => collection.AddScoped<IRepositoryService, RustOutcomesProjectService>());
         var worker = CreateWorker(services);
 
         (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
@@ -652,7 +652,7 @@ public class StandaloneIndexerOperationsServiceTests
             new FakeDatabaseSourceStore(),
             new RecordingDatabaseSchemaExtractor(),
             new RecordingAdminService(),
-            configure: collection => collection.AddScoped<IProjectService, CrateGroupRustFallbackProjectService>());
+            configure: collection => collection.AddScoped<IRepositoryService, CrateGroupRustFallbackProjectService>());
         var worker = CreateWorker(services);
 
         (await worker.TryExecuteNextAsync(CancellationToken.None)).ShouldBeTrue();
@@ -794,11 +794,11 @@ public class StandaloneIndexerOperationsServiceTests
         IDatabaseSourceStore sources,
         IDatabaseSchemaExtractor schemas,
         IAdminService admin,
-        IProjectService? projects = null,
+        IRepositoryService? repositories = null,
         Action<IServiceCollection>? configure = null,
         IBranchOverlayService? overlays = null)
     {
-        var configureProjects = configure is not null;
+        var configureRepositories = configure is not null;
         var services = new ServiceCollection();
         if (overlays is not null)
             services.AddSingleton(overlays);
@@ -806,8 +806,8 @@ public class StandaloneIndexerOperationsServiceTests
         services.AddSingleton(sources);
         services.AddSingleton(schemas);
         services.AddSingleton(admin);
-        if (projects is not null || !configureProjects)
-            services.AddSingleton(projects ?? new RecordingProjectService());
+        if (repositories is not null || !configureRepositories)
+            services.AddSingleton(repositories ?? new RecordingRepositoryService());
         services.AddScoped<IndexingRunDiagnostics>();
         services.AddTransient<IndexerRunExecutor>();
         configure?.Invoke(services);
@@ -931,7 +931,7 @@ public class StandaloneIndexerOperationsServiceTests
     private sealed class AllowAllExclusions : IExclusionService
     {
         public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) => Task.FromResult<string?>(null);
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) => Task.FromResult(new HashSet<string>());
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) => Task.FromResult(new HashSet<string>());
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() => Task.FromResult<IReadOnlyList<ExclusionRuleEntity>>([]);
         public Task<ExclusionRuleEntity> CreateRuleAsync(string targetType, string targetValue, string exclusionType, string? reason, string createdBy) => throw new NotSupportedException();
         public Task<ExclusionRuleEntity?> UpdateRuleAsync(long id, string exclusionType, string? reason) => throw new NotSupportedException();
@@ -939,7 +939,7 @@ public class StandaloneIndexerOperationsServiceTests
         public Task SeedFromConfigAsync(IReadOnlyList<string> excludedGroups) => Task.CompletedTask;
     }
 
-    private sealed class RecordingProjectService : IProjectService
+    private sealed class RecordingRepositoryService : IRepositoryService
     {
         public AnalysisBatchResponse? Batch { get; set; }
         public string? LastReanalyzedRepo { get; private set; }
@@ -961,7 +961,7 @@ public class StandaloneIndexerOperationsServiceTests
             => throw new NotSupportedException();
     }
 
-    private sealed class RustFallbackProjectService(IndexingRunDiagnostics diagnostics) : IProjectService
+    private sealed class RustFallbackProjectService(IndexingRunDiagnostics diagnostics) : IRepositoryService
     {
         public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
         {
@@ -981,7 +981,7 @@ public class StandaloneIndexerOperationsServiceTests
             => throw new NotSupportedException();
     }
 
-    private sealed class RustOutcomesProjectService(IndexingRunDiagnostics diagnostics) : IProjectService
+    private sealed class RustOutcomesProjectService(IndexingRunDiagnostics diagnostics) : IRepositoryService
     {
         public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
         {
@@ -1002,7 +1002,7 @@ public class StandaloneIndexerOperationsServiceTests
             => throw new NotSupportedException();
     }
 
-    private sealed class CrateGroupRustFallbackProjectService(IndexingRunDiagnostics diagnostics) : IProjectService
+    private sealed class CrateGroupRustFallbackProjectService(IndexingRunDiagnostics diagnostics) : IRepositoryService
     {
         public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
         {
@@ -1021,7 +1021,7 @@ public class StandaloneIndexerOperationsServiceTests
             => throw new NotSupportedException();
     }
 
-    private sealed class FailingProjectService(Exception failure) : IProjectService
+    private sealed class FailingRepositoryService(Exception failure) : IRepositoryService
     {
         public Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = default)
             => Task.FromException<AnalysisBatchResponse?>(failure);

@@ -96,9 +96,9 @@ public static class SwiftTypeReference
     /// cross-file extension (<c>{file}#extension:Outer#type:Inner</c>). Null when the qualified
     /// name does not start with the node's file.
     /// </summary>
-    public static string? TypePath(string project, string? filePath, string qualifiedName)
+    public static string? TypePath(string repository, string? filePath, string qualifiedName)
     {
-        var filePrefix = $"{project}:{filePath}";
+        var filePrefix = $"{repository}:{filePath}";
         if (string.IsNullOrEmpty(filePath)
             || !qualifiedName.StartsWith(filePrefix + "#", StringComparison.Ordinal))
         {

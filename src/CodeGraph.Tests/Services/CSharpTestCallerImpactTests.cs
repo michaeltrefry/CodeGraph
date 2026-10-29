@@ -21,26 +21,26 @@ namespace CodeGraph.Tests.Services;
 
 /// <summary>
 /// Regression for dark-factory-sandbox: callers of a static helper that live in a separate
-/// test project must produce CALLS edges and count toward impact analysis, both with the
+/// test repository must produce CALLS edges and count toward impact analysis, both with the
 /// default syntax-only C# extraction and with trusted MSBuild solution analysis.
 /// </summary>
 public sealed class CSharpTestCallerImpactTests
 {
-    private const string Project = "StaticCallers";
+    private const string Repository = "StaticCallers";
     private const string LibFile = "src/Lib/TextTools.cs";
     private const string TestFile = "tests/Lib.Tests/TextToolsTests.cs";
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task IndexProjectAsync_TestProjectCallersOfStaticMethod_ProduceCallsEdges(bool trusted)
+    public async Task IndexRepositoryAsync_TestProjectCallersOfStaticMethod_ProduceCallsEdges(bool trusted)
     {
         var root = CopyFixture();
         try
         {
             var store = new InMemoryGraphStore();
-            await CreatePipeline(store, root, trusted).IndexProjectAsync(
-                Project, root, repositoryToolingIdentity: Identity(root), ct: CancellationToken.None);
+            await CreatePipeline(store, root, trusted).IndexRepositoryAsync(
+                Repository, root, repositoryToolingIdentity: Identity(root), ct: CancellationToken.None);
 
             var calls = CallsByName(store);
             calls.ShouldContain(("WordCount_counts_words", TestFile, "WordCount", LibFile));
@@ -94,11 +94,11 @@ public sealed class CSharpTestCallerImpactTests
                 runner);
 
             // Default (untrusted) policy — what the hosted indexer runs for this repository.
-            await CreatePipeline(store, root, trusted: false).IndexProjectAsync(
-                Project, root, repositoryToolingIdentity: Identity(root), ct: CancellationToken.None);
+            await CreatePipeline(store, root, trusted: false).IndexRepositoryAsync(
+                Repository, root, repositoryToolingIdentity: Identity(root), ct: CancellationToken.None);
 
             var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
-            var byName = await impact.AnalyzeImpactAsync("WordCount", Project);
+            var byName = await impact.AnalyzeImpactAsync("WordCount", Repository);
             byName.ShouldNotBeNull();
             var callers = byName.AffectedNodes.Where(node => node.EdgeType == nameof(EdgeType.CALLS)).ToList();
             callers.Select(node => node.Name).ShouldBe(
@@ -106,7 +106,7 @@ public sealed class CSharpTestCallerImpactTests
                 ignoreOrder: true);
             AssertTestCallersLabeled(callers);
 
-            var byFile = await impact.AnalyzeFileImpactAsync(Project, LibFile);
+            var byFile = await impact.AnalyzeFileImpactAsync(Repository, LibFile);
             byFile.ShouldNotBeNull();
             byFile.AffectedNodes.Select(node => node.Name)
                 .ShouldContain("WordCount_counts_words");

@@ -11,7 +11,7 @@ public class SwiftPackageManifestExtractorTests
 
     private static readonly ExtractorContext Context = new()
     {
-        ProjectName = "SwiftRepo",
+        RepositoryName = "SwiftRepo",
         RootPath = RootPath
     };
 

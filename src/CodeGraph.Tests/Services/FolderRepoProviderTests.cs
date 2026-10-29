@@ -16,14 +16,14 @@ public class FolderRepoProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_FindsNestedRepositories_AndPreservesGroups()
+    public async Task DiscoverRepositoriesAsync_FindsNestedRepositories_AndPreservesGroups()
     {
         CreateRepo("flat-repo");
         CreateRepo(Path.Combine("group-a", "nested-repo"));
 
         var provider = CreateProvider();
 
-        var results = await provider.DiscoverProjectsAsync();
+        var results = await provider.DiscoverRepositoriesAsync();
 
         results.Select(r => r.Name).ShouldContain("flat-repo");
         results.Select(r => r.Name).ShouldContain("nested-repo");
@@ -89,7 +89,7 @@ public class FolderRepoProviderTests : IDisposable
         public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) =>
             Task.FromResult<string?>(null);
 
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) =>
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) =>
             Task.FromResult(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() =>

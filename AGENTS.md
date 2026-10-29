@@ -86,7 +86,7 @@ Default operating procedure for any agent working in this repo:
 - Use CodeGraph MCP tools first for discovery, architecture questions, dependency tracing, and locating implementation.
 - Start with graph and convention queries before opening source files directly.
 - Memory tools are part of the broader CodeGraph MCP suite, not a separate `memorygraph` tool family.
-- Prefer these CodeGraph MCP tools when they fit the question: `search_graph`, `get_service_summary`, `trace_call_path`, `trace_data_lineage`, `find_consumers`, `find_publishers`, `get_architecture`, `get_project_health`, `get_fleet_health`, `list_conventions`, `get_convention`, `get_code_snippet`, and `read_node_source`.
+- Prefer these CodeGraph MCP tools when they fit the question: `search_graph`, `get_service_summary`, `trace_call_path`, `trace_data_lineage`, `find_consumers`, `find_publishers`, `get_architecture`, `get_repository_health`, `get_fleet_health`, `list_conventions`, `get_convention`, `get_code_snippet`, and `read_node_source`.
 - Do not assume CodeGraph MCP results reflect the current git working tree or non-`main` branches; the indexed graph reflects committed code on `main`, not uncommitted local edits.
 - Inspect source files directly when MCP results are insufficient, exact line-level behavior matters, the question depends on uncommitted or branch-only changes, or a file is about to be edited.
 - Avoid broad file-reading sweeps when CodeGraph MCP can narrow the search space first.

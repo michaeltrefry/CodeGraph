@@ -16,11 +16,11 @@ public interface IBranchOverlayStore
     /// <summary>
     /// Overlays for the commit <paramref name="sha"/> (a full lowercase SHA), newest first: overlays
     /// whose resolved head is <paramref name="sha"/>, plus overlays requested by that SHA whose head
-    /// is not resolved yet (queued). Restricted to <paramref name="project"/> when given.
+    /// is not resolved yet (queued). Restricted to <paramref name="repository"/> when given.
     /// </summary>
     Task<IReadOnlyList<BranchOverlayEntity>> FindOverlaysByShaAsync(
         string sha,
-        string? project,
+        string? repository,
         CancellationToken ct = default);
 
     Task SetOverlayRunAsync(long overlayId, long indexerRunId, CancellationToken ct = default);
@@ -66,10 +66,10 @@ public interface IBranchOverlayStore
         CancellationToken ct = default);
 
     /// <summary>
-    /// Serializes overlay requests for <paramref name="project"/> across hosts, so two concurrent
+    /// Serializes overlay requests for <paramref name="repository"/> across hosts, so two concurrent
     /// identical requests cannot both miss the live overlay and create two. Disposing releases it.
     /// </summary>
-    Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string project, CancellationToken ct = default);
+    Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string repository, CancellationToken ct = default);
 }
 
 public static class BranchOverlayStatuses
@@ -94,7 +94,7 @@ public static class BranchOverlayChangeKinds
 public class BranchOverlayEntity
 {
     public long Id { get; set; }
-    public string Project { get; set; } = "";
+    public string Repository { get; set; } = "";
     public string RequestedRef { get; set; } = "";
     public string? HeadSha { get; set; }
     public string? BaseSha { get; set; }

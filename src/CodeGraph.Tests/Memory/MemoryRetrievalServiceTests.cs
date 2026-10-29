@@ -468,7 +468,7 @@ public class MemoryRetrievalServiceTests
                     {
                         Id = "memorygraph",
                         Label = "MemoryGraph",
-                        Type = "project",
+                        Type = "repository",
                         Summary = "",
                         Source = "test",
                     },

@@ -453,9 +453,9 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
         await InvokeAuditedAsync("rabbitmq", "rabbitmq_peek_queue", "peek", $"{virtualHost}/{queue}", "shared", () => hub.PeekRabbitMqQueueAsync(virtualHost, queue, count, cancellationToken), cancellationToken);
 
     [McpServerTool(Name = "mysql_list_schemas", Title = "List MySQL Schemas", ReadOnly = true)]
-    [Description("List indexed database schema projects through the MCP Hub MySQL provider.")]
+    [Description("List indexed database schema repositories through the MCP Hub MySQL provider.")]
     public async Task<string> ListMySqlSchemas(
-        [Description("Optional search across schema project, server, and database names.")] string? search = null,
+        [Description("Optional search across schema repository, server, and database names.")] string? search = null,
         [Description("Optional server name filter.")] string? server = null,
         [Description("Optional database name filter.")] string? database = null,
         [Description("Page number, 1-based.")] int page = 1,
@@ -466,7 +466,7 @@ public sealed class McpHubServer(McpHubService hub, IHttpContextAccessor httpCon
     [McpServerTool(Name = "mysql_get_schema_catalog", Title = "Get MySQL Schema Catalog", ReadOnly = true)]
     [Description("Get a detailed catalog for an indexed database schema through the MCP Hub MySQL provider.")]
     public async Task<string> GetMySqlSchemaCatalog(
-        [Description("Schema project name from mysql_list_schemas, for example db:server/database.")] string name,
+        [Description("Schema repository name from mysql_list_schemas, for example db:server/database.")] string name,
         CancellationToken cancellationToken = default) =>
         await InvokeAuditedAsync("mysql", "mysql_get_schema_catalog", "get", name, "none", () => hub.GetSchemaCatalogAsync(name, cancellationToken), cancellationToken);
 

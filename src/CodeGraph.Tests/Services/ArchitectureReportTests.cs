@@ -19,7 +19,7 @@ public class ArchitectureReportTests
         await ArchitectureGraphFixture.SeedAsync(store, ArchitectureGraphFixture.LargeMethodCount);
 
         var report = await new GraphQueryEngine(store, NullLogger<GraphQueryEngine>.Instance)
-            .GetArchitectureAsync(ArchitectureGraphFixture.Project);
+            .GetArchitectureAsync(ArchitectureGraphFixture.Repository);
 
         ArchitectureGraphFixture.AssertReport(report, ArchitectureGraphFixture.LargeMethodCount);
     }
@@ -33,7 +33,7 @@ public class ArchitectureReportTests
         await ArchitectureGraphFixture.SeedAsync(store, fillerMethodCount: 10);
         await store.UpsertSyncStateAsync(new SyncStateEntity
         {
-            Project = ArchitectureGraphFixture.Project, LastCommitSha = sha, Status = "idle"
+            Repository = ArchitectureGraphFixture.Repository, LastCommitSha = sha, Status = "idle"
         });
         var mcp = new CodeGraphMcpServer(
             new GraphQueryEngine(store, NullLogger<GraphQueryEngine>.Instance),
@@ -44,17 +44,17 @@ public class ArchitectureReportTests
             null!,
             null!);
 
-        var answer = await mcp.GetArchitecture(ArchitectureGraphFixture.Project);
+        var answer = await mcp.GetArchitecture(ArchitectureGraphFixture.Repository);
 
         answer.Text().ShouldStartWith($"Commit: {sha}");
         answer.Text().ShouldContain("Arch");
         var structured = answer.StructuredContent!.Value;
         structured.GetProperty("commitSha").GetString().ShouldBe(sha);
         structured.GetProperty("source").GetString().ShouldBe("default-branch");
-        structured.GetProperty("repo").GetString().ShouldBe(ArchitectureGraphFixture.Project);
+        structured.GetProperty("repo").GetString().ShouldBe(ArchitectureGraphFixture.Repository);
 
-        // The consolidated project_report envelope carries the same commit.
-        var wrapped = await ConsolidatedMcpServer.ProjectReport(mcp, "architecture", ArchitectureGraphFixture.Project);
+        // The consolidated repository_report envelope carries the same commit.
+        var wrapped = await ConsolidatedMcpServer.RepositoryReport(mcp, "architecture", ArchitectureGraphFixture.Repository);
         using var envelope = System.Text.Json.JsonDocument.Parse(wrapped.Text());
         envelope.RootElement.GetProperty("commitSha").GetString().ShouldBe(sha);
     }
@@ -77,7 +77,7 @@ public class ArchitectureReportTests
 
         GraphQueryEngine.PackageEcosystem(new GraphNode
         {
-            Project = "Arch",
+            Repository = "Arch",
             Label = label,
             Name = qualifiedName,
             QualifiedName = qualifiedName,
@@ -95,10 +95,10 @@ public class ArchitectureReportTests
             new Dictionary<NodeLabel, int> { [NodeLabel.Method] = 10_481, [NodeLabel.Struct] = 1_243 },
             [new HotspotInfo("hot", "Arch:hot", 5, "High fan-in method")],
             [
-                new CrossRepoEdge { SourceProject = "Up", TargetProject = "Arch", Type = EdgeType.CALLS },
-                new CrossRepoEdge { SourceProject = "Up", TargetProject = "Arch", Type = EdgeType.CALLS }
+                new CrossRepoEdge { SourceRepository = "Up", TargetRepository = "Arch", Type = EdgeType.CALLS },
+                new CrossRepoEdge { SourceRepository = "Up", TargetRepository = "Arch", Type = EdgeType.CALLS }
             ],
-            [new CrossRepoEdge { SourceProject = "Arch", TargetProject = "Down", Type = EdgeType.REFERENCES_PACKAGE }],
+            [new CrossRepoEdge { SourceRepository = "Arch", TargetRepository = "Down", Type = EdgeType.REFERENCES_PACKAGE }],
             [
                 new PackageDependencyInfo("serde", "cargo", "1.0", 2),
                 new PackageDependencyInfo("Newtonsoft.Json", "nuget", "13.0.1", 1)
@@ -124,20 +124,20 @@ public class ArchitectureReportTests
 }
 
 /// <summary>
-/// One project graph exercising every architecture aggregate, seeded identically into each store
+/// One repository graph exercising every architecture aggregate, seeded identically into each store
 /// implementation so their results can be compared.
 /// </summary>
 internal static class ArchitectureGraphFixture
 {
-    public const string Project = "Arch";
-    public const string OtherProject = "ArchOther";
+    public const string Repository = "Arch";
+    public const string OtherRepository = "ArchOther";
     public const int LargeMethodCount = 10_050;
 
     public static async Task SeedAsync(
         IGraphStore store,
         int fillerMethodCount,
-        string project = Project,
-        string otherProject = OtherProject)
+        string repository = Repository,
+        string otherRepository = OtherRepository)
     {
         GraphNode Node(
             NodeLabel label,
@@ -146,7 +146,7 @@ internal static class ArchitectureGraphFixture
             Dictionary<string, object>? properties = null,
             bool other = false) => new()
         {
-            Project = other ? otherProject : project,
+            Repository = other ? otherRepository : repository,
             Label = label,
             Name = name,
             QualifiedName = qualifiedName,
@@ -154,8 +154,8 @@ internal static class ArchitectureGraphFixture
             Properties = properties ?? new()
         };
 
-        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
-        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = otherProject });
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = repository });
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = otherRepository });
 
         var nodes = new List<GraphNode>();
         for (var i = 0; i < fillerMethodCount; i++)
@@ -194,11 +194,11 @@ internal static class ArchitectureGraphFixture
         ]);
         var ids = await store.UpsertNodeBatchAsync(nodes);
         long Id(string qualifiedName, bool other = false) =>
-            ids[GraphNodeKey.Create(other ? otherProject : project, qualifiedName)];
+            ids[GraphNodeKey.Create(other ? otherRepository : repository, qualifiedName)];
 
         var edges = new List<GraphEdge>();
         void Add(string source, string target, EdgeType type) =>
-            edges.Add(new GraphEdge { Project = project, SourceId = Id(source), TargetId = Id(target), Type = type });
+            edges.Add(new GraphEdge { Repository = repository, SourceId = Id(source), TargetId = Id(target), Type = type });
 
         for (var i = 0; i < 5; i++) Add($"Arch:m{i}", "Arch:hot", EdgeType.CALLS);
         for (var i = 0; i < 3; i++) Add($"Arch:m{i}", "Arch:warm", EdgeType.CALLS);
@@ -221,11 +221,11 @@ internal static class ArchitectureGraphFixture
         Add("cargo:arch-cli@0.1.0", "swiftpm:swift-collections@1.1.0", EdgeType.REFERENCES_PACKAGE);
         Add("Arch:Widget", "npm:react", EdgeType.REFERENCES_PACKAGE);
 
-        // Another project's edges never count toward this project's figures.
+        // Another repository's edges never count toward this repository's figures.
         for (var i = 0; i < 9; i++)
             edges.Add(new GraphEdge
             {
-                Project = otherProject,
+                Repository = otherRepository,
                 SourceId = Id($"Arch:m{i}"),
                 TargetId = Id("ArchOther:busy", other: true),
                 Type = EdgeType.CALLS

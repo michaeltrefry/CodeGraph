@@ -114,8 +114,8 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
                 // the caller falls back to per-file extraction.
                 var body = await response.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning(
-                    "TypeScript extractor rejected the extraction of {Project}: HTTP {StatusCode} {Reason}: {Body}",
-                    request.ProjectName,
+                    "TypeScript extractor rejected the extraction of {Repository}: HTTP {StatusCode} {Reason}: {Body}",
+                    request.RepositoryName,
                     (int)response.StatusCode,
                     response.ReasonPhrase,
                     body.Length > 500 ? body[..500] : body);
@@ -128,15 +128,15 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         catch (HttpRequestException ex) when (ex.InnerException is HttpIOException)
         {
             _logger.LogWarning(
-                "TypeScript extractor crashed (likely OOM) while processing {Project}. " +
+                "TypeScript extractor crashed (likely OOM) while processing {Repository}. " +
                 "Process alive: {Alive}",
-                request.ProjectName, IsProcessAlive());
+                request.RepositoryName, IsProcessAlive());
             _available = false;
             return null;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "TypeScript extractor request for {Project} failed", request.ProjectName);
+            _logger.LogWarning(ex, "TypeScript extractor request for {Repository} failed", request.RepositoryName);
             return null;
         }
         finally
@@ -146,7 +146,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         }
     }
 
-    public async Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(
+    public async Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(
         string repoPath, CancellationToken ct = default)
     {
         if (!await EnsureStartedAsync(ct))

@@ -32,7 +32,7 @@ public sealed class RustProjectAnalyzerCrateGroupTests
         using var project = JsonDocument.Parse(projectJson);
         var crates = project.RootElement.GetProperty("crates").EnumerateArray().ToList();
         crates.ShouldNotBeEmpty();
-        // rust-analyzer only expands proc-macros whose dylib the project names, and only runs
+        // rust-analyzer only expands proc-macros whose dylib the repository names, and only runs
         // build scripts for Cargo (not rust-project.json) workspaces.
         crates.ShouldNotContain(crate => HasProperty(crate, "proc_macro_dylib_path"));
         crates.ShouldNotContain(crate => HasProperty(crate.GetProperty("env"), "OUT_DIR"));
@@ -437,7 +437,7 @@ public sealed class RustProjectAnalyzerCrateGroupTests
 
     private static ExtractorContext Context(FakeRustToolchain toolchain) => new()
     {
-        ProjectName = "RustGroups",
+        RepositoryName = "RustGroups",
         RootPath = toolchain.RootPath
     };
 }

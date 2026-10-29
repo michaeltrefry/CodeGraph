@@ -85,13 +85,13 @@ public sealed class GitHubPushWebhookService(
         if (payload.Deleted || string.IsNullOrWhiteSpace(payload.After) || payload.After.All(c => c == '0'))
             return Ignored("Push deleted the branch.");
 
-        var project = await FindProjectAsync(repository);
-        if (project is null)
+        var indexed = await FindRepositoryAsync(repository);
+        if (indexed is null)
             return Ignored($"Repository '{repository.FullName}' is not indexed.");
 
-        var exclusionType = await exclusionService.GetExclusionTypeAsync(project.Name, project.SourceGroup);
+        var exclusionType = await exclusionService.GetExclusionTypeAsync(indexed.Name, indexed.SourceGroup);
         if (exclusionType == "complete")
-            return Ignored($"Repository '{project.Name}' is excluded.");
+            return Ignored($"Repository '{indexed.Name}' is excluded.");
 
         var sha = payload.After.Trim().ToLowerInvariant();
         IndexerAcceptedResponse accepted;
@@ -101,27 +101,27 @@ public sealed class GitHubPushWebhookService(
                 RequestedBy,
                 new ProcessRequest
                 {
-                    Repos = [project.Name],
+                    Repos = [indexed.Name],
                     ShouldIndex = true,
                     ShouldAnalyze = exclusionType != "no_analysis",
                     SkipIfUpToDate = true
                 },
-                $"github-push:{project.Name}:{sha}",
+                $"github-push:{indexed.Name}:{sha}",
                 ct);
         }
         catch (IndexerSubmissionConflictException)
         {
-            return Ignored($"A sync for {project.Name}@{sha} was already submitted.");
+            return Ignored($"A sync for {indexed.Name}@{sha} was already submitted.");
         }
 
         logger.LogInformation(
             "GitHub push to {Repo}@{Sha} {Disposition} indexer run {RunId}.",
-            project.Name, sha, accepted.Duplicate ? "matched existing" : "queued", accepted.RunId);
+            indexed.Name, sha, accepted.Duplicate ? "matched existing" : "queued", accepted.RunId);
         return new GitHubWebhookResult(
             GitHubWebhookOutcome.Queued,
             accepted.Duplicate
-                ? $"A sync for {project.Name}@{sha} is already queued."
-                : $"Queued incremental sync for {project.Name}@{sha}.",
+                ? $"A sync for {indexed.Name}@{sha} is already queued."
+                : $"Queued incremental sync for {indexed.Name}@{sha}.",
             accepted);
     }
 
@@ -145,17 +145,17 @@ public sealed class GitHubPushWebhookService(
         return CryptographicOperations.FixedTimeEquals(expected, provided);
     }
 
-    private async Task<ProjectInfo?> FindProjectAsync(PushRepository repository)
+    private async Task<RepositoryInfo?> FindRepositoryAsync(PushRepository repository)
     {
         var payloadUrls = new[] { repository.CloneUrl, repository.HtmlUrl }
             .Select(NormalizeRepoUrl)
             .Where(url => url is not null)
             .ToHashSet(StringComparer.Ordinal);
 
-        var projects = await graphStore.ListRepositoriesAsync();
-        return projects.FirstOrDefault(p =>
+        var repositories = await graphStore.ListRepositoriesAsync();
+        return repositories.FirstOrDefault(p =>
                    NormalizeRepoUrl(p.RepoUrl) is { } url && payloadUrls.Contains(url))
-               ?? projects.FirstOrDefault(p =>
+               ?? repositories.FirstOrDefault(p =>
                    !string.IsNullOrWhiteSpace(p.SourceGroup)
                    && string.Equals($"{p.SourceGroup}/{p.Name}", repository.FullName, StringComparison.OrdinalIgnoreCase));
     }

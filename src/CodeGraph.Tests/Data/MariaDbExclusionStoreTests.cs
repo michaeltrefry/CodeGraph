@@ -71,7 +71,7 @@ public class MariaDbExclusionStoreTests
 
             context.SecurityFindings.Add(new SecurityFindingEntity
             {
-                Project = "CodeGraph",
+                Repository = "CodeGraph",
                 Category = "secret",
                 Severity = "high",
                 Title = "Secret",

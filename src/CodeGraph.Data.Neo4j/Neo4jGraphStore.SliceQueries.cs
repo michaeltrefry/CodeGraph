@@ -8,7 +8,7 @@ namespace CodeGraph.Data.Neo4j;
 public partial class Neo4jGraphStore
 {
     public async Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
-        string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+        string repository, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
     {
         var paths = ExpandPathVariants(filePaths.ToList());
         await using var session = sessionFactory.GetSession(AccessMode.Read);
@@ -19,8 +19,8 @@ public partial class Neo4jGraphStore
             {
                 ct.ThrowIfCancellationRequested();
                 var cursor = await tx.RunAsync(
-                    "MATCH (n:CodeNode {project: $project}) WHERE n.filePath IN $paths RETURN n",
-                    new { project, paths = batch });
+                    "MATCH (n:CodeNode {repository: $repository}) WHERE n.filePath IN $paths RETURN n",
+                    new { repository, paths = batch });
                 await foreach (var record in cursor)
                     results.Add(MapCodeNode(record["n"].As<INode>()));
             }
@@ -29,15 +29,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string repository, CancellationToken ct = default)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project}) WHERE n.filePath IS NOT NULL AND n.filePath <> '' " +
+                "MATCH (n:CodeNode {repository: $repository}) WHERE n.filePath IS NOT NULL AND n.filePath <> '' " +
                 "RETURN DISTINCT n.filePath AS filePath",
-                new { project });
+                new { repository });
             var paths = new List<string>();
             await foreach (var record in cursor)
             {
@@ -50,7 +50,7 @@ public partial class Neo4jGraphStore
     }
 
     public async Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
-        string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
+        string repository, IReadOnlyCollection<string> names, CancellationToken ct = default)
     {
         var distinct = names.Distinct(StringComparer.Ordinal).ToList();
         await using var session = sessionFactory.GetSession(AccessMode.Read);
@@ -61,8 +61,8 @@ public partial class Neo4jGraphStore
             {
                 ct.ThrowIfCancellationRequested();
                 var cursor = await tx.RunAsync(
-                    "MATCH (n:CodeNode {project: $project}) WHERE n.name IN $names RETURN n",
-                    new { project, names = batch });
+                    "MATCH (n:CodeNode {repository: $repository}) WHERE n.name IN $names RETURN n",
+                    new { repository, names = batch });
                 await foreach (var record in cursor)
                     results.Add(MapCodeNode(record["n"].As<INode>()));
             }
@@ -76,7 +76,7 @@ public partial class Neo4jGraphStore
     /// on the key and filtered exactly here.
     /// </summary>
     public async Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<EdgeType> types,
         string propertyKey,
         IReadOnlyCollection<string> values,
@@ -91,12 +91,12 @@ public partial class Neo4jGraphStore
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (source:CodeNode {project: $project})-[edge]->(target:CodeNode)
+                MATCH (source:CodeNode {repository: $repository})-[edge]->(target:CodeNode)
                 WHERE type(edge) IN $types AND edge.properties CONTAINS $key
                 RETURN source.qualifiedName AS sourceQN, source.filePath AS sourceFile,
                        target.qualifiedName AS targetQN, target.filePath AS targetFile,
                        type(edge) AS type, edge.properties AS properties
-                """, new { project, types = typeNames, key = $"\"{propertyKey}\"" });
+                """, new { repository, types = typeNames, key = $"\"{propertyKey}\"" });
             var results = new List<StoredEdge>();
             await foreach (var record in cursor)
             {

@@ -36,7 +36,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
             packageByDirectory[Path.GetDirectoryName(manifest.FullPath) ?? context.RootPath] = definition;
             nodes[definition.Node.QualifiedName] = definition.Node;
             AddEdge(edges, edgeKeys, new PendingEdge(
-                context.ProjectName,
+                context.RepositoryName,
                 definition.Node.QualifiedName,
                 EdgeType.CONTAINS_PROJECT,
                 new() { ["ecosystem"] = "cargo", ["source"] = "Cargo.toml" }));
@@ -47,7 +47,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
             var workspace = FindWorkspaceManifest(manifest, parsed);
             var owner = packageByDirectory.GetValueOrDefault(
                 Path.GetDirectoryName(manifest.FullPath) ?? context.RootPath);
-            var sourceQN = owner?.Node.QualifiedName ?? context.ProjectName;
+            var sourceQN = owner?.Node.QualifiedName ?? context.RepositoryName;
             var workspaceDependencies = ReadDependencyTable(workspace?.Workspace, "dependencies");
 
             foreach (var dependency in ReadDependencies(
@@ -124,7 +124,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
         var definitionSource = publish is false ? "workspace" : "crates.io";
         var packageKey = definitionSource == "crates.io"
             ? CargoPackageKey.Registry("crates.io", name)
-            : CargoPackageKey.Workspace(context.ProjectName, name);
+            : CargoPackageKey.Workspace(context.RepositoryName, name);
         var qn = CargoPackageKey.QualifiedName(packageKey, version);
 
         var properties = new Dictionary<string, object>
@@ -142,7 +142,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
 
         return new PackageDefinition(new GraphNode
         {
-            Project = context.ProjectName,
+            Repository = context.RepositoryName,
             Label = NodeLabel.Package,
             Name = name,
             QualifiedName = qn,
@@ -267,7 +267,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
                 targetQN,
                 new GraphNode
                 {
-                    Project = context.ProjectName,
+                    Repository = context.RepositoryName,
                     Label = NodeLabel.Package,
                     Name = specification.PackageName,
                     QualifiedName = targetQN,
@@ -328,7 +328,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
                     : manifest.FullPath) ?? "";
             resolvedPath = Path.GetFullPath(Path.Combine(declaringDirectory, path));
             source = NormalizePath(path);
-            packageKey = CargoPackageKey.Path(manifest.ProjectScope, source, packageName);
+            packageKey = CargoPackageKey.Path(manifest.RepositoryScope, source, packageName);
         }
         else if (!string.IsNullOrWhiteSpace(git))
         {
@@ -365,7 +365,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
             gitReference,
             resolvedPath,
             TargetQualifiedName: null,
-            manifest.ProjectScope);
+            manifest.RepositoryScope);
     }
 
     private static TomlTable? ReadDependencyTable(TomlTable? parent, string name) =>
@@ -443,7 +443,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
         TomlTable? Package,
         TomlTable? Workspace)
     {
-        public string ProjectScope { get; init; } = Path.GetFileName(
+        public string RepositoryScope { get; init; } = Path.GetFileName(
             Path.GetDirectoryName(FullPath) ?? FullPath);
     }
 
@@ -471,7 +471,7 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
         string? GitReference,
         string? ResolvedPath,
         string? TargetQualifiedName,
-        string ProjectScope);
+        string RepositoryScope);
 
     private static class CargoPackageKey
     {
@@ -481,11 +481,11 @@ public sealed class CargoManifestExtractor : ICargoManifestExtractor
         public static string Git(string git, string name) =>
             $"cargo:git:{git.ToLowerInvariant()}:{name.ToLowerInvariant()}";
 
-        public static string Path(string project, string path, string name) =>
-            $"cargo:path:{project.ToLowerInvariant()}:{path.ToLowerInvariant()}:{name.ToLowerInvariant()}";
+        public static string Path(string repository, string path, string name) =>
+            $"cargo:path:{repository.ToLowerInvariant()}:{path.ToLowerInvariant()}:{name.ToLowerInvariant()}";
 
-        public static string Workspace(string project, string name) =>
-            $"cargo:workspace:{project.ToLowerInvariant()}:{name.ToLowerInvariant()}";
+        public static string Workspace(string repository, string name) =>
+            $"cargo:workspace:{repository.ToLowerInvariant()}:{name.ToLowerInvariant()}";
 
         public static string QualifiedName(string packageKey, string? version) =>
             $"package:{packageKey}@{(string.IsNullOrWhiteSpace(version) ? "*" : version)}";

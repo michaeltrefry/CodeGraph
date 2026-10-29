@@ -41,7 +41,7 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Tighten failure handling in the worker path."]
                 }
                 """);
-            var baselineProjectService = CreateProjectService(store, baselineProvider);
+            var baselineProjectService = CreateRepositoryService(store, baselineProvider);
             var baselineRepositoryService = CreateRepositoryService(store, baselineProvider, baselineProjectService);
 
             var baselineRunId = await baselineRepositoryService.StartReviewAsync("TestRepo", "full");
@@ -81,7 +81,7 @@ public class RepositoryReviewServiceTests
                 Error = "Repository review was interrupted while the API was restarting. Continue Review to restart it."
             });
 
-            var repositoryService = CreateRepositoryService(store, new RecordingProvider(), CreateProjectService(store, new RecordingProvider()));
+            var repositoryService = CreateRepositoryService(store, new RecordingProvider(), CreateRepositoryService(store, new RecordingProvider()));
             var continuedRunId = await repositoryService.StartReviewAsync("TestRepo", "update");
             continuedRunId.ShouldNotBe(interruptedRunId);
 
@@ -180,7 +180,7 @@ public class RepositoryReviewServiceTests
                 }
                 """);
 
-            var projectReviewService = CreateProjectService(store, provider);
+            var projectReviewService = CreateRepositoryService(store, provider);
             var repositoryReviewService = CreateRepositoryService(store, provider, projectReviewService);
 
             var runId = await repositoryReviewService.StartReviewAsync("TestRepo", "full");
@@ -227,7 +227,7 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Tighten failure handling in the worker path."]
                 }
                 """);
-            var baselineProjectService = CreateProjectService(store, baselineProvider);
+            var baselineProjectService = CreateRepositoryService(store, baselineProvider);
             var baselineRepositoryService = CreateRepositoryService(store, baselineProvider, baselineProjectService);
 
             var baselineRunId = await baselineRepositoryService.StartReviewAsync("TestRepo", "full");
@@ -263,7 +263,7 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Recheck the worker path if shared abstractions change later."]
                 }
                 """);
-            var updateProjectService = CreateProjectService(store, updateProvider);
+            var updateProjectService = CreateRepositoryService(store, updateProvider);
             var updateRepositoryService = CreateRepositoryService(store, updateProvider, updateProjectService);
 
             var updateRunId = await updateRepositoryService.StartReviewAsync("TestRepo", "update");
@@ -315,18 +315,18 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Tighten failure handling in the worker path."]
                 }
                 """);
-            var baselineProjectService = CreateProjectService(store, baselineProvider);
+            var baselineProjectService = CreateRepositoryService(store, baselineProvider);
             var baselineRepositoryService = CreateRepositoryService(store, baselineProvider, baselineProjectService);
 
             var baselineRunId = await baselineRepositoryService.StartReviewAsync("TestRepo", "full");
             await baselineRepositoryService.ExecuteReviewRunAsync(baselineRunId);
 
             await File.WriteAllTextAsync(Path.Combine(repoPath, "Directory.Build.props"), """
-                <Project>
+                <Repository>
                   <PropertyGroup>
                     <Nullable>enable</Nullable>
                   </PropertyGroup>
-                </Project>
+                </Repository>
                 """);
             CommitAll(repoPath, "config change");
 
@@ -344,7 +344,7 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Revalidate both projects after broad config changes."]
                 }
                 """);
-            var updateProjectService = CreateProjectService(store, updateProvider);
+            var updateProjectService = CreateRepositoryService(store, updateProvider);
             var updateRepositoryService = CreateRepositoryService(store, updateProvider, updateProjectService);
 
             var updateRunId = await updateRepositoryService.StartReviewAsync("TestRepo", "update");
@@ -389,7 +389,7 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Tighten failure handling in the worker path."]
                 }
                 """);
-            var baselineProjectService = CreateProjectService(store, baselineProvider);
+            var baselineProjectService = CreateRepositoryService(store, baselineProvider);
             var baselineRepositoryService = CreateRepositoryService(store, baselineProvider, baselineProjectService);
 
             var baselineRunId = await baselineRepositoryService.StartReviewAsync("TestRepo", "full");
@@ -427,7 +427,7 @@ public class RepositoryReviewServiceTests
                   "followUps": ["Recheck the worker path if the API contract changes further."]
                 }
                 """);
-            var updateProjectService = CreateProjectService(store, updateProvider);
+            var updateProjectService = CreateRepositoryService(store, updateProvider);
             var updateRepositoryService = CreateRepositoryService(store, updateProvider, updateProjectService);
 
             var updateRunId = await updateRepositoryService.StartReviewAsync("TestRepo", "update");
@@ -474,7 +474,7 @@ public class RepositoryReviewServiceTests
             NullLogger<RepositoryReviewService>.Instance);
     }
 
-    private static ProjectReviewService CreateProjectService(InMemoryGraphStore store, RecordingProvider provider)
+    private static ProjectReviewService CreateRepositoryService(InMemoryGraphStore store, RecordingProvider provider)
     {
         var fileSystem = new LocalFileSystem();
         return new ProjectReviewService(
@@ -544,7 +544,7 @@ public class RepositoryReviewServiceTests
 
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.File,
             Name = "FooService.cs",
@@ -553,7 +553,7 @@ public class RepositoryReviewServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.Class,
             Name = "FooService",
@@ -564,7 +564,7 @@ public class RepositoryReviewServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Worker",
             Label = NodeLabel.File,
             Name = "JobRunner.cs",
@@ -573,7 +573,7 @@ public class RepositoryReviewServiceTests
         });
         store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Worker",
             Label = NodeLabel.Class,
             Name = "JobRunner",
@@ -592,7 +592,7 @@ public class RepositoryReviewServiceTests
         [
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Api",
                 FilePath = "src/Api/FooService.cs",
                 ComplexityScore = 12,
@@ -605,7 +605,7 @@ public class RepositoryReviewServiceTests
             },
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Worker",
                 FilePath = "src/Worker/JobRunner.cs",
                 ComplexityScore = 16,
@@ -668,7 +668,7 @@ public class RepositoryReviewServiceTests
 
         var apiFileId = store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.File,
             Name = "FooService.cs",
@@ -677,7 +677,7 @@ public class RepositoryReviewServiceTests
         });
         var apiClassId = store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Api",
             Label = NodeLabel.Class,
             Name = "FooService",
@@ -688,7 +688,7 @@ public class RepositoryReviewServiceTests
         });
         var workerFileId = store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Worker",
             Label = NodeLabel.File,
             Name = "JobRunner.cs",
@@ -697,7 +697,7 @@ public class RepositoryReviewServiceTests
         });
         var workerClassId = store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Worker",
             Label = NodeLabel.Class,
             Name = "JobRunner",
@@ -708,7 +708,7 @@ public class RepositoryReviewServiceTests
         });
         var uiFileId = store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Ui",
             Label = NodeLabel.File,
             Name = "ViewModel.cs",
@@ -717,7 +717,7 @@ public class RepositoryReviewServiceTests
         });
         var uiClassId = store.AddNode(new GraphNode
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             DotnetProject = "TestRepo.Ui",
             Label = NodeLabel.Class,
             Name = "ViewModel",
@@ -729,28 +729,28 @@ public class RepositoryReviewServiceTests
 
         store.AddEdge(new GraphEdge
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             SourceId = apiClassId,
             TargetId = workerClassId,
             Type = EdgeType.CALLS
         });
         store.AddEdge(new GraphEdge
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             SourceId = apiFileId,
             TargetId = apiClassId,
             Type = EdgeType.DEFINES
         });
         store.AddEdge(new GraphEdge
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             SourceId = workerFileId,
             TargetId = workerClassId,
             Type = EdgeType.DEFINES
         });
         store.AddEdge(new GraphEdge
         {
-            Project = "TestRepo",
+            Repository = "TestRepo",
             SourceId = uiFileId,
             TargetId = uiClassId,
             Type = EdgeType.DEFINES
@@ -767,7 +767,7 @@ public class RepositoryReviewServiceTests
         [
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Api",
                 FilePath = "src/Api/FooService.cs",
                 ComplexityScore = 12,
@@ -780,7 +780,7 @@ public class RepositoryReviewServiceTests
             },
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Worker",
                 FilePath = "src/Worker/JobRunner.cs",
                 ComplexityScore = 16,
@@ -793,7 +793,7 @@ public class RepositoryReviewServiceTests
             },
             new FileMetricsEntity
             {
-                Project = "TestRepo",
+                Repository = "TestRepo",
                 DotnetProject = "TestRepo.Ui",
                 FilePath = "src/Ui/ViewModel.cs",
                 ComplexityScore = 2,

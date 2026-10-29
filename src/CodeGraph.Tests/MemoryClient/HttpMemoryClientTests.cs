@@ -33,7 +33,7 @@ public class HttpMemoryClientTests
                     {
                         Id = "codegraph",
                         Label = "CodeGraph",
-                        Type = "project",
+                        Type = "repository",
                     }
                 ]
             });

@@ -164,7 +164,7 @@ public class TreeSitterExtractor : ICodeExtractor
                 .Replace('\\', '/');
             return new GraphNode
             {
-                Project = context.ProjectName,
+                Repository = context.RepositoryName,
                 Label = label,
                 Name = name,
                 QualifiedName = qualifiedName,
@@ -231,7 +231,7 @@ public class TreeSitterExtractor : ICodeExtractor
         var fileTypes = new FileTypes(
             knownTypeLabels,
             fileQN,
-            fileQN[(context.ProjectName.Length + 1)..],
+            fileQN[(context.RepositoryName.Length + 1)..],
             spec.CallSiteReader?.Invoke(root));
         WalkForDefinitionsAndCalls(root, spec, context, content,
             nodes, edges, unresolvedCalls, makeNode, fileQN,
@@ -635,7 +635,7 @@ public class TreeSitterExtractor : ICodeExtractor
         var relativePath = Path.GetRelativePath(context.RootPath, filePath)
             .Replace('\\', '/')
             .TrimStart('/');
-        return $"{context.ProjectName}:{relativePath}";
+        return $"{context.RepositoryName}:{relativePath}";
     }
 
     /// <summary>

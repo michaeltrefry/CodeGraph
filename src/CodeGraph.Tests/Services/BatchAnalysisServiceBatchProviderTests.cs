@@ -27,7 +27,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         var nodeId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrderService",
@@ -71,7 +71,7 @@ public class BatchAnalysisServiceBatchProviderTests
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "demo-repo" });
         var nodeId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrderService",
@@ -126,7 +126,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         var classId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrderService",
@@ -136,7 +136,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         var methodId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Method,
             Name = "ProcessOrder",
@@ -152,7 +152,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         await store.InsertEdgeAsync(new GraphEdge
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             SourceId = classId,
             TargetId = methodId,
             Type = EdgeType.DEFINES_METHOD
@@ -182,7 +182,7 @@ public class BatchAnalysisServiceBatchProviderTests
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "demo-repo" });
         var nodeId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrderService",
@@ -248,7 +248,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
             var firstPartyNodeId = await store.UpsertNodeAsync(new GraphNode
             {
-                Project = "demo-repo",
+                Repository = "demo-repo",
                 Label = NodeLabel.Function,
                 Name = "display_manager_tick",
                 QualifiedName = "demo-repo.display_manager_tick",
@@ -260,7 +260,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
             await store.UpsertNodeAsync(new GraphNode
             {
-                Project = "demo-repo",
+                Repository = "demo-repo",
                 Label = NodeLabel.Function,
                 Name = "protoc_codegen_pass",
                 QualifiedName = "demo-repo.protoc_codegen_pass",
@@ -313,7 +313,7 @@ public class BatchAnalysisServiceBatchProviderTests
             var store = new InMemoryGraphStore();
             var nodeId = await store.UpsertNodeAsync(new GraphNode
             {
-                Project = "removed-repo",
+                Repository = "removed-repo",
                 DotnetProject = "Removed.Services",
                 Label = NodeLabel.Class,
                 Name = "OrderService",
@@ -356,7 +356,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrdersController",
@@ -366,7 +366,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         var serviceId = await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrderService",
@@ -376,7 +376,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
         await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "HelperUtility",
@@ -388,7 +388,7 @@ public class BatchAnalysisServiceBatchProviderTests
         {
             var targetId = await store.UpsertNodeAsync(new GraphNode
             {
-                Project = "demo-repo",
+                Repository = "demo-repo",
                 DotnetProject = "Demo.Project",
                 Label = NodeLabel.Interface,
                 Name = $"Dependency{i}",
@@ -398,7 +398,7 @@ public class BatchAnalysisServiceBatchProviderTests
 
             await store.InsertEdgeAsync(new GraphEdge
             {
-                Project = "demo-repo",
+                Repository = "demo-repo",
                 SourceId = serviceId,
                 TargetId = targetId,
                 Type = EdgeType.CALLS
@@ -440,7 +440,7 @@ public class BatchAnalysisServiceBatchProviderTests
         await store.UpsertRepositoryAsync(new RepositoryEntity { Name = "demo-repo" });
         await store.UpsertNodeAsync(new GraphNode
         {
-            Project = "demo-repo",
+            Repository = "demo-repo",
             DotnetProject = "Demo.Project",
             Label = NodeLabel.Class,
             Name = "OrderService",
@@ -679,7 +679,7 @@ public class BatchAnalysisServiceBatchProviderTests
     private sealed class NoOpExclusionService : IExclusionService
     {
         public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) => Task.FromResult<string?>(null);
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) => Task.FromResult(new HashSet<string>());
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) => Task.FromResult(new HashSet<string>());
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() => Task.FromResult<IReadOnlyList<ExclusionRuleEntity>>([]);
         public Task<ExclusionRuleEntity> CreateRuleAsync(string targetType, string targetValue, string exclusionType, string? reason, string createdBy) => throw new NotSupportedException();
         public Task<ExclusionRuleEntity?> UpdateRuleAsync(long id, string exclusionType, string? reason) => throw new NotSupportedException();

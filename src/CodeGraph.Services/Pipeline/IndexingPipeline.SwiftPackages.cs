@@ -53,8 +53,8 @@ public partial class IndexingPipeline
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                _logger.LogWarning(ex, "Skipping unreadable Swift package manifest {Manifest} in {Project}",
-                    NormalizeRelativePath(Path.GetRelativePath(rootPath, path)), context.ProjectName);
+                _logger.LogWarning(ex, "Skipping unreadable Swift package manifest {Manifest} in {Repository}",
+                    NormalizeRelativePath(Path.GetRelativePath(rootPath, path)), context.RepositoryName);
             }
         }
 

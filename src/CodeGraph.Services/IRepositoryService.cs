@@ -3,7 +3,7 @@ using CodeGraph.Models.Responses;
 
 namespace CodeGraph.Services;
 
-public interface IProjectService
+public interface IRepositoryService
 {
     Task<AnalysisBatchResponse?> ReAnalyzeRepository(string repo, CancellationToken cancellationToken = new());
     Task ProcessRepository(ProcessRepository message, CancellationToken cancellationToken = new());

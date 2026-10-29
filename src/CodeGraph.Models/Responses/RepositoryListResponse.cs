@@ -1,13 +1,13 @@
 namespace CodeGraph.Models.Responses;
 
-public record ProjectListResponse(
-    IReadOnlyList<ProjectListItem> Items,
+public record RepositoryListResponse(
+    IReadOnlyList<RepositoryListItem> Items,
     int Total,
     int Page,
     int PageSize,
     IReadOnlyList<string> Groups);
 
-public record ProjectListItem(
+public record RepositoryListItem(
     string Name,
     string? RepoUrl,
     string? SourceGroup,

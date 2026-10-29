@@ -17,7 +17,7 @@ public class SwiftTreeSitterExtractorTests
 
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 
@@ -239,7 +239,7 @@ public class SwiftTreeSitterExtractorTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_SwiftGrammarUnavailable_FilesAreReExtractedOnceTheGrammarLoads()
+    public async Task IndexRepositoryAsync_SwiftGrammarUnavailable_FilesAreReExtractedOnceTheGrammarLoads()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-swift-nogrammar-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(rootPath, "Sources"));
@@ -247,7 +247,7 @@ public class SwiftTreeSitterExtractorTests
         try
         {
             await File.WriteAllTextAsync(Path.Combine(rootPath, "Sources", "Shapes.swift"), FixtureSource);
-            // Another language keeps extraction nodes in the project, so the pipeline's
+            // Another language keeps extraction nodes in the repository, so the pipeline's
             // "no extraction nodes at all" safety net does not mask the version check.
             await File.WriteAllTextAsync(Path.Combine(rootPath, "tools.py"), "def helper():\n    pass\n");
             var store = new InMemoryGraphStore();
@@ -261,13 +261,13 @@ public class SwiftTreeSitterExtractorTests
 
             // Deployment without the grammar: the run completes and the file is skipped.
             await Pipeline(GrammarUnavailableExtractor())
-                .IndexProjectAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
+                .IndexRepositoryAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
             store.Nodes.ShouldNotContain(node => node.Name == "ShapeStore");
             store.Nodes.ShouldContain(node => node.Name == "helper");
 
             // Same unchanged file after the grammar is fixed: it must be extracted again.
             await Pipeline(new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance))
-                .IndexProjectAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
+                .IndexRepositoryAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
             store.Nodes.ShouldContain(node =>
                 node.Name == "ShapeStore" && node.Label == NodeLabel.Class);
         }
@@ -279,7 +279,7 @@ public class SwiftTreeSitterExtractorTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_SwiftRepository_ReportsSwiftLanguageStatsAndRecoversFromSyntaxErrors()
+    public async Task IndexRepositoryAsync_SwiftRepository_ReportsSwiftLanguageStatsAndRecoversFromSyntaxErrors()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-swift-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(rootPath, "Sources"));
@@ -301,7 +301,7 @@ public class SwiftTreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("SwiftRepo", rootPath, ct: CancellationToken.None);
 
             store.Nodes.ShouldContain(node =>
                 node.Name == "ShapeStore" && node.Label == NodeLabel.Class);

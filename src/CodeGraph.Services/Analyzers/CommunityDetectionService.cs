@@ -46,7 +46,7 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
         // Run Louvain
         var result = LouvainAlgorithm.Execute(adjacency);
         logger.LogInformation(
-            "Community detection complete: {Communities} communities, modularity={Modularity:F4}, {Nodes} projects",
+            "Community detection complete: {Communities} communities, modularity={Modularity:F4}, {Nodes} repositories",
             result.CommunityCount, result.Modularity, result.Communities.Count);
 
         // Compute betweenness centrality
@@ -56,7 +56,7 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
         var now = DateTime.UtcNow;
         var clusters = result.Communities.Select(kv => new RepoCluster
         {
-            ProjectName = kv.Key,
+            RepositoryName = kv.Key,
             ClusterId = kv.Value,
             ModularityScore = (decimal)result.Modularity,
             Level = 0,
@@ -78,8 +78,8 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
         if (clusters.Count == 0)
             return new ClusterOverviewResponse([], 0, repos.Count, 0, null);
 
-        // Build lookup: project → cluster_id (case-insensitive — edge project names may differ in casing)
-        var projectCluster = clusters.GroupBy(c => c.ProjectName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().ClusterId, StringComparer.OrdinalIgnoreCase);
+        // Build lookup: repository → cluster_id (case-insensitive — edge repository names may differ in casing)
+        var repositoryCluster = clusters.GroupBy(c => c.RepositoryName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().ClusterId, StringComparer.OrdinalIgnoreCase);
 
         // Group by cluster
         var grouped = clusters.GroupBy(c => c.ClusterId).OrderBy(g => g.Key);
@@ -87,14 +87,14 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
 
         foreach (var group in grouped)
         {
-            var members = group.Select(c => c.ProjectName).ToList();
+            var members = group.Select(c => c.RepositoryName).ToList();
             var memberSet = members.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             int internalEdges = 0, externalEdges = 0;
             foreach (var edge in allEdges)
             {
-                bool sourceIn = memberSet.Contains(edge.SourceProject);
-                bool targetIn = memberSet.Contains(edge.TargetProject);
+                bool sourceIn = memberSet.Contains(edge.SourceRepository);
+                bool targetIn = memberSet.Contains(edge.TargetRepository);
                 if (sourceIn && targetIn) internalEdges++;
                 else if (sourceIn || targetIn) externalEdges++;
             }
@@ -108,7 +108,7 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
                 .Where(c => c.BetweennessCentrality > 0.01m)
                 .OrderByDescending(c => c.BetweennessCentrality)
                 .Take(3)
-                .Select(c => c.ProjectName)
+                .Select(c => c.RepositoryName)
                 .ToList();
 
             summaries.Add(new ClusterSummary(
@@ -136,33 +136,33 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
 
         var allEdges = await store.GetAllCrossRepoEdgesAsync();
         var allClusters = await store.GetRepoClustersAsync();
-        var projectCluster = allClusters.ToDictionary(c => c.ProjectName, c => c.ClusterId, StringComparer.OrdinalIgnoreCase);
+        var repositoryCluster = allClusters.ToDictionary(c => c.RepositoryName, c => c.ClusterId, StringComparer.OrdinalIgnoreCase);
 
-        var memberSet = members.Select(m => m.ProjectName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var memberSet = members.Select(m => m.RepositoryName).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // Per-member edge counts
         var memberDetails = new List<ClusterMember>();
         foreach (var m in members)
         {
             int internalEdges = allEdges.Count(e =>
-                (e.SourceProject.Equals(m.ProjectName, StringComparison.OrdinalIgnoreCase) && memberSet.Contains(e.TargetProject)) ||
-                (e.TargetProject.Equals(m.ProjectName, StringComparison.OrdinalIgnoreCase) && memberSet.Contains(e.SourceProject)));
+                (e.SourceRepository.Equals(m.RepositoryName, StringComparison.OrdinalIgnoreCase) && memberSet.Contains(e.TargetRepository)) ||
+                (e.TargetRepository.Equals(m.RepositoryName, StringComparison.OrdinalIgnoreCase) && memberSet.Contains(e.SourceRepository)));
             int externalEdges = allEdges.Count(e =>
-                (e.SourceProject.Equals(m.ProjectName, StringComparison.OrdinalIgnoreCase) && !memberSet.Contains(e.TargetProject)) ||
-                (e.TargetProject.Equals(m.ProjectName, StringComparison.OrdinalIgnoreCase) && !memberSet.Contains(e.SourceProject)));
+                (e.SourceRepository.Equals(m.RepositoryName, StringComparison.OrdinalIgnoreCase) && !memberSet.Contains(e.TargetRepository)) ||
+                (e.TargetRepository.Equals(m.RepositoryName, StringComparison.OrdinalIgnoreCase) && !memberSet.Contains(e.SourceRepository)));
 
-            memberDetails.Add(new ClusterMember(m.ProjectName, m.BetweennessCentrality, internalEdges, externalEdges));
+            memberDetails.Add(new ClusterMember(m.RepositoryName, m.BetweennessCentrality, internalEdges, externalEdges));
         }
 
         // Cross-cluster connections
         var crossClusterEdges = allEdges.Where(e =>
-            (memberSet.Contains(e.SourceProject) && !memberSet.Contains(e.TargetProject)) ||
-            (memberSet.Contains(e.TargetProject) && !memberSet.Contains(e.SourceProject)));
+            (memberSet.Contains(e.SourceRepository) && !memberSet.Contains(e.TargetRepository)) ||
+            (memberSet.Contains(e.TargetRepository) && !memberSet.Contains(e.SourceRepository)));
 
         var connections = crossClusterEdges
-            .Select(e => memberSet.Contains(e.SourceProject) ? e.TargetProject : e.SourceProject)
-            .Where(p => projectCluster.ContainsKey(p))
-            .GroupBy(p => projectCluster[p])
+            .Select(e => memberSet.Contains(e.SourceRepository) ? e.TargetRepository : e.SourceRepository)
+            .Where(p => repositoryCluster.ContainsKey(p))
+            .GroupBy(p => repositoryCluster[p])
             .Select(g =>
             {
                 var targetClusterMembers = allClusters.Where(c => c.ClusterId == g.Key).ToList();
@@ -172,8 +172,8 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
                     g.Count(),
                     crossClusterEdges
                         .Where(e =>
-                            (memberSet.Contains(e.SourceProject) && projectCluster.GetValueOrDefault(e.TargetProject, -1) == g.Key) ||
-                            (memberSet.Contains(e.TargetProject) && projectCluster.GetValueOrDefault(e.SourceProject, -1) == g.Key))
+                            (memberSet.Contains(e.SourceRepository) && repositoryCluster.GetValueOrDefault(e.TargetRepository, -1) == g.Key) ||
+                            (memberSet.Contains(e.TargetRepository) && repositoryCluster.GetValueOrDefault(e.SourceRepository, -1) == g.Key))
                         .Select(e => e.Type.ToString())
                         .Distinct()
                         .ToList());
@@ -181,7 +181,7 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
             .OrderByDescending(c => c.EdgeCount)
             .ToList();
 
-        int totalInternal = allEdges.Count(e => memberSet.Contains(e.SourceProject) && memberSet.Contains(e.TargetProject));
+        int totalInternal = allEdges.Count(e => memberSet.Contains(e.SourceRepository) && memberSet.Contains(e.TargetRepository));
         int totalExternal = crossClusterEdges.Count();
 
         return new ClusterDetailResponse(
@@ -199,8 +199,8 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
         var allEdges = await store.GetAllCrossRepoEdgesAsync();
         var clusters = await store.GetRepoClustersAsync();
 
-        var projectCluster = clusters.GroupBy(c => c.ProjectName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().ClusterId, StringComparer.OrdinalIgnoreCase);
-        var projectBetweenness = clusters.GroupBy(c => c.ProjectName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().BetweennessCentrality, StringComparer.OrdinalIgnoreCase);
+        var repositoryCluster = clusters.GroupBy(c => c.RepositoryName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().ClusterId, StringComparer.OrdinalIgnoreCase);
+        var repositoryBetweenness = clusters.GroupBy(c => c.RepositoryName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().BetweennessCentrality, StringComparer.OrdinalIgnoreCase);
 
         var nodes = repos.Select(r => new ClusterGraphNode(
             r.Name,
@@ -208,15 +208,15 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
             r.Language,
             r.Framework,
             r.IsFoundational,
-            projectCluster.GetValueOrDefault(r.Name),
-            projectBetweenness.GetValueOrDefault(r.Name, 0))).ToList();
+            repositoryCluster.GetValueOrDefault(r.Name),
+            repositoryBetweenness.GetValueOrDefault(r.Name, 0))).ToList();
 
         var edges = allEdges
-            .GroupBy(e => (Source: e.SourceProject, Target: e.TargetProject))
+            .GroupBy(e => (Source: e.SourceRepository, Target: e.TargetRepository))
             .Select(g =>
             {
-                var sourceCluster = projectCluster.GetValueOrDefault(g.Key.Source, -1);
-                var targetCluster = projectCluster.GetValueOrDefault(g.Key.Target, -2);
+                var sourceCluster = repositoryCluster.GetValueOrDefault(g.Key.Source, -1);
+                var targetCluster = repositoryCluster.GetValueOrDefault(g.Key.Target, -2);
                 return new ClusterGraphEdge(
                     g.Key.Source,
                     g.Key.Target,
@@ -249,12 +249,12 @@ public class CommunityDetectionService(IGraphStore store, ILogger<CommunityDetec
         {
             double weight = EdgeWeights.GetValueOrDefault(edge.Type.ToString(), DefaultWeight);
 
-            if (!directedWeights.TryGetValue(edge.SourceProject, out var targets))
+            if (!directedWeights.TryGetValue(edge.SourceRepository, out var targets))
             {
                 targets = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-                directedWeights[edge.SourceProject] = targets;
+                directedWeights[edge.SourceRepository] = targets;
             }
-            targets[edge.TargetProject] = targets.GetValueOrDefault(edge.TargetProject, 0) + weight;
+            targets[edge.TargetRepository] = targets.GetValueOrDefault(edge.TargetRepository, 0) + weight;
         }
 
         // Convert to undirected with bidirectional bonus

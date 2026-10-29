@@ -14,14 +14,14 @@ using Shouldly;
 
 namespace CodeGraph.Tests.Services;
 
-public class ProjectQueryServiceMariaDbTests
+public class RepositoryQueryServiceMariaDbTests
 {
     [Fact]
     public async Task SchemaQueries_CompleteAgainstOneSharedDbContext()
     {
         var rootConnectionString = MariaDbTestEnvironment.RequireConnectionString();
         var builder = new MySqlConnectionStringBuilder(rootConnectionString);
-        var databaseName = $"codegraph_project_query_test_{Guid.NewGuid():N}";
+        var databaseName = $"codegraph_repository_query_test_{Guid.NewGuid():N}";
         builder.Database = databaseName;
 
         var storageOptions = Options.Create(new MariaDbStorageOptions
@@ -52,27 +52,27 @@ public class ProjectQueryServiceMariaDbTests
                 new MySqlMetricsStore(context),
                 new MySqlReviewStore(context),
                 runner);
-            var service = new ProjectQueryService(
+            var service = new RepositoryQueryService(
                 store,
                 Options.Create(new RepositorySourceOptions()));
-            const string project = "db:sql-prod/Orders";
+            const string repository = "db:sql-prod/Orders";
 
             await store.UpsertRepositoryAsync(new RepositoryEntity
             {
-                Name = project,
+                Name = repository,
                 SourceGroup = "sql-prod",
                 Language = "SQL"
             });
             await store.UpsertNodeAsync(new GraphNode
             {
-                Project = project,
+                Repository = repository,
                 Label = NodeLabel.Table,
                 Name = "Orders",
                 QualifiedName = "dbo.Orders"
             });
 
-            var nodes = await service.GetNodesAsync(project, null, null, 1, 50);
-            var catalog = await service.GetSchemaCatalogAsync(project);
+            var nodes = await service.GetNodesAsync(repository, null, null, 1, 50);
+            var catalog = await service.GetSchemaCatalogAsync(repository);
 
             nodes.Total.ShouldBe(1);
             nodes.Items.Single().Name.ShouldBe("Orders");

@@ -92,7 +92,7 @@ public class McpHubServiceTests
         };
         var service = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -113,7 +113,7 @@ public class McpHubServiceTests
         };
         var service = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -148,7 +148,7 @@ public class McpHubServiceTests
 
         var service = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             factory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -176,7 +176,7 @@ public class McpHubServiceTests
         };
         var service = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             // The source exists but mcp_hub_enabled = false -> not exposed.
@@ -203,7 +203,7 @@ public class McpHubServiceTests
         };
         var service = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             // Exposed, but only SchemaOnly — read-only SQL is not permitted.
@@ -593,7 +593,7 @@ public class McpHubServiceTests
         };
         return new McpHubService(
             hubStore,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             httpClientFactory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -642,7 +642,7 @@ public class McpHubServiceTests
         {
             Providers = [new() { ProviderKey = "mysql", Enabled = true }]
         };
-        // EmptyProjectQueryService throws NotSupportedException for schema listing.
+        // EmptyRepositoryQueryService throws NotSupportedException for schema listing.
         var server = Server(store);
 
         await server.ListMySqlSchemas(null, null, null, 1, 25, CancellationToken.None);
@@ -681,7 +681,7 @@ public class McpHubServiceTests
         };
         var hub = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             factory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -947,7 +947,7 @@ public class McpHubServiceTests
         using var staging = new ShortcutUploadStagingArea();
         var hub = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             factory,
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -984,7 +984,7 @@ public class McpHubServiceTests
         var store = new RecordingMcpHubStore();
         var service = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -1009,7 +1009,7 @@ public class McpHubServiceTests
     {
         var hub = new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             new EmptyHttpClientFactory(),
             Policy(new InMemoryMcpSensitiveColumnStore()),
             ExposurePolicy(),
@@ -1227,18 +1227,18 @@ public class McpHubServiceTests
         public HttpClient CreateClient(string name) => new();
     }
 
-    private sealed class EmptyProjectQueryService : IProjectQueryService
+    private sealed class EmptyRepositoryQueryService : IRepositoryQueryService
     {
-        public Task<ProjectListResponse> ListAsync(string? search, string? group, int page, int pageSize) => throw new NotSupportedException();
+        public Task<RepositoryListResponse> ListAsync(string? search, string? group, int page, int pageSize) => throw new NotSupportedException();
         public Task<SchemaListResponse> ListSchemasAsync(string? search, string? server, string? database, int page, int pageSize) => throw new NotSupportedException();
         public Task<SchemaCatalogResponse?> GetSchemaCatalogAsync(string name) => throw new NotSupportedException();
-        public Task<ProjectDetailResponse?> GetDetailAsync(string name) => throw new NotSupportedException();
-        public Task<ProjectHealthResponse?> GetHealthAsync(string name) => throw new NotSupportedException();
+        public Task<RepositoryDetailResponse?> GetDetailAsync(string name) => throw new NotSupportedException();
+        public Task<RepositoryHealthResponse?> GetHealthAsync(string name) => throw new NotSupportedException();
         public Task<IReadOnlyList<FileMetrics>> GetMetricsAsync(string name, string? dotnetProject, int top) => throw new NotSupportedException();
         public Task<IReadOnlyList<FileMetrics>> GetHotspotsAsync(string name, int top) => throw new NotSupportedException();
         public Task<NodeListResponse> GetNodesAsync(string name, string? label, string? dotnetProject, int page, int pageSize) => throw new NotSupportedException();
         public Task<AnalysisBatchResponse?> GetBatchStatusAsync(string name) => throw new NotSupportedException();
-        public Task<ProjectSecurityResponse?> GetSecurityAsync(string name) => throw new NotSupportedException();
+        public Task<RepositorySecurityResponse?> GetSecurityAsync(string name) => throw new NotSupportedException();
         public Task<string?> GetReadmeAsync(string name) => throw new NotSupportedException();
     }
 }

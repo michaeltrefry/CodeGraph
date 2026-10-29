@@ -10,7 +10,7 @@ public class SqlExtractorTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 

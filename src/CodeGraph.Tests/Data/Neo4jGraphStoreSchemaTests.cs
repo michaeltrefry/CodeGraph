@@ -67,10 +67,10 @@ public class Neo4jGraphStoreSchemaTests
 
         var suffix = Guid.NewGuid().ToString("N");
         var server = $"server-{suffix}";
-        var billingProject = $"db:{server}/Billing";
-        var ordersProject = $"schema-{suffix}-orders";
-        var whitespaceServerProject = $"db:invalid-{suffix}/WhitespaceServer";
-        var whitespaceDatabaseProject = $"invalid-{suffix}-whitespace-database";
+        var billingRepository = $"db:{server}/Billing";
+        var ordersRepository = $"schema-{suffix}-orders";
+        var whitespaceServerRepository = $"db:invalid-{suffix}/WhitespaceServer";
+        var whitespaceDatabaseRepository = $"invalid-{suffix}-whitespace-database";
         var options = Options.Create(new CodeGraphStorageOptions
         {
             Neo4jUri = uri,
@@ -86,31 +86,31 @@ public class Neo4jGraphStoreSchemaTests
         {
             await store.UpsertRepositoryAsync(new RepositoryEntity
             {
-                Name = billingProject,
+                Name = billingRepository,
                 SourceGroup = server
             });
             await store.UpsertRepositoryAsync(new RepositoryEntity
             {
-                Name = ordersProject,
+                Name = ordersRepository,
                 Properties = $$"""{"serverName":"{{server}}","databaseName":"Orders"}"""
             });
             await SeedWhitespaceSchemasAsync(
                 factory,
                 server,
-                whitespaceServerProject,
-                whitespaceDatabaseProject);
+                whitespaceServerRepository,
+                whitespaceDatabaseRepository);
             await store.UpsertNodeBatchAsync(
             [
                 new GraphNode
                 {
-                    Project = ordersProject,
+                    Repository = ordersRepository,
                     Label = NodeLabel.Table,
                     Name = "Customers",
                     QualifiedName = $"{suffix}.Customers"
                 },
                 new GraphNode
                 {
-                    Project = ordersProject,
+                    Repository = ordersRepository,
                     Label = NodeLabel.StoredProcedure,
                     Name = "GetCustomers",
                     QualifiedName = $"{suffix}.GetCustomers"
@@ -121,12 +121,12 @@ public class Neo4jGraphStoreSchemaTests
             var result = await store.SearchSchemaRepositoriesAsync(server: server, page: 2, pageSize: 1);
 
             allTestSchemas.TotalCount.ShouldBe(2);
-            allTestSchemas.Items.Select(item => item.Project.Name)
-                .ShouldBe([billingProject, ordersProject]);
+            allTestSchemas.Items.Select(item => item.Repository.Name)
+                .ShouldBe([billingRepository, ordersRepository]);
             result.TotalCount.ShouldBe(2);
             result.TotalTables.ShouldBe(1);
             result.TotalProcedures.ShouldBe(1);
-            result.Items.Single().Project.Name.ShouldBe(ordersProject);
+            result.Items.Single().Repository.Name.ShouldBe(ordersRepository);
             result.Items.Single().TableCount.ShouldBe(1);
             result.Databases.ShouldBe(["Billing", "Orders"]);
 
@@ -136,16 +136,16 @@ public class Neo4jGraphStoreSchemaTests
                 database: "orders");
             filtered.TotalCount.ShouldBe(1);
             filtered.TotalTables.ShouldBe(1);
-            filtered.Items.Single().Project.Name.ShouldBe(ordersProject);
+            filtered.Items.Single().Repository.Name.ShouldBe(ordersRepository);
         }
         finally
         {
-            await store.DeleteNodesByProjectAsync(billingProject);
-            await store.DeleteNodesByProjectAsync(ordersProject);
-            await store.DeleteRepositoryAsync(billingProject);
-            await store.DeleteRepositoryAsync(ordersProject);
-            await store.DeleteRepositoryAsync(whitespaceServerProject);
-            await store.DeleteRepositoryAsync(whitespaceDatabaseProject);
+            await store.DeleteNodesByRepositoryAsync(billingRepository);
+            await store.DeleteNodesByRepositoryAsync(ordersRepository);
+            await store.DeleteRepositoryAsync(billingRepository);
+            await store.DeleteRepositoryAsync(ordersRepository);
+            await store.DeleteRepositoryAsync(whitespaceServerRepository);
+            await store.DeleteRepositoryAsync(whitespaceDatabaseRepository);
         }
     }
 
@@ -162,9 +162,9 @@ public class Neo4jGraphStoreSchemaTests
         {
             await tx.RunAsync("""
                 UNWIND $indexes AS index
-                WITH index, 'db:' + $server + '/Database' + right('0000' + toString(index), 4) AS project
+                WITH index, 'db:' + $server + '/Database' + right('0000' + toString(index), 4) AS repository
                 CREATE (r:RepositoryRecord {
-                    name: project,
+                    name: repository,
                     sourceGroup: $server,
                     isDatabaseSchema: true,
                     schemaServerName: $server,
@@ -172,7 +172,7 @@ public class Neo4jGraphStoreSchemaTests
                     schemaScaleTest: $suffix
                 })
                 CREATE (:CodeNode {
-                    project: project,
+                    repository: repository,
                     label: 'Table',
                     name: 'Table' + right('0000' + toString(index), 4),
                     qualifiedName: 'dbo.Table' + right('0000' + toString(index), 4),
@@ -185,26 +185,26 @@ public class Neo4jGraphStoreSchemaTests
     private static async Task SeedWhitespaceSchemasAsync(
         Neo4jSessionFactory factory,
         string server,
-        string whitespaceServerProject,
-        string whitespaceDatabaseProject)
+        string whitespaceServerRepository,
+        string whitespaceDatabaseRepository)
     {
         await using var session = factory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
                 CREATE (:RepositoryRecord {
-                    name: $whitespaceServerProject,
+                    name: $whitespaceServerRepository,
                     sourceGroup: $whitespaceServer
                 })
                 CREATE (:RepositoryRecord {
-                    name: $whitespaceDatabaseProject,
+                    name: $whitespaceDatabaseRepository,
                     sourceGroup: $server,
                     properties: '{"databaseName":"   "}'
                 })
                 """, new
                 {
-                    whitespaceServerProject,
-                    whitespaceDatabaseProject,
+                    whitespaceServerRepository,
+                    whitespaceDatabaseRepository,
                     whitespaceServer = " \t ",
                     server
                 });
@@ -213,12 +213,12 @@ public class Neo4jGraphStoreSchemaTests
 
     private static void AssertSchemaScalePage(SchemaRepositorySearchResult result, string server)
     {
-        var expectedProjects = Enumerable.Range(20, 10)
+        var expectedRepositories = Enumerable.Range(20, 10)
             .Select(index => $"db:{server}/Database{index:0000}")
             .ToArray();
 
         result.Items.Count.ShouldBe(10);
-        result.Items.Select(item => item.Project.Name).ShouldBe(expectedProjects);
+        result.Items.Select(item => item.Repository.Name).ShouldBe(expectedRepositories);
         result.Items.ShouldAllBe(item =>
             item.TableCount == 1 && item.ViewCount == 0 && item.ProcedureCount == 0);
     }

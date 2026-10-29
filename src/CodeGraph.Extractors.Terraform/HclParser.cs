@@ -82,7 +82,7 @@ public partial class HclParser
             var resourceType = m.Groups["type"].Value;
             var resourceName = m.Groups["name"].Value;
             var body = ExtractBlockBody(content, m.Index);
-            var qn = $"{_context.ProjectName}.resource.{resourceType}.{resourceName}";
+            var qn = $"{_context.RepositoryName}.resource.{resourceType}.{resourceName}";
 
             var props = new Dictionary<string, object>
             {
@@ -112,7 +112,7 @@ public partial class HclParser
         {
             var dataType = m.Groups["type"].Value;
             var dataName = m.Groups["name"].Value;
-            var qn = $"{_context.ProjectName}.data.{dataType}.{dataName}";
+            var qn = $"{_context.RepositoryName}.data.{dataType}.{dataName}";
 
             _nodes.Add(MakeNode(qn, $"data.{dataType}.{dataName}", NodeLabel.TerraformDataSource, new()
             {
@@ -131,7 +131,7 @@ public partial class HclParser
         {
             var moduleName = m.Groups["name"].Value;
             var body = ExtractBlockBody(content, m.Index);
-            var qn = $"{_context.ProjectName}.module.{moduleName}";
+            var qn = $"{_context.RepositoryName}.module.{moduleName}";
 
             var source = ExtractStringValue(body, "source");
             var version = ExtractStringValue(body, "version");
@@ -147,7 +147,7 @@ public partial class HclParser
             {
                 var localSource = source.TrimStart('.', '/');
                 var sourceQN = source.StartsWith("./") || source.StartsWith("../")
-                    ? $"{_context.ProjectName}.module_source.{Sanitize(localSource)}"
+                    ? $"{_context.RepositoryName}.module_source.{Sanitize(localSource)}"
                     : $"terraform_registry:{source}";
 
                 _edges.Add(new PendingEdge(qn, sourceQN, EdgeType.INCLUDES_MODULE,
@@ -166,7 +166,7 @@ public partial class HclParser
         {
             var varName = m.Groups["name"].Value;
             var body = ExtractBlockBody(content, m.Index);
-            var qn = $"{_context.ProjectName}.var.{varName}";
+            var qn = $"{_context.RepositoryName}.var.{varName}";
 
             var props = new Dictionary<string, object> { ["confidence"] = "high" };
 
@@ -190,7 +190,7 @@ public partial class HclParser
         {
             var outputName = m.Groups["name"].Value;
             var body = ExtractBlockBody(content, m.Index);
-            var qn = $"{_context.ProjectName}.output.{outputName}";
+            var qn = $"{_context.RepositoryName}.output.{outputName}";
 
             var props = new Dictionary<string, object> { ["confidence"] = "high" };
 
@@ -209,7 +209,7 @@ public partial class HclParser
                 {
                     var refType = refMatch.Groups["type"].Value;
                     var refName = refMatch.Groups["name"].Value;
-                    var targetQN = $"{_context.ProjectName}.resource.{refType}.{refName}";
+                    var targetQN = $"{_context.RepositoryName}.resource.{refType}.{refName}";
                     _edges.Add(new PendingEdge(qn, targetQN, EdgeType.CALLS));
                 }
             }
@@ -226,7 +226,7 @@ public partial class HclParser
             foreach (Match assign in LocalAssignmentRegex().Matches(body))
             {
                 var localName = assign.Groups["name"].Value;
-                var qn = $"{_context.ProjectName}.local.{localName}";
+                var qn = $"{_context.RepositoryName}.local.{localName}";
 
                 _nodes.Add(MakeNode(qn, localName, NodeLabel.TerraformVariable, new()
                 {
@@ -245,7 +245,7 @@ public partial class HclParser
         {
             var varName = m.Groups["name"].Value;
             var value = m.Groups["value"].Value.Trim().Trim('"');
-            var qn = $"{_context.ProjectName}.tfvar.{varName}";
+            var qn = $"{_context.RepositoryName}.tfvar.{varName}";
 
             var props = new Dictionary<string, object>
             {
@@ -320,7 +320,7 @@ public partial class HclParser
         {
             var refType = dep.Groups["type"].Value;
             var refName = dep.Groups["name"].Value;
-            var targetQN = $"{_context.ProjectName}.resource.{refType}.{refName}";
+            var targetQN = $"{_context.RepositoryName}.resource.{refType}.{refName}";
             _edges.Add(new PendingEdge(sourceQN, targetQN, EdgeType.DEPENDS_ON));
         }
 
@@ -328,7 +328,7 @@ public partial class HclParser
         foreach (Match dep in ModuleRefRegex().Matches(deps))
         {
             var moduleName = dep.Groups["name"].Value;
-            var targetQN = $"{_context.ProjectName}.module.{moduleName}";
+            var targetQN = $"{_context.RepositoryName}.module.{moduleName}";
             _edges.Add(new PendingEdge(sourceQN, targetQN, EdgeType.DEPENDS_ON));
         }
     }
@@ -443,7 +443,7 @@ public partial class HclParser
 
     private void ScanForReferences(string content)
     {
-        var parentQN = $"{_context.ProjectName}.file.{Path.GetFileNameWithoutExtension(_filePath)}";
+        var parentQN = $"{_context.RepositoryName}.file.{Path.GetFileNameWithoutExtension(_filePath)}";
 
         foreach (Match m in StringLiteralRegex().Matches(content))
         {
@@ -553,7 +553,7 @@ public partial class HclParser
 
         return new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = label,
             Name = name,
             QualifiedName = qualifiedName,

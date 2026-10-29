@@ -4,7 +4,7 @@ public record StartProjectReviewResponse(long ReviewRunId, string Status);
 
 public record ProjectReviewRunResponse(
     long Id,
-    string Project,
+    string Repository,
     string ProjectName,
     string? ReviewedCommitSha,
     string Status,
@@ -49,7 +49,7 @@ public record ProjectDiagnosticResponse(
     DateTime ComputedAt);
 
 public record ProjectDiagnosticsResponse(
-    string Project,
+    string Repository,
     string? DotnetProject,
     int ErrorCount,
     int WarningCount,

@@ -8,7 +8,7 @@ public partial class Neo4jGraphStore
 {
     // ── Summaries ─────────────────────────────────────────────────────────
 
-    public async Task UpsertRepositorySummaryAsync(string project, string summary,
+    public async Task UpsertRepositorySummaryAsync(string repository, string summary,
         ConfidenceLevel confidence, string sourceHash, string? modelUsed = null)
     {
         var now = DateTime.UtcNow;
@@ -16,7 +16,7 @@ public partial class Neo4jGraphStore
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
-                MERGE (s:RepositorySummary {project: $project})
+                MERGE (s:RepositorySummary {repository: $repository})
                 ON CREATE SET s.createdAt = $now
                 SET s.summary = $summary,
                     s.confidence = $confidence,
@@ -26,7 +26,7 @@ public partial class Neo4jGraphStore
                 """,
                 new
                 {
-                    project,
+                    repository,
                     summary,
                     confidence = confidence.ToString().ToLowerInvariant(),
                     sourceHash,
@@ -36,19 +36,19 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<ProjectSummary?> GetRepositorySummaryAsync(string project)
+    public async Task<RepositorySummary?> GetRepositorySummaryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (s:RepositorySummary {project: $project}) RETURN s",
-                new { project });
+                "MATCH (s:RepositorySummary {repository: $repository}) RETURN s",
+                new { repository });
             if (await cursor.FetchAsync())
             {
                 var node = cursor.Current["s"].As<INode>();
-                return new ProjectSummary(
-                    node["project"].As<string>(),
+                return new RepositorySummary(
+                    node["repository"].As<string>(),
                     node["summary"].As<string>(),
                     Enum.Parse<ConfidenceLevel>(node["confidence"].As<string>(), ignoreCase: true),
                     node["sourceHash"].As<string>(),
@@ -126,18 +126,18 @@ public partial class Neo4jGraphStore
 
     // ── Graph Context for Batch Analysis ──────────────────────────────────
 
-    public async Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string project)
+    public async Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (n:CodeNode:Type {project: $project})
+                MATCH (n:CodeNode:Type {repository: $repository})
                 WHERE (n:Class OR n:Interface)
                   AND EXISTS { MATCH (n)-[]-(:CodeNode) }
                 RETURN n ORDER BY n.name
                 """,
-                new { project });
+                new { repository });
             var results = new List<NodeEntity>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNodeToEntity(record["n"].As<INode>()));
@@ -171,7 +171,7 @@ public partial class Neo4jGraphStore
                 MATCH (source:CodeNode {appId: $nodeId})-[e]->(target:CodeNode)
                 WHERE NOT type(e) IN ['DEFINES', 'DEFINES_METHOD', 'CONTAINS_FILE', 'CONTAINS_FOLDER', 'CONTAINS_NAMESPACE', 'CONTAINS_PROJECT']
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
@@ -195,7 +195,7 @@ public partial class Neo4jGraphStore
                 MATCH (source:CodeNode)-[e]->(target:CodeNode {appId: $nodeId})
                 WHERE NOT type(e) IN ['DEFINES', 'DEFINES_METHOD', 'CONTAINS_FILE', 'CONTAINS_FOLDER', 'CONTAINS_NAMESPACE', 'CONTAINS_PROJECT']
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
@@ -210,14 +210,14 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project)
+    public async Task<IReadOnlyList<NodeEntity>> GetAllNodesByRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (n:CodeNode {project: $project}) RETURN n ORDER BY n.label, n.name",
-                new { project });
+                "MATCH (n:CodeNode {repository: $repository}) RETURN n ORDER BY n.label, n.name",
+                new { repository });
             var results = new List<NodeEntity>();
             await foreach (var record in cursor)
                 results.Add(MapCodeNodeToEntity(record["n"].As<INode>()));
@@ -225,23 +225,23 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project)
+    public async Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
                 """
-                MATCH (source:CodeNode {project: $project})-[e]->(target:CodeNode)
-                WHERE coalesce(e.project, source.project) = $project
+                MATCH (source:CodeNode {repository: $repository})-[e]->(target:CodeNode)
+                WHERE coalesce(e.repository, source.repository) = $repository
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
                        e.properties AS properties
                 """,
-                new { project });
+                new { repository });
             var results = new List<EdgeEntity>();
             await foreach (var record in cursor)
                 results.Add(MapEdgeRecordToEntity(record));
@@ -259,7 +259,7 @@ public partial class Neo4jGraphStore
                 MATCH (source:CodeNode)-[e]->(target:CodeNode)
                 WHERE source.appId IN $nodeIds OR target.appId IN $nodeIds
                 RETURN elementId(e) AS elementId,
-                       coalesce(e.project, source.project) AS project,
+                       coalesce(e.repository, source.repository) AS repository,
                        source.appId AS sourceId,
                        target.appId AS targetId,
                        type(e) AS type,
@@ -556,7 +556,7 @@ public partial class Neo4jGraphStore
     private static NodeEntity MapCodeNodeToEntity(INode node) => new()
     {
         Id = node["appId"].As<long>(),
-        Project = node["project"].As<string>(),
+        Repository = node["repository"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
         Label = GetNodeLabel(node).ToString(),
         Name = node["name"].As<string>(),
@@ -570,7 +570,7 @@ public partial class Neo4jGraphStore
     private static EdgeEntity MapEdgeRecordToEntity(IRecord record) => new()
     {
         Id = GetRelationshipId(record),
-        Project = record["project"].As<string>(),
+        Repository = record["repository"].As<string>(),
         SourceId = record["sourceId"].As<long>(),
         TargetId = record["targetId"].As<long>(),
         Type = record["type"].As<string>(),

@@ -8,8 +8,8 @@ namespace CodeGraph.Data.MariaDb;
 
 public partial class MySqlGraphStore
 {
-    public async Task<int> ReplaceProjectFilesAsync(
-        string project,
+    public async Task<int> ReplaceRepositoryFilesAsync(
+        string repository,
         IReadOnlyList<string> filePaths,
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
@@ -27,7 +27,7 @@ public partial class MySqlGraphStore
             var pathVariants = ExpandPathVariants(filePaths);
             // Retracted edges go first, so they are never preserved below.
             if (retractions is { Edges.Count: > 0 })
-                await DeleteRetractedEdgesAsync(conn, transaction, project, retractions.Edges, ct);
+                await DeleteRetractedEdgesAsync(conn, transaction, repository, retractions.Edges, ct);
 
             var preservedIncoming = (await conn.QueryAsync<StoredPendingEdge>(new CommandDefinition("""
                 SELECT source.qualified_name AS SourceQN,
@@ -37,20 +37,20 @@ public partial class MySqlGraphStore
                 FROM edges edge
                 INNER JOIN nodes source ON source.id = edge.source_id
                 INNER JOIN nodes target ON target.id = edge.target_id
-                WHERE target.project = @Project
+                WHERE target.repository = @Repository
                   AND target.file_path IN @Paths
-                  AND NOT (source.project = @Project AND source.file_path IN @Paths)
-                """, new { Project = project, Paths = pathVariants }, transaction,
+                  AND NOT (source.repository = @Repository AND source.file_path IN @Paths)
+                """, new { Repository = repository, Paths = pathVariants }, transaction,
                 commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
 
             var replacedNodeIds = (await conn.QueryAsync<long>(new CommandDefinition(
-                "SELECT id FROM nodes WHERE project = @Project AND file_path IN @Paths",
-                new { Project = project, Paths = pathVariants }, transaction,
+                "SELECT id FROM nodes WHERE repository = @Repository AND file_path IN @Paths",
+                new { Repository = repository, Paths = pathVariants }, transaction,
                 commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
             await DeleteNodesInBatchesAsync(conn, transaction, replacedNodeIds, ct);
             await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM file_hashes WHERE project = @Project AND rel_path IN @Paths",
-                new { Project = project, Paths = pathVariants }, transaction,
+                "DELETE FROM file_hashes WHERE repository = @Repository AND rel_path IN @Paths",
+                new { Repository = repository, Paths = pathVariants }, transaction,
                 commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
             var candidates = nodes
@@ -69,9 +69,9 @@ public partial class MySqlGraphStore
             var qnToId = new Dictionary<string, long>(StringComparer.Ordinal);
             foreach (var batch in endpointNames.Chunk(1000))
             {
-                var lookup = new DynamicParameters(new { Project = project });
+                var lookup = new DynamicParameters(new { Repository = repository });
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
-                    $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND {QualifiedNameMatch(batch, lookup)}",
+                    $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE repository = @Repository AND {QualifiedNameMatch(batch, lookup)}",
                     lookup, transaction,
                     commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 foreach (var row in rows)
@@ -85,7 +85,7 @@ public partial class MySqlGraphStore
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder("""
-                    INSERT INTO nodes (project, dotnet_project, label, name, qualified_name, file_path, start_line, end_line, properties, do_not_trust)
+                    INSERT INTO nodes (repository, dotnet_project, label, name, qualified_name, file_path, start_line, end_line, properties, do_not_trust)
                     VALUES
                     """);
                 var parameters = new DynamicParameters();
@@ -93,9 +93,9 @@ public partial class MySqlGraphStore
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.AppendLine($"(@Project{i}, @DotnetProject{i}, @Label{i}, @Name{i}, @QualifiedName{i}, @FilePath{i}, @StartLine{i}, @EndLine{i}, @Properties{i}, @DoNotTrust{i})");
+                    sql.AppendLine($"(@Repository{i}, @DotnetProject{i}, @Label{i}, @Name{i}, @QualifiedName{i}, @FilePath{i}, @StartLine{i}, @EndLine{i}, @Properties{i}, @DoNotTrust{i})");
                     var node = batch[i];
-                    parameters.Add($"Project{i}", project);
+                    parameters.Add($"Repository{i}", repository);
                     parameters.Add($"DotnetProject{i}", node.DotnetProject);
                     parameters.Add($"Label{i}", node.Label.ToString());
                     parameters.Add($"Name{i}", Truncate(node.Name, 1000));
@@ -116,9 +116,9 @@ public partial class MySqlGraphStore
                          .Distinct(StringComparer.Ordinal)
                          .Chunk(1000))
             {
-                var lookup = new DynamicParameters(new { Project = project });
+                var lookup = new DynamicParameters(new { Repository = repository });
                 var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
-                    $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND {QualifiedNameMatch(batch, lookup)}",
+                    $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE repository = @Repository AND {QualifiedNameMatch(batch, lookup)}",
                     lookup, transaction,
                     commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 foreach (var row in rows)
@@ -140,20 +140,20 @@ public partial class MySqlGraphStore
             foreach (var edge in edges)
                 pendingByKey[EdgeKey(edge)] = edge;
 
-            var resolvedEdges = InInsertOrder(ResolveFileSliceEdges(project, pendingByKey.Values, qnToId));
+            var resolvedEdges = InInsertOrder(ResolveFileSliceEdges(repository, pendingByKey.Values, qnToId));
             foreach (var batch in resolvedEdges.Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder("""
-                    INSERT INTO edges (project, source_id, target_id, type, properties)
+                    INSERT INTO edges (repository, source_id, target_id, type, properties)
                     VALUES
                     """);
                 var parameters = new DynamicParameters();
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.AppendLine($"(@Project{i}, @SourceId{i}, @TargetId{i}, @Type{i}, @Properties{i})");
-                    parameters.Add($"Project{i}", project);
+                    sql.AppendLine($"(@Repository{i}, @SourceId{i}, @TargetId{i}, @Type{i}, @Properties{i})");
+                    parameters.Add($"Repository{i}", repository);
                     parameters.Add($"SourceId{i}", batch[i].SourceId);
                     parameters.Add($"TargetId{i}", batch[i].TargetId);
                     parameters.Add($"Type{i}", batch[i].Type.ToString());
@@ -165,19 +165,19 @@ public partial class MySqlGraphStore
             }
 
             if (retractions is { OrphanCandidateQNs.Count: > 0 })
-                await DeleteOrphanedNodesAsync(conn, transaction, project, retractions.OrphanCandidateQNs, ct);
+                await DeleteOrphanedNodesAsync(conn, transaction, repository, retractions.OrphanCandidateQNs, ct);
 
             foreach (var batch in fileHashes.ToArray().Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder(
-                    "INSERT INTO file_hashes (project, rel_path, content_hash, extraction_version) VALUES ");
+                    "INSERT INTO file_hashes (repository, rel_path, content_hash, extraction_version) VALUES ");
                 var parameters = new DynamicParameters();
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.Append($"(@Project{i}, @RelPath{i}, @ContentHash{i}, @ExtractionVersion{i})");
-                    parameters.Add($"Project{i}", project);
+                    sql.Append($"(@Repository{i}, @RelPath{i}, @ContentHash{i}, @ExtractionVersion{i})");
+                    parameters.Add($"Repository{i}", repository);
                     parameters.Add($"RelPath{i}", batch[i].Key);
                     parameters.Add($"ContentHash{i}", batch[i].Value);
                     parameters.Add($"ExtractionVersion{i}", extractionVersions?.GetValueOrDefault(batch[i].Key));
@@ -193,17 +193,17 @@ public partial class MySqlGraphStore
         }
         catch
         {
-            await TryRollbackAsync(transaction, project);
+            await TryRollbackAsync(transaction, repository);
             throw;
         }
     }
 
-    public async Task<int> ReplaceProjectGraphAsync(
-        string project,
+    public async Task<int> ReplaceRepositoryGraphAsync(
+        string repository,
         IReadOnlyList<GraphNode> nodes,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, string> fileHashes,
-        RepositoryEntity repository,
+        RepositoryEntity repositoryEntity,
         SyncStateEntity? syncState,
         IReadOnlyDictionary<string, string>? extractionVersions = null,
         CancellationToken ct = default)
@@ -235,35 +235,35 @@ public partial class MySqlGraphStore
                     updated_at = VALUES(updated_at)
                 """, new
             {
-                repository.Name,
-                repository.RepoUrl,
-                repository.SourceGroup,
-                repository.LocalPath,
-                repository.DefaultBranch,
-                repository.LastCommitSha,
-                IndexedAt = repository.IndexedAt ?? now,
-                repository.Language,
-                repository.Framework,
-                repository.IsFoundational,
-                repository.Properties,
-                CreatedAt = repository.CreatedAt == default ? now : repository.CreatedAt,
+                repositoryEntity.Name,
+                repositoryEntity.RepoUrl,
+                repositoryEntity.SourceGroup,
+                repositoryEntity.LocalPath,
+                repositoryEntity.DefaultBranch,
+                repositoryEntity.LastCommitSha,
+                IndexedAt = repositoryEntity.IndexedAt ?? now,
+                repositoryEntity.Language,
+                repositoryEntity.Framework,
+                repositoryEntity.IsFoundational,
+                repositoryEntity.Properties,
+                CreatedAt = repositoryEntity.CreatedAt == default ? now : repositoryEntity.CreatedAt,
                 UpdatedAt = now
             }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
             var replacedNodeIds = (await conn.QueryAsync<long>(new CommandDefinition(
-                "SELECT id FROM nodes WHERE project = @Project",
-                new { Project = project }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
+                "SELECT id FROM nodes WHERE repository = @Repository",
+                new { Repository = repository }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct))).ToList();
             await DeleteNodesInBatchesAsync(conn, transaction, replacedNodeIds, ct);
             await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM file_hashes WHERE project = @Project",
-                new { Project = project }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+                "DELETE FROM file_hashes WHERE repository = @Repository",
+                new { Repository = repository }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
 
             var qnToId = new Dictionary<string, long>(nodes.Count, StringComparer.Ordinal);
             foreach (var batch in nodes.Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder("""
-                    INSERT INTO nodes (project, dotnet_project, label, name, qualified_name, file_path, start_line, end_line, properties, do_not_trust)
+                    INSERT INTO nodes (repository, dotnet_project, label, name, qualified_name, file_path, start_line, end_line, properties, do_not_trust)
                     VALUES
                     """);
                 var parameters = new DynamicParameters();
@@ -271,10 +271,10 @@ public partial class MySqlGraphStore
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.AppendLine($"(@Project{i}, @DotnetProject{i}, @Label{i}, @Name{i}, @QualifiedName{i}, @FilePath{i}, @StartLine{i}, @EndLine{i}, @Properties{i}, @DoNotTrust{i})");
+                    sql.AppendLine($"(@Repository{i}, @DotnetProject{i}, @Label{i}, @Name{i}, @QualifiedName{i}, @FilePath{i}, @StartLine{i}, @EndLine{i}, @Properties{i}, @DoNotTrust{i})");
 
                     var node = batch[i];
-                    parameters.Add($"Project{i}", node.Project);
+                    parameters.Add($"Repository{i}", node.Repository);
                     parameters.Add($"DotnetProject{i}", node.DotnetProject);
                     parameters.Add($"Label{i}", node.Label.ToString());
                     parameters.Add($"Name{i}", Truncate(node.Name, 1000));
@@ -293,9 +293,9 @@ public partial class MySqlGraphStore
                     .Select(node => Truncate(node.QualifiedName, 1000))
                     .Distinct(StringComparer.Ordinal)
                     .ToList();
-                var lookup = new DynamicParameters(new { Project = project });
+                var lookup = new DynamicParameters(new { Repository = repository });
                 var rows = await conn.QueryAsync<(long id, string qualified_name)>(new CommandDefinition(
-                    $"SELECT id, qualified_name FROM nodes WHERE project = @Project AND {QualifiedNameMatch(storedNames, lookup)}",
+                    $"SELECT id, qualified_name FROM nodes WHERE repository = @Repository AND {QualifiedNameMatch(storedNames, lookup)}",
                     lookup, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 var originalByStoredName = batch
                     .GroupBy(node => Truncate(node.QualifiedName, 1000), StringComparer.Ordinal)
@@ -304,16 +304,16 @@ public partial class MySqlGraphStore
                 foreach (var row in rows)
                 {
                     if (originalByStoredName.TryGetValue(row.qualified_name, out var originalName))
-                        qnToId[GraphNodeKey.Create(project, originalName)] = row.id;
+                        qnToId[GraphNodeKey.Create(repository, originalName)] = row.id;
                 }
             }
 
-            var resolvedEdges = InInsertOrder(ResolveSnapshotEdges(project, edges, qnToId));
+            var resolvedEdges = InInsertOrder(ResolveSnapshotEdges(repository, edges, qnToId));
             foreach (var batch in resolvedEdges.Chunk(options.BatchSize))
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder("""
-                    INSERT INTO edges (project, source_id, target_id, type, properties)
+                    INSERT INTO edges (repository, source_id, target_id, type, properties)
                     VALUES
                     """);
                 var parameters = new DynamicParameters();
@@ -321,9 +321,9 @@ public partial class MySqlGraphStore
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.AppendLine($"(@Project{i}, @SourceId{i}, @TargetId{i}, @Type{i}, @Properties{i})");
+                    sql.AppendLine($"(@Repository{i}, @SourceId{i}, @TargetId{i}, @Type{i}, @Properties{i})");
                     var edge = batch[i];
-                    parameters.Add($"Project{i}", edge.Project);
+                    parameters.Add($"Repository{i}", edge.Repository);
                     parameters.Add($"SourceId{i}", edge.SourceId);
                     parameters.Add($"TargetId{i}", edge.TargetId);
                     parameters.Add($"Type{i}", edge.Type.ToString());
@@ -338,7 +338,7 @@ public partial class MySqlGraphStore
             {
                 ct.ThrowIfCancellationRequested();
                 var sql = new StringBuilder("""
-                    INSERT INTO file_hashes (project, rel_path, content_hash, extraction_version)
+                    INSERT INTO file_hashes (repository, rel_path, content_hash, extraction_version)
                     VALUES
                     """);
                 var parameters = new DynamicParameters();
@@ -346,8 +346,8 @@ public partial class MySqlGraphStore
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i > 0) sql.Append(',');
-                    sql.AppendLine($"(@Project{i}, @RelPath{i}, @ContentHash{i}, @ExtractionVersion{i})");
-                    parameters.Add($"Project{i}", project);
+                    sql.AppendLine($"(@Repository{i}, @RelPath{i}, @ContentHash{i}, @ExtractionVersion{i})");
+                    parameters.Add($"Repository{i}", repository);
                     parameters.Add($"RelPath{i}", batch[i].Key);
                     parameters.Add($"ContentHash{i}", batch[i].Value);
                     parameters.Add($"ExtractionVersion{i}", extractionVersions?.GetValueOrDefault(batch[i].Key));
@@ -360,10 +360,10 @@ public partial class MySqlGraphStore
             if (syncState is not null)
             {
                 await conn.ExecuteAsync(new CommandDefinition("""
-                    INSERT INTO sync_state (project, last_sync_at, last_commit_sha, status, error_message,
+                    INSERT INTO sync_state (repository, last_sync_at, last_commit_sha, status, error_message,
                                             failed_commit_sha, consecutive_failures, last_failure_at,
                                             extraction_fingerprint)
-                    VALUES (@Project, @LastSyncAt, @LastCommitSha, @Status, @ErrorMessage,
+                    VALUES (@Repository, @LastSyncAt, @LastCommitSha, @Status, @ErrorMessage,
                             @FailedCommitSha, @ConsecutiveFailures, @LastFailureAt,
                             @ExtractionFingerprint)
                     ON DUPLICATE KEY UPDATE
@@ -383,13 +383,13 @@ public partial class MySqlGraphStore
         }
         catch
         {
-            await TryRollbackAsync(transaction, project);
+            await TryRollbackAsync(transaction, repository);
             throw;
         }
     }
 
-    public async Task DeleteFilesFromProjectGraphAsync(
-        string project,
+    public async Task DeleteFilesFromRepositoryGraphAsync(
+        string repository,
         IReadOnlyList<string> filePaths,
         CancellationToken ct = default)
     {
@@ -406,21 +406,21 @@ public partial class MySqlGraphStore
                 await conn.ExecuteAsync(new CommandDefinition("""
                     DELETE na FROM node_analysis na
                     INNER JOIN nodes n ON n.id = na.node_id
-                    WHERE n.project = @Project AND n.file_path IN @Paths
-                    """, new { Project = project, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+                    WHERE n.repository = @Repository AND n.file_path IN @Paths
+                    """, new { Repository = repository, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 await conn.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM nodes WHERE project = @Project AND file_path IN @Paths",
-                    new { Project = project, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+                    "DELETE FROM nodes WHERE repository = @Repository AND file_path IN @Paths",
+                    new { Repository = repository, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
                 await conn.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM file_hashes WHERE project = @Project AND rel_path IN @Paths",
-                    new { Project = project, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
+                    "DELETE FROM file_hashes WHERE repository = @Repository AND rel_path IN @Paths",
+                    new { Repository = repository, Paths = paths }, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
             await transaction.CommitAsync(ct);
         }
         catch
         {
-            await TryRollbackAsync(transaction, project);
+            await TryRollbackAsync(transaction, repository);
             throw;
         }
     }
@@ -464,7 +464,7 @@ public partial class MySqlGraphStore
     /// network error leaves the connection Broken, and a throwing rollback would otherwise replace
     /// the real cause with "Connection must be Open; current state is Broken".
     /// </summary>
-    private async Task TryRollbackAsync(MySqlTransaction transaction, string project)
+    private async Task TryRollbackAsync(MySqlTransaction transaction, string repository)
     {
         try
         {
@@ -473,8 +473,8 @@ public partial class MySqlGraphStore
         catch (Exception rollbackException)
         {
             logger.LogWarning(rollbackException,
-                "Rollback of the graph write for {Project} failed; the server discards the uncommitted transaction with the connection",
-                project);
+                "Rollback of the graph write for {Repository} failed; the server discards the uncommitted transaction with the connection",
+                repository);
         }
     }
 
@@ -489,7 +489,7 @@ public partial class MySqlGraphStore
             .ToList();
 
     private static List<GraphEdge> ResolveSnapshotEdges(
-        string project,
+        string repository,
         IReadOnlyList<PendingEdge> edges,
         IReadOnlyDictionary<string, long> qnToId)
     {
@@ -497,8 +497,8 @@ public partial class MySqlGraphStore
         var edgeKeys = new HashSet<(long SourceId, long TargetId, EdgeType Type)>();
         foreach (var edge in edges)
         {
-            if (!qnToId.TryGetValue(GraphNodeKey.Create(project, edge.SourceQN), out var sourceId) ||
-                !qnToId.TryGetValue(GraphNodeKey.Create(project, edge.TargetQN), out var targetId))
+            if (!qnToId.TryGetValue(GraphNodeKey.Create(repository, edge.SourceQN), out var sourceId) ||
+                !qnToId.TryGetValue(GraphNodeKey.Create(repository, edge.TargetQN), out var targetId))
             {
                 continue;
             }
@@ -508,7 +508,7 @@ public partial class MySqlGraphStore
 
             resolved.Add(new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = sourceId,
                 TargetId = targetId,
                 Type = edge.Type,
@@ -520,7 +520,7 @@ public partial class MySqlGraphStore
     }
 
     private static List<GraphEdge> ResolveFileSliceEdges(
-        string project,
+        string repository,
         IEnumerable<PendingEdge> edges,
         IReadOnlyDictionary<string, long> qnToId)
     {
@@ -532,7 +532,7 @@ public partial class MySqlGraphStore
                 continue;
             resolved.Add(new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = sourceId,
                 TargetId = targetId,
                 Type = edge.Type,

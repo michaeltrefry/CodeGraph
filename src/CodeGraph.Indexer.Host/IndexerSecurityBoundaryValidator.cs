@@ -35,8 +35,8 @@ internal static class IndexerSecurityBoundaryValidator
 
         var repositoryPath = Path.GetDirectoryName(solutionPath)!;
         using var scope = services.CreateScope();
-        var projectService = scope.ServiceProvider.GetRequiredService<IProjectService>();
-        await projectService.ProcessRepository(new ProcessRepository
+        var repositoryService = scope.ServiceProvider.GetRequiredService<IRepositoryService>();
+        await repositoryService.ProcessRepository(new ProcessRepository
         {
             Name = Path.GetFileName(repositoryPath),
             RepoUrl = repositoryPath,

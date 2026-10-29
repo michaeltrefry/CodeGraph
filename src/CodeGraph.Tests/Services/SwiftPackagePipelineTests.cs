@@ -27,7 +27,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_XcodeRepository_ClassifiesSwiftXcodeAndPersistsResolvedPins()
+    public async Task IndexRepositoryAsync_XcodeRepository_ClassifiesSwiftXcodeAndPersistsResolvedPins()
     {
         Write("native/Compositor.xcodeproj/project.pbxproj", "// !$*UTF8*$!\n{}\n");
         Write("native/Compositor.xcodeproj/project.xcworkspace/contents.xcworkspacedata", "<Workspace/>\n");
@@ -38,7 +38,7 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("native/Sources/App.swift", "struct App {}\n");
 
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
 
         var repo = await store.GetRepositoryByName("SwiftApp");
         repo.ShouldNotBeNull();
@@ -52,7 +52,7 @@ public class SwiftPackagePipelineTests : IDisposable
         sparkle.Properties["version"].ToString().ShouldBe("2.10.0");
         sparkle.Properties["revision"].ToString().ShouldBe("eef1a539a373c1f1a320624b1130fc5de7b2e100");
         var repositoryNode = store.Nodes.Single(node =>
-            node.Label == NodeLabel.Repository && node.Project == "SwiftApp");
+            node.Label == NodeLabel.Repository && node.Repository == "SwiftApp");
         store.Edges.ShouldContain(edge =>
             edge.SourceId == repositoryNode.Id &&
             edge.TargetId == sparkle.Id &&
@@ -60,7 +60,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_PackageSwiftOnly_ClassifiesSwiftPMAndIgnoresBuildCheckouts()
+    public async Task IndexRepositoryAsync_PackageSwiftOnly_ClassifiesSwiftPMAndIgnoresBuildCheckouts()
     {
         Write("Package.swift", """
             // swift-tools-version:5.9
@@ -82,7 +82,7 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("DerivedData/App/SourcePackages/checkouts/y/Package.swift", "let package = Package(name: \"Y\")\n");
 
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
 
         var repo = await store.GetRepositoryByName("ShapeKit");
         repo.ShouldNotBeNull();
@@ -103,7 +103,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_MixedSwiftAndRust_KeepsBothLanguagesAndPicksTheDominantOne()
+    public async Task IndexRepositoryAsync_MixedSwiftAndRust_KeepsBothLanguagesAndPicksTheDominantOne()
     {
         Write("native/Compositor.xcodeproj/project.pbxproj", "// !$*UTF8*$!\n{}\n");
         Write(XcodeResolvedPath, Resolved("2.10.0", "eef1a539a373c1f1a320624b1130fc5de7b2e100"));
@@ -112,7 +112,7 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("src/lib.rs", string.Concat(Enumerable.Range(0, 20).Select(i => $"pub fn f{i}() {{}}\n")));
 
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("Mixed", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("Mixed", _rootPath, ct: CancellationToken.None);
 
         var repo = await store.GetRepositoryByName("Mixed");
         repo.ShouldNotBeNull();
@@ -129,7 +129,7 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("native/Sources/More.swift",
             string.Concat(Enumerable.Range(0, 40).Select(i => $"func g{i}() {{}}\n")));
         var swiftStore = new InMemoryGraphStore();
-        await CreatePipeline(swiftStore).IndexProjectAsync("Mixed", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(swiftStore).IndexRepositoryAsync("Mixed", _rootPath, ct: CancellationToken.None);
         var swiftRepo = await swiftStore.GetRepositoryByName("Mixed");
         swiftRepo.ShouldNotBeNull();
         swiftRepo.Language.ShouldBe("Swift");
@@ -138,16 +138,16 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IncrementalRun_ReplacesChangedResolvedPins()
+    public async Task IndexRepositoryAsync_IncrementalRun_ReplacesChangedResolvedPins()
     {
         Write(XcodeResolvedPath, Resolved("2.10.0", "eef1a539a373c1f1a320624b1130fc5de7b2e100"));
         Write("native/Compositor.xcodeproj/project.pbxproj", "{}\n");
         Write("native/Sources/App.swift", "struct App {}\n");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
 
         Write(XcodeResolvedPath, Resolved("2.11.0", "0000000000000000000000000000000000000001"));
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
 
         var sparkle = store.Nodes.Where(node => node.Label == NodeLabel.Package).ShouldHaveSingleItem();
         sparkle.Properties["version"].ToString().ShouldBe("2.11.0");
@@ -158,7 +158,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IncrementalRun_ReplacesDeclaredDependenciesEvenWhenSwiftSourceExtractionFails()
+    public async Task IndexRepositoryAsync_IncrementalRun_ReplacesDeclaredDependenciesEvenWhenSwiftSourceExtractionFails()
     {
         static string Manifest(string dependency) => $$"""
             let package = Package(
@@ -169,12 +169,12 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("Package.swift", Manifest("swift-log"));
         var store = new InMemoryGraphStore();
         await CreatePipeline(store, new FailingSwiftExtractor())
-            .IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+            .IndexRepositoryAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
         store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package && node.Name == "swift-log");
 
         Write("Package.swift", Manifest("swift-nio"));
         await CreatePipeline(store, new FailingSwiftExtractor())
-            .IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+            .IndexRepositoryAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
 
         var packages = store.Nodes.Where(node => node.Label == NodeLabel.Package).ToList();
         packages.Select(node => node.QualifiedName).ShouldBe([
@@ -189,18 +189,18 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IncrementalRun_RemovesTheSliceOfADeletedPackageResolved()
+    public async Task IndexRepositoryAsync_IncrementalRun_RemovesTheSliceOfADeletedPackageResolved()
     {
         Write(XcodeResolvedPath, Resolved("2.10.0", "eef1a539a373c1f1a320624b1130fc5de7b2e100"));
         Write("native/Compositor.xcodeproj/project.pbxproj", "{}\n");
         Write("native/Sources/App.swift", "struct App {}\n");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
         store.Nodes.Count(node => node.Label == NodeLabel.Package).ShouldBe(1);
 
         File.Delete(Path.Combine(_rootPath, XcodeResolvedPath));
         Write("native/Sources/App.swift", "struct App { let id = 1 }\n");
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
 
         store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package);
         store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.REFERENCES_PACKAGE);
@@ -208,7 +208,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IncrementalRun_MovesTheSliceOfARenamedXcodeProject()
+    public async Task IndexRepositoryAsync_IncrementalRun_MovesTheSliceOfARenamedXcodeProject()
     {
         const string renamedResolvedPath =
             "native/Renamed.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved";
@@ -216,12 +216,12 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("native/Compositor.xcodeproj/project.pbxproj", "{}\n");
         Write("native/Sources/App.swift", "struct App {}\n");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
 
         Directory.Move(
             Path.Combine(_rootPath, "native/Compositor.xcodeproj"),
             Path.Combine(_rootPath, "native/Renamed.xcodeproj"));
-        await CreatePipeline(store).IndexProjectAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftApp", _rootPath, ct: CancellationToken.None);
 
         var sparkle = store.Nodes.Where(node => node.Label == NodeLabel.Package).ShouldHaveSingleItem();
         sparkle.FilePath.ShouldBe(renamedResolvedPath);
@@ -231,18 +231,18 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IncrementalRun_RemovesTheSliceOfADeletedCargoManifest()
+    public async Task IndexRepositoryAsync_IncrementalRun_RemovesTheSliceOfADeletedCargoManifest()
     {
         Write("Cargo.toml", "[package]\nname = \"engine\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1.0\"\n");
         Write("src/lib.rs", "pub fn run() {}\n");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("Engine", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("Engine", _rootPath, ct: CancellationToken.None);
         store.Nodes.Where(node => node.Label == NodeLabel.Package).Select(node => node.Name)
             .ShouldBe(["engine", "serde"], ignoreOrder: true);
 
         File.Delete(Path.Combine(_rootPath, "Cargo.toml"));
         Write("src/lib.rs", "pub fn run() {}\npub fn stop() {}\n");
-        await CreatePipeline(store).IndexProjectAsync("Engine", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("Engine", _rootPath, ct: CancellationToken.None);
 
         store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package);
         store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.REFERENCES_PACKAGE);
@@ -250,7 +250,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_DeletedPackageResolved_DropsItsCrossRepoLinkOnRelink()
+    public async Task IndexRepositoryAsync_DeletedPackageResolved_DropsItsCrossRepoLinkOnRelink()
     {
         var corePath = Path.Combine(_rootPath, "core");
         var appPath = Path.Combine(_rootPath, "app");
@@ -260,17 +260,17 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("app/native/Compositor.xcodeproj/project.pbxproj", "{}\n");
         Write("app/native/Sources/App.swift", "struct App {}\n");
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("SwiftCore", corePath,
+        await CreatePipeline(store).IndexRepositoryAsync("SwiftCore", corePath,
             repoUrl: "https://github.com/acme/swiftcore", ct: CancellationToken.None);
-        await CreatePipeline(store).IndexProjectAsync("XcodeApp", appPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("XcodeApp", appPath, ct: CancellationToken.None);
         var linker = new CrossRepoLinker(store, NullLogger<CrossRepoLinker>.Instance);
-        await linker.LinkForProjectAsync("XcodeApp", CancellationToken.None);
-        store.CrossEdges.ShouldHaveSingleItem().TargetProject.ShouldBe("SwiftCore");
+        await linker.LinkForRepositoryAsync("XcodeApp", CancellationToken.None);
+        store.CrossEdges.ShouldHaveSingleItem().TargetRepository.ShouldBe("SwiftCore");
 
         File.Delete(Path.Combine(appPath, XcodeResolvedPath));
         Write("app/native/Sources/App.swift", "struct App { let id = 1 }\n");
-        await CreatePipeline(store).IndexProjectAsync("XcodeApp", appPath, ct: CancellationToken.None);
-        await linker.LinkForProjectAsync("XcodeApp", CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("XcodeApp", appPath, ct: CancellationToken.None);
+        await linker.LinkForRepositoryAsync("XcodeApp", CancellationToken.None);
 
         store.CrossEdges.ShouldBeEmpty();
     }
@@ -278,7 +278,7 @@ public class SwiftPackagePipelineTests : IDisposable
     // ── Discovery exclusions ─────────────────────────────────────────
 
     [Fact]
-    public async Task IndexProjectAsync_SkipsDependencyCheckoutsAndAgentWorktrees()
+    public async Task IndexRepositoryAsync_SkipsDependencyCheckoutsAndAgentWorktrees()
     {
         Write("Package.swift", "let package = Package(name: \"ShapeKit\")\n");
         Write("Sources/ShapeKit/Shape.swift", "public struct Shape {}\n");
@@ -293,7 +293,7 @@ public class SwiftPackagePipelineTests : IDisposable
         Write(".claude/worktrees/agent-1/Package.swift", "let package = Package(name: \"ShapeKit\")\n");
 
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("ShapeKit", _rootPath, ct: CancellationToken.None);
 
         store.Nodes.Select(node => node.FilePath).OfType<string>().Where(path => path.Length > 0).Distinct()
             .ShouldBe(["Package.swift", "Sources/ShapeKit/Shape.swift"],
@@ -307,7 +307,7 @@ public class SwiftPackagePipelineTests : IDisposable
     /// directory without a Podfile, is the repository's own code.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_DependencyDirectoryNamesWithoutTheirManager_StayIndexed()
+    public async Task IndexRepositoryAsync_DependencyDirectoryNamesWithoutTheirManager_StayIndexed()
     {
         Write("pkg/pods/handler.go", "package pods\n\nfunc Handle() {}\n");
         Write("pkg/carthage/cart.go", "package carthage\n\nfunc Cart() {}\n");
@@ -320,7 +320,7 @@ public class SwiftPackagePipelineTests : IDisposable
         Write("ios/pods/list.go", "package pods\n\nfunc List() {}\n");
 
         var store = new InMemoryGraphStore();
-        await CreatePipeline(store).IndexProjectAsync("Pods", _rootPath, ct: CancellationToken.None);
+        await CreatePipeline(store).IndexRepositoryAsync("Pods", _rootPath, ct: CancellationToken.None);
 
         (await store.GetFileHashesAsync("Pods")).Keys.ShouldBe([
             "pkg/pods/handler.go", "pkg/carthage/cart.go", "tools/derivedData/reader.go",
@@ -330,7 +330,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_PodsAndCarthageBesideTheirManifests_AreExcludedAtAnyDepth()
+    public async Task IndexRepositoryAsync_PodsAndCarthageBesideTheirManifests_AreExcludedAtAnyDepth()
     {
         Write("ios/Podfile", "pod 'Alamofire'\n");
         Write("ios/Pods/Alamofire/Source/Session.swift", "open class Session {}\n");
@@ -342,7 +342,7 @@ public class SwiftPackagePipelineTests : IDisposable
 
         var store = new InMemoryGraphStore();
         var pipeline = CreatePipeline(store);
-        await pipeline.IndexProjectAsync("App", _rootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync("App", _rootPath, ct: CancellationToken.None);
 
         (await store.GetFileHashesAsync("App")).Keys.ShouldBe(["ios/App/App.swift", "other/Pods/Mine.swift"],
             ignoreOrder: true);
@@ -359,7 +359,7 @@ public class SwiftPackagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IndexedAgentWorktree_IsRemovedByTheRefreshRunOfTheNewDefaults()
+    public async Task IndexRepositoryAsync_IndexedAgentWorktree_IsRemovedByTheRefreshRunOfTheNewDefaults()
     {
         Write("Sources/App.swift", "struct App {}\n");
         Write(".claude/worktrees/agent-1/Sources/App.swift", "struct App {}\n");
@@ -369,7 +369,7 @@ public class SwiftPackagePipelineTests : IDisposable
         var previousDefaults = new IndexingOptions().SkipPatterns
             .Where(pattern => pattern != "**/.claude/worktrees/**").ToArray();
         var before = CreatePipeline(store, skipPatterns: previousDefaults);
-        await before.IndexProjectAsync("App", _rootPath, ct: CancellationToken.None);
+        await before.IndexRepositoryAsync("App", _rootPath, ct: CancellationToken.None);
         store.Nodes.ShouldContain(node => node.FilePath == ".claude/worktrees/agent-1/Sources/App.swift");
         store.Nodes.ShouldContain(node => node.Label == NodeLabel.Package);
 
@@ -377,7 +377,7 @@ public class SwiftPackagePipelineTests : IDisposable
         // unchanged commit; that run's full scan removes the worktree copy.
         var after = CreatePipeline(store);
         after.ExtractionFingerprint.ShouldNotBe(before.ExtractionFingerprint);
-        await after.IndexProjectAsync("App", _rootPath, ct: CancellationToken.None);
+        await after.IndexRepositoryAsync("App", _rootPath, ct: CancellationToken.None);
 
         store.Nodes.ShouldNotContain(node => node.FilePath != null && node.FilePath.StartsWith(".claude/"));
         store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Package);

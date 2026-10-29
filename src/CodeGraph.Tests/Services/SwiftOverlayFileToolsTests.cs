@@ -97,10 +97,10 @@ public sealed class SwiftOverlayFileToolsTests : IDisposable
         _headSha = GitFixture.Run(_root, "rev-parse", "HEAD");
         GitFixture.Run(_root, "checkout", "-q", "main");
 
-        Pipeline().IndexProjectAsync(Repo, _root, ct: CancellationToken.None).GetAwaiter().GetResult();
+        Pipeline().IndexRepositoryAsync(Repo, _root, ct: CancellationToken.None).GetAwaiter().GetResult();
         _store.UpsertRepositoryAsync(new RepositoryEntity { Name = Repo, LocalPath = _root, LastCommitSha = _baseSha })
             .GetAwaiter().GetResult();
-        _store.UpsertSyncStateAsync(new SyncStateEntity { Project = Repo, LastCommitSha = _baseSha })
+        _store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repo, LastCommitSha = _baseSha })
             .GetAwaiter().GetResult();
     }
 
@@ -237,7 +237,7 @@ public sealed class SwiftOverlayFileToolsTests : IDisposable
 
     private sealed class NoLint : ILintRunner
     {
-        public Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(string repoPath, CancellationToken ct = default)
+        public Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(string repoPath, CancellationToken ct = default)
             => Task.FromResult<IReadOnlyDictionary<string, LintResult>>(new Dictionary<string, LintResult>());
     }
 

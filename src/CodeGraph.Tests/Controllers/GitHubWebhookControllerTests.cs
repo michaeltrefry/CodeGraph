@@ -29,7 +29,7 @@ public class GitHubWebhookControllerTests
 
     public GitHubWebhookControllerTests()
     {
-        _graph.AddProject(new ProjectInfo(
+        _graph.AddRepository(new RepositoryInfo(
             "dark-factory-sandbox", "https://github.com/michaeltrefry/dark-factory-sandbox.git",
             "michaeltrefry", null, "252dc0d8", null, null, null, false, null));
     }
@@ -57,7 +57,7 @@ public class GitHubWebhookControllerTests
     public async Task PushMatchedByFullNameWhenStoredUrlDiffers_QueuesSync()
     {
         var graph = new InMemoryGraphStore();
-        graph.AddProject(new ProjectInfo("dark-factory-sandbox", null, "MichaelTrefry", null, null, null, null, null, false, null));
+        graph.AddRepository(new RepositoryInfo("dark-factory-sandbox", null, "MichaelTrefry", null, null, null, null, null, false, null));
 
         var result = await DeliverAsync("push", PushBody(), graph: graph);
 

@@ -102,7 +102,7 @@ public class MariaDbReviewStoreTests
 
             var projectRunId = await store.CreateProjectReviewRunAsync(new ProjectReviewRunEntity
             {
-                Project = "CodeGraph",
+                Repository = "CodeGraph",
                 ProjectName = "CodeGraph.Api",
                 ReviewedCommitSha = "abc123",
                 Status = "queued",

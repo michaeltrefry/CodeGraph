@@ -3,7 +3,7 @@ namespace CodeGraph.Models;
 public record GraphNode
 {
     public long Id { get; init; }
-    public required string Project { get; init; }
+    public required string Repository { get; init; }
     public string? DotnetProject { get; init; }
     public required NodeLabel Label { get; init; }
     public required string Name { get; init; }

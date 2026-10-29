@@ -133,20 +133,20 @@ internal static class CrossRepoLinkFleet
     }
 
     /// <summary>Provider's remote, spelled differently from Consumer's git dependency on it.</summary>
-    public static string? RepoUrl(string project) =>
-        project == Provider ? "git@example.test:acme/provider-repo.git" : null;
+    public static string? RepoUrl(string repository) =>
+        repository == Provider ? "git@example.test:acme/provider-repo.git" : null;
 
     public static void SeedInMemory(InMemoryGraphStore store)
     {
-        foreach (var (project, (nodes, edges)) in Build())
+        foreach (var (repository, (nodes, edges)) in Build())
         {
-            store.AddProject(new ProjectInfo(project, RepoUrl(project), null, null, null, null, null, null, false, null));
+            store.AddRepository(new RepositoryInfo(repository, RepoUrl(repository), null, null, null, null, null, null, false, null));
             var ids = nodes.ToDictionary(node => node.QualifiedName, node => store.AddNode(node));
             foreach (var edge in edges)
             {
                 store.AddEdge(new GraphEdge
                 {
-                    Project = project,
+                    Repository = repository,
                     SourceId = ids[edge.SourceQN],
                     TargetId = ids[edge.TargetQN],
                     Type = edge.Type,
@@ -182,10 +182,10 @@ internal static class CrossRepoLinkFleet
     }
 
     private static GraphNode Node(
-        string project, NodeLabel label, string name, string qualifiedName,
+        string repository, NodeLabel label, string name, string qualifiedName,
         Dictionary<string, object>? properties = null) => new()
     {
-        Project = project,
+        Repository = repository,
         Label = label,
         Name = name,
         QualifiedName = qualifiedName,

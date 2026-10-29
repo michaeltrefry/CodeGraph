@@ -165,18 +165,18 @@ public sealed class Neo4jToMariaDbMigrationService : INeo4jToMariaDbMigrationSer
         }
 
         var idMap = new Dictionary<long, long>();
-        foreach (var projectGroup in nodes.GroupBy(node => node.Project, StringComparer.OrdinalIgnoreCase))
+        foreach (var repositoryGroup in nodes.GroupBy(node => node.Repository, StringComparer.OrdinalIgnoreCase))
         {
             ct.ThrowIfCancellationRequested();
-            var projectNodes = projectGroup.ToList();
-            var upsertedIds = await _targetStore.UpsertNodeBatchAsync(projectNodes, ct);
+            var repositoryNodes = repositoryGroup.ToList();
+            var upsertedIds = await _targetStore.UpsertNodeBatchAsync(repositoryNodes, ct);
 
-            foreach (var sourceNode in projectNodes)
+            foreach (var sourceNode in repositoryNodes)
             {
                 var qualifiedName = Truncate(sourceNode.QualifiedName, 1000);
-                if (!upsertedIds.TryGetValue(GraphNodeKey.Create(sourceNode.Project, qualifiedName), out var targetId))
+                if (!upsertedIds.TryGetValue(GraphNodeKey.Create(sourceNode.Repository, qualifiedName), out var targetId))
                 {
-                    var targetNode = await _targetStore.FindNodeByQualifiedNameAsync(sourceNode.Project, qualifiedName);
+                    var targetNode = await _targetStore.FindNodeByQualifiedNameAsync(sourceNode.Repository, qualifiedName);
                     if (targetNode is null)
                     {
                         continue;

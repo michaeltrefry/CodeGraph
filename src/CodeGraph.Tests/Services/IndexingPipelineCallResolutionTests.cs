@@ -19,7 +19,7 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public class IndexingPipelineCallResolutionTests
 {
-    private const string Project = "resolution";
+    private const string Repository = "resolution";
     private static readonly string[] CalleeNames = ["new", "from", "get", "run", "fmt", "build", "len", "missing"];
     private static readonly NodeLabel[] OwnerLabels =
         [NodeLabel.Class, NodeLabel.Struct, NodeLabel.Interface, NodeLabel.Enum, NodeLabel.Module, NodeLabel.Namespace, NodeLabel.Record];
@@ -37,9 +37,9 @@ public class IndexingPipelineCallResolutionTests
         var actual = graph.CreateBuffer();
 
         await new PreviousCallResolution(store).ResolveCallsAsync(
-            Project, expected, includePersistedNodes, graph.ExcludedPersistedFiles, CancellationToken.None);
+            Repository, expected, includePersistedNodes, graph.ExcludedPersistedFiles, CancellationToken.None);
         await CreatePipeline(store).ResolveCallsAsync(
-            Project, actual, includePersistedNodes, graph.ExcludedPersistedFiles, CancellationToken.None);
+            Repository, actual, includePersistedNodes, graph.ExcludedPersistedFiles, CancellationToken.None);
 
         var expectedCalls = CallEdges(expected);
         expectedCalls.Count.ShouldBeGreaterThan(300);
@@ -63,7 +63,7 @@ public class IndexingPipelineCallResolutionTests
 
         var stopwatch = Stopwatch.StartNew();
         await CreatePipeline(store).ResolveCallsAsync(
-            Project, buffer, includePersistedNodes: true, graph.ExcludedPersistedFiles, CancellationToken.None);
+            Repository, buffer, includePersistedNodes: true, graph.ExcludedPersistedFiles, CancellationToken.None);
         stopwatch.Stop();
 
         buffer.AllPendingEdges.Count.ShouldBeGreaterThan(900_000);
@@ -85,10 +85,10 @@ public class IndexingPipelineCallResolutionTests
     {
         public int QualifiedNameLookups;
 
-        public override Task<GraphNode?> FindNodeByQualifiedNameAsync(string project, string qualifiedName)
+        public override Task<GraphNode?> FindNodeByQualifiedNameAsync(string repository, string qualifiedName)
         {
             Interlocked.Increment(ref QualifiedNameLookups);
-            return base.FindNodeByQualifiedNameAsync(project, qualifiedName);
+            return base.FindNodeByQualifiedNameAsync(repository, qualifiedName);
         }
     }
 
@@ -239,7 +239,7 @@ public class IndexingPipelineCallResolutionTests
             NodeLabel label, string name, string qualifiedName, string filePath, Dictionary<string, object>? properties = null) =>
             new()
             {
-                Project = Project,
+                Repository = Repository,
                 Label = label,
                 Name = name,
                 QualifiedName = qualifiedName,
@@ -252,7 +252,7 @@ public class IndexingPipelineCallResolutionTests
     private sealed class PreviousCallResolution(IGraphStore store)
     {
         public async Task ResolveCallsAsync(
-            string projectName,
+            string repositoryName,
             GraphBuffer buffer,
             bool includePersistedNodes,
             IReadOnlySet<string> excludedPersistedFiles,
@@ -272,7 +272,7 @@ public class IndexingPipelineCallResolutionTests
                 var candidates = buffer.FindByName(name).AsEnumerable();
                 if (includePersistedNodes)
                 {
-                    var persisted = await store.FindNodesByNameAsync(projectName, name);
+                    var persisted = await store.FindNodesByNameAsync(repositoryName, name);
                     candidates = candidates.Concat(persisted.Where(IsPersistedNodeEligible));
                 }
 
@@ -300,7 +300,7 @@ public class IndexingPipelineCallResolutionTests
                         continue;
 
                     var receiver = await ResolveReceiverOwnerAsync(
-                        projectName,
+                        repositoryName,
                         buffer,
                         call.ReceiverType,
                         includePersistedNodes,
@@ -338,7 +338,7 @@ public class IndexingPipelineCallResolutionTests
         }
 
         private async Task<GraphNode?> ResolveReceiverOwnerAsync(
-            string projectName,
+            string repositoryName,
             GraphBuffer buffer,
             string receiverType,
             bool includePersistedNodes,
@@ -351,7 +351,7 @@ public class IndexingPipelineCallResolutionTests
 
             if (includePersistedNodes)
             {
-                exact = await store.FindNodeByQualifiedNameAsync(projectName, receiverType);
+                exact = await store.FindNodeByQualifiedNameAsync(repositoryName, receiverType);
                 if (exact is not null && isPersistedNodeEligible(exact) && IsReceiverOwnerLabel(exact.Label))
                     return exact;
             }

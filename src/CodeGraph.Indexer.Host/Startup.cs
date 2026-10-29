@@ -154,7 +154,7 @@ public static class Startup
         services.AddTransient<IAgentPromptService, AgentPromptService>();
         services.AddTransient<IMetricsEventPublisher, MetricsEventPublisher>();
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
-        services.AddTransient<IProjectService, ProjectService>();
+        services.AddTransient<IRepositoryService, RepositoryService>();
 
         services.AddTransient<IExclusionService, ExclusionService>();
         services.AddTransient<IAdminService, AdminService>();

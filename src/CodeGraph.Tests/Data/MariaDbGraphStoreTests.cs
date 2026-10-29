@@ -141,7 +141,7 @@ public class MariaDbGraphStoreTests
             [
                 new GraphNode
                 {
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     Label = NodeLabel.Class,
                     Name = "Widget",
                     QualifiedName = "CodeGraph.Widget",
@@ -152,7 +152,7 @@ public class MariaDbGraphStoreTests
                 },
                 new GraphNode
                 {
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     Label = NodeLabel.Method,
                     Name = "Run",
                     QualifiedName = "CodeGraph.Widget.Run",
@@ -162,7 +162,7 @@ public class MariaDbGraphStoreTests
                 },
                 new GraphNode
                 {
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     Label = NodeLabel.Package,
                     Name = "serde",
                     QualifiedName = "cargo:serde",
@@ -170,7 +170,7 @@ public class MariaDbGraphStoreTests
                 },
                 new GraphNode
                 {
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     Label = NodeLabel.ExternalSymbol,
                     Name = "Serialize",
                     QualifiedName = "scip:rust-analyzer cargo serde Serialize",
@@ -178,7 +178,7 @@ public class MariaDbGraphStoreTests
                 },
                 new GraphNode
                 {
-                    Project = "Dependency",
+                    Repository = "Dependency",
                     Label = NodeLabel.Class,
                     Name = "Dependency",
                     QualifiedName = "Dependency.Root",
@@ -205,7 +205,7 @@ public class MariaDbGraphStoreTests
             (await store.GetNodeCountsByLabelAsync())[NodeLabel.Class].ShouldBe(2);
             (await store.GetNodeCountsByLabelAsync())[NodeLabel.Package].ShouldBe(1);
             (await store.GetNodeCountsByLabelAsync())[NodeLabel.ExternalSymbol].ShouldBe(1);
-            (await store.GetNodeCountsByLabelForProjectAsync("CodeGraph"))["Class"].ShouldBe(1);
+            (await store.GetNodeCountsByLabelForRepositoryAsync("CodeGraph"))["Class"].ShouldBe(1);
             (await store.FindNodesByIdBatchAsync([classId, methodId])).ShouldContainKey(methodId);
 
             await store.SetDoNotTrustAsync(methodId, true);
@@ -215,7 +215,7 @@ public class MariaDbGraphStoreTests
             [
                 new GraphEdge
                 {
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     SourceId = classId,
                     TargetId = methodId,
                     Type = EdgeType.DEFINES,
@@ -223,7 +223,7 @@ public class MariaDbGraphStoreTests
                 },
                 new GraphEdge
                 {
-                    Project = "CodeGraph",
+                    Repository = "CodeGraph",
                     SourceId = methodId,
                     TargetId = classId,
                     Type = EdgeType.CALLS
@@ -244,15 +244,15 @@ public class MariaDbGraphStoreTests
 
             await store.InsertCrossRepoEdgeAsync(new CrossRepoEdge
             {
-                SourceProject = "CodeGraph",
-                TargetProject = "Dependency",
+                SourceRepository = "CodeGraph",
+                TargetRepository = "Dependency",
                 SourceNodeId = methodId,
                 TargetNodeId = dependencyId,
                 Type = EdgeType.CALLS
             });
-            (await store.FindCrossRepoEdgesAsync("CodeGraph")).Single().TargetProject.ShouldBe("Dependency");
-            (await store.GetAllCrossRepoEdgesAsync()).Single().SourceProject.ShouldBe("CodeGraph");
-            (await store.FindProjectsWithNoCrossRepoEdgesAsync()).ShouldBeEmpty();
+            (await store.FindCrossRepoEdgesAsync("CodeGraph")).Single().TargetRepository.ShouldBe("Dependency");
+            (await store.GetAllCrossRepoEdgesAsync()).Single().SourceRepository.ShouldBe("CodeGraph");
+            (await store.FindRepositoriesWithNoCrossRepoEdgesAsync()).ShouldBeEmpty();
 
             await store.UpsertRepositoryAsync(new RepositoryEntity
             {
@@ -275,14 +275,14 @@ public class MariaDbGraphStoreTests
             [
                 new GraphNode
                 {
-                    Project = "db:sql-prod/Orders",
+                    Repository = "db:sql-prod/Orders",
                     Label = NodeLabel.Table,
                     Name = "Customers",
                     QualifiedName = "dbo.Customers"
                 },
                 new GraphNode
                 {
-                    Project = "db:sql-prod/Orders",
+                    Repository = "db:sql-prod/Orders",
                     Label = NodeLabel.View,
                     Name = "ActiveCustomers",
                     QualifiedName = "dbo.ActiveCustomers"
@@ -304,7 +304,7 @@ public class MariaDbGraphStoreTests
                 database: "ORDERS");
             filteredSchemas.TotalCount.ShouldBe(1);
             filteredSchemas.TotalTables.ShouldBe(1);
-            filteredSchemas.Items.Single().Project.Name.ShouldBe("db:sql-prod/Orders");
+            filteredSchemas.Items.Single().Repository.Name.ShouldBe("db:sql-prod/Orders");
 
             await store.UpsertFileHashBatchAsync("CodeGraph", new Dictionary<string, string>
             {
@@ -316,7 +316,7 @@ public class MariaDbGraphStoreTests
 
             await store.UpsertSyncStateAsync(new SyncStateEntity
             {
-                Project = "CodeGraph",
+                Repository = "CodeGraph",
                 Status = "syncing",
                 LastCommitSha = "abc123"
             });
@@ -329,7 +329,7 @@ public class MariaDbGraphStoreTests
             [
                 new RepoCluster
                 {
-                    ProjectName = "CodeGraph",
+                    RepositoryName = "CodeGraph",
                     ClusterId = 7,
                     ClusterLabel = "Core",
                     ModularityScore = 0.7m,
@@ -339,14 +339,14 @@ public class MariaDbGraphStoreTests
                 }
             ]);
             (await store.GetRepoClustersAsync()).Single().ClusterLabel.ShouldBe("Core");
-            (await store.GetRepoClusterMembersAsync(7)).Single().ProjectName.ShouldBe("CodeGraph");
+            (await store.GetRepoClusterMembersAsync(7)).Single().RepositoryName.ShouldBe("CodeGraph");
 
-            var replacementEdgeCount = await store.ReplaceProjectGraphAsync(
+            var replacementEdgeCount = await store.ReplaceRepositoryGraphAsync(
                 "ReplacementCalls",
                 [
                     new GraphNode
                     {
-                        Project = "ReplacementCalls",
+                        Repository = "ReplacementCalls",
                         Label = NodeLabel.Function,
                         Name = "caller",
                         QualifiedName = "ReplacementCalls.caller",
@@ -354,7 +354,7 @@ public class MariaDbGraphStoreTests
                     },
                     new GraphNode
                     {
-                        Project = "ReplacementCalls",
+                        Repository = "ReplacementCalls",
                         Label = NodeLabel.Function,
                         Name = "callee",
                         QualifiedName = "ReplacementCalls.callee",
@@ -371,7 +371,7 @@ public class MariaDbGraphStoreTests
 
             replacementEdgeCount.ShouldBe(1);
             (await store.FindAllEdgesByTypeAsync(EdgeType.CALLS))
-                .Count(edge => edge.Project == "ReplacementCalls")
+                .Count(edge => edge.Repository == "ReplacementCalls")
                 .ShouldBe(1);
         }
         finally
@@ -433,7 +433,7 @@ public class MariaDbGraphStoreTests
                 ["api.cs"] = "old-hash"
             });
 
-            await store.ReplaceProjectFilesAsync(
+            await store.ReplaceRepositoryFilesAsync(
                 "SliceProvider",
                 ["api.cs"],
                 [
@@ -470,7 +470,7 @@ public class MariaDbGraphStoreTests
                 newSlice.Nodes.Select(node => node.FilePath).Distinct().Order()
                     .ShouldBe(ProductionFileSliceFixture.FilePaths.Order());
 
-                await store.ReplaceProjectFilesAsync(
+                await store.ReplaceRepositoryFilesAsync(
                     "SliceProvider",
                     ProductionFileSliceFixture.FilePaths,
                     oldSlice.Nodes,
@@ -481,7 +481,7 @@ public class MariaDbGraphStoreTests
                     oldIds[oldNode.QualifiedName] =
                         (await store.FindNodeByQualifiedNameAsync("SliceProvider", oldNode.QualifiedName))!.Id;
 
-                await store.ReplaceProjectFilesAsync(
+                await store.ReplaceRepositoryFilesAsync(
                     "SliceProvider",
                     ProductionFileSliceFixture.FilePaths,
                     newSlice.Nodes,
@@ -508,7 +508,7 @@ public class MariaDbGraphStoreTests
             }
 
             var oversizedPath = new string('x', 501);
-            await Should.ThrowAsync<MySqlException>(() => store.ReplaceProjectFilesAsync(
+            await Should.ThrowAsync<MySqlException>(() => store.ReplaceRepositoryFilesAsync(
                 "SliceProvider",
                 ["api.cs"],
                 [Node(NodeLabel.Class, "Broken", "SliceProvider.Broken", oversizedPath)],
@@ -524,7 +524,7 @@ public class MariaDbGraphStoreTests
 
         static GraphNode Node(NodeLabel label, string name, string qn, string filePath) => new()
         {
-            Project = "SliceProvider",
+            Repository = "SliceProvider",
             Label = label,
             Name = name,
             QualifiedName = qn,
@@ -532,7 +532,7 @@ public class MariaDbGraphStoreTests
         };
         static GraphEdge Edge(long sourceId, long targetId, EdgeType type) => new()
         {
-            Project = "SliceProvider",
+            Repository = "SliceProvider",
             SourceId = sourceId,
             TargetId = targetId,
             Type = type
@@ -586,7 +586,7 @@ public class MariaDbGraphStoreTests
                 .ShouldBe(new FileHashRecord("h1", null));
 
             // Incremental file-slice replacement writes the version alongside the hash.
-            await store.ReplaceProjectFilesAsync(
+            await store.ReplaceRepositoryFilesAsync(
                 "Versioned",
                 ["a.cs"],
                 [Node("Versioned.A", "a.cs")],
@@ -598,7 +598,7 @@ public class MariaDbGraphStoreTests
             (await store.GetFileHashesAsync("Versioned"))["a.cs"].ShouldBe("h1");
 
             // Full replacement writes versions and the sync-state fingerprint atomically.
-            await store.ReplaceProjectGraphAsync(
+            await store.ReplaceRepositoryGraphAsync(
                 "Versioned",
                 [Node("Versioned.B", "b.cs")],
                 [],
@@ -606,7 +606,7 @@ public class MariaDbGraphStoreTests
                 new RepositoryEntity { Name = "Versioned" },
                 new SyncStateEntity
                 {
-                    Project = "Versioned",
+                    Repository = "Versioned",
                     LastCommitSha = "abc",
                     LastSyncAt = DateTime.UtcNow,
                     Status = "idle",
@@ -623,7 +623,7 @@ public class MariaDbGraphStoreTests
             context.ChangeTracker.Clear();
             await store.UpsertSyncStateAsync(new SyncStateEntity
             {
-                Project = "Versioned",
+                Repository = "Versioned",
                 Status = "error",
                 FailedCommitSha = "abc",
                 ConsecutiveFailures = 1
@@ -632,7 +632,7 @@ public class MariaDbGraphStoreTests
             (await store.GetSyncStateAsync("Versioned"))!.ExtractionFingerprint.ShouldBe("FP1");
             await store.UpsertSyncStateAsync(new SyncStateEntity
             {
-                Project = "Versioned",
+                Repository = "Versioned",
                 LastCommitSha = "abc",
                 Status = "idle",
                 ExtractionFingerprint = "FP2"
@@ -649,14 +649,14 @@ public class MariaDbGraphStoreTests
             context.ChangeTracker.Clear();
             (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBe(7);
             (await store.GetSyncStateAsync("Unknown")).ShouldBeNull();
-            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "Versioned", Status = "idle" });
-            await store.ReplaceProjectGraphAsync(
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = "Versioned", Status = "idle" });
+            await store.ReplaceRepositoryGraphAsync(
                 "Versioned",
                 [Node("Versioned.B", "b.cs")],
                 [],
                 new Dictionary<string, string> { ["b.cs"] = "h2" },
                 new RepositoryEntity { Name = "Versioned" },
-                new SyncStateEntity { Project = "Versioned", LastCommitSha = "def", Status = "idle" },
+                new SyncStateEntity { Repository = "Versioned", LastCommitSha = "def", Status = "idle" },
                 new Dictionary<string, string> { ["b.cs"] = "p1;RoslynExtractor=3" });
             context.ChangeTracker.Clear();
             (await store.GetSyncStateAsync("Versioned"))!.VitalsVersion.ShouldBe(7);
@@ -666,7 +666,7 @@ public class MariaDbGraphStoreTests
             // sync-state writes, and a success clears them.
             (await store.RecordVitalsFailureAsync("Versioned", "def", 8)).ShouldBe(1);
             (await store.RecordVitalsFailureAsync("Versioned", "def", 8)).ShouldBe(2);
-            await store.UpsertSyncStateAsync(new SyncStateEntity { Project = "Versioned", Status = "idle" });
+            await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = "Versioned", Status = "idle" });
             context.ChangeTracker.Clear();
             var failing = (await store.GetSyncStateAsync("Versioned"))!;
             failing.VitalsFailedCommitSha.ShouldBe("def");
@@ -690,7 +690,7 @@ public class MariaDbGraphStoreTests
 
         static GraphNode Node(string qn, string filePath) => new()
         {
-            Project = "Versioned",
+            Repository = "Versioned",
             Label = NodeLabel.Class,
             Name = qn,
             QualifiedName = qn,
@@ -735,7 +735,7 @@ public class MariaDbGraphStoreTests
                 Node(NodeLabel.Function, "strategy", "SceneWorks.strategy", "candle_memory_strategy.rs")
             };
 
-            await store.ReplaceProjectGraphAsync(
+            await store.ReplaceRepositoryGraphAsync(
                 "SceneWorks",
                 nodes,
                 [],
@@ -749,15 +749,15 @@ public class MariaDbGraphStoreTests
             lower.ShouldNotBeNull();
             upper.Id.ShouldNotBe(lower.Id);
 
-            // Batch lookup by qualified name is project-scoped and case-sensitive.
+            // Batch lookup by qualified name is repository-scoped and case-sensitive.
             (await store.FindNodesByQualifiedNamesAsync("SceneWorks", ["SceneWorks.strategy", "SceneWorks.Missing"]))
                 .ShouldHaveSingleItem().Id.ShouldBe(lower.Id);
             (await store.FindNodesByQualifiedNamesAsync("SceneWorks", ["SceneWorks.Strategy", "SceneWorks.strategy"]))
                 .Select(node => node.Id).ShouldBe([upper.Id, lower.Id], ignoreOrder: true);
-            (await store.FindNodesByQualifiedNamesAsync("OtherProject", ["SceneWorks.Strategy"])).ShouldBeEmpty();
+            (await store.FindNodesByQualifiedNamesAsync("OtherRepository", ["SceneWorks.Strategy"])).ShouldBeEmpty();
             (await store.FindNodesByQualifiedNamesAsync("SceneWorks", [])).ShouldBeEmpty();
 
-            await Should.ThrowAsync<MySqlException>(() => store.ReplaceProjectGraphAsync(
+            await Should.ThrowAsync<MySqlException>(() => store.ReplaceRepositoryGraphAsync(
                 "SceneWorks",
                 [Node(NodeLabel.Class, "Broken", "SceneWorks.Broken", new string('x', 501))],
                 [],
@@ -777,7 +777,7 @@ public class MariaDbGraphStoreTests
 
         static GraphNode Node(NodeLabel label, string name, string qn, string filePath) => new()
         {
-            Project = "SceneWorks",
+            Repository = "SceneWorks",
             Label = label,
             Name = name,
             QualifiedName = qn,
@@ -812,11 +812,11 @@ public class MariaDbGraphStoreTests
             SELECT CONCAT('db:', @Server, '/Database', LPAD(seq, 4, '0')), @Server
             FROM seq_{{first}}_to_{{last}};
 
-            INSERT INTO nodes (project, label, name, qualified_name)
+            INSERT INTO nodes (repository, label, name, qualified_name)
             SELECT name, 'Table', CONCAT('Table', RIGHT(name, 4)), CONCAT('dbo.Table', RIGHT(name, 4))
             FROM repositories
             WHERE gitlab_group = @Server
-                AND name NOT IN (SELECT project FROM nodes WHERE label = 'Table');
+                AND name NOT IN (SELECT repository FROM nodes WHERE label = 'Table');
             """, new { Server = server });
     }
 
@@ -852,12 +852,12 @@ public class MariaDbGraphStoreTests
 
     private static void AssertSchemaScalePage(SchemaRepositorySearchResult result, string server)
     {
-        var expectedProjects = Enumerable.Range(20, 10)
+        var expectedRepositories = Enumerable.Range(20, 10)
             .Select(index => $"db:{server}/Database{index:0000}")
             .ToArray();
 
         result.Items.Count.ShouldBe(10);
-        result.Items.Select(item => item.Project.Name).ShouldBe(expectedProjects);
+        result.Items.Select(item => item.Repository.Name).ShouldBe(expectedRepositories);
         result.Items.ShouldAllBe(item =>
             item.TableCount == 1 && item.ViewCount == 0 && item.ProcedureCount == 0);
     }

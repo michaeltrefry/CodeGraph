@@ -13,7 +13,7 @@ public class TreeSitterExtractorTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "TestProject",
+        RepositoryName = "TestProject",
         RootPath = "/test"
     };
 
@@ -160,7 +160,7 @@ public class TreeSitterExtractorTests
 
     [Theory]
     [MemberData(nameof(CallFixtures))]
-    public async Task IndexProjectAsync_EachSupportedLanguage_ResolvesPositiveCallEdge(
+    public async Task IndexRepositoryAsync_EachSupportedLanguage_ResolvesPositiveCallEdge(
         string extension,
         string source,
         string expectedLanguage)
@@ -179,7 +179,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("CallEdgeRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("CallEdgeRepo", rootPath, ct: CancellationToken.None);
 
             var nodesById = store.Nodes.ToDictionary(node => node.Id);
             store.Edges.ShouldContain(edge =>
@@ -255,7 +255,7 @@ public class TreeSitterExtractorTests
     [Theory]
     [InlineData(".py", "class Worker:\n    def helper(self): pass\n    def run(self): self.helper()\n")]
     [InlineData(".cpp", "namespace Worker { void helper() {} void run() { Worker::helper(); } }")]
-    public async Task IndexProjectAsync_QualifiedCalls_ResolveWithinEnclosingType(
+    public async Task IndexRepositoryAsync_QualifiedCalls_ResolveWithinEnclosingType(
         string extension,
         string source)
     {
@@ -273,7 +273,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("QualifiedRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("QualifiedRepo", rootPath, ct: CancellationToken.None);
 
             var nodesById = store.Nodes.ToDictionary(node => node.Id);
             store.Edges.ShouldContain(edge =>
@@ -290,7 +290,7 @@ public class TreeSitterExtractorTests
 
     [Theory]
     [MemberData(nameof(QualifiedCallFixtures))]
-    public async Task IndexProjectAsync_MemberAndScopedCalls_ResolveWithinOwningTypeAndDeduplicate(
+    public async Task IndexRepositoryAsync_MemberAndScopedCalls_ResolveWithinOwningTypeAndDeduplicate(
         string extension,
         string source)
     {
@@ -308,7 +308,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("QualifiedRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("QualifiedRepo", rootPath, ct: CancellationToken.None);
 
             var nodesById = store.Nodes.ToDictionary(node => node.Id);
             var calls = store.Edges.Where(edge => edge.Type == EdgeType.CALLS).ToList();
@@ -325,7 +325,7 @@ public class TreeSitterExtractorTests
 
     [Theory]
     [MemberData(nameof(LowercaseScopedCallFixtures))]
-    public async Task IndexProjectAsync_LowercaseScopedCalls_ResolveWithoutCapitalizationHeuristics(
+    public async Task IndexRepositoryAsync_LowercaseScopedCalls_ResolveWithoutCapitalizationHeuristics(
         string extension,
         string source)
     {
@@ -343,7 +343,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("LowercaseRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("LowercaseRepo", rootPath, ct: CancellationToken.None);
 
             var nodesById = store.Nodes.ToDictionary(node => node.Id);
             var call = store.Edges.Single(edge => edge.Type == EdgeType.CALLS);
@@ -358,7 +358,7 @@ public class TreeSitterExtractorTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_CrossFileDotReceiver_DoesNotPromoteTypeBySpelling()
+    public async Task IndexRepositoryAsync_CrossFileDotReceiver_DoesNotPromoteTypeBySpelling()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-tree-cross-file-calls-{Guid.NewGuid():N}");
         Directory.CreateDirectory(rootPath);
@@ -379,7 +379,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("CrossFileRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("CrossFileRepo", rootPath, ct: CancellationToken.None);
 
             store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.CALLS);
         }
@@ -391,7 +391,7 @@ public class TreeSitterExtractorTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_UnknownInstanceReceiver_DoesNotResolveByGlobalName()
+    public async Task IndexRepositoryAsync_UnknownInstanceReceiver_DoesNotResolveByGlobalName()
     {
         var source = "class service:\n    def helper(self): pass\nclass Runner:\n    def run(self, service): service.helper()\n";
         var extractor = new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance);
@@ -412,7 +412,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("UnknownReceiverRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("UnknownReceiverRepo", rootPath, ct: CancellationToken.None);
 
             store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.CALLS);
         }
@@ -425,7 +425,7 @@ public class TreeSitterExtractorTests
 
     [Theory]
     [MemberData(nameof(AmbiguousReceiverFixtures))]
-    public async Task IndexProjectAsync_FieldMemberAndImportAliases_DoNotPromoteKnownTypeNames(
+    public async Task IndexRepositoryAsync_FieldMemberAndImportAliases_DoNotPromoteKnownTypeNames(
         string extension,
         string source)
     {
@@ -443,7 +443,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("CollisionRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("CollisionRepo", rootPath, ct: CancellationToken.None);
 
             store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.CALLS);
         }
@@ -456,7 +456,7 @@ public class TreeSitterExtractorTests
 
     [Theory]
     [MemberData(nameof(SplitOwnerFixtures))]
-    public async Task IndexProjectAsync_SplitFileGoAndRustMethods_RetainOwnerAndResolveCalls(
+    public async Task IndexRepositoryAsync_SplitFileGoAndRustMethods_RetainOwnerAndResolveCalls(
         string extension,
         string typeSource,
         string methodSource)
@@ -476,7 +476,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("SplitOwnerRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("SplitOwnerRepo", rootPath, ct: CancellationToken.None);
 
             var run = store.Nodes.ShouldContain(node => node.Name == "run");
             var helper = store.Nodes.ShouldContain(node => node.Name == "helper");
@@ -497,7 +497,7 @@ public class TreeSitterExtractorTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task IndexProjectAsync_GenericRustImpl_NormalizesNominalOwnerAndResolvesSelfCall(
+    public async Task IndexRepositoryAsync_GenericRustImpl_NormalizesNominalOwnerAndResolvesSelfCall(
         bool splitFiles)
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-tree-rust-generic-{Guid.NewGuid():N}");
@@ -526,7 +526,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("GenericRustRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("GenericRustRepo", rootPath, ct: CancellationToken.None);
 
             var run = store.Nodes.ShouldContain(node => node.Name == "run");
             var helper = store.Nodes.ShouldContain(node => node.Name == "helper");
@@ -547,7 +547,7 @@ public class TreeSitterExtractorTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public async Task IndexProjectAsync_ScopedRustImpl_UsesUniqueNominalOwner(
+    public async Task IndexRepositoryAsync_ScopedRustImpl_UsesUniqueNominalOwner(
         bool splitFiles,
         bool genericOwner)
     {
@@ -578,7 +578,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("ScopedRustRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("ScopedRustRepo", rootPath, ct: CancellationToken.None);
 
             var run = store.Nodes.ShouldContain(node => node.Name == "run");
             var helper = store.Nodes.ShouldContain(node => node.Name == "helper");
@@ -595,7 +595,7 @@ public class TreeSitterExtractorTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_DuplicateSplitRustOwners_DoNotCrossLinkSymbolicMethod()
+    public async Task IndexRepositoryAsync_DuplicateSplitRustOwners_DoNotCrossLinkSymbolicMethod()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-tree-rust-owner-collision-{Guid.NewGuid():N}");
         Directory.CreateDirectory(rootPath);
@@ -618,7 +618,7 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("DuplicateRustOwnerRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("DuplicateRustOwnerRepo", rootPath, ct: CancellationToken.None);
 
             store.Nodes.Count(node => node.Name == "Worker").ShouldBe(2);
             store.Nodes.Count(node => node.Name == "helper").ShouldBe(1);
@@ -632,7 +632,7 @@ public class TreeSitterExtractorTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_IncrementalCaller_ResolvesPersistedUnchangedCallee()
+    public async Task IndexRepositoryAsync_IncrementalCaller_ResolvesPersistedUnchangedCallee()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), $"codegraph-tree-incremental-call-{Guid.NewGuid():N}");
         Directory.CreateDirectory(rootPath);
@@ -650,9 +650,9 @@ public class TreeSitterExtractorTests
                 new LocalFileSystem(),
                 NullLogger<IndexingPipeline>.Instance);
 
-            await pipeline.IndexProjectAsync("IncrementalCallRepo", rootPath, ct: CancellationToken.None);
+            await pipeline.IndexRepositoryAsync("IncrementalCallRepo", rootPath, ct: CancellationToken.None);
             await File.WriteAllTextAsync(callerPath, "def caller():\n    # changed\n    callee()\n");
-            await pipeline.IndexProjectAsync(
+            await pipeline.IndexRepositoryAsync(
                 "IncrementalCallRepo",
                 rootPath,
                 changedFilesOnly: ["caller.py"],

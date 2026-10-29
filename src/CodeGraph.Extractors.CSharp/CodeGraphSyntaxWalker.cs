@@ -115,7 +115,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
     {
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Namespace,
             Name = ns,
@@ -135,7 +135,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Class,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -189,7 +189,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Interface,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -223,7 +223,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Record,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -260,7 +260,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Struct,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -289,7 +289,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Enum,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -311,7 +311,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Delegate,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -331,7 +331,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Method,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -372,7 +372,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Property,
             Name = symbol?.Name ?? node.Identifier.Text,
@@ -478,7 +478,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
         var ns = node.Name?.ToString();
         if (ns is not null)
         {
-            var fileQN = $"{_context.ProjectName}:{GetRelativePath(node)}";
+            var fileQN = $"{_context.RepositoryName}:{GetRelativePath(node)}";
             _imports.Add(new UnresolvedImport(fileQN, ns));
         }
         base.VisitUsingDirective(node);
@@ -497,11 +497,11 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Route,
             Name = $"{httpMethod} {routeTemplate}",
-            QualifiedName = $"route:{_context.ProjectName}:{httpMethod}:{routeTemplate}",
+            QualifiedName = $"route:{_context.RepositoryName}:{httpMethod}:{routeTemplate}",
             FilePath = GetRelativePath(node),
             StartLine = GetStartLine(node),
             EndLine = GetEndLine(node),
@@ -513,7 +513,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
         });
 
         _edges.Add(new PendingEdge(
-            $"route:{_context.ProjectName}:{httpMethod}:{routeTemplate}",
+            $"route:{_context.RepositoryName}:{httpMethod}:{routeTemplate}",
             methodQN,
             EdgeType.HANDLES));
     }
@@ -638,10 +638,10 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
             // Create Queue node if queue name is known
             if (queueName is not null)
             {
-                var queueQN = $"queue:{_context.ProjectName}:{queueName}";
+                var queueQN = $"queue:{_context.RepositoryName}:{queueName}";
                 _nodes.Add(new GraphNode
                 {
-                    Project = _context.ProjectName,
+                    Repository = _context.RepositoryName,
                     DotnetProject = _context.DotnetProject,
                     Label = NodeLabel.Queue,
                     Name = queueName,
@@ -662,10 +662,10 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
                 // Create Exchange node and Queue --BOUND_TO--> Exchange if exchange is specified
                 if (exchangeName is not null)
                 {
-                    var exchangeQN = $"exchange:{_context.ProjectName}:{exchangeName}";
+                    var exchangeQN = $"exchange:{_context.RepositoryName}:{exchangeName}";
                     _nodes.Add(new GraphNode
                     {
-                        Project = _context.ProjectName,
+                        Repository = _context.RepositoryName,
                         DotnetProject = _context.DotnetProject,
                         Label = NodeLabel.Exchange,
                         Name = exchangeName,
@@ -1022,11 +1022,11 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             DotnetProject = _context.DotnetProject,
             Label = NodeLabel.Service,
             Name = interfaceType.Split('.').Last(),
-            QualifiedName = $"service:{_context.ProjectName}:{interfaceType}",
+            QualifiedName = $"service:{_context.RepositoryName}:{interfaceType}",
             FilePath = GetRelativePath(node),
             StartLine = GetStartLine(node),
             Properties = new()
@@ -1124,7 +1124,7 @@ public class CodeGraphSyntaxWalker : CSharpSyntaxWalker
     private string BuildQualifiedName(string identifier)
     {
         if (_scopeStack.Count == 0)
-            return $"{_context.ProjectName}.{identifier}";
+            return $"{_context.RepositoryName}.{identifier}";
         return $"{_scopeStack.Peek()}.{identifier}";
     }
 

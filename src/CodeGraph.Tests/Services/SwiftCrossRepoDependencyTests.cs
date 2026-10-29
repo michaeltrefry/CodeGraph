@@ -136,7 +136,7 @@ public sealed class SwiftCrossRepoDependencyTests
 
         _store.AddNode(new GraphNode
         {
-            Project = Core,
+            Repository = Core,
             Label = NodeLabel.Function,
             Name = "run",
             QualifiedName = $"{Core}:Sources/SwiftCore/Core.swift:run",
@@ -146,28 +146,28 @@ public sealed class SwiftCrossRepoDependencyTests
         await new CrossRepoLinker(_store, NullLogger<CrossRepoLinker>.Instance).LinkAsync(CancellationToken.None);
     }
 
-    private void Index(string project, string? repoUrl, Dictionary<string, string> manifests, bool hasXcodeProject = false)
+    private void Index(string repository, string? repoUrl, Dictionary<string, string> manifests, bool hasXcodeProject = false)
     {
-        var rootPath = Path.Combine(_root, project);
+        var rootPath = Path.Combine(_root, repository);
         var result = new SwiftPackageManifestExtractor().Extract(
             manifests.ToDictionary(manifest => Path.Combine(rootPath, manifest.Key), manifest => manifest.Value),
             hasXcodeProject,
-            new ExtractorContext { ProjectName = project, RootPath = rootPath });
+            new ExtractorContext { RepositoryName = repository, RootPath = rootPath });
 
-        _store.AddProject(new ProjectInfo(project, repoUrl, null, null, "sha-" + project, null, "Swift", "SwiftPM", false, null));
+        _store.AddRepository(new RepositoryInfo(repository, repoUrl, null, null, "sha-" + repository, null, "Swift", "SwiftPM", false, null));
         var ids = result.Nodes.ToDictionary(node => node.QualifiedName, node => _store.AddNode(node));
-        ids[project] = _store.AddNode(new GraphNode
+        ids[repository] = _store.AddNode(new GraphNode
         {
-            Project = project,
+            Repository = repository,
             Label = NodeLabel.Repository,
-            Name = project,
-            QualifiedName = project
+            Name = repository,
+            QualifiedName = repository
         });
         foreach (var edge in result.Edges)
         {
             _store.AddEdge(new GraphEdge
             {
-                Project = project,
+                Repository = repository,
                 SourceId = ids[edge.SourceQN],
                 TargetId = ids[edge.TargetQN],
                 Type = edge.Type,
@@ -199,10 +199,10 @@ public sealed class SwiftCrossRepoDependencyTests
             edge.Properties["ecosystem"].ShouldBe("swiftpm");
             var source = await NodeAsync(edge.SourceNodeId);
             var target = await NodeAsync(edge.TargetNodeId);
-            source.Project.ShouldBe(edge.SourceProject);
-            target.Project.ShouldBe(edge.TargetProject);
+            source.Repository.ShouldBe(edge.SourceRepository);
+            target.Repository.ShouldBe(edge.TargetRepository);
             ((bool)target.Properties["is_definition"]).ShouldBeTrue();
-            links.Add((edge.SourceProject, edge.TargetProject, source.QualifiedName, target.QualifiedName,
+            links.Add((edge.SourceRepository, edge.TargetRepository, source.QualifiedName, target.QualifiedName,
                 (string)edge.Properties["matched_by"], (string)edge.Properties["confidence_band"],
                 (string)edge.Properties["dependency_kind"]));
         }
@@ -226,7 +226,7 @@ public sealed class SwiftCrossRepoDependencyTests
             (Both, Shared, Both, sharedDefinition, "git_url", "high", "pinned")
         ], ignoreOrder: true);
 
-        var pinned = _store.CrossEdges.Single(edge => edge.SourceProject == XcodeApp);
+        var pinned = _store.CrossEdges.Single(edge => edge.SourceRepository == XcodeApp);
         pinned.Properties["package_key"].ShouldBe("swiftpm:scm:github.com/acme/swiftcore");
         pinned.Properties["identity"].ShouldBe("swiftcore");
         pinned.Properties["version"].ShouldBe("1.4.0");
@@ -242,7 +242,7 @@ public sealed class SwiftCrossRepoDependencyTests
         log.Properties["source_kind"].ShouldBe("remote");
         log.Properties["location"].ShouldBe("https://github.com/apple/swift-log.git");
         _store.CrossEdges.ShouldNotContain(edge => edge.TargetNodeId == log.Id || edge.SourceNodeId == log.Id);
-        _store.CrossEdges.ShouldNotContain(edge => edge.TargetProject == Fork);
+        _store.CrossEdges.ShouldNotContain(edge => edge.TargetRepository == Fork);
     }
 
     [Fact]
@@ -262,11 +262,11 @@ public sealed class SwiftCrossRepoDependencyTests
                     swiftcore = { git = "https://github.com/acme/swiftcore" }
                     """
             },
-            new ExtractorContext { ProjectName = "Mixed", RootPath = Path.Combine(_root, "Mixed") });
-        _store.AddProject("Mixed");
+            new ExtractorContext { RepositoryName = "Mixed", RootPath = Path.Combine(_root, "Mixed") });
+        _store.AddRepository("Mixed");
         var ids = cargo.Nodes.ToDictionary(node => node.QualifiedName, node => _store.AddNode(node));
         foreach (var edge in cargo.Edges.Where(edge => ids.ContainsKey(edge.SourceQN)))
-            _store.AddEdge(new GraphEdge { Project = "Mixed", SourceId = ids[edge.SourceQN], TargetId = ids[edge.TargetQN], Type = edge.Type });
+            _store.AddEdge(new GraphEdge { Repository = "Mixed", SourceId = ids[edge.SourceQN], TargetId = ids[edge.TargetQN], Type = edge.Type });
 
         await new CrossRepoLinker(_store, NullLogger<CrossRepoLinker>.Instance).LinkAsync(CancellationToken.None);
 
@@ -275,15 +275,15 @@ public sealed class SwiftCrossRepoDependencyTests
     }
 
     [Fact]
-    public async Task LinkForProject_ScopedToTheUpstream_RelinksItsInboundSwiftDependents()
+    public async Task LinkForRepository_ScopedToTheUpstream_RelinksItsInboundSwiftDependents()
     {
         await SeedAsync();
 
         await new CrossRepoLinker(_store, NullLogger<CrossRepoLinker>.Instance)
-            .LinkForProjectAsync(Core, CancellationToken.None);
+            .LinkForRepositoryAsync(Core, CancellationToken.None);
 
-        _store.CrossEdges.Where(edge => edge.TargetProject == Core)
-            .Select(edge => edge.SourceProject).Order(StringComparer.Ordinal)
+        _store.CrossEdges.Where(edge => edge.TargetRepository == Core)
+            .Select(edge => edge.SourceRepository).Order(StringComparer.Ordinal)
             .ShouldBe([AppHttps, AppScp, AppSsh, Both, XcodeApp]);
         _store.CrossEdges.Count.ShouldBe(7);
     }

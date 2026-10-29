@@ -4,7 +4,7 @@ namespace CodeGraph.Extractors.TypeScript;
 
 public record ExtractProjectRequest
 {
-    [JsonPropertyName("projectName")] public required string ProjectName { get; init; }
+    [JsonPropertyName("repositoryName")] public required string RepositoryName { get; init; }
     [JsonPropertyName("rootPath")]    public required string RootPath { get; init; }
     [JsonPropertyName("tsconfigPath")] public required string TsconfigPath { get; init; }
 

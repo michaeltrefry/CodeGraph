@@ -10,7 +10,7 @@ namespace CodeGraph.Data.MariaDb;
 /// <summary>
 /// Cross-repo linking reads: server-side filtered, column-projected and streamed row by row on a
 /// dedicated connection, so linking a small repository never materializes the node/edge rows (and
-/// their JSON properties) of every other project in the indexer's heap.
+/// their JSON properties) of every other repository in the indexer's heap.
 /// </summary>
 public partial class MySqlGraphStore
 {
@@ -27,7 +27,7 @@ public partial class MySqlGraphStore
         await using var command = conn.CreateCommand();
         command.CommandTimeout = GraphWriteTimeout;
 
-        var sql = new StringBuilder("SELECT n.id, n.project, n.label, n.name, n.qualified_name");
+        var sql = new StringBuilder("SELECT n.id, n.repository, n.label, n.name, n.qualified_name");
         foreach (var key in query.PropertyKeys)
             sql.Append(", ").Append(JsonScalar("n.properties", key));
         sql.Append(" FROM nodes n WHERE n.label IN (")
@@ -64,7 +64,7 @@ public partial class MySqlGraphStore
         // the FK makes that impossible today, but the projection must not silently drop edges.
         var targetJoin = CrossRepoLinkProjection.HasTargetFilter(query) ? "JOIN" : "LEFT JOIN";
         var sql = new StringBuilder(
-            "SELECT e.source_id, s.project, e.target_id, COALESCE(t.project, ''), t.label, " +
+            "SELECT e.source_id, s.repository, e.target_id, COALESCE(t.repository, ''), t.label, " +
             "COALESCE(t.name, ''), COALESCE(t.qualified_name, ''), e.type");
         foreach (var key in query.EdgePropertyKeys)
             sql.Append(", ").Append(JsonScalar("e.properties", key));

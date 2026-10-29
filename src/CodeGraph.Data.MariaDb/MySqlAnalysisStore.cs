@@ -12,17 +12,17 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    public async Task UpsertRepositorySummaryAsync(string project, string summary,
+    public async Task UpsertRepositorySummaryAsync(string repository, string summary,
         ConfidenceLevel confidence, string sourceHash, string? modelUsed = null)
     {
-        var existing = await db.RepositorySummaries.FindAsync(project);
+        var existing = await db.RepositorySummaries.FindAsync(repository);
         var now = DateTime.UtcNow;
 
         if (existing is null)
         {
             db.RepositorySummaries.Add(new RepositorySummaryEntity
             {
-                Project = project,
+                Repository = repository,
                 Summary = summary,
                 Confidence = confidence.ToString().ToLowerInvariant(),
                 SourceHash = sourceHash,
@@ -43,15 +43,15 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
         await db.SaveChangesAsync();
     }
 
-    public async Task<ProjectSummary?> GetRepositorySummaryAsync(string project)
+    public async Task<RepositorySummary?> GetRepositorySummaryAsync(string repository)
     {
         var entity = await db.RepositorySummaries.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Project == project);
+            .FirstOrDefaultAsync(s => s.Repository == repository);
 
         return entity is null
             ? null
-            : new ProjectSummary(
-                entity.Project,
+            : new RepositorySummary(
+                entity.Repository,
                 entity.Summary,
                 Enum.Parse<ConfidenceLevel>(entity.Confidence, ignoreCase: true),
                 entity.SourceHash,
@@ -267,13 +267,13 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
         return entities.ToDictionary(e => e.NodeId, MapNodeAnalysis);
     }
 
-    public async Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string project)
+    public async Task<IReadOnlyList<NodeEntity>> GetClassNodesWithEdgesAsync(string repository)
     {
         var classLabel = NodeLabel.Class.ToString();
         var interfaceLabel = NodeLabel.Interface.ToString();
 
         return await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project
+            .Where(n => n.Repository == repository
                 && (n.Label == classLabel || n.Label == interfaceLabel)
                 && (db.Edges.Any(e => e.SourceId == n.Id) || db.Edges.Any(e => e.TargetId == n.Id)))
             .OrderBy(n => n.Name)
@@ -315,16 +315,16 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
             .OrderBy(e => e.Type)
             .ToListAsync();
 
-    public async Task<IReadOnlyList<NodeEntity>> GetAllNodesByProjectAsync(string project)
+    public async Task<IReadOnlyList<NodeEntity>> GetAllNodesByRepositoryAsync(string repository)
         => await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project)
+            .Where(n => n.Repository == repository)
             .OrderBy(n => n.Label)
             .ThenBy(n => n.Name)
             .ToListAsync();
 
-    public async Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByProjectAsync(string project)
+    public async Task<IReadOnlyList<EdgeEntity>> GetAllEdgesByRepositoryAsync(string repository)
         => await db.Edges.AsNoTracking()
-            .Where(e => e.Project == project)
+            .Where(e => e.Repository == repository)
             .OrderBy(e => e.Id)
             .ToListAsync();
 
@@ -341,31 +341,31 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
             .ToListAsync();
     }
 
-    public async Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForProjectAsync(string project)
+    public async Task<IReadOnlyList<EdgeEntity>> GetEdgeEndpointsForRepositoryAsync(string repository)
     {
-        // Join on the project's nodes instead of sending every node id as an IN list, and leave the
+        // Join on the repository's nodes instead of sending every node id as an IN list, and leave the
         // JSON properties on the server: a ~130k-node repository has ~900k edges.
         var outbound = db.Edges.AsNoTracking()
-            .Join(db.Nodes.Where(n => n.Project == project), e => e.SourceId, n => n.Id,
-                (e, _) => new { e.Id, e.Project, e.SourceId, e.TargetId, e.Type });
+            .Join(db.Nodes.Where(n => n.Repository == repository), e => e.SourceId, n => n.Id,
+                (e, _) => new { e.Id, e.Repository, e.SourceId, e.TargetId, e.Type });
         var inbound = db.Edges.AsNoTracking()
-            .Join(db.Nodes.Where(n => n.Project == project), e => e.TargetId, n => n.Id,
-                (e, _) => new { e.Id, e.Project, e.SourceId, e.TargetId, e.Type });
+            .Join(db.Nodes.Where(n => n.Repository == repository), e => e.TargetId, n => n.Id,
+                (e, _) => new { e.Id, e.Repository, e.SourceId, e.TargetId, e.Type });
 
         var rows = await outbound.Union(inbound).OrderBy(e => e.Id).ToListAsync();
         return rows.Select(e => new EdgeEntity
         {
-            Id = e.Id, Project = e.Project, SourceId = e.SourceId, TargetId = e.TargetId, Type = e.Type
+            Id = e.Id, Repository = e.Repository, SourceId = e.SourceId, TargetId = e.TargetId, Type = e.Type
         }).ToList();
     }
 
-    public async Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string project)
+    public async Task<IReadOnlyList<NodeEntity>> GetFileAndUntrustedNodesAsync(string repository)
         => await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project && (n.Label == "File" || n.DoNotTrust))
+            .Where(n => n.Repository == repository && (n.Label == "File" || n.DoNotTrust))
             .OrderBy(n => n.Id)
             .Select(n => new NodeEntity
             {
-                Id = n.Id, Project = n.Project, DotnetProject = n.DotnetProject, Label = n.Label, Name = n.Name,
+                Id = n.Id, Repository = n.Repository, DotnetProject = n.DotnetProject, Label = n.Label, Name = n.Name,
                 QualifiedName = n.QualifiedName, FilePath = n.FilePath, StartLine = n.StartLine,
                 EndLine = n.EndLine, DoNotTrust = n.DoNotTrust
             })

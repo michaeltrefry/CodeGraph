@@ -6,10 +6,10 @@ namespace CodeGraph.Data.Neo4j;
 
 public partial class Neo4jGraphStore
 {
-    private const string ProjectIndexLockConstraint = "project_index_lock_unique";
+    private const string RepositoryIndexLockConstraint = "repository_index_lock_unique";
 
-    public async Task<IAsyncDisposable> AcquireProjectIndexingLockAsync(
-        string project,
+    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
+        string repository,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -21,15 +21,15 @@ public partial class Neo4jGraphStore
                 WHERE name = $constraintName
                   AND type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS']
                   AND entityType = 'NODE'
-                  AND labelsOrTypes = ['ProjectIndexLock']
-                  AND properties = ['project']
+                  AND labelsOrTypes = ['RepositoryIndexLock']
+                  AND properties = ['repository']
                 RETURN count(*) AS constraintCount
-                """, new { constraintName = ProjectIndexLockConstraint });
+                """, new { constraintName = RepositoryIndexLockConstraint });
             if (!await constraintCursor.FetchAsync() ||
                 constraintCursor.Current["constraintCount"].As<long>() != 1)
             {
                 throw new InvalidOperationException(
-                    $"Neo4j constraint '{ProjectIndexLockConstraint}' is required for repository indexing locks.");
+                    $"Neo4j constraint '{RepositoryIndexLockConstraint}' is required for repository indexing locks.");
             }
 
             var transaction = await session.BeginTransactionAsync(config =>
@@ -37,12 +37,12 @@ public partial class Neo4jGraphStore
             try
             {
                 var cursor = await transaction.RunAsync("""
-                    MERGE (l:ProjectIndexLock {project: $project})
+                    MERGE (l:RepositoryIndexLock {repository: $repository})
                     SET l.owner = $owner
                     RETURN l.owner
-                    """, new { project, owner = Guid.NewGuid().ToString("N") });
+                    """, new { repository, owner = Guid.NewGuid().ToString("N") });
                 await cursor.ConsumeAsync();
-                return new Neo4jIndexingLock(session, transaction, logger, project);
+                return new Neo4jIndexingLock(session, transaction, logger, repository);
             }
             catch
             {
@@ -61,7 +61,7 @@ public partial class Neo4jGraphStore
         IAsyncSession session,
         IAsyncTransaction transaction,
         MsLogger logger,
-        string project) : IAsyncDisposable
+        string repository) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
@@ -71,7 +71,7 @@ public partial class Neo4jGraphStore
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to roll back repository indexing lock for {Project}", project);
+                logger.LogWarning(ex, "Failed to roll back repository indexing lock for {Repository}", repository);
             }
 
             try
@@ -80,7 +80,7 @@ public partial class Neo4jGraphStore
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to dispose repository indexing lock transaction for {Project}", project);
+                logger.LogWarning(ex, "Failed to dispose repository indexing lock transaction for {Repository}", repository);
             }
 
             try
@@ -89,7 +89,7 @@ public partial class Neo4jGraphStore
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to dispose repository indexing lock session for {Project}", project);
+                logger.LogWarning(ex, "Failed to dispose repository indexing lock session for {Repository}", repository);
             }
         }
     }

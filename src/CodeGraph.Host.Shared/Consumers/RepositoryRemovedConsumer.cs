@@ -17,10 +17,10 @@ public class RepositoryRemovedConsumer(
         var message = context.Message;
         logger.LogInformation("Cleaning up data for removed repository {Repo}", message.Name);
 
-        await store.DeleteCrossRepoEdgesForProjectAsync(message.Name);
-        await store.DeleteAnalysisDataForProjectAsync(message.Name);
-        await store.DeleteAllEdgesForProjectAsync(message.Name);
-        await store.DeleteNodesByProjectAsync(message.Name);
+        await store.DeleteCrossRepoEdgesForRepositoryAsync(message.Name);
+        await store.DeleteAnalysisDataForRepositoryAsync(message.Name);
+        await store.DeleteAllEdgesForRepositoryAsync(message.Name);
+        await store.DeleteNodesByRepositoryAsync(message.Name);
         await store.DeleteFileMetricsAsync(message.Name);
         await store.DeleteSyncStateAsync(message.Name);
         await store.DeleteRepositoryAsync(message.Name);

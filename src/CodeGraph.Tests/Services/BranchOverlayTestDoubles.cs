@@ -35,7 +35,7 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
 
     public Task<IReadOnlyList<BranchOverlayEntity>> FindOverlaysByShaAsync(
         string sha,
-        string? project,
+        string? repository,
         CancellationToken ct = default)
     {
         lock (_sync)
@@ -44,7 +44,7 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
                 .Where(overlay => string.Equals(overlay.HeadSha, sha, StringComparison.OrdinalIgnoreCase)
                                   || (overlay.HeadSha is null
                                       && string.Equals(overlay.RequestedRef, sha, StringComparison.OrdinalIgnoreCase)))
-                .Where(overlay => project is null || string.Equals(overlay.Project, project, StringComparison.OrdinalIgnoreCase))
+                .Where(overlay => repository is null || string.Equals(overlay.Repository, repository, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(overlay => overlay.CreatedAt)
                 .ThenByDescending(overlay => overlay.Id)
                 .Select(Clone)
@@ -171,7 +171,7 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
 
     private readonly SemaphoreSlim _requestLock = new(1, 1);
 
-    public async Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string project, CancellationToken ct = default)
+    public async Task<IAsyncDisposable> AcquireOverlayRequestLockAsync(string repository, CancellationToken ct = default)
     {
         await _requestLock.WaitAsync(ct);
         return new Releaser(_requestLock);
@@ -206,7 +206,7 @@ internal sealed class InMemoryBranchOverlayStore : IBranchOverlayStore
     private static BranchOverlayEntity Clone(BranchOverlayEntity overlay) => new()
     {
         Id = overlay.Id,
-        Project = overlay.Project,
+        Repository = overlay.Repository,
         RequestedRef = overlay.RequestedRef,
         HeadSha = overlay.HeadSha,
         BaseSha = overlay.BaseSha,
@@ -241,11 +241,11 @@ internal sealed class FixedPathRepoProvider(string localPath) : IRepoProvider
     public Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
         => Task.FromResult(LocalPath);
 
-    public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
-        => Task.FromResult(new List<DiscoveredProject>());
+    public Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredRepository>());
 
-    public Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
-        => Task.FromResult(new List<DiscoveredProject>());
+    public Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredRepository>());
 }
 
 /// <summary>
@@ -266,11 +266,11 @@ internal sealed class ResyncingRepoProvider(string reposCachePath, string dirtyP
     public Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
         => throw new NotSupportedException();
 
-    public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
-        => Task.FromResult(new List<DiscoveredProject>());
+    public Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredRepository>());
 
-    public Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
-        => Task.FromResult(new List<DiscoveredProject>());
+    public Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredRepository>());
 }
 
 /// <summary>Real git plumbing that records the git subcommands it runs.</summary>
@@ -298,11 +298,11 @@ internal sealed class ThrowingRepoProvider(Exception failure) : IRepoProvider
     public Task<string> EnsureLocalAsync(string repoName, string? localPath, string? repoUrl, CancellationToken ct = default)
         => Task.FromException<string>(failure);
 
-    public Task<List<DiscoveredProject>> DiscoverProjectsAsync(CancellationToken ct = default)
-        => Task.FromResult(new List<DiscoveredProject>());
+    public Task<List<DiscoveredRepository>> DiscoverRepositoriesAsync(CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredRepository>());
 
-    public Task<List<DiscoveredProject>> SearchProjectsAsync(string searchTerm, CancellationToken ct = default)
-        => Task.FromResult(new List<DiscoveredProject>());
+    public Task<List<DiscoveredRepository>> SearchRepositoriesAsync(string searchTerm, CancellationToken ct = default)
+        => Task.FromResult(new List<DiscoveredRepository>());
 }
 
 /// <summary>
@@ -327,10 +327,10 @@ internal sealed class LineFunctionExtractor : ICodeExtractor
                 continue;
             if (parts[0] == "def")
             {
-                current = $"{context.ProjectName}:{relativePath}:{parts[1]}";
+                current = $"{context.RepositoryName}:{relativePath}:{parts[1]}";
                 nodes.Add(new GraphNode
                 {
-                    Project = context.ProjectName,
+                    Repository = context.RepositoryName,
                     Label = NodeLabel.Function,
                     Name = parts[1],
                     QualifiedName = current,

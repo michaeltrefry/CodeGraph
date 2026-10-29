@@ -13,7 +13,7 @@ public static class ArchitectureReportFormatter
     public static string Format(ArchitectureReport report)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# Architecture: {report.Project}\n");
+        sb.AppendLine($"# Architecture: {report.Repository}\n");
 
         if (report.Summary is not null)
         {
@@ -61,9 +61,9 @@ public static class ArchitectureReportFormatter
         }
 
         AppendCrossRepo(sb, "### Inbound Dependencies (other repos depend on this)\n",
-            report.InboundDependencies.Select(e => (Repo: e.SourceProject, e.Type)), outbound: false);
+            report.InboundDependencies.Select(e => (Repo: e.SourceRepository, e.Type)), outbound: false);
         AppendCrossRepo(sb, "### Outbound Dependencies (this depends on other repos)\n",
-            report.OutboundDependencies.Select(e => (Repo: e.TargetProject, e.Type)), outbound: true);
+            report.OutboundDependencies.Select(e => (Repo: e.TargetRepository, e.Type)), outbound: true);
 
         return sb.ToString();
     }

@@ -24,7 +24,7 @@ public record SchemaListItem(
     Dictionary<string, object>? Properties);
 
 public record SchemaCatalogResponse(
-    string ProjectName,
+    string RepositoryName,
     string ServerName,
     string DatabaseName,
     IReadOnlyList<SchemaObjectResponse> Tables,

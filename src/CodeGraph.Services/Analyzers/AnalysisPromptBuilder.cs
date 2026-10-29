@@ -104,7 +104,7 @@ public static class AnalysisPromptBuilder
         else
         {
             foreach (var edge in crossRepoEdges)
-                sb.AppendLine($"- {edge.SourceProject} --{edge.Type}--> {edge.TargetProject}");
+                sb.AppendLine($"- {edge.SourceRepository} --{edge.Type}--> {edge.TargetRepository}");
         }
 
         sb.AppendLine();

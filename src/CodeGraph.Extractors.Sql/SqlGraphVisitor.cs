@@ -104,7 +104,7 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = NodeLabel.Table,
             Name = tableName,
             QualifiedName = qn,
@@ -153,7 +153,7 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = NodeLabel.View,
             Name = viewName,
             QualifiedName = qn,
@@ -178,7 +178,7 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
         // Treat ALTER VIEW as an update — same node QN, pipeline will upsert
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = NodeLabel.View,
             Name = viewName,
             QualifiedName = qn,
@@ -219,7 +219,7 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = NodeLabel.StoredProcedure,
             Name = procName,
             QualifiedName = qn,
@@ -268,7 +268,7 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
 
         _nodes.Add(new GraphNode
         {
-            Project = _context.ProjectName,
+            Repository = _context.RepositoryName,
             Label = NodeLabel.Function,
             Name = funcName,
             QualifiedName = qn,
@@ -385,8 +385,8 @@ public class SqlGraphVisitor : TSqlFragmentVisitor
 
     private string BuildQualifiedName(string objectName)
     {
-        // Prefix with project name for cross-repo uniqueness
-        return $"{_context.ProjectName}.{objectName}";
+        // Prefix with repository name for cross-repo uniqueness
+        return $"{_context.RepositoryName}.{objectName}";
     }
 
     private static string FragmentToString(TSqlFragment? fragment)

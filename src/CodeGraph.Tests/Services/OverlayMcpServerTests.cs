@@ -22,7 +22,7 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class OverlayMcpServerTests : IDisposable
 {
-    private const string Project = "OverlayRepo";
+    private const string Repository = "OverlayRepo";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-overlay-mcp-{Guid.NewGuid():N}");
     private readonly InMemoryGraphStore _graph = new();
     private readonly InMemoryBranchOverlayStore _overlays = new();
@@ -36,7 +36,7 @@ public sealed class OverlayMcpServerTests : IDisposable
 
     public OverlayMcpServerTests()
     {
-        _remote = Path.Combine(_root, "remote", Project);
+        _remote = Path.Combine(_root, "remote", Repository);
         Directory.CreateDirectory(_remote);
         GitFixture.Run(_remote, "init", "-q", "-b", "main");
         GitFixture.Run(_remote, "config", "commit.gpgsign", "false");
@@ -48,16 +48,16 @@ public sealed class OverlayMcpServerTests : IDisposable
 
         var cacheRoot = Path.Combine(_root, "cache");
         Directory.CreateDirectory(cacheRoot);
-        GitFixture.Run(cacheRoot, "clone", "-q", "--single-branch", _remote, Path.Combine(cacheRoot, Project));
+        GitFixture.Run(cacheRoot, "clone", "-q", "--single-branch", _remote, Path.Combine(cacheRoot, Repository));
 
-        _graph.AddProject(Project);
-        _graph.UpsertSyncStateAsync(new SyncStateEntity { Project = Project, LastCommitSha = _baseSha });
+        _graph.AddRepository(Repository);
+        _graph.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = _baseSha });
 
         var sourceOptions = Options.Create(new RepositorySourceOptions { ReposCachePath = cacheRoot });
         _service = new BranchOverlayService(
             _overlays,
             _graph,
-            new FixedPathRepoProvider(Path.Combine(cacheRoot, Project)),
+            new FixedPathRepoProvider(Path.Combine(cacheRoot, Repository)),
             new IndexingPipeline(_graph, [new LineFunctionExtractor()], Options.Create(new IndexingOptions { MaxParallelFiles = 2 }),
                 new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance),
             new BranchOverlayGit(),
@@ -90,7 +90,7 @@ public sealed class OverlayMcpServerTests : IDisposable
     {
         var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
 
-        var result = await _tools.RequestOverlay(Project, "factory/feature");
+        var result = await _tools.RequestOverlay(Repository, "factory/feature");
 
         result.IsError.ShouldNotBe(true);
         var structured = Structured(result);
@@ -111,9 +111,9 @@ public sealed class OverlayMcpServerTests : IDisposable
     {
         var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
 
-        var first = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
-        var again = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
-        var bySha = Structured(await _tools.RequestOverlay(Project, headSha.ToUpperInvariant()));
+        var first = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
+        var again = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
+        var bySha = Structured(await _tools.RequestOverlay(Repository, headSha.ToUpperInvariant()));
 
         again.GetProperty("overlayId").GetInt64().ShouldBe(first.GetProperty("overlayId").GetInt64());
         again.GetProperty("reused").GetBoolean().ShouldBeTrue();
@@ -124,7 +124,7 @@ public sealed class OverlayMcpServerTests : IDisposable
 
         // Once indexed, the ready overlay is still the live one for that commit.
         await _service.IndexOverlayAsync(first.GetProperty("overlayId").GetInt64());
-        var ready = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        var ready = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
         ready.GetProperty("overlayId").GetInt64().ShouldBe(first.GetProperty("overlayId").GetInt64());
         ready.GetProperty("status").GetString().ShouldBe(BranchOverlayStatuses.Ready);
         ready.GetProperty("reused").GetBoolean().ShouldBeTrue();
@@ -136,7 +136,7 @@ public sealed class OverlayMcpServerTests : IDisposable
     {
         CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
 
-        var results = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => _tools.RequestOverlay(Project, "factory/feature")));
+        var results = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => _tools.RequestOverlay(Repository, "factory/feature")));
 
         results.Select(result => Structured(result).GetProperty("overlayId").GetInt64()).Distinct().Count().ShouldBe(1);
         results.Count(result => !Structured(result).GetProperty("reused").GetBoolean()).ShouldBe(1);
@@ -148,10 +148,10 @@ public sealed class OverlayMcpServerTests : IDisposable
     public async Task RequestOverlay_BranchMovedOn_CreatesOverlayForTheNewHead()
     {
         var firstHead = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
-        var first = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        var first = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
 
         var secondHead = CommitOnBranch("factory/feature", "src/b.py", "def beta\ndef beta_two\n");
-        var second = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        var second = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
 
         second.GetProperty("overlayId").GetInt64().ShouldNotBe(first.GetProperty("overlayId").GetInt64());
         second.GetProperty("headSha").GetString().ShouldBe(secondHead);
@@ -168,10 +168,10 @@ public sealed class OverlayMcpServerTests : IDisposable
     public async Task RequestOverlay_FailedExpiredOrStaleOverlay_IsReplacedByANewOne()
     {
         var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
-        var failedId = Structured(await _tools.RequestOverlay(Project, headSha)).GetProperty("overlayId").GetInt64();
+        var failedId = Structured(await _tools.RequestOverlay(Repository, headSha)).GetProperty("overlayId").GetInt64();
         await _overlays.MarkOverlayFailedAsync(failedId, "boom", null, null, _time.GetUtcNow().UtcDateTime);
 
-        var afterFailure = Structured(await _tools.RequestOverlay(Project, headSha));
+        var afterFailure = Structured(await _tools.RequestOverlay(Repository, headSha));
         var readyId = afterFailure.GetProperty("overlayId").GetInt64();
         readyId.ShouldNotBe(failedId);
         afterFailure.GetProperty("reused").GetBoolean().ShouldBeFalse();
@@ -179,12 +179,12 @@ public sealed class OverlayMcpServerTests : IDisposable
         // Stale: the default-branch index moved past the ready overlay's base.
         await _service.IndexOverlayAsync(readyId);
         var newDefault = CommitOnBranch("main", "src/b.py", "def beta\ndef beta_main\n");
-        await _graph.UpsertSyncStateAsync(new SyncStateEntity { Project = Project, LastCommitSha = newDefault });
+        await _graph.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = newDefault });
         var staleStatus = Structured(await _tools.GetOverlayStatus(readyId));
         staleStatus.GetProperty("status").GetString().ShouldBe(BranchOverlayStatuses.Ready);
         staleStatus.GetProperty("stale").GetBoolean().ShouldBeTrue();
 
-        var afterStale = Structured(await _tools.RequestOverlay(Project, headSha));
+        var afterStale = Structured(await _tools.RequestOverlay(Repository, headSha));
         var freshId = afterStale.GetProperty("overlayId").GetInt64();
         freshId.ShouldNotBe(readyId);
         afterStale.GetProperty("baseSha").GetString().ShouldBe(newDefault);
@@ -194,7 +194,7 @@ public sealed class OverlayMcpServerTests : IDisposable
         var expired = await _tools.GetOverlayStatus(freshId);
         Structured(expired).GetProperty("status").GetString().ShouldBe(BranchOverlayStatuses.Expired);
         Text(expired).ShouldContain("Expired");
-        var afterExpiry = Structured(await _tools.RequestOverlay(Project, headSha));
+        var afterExpiry = Structured(await _tools.RequestOverlay(Repository, headSha));
         afterExpiry.GetProperty("overlayId").GetInt64().ShouldNotBe(freshId);
         afterExpiry.GetProperty("reused").GetBoolean().ShouldBeFalse();
     }
@@ -205,7 +205,7 @@ public sealed class OverlayMcpServerTests : IDisposable
         var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
         _runs.CreateFailure = new InvalidOperationException("run store unavailable");
 
-        await Should.ThrowAsync<InvalidOperationException>(() => _tools.RequestOverlay(Project, "factory/feature"));
+        await Should.ThrowAsync<InvalidOperationException>(() => _tools.RequestOverlay(Repository, "factory/feature"));
 
         var orphan = _overlays.All.ShouldHaveSingleItem();
         orphan.Status.ShouldBe(BranchOverlayStatuses.Failed);
@@ -214,7 +214,7 @@ public sealed class OverlayMcpServerTests : IDisposable
 
         _runs.CreateFailure = null;
         using var cts = new CancellationTokenSource();
-        var next = Structured(await _tools.RequestOverlay(Project, "factory/feature", cts.Token));
+        var next = Structured(await _tools.RequestOverlay(Repository, "factory/feature", cts.Token));
         next.GetProperty("overlayId").GetInt64().ShouldNotBe(orphan.Id);
         next.GetProperty("reused").GetBoolean().ShouldBeFalse();
         next.GetProperty("status").GetString().ShouldBe(BranchOverlayStatuses.Queued);
@@ -229,7 +229,7 @@ public sealed class OverlayMcpServerTests : IDisposable
         var now = _time.GetUtcNow().UtcDateTime;
         var orphanId = await _overlays.CreateOverlayAsync(new BranchOverlayEntity
         {
-            Project = Project,
+            Repository = Repository,
             RequestedRef = "factory/feature",
             HeadSha = headSha,
             BaseSha = _baseSha,
@@ -238,12 +238,12 @@ public sealed class OverlayMcpServerTests : IDisposable
         });
 
         // Still within the grace period: the request that recorded it may be queuing its run.
-        var within = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        var within = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
         within.GetProperty("overlayId").GetInt64().ShouldBe(orphanId);
         within.GetProperty("reused").GetBoolean().ShouldBeTrue();
 
         _time.Now = _time.Now.AddSeconds(2);
-        var after = Structured(await _tools.RequestOverlay(Project, "factory/feature"));
+        var after = Structured(await _tools.RequestOverlay(Repository, "factory/feature"));
         after.GetProperty("overlayId").GetInt64().ShouldNotBe(orphanId);
         after.GetProperty("reused").GetBoolean().ShouldBeFalse();
     }
@@ -252,7 +252,7 @@ public sealed class OverlayMcpServerTests : IDisposable
     public async Task GetOverlayStatus_ReportsQueuedReadyAndFailed()
     {
         var headSha = CommitOnBranch("factory/feature", "src/a.py", "def alpha\ndef alpha_two\n");
-        var id = Structured(await _tools.RequestOverlay(Project, "factory/feature")).GetProperty("overlayId").GetInt64();
+        var id = Structured(await _tools.RequestOverlay(Repository, "factory/feature")).GetProperty("overlayId").GetInt64();
 
         var queued = await _tools.GetOverlayStatus(id);
         var queuedStructured = Structured(queued);
@@ -269,7 +269,7 @@ public sealed class OverlayMcpServerTests : IDisposable
         ready.GetProperty("stale").GetBoolean().ShouldBeFalse();
         ready.GetProperty("changedFileCount").GetInt32().ShouldBe(1);
 
-        var otherId = Structured(await _tools.RequestOverlay(Project, CommitOnBranch("factory/other", "src/b.py", "def beta\ndef b2\n")))
+        var otherId = Structured(await _tools.RequestOverlay(Repository, CommitOnBranch("factory/other", "src/b.py", "def beta\ndef b2\n")))
             .GetProperty("overlayId").GetInt64();
         await _overlays.MarkOverlayFailedAsync(otherId, "extraction failed", null, null, _time.GetUtcNow().UtcDateTime);
         var failed = await _tools.GetOverlayStatus(otherId);
@@ -282,9 +282,9 @@ public sealed class OverlayMcpServerTests : IDisposable
     public async Task UnknownRepoRefAndOverlay_AnswerTypedErrors()
     {
         AssertError(await _tools.RequestOverlay("NoSuchRepo", "main"), OverlayMcpServer.RepoNotFoundCode);
-        AssertError(await _tools.RequestOverlay(Project, "factory/does-not-exist"), OverlayMcpServer.InvalidRefCode);
-        AssertError(await _tools.RequestOverlay(Project, "main~1"), OverlayMcpServer.InvalidRefCode);
-        AssertError(await _tools.RequestOverlay(Project, " "), OverlayMcpServer.InvalidRefCode);
+        AssertError(await _tools.RequestOverlay(Repository, "factory/does-not-exist"), OverlayMcpServer.InvalidRefCode);
+        AssertError(await _tools.RequestOverlay(Repository, "main~1"), OverlayMcpServer.InvalidRefCode);
+        AssertError(await _tools.RequestOverlay(Repository, " "), OverlayMcpServer.InvalidRefCode);
         AssertError(await _tools.GetOverlayStatus(9999), OverlayMcpServer.OverlayNotFoundCode);
         AssertError(await _tools.GetOverlayStatus(0), OverlayMcpServer.InvalidRequestCode);
         _overlays.All.ShouldBeEmpty();
@@ -296,7 +296,7 @@ public sealed class OverlayMcpServerTests : IDisposable
         var headSha = CommitOnBranch("release", "src/a.py", "def alpha\ndef tagged\n");
         GitFixture.Run(_remote, "tag", "-a", "v1.0", "-m", "v1.0", headSha);
 
-        var structured = Structured(await _tools.RequestOverlay(Project, "v1.0"));
+        var structured = Structured(await _tools.RequestOverlay(Repository, "v1.0"));
 
         structured.GetProperty("headSha").GetString().ShouldBe(headSha);
     }

@@ -18,7 +18,7 @@ public class SemanticSearchService(
     public bool IsAvailable => embeddingService.IsAvailable;
 
     public async Task<IReadOnlyList<SemanticSearchResult>> SearchAsync(
-        string query, string? project = null, int topK = 10)
+        string query, string? repository = null, int topK = 10)
     {
         if (!embeddingService.IsAvailable)
             return [];
@@ -43,7 +43,7 @@ public class SemanticSearchService(
         {
             if (long.TryParse(vr.EntityKey, out var nodeId) && nodes.TryGetValue(nodeId, out var node))
             {
-                if (project is not null && node.Project != project)
+                if (repository is not null && node.Repository != repository)
                     continue;
 
                 results.Add(new SemanticSearchResult(node, vr.Score));
@@ -92,8 +92,8 @@ public class SemanticSearchService(
         if (!string.IsNullOrEmpty(description))
             parts.Add(description);
 
-        if (!string.IsNullOrEmpty(node.Project))
-            parts.Add(node.Project);
+        if (!string.IsNullOrEmpty(node.Repository))
+            parts.Add(node.Repository);
 
         return string.Join(" ", parts);
     }
@@ -104,7 +104,7 @@ public record SemanticSearchResult(GraphNode Node, double Score);
 public interface ISemanticSearchService
 {
     bool IsAvailable { get; }
-    Task<IReadOnlyList<SemanticSearchResult>> SearchAsync(string query, string? project = null, int topK = 10);
+    Task<IReadOnlyList<SemanticSearchResult>> SearchAsync(string query, string? repository = null, int topK = 10);
     Task IndexNodeAsync(GraphNode node, string? description = null);
     Task IndexNodeBatchAsync(IReadOnlyList<(GraphNode node, string? description)> items);
 }

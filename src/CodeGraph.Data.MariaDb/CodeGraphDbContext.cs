@@ -28,7 +28,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
     public DbSet<RepositoryReviewRunEntity> RepositoryReviewRuns => Set<RepositoryReviewRunEntity>();
     public DbSet<RepositoryReviewProjectSectionEntity> RepositoryReviewProjectSections => Set<RepositoryReviewProjectSectionEntity>();
     public DbSet<RepositoryReviewFindingEntity> RepositoryReviewFindings => Set<RepositoryReviewFindingEntity>();
-    public DbSet<ProjectSecuritySummaryEntity> ProjectSecuritySummaries => Set<ProjectSecuritySummaryEntity>();
+    public DbSet<RepositorySecuritySummaryEntity> RepositorySecuritySummaries => Set<RepositorySecuritySummaryEntity>();
     public DbSet<ConventionPageEntity> ConventionPages => Set<ConventionPageEntity>();
     public DbSet<ConventionRevisionEntity> ConventionRevisions => Set<ConventionRevisionEntity>();
     public DbSet<WikiSectionEntity> WikiSections => Set<WikiSectionEntity>();
@@ -129,8 +129,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<SyncStateEntity>(e =>
         {
             e.ToTable("sync_state");
-            e.HasKey(s => s.Project);
-            e.Property(s => s.Project).HasColumnName("project");
+            e.HasKey(s => s.Repository);
+            e.Property(s => s.Repository).HasColumnName("repository");
             e.Property(s => s.LastSyncAt).HasColumnName("last_sync_at");
             e.Property(s => s.LastCommitSha).HasColumnName("last_commit_sha");
             e.Property(s => s.Status).HasColumnName("status");
@@ -153,7 +153,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("nodes");
             e.HasKey(n => n.Id);
             e.Property(n => n.Id).HasColumnName("id");
-            e.Property(n => n.Project).HasColumnName("project");
+            e.Property(n => n.Repository).HasColumnName("repository");
             e.Property(n => n.DotnetProject).HasColumnName("dotnet_project");
             e.Property(n => n.Label).HasColumnName("label");
             e.Property(n => n.Name).HasColumnName("name");
@@ -163,10 +163,10 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(n => n.EndLine).HasColumnName("end_line");
             e.Property(n => n.Properties).HasColumnName("properties").HasColumnType("json");
             e.Property(n => n.DoNotTrust).HasColumnName("do_not_trust");
-            e.HasIndex(n => new { n.Project, n.QualifiedName }).IsUnique();
-            e.HasIndex(n => new { n.Project, n.Label });
-            e.HasIndex(n => new { n.Project, n.Name });
-            e.HasIndex(n => new { n.Project, n.FilePath });
+            e.HasIndex(n => new { n.Repository, n.QualifiedName }).IsUnique();
+            e.HasIndex(n => new { n.Repository, n.Label });
+            e.HasIndex(n => new { n.Repository, n.Name });
+            e.HasIndex(n => new { n.Repository, n.FilePath });
         });
 
         modelBuilder.Entity<EdgeEntity>(e =>
@@ -174,7 +174,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("edges");
             e.HasKey(x => x.Id);
             e.Property(x => x.Id).HasColumnName("id");
-            e.Property(x => x.Project).HasColumnName("project");
+            e.Property(x => x.Repository).HasColumnName("repository");
             e.Property(x => x.SourceId).HasColumnName("source_id");
             e.Property(x => x.TargetId).HasColumnName("target_id");
             e.Property(x => x.Type).HasColumnName("type");
@@ -187,8 +187,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("cross_repo_edges");
             e.HasKey(x => x.Id);
             e.Property(x => x.Id).HasColumnName("id");
-            e.Property(x => x.SourceProject).HasColumnName("source_project");
-            e.Property(x => x.TargetProject).HasColumnName("target_project");
+            e.Property(x => x.SourceRepository).HasColumnName("source_repository");
+            e.Property(x => x.TargetRepository).HasColumnName("target_repository");
             e.Property(x => x.SourceNodeId).HasColumnName("source_node_id");
             e.Property(x => x.TargetNodeId).HasColumnName("target_node_id");
             e.Property(x => x.Type).HasColumnName("type");
@@ -199,8 +199,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<FileHashEntity>(e =>
         {
             e.ToTable("file_hashes");
-            e.HasKey(f => new { f.Project, f.RelPath });
-            e.Property(f => f.Project).HasColumnName("project");
+            e.HasKey(f => new { f.Repository, f.RelPath });
+            e.Property(f => f.Repository).HasColumnName("repository");
             e.Property(f => f.RelPath).HasColumnName("rel_path");
             e.Property(f => f.ContentHash).HasColumnName("content_hash");
             e.Property(f => f.ExtractionVersion).HasColumnName("extraction_version");
@@ -222,8 +222,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<RepositorySummaryEntity>(e =>
         {
             e.ToTable("repository_summaries");
-            e.HasKey(s => s.Project);
-            e.Property(s => s.Project).HasColumnName("project");
+            e.HasKey(s => s.Repository);
+            e.Property(s => s.Repository).HasColumnName("repository");
             e.Property(s => s.Summary).HasColumnName("summary");
             e.Property(s => s.Confidence).HasColumnName("confidence");
             e.Property(s => s.SourceHash).HasColumnName("source_hash");
@@ -334,7 +334,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("file_metrics");
             e.HasKey(f => f.Id);
             e.Property(f => f.Id).HasColumnName("id");
-            e.Property(f => f.Project).HasColumnName("project");
+            e.Property(f => f.Repository).HasColumnName("repository");
             e.Property(f => f.FilePath).HasColumnName("file_path");
             e.Property(f => f.DotnetProject).HasColumnName("dotnet_project");
             e.Property(f => f.Changes).HasColumnName("changes");
@@ -368,7 +368,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(f => f.ConcernScore).HasColumnName("concern_score");
             e.Property(f => f.CommitSha).HasColumnName("commit_sha");
             e.Ignore(f => f.BugFixWeightedTouches365d);
-            e.HasIndex(f => new { f.Project, f.FilePath }).IsUnique();
+            e.HasIndex(f => new { f.Repository, f.FilePath }).IsUnique();
         });
 
         modelBuilder.Entity<ProjectHealthSummaryEntity>(e =>
@@ -376,7 +376,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("project_health_summaries");
             e.HasKey(h => h.Id);
             e.Property(h => h.Id).HasColumnName("id");
-            e.Property(h => h.Project).HasColumnName("project");
+            e.Property(h => h.Repository).HasColumnName("repository");
             e.Property(h => h.DotnetProject).HasColumnName("dotnet_project");
             e.Property(h => h.OverallHealth).HasColumnName("overall_health");
             e.Property(h => h.TotalFiles).HasColumnName("total_files");
@@ -398,7 +398,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Ignore(h => h.FirefightingCommits365d);
             e.Ignore(h => h.FirefightingRate90d);
             e.Ignore(h => h.FirefightingRate365d);
-            e.HasIndex(h => new { h.Project, h.DotnetProject }).IsUnique();
+            e.HasIndex(h => new { h.Repository, h.DotnetProject }).IsUnique();
         });
 
         modelBuilder.Entity<ProjectHealthAnalysisEntity>(e =>
@@ -406,14 +406,14 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("project_health_analyses");
             e.HasKey(h => h.Id);
             e.Property(h => h.Id).HasColumnName("id");
-            e.Property(h => h.Project).HasColumnName("project");
+            e.Property(h => h.Repository).HasColumnName("repository");
             e.Property(h => h.DotnetProject).HasColumnName("dotnet_project");
             e.Property(h => h.Analysis).HasColumnName("analysis");
             e.Property(h => h.Confidence).HasColumnName("confidence");
             e.Property(h => h.ModelUsed).HasColumnName("model_used");
             e.Property(h => h.CreatedAt).HasColumnName("created_at");
             e.Property(h => h.UpdatedAt).HasColumnName("updated_at");
-            e.HasIndex(h => new { h.Project, h.DotnetProject }).IsUnique();
+            e.HasIndex(h => new { h.Repository, h.DotnetProject }).IsUnique();
         });
 
         modelBuilder.Entity<SecurityFindingEntity>(e =>
@@ -421,7 +421,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("security_findings");
             e.HasKey(f => f.Id);
             e.Property(f => f.Id).HasColumnName("id");
-            e.Property(f => f.Project).HasColumnName("project");
+            e.Property(f => f.Repository).HasColumnName("repository");
             e.Property(f => f.DotnetProject).HasColumnName("dotnet_project");
             e.Property(f => f.Category).HasColumnName("category");
             e.Property(f => f.Severity).HasColumnName("severity");
@@ -435,12 +435,12 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(f => f.ComputedAt).HasColumnName("computed_at");
         });
 
-        modelBuilder.Entity<ProjectSecuritySummaryEntity>(e =>
+        modelBuilder.Entity<RepositorySecuritySummaryEntity>(e =>
         {
-            e.ToTable("project_security_summaries");
+            e.ToTable("repository_security_summaries");
             e.HasKey(s => s.Id);
             e.Property(s => s.Id).HasColumnName("id");
-            e.Property(s => s.Project).HasColumnName("project");
+            e.Property(s => s.Repository).HasColumnName("repository");
             e.Property(s => s.SecurityScore).HasColumnName("security_score");
             e.Property(s => s.CriticalCount).HasColumnName("critical_count");
             e.Property(s => s.HighCount).HasColumnName("high_count");
@@ -448,7 +448,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.Property(s => s.LowCount).HasColumnName("low_count");
             e.Property(s => s.Analysis).HasColumnName("analysis");
             e.Property(s => s.ComputedAt).HasColumnName("computed_at");
-            e.HasIndex(s => s.Project).IsUnique();
+            e.HasIndex(s => s.Repository).IsUnique();
         });
     }
 
@@ -457,8 +457,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<ProjectDiagnosticEntity>(e =>
         {
             e.ToTable("project_diagnostics");
-            e.HasKey(d => new { d.Project, d.DotnetProject, d.Source, d.DiagnosticKey });
-            e.Property(d => d.Project).HasColumnName("project");
+            e.HasKey(d => new { d.Repository, d.DotnetProject, d.Source, d.DiagnosticKey });
+            e.Property(d => d.Repository).HasColumnName("repository");
             e.Property(d => d.DotnetProject).HasColumnName("dotnet_project");
             e.Property(d => d.Source).HasColumnName("source");
             e.Property(d => d.DiagnosticKey).HasColumnName("diagnostic_key");
@@ -477,7 +477,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.ToTable("project_review_runs");
             e.HasKey(r => r.Id);
             e.Property(r => r.Id).HasColumnName("id");
-            e.Property(r => r.Project).HasColumnName("project");
+            e.Property(r => r.Repository).HasColumnName("repository");
             e.Property(r => r.ProjectName).HasColumnName("project_name");
             e.Property(r => r.ReviewedCommitSha).HasColumnName("reviewed_commit_sha");
             e.Property(r => r.Status).HasColumnName("status");

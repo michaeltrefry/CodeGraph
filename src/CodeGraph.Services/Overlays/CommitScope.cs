@@ -8,17 +8,17 @@ namespace CodeGraph.Services.Overlays;
 
 /// <summary>
 /// The graph a read query answers from. Without a requested SHA it is the default-branch index
-/// (<see cref="Sha"/> is null and each answer names its project's index commit). With a SHA it is
+/// (<see cref="Sha"/> is null and each answer names its repository's index commit). With a SHA it is
 /// pinned: either the ready branch overlay for that commit layered over the default-branch index,
 /// or, when the SHA is the default-branch index commit itself, that index. When the SHA cannot be
 /// answered, <see cref="NotIndexed"/> says why and <see cref="Graph"/> must not be used.
 /// </summary>
 public sealed class CommitScope
 {
-    private CommitScope(IGraphReader graph, string? project, string? sha, OverlayGraphView? overlay, CommitNotIndexedResponse? notIndexed)
+    private CommitScope(IGraphReader graph, string? repository, string? sha, OverlayGraphView? overlay, CommitNotIndexedResponse? notIndexed)
     {
         Graph = graph;
-        Project = project;
+        Repository = repository;
         Sha = sha;
         Overlay = overlay;
         NotIndexed = notIndexed;
@@ -26,8 +26,8 @@ public sealed class CommitScope
 
     public IGraphReader Graph { get; }
 
-    /// <summary>The repository the SHA belongs to (pinned scopes), or the requested project.</summary>
-    public string? Project { get; }
+    /// <summary>The repository the SHA belongs to (pinned scopes), or the requested repository.</summary>
+    public string? Repository { get; }
 
     /// <summary>The commit every answer from this scope describes; null for the unpinned default branch.</summary>
     public string? Sha { get; }
@@ -38,11 +38,11 @@ public sealed class CommitScope
 
     public bool IsPinned => Sha is not null;
 
-    internal static CommitScope DefaultBranch(IGraphReader graph, string? project) => new(graph, project, null, null, null);
+    internal static CommitScope DefaultBranch(IGraphReader graph, string? repository) => new(graph, repository, null, null, null);
 
-    internal static CommitScope PinnedToDefault(IGraphReader graph, string project, string sha) => new(graph, project, sha, null, null);
+    internal static CommitScope PinnedToDefault(IGraphReader graph, string repository, string sha) => new(graph, repository, sha, null, null);
 
-    internal static CommitScope PinnedToOverlay(OverlayGraphView overlay, string sha) => new(overlay, overlay.Project, sha, overlay, null);
+    internal static CommitScope PinnedToOverlay(OverlayGraphView overlay, string sha) => new(overlay, overlay.Repository, sha, overlay, null);
 
     internal static CommitScope Unavailable(IGraphReader graph, CommitNotIndexedResponse notIndexed) => new(graph, notIndexed.Repo, null, null, notIndexed);
 }
@@ -90,25 +90,25 @@ public interface ICommitScopeResolver
 {
     /// <summary>
     /// Resolves the graph for <paramref name="sha"/> (a full 40/64-hex SHA; abbreviated SHAs are
-    /// rejected) in <paramref name="project"/>. A null SHA is the default branch. With a SHA and no
-    /// project, the repository is the one whose overlays carry the SHA, or else the one whose
+    /// rejected) in <paramref name="repository"/>. A null SHA is the default branch. With a SHA and no
+    /// repository, the repository is the one whose overlays carry the SHA, or else the one whose
     /// default-branch index is at the SHA.
     /// </summary>
-    Task<CommitScope> ResolveAsync(string? project, string? sha, CancellationToken ct = default);
+    Task<CommitScope> ResolveAsync(string? repository, string? sha, CancellationToken ct = default);
 
-    /// <summary>The commit an answer from <paramref name="scope"/> about <paramref name="projects"/> describes.</summary>
-    Task<CommitDescription> DescribeAsync(CommitScope scope, IEnumerable<string?> projects, CancellationToken ct = default);
+    /// <summary>The commit an answer from <paramref name="scope"/> about <paramref name="repositories"/> describes.</summary>
+    Task<CommitDescription> DescribeAsync(CommitScope scope, IEnumerable<string?> repositories, CancellationToken ct = default);
 
     /// <summary>
-    /// Source of <paramref name="filePath"/> in <paramref name="project"/>: the blob at the pinned
+    /// Source of <paramref name="filePath"/> in <paramref name="repository"/>: the blob at the pinned
     /// commit (never the working tree), or for the unpinned default branch the blob at the
     /// default-branch index commit, falling back to the working tree only when that commit is not
     /// in git on this host (e.g. a non-git folder source).
     /// </summary>
-    Task<CommitSourceResult> ReadSourceAsync(CommitScope scope, string project, string filePath, CancellationToken ct = default);
+    Task<CommitSourceResult> ReadSourceAsync(CommitScope scope, string repository, string filePath, CancellationToken ct = default);
 
-    /// <summary>The commit of <paramref name="project"/>'s default-branch index.</summary>
-    Task<string?> GetDefaultCommitAsync(string project, CancellationToken ct = default);
+    /// <summary>The commit of <paramref name="repository"/>'s default-branch index.</summary>
+    Task<string?> GetDefaultCommitAsync(string repository, CancellationToken ct = default);
 }
 
 public sealed class CommitScopeResolver(
@@ -129,39 +129,39 @@ public sealed class CommitScopeResolver(
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private TimeSpan Ttl => (overlayOptions?.Value ?? new BranchOverlayOptions()).Ttl;
 
-    public async Task<CommitScope> ResolveAsync(string? project, string? sha, CancellationToken ct = default)
+    public async Task<CommitScope> ResolveAsync(string? repository, string? sha, CancellationToken ct = default)
     {
-        string? canonicalProject = null;
-        if (!string.IsNullOrWhiteSpace(project))
-            canonicalProject = (await store.GetRepositoryByName(project.Trim()))?.Name ?? project.Trim();
+        string? canonicalRepository = null;
+        if (!string.IsNullOrWhiteSpace(repository))
+            canonicalRepository = (await store.GetRepositoryByName(repository.Trim()))?.Name ?? repository.Trim();
 
         if (string.IsNullOrWhiteSpace(sha))
-            return CommitScope.DefaultBranch(store, canonicalProject);
+            return CommitScope.DefaultBranch(store, canonicalRepository);
 
         var requested = sha.Trim().ToLowerInvariant();
         if (!BranchOverlayGit.IsFullSha(requested))
         {
-            return Unavailable(InvalidShaCode, canonicalProject, sha.Trim(), "invalid",
+            return Unavailable(InvalidShaCode, canonicalRepository, sha.Trim(), "invalid",
                 "sha must be a full 40- or 64-hex commit SHA; abbreviated SHAs are not accepted.");
         }
 
         var overlays = overlayStore is null
             ? []
-            : await overlayStore.FindOverlaysByShaAsync(requested, canonicalProject, ct);
+            : await overlayStore.FindOverlaysByShaAsync(requested, canonicalRepository, ct);
 
-        if (canonicalProject is null)
+        if (canonicalRepository is null)
         {
-            var projects = overlays.Select(overlay => overlay.Project).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            if (projects.Count > 1)
+            var repositories = overlays.Select(overlay => overlay.Repository).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (repositories.Count > 1)
             {
                 return Unavailable(AmbiguousShaCode, null, requested, UnknownStatus,
-                    $"Overlays for {requested} exist in several repositories ({string.Join(", ", projects.Order())}); pass the repository.");
+                    $"Overlays for {requested} exist in several repositories ({string.Join(", ", repositories.Order())}); pass the repository.");
             }
 
-            if (projects.Count == 0)
+            if (repositories.Count == 0)
             {
                 // No overlay carries the SHA: it may still be a repository's default-branch index commit.
-                var indexed = await FindProjectsIndexedAtAsync(requested, ct);
+                var indexed = await FindRepositoriesIndexedAtAsync(requested, ct);
                 if (indexed.Count == 1)
                     return CommitScope.PinnedToDefault(store, indexed[0], requested);
                 if (indexed.Count > 1)
@@ -174,12 +174,12 @@ public sealed class CommitScopeResolver(
                     $"No overlay index exists for commit {requested}. Request one with POST /api/indexer/overlays or the request_overlay MCP tool.");
             }
 
-            canonicalProject = projects[0];
+            canonicalRepository = repositories[0];
         }
 
-        var defaultCommit = await GetDefaultCommitAsync(canonicalProject, ct);
+        var defaultCommit = await GetDefaultCommitAsync(canonicalRepository, ct);
         if (defaultCommit is not null && string.Equals(defaultCommit, requested, StringComparison.OrdinalIgnoreCase))
-            return CommitScope.PinnedToDefault(store, canonicalProject, requested);
+            return CommitScope.PinnedToDefault(store, canonicalRepository, requested);
 
         var now = _time.GetUtcNow().UtcDateTime;
         var effective = overlays
@@ -205,14 +205,14 @@ public sealed class CommitScopeResolver(
         if (effective.Count > 0 && effective[0].Status is BranchOverlayStatuses.Queued or BranchOverlayStatuses.Indexing)
         {
             var (pending, status) = effective[0];
-            return Unavailable(NotIndexedCode, canonicalProject, requested, status,
-                $"Overlay {pending.Id} for {canonicalProject}@{requested} is not ready yet.", pending.Id, pending.BaseSha);
+            return Unavailable(NotIndexedCode, canonicalRepository, requested, status,
+                $"Overlay {pending.Id} for {canonicalRepository}@{requested} is not ready yet.", pending.Id, pending.BaseSha);
         }
 
         if (ready.Count > 0)
         {
             var newest = ready[0];
-            return Unavailable(NotIndexedCode, canonicalProject, requested, StaleStatus,
+            return Unavailable(NotIndexedCode, canonicalRepository, requested, StaleStatus,
                 $"Overlay {newest.Id} for {requested} was built against default-branch commit {newest.BaseSha}, " +
                 $"but the default-branch index is now at {defaultCommit ?? "an unknown commit"}. " +
                 "Its answers would mix two default-branch commits, so it is not used; request a new overlay.",
@@ -229,33 +229,33 @@ public sealed class CommitScopeResolver(
                 BranchOverlayStatuses.Expired => "expired; request a new overlay",
                 _ => $"is {status}"
             };
-            return Unavailable(NotIndexedCode, canonicalProject, requested, status,
-                $"Overlay {newest.Id} for {canonicalProject}@{requested} {detail}.", newest.Id, newest.BaseSha);
+            return Unavailable(NotIndexedCode, canonicalRepository, requested, status,
+                $"Overlay {newest.Id} for {canonicalRepository}@{requested} {detail}.", newest.Id, newest.BaseSha);
         }
 
-        return Unavailable(NotIndexedCode, canonicalProject, requested, UnknownStatus,
-            $"No overlay index exists for {canonicalProject}@{requested}. Request one with POST /api/indexer/overlays or the request_overlay MCP tool.");
+        return Unavailable(NotIndexedCode, canonicalRepository, requested, UnknownStatus,
+            $"No overlay index exists for {canonicalRepository}@{requested}. Request one with POST /api/indexer/overlays or the request_overlay MCP tool.");
     }
 
     public async Task<CommitDescription> DescribeAsync(
         CommitScope scope,
-        IEnumerable<string?> projects,
+        IEnumerable<string?> repositories,
         CancellationToken ct = default)
     {
-        var distinct = projects
-            .Append(scope.Project)
-            .Where(project => !string.IsNullOrWhiteSpace(project))
-            .Select(project => project!)
+        var distinct = repositories
+            .Append(scope.Repository)
+            .Where(repository => !string.IsNullOrWhiteSpace(repository))
+            .Select(repository => repository!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var commits = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var project in distinct)
+        foreach (var repository in distinct)
         {
             // A pinned answer describes the SHA for its own repository; any other repository in the
             // answer (cross-repo neighbours) is read from that repository's default-branch index.
-            commits[project] = scope.Sha is not null && string.Equals(project, scope.Project, StringComparison.OrdinalIgnoreCase)
+            commits[repository] = scope.Sha is not null && string.Equals(repository, scope.Repository, StringComparison.OrdinalIgnoreCase)
                 ? scope.Sha
-                : await GetDefaultCommitAsync(project, ct);
+                : await GetDefaultCommitAsync(repository, ct);
         }
 
         if (scope.Sha is not null)
@@ -266,13 +266,13 @@ public sealed class CommitScopeResolver(
 
     public async Task<CommitSourceResult> ReadSourceAsync(
         CommitScope scope,
-        string project,
+        string repositoryName,
         string filePath,
         CancellationToken ct = default)
     {
-        var repository = await store.GetRepositoryByName(project);
+        var repository = await store.GetRepositoryByName(repositoryName);
         if (repository is null || !RepoFileResolver.IsSafeRelativePath(filePath))
-            return new CommitSourceResult(CommitSourceStatus.NotFound, null, $"File not found: {project}/{filePath}.");
+            return new CommitSourceResult(CommitSourceStatus.NotFound, null, $"File not found: {repositoryName}/{filePath}.");
 
         if (scope.Sha is null)
         {
@@ -289,7 +289,7 @@ public sealed class CommitScopeResolver(
                 if (committed.Status == CommitFileReadStatus.PathMissing)
                 {
                     return new CommitSourceResult(CommitSourceStatus.NotFound, null,
-                        $"File not found: {project}/{filePath} does not exist at commit {defaultSha}.");
+                        $"File not found: {repositoryName}/{filePath} does not exist at commit {defaultSha}.");
                 }
             }
 
@@ -297,27 +297,27 @@ public sealed class CommitScopeResolver(
             var text = await RepoFileResolver.ReadAllTextAsync(
                 repository.Name, filePath, sourceOptions.Value.ReposCachePath, repository.LocalPath, ct);
             return text is null
-                ? new CommitSourceResult(CommitSourceStatus.NotFound, null, $"File not found: {project}/{filePath}.")
+                ? new CommitSourceResult(CommitSourceStatus.NotFound, null, $"File not found: {repositoryName}/{filePath}.")
                 : new CommitSourceResult(CommitSourceStatus.Found, text, "");
         }
 
-        if (!string.Equals(repository.Name, scope.Project, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(repository.Name, scope.Repository, StringComparison.OrdinalIgnoreCase))
         {
             return new CommitSourceResult(CommitSourceStatus.OutsideScope, null,
-                $"{project}/{filePath} is not in {scope.Project}, the repository of commit {scope.Sha}.");
+                $"{repositoryName}/{filePath} is not in {scope.Repository}, the repository of commit {scope.Sha}.");
         }
 
         if (scope.Overlay is { } overlay && overlay.IsRemovedPath(filePath))
         {
             return new CommitSourceResult(CommitSourceStatus.DeletedAtCommit, null,
-                $"{project}/{filePath} was deleted (or renamed away) at commit {scope.Sha}.");
+                $"{repositoryName}/{filePath} was deleted (or renamed away) at commit {scope.Sha}.");
         }
 
         var root = RepoFileResolver.ResolveRepositoryRoot(repository.Name, sourceOptions.Value.ReposCachePath, repository.LocalPath);
         if (root is null)
         {
             return new CommitSourceResult(CommitSourceStatus.CommitUnavailable, null,
-                $"The {project} checkout is not available on this host, so commit {scope.Sha} cannot be read.");
+                $"The {repositoryName} checkout is not available on this host, so commit {scope.Sha} cannot be read.");
         }
 
         var read = await _git.ReadFileAtCommitAsync(root, scope.Sha, filePath, ct);
@@ -325,23 +325,23 @@ public sealed class CommitScopeResolver(
         {
             CommitFileReadStatus.Found => new CommitSourceResult(CommitSourceStatus.Found, Decode(read.Content!), ""),
             CommitFileReadStatus.PathMissing => new CommitSourceResult(CommitSourceStatus.NotFound, null,
-                $"File not found: {project}/{filePath} does not exist at commit {scope.Sha}."),
+                $"File not found: {repositoryName}/{filePath} does not exist at commit {scope.Sha}."),
             _ => new CommitSourceResult(CommitSourceStatus.CommitUnavailable, null,
-                $"Commit {scope.Sha} is not present in the {project} checkout on this host.")
+                $"Commit {scope.Sha} is not present in the {repositoryName} checkout on this host.")
         };
     }
 
-    public async Task<string?> GetDefaultCommitAsync(string project, CancellationToken ct = default)
+    public async Task<string?> GetDefaultCommitAsync(string repositoryName, CancellationToken ct = default)
     {
-        var syncState = await store.GetSyncStateAsync(project);
+        var syncState = await store.GetSyncStateAsync(repositoryName);
         if (!string.IsNullOrWhiteSpace(syncState?.LastCommitSha))
             return syncState.LastCommitSha;
 
-        var repository = await store.GetRepositoryByName(project);
+        var repository = await store.GetRepositoryByName(repositoryName);
         return string.IsNullOrWhiteSpace(repository?.LastCommitSha) ? null : repository.LastCommitSha;
     }
 
-    private async Task<IReadOnlyList<string>> FindProjectsIndexedAtAsync(string sha, CancellationToken ct)
+    private async Task<IReadOnlyList<string>> FindRepositoriesIndexedAtAsync(string sha, CancellationToken ct)
     {
         var matches = new List<string>();
         foreach (var repository in await store.ListRepositoriesAsync())
@@ -361,13 +361,13 @@ public sealed class CommitScopeResolver(
 
     private CommitScope Unavailable(
         string code,
-        string? project,
+        string? repository,
         string sha,
         string status,
         string message,
         long? overlayId = null,
         string? baseSha = null)
-        => CommitScope.Unavailable(store, new CommitNotIndexedResponse(code, project, sha, status, message, overlayId, baseSha));
+        => CommitScope.Unavailable(store, new CommitNotIndexedResponse(code, repository, sha, status, message, overlayId, baseSha));
 
     private static string Decode(byte[] content)
     {

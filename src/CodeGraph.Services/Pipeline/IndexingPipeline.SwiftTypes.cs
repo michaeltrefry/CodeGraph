@@ -46,7 +46,7 @@ public partial class IndexingPipeline
     /// affected names are orphan candidates, deleted by the write once nothing references them.
     /// </remarks>
     internal async Task<SwiftRebinding> ResolveSwiftTypeReferencesAsync(
-        string projectName,
+        string repositoryName,
         GraphBuffer buffer,
         bool includePersistedNodes,
         IReadOnlySet<string> excludedPersistedFiles,
@@ -68,19 +68,19 @@ public partial class IndexingPipeline
             affectedNames.UnionWith(buffer.AllNodes.Where(IsSwiftTypeNode).Select(node => node.Name));
             if (excludedSwiftFiles.Count > 0)
             {
-                affectedNames.UnionWith((await _store.FindNodesByFilesAsync(projectName, excludedSwiftFiles, ct))
+                affectedNames.UnionWith((await _store.FindNodesByFilesAsync(repositoryName, excludedSwiftFiles, ct))
                     .Where(IsSwiftTypeNode)
                     .Select(node => node.Name));
                 originOwned = (await _store.FindEdgesByPropertyAsync(
-                    projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.OriginFileProperty, excludedSwiftFiles, ct)).ToList();
+                    repositoryName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.OriginFileProperty, excludedSwiftFiles, ct)).ToList();
             }
 
             if (affectedNames.Count > 0)
             {
                 var bySource = await _store.FindEdgesByPropertyAsync(
-                    projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.SourceNameProperty, affectedNames, ct);
+                    repositoryName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.SourceNameProperty, affectedNames, ct);
                 var byTarget = await _store.FindEdgesByPropertyAsync(
-                    projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.TargetNameProperty, affectedNames, ct);
+                    repositoryName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.TargetNameProperty, affectedNames, ct);
                 persistedReferences = bySource.Concat(byTarget)
                     .DistinctBy(StoredEdgeKey)
                     .Where(edge => !excludedPersistedFiles.Contains(NormalizeRelativePath(
@@ -109,7 +109,7 @@ public partial class IndexingPipeline
             .Concat(affectedNames)
             .ToHashSet(StringComparer.Ordinal);
         var persistedByName = includePersistedNodes && lookupNames.Count > 0
-            ? (await _store.FindNodesByNamesAsync(projectName, lookupNames, ct))
+            ? (await _store.FindNodesByNamesAsync(repositoryName, lookupNames, ct))
                 .Where(node => !excludedPersistedFiles.Contains(NormalizeRelativePath(node.FilePath ?? "")))
                 .ToList()
             : [];
@@ -124,7 +124,7 @@ public partial class IndexingPipeline
             cached = buffer.FindByName(simpleName)
                 .Concat(persistedByName.Where(node => string.Equals(node.Name, simpleName, StringComparison.Ordinal)))
                 .Where(IsSwiftTypeNode)
-                .Where(node => SwiftTypeReference.TypePath(projectName, node.FilePath, node.QualifiedName) == typePath)
+                .Where(node => SwiftTypeReference.TypePath(repositoryName, node.FilePath, node.QualifiedName) == typePath)
                 .DistinctBy(node => node.QualifiedName, StringComparer.Ordinal)
                 .OrderBy(node => node.QualifiedName, StringComparer.Ordinal)
                 .ToList();
@@ -178,7 +178,7 @@ public partial class IndexingPipeline
                 else if (PlainString(properties, SwiftTypeReference.OriginFileProperty) is { Length: > 0 } originFile)
                 {
                     ambiguous.Add(sourcePath);
-                    sourceQN = $"{projectName}:{originFile}";
+                    sourceQN = $"{repositoryName}:{originFile}";
                 }
                 else
                 {
@@ -288,7 +288,7 @@ public partial class IndexingPipeline
                 continue;
             buffer.AddNode(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = label,
                 Name = SwiftTypeReference.SimpleName(typePath),
                 QualifiedName = qualifiedName,
@@ -398,7 +398,7 @@ public partial class IndexingPipeline
     /// hides both.
     /// </summary>
     private async Task AddOverlayRetractionsAsync(
-        string projectName,
+        string repositoryName,
         SwiftRebinding rebinding,
         List<GraphNode> nodes,
         List<PendingEdge> edges,
@@ -425,9 +425,9 @@ public partial class IndexingPipeline
             .Select(qualifiedName => SwiftTypeReference.SimpleName(qualifiedName[SwiftTypeReference.ExternalPrefix.Length..]))
             .ToHashSet(StringComparer.Ordinal);
         var baseEdges = (await _store.FindEdgesByPropertyAsync(
-                projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.SourceNameProperty, names, ct))
+                repositoryName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.SourceNameProperty, names, ct))
             .Concat(await _store.FindEdgesByPropertyAsync(
-                projectName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.TargetNameProperty, names, ct))
+                repositoryName, SwiftTypeReference.EdgeTypes, SwiftTypeReference.TargetNameProperty, names, ct))
             .ToList();
         foreach (var candidate in candidates)
         {
@@ -440,7 +440,7 @@ public partial class IndexingPipeline
             var typePath = candidate[SwiftTypeReference.ExternalPrefix.Length..];
             nodes.Add(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = NodeLabel.Class,
                 Name = SwiftTypeReference.SimpleName(typePath),
                 QualifiedName = candidate,

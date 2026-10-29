@@ -25,13 +25,13 @@ public static class CommitAnswer
         if (commit.Commits.Count > 1)
         {
             var commits = new JsonObject();
-            foreach (var (project, sha) in commit.Commits.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
-                commits[project] = sha;
+            foreach (var (repository, sha) in commit.Commits.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+                commits[repository] = sha;
             structured["commits"] = commits;
         }
 
         if (scope.IsPinned)
-            structured["repo"] = scope.Project;
+            structured["repo"] = scope.Repository;
         if (scope.Overlay is { } overlay)
         {
             structured["overlayId"] = overlay.Overlay.Id;

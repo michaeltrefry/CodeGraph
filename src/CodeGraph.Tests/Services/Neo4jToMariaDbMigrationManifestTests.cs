@@ -109,8 +109,8 @@ public class Neo4jToMariaDbMigrationManifestTests
                 new CrossRepoEdge
                 {
                     Id = 300,
-                    SourceProject = "Demo",
-                    TargetProject = "Demo",
+                    SourceRepository = "Demo",
+                    TargetRepository = "Demo",
                     SourceNodeId = 100,
                     TargetNodeId = 101,
                     Type = EdgeType.REFERENCES_PACKAGE
@@ -138,19 +138,19 @@ public class Neo4jToMariaDbMigrationManifestTests
         targetStore.CrossEdges.Single().SourceNodeId.ShouldBe(targetStore.Edges.Single().SourceId);
     }
 
-    private static GraphNode Node(long id, string project, NodeLabel label, string qualifiedName) => new()
+    private static GraphNode Node(long id, string repository, NodeLabel label, string qualifiedName) => new()
     {
         Id = id,
-        Project = project,
+        Repository = repository,
         Label = label,
         Name = qualifiedName.Split('.').Last(),
         QualifiedName = qualifiedName
     };
 
-    private static GraphEdge Edge(long id, string project, long sourceId, long targetId, EdgeType type) => new()
+    private static GraphEdge Edge(long id, string repository, long sourceId, long targetId, EdgeType type) => new()
     {
         Id = id,
-        Project = project,
+        Repository = repository,
         SourceId = sourceId,
         TargetId = targetId,
         Type = type

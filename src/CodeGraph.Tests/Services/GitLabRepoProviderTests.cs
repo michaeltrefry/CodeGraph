@@ -129,7 +129,7 @@ public class GitLabRepoProviderTests
         public Task<string?> GetExclusionTypeAsync(string repoName, string? sourceGroup) =>
             Task.FromResult<string?>(null);
 
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) =>
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) =>
             Task.FromResult(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() =>

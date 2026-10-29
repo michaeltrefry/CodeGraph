@@ -27,7 +27,7 @@ public sealed class SolutionAnalyzerTrustPolicyTests
                 Path.Combine(workingRoot, "MaliciousRestore.slnx"),
                 new ExtractorContext
                 {
-                    ProjectName = "MaliciousRestore",
+                    RepositoryName = "MaliciousRestore",
                     RootPath = workingRoot
                 },
                 CancellationToken.None);
@@ -60,7 +60,7 @@ public sealed class SolutionAnalyzerTrustPolicyTests
                 Path.Combine(workingRoot, "MaliciousRestore.slnx"),
                 new ExtractorContext
                 {
-                    ProjectName = "MaliciousRestore",
+                    RepositoryName = "MaliciousRestore",
                     RootPath = workingRoot,
                     RepositoryToolingTrust = RepositoryToolingTrust.Trusted
                 },

@@ -27,9 +27,9 @@ public class ProcessRepositoryDurableRunTests
     {
         var time = new ManualTimeProvider();
         var runs = new FakeIndexerRunStore { EnforceLeaseExpiry = true };
-        var projects = new BlockingProjectService();
+        var repositories = new BlockingRepositoryService();
         var runId = (await Handoff(runs).HandOffAsync(Routine())).RunId;
-        using var services = CreateServices(runs, projects);
+        using var services = CreateServices(runs, repositories);
         var worker = CreateWorker(services, time, new IndexerRunWorkerOptions
         {
             LeaseDuration = TimeSpan.FromSeconds(45),
@@ -37,7 +37,7 @@ public class ProcessRepositoryDurableRunTests
         });
 
         var execution = worker.TryExecuteNextAsync(CancellationToken.None, IndexerRunBackgroundRunner.RepositoryLane);
-        await projects.Started.Task.WaitAsync(WaitLimit);
+        await repositories.Started.Task.WaitAsync(WaitLimit);
 
         // Two hours of virtual time, one heartbeat interval at a time.
         for (var beat = 0; beat < 720; beat++)
@@ -53,12 +53,12 @@ public class ProcessRepositoryDurableRunTests
                 .ShouldBeNull();
         }
 
-        projects.Finish.SetResult();
+        repositories.Finish.SetResult();
         (await execution.WaitAsync(WaitLimit)).ShouldBeTrue();
         var completed = (await runs.GetIndexerRunAsync(runId))!;
         completed.Status.ShouldBe("completed");
         completed.AttemptCount.ShouldBe(1);
-        projects.Calls.ShouldBe(1);
+        repositories.Calls.ShouldBe(1);
     }
 
     [Fact]
@@ -66,9 +66,9 @@ public class ProcessRepositoryDurableRunTests
     {
         var time = new ManualTimeProvider();
         var runs = new FakeIndexerRunStore { EnforceLeaseExpiry = true, FailNextRenewals = 1 };
-        var projects = new BlockingProjectService();
+        var repositories = new BlockingRepositoryService();
         var runId = (await Handoff(runs).HandOffAsync(Routine())).RunId;
-        using var services = CreateServices(runs, projects);
+        using var services = CreateServices(runs, repositories);
         var worker = CreateWorker(services, time, new IndexerRunWorkerOptions
         {
             LeaseDuration = TimeSpan.FromSeconds(45),
@@ -76,7 +76,7 @@ public class ProcessRepositoryDurableRunTests
         });
 
         var execution = worker.TryExecuteNextAsync(CancellationToken.None, IndexerRunBackgroundRunner.RepositoryLane);
-        await projects.Started.Task.WaitAsync(WaitLimit);
+        await repositories.Started.Task.WaitAsync(WaitLimit);
 
         // The first heartbeat fails; the next one renews the still-live lease.
         await WaitUntilAsync(() => time.PendingTimers > 0);
@@ -86,7 +86,7 @@ public class ProcessRepositoryDurableRunTests
         var now = time.GetUtcNow().UtcDateTime;
         await WaitUntilAsync(() => runs.GetIndexerRunAsync(runId).Result!.HeartbeatAt == now);
 
-        projects.Finish.SetResult();
+        repositories.Finish.SetResult();
         (await execution.WaitAsync(WaitLimit)).ShouldBeTrue();
         (await runs.GetIndexerRunAsync(runId))!.Status.ShouldBe("completed");
     }
@@ -95,7 +95,7 @@ public class ProcessRepositoryDurableRunTests
     public async Task RepositoryRuns_HaveTheirOwnLaneAndDoNotBlockOtherIndexerWork()
     {
         var runs = new FakeIndexerRunStore();
-        var projects = new BlockingProjectService();
+        var repositories = new BlockingRepositoryService();
         var repoRun = (await Handoff(runs).HandOffAsync(Routine())).RunId;
         var linkRun = await runs.CreateIndexerRunAsync(new IndexerRunEntity
         {
@@ -105,7 +105,7 @@ public class ProcessRepositoryDurableRunTests
             RetrySafe = true,
             CreatedAt = DateTime.UtcNow.AddSeconds(1)
         });
-        using var services = CreateServices(runs, projects);
+        using var services = CreateServices(runs, repositories);
         var worker = CreateWorker(services, TimeProvider.System, new IndexerRunWorkerOptions
         {
             PollInterval = TimeSpan.FromMilliseconds(20),
@@ -116,7 +116,7 @@ public class ProcessRepositoryDurableRunTests
         await worker.StartAsync(CancellationToken.None);
         try
         {
-            await projects.Started.Task.WaitAsync(WaitLimit);
+            await repositories.Started.Task.WaitAsync(WaitLimit);
             await WaitUntilAsync(() => runs.GetIndexerRunAsync(linkRun).Result!.Status == "completed");
             (await runs.GetIndexerRunAsync(repoRun))!.Status.ShouldBe("running");
         }
@@ -137,7 +137,7 @@ public class ProcessRepositoryDurableRunTests
         var failure = new InvalidOperationException($"failed in {phase}");
         IndexingFailure.TagPhase(failure, phase);
         var runId = (await Handoff(runs).HandOffAsync(Routine())).RunId;
-        using var services = CreateServices(runs, new FailingProjectService(failure));
+        using var services = CreateServices(runs, new FailingRepositoryService(failure));
         var worker = CreateWorker(services, TimeProvider.System, new IndexerRunWorkerOptions());
 
         (await worker.TryExecuteNextAsync(CancellationToken.None, IndexerRunBackgroundRunner.RepositoryLane))
@@ -150,11 +150,11 @@ public class ProcessRepositoryDurableRunTests
     }
 
     [Fact]
-    public async Task DurableRun_PassesTheWholeProcessRepositoryMessageToTheProjectService()
+    public async Task DurableRun_PassesTheWholeProcessRepositoryMessageToTheRepositoryService()
     {
         var runs = new FakeIndexerRunStore();
-        var projects = new BlockingProjectService();
-        projects.Finish.SetResult();
+        var repositories = new BlockingRepositoryService();
+        repositories.Finish.SetResult();
         var message = new ProcessRepository
         {
             Name = "SceneWorks",
@@ -169,13 +169,13 @@ public class ProcessRepositoryDurableRunTests
             ShouldComputeVitals = false
         };
         var runId = (await Handoff(runs).HandOffAsync(message)).RunId;
-        using var services = CreateServices(runs, projects);
+        using var services = CreateServices(runs, repositories);
         var worker = CreateWorker(services, TimeProvider.System, new IndexerRunWorkerOptions());
 
         (await worker.TryExecuteNextAsync(CancellationToken.None, IndexerRunBackgroundRunner.RepositoryLane))
             .ShouldBeTrue();
 
-        projects.LastMessage.ShouldBeEquivalentTo(message);
+        repositories.LastMessage.ShouldBeEquivalentTo(message);
         (await runs.GetIndexerRunAsync(runId))!.Status.ShouldBe("completed");
     }
 
@@ -185,10 +185,10 @@ public class ProcessRepositoryDurableRunTests
     private static ProcessRepositoryHandoff Handoff(FakeIndexerRunStore runs) =>
         new(runs, new RecordingBackgroundRunner(), NullLogger<ProcessRepositoryHandoff>.Instance);
 
-    private static ServiceProvider CreateServices(FakeIndexerRunStore runs, IProjectService projects) =>
+    private static ServiceProvider CreateServices(FakeIndexerRunStore runs, IRepositoryService repositories) =>
         CreateWorkerServices(
             runs, new FakeDatabaseSourceStore(), new RecordingDatabaseSchemaExtractor(), new RecordingAdminService(),
-            projects);
+            repositories);
 
     private static IndexerRunBackgroundRunner CreateWorker(
         ServiceProvider services, TimeProvider time, IndexerRunWorkerOptions options) =>
@@ -210,7 +210,7 @@ public class ProcessRepositoryDurableRunTests
         }
     }
 
-    private sealed class BlockingProjectService : IProjectService
+    private sealed class BlockingRepositoryService : IRepositoryService
     {
         private int _calls;
         public int Calls => _calls;
@@ -232,7 +232,7 @@ public class ProcessRepositoryDurableRunTests
         public Task<bool> DeleteRepositoryAsync(string repo) => throw new NotSupportedException();
     }
 
-    private sealed class FailingProjectService(Exception failure) : IProjectService
+    private sealed class FailingRepositoryService(Exception failure) : IRepositoryService
     {
         public Task ProcessRepository(ProcessRepository message, CancellationToken cancellationToken = new()) =>
             Task.FromException(failure);

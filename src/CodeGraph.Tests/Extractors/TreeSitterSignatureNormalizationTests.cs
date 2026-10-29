@@ -15,7 +15,7 @@ public class TreeSitterSignatureNormalizationTests
 {
     private static readonly ExtractorContext TestContext = new()
     {
-        ProjectName = "P",
+        RepositoryName = "P",
         RootPath = "/test"
     };
 

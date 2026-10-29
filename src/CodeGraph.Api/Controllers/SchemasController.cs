@@ -6,7 +6,7 @@ namespace CodeGraph.Api.Controllers;
 
 [ApiController]
 [Route("api/schemas")]
-public class SchemasController(IProjectQueryService queryService) : Controller
+public class SchemasController(IRepositoryQueryService queryService) : Controller
 {
     [HttpGet]
     public async Task<ActionResult<SchemaListResponse>> List(

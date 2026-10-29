@@ -64,7 +64,7 @@ public class ImpactLowConfidenceTests
 
     private static GraphNode CreateNode(string name, Dictionary<string, object> properties) => new()
     {
-        Project = "RustRepo",
+        Repository = "RustRepo",
         Label = NodeLabel.Function,
         Name = name,
         QualifiedName = $"RustRepo:{name}",

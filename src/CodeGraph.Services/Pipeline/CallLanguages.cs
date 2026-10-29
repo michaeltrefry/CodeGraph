@@ -62,19 +62,19 @@ public static partial class CallLanguages
             : FamilyByExtension.GetValueOrDefault(Path.GetExtension(filePath));
 
     /// <summary>
-    /// The language family of the file a qualified name of <paramref name="project"/> is declared
-    /// in (<c>{project}:{file}</c> or <c>{project}:{file}#...</c>); null for any other shape.
+    /// The language family of the file a qualified name of <paramref name="repository"/> is declared
+    /// in (<c>{repository}:{file}</c> or <c>{repository}:{file}#...</c>); null for any other shape.
     /// </summary>
-    public static string? FamilyOfQualifiedName(string project, string qualifiedName) =>
-        FamilyOf(FileOfQualifiedName(project, qualifiedName));
+    public static string? FamilyOfQualifiedName(string repository, string qualifiedName) =>
+        FamilyOf(FileOfQualifiedName(repository, qualifiedName));
 
     /// <summary>
-    /// The file a qualified name of <paramref name="project"/> is declared in (<c>{project}:{file}</c>
-    /// or <c>{project}:{file}#...</c>); null for any other shape.
+    /// The file a qualified name of <paramref name="repository"/> is declared in (<c>{repository}:{file}</c>
+    /// or <c>{repository}:{file}#...</c>); null for any other shape.
     /// </summary>
-    public static string? FileOfQualifiedName(string project, string qualifiedName)
+    public static string? FileOfQualifiedName(string repository, string qualifiedName)
     {
-        var prefix = project + ":";
+        var prefix = repository + ":";
         if (!qualifiedName.StartsWith(prefix, StringComparison.Ordinal))
             return null;
         var rest = qualifiedName[prefix.Length..];

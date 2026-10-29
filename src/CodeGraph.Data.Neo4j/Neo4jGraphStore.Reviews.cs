@@ -7,18 +7,18 @@ public partial class Neo4jGraphStore
 {
     // ── Project Diagnostics ──────────────────────────────────────────────
 
-    public async Task DeleteProjectDiagnosticsAsync(string project)
+    public async Task DeleteProjectDiagnosticsAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (d:ProjectDiagnostic {project: $project}) DELETE d",
-                new { project });
+                "MATCH (d:ProjectDiagnostic {repository: $repository}) DELETE d",
+                new { repository });
         });
     }
 
-    public async Task UpsertProjectDiagnosticsBatchAsync(string project, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
+    public async Task UpsertProjectDiagnosticsBatchAsync(string repository, IReadOnlyList<ProjectDiagnosticEntity> diagnostics)
     {
         if (diagnostics.Count == 0) return;
 
@@ -45,7 +45,7 @@ public partial class Neo4jGraphStore
             {
                 await tx.RunAsync("""
                     UNWIND $items AS d
-                    MERGE (pd:ProjectDiagnostic {project: $project, diagnosticKey: d.diagnosticKey})
+                    MERGE (pd:ProjectDiagnostic {repository: $repository, diagnosticKey: d.diagnosticKey})
                     SET pd.dotnetProject = d.dotnetProject,
                         pd.source = d.source,
                         pd.diagnosticId = d.diagnosticId,
@@ -57,22 +57,22 @@ public partial class Neo4jGraphStore
                         pd.lineEnd = d.lineEnd,
                         pd.computedAt = d.computedAt
                     """,
-                    new { project, items });
+                    new { repository, items });
             });
         }
 
-        logger.LogInformation("Upserted {Count} project diagnostics for {Project}", diagnostics.Count, project);
+        logger.LogInformation("Upserted {Count} project diagnostics for {Project}", diagnostics.Count, repository);
     }
 
     public async Task<IReadOnlyList<ProjectDiagnosticEntity>> GetProjectDiagnosticsAsync(
-        string project, string? dotnetProject = null)
+        string repository, string? dotnetProject = null)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cypher = dotnetProject is null
                 ? """
-                  MATCH (d:ProjectDiagnostic {project: $project})
+                  MATCH (d:ProjectDiagnostic {repository: $repository})
                   WITH d,
                        CASE d.severity
                            WHEN 'error' THEN 0
@@ -84,7 +84,7 @@ public partial class Neo4jGraphStore
                   RETURN d ORDER BY severityOrder, d.filePath, coalesce(d.lineStart, 0), d.diagnosticId
                   """
                 : """
-                  MATCH (d:ProjectDiagnostic {project: $project, dotnetProject: $dotnetProject})
+                  MATCH (d:ProjectDiagnostic {repository: $repository, dotnetProject: $dotnetProject})
                   WITH d,
                        CASE d.severity
                            WHEN 'error' THEN 0
@@ -96,7 +96,7 @@ public partial class Neo4jGraphStore
                   RETURN d ORDER BY severityOrder, d.filePath, coalesce(d.lineStart, 0), d.diagnosticId
                   """;
 
-            var cursor = await tx.RunAsync(cypher, new { project, dotnetProject });
+            var cursor = await tx.RunAsync(cypher, new { repository, dotnetProject });
             var results = new List<ProjectDiagnosticEntity>();
             await foreach (var record in cursor)
             {
@@ -122,7 +122,7 @@ public partial class Neo4jGraphStore
                 WITH seq.value AS newId
                 CREATE (r:ProjectReviewRun {
                     appId: newId,
-                    project: $project,
+                    repository: $repository,
                     projectName: $projectName,
                     reviewedCommitSha: $reviewedCommitSha,
                     status: $status,
@@ -139,7 +139,7 @@ public partial class Neo4jGraphStore
                 """,
                 new
                 {
-                    project = run.Project,
+                    repository = run.Repository,
                     projectName = run.ProjectName,
                     reviewedCommitSha = (object?)run.ReviewedCommitSha,
                     status = run.Status,
@@ -264,18 +264,18 @@ public partial class Neo4jGraphStore
         logger.LogInformation("Upserted {Count} review findings for review run {ReviewRunId}", findings.Count, reviewRunId);
     }
 
-    public async Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string project, string projectName)
+    public async Task<ProjectReviewRunEntity?> GetLatestProjectReviewRunAsync(string repository, string projectName)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync("""
-                MATCH (r:ProjectReviewRun {project: $project, projectName: $projectName})
+                MATCH (r:ProjectReviewRun {repository: $repository, projectName: $projectName})
                 RETURN r
                 ORDER BY r.createdAt DESC, r.appId DESC
                 LIMIT 1
                 """,
-                new { project, projectName });
+                new { repository, projectName });
 
             if (await cursor.FetchAsync())
                 return MapProjectReviewRunNode(cursor.Current["r"].As<INode>());
@@ -685,7 +685,7 @@ public partial class Neo4jGraphStore
 
     private static ProjectDiagnosticEntity MapProjectDiagnosticNode(INode node) => new()
     {
-        Project = node["project"].As<string>(),
+        Repository = node["repository"].As<string>(),
         DotnetProject = GetStringOrNull(node, "dotnetProject"),
         Source = GetStringOrNull(node, "source") ?? "roslyn",
         DiagnosticKey = node["diagnosticKey"].As<string>(),
@@ -706,7 +706,7 @@ public partial class Neo4jGraphStore
     private static ProjectReviewRunEntity MapProjectReviewRunNode(INode node) => new()
     {
         Id = node["appId"].As<long>(),
-        Project = node["project"].As<string>(),
+        Repository = node["repository"].As<string>(),
         ProjectName = node["projectName"].As<string>(),
         ReviewedCommitSha = GetStringOrNull(node, "reviewedCommitSha"),
         Status = node["status"].As<string>(),

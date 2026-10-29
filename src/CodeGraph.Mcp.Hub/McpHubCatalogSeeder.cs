@@ -107,7 +107,7 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
         new("rabbitmq_list_queues", "rabbitmq", "List RabbitMQ queues", "List queues through the RabbitMQ management API.", RequiresCredential: true),
         new("rabbitmq_get_queue", "rabbitmq", "Get RabbitMQ queue", "Get read-only details for one RabbitMQ queue.", RequiresCredential: true),
         new("rabbitmq_peek_queue", "rabbitmq", "Peek RabbitMQ queue", "Non-destructively peek capped messages from a RabbitMQ queue.", RequiresCredential: true),
-        new("mysql_list_schemas", "mysql", "List indexed MySQL schemas", "List indexed schema projects and counts."),
+        new("mysql_list_schemas", "mysql", "List indexed MySQL schemas", "List indexed schema repositories and counts."),
         new("mysql_get_schema_catalog", "mysql", "Get indexed MySQL schema catalog", "Return indexed tables, views, procedures, columns, indexes, and constraints."),
         new("mysql_readonly_query", "mysql", "Run guarded read-only SQL", "Run a bounded SELECT/SHOW/DESCRIBE/EXPLAIN query against a configured source.", RequiresCredential: true)
     ];

@@ -25,16 +25,16 @@ public sealed class LowConfidenceAnswerTests
 
     public LowConfidenceAnswerTests()
     {
-        _store.AddProject(Repo);
+        _store.AddRepository(Repo);
         _fallbackId = _store.AddNode(Node("fallback_fn", "crates/gamma/src/lib.rs", lowConfidence: true));
         _semanticId = _store.AddNode(Node("semantic_fn", "crates/beta/src/lib.rs", lowConfidence: false));
-        _store.AddEdge(new GraphEdge { Project = Repo, SourceId = _semanticId, TargetId = _fallbackId, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = Repo, SourceId = _semanticId, TargetId = _fallbackId, Type = EdgeType.CALLS });
     }
 
     [Fact]
     public async Task SearchGraph_TagsLowConfidenceNodes_AndSummarizes()
     {
-        var answer = await Mcp().SearchGraph("_fn", project: Repo);
+        var answer = await Mcp().SearchGraph("_fn", repository: Repo);
 
         var text = answer.Text();
         text.ShouldContain("**fallback_fn** (Function) — RustRepo [low confidence]");
@@ -43,11 +43,11 @@ public sealed class LowConfidenceAnswerTests
         answer.StructuredString("lowConfidence").ShouldBe("true");
         answer.StructuredString("lowConfidenceCount").ShouldBe("1");
 
-        var semanticOnly = await Mcp().SearchGraph("semantic_fn", project: Repo);
+        var semanticOnly = await Mcp().SearchGraph("semantic_fn", repository: Repo);
         semanticOnly.Text().ShouldNotContain("low confidence", Case.Insensitive);
         semanticOnly.StructuredString("lowConfidence").ShouldBe("false");
 
-        var consolidated = await ConsolidatedMcpServer.CodegraphSearch(Mcp(), "search", "_fn", project: Repo);
+        var consolidated = await ConsolidatedMcpServer.CodegraphSearch(Mcp(), "search", "_fn", repository: Repo);
         using var envelope = JsonDocument.Parse(consolidated.Text());
         envelope.RootElement.GetProperty("lowConfidenceCount").GetInt32().ShouldBe(1);
     }
@@ -58,7 +58,7 @@ public sealed class LowConfidenceAnswerTests
     [Fact]
     public async Task TraceCallPath_TagsLowConfidenceEntries_AndSummarizes()
     {
-        var fallback = await Mcp().TraceCallPath("fallback_fn", project: Repo);
+        var fallback = await Mcp().TraceCallPath("fallback_fn", repository: Repo);
 
         fallback.Text().ShouldContain("- **fallback_fn** (Function) — RustRepo [low confidence]");
         fallback.Text().ShouldContain("includes 1 low-confidence node(s)");
@@ -66,11 +66,11 @@ public sealed class LowConfidenceAnswerTests
         // Default-branch answers carry no overlay mapping count.
         fallback.StructuredString("unmappedInboundEdges").ShouldBeNull();
 
-        var semantic = await Mcp().TraceCallPath("semantic_fn", project: Repo);
+        var semantic = await Mcp().TraceCallPath("semantic_fn", repository: Repo);
         semantic.Text().ShouldNotContain("low confidence", Case.Insensitive);
         semantic.StructuredString("lowConfidence").ShouldBe("false");
 
-        var consolidated = await ConsolidatedMcpServer.GraphTrace(Mcp(), "call_path", "fallback_fn", project: Repo);
+        var consolidated = await ConsolidatedMcpServer.GraphTrace(Mcp(), "call_path", "fallback_fn", repository: Repo);
         using var envelope = JsonDocument.Parse(consolidated.Text());
         envelope.RootElement.GetProperty("lowConfidence").GetBoolean().ShouldBeTrue();
     }
@@ -110,7 +110,7 @@ public sealed class LowConfidenceAnswerTests
 
     private static GraphNode Node(string name, string path, bool lowConfidence) => new()
     {
-        Project = Repo,
+        Repository = Repo,
         Label = NodeLabel.Function,
         Name = name,
         QualifiedName = $"{Repo}:{path}#{name}",

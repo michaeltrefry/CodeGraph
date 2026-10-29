@@ -74,7 +74,7 @@ public class DatabaseSchemaExtractorTests
         var databaseName = $"codegraph_schema_retry_{Guid.NewGuid():N}";
         var adminBuilder = new MySqlConnectionStringBuilder(baseConnectionString) { Database = "" };
         var sourceBuilder = new MySqlConnectionStringBuilder(baseConnectionString) { Database = databaseName };
-        var projectName = $"db:integration:{databaseName}";
+        var repositoryName = $"db:integration:{databaseName}";
 
         await using (var admin = new MySqlConnection(adminBuilder.ConnectionString))
         {
@@ -103,7 +103,7 @@ public class DatabaseSchemaExtractorTests
             var graph = new InMemoryGraphStore();
             graph.AddNode(new GraphNode
             {
-                Project = projectName,
+                Repository = repositoryName,
                 Label = NodeLabel.Table,
                 Name = "existing",
                 QualifiedName = $"integration.{databaseName}.existing"

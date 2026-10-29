@@ -74,7 +74,7 @@ public partial class Neo4jGraphStore
                 ORDER BY {DeterministicSchemaOrder}
                 SKIP $skip LIMIT $limit
                 OPTIONAL MATCH (n:CodeNode)
-                WHERE n.project = r.name AND n.label IN ['Table', 'View', 'StoredProcedure']
+                WHERE n.repository = r.name AND n.label IN ['Table', 'View', 'StoredProcedure']
                 RETURN r, serverName, databaseName,
                     sum(CASE WHEN n.label = 'Table' THEN 1 ELSE 0 END) AS tableCount,
                     sum(CASE WHEN n.label = 'View' THEN 1 ELSE 0 END) AS viewCount,
@@ -98,7 +98,7 @@ public partial class Neo4jGraphStore
                 {SchemaMetadataProjection}
                 WHERE {FilteredSchemaPredicate}
                 OPTIONAL MATCH (n:CodeNode)
-                WHERE n.project = r.name AND n.label IN ['Table', 'View', 'StoredProcedure']
+                WHERE n.repository = r.name AND n.label IN ['Table', 'View', 'StoredProcedure']
                 RETURN count(DISTINCT r) AS totalCount,
                     sum(CASE WHEN n.label = 'Table' THEN 1 ELSE 0 END) AS totalTables,
                     sum(CASE WHEN n.label = 'View' THEN 1 ELSE 0 END) AS totalViews,
@@ -148,7 +148,7 @@ public partial class Neo4jGraphStore
     private static SchemaMetadata ResolveSchemaMetadata(RepositoryEntity repository)
     {
         var serverName = GetJsonString(repository.Properties, "serverName") ?? repository.SourceGroup ?? "";
-        var databaseName = GetJsonString(repository.Properties, "databaseName") ?? GetDatabaseNameFromProject(repository.Name);
+        var databaseName = GetJsonString(repository.Properties, "databaseName") ?? GetDatabaseNameFromRepository(repository.Name);
         var isDatabaseSchema = repository.Name.StartsWith("db:", StringComparison.OrdinalIgnoreCase) ||
             GetJsonString(repository.Properties, "serverName") is not null ||
             GetJsonString(repository.Properties, "databaseName") is not null;
@@ -176,11 +176,11 @@ public partial class Neo4jGraphStore
         }
     }
 
-    private static string GetDatabaseNameFromProject(string projectName)
+    private static string GetDatabaseNameFromRepository(string repositoryName)
     {
-        var name = projectName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
-            ? projectName[3..]
-            : projectName;
+        var name = repositoryName.StartsWith("db:", StringComparison.OrdinalIgnoreCase)
+            ? repositoryName[3..]
+            : repositoryName;
         var slash = name.LastIndexOf('/');
         return slash >= 0 ? name[(slash + 1)..] : name;
     }

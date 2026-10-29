@@ -70,11 +70,11 @@ public static class RepoFileResolver
         RepositorySourceOptions sourceOptions,
         IGraphStore store)
     {
-        var project = await store.GetRepositoryByName(repoName);
-        if (project is null)
+        var repository = await store.GetRepositoryByName(repoName);
+        if (repository is null)
             return null;
 
-        return Resolve(project.Name, relativeFilePath, sourceOptions.ReposCachePath, project.LocalPath);
+        return Resolve(repository.Name, relativeFilePath, sourceOptions.ReposCachePath, repository.LocalPath);
     }
 
     /// <summary>
@@ -89,11 +89,11 @@ public static class RepoFileResolver
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        var project = await store.GetRepositoryByName(repoName);
-        if (project is null)
+        var repository = await store.GetRepositoryByName(repoName);
+        if (repository is null)
             return null;
 
-        return OpenRead(project.Name, relativeFilePath, sourceOptions.ReposCachePath, project.LocalPath);
+        return OpenRead(repository.Name, relativeFilePath, sourceOptions.ReposCachePath, repository.LocalPath);
     }
 
     /// <summary>

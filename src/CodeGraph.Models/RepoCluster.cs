@@ -3,7 +3,7 @@ namespace CodeGraph.Models;
 public record RepoCluster
 {
     public long Id { get; init; }
-    public required string ProjectName { get; init; }
+    public required string RepositoryName { get; init; }
     public int ClusterId { get; init; }
     public string? ClusterLabel { get; init; }
     public decimal ModularityScore { get; init; }

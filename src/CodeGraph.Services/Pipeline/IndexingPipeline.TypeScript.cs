@@ -44,7 +44,7 @@ public partial class IndexingPipeline
     /// touching them or an excluded file, and excluded processed files. Guards the graph against
     /// a sidecar that reads more than it was given.
     /// </summary>
-    private ExtractionResult ClampToDiscovery(ExtractionResult result, string projectName, string rootPath)
+    private ExtractionResult ClampToDiscovery(ExtractionResult result, string repositoryName, string rootPath)
     {
         var excludedPath = CreateDiscoveryExclusion(rootPath);
         bool Admitted(string? filePath) => string.IsNullOrWhiteSpace(filePath) || !excludedPath(filePath);
@@ -57,7 +57,7 @@ public partial class IndexingPipeline
             .Select(node => node.QualifiedName)
             .Where(qualifiedName => !keptQns.Contains(qualifiedName))
             .ToHashSet(StringComparer.Ordinal);
-        var filePrefix = $"{projectName}:";
+        var filePrefix = $"{repositoryName}:";
         bool AdmittedFileQn(string qualifiedName) =>
             !qualifiedName.StartsWith(filePrefix, StringComparison.Ordinal)
             || Admitted(qualifiedName[filePrefix.Length..]);
@@ -81,8 +81,8 @@ public partial class IndexingPipeline
             return result;
 
         _logger.LogWarning(
-            "TypeScript analysis of {Project} returned {Nodes} node(s), {Edges} edge(s) and {Files} file(s) under paths discovery excludes; dropping them",
-            projectName, removedNodes, removedEdges, removedFiles);
+            "TypeScript analysis of {Repository} returned {Nodes} node(s), {Edges} edge(s) and {Files} file(s) under paths discovery excludes; dropping them",
+            repositoryName, removedNodes, removedEdges, removedFiles);
         return clamped;
     }
 
@@ -93,7 +93,7 @@ public partial class IndexingPipeline
     /// here. Unchanged packages are left alone.
     /// </summary>
     private async Task<IReadOnlyList<string>> FindChangedTypeScriptModuleSlicesAsync(
-        string projectName, IEnumerable<GraphNode> analyzedNodes)
+        string repositoryName, IEnumerable<GraphNode> analyzedNodes)
     {
         static IEnumerable<(string QualifiedName, string FilePath)> Modules(IEnumerable<GraphNode> nodes) =>
             WorkspaceModules(nodes)
@@ -102,7 +102,7 @@ public partial class IndexingPipeline
 
         var analyzed = analyzedNodes.ToList();
         var current = Modules(analyzed).ToHashSet();
-        var storedNodes = await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue);
+        var storedNodes = await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Module, int.MaxValue);
         var stored = Modules(storedNodes).ToHashSet();
         var paths = current.Except(stored).Concat(stored.Except(current))
             .Select(module => module.FilePath)
@@ -171,15 +171,15 @@ public partial class IndexingPipeline
     /// row, so deletion inference never reaches them.
     /// </summary>
     private async Task<IReadOnlyList<string>> FindExcludedTypeScriptSlicesAsync(
-        string projectName, string rootPath, CancellationToken ct)
+        string repositoryName, string rootPath, CancellationToken ct)
     {
         var excludedPath = CreateDiscoveryExclusion(rootPath);
-        var excluded = (await _store.GetNodeFilePathsAsync(projectName, ct))
+        var excluded = (await _store.GetNodeFilePathsAsync(repositoryName, ct))
             .Select(NormalizeRelativePath)
             .Where(path => IsTypeScriptPath(path) && excludedPath(path))
             // Workspace package modules keyed by an excluded directory go too, also when no
             // analysis ran this time (no admitted tsconfig, or the sidecar was unavailable).
-            .Concat(WorkspaceModules(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
+            .Concat(WorkspaceModules(await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Module, int.MaxValue))
                 .Where(node => !string.IsNullOrWhiteSpace(node.FilePath) && excludedPath(node.FilePath!))
                 .Select(node => NormalizeRelativePath(node.FilePath!)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -187,25 +187,25 @@ public partial class IndexingPipeline
         if (excluded.Count > 0)
         {
             _logger.LogInformation(
-                "Removing {Count} TypeScript file slice(s) of {Project} under paths discovery excludes",
-                excluded.Count, projectName);
+                "Removing {Count} TypeScript file slice(s) of {Repository} under paths discovery excludes",
+                excluded.Count, repositoryName);
         }
 
         return excluded;
     }
 
     /// <summary>
-    /// Stub nodes of <paramref name="projectName"/> that TypeScript edges can create. Passed as
+    /// Stub nodes of <paramref name="repositoryName"/> that TypeScript edges can create. Passed as
     /// orphan candidates when TypeScript slices are rewritten wholesale (excluded slices removed,
     /// or an extraction version bump re-extracted them), so stubs whose last edge went away (for
     /// example ones named after a checkout-specific <c>import("/abs/path")</c> type) are deleted.
     /// </summary>
-    private async Task<IReadOnlyList<string>> FindTypeScriptStubCandidatesAsync(string projectName)
+    private async Task<IReadOnlyList<string>> FindTypeScriptStubCandidatesAsync(string repositoryName)
     {
         var candidates = new List<string>();
         foreach (var label in new[] { NodeLabel.Interface, NodeLabel.Class, NodeLabel.Route })
         {
-            candidates.AddRange((await _store.FindNodesByLabelAsync(projectName, label, int.MaxValue))
+            candidates.AddRange((await _store.FindNodesByLabelAsync(repositoryName, label, int.MaxValue))
                 .Where(node => string.IsNullOrEmpty(node.FilePath)
                                && TypeScriptNodeText(node.Properties.GetValueOrDefault("stub")) == "true")
                 .Select(node => node.QualifiedName));

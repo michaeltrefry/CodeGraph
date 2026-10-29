@@ -26,11 +26,11 @@ public class ProcessRepositoryConsumerTests
     {
         var runs = new FakeIndexerRunStore();
         var runner = new RecordingBackgroundRunner();
-        var projects = new NeverCompletingProjectService();
+        var repositories = new NeverCompletingRepositoryService();
         await using var provider = new ServiceCollection()
             .AddSingleton<IIndexerRunStore>(runs)
             .AddSingleton<IIndexerRunBackgroundRunner>(runner)
-            .AddSingleton<IProjectService>(projects)
+            .AddSingleton<IRepositoryService>(repositories)
             .AddSingleton<ILogger<ProcessRepositoryHandoff>>(NullLogger<ProcessRepositoryHandoff>.Instance)
             .AddTransient<ProcessRepositoryHandoff>()
             .AddMassTransitTestHarness(cfg => cfg.AddConsumer<ProcessRepositoryConsumer>())
@@ -48,7 +48,7 @@ public class ProcessRepositoryConsumerTests
 
             (await harness.GetConsumerHarness<ProcessRepositoryConsumer>().Consumed
                 .Any<ProcessRepository>(context => context.Exception is null)).ShouldBeTrue();
-            projects.Calls.ShouldBe(0);
+            repositories.Calls.ShouldBe(0);
 
             var run = (await runs.ListIndexerRunsAsync()).ShouldHaveSingleItem();
             run.Operation.ShouldBe(IndexerRunOperations.ProcessRepository);
@@ -62,7 +62,7 @@ public class ProcessRepositoryConsumerTests
         }
         finally
         {
-            projects.Release.TrySetResult();
+            repositories.Release.TrySetResult();
             await harness.Stop();
         }
     }
@@ -104,7 +104,7 @@ public class ProcessRepositoryConsumerTests
         logger.Messages.Count(text => text.StartsWith("Coalesced ProcessRepository for SceneWorks")).ShouldBe(2);
     }
 
-    private sealed class NeverCompletingProjectService : IProjectService
+    private sealed class NeverCompletingRepositoryService : IRepositoryService
     {
         private int _calls;
         public int Calls => _calls;

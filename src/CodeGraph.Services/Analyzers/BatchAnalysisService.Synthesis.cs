@@ -202,8 +202,8 @@ public partial class BatchAnalysisService
             };
 
             var crossRepoEdges = await store.FindCrossRepoEdgesAsync(repoName);
-            var inbound = crossRepoEdges.Where(e => e.TargetProject == repoName).ToList();
-            var outbound = crossRepoEdges.Where(e => e.SourceProject == repoName).ToList();
+            var inbound = crossRepoEdges.Where(e => e.TargetRepository == repoName).ToList();
+            var outbound = crossRepoEdges.Where(e => e.SourceRepository == repoName).ToList();
 
             var repoDoc = docGenerator.GenerateRepoDoc(repoName, repoAnalysis, inbound, outbound);
             var repoDocPath = Path.Combine(repoInfo.LocalPath, "CODEGRAPH.md");
@@ -286,7 +286,7 @@ public partial class BatchAnalysisService
         await store.UpdateRepositoryCommitShaAsync(repoName, commitSha);
         await store.UpsertSyncStateAsync(new SyncStateEntity
         {
-            Project = repoName,
+            Repository = repoName,
             LastCommitSha = commitSha,
             LastSyncAt = DateTime.UtcNow,
             Status = "idle",

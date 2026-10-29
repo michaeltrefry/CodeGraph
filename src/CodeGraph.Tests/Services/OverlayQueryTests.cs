@@ -153,7 +153,7 @@ public sealed class OverlayQueryTests : IDisposable
     public async Task FileImpact_Rest_WithSha_ReturnsHeadNodesAndTheirDependents()
     {
         await CreateReadyOverlayAsync(_headSha, _baseSha);
-        var controller = ProjectsController();
+        var controller = RepositoriesController();
 
         var head = (ImpactReport)((OkObjectResult)(await controller.FileImpact(Repo, "src/a.py", sha: _headSha)).Result!).Value!;
         var defaultBranch = (ImpactReport)((OkObjectResult)(await controller.FileImpact(Repo, "src/a.py")).Result!).Value!;
@@ -171,7 +171,7 @@ public sealed class OverlayQueryTests : IDisposable
     {
         await CreateReadyOverlayAsync(_headSha, _baseSha);
 
-        var rest = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, Qn("src/a.py", "alpha"), sha: _headSha)).Result!).Value!;
+        var rest = (ImpactReport)((OkObjectResult)(await RepositoriesController().Impact(Repo, Qn("src/a.py", "alpha"), sha: _headSha)).Result!).Value!;
         rest.CommitSha.ShouldBe(_headSha);
         rest.ChangedNodes.ShouldHaveSingleItem().NodeId.ShouldBeLessThan(0);
         rest.AffectedNodes.Select(node => node.Name).ShouldBe(["beta", "newbie"], ignoreOrder: true);
@@ -191,12 +191,12 @@ public sealed class OverlayQueryTests : IDisposable
         await CreateReadyOverlayAsync(_headSha, _baseSha);
         await _store.UpsertFileMetricsBatchAsync(Repo,
         [
-            new FileMetricsEntity { Project = Repo, FilePath = "src/a.py", TrustScore = 0.1 },
-            new FileMetricsEntity { Project = Repo, FilePath = "src/b.py", TrustScore = 0.1 }
+            new FileMetricsEntity { Repository = Repo, FilePath = "src/a.py", TrustScore = 0.1 },
+            new FileMetricsEntity { Repository = Repo, FilePath = "src/b.py", TrustScore = 0.1 }
         ]);
 
-        var head = (await Mcp().SearchGraph("%", project: Repo, sha: _headSha)).Text();
-        var defaultBranch = (await Mcp().SearchGraph("alpha", project: Repo)).Text();
+        var head = (await Mcp().SearchGraph("%", repository: Repo, sha: _headSha)).Text();
+        var defaultBranch = (await Mcp().SearchGraph("alpha", repository: Repo)).Text();
 
         // src/a.py changed at the head: its default-branch metrics do not describe it.
         head.ShouldContain($"- **alpha** (Function) — {Repo}\n");
@@ -219,9 +219,9 @@ public sealed class OverlayQueryTests : IDisposable
         snippet.Text().ShouldNotContain("delta'");
 
         (await mcp.ReadNodeSource(_deltaId, _headSha)).Body().ShouldBe($"Node {_deltaId} not found at commit {_headSha}.");
-        (await mcp.SearchGraph("delta", project: Repo, sha: _headSha)).Body().ShouldStartWith("No results found");
+        (await mcp.SearchGraph("delta", repository: Repo, sha: _headSha)).Body().ShouldStartWith("No results found");
         (await NodesController().ByFile(Repo, "src/d.py", sha: _headSha)).Result.ShouldBeOfType<NotFoundObjectResult>();
-        (await ProjectsController().FileImpact(Repo, "src/d.py", sha: _headSha)).Result.ShouldBeOfType<NotFoundResult>();
+        (await RepositoriesController().FileImpact(Repo, "src/d.py", sha: _headSha)).Result.ShouldBeOfType<NotFoundResult>();
         (await NodesController().Source(_deltaId, _headSha)).Result.ShouldBeOfType<NotFoundResult>();
 
         // Without sha the default branch still has it.
@@ -238,7 +238,7 @@ public sealed class OverlayQueryTests : IDisposable
     {
         var id = await _overlays.CreateOverlayAsync(new BranchOverlayEntity
         {
-            Project = Repo,
+            Repository = Repo,
             RequestedRef = _headSha,
             CreatedAt = Now.UtcDateTime
         });
@@ -252,7 +252,7 @@ public sealed class OverlayQueryTests : IDisposable
         AssertNotIndexed(answer, _headSha, status);
         answer.Text().ShouldNotContain("alpha");
 
-        var rest = await ProjectsController().FileImpact(Repo, "src/a.py", sha: _headSha);
+        var rest = await RepositoriesController().FileImpact(Repo, "src/a.py", sha: _headSha);
         var conflict = rest.Result.ShouldBeOfType<ConflictObjectResult>();
         var body = conflict.Value.ShouldBeOfType<CommitNotIndexedResponse>();
         body.Code.ShouldBe(CommitScopeResolver.NotIndexedCode);
@@ -267,8 +267,8 @@ public sealed class OverlayQueryTests : IDisposable
         var unknown = new string('c', 40);
         var mcp = Mcp();
 
-        AssertNotIndexed(await mcp.SearchGraph("alpha", project: Repo, sha: unknown), unknown, "unknown");
-        AssertNotIndexed(await mcp.TraceCallPath("alpha", project: Repo, sha: unknown), unknown, "unknown");
+        AssertNotIndexed(await mcp.SearchGraph("alpha", repository: Repo, sha: unknown), unknown, "unknown");
+        AssertNotIndexed(await mcp.TraceCallPath("alpha", repository: Repo, sha: unknown), unknown, "unknown");
         AssertNotIndexed(await mcp.ReadNodeSource(_alphaId, unknown), unknown, "unknown");
         AssertNotIndexed(await mcp.AnalyzeImpact("alpha", Repo, sha: unknown), unknown, "unknown");
 
@@ -276,7 +276,7 @@ public sealed class OverlayQueryTests : IDisposable
         search.Value.ShouldBeOfType<CommitNotIndexedResponse>().Status.ShouldBe("unknown");
         (await NodesController().Source(_alphaId, unknown)).Result.ShouldBeOfType<ConflictObjectResult>();
         (await NodesController().ByFile(Repo, "src/a.py", sha: unknown)).Result.ShouldBeOfType<ConflictObjectResult>();
-        (await ProjectsController().Impact(Repo, "alpha", sha: unknown)).Result.ShouldBeOfType<ConflictObjectResult>();
+        (await RepositoriesController().Impact(Repo, "alpha", sha: unknown)).Result.ShouldBeOfType<ConflictObjectResult>();
     }
 
     [Fact]
@@ -310,7 +310,7 @@ public sealed class OverlayQueryTests : IDisposable
         FirstLine(answer).ShouldBe("Commit: unknown");
         answer.StructuredString("commitSha").ShouldBeNull();
         answer.Text().ShouldContain(CommitScopeResolver.InvalidShaCode);
-        (await ProjectsController().FileImpact(Repo, "src/a.py", sha: _headSha[..12])).Result
+        (await RepositoriesController().FileImpact(Repo, "src/a.py", sha: _headSha[..12])).Result
             .ShouldBeOfType<BadRequestObjectResult>();
     }
 
@@ -333,7 +333,7 @@ public sealed class OverlayQueryTests : IDisposable
         await CreateReadyOverlayAsync(_headSha, new string('e', 40));
         var pendingId = await _overlays.CreateOverlayAsync(new BranchOverlayEntity
         {
-            Project = Repo,
+            Repository = Repo,
             RequestedRef = _headSha,
             CreatedAt = Now.UtcDateTime.AddMinutes(1)
         });
@@ -343,16 +343,16 @@ public sealed class OverlayQueryTests : IDisposable
         queued.StructuredContent!.Value.GetProperty("notIndexed").GetProperty("overlayId").GetInt64().ShouldBe(pendingId);
 
         await _overlays.MarkOverlayIndexingAsync(pendingId, Now.UtcDateTime.AddMinutes(1));
-        var indexing = await ProjectsController().FileImpact(Repo, "src/a.py", sha: _headSha);
+        var indexing = await RepositoriesController().FileImpact(Repo, "src/a.py", sha: _headSha);
         var body = indexing.Result.ShouldBeOfType<ConflictObjectResult>().Value.ShouldBeOfType<CommitNotIndexedResponse>();
         body.Status.ShouldBe(BranchOverlayStatuses.Indexing);
         body.OverlayId.ShouldBe(pendingId);
     }
 
     [Fact]
-    public async Task ShaOfTheDefaultBranchIndex_WithoutProject_AnswersNodeSourceAndDetail()
+    public async Task ShaOfTheDefaultBranchIndex_WithoutRepository_AnswersNodeSourceAndDetail()
     {
-        // No overlay row carries the SHA; the node surfaces take no project.
+        // No overlay row carries the SHA; the node surfaces take no repository.
         var mcp = await Mcp().ReadNodeSource(_alphaId, _baseSha);
         FirstLine(mcp).ShouldBe($"Commit: {_baseSha}");
         mcp.StructuredString("source").ShouldBe("default-branch");
@@ -422,7 +422,7 @@ public sealed class OverlayQueryTests : IDisposable
         await _store.UpsertRepositoryAsync(new RepositoryEntity { Name = "Other", LastCommitSha = otherSha });
         var callerId = _store.AddNode(new GraphNode
         {
-            Project = "Other",
+            Repository = "Other",
             Label = NodeLabel.Function,
             Name = "remote_caller",
             QualifiedName = "Other:src/r.py:remote_caller",
@@ -430,11 +430,11 @@ public sealed class OverlayQueryTests : IDisposable
             StartLine = 1,
             EndLine = 2
         });
-        _store.AddEdge(new GraphEdge { Project = "Other", SourceId = callerId, TargetId = _alphaId, Type = EdgeType.CALLS });
+        _store.AddEdge(new GraphEdge { Repository = "Other", SourceId = callerId, TargetId = _alphaId, Type = EdgeType.CALLS });
         await _store.InsertCrossRepoEdgeAsync(new CrossRepoEdge
         {
-            SourceProject = "Other",
-            TargetProject = Repo,
+            SourceRepository = "Other",
+            TargetRepository = Repo,
             SourceNodeId = callerId,
             TargetNodeId = _alphaId,
             Type = EdgeType.CALLS
@@ -444,7 +444,7 @@ public sealed class OverlayQueryTests : IDisposable
 
         foreach (var answer in new[]
                  {
-                     await mcp.TraceCallPath("alpha", "inbound", project: Repo, sha: _headSha),
+                     await mcp.TraceCallPath("alpha", "inbound", repository: Repo, sha: _headSha),
                      await mcp.AnalyzeImpact(Qn("src/a.py", "alpha"), Repo, sha: _headSha),
                      // alpha has no data edges: Other appears only through the cross-repo reference.
                      await mcp.TraceDataLineage("alpha", Repo, _headSha),
@@ -458,7 +458,7 @@ public sealed class OverlayQueryTests : IDisposable
             commits.GetProperty("Other").GetString().ShouldBe(otherSha);
         }
 
-        var rest = (ImpactReport)((OkObjectResult)(await ProjectsController().Impact(Repo, Qn("src/a.py", "alpha"), sha: _headSha)).Result!).Value!;
+        var rest = (ImpactReport)((OkObjectResult)(await RepositoriesController().Impact(Repo, Qn("src/a.py", "alpha"), sha: _headSha)).Result!).Value!;
         rest.CommitSha.ShouldBe(_headSha);
         rest.Commits.ShouldNotBeNull();
         rest.Commits[Repo].ShouldBe(_headSha);
@@ -500,9 +500,9 @@ public sealed class OverlayQueryTests : IDisposable
         {
             var answers = new List<CallToolResult>
             {
-                await mcp.SearchGraph("alpha", project: Repo, sha: sha),
+                await mcp.SearchGraph("alpha", repository: Repo, sha: sha),
                 await mcp.SearchGraph("alpha", sha: sha),
-                await mcp.TraceCallPath("alpha", project: Repo, sha: sha),
+                await mcp.TraceCallPath("alpha", repository: Repo, sha: sha),
                 await mcp.TraceDataLineage("alpha", Repo, sha),
                 await mcp.FindConsumers("alpha", Repo, sha),
                 await mcp.FindPublishers("alpha", Repo, sha),
@@ -522,7 +522,7 @@ public sealed class OverlayQueryTests : IDisposable
         headSource.Text().ShouldContain("head alpha");
         headSource.Text().ShouldContain("lines 6–7");
         (await mcp.SearchGraph("newbie", sha: _headSha)).Text().ShouldContain("newbie");
-        (await mcp.SearchGraph("newbie", project: Repo)).Body().ShouldStartWith("No results found");
+        (await mcp.SearchGraph("newbie", repository: Repo)).Body().ShouldStartWith("No results found");
     }
 
     [Fact]
@@ -533,9 +533,9 @@ public sealed class OverlayQueryTests : IDisposable
 
         var results = new[]
         {
-            await ConsolidatedMcpServer.CodegraphSearch(mcp, "search", "alpha", project: Repo, sha: _headSha),
-            await ConsolidatedMcpServer.GraphTrace(mcp, "call_path", "alpha", project: Repo, sha: _headSha),
-            await ConsolidatedMcpServer.GraphTrace(mcp, "impact", "alpha", project: Repo, sha: _headSha),
+            await ConsolidatedMcpServer.CodegraphSearch(mcp, "search", "alpha", repository: Repo, sha: _headSha),
+            await ConsolidatedMcpServer.GraphTrace(mcp, "call_path", "alpha", repository: Repo, sha: _headSha),
+            await ConsolidatedMcpServer.GraphTrace(mcp, "impact", "alpha", repository: Repo, sha: _headSha),
             await ConsolidatedMcpServer.GraphSource(mcp, "snippet", Repo, "src/a.py", sha: _headSha),
         };
 
@@ -586,12 +586,12 @@ public sealed class OverlayQueryTests : IDisposable
     }
 
     [Fact]
-    public async Task ListAndSearchProjects_ShowRepoUrlAndLastCommit()
+    public async Task ListAndSearchRepositories_ShowRepoUrlAndLastCommit()
     {
-#pragma warning disable CS0618 // list_projects is obsolete but still served
-        var list = await Mcp().ListProjects();
+#pragma warning disable CS0618 // list_repositories is obsolete but still served
+        var list = await Mcp().ListRepositories();
 #pragma warning restore CS0618
-        var search = await Mcp().SearchProjects("Rep");
+        var search = await Mcp().SearchRepositories("Rep");
 
         foreach (var markdown in new[] { list, search })
         {
@@ -613,7 +613,7 @@ public sealed class OverlayQueryTests : IDisposable
             [Affected("x", RiskLevel.Low), Affected("y", RiskLevel.Critical, lowConfidence: true), Affected("z", RiskLevel.Medium)],
             [],
             new ImpactSummary(TotalAffected: 3, CrossRepoCount: 1, CriticalCount: 1, HighCount: 0, MediumCount: 1, LowCount: 1,
-                AffectedProjects: [Repo], LowConfidenceCount: 1)));
+                AffectedRepositories: [Repo], LowConfidenceCount: 1)));
 
         var answer = await Mcp(stub).AnalyzeImpactFile(Repo, "./src/a.py");
 
@@ -684,7 +684,7 @@ public sealed class OverlayQueryTests : IDisposable
     public async Task PerFileTools_MatchThePathCaseSensitively()
     {
         await _store.UpsertFileMetricsBatchAsync(Repo,
-            [new FileMetricsEntity { Project = Repo, FilePath = "src/a.py", RiskScore = 5, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+            [new FileMetricsEntity { Repository = Repo, FilePath = "src/a.py", RiskScore = 5, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
         var mcp = Mcp();
 
         // The store's file-node lookup is case-insensitive (as MariaDB's collation is); the tools are not.
@@ -775,13 +775,13 @@ public sealed class OverlayQueryTests : IDisposable
         [
             new FileMetricsEntity
             {
-                Project = Repo, FilePath = "src/a.py", RiskScore = 42.5, ConcernScore = 7.25, HealthScore = 3.5,
+                Repository = Repo, FilePath = "src/a.py", RiskScore = 42.5, ConcernScore = 7.25, HealthScore = 3.5,
                 Churn365d = 12.75, ComplexityScore = 61, ComputedAt = computedAt, CommitSha = _baseSha
             },
             // Computed before the commit was recorded.
             new FileMetricsEntity
             {
-                Project = Repo, FilePath = "src/b.py", RiskScore = 1, HealthScore = 9, ComputedAt = computedAt
+                Repository = Repo, FilePath = "src/b.py", RiskScore = 1, HealthScore = 9, ComputedAt = computedAt
             }
         ]);
         var mcp = Mcp();
@@ -838,7 +838,7 @@ public sealed class OverlayQueryTests : IDisposable
         string path, bool found, bool languageIndexed, string? language)
     {
         await _store.UpsertFileMetricsBatchAsync(Repo,
-            [new FileMetricsEntity { Project = Repo, FilePath = "src/a.py", RiskScore = 5, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+            [new FileMetricsEntity { Repository = Repo, FilePath = "src/a.py", RiskScore = 5, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
         var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
 
         foreach (var answer in new[] { await mcp.AnalyzeImpactFile(Repo, path), await mcp.FileHotspot(Repo, path) })
@@ -863,7 +863,7 @@ public sealed class OverlayQueryTests : IDisposable
     public async Task FileHotspot_ForALanguageTheGraphDoesNotIndex_ReportsItsVitalsWithoutDisclaimingThem()
     {
         await _store.UpsertFileMetricsBatchAsync(Repo,
-            [new FileMetricsEntity { Project = Repo, FilePath = "web/View.tsx", RiskScore = 7, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+            [new FileMetricsEntity { Repository = Repo, FilePath = "web/View.tsx", RiskScore = 7, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
         var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
 
         var withData = await mcp.FileHotspot(Repo, "web/View.tsx");
@@ -963,7 +963,7 @@ public sealed class OverlayQueryTests : IDisposable
     {
         var id = await _overlays.CreateOverlayAsync(new BranchOverlayEntity
         {
-            Project = Repo,
+            Repository = Repo,
             RequestedRef = "factory/feature",
             CreatedAt = Now.UtcDateTime
         });
@@ -1010,19 +1010,19 @@ public sealed class OverlayQueryTests : IDisposable
 
     private sealed class StubImpactAnalysis(ImpactReport report) : IImpactAnalysisService
     {
-        public List<(string Project, string Path, int Depth)> Calls { get; } = [];
+        public List<(string Repository, string Path, int Depth)> Calls { get; } = [];
 
-        public Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? project = null, int maxDepth = 3, IGraphReader? graph = null)
+        public Task<ImpactReport?> AnalyzeImpactAsync(string qualifiedName, string? repository = null, int maxDepth = 3, IGraphReader? graph = null)
             => throw new NotSupportedException();
 
-        public Task<ImpactReport?> AnalyzeFileImpactAsync(string project, string filePath, int maxDepth = 3, IGraphReader? graph = null)
+        public Task<ImpactReport?> AnalyzeFileImpactAsync(string repository, string filePath, int maxDepth = 3, IGraphReader? graph = null)
         {
-            Calls.Add((project, filePath, maxDepth));
+            Calls.Add((repository, filePath, maxDepth));
             return Task.FromResult<ImpactReport?>(report);
         }
     }
 
-    private ProjectsController ProjectsController() => new(
+    private RepositoriesController RepositoriesController() => new(
         null!,
         null!,
         new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance),
@@ -1050,7 +1050,7 @@ public sealed class OverlayQueryTests : IDisposable
 
     private static GraphNode Function(string name, string path, int start, int end) => new()
     {
-        Project = Repo,
+        Repository = Repo,
         Label = NodeLabel.Function,
         Name = name,
         QualifiedName = Qn(path, name),
@@ -1061,7 +1061,7 @@ public sealed class OverlayQueryTests : IDisposable
 
     private static GraphEdge Calls(long source, long target) => new()
     {
-        Project = Repo,
+        Repository = Repo,
         SourceId = source,
         TargetId = target,
         Type = EdgeType.CALLS

@@ -19,7 +19,7 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public sealed class ManifestSliceTrackingTests : IDisposable
 {
-    internal const string Project = "Mixed";
+    internal const string Repository = "Mixed";
 
     internal static readonly string[] TrackedManifests =
     [
@@ -81,7 +81,7 @@ public sealed class ManifestSliceTrackingTests : IDisposable
             cargoManifestExtractor: new CargoManifestExtractor(),
             swiftPackageManifestExtractor: new SwiftPackageManifestExtractor());
 
-    private Task IndexAsync() => Pipeline(_store).IndexProjectAsync(Project, _root, ct: CancellationToken.None);
+    private Task IndexAsync() => Pipeline(_store).IndexRepositoryAsync(Repository, _root, ct: CancellationToken.None);
 
     private Dictionary<string, long> ManifestNodeIds() =>
         _store.Nodes
@@ -104,9 +104,9 @@ public sealed class ManifestSliceTrackingTests : IDisposable
         var ids = ManifestNodeIds();
         ids.Keys.ShouldContain(qn => qn.StartsWith("package:cargo:", StringComparison.Ordinal));
         ids.Keys.ShouldContain(qn => qn.Contains("sparkle", StringComparison.Ordinal));
-        ids.Keys.ShouldContain($"{Project}:app/App.xcodeproj/project.pbxproj#target:App");
+        ids.Keys.ShouldContain($"{Repository}:app/App.xcodeproj/project.pbxproj#target:App");
         // Every tracked manifest has a hash record carrying its manifest version.
-        TrackedManifests.ShouldAllBe(path => _store.FileHashesOf(Project).ContainsKey(path));
+        TrackedManifests.ShouldAllBe(path => _store.FileHashesOf(Repository).ContainsKey(path));
         var callsBefore = _store.ReplacedFileSlices.Count;
 
         await IndexAsync();
@@ -120,7 +120,7 @@ public sealed class ManifestSliceTrackingTests : IDisposable
         var byId = _store.Nodes.ToDictionary(node => node.Id);
         _store.Edges.Where(edge => edge.Type == EdgeType.IMPORTS)
             .Select(edge => byId[edge.TargetId].QualifiedName)
-            .ShouldContain($"{Project}:app/App.xcodeproj/project.pbxproj#target:App");
+            .ShouldContain($"{Repository}:app/App.xcodeproj/project.pbxproj#target:App");
     }
 
     [Fact]
@@ -167,18 +167,18 @@ public sealed class ManifestSliceTrackingTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_root, "tools/Empty.xcodeproj"));
         File.WriteAllText(Path.Combine(_root, empty), XcodeProjectImportTests.ProjectFile());
         await IndexAsync();
-        _store.FileHashesOf(Project).Keys.ShouldContain(empty);
+        _store.FileHashesOf(Repository).Keys.ShouldContain(empty);
 
         File.Delete(Path.Combine(_root, "app/App.xcodeproj/project.pbxproj"));
         File.Delete(Path.Combine(_root, "app/Package.resolved"));
         File.Delete(Path.Combine(_root, empty));
         await IndexAsync();
-        _store.FileHashesOf(Project).Keys.ShouldNotContain(empty);
+        _store.FileHashesOf(Repository).Keys.ShouldNotContain(empty);
 
         _store.Nodes.ShouldNotContain(node =>
             node.FilePath == "app/App.xcodeproj/project.pbxproj" || node.FilePath == "app/Package.resolved");
-        _store.FileHashesOf(Project).Keys.ShouldNotContain("app/App.xcodeproj/project.pbxproj");
-        _store.FileHashesOf(Project).Keys.ShouldNotContain("app/Package.resolved");
+        _store.FileHashesOf(Repository).Keys.ShouldNotContain("app/App.xcodeproj/project.pbxproj");
+        _store.FileHashesOf(Repository).Keys.ShouldNotContain("app/Package.resolved");
         // The unchanged test file's import of the removed target is re-bound to a stub.
         var byId = _store.Nodes.ToDictionary(node => node.Id);
         _store.Edges.Where(edge => edge.Type == EdgeType.IMPORTS)
@@ -201,9 +201,9 @@ public sealed class ManifestSliceTrackingTests : IDisposable
 
         // A record written by an older manifest extractor version is outdated.
         var store = _store;
-        var outdated = store.FileHashesOf(Project).ToDictionary(entry => entry.Key, entry => entry.Value);
-        await store.ReplaceProjectFilesAsync(
-            Project, ["crates/core/Cargo.toml"],
+        var outdated = store.FileHashesOf(Repository).ToDictionary(entry => entry.Key, entry => entry.Value);
+        await store.ReplaceRepositoryFilesAsync(
+            Repository, ["crates/core/Cargo.toml"],
             store.Nodes.Where(node => node.FilePath == "crates/core/Cargo.toml").ToList(),
             [],
             new Dictionary<string, string> { ["crates/core/Cargo.toml"] = outdated["crates/core/Cargo.toml"] },

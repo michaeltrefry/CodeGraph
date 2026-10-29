@@ -30,7 +30,7 @@ public partial class IndexingPipeline
     private readonly IFileSystem _fileSystem;
     private readonly string[] _foundationalRepos;
     private readonly ExtractionVersionCatalog _extractionVersions;
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> ProjectLocks =
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryLocks =
         new(StringComparer.OrdinalIgnoreCase);
 
     public IndexingPipeline(
@@ -76,7 +76,7 @@ public partial class IndexingPipeline
     /// <summary>Runs the per-run working-copy listing (sc-26199); a seam for tests.</summary>
     internal IGitProcessRunner GitRunner { get; init; } = GitProcessRunner.Instance;
 
-    public async Task IndexProjectAsync(string projectName, string rootPath,
+    public async Task IndexRepositoryAsync(string repositoryName, string rootPath,
         FoundationalKnowledge? knowledge = null,
         IReadOnlyList<string>? changedFilesOnly = null,
         string? repoUrl = null,
@@ -86,14 +86,14 @@ public partial class IndexingPipeline
         SyncStateEntity? replacementSyncState = null,
         CancellationToken ct = default)
     {
-        var projectLock = ProjectLocks.GetOrAdd(projectName, _ => new SemaphoreSlim(1, 1));
-        await projectLock.WaitAsync(ct);
+        var repositoryLock = RepositoryLocks.GetOrAdd(repositoryName, _ => new SemaphoreSlim(1, 1));
+        await repositoryLock.WaitAsync(ct);
         var phase = new StrongBox<string>("discovery");
         // Every discovery of this run shares one git listing per root.
         using var gitListings = GitListingScope.Begin(GitRunner, _logger);
         try
         {
-            await IndexProjectCoreAsync(projectName, rootPath, knowledge, changedFilesOnly,
+            await IndexRepositoryCoreAsync(repositoryName, rootPath, knowledge, changedFilesOnly,
                 repoUrl, sourceGroup, repositoryToolingIdentity, replaceExistingGraph, replacementSyncState, phase, ct);
         }
         catch (Exception ex) when (IndexingFailure.TagPhase(ex, phase.Value!))
@@ -102,11 +102,11 @@ public partial class IndexingPipeline
         }
         finally
         {
-            projectLock.Release();
+            repositoryLock.Release();
         }
     }
 
-    private async Task IndexProjectCoreAsync(string projectName, string rootPath,
+    private async Task IndexRepositoryCoreAsync(string repositoryName, string rootPath,
         FoundationalKnowledge? knowledge,
         IReadOnlyList<string>? changedFilesOnly,
         string? repoUrl,
@@ -118,13 +118,13 @@ public partial class IndexingPipeline
         CancellationToken ct)
     {
         var pipelineSw = Stopwatch.StartNew();
-        _logger.LogInformation("Indexing {Project} at {Path}", projectName, rootPath);
+        _logger.LogInformation("Indexing {Repository} at {Path}", repositoryName, rootPath);
 
-        var isFoundational = _foundationalRepos.Contains(projectName, StringComparer.OrdinalIgnoreCase);
+        var isFoundational = _foundationalRepos.Contains(repositoryName, StringComparer.OrdinalIgnoreCase);
 
         var repository = new RepositoryEntity
         {
-            Name = projectName,
+            Name = repositoryName,
             LocalPath = rootPath,
             RepoUrl = repoUrl,
             SourceGroup = sourceGroup,
@@ -144,7 +144,7 @@ public partial class IndexingPipeline
         var dotnetToolingTrusted = _options.IsDotnetToolingTrusted(repositoryToolingIdentity);
         var context = new ExtractorContext
         {
-            ProjectName = projectName,
+            RepositoryName = repositoryName,
             RootPath = rootPath,
             FoundationalKnowledge = knowledge,
             RepositoryToolingTrust = dotnetToolingTrusted
@@ -154,12 +154,12 @@ public partial class IndexingPipeline
 
         var existingHashes = replaceExistingGraph
             ? []
-            : await _store.GetFileHashRecordsAsync(projectName);
+            : await _store.GetFileHashRecordsAsync(repositoryName);
 
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
-        var deletedFiles = GetDeletedFiles(projectName, rootPath, changedFilesOnly, files, existingHashes);
+        var deletedFiles = GetDeletedFiles(repositoryName, rootPath, changedFilesOnly, files, existingHashes);
         var languageStats = ComputeLanguageStats(files);
         // Files over their size limit record their oversize version whichever component
         // processes them, so the stored version always matches what FilterByHash expects.
@@ -169,21 +169,21 @@ public partial class IndexingPipeline
         if (outdatedVersionFiles > 0)
         {
             _logger.LogInformation(
-                "Re-extracting {Count} unchanged files of {Project} whose extraction version is outdated",
-                outdatedVersionFiles, projectName);
+                "Re-extracting {Count} unchanged files of {Repository} whose extraction version is outdated",
+                outdatedVersionFiles, repositoryName);
         }
 
-        // If no files changed but the project has no extraction nodes (e.g. extractor was
+        // If no files changed but the repository has no extraction nodes (e.g. extractor was
         // just added/fixed), force a full re-extraction by clearing hashes.
         if (filesToProcess.Count == 0 && files.Count > 0)
         {
-            var existingNodes = await _store.GetAllNodesByProjectAsync(projectName);
+            var existingNodes = await _store.GetAllNodesByRepositoryAsync(repositoryName);
             var hasExtractionNodes = existingNodes.Any(n =>
                 n.Label is not ("Repository" or "DotnetProject" or "Folder" or "File"));
             if (!hasExtractionNodes)
             {
-                _logger.LogInformation("No extraction nodes found for {Project} despite {FileCount} files — forcing full re-extraction",
-                    projectName, files.Count);
+                _logger.LogInformation("No extraction nodes found for {Repository} despite {FileCount} files — forcing full re-extraction",
+                    repositoryName, files.Count);
                 filesToProcess = files;
             }
         }
@@ -200,14 +200,14 @@ public partial class IndexingPipeline
         // Same exclusions as source discovery (skip patterns, dependency directories, git rule).
         var csprojFiles = DiscoverPaths(rootPath, "**/*.csproj").ToArray();
 
-        // Pass 1: Structural nodes (Project, Folder, File)
+        // Pass 1: Structural nodes (Repository, Folder, File)
         phase.Value = "extraction";
         stepSw.Restart();
-        CreateStructuralNodes(projectName, rootPath, files, csprojFiles, buffer);
+        CreateStructuralNodes(repositoryName, rootPath, files, csprojFiles, buffer);
         _logger.LogInformation("[Timing] Structural nodes: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
         // Pass 2: Extract code elements using specialized analyzers where available.
-        // Track exact files completed by project analyzers. A partial project result must
+        // Track exact files completed by repository analyzers. A partial repository result must
         // fall back per-file instead of advancing hashes for files it did not process.
         // The absolute-path set deduplicates shared projects/documents across solutions.
         var specializedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -224,8 +224,8 @@ public partial class IndexingPipeline
             if (solutionFiles.Length > 0)
             {
                 _logger.LogWarning(
-                    "SECURITY-AUDIT: repository {Project} with provider-resolved identity {RepositoryIdentity} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
-                    projectName,
+                    "SECURITY-AUDIT: repository {Repository} with provider-resolved identity {RepositoryIdentity} is explicitly trusted by CodeGraph:IndexingOptions:TrustedDotnetRepositories; enabling repository-controlled restore and MSBuild solution analysis",
+                    repositoryName,
                     repositoryToolingIdentity);
                 foreach (var solutionFile in solutionFiles)
                 {
@@ -279,8 +279,8 @@ public partial class IndexingPipeline
             if (hasSolution)
             {
                 _logger.LogInformation(
-                    "SECURITY-AUDIT: repository {Project} with provider-resolved identity {RepositoryIdentity} is untrusted; restore and MSBuild solution analysis are disabled, using syntax-only C# extraction",
-                    projectName,
+                    "SECURITY-AUDIT: repository {Repository} with provider-resolved identity {RepositoryIdentity} is untrusted; restore and MSBuild solution analysis are disabled, using syntax-only C# extraction",
+                    repositoryName,
                     repositoryToolingIdentity);
             }
         }
@@ -302,9 +302,9 @@ public partial class IndexingPipeline
                 {
                     var results = (await _typeScriptAnalyzer.AnalyzeProjectAsync(
                             Path.Combine(rootPath, tsconfig), context, typeScriptScope, ct))
-                        .Select(result => ClampToDiscovery(result, projectName, rootPath))
+                        .Select(result => ClampToDiscovery(result, repositoryName, rootPath))
                         .ToList();
-                    _logger.LogInformation("[Timing] TypeScript project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+                    _logger.LogInformation("[Timing] TypeScript repository analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
@@ -342,7 +342,7 @@ public partial class IndexingPipeline
 
             foreach (var cargoManifest in cargoManifests)
             {
-                _logger.LogInformation("Using Rust project analysis for {Manifest}",
+                _logger.LogInformation("Using Rust repository analysis for {Manifest}",
                     Path.GetRelativePath(rootPath, cargoManifest));
                 stepSw.Restart();
                 RustWorkspaceAnalysis analysis;
@@ -360,7 +360,7 @@ public partial class IndexingPipeline
                     var workspaceFallback = CreateRustSemanticFallback(rootPath, cargoManifest, cargoManifests, ex, crateGroup: null);
                     RecordRustSemanticFallback(workspaceFallback, ex);
                     rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
-                        projectName,
+                        repositoryName,
                         workspaceFallback.Manifest,
                         settings: null,
                         [new RustSemanticGroupOutcome(
@@ -427,12 +427,12 @@ public partial class IndexingPipeline
                 }
 
                 rustSemanticOutcomes = RustSemanticOutcomes.Combine(rustSemanticOutcomes, RecordRustSemanticOutcomes(
-                    projectName,
+                    repositoryName,
                     NormalizeRelativePath(Path.GetRelativePath(rootPath, cargoManifest)),
                     analysis.Settings,
                     groupOutcomes,
                     analysisMs));
-                _logger.LogInformation("[Timing] Rust project analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+                _logger.LogInformation("[Timing] Rust repository analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
                 if (succeeded.Count == 0)
                     continue;
 
@@ -455,17 +455,17 @@ public partial class IndexingPipeline
             // is the durable record for runs without an indexer_runs row (scheduled,
             // CI and ProcessRepository consumer-driven indexing).
             _logger.LogWarning(failure,
-                "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Project} {Manifest}; " +
+                "Rust semantic indexing failed ({FailureCode}/{DetailCode}) for {Repository} {Manifest}; " +
                 "falling back to low-confidence tree-sitter extraction for crates {Crates}",
                 fallback.FailureCode,
                 fallback.DetailCode,
-                projectName,
+                repositoryName,
                 fallback.Manifest,
                 fallback.Crates);
         }
 
         RustSemanticOutcomes RecordRustSemanticOutcomes(
-            string project,
+            string repository,
             string manifest,
             RustSemanticSettingsSnapshot? settings,
             IReadOnlyList<RustSemanticGroupOutcome> groups,
@@ -494,10 +494,10 @@ public partial class IndexingPipeline
             foreach (var group in groups)
             {
                 _logger.LogInformation(
-                    "Rust semantic group outcome for {Project} {Manifest}: group {Group} {Outcome} " +
+                    "Rust semantic group outcome for {Repository} {Manifest}: group {Group} {Outcome} " +
                     "({FailureCode}/{DetailCode}) in {DurationMs}ms, peak RSS {PeakRssMb}MB, " +
                     "{Documents} documents, {Nodes} nodes, {Edges} edges; crates {Crates}",
-                    project,
+                    repository,
                     manifest,
                     group.Index,
                     group.Outcome,
@@ -512,12 +512,12 @@ public partial class IndexingPipeline
             }
 
             _logger.LogInformation(
-                "Rust semantic outcomes for {Project} {Manifest}: {GroupCount} groups ({SemanticGroups} semantic, " +
+                "Rust semantic outcomes for {Repository} {Manifest}: {GroupCount} groups ({SemanticGroups} semantic, " +
                 "{FallbackGroups} fallback, {SkippedGroups} skipped), {CrateCount} crates, {TotalDurationMs}ms " +
                 "(group size {GroupSize}, group timeout {GroupTimeoutSeconds}s, workspace timeout " +
                 "{WorkspaceTimeoutSeconds}s, group memory limit {GroupMemoryLimitMb}MB, build scripts " +
                 "{BuildScripts}, proc-macros {ProcMacros})",
-                project,
+                repository,
                 manifest,
                 outcomes.GroupCount,
                 outcomes.SemanticGroups,
@@ -582,7 +582,7 @@ public partial class IndexingPipeline
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
-                        "Cargo manifest extraction failed for {Project}", projectName);
+                        "Cargo manifest extraction failed for {Repository}", repositoryName);
                 }
             }
         }
@@ -634,7 +634,7 @@ public partial class IndexingPipeline
             catch (Exception ex)
             {
                 _logger.LogWarning(ex,
-                    "Swift package manifest extraction failed for {Project}", projectName);
+                    "Swift package manifest extraction failed for {Repository}", repositoryName);
             }
         }
 
@@ -642,11 +642,11 @@ public partial class IndexingPipeline
         // slice behind: Package.resolved and Cargo.toml are not hash-tracked source files, so the
         // full scan never reports them deleted. Replacing their paths with nothing removes their
         // Package nodes and REFERENCES_PACKAGE edges; the post-index cross-repo linking of this
-        // project then rebuilds its links without them.
+        // repository then rebuilds its links without them.
         if (!replaceExistingGraph && existingHashes.Count > 0 && discoveredManifestNames.Count > 0)
         {
             var removedManifests = await FindRemovedManifestPathsAsync(
-                projectName, discoveredManifestNames, discoveredManifestPaths, existingHashes.Keys);
+                repositoryName, discoveredManifestNames, discoveredManifestPaths, existingHashes.Keys);
             manifestReplacementPaths.AddRange(removedManifests);
             swiftManifestsPresent |= removedManifests.Any(IsSwiftManifest);
         }
@@ -660,11 +660,11 @@ public partial class IndexingPipeline
         var typeScriptModulesChanged = false;
         if (!replaceExistingGraph && existingHashes.Count > 0 && _typeScriptAnalyzer is not null)
         {
-            var excludedSlices = await FindExcludedTypeScriptSlicesAsync(projectName, rootPath, ct);
+            var excludedSlices = await FindExcludedTypeScriptSlicesAsync(repositoryName, rootPath, ct);
             typeScriptReplacementPaths.AddRange(excludedSlices);
             if (typeScriptNodes is not null)
             {
-                var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(projectName, typeScriptNodes);
+                var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(repositoryName, typeScriptNodes);
                 typeScriptReplacementPaths.AddRange(moduleSlices);
                 typeScriptModulesChanged = moduleSlices.Count > 0;
             }
@@ -674,13 +674,13 @@ public partial class IndexingPipeline
                 && buffer.AllFileHashes.TryGetValue(path, out var hash)
                 && record.ContentHash == hash);
             if (excludedSlices.Count > 0 || typeScriptVersionRefresh)
-                typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(projectName);
+                typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(repositoryName);
         }
 
         // DotnetProject nodes have no file slice: retire the ones no discovered .csproj yields.
         if (!replaceExistingGraph && existingHashes.Count > 0)
         {
-            var (retired, packageCandidates) = await RetireStaleDotnetProjectsAsync(projectName, csprojFiles);
+            var (retired, packageCandidates) = await RetireStaleDotnetProjectsAsync(repositoryName, csprojFiles);
             if (retired)
             {
                 typeScriptReplacementPaths.Add(StaleDotnetProjectSlice);
@@ -707,7 +707,7 @@ public partial class IndexingPipeline
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
         if (_nugetExtractor is not null)
-            ExtractNuGetReferences(projectName, csprojFiles, buffer, replaceExistingGraph);
+            ExtractNuGetReferences(repositoryName, csprojFiles, buffer, replaceExistingGraph);
 
         ApplyNodeCounts(languageStats, buffer.AllNodes);
         var detectedMetadata = SelectDominantMetadata(detectedMetadataCandidates, languageStats);
@@ -729,7 +729,7 @@ public partial class IndexingPipeline
         // Manifests are re-extracted every run, so persisted imports are re-bound whenever the
         // repository has (or just lost) Swift package manifests.
         var swiftImportRebinding = await ResolveSwiftImportsAsync(
-            projectName,
+            repositoryName,
             buffer,
             manifestsExtracted: swiftManifestsExtracted,
             incremental: includePersistedNodes,
@@ -737,11 +737,11 @@ public partial class IndexingPipeline
             excludedPersistedFiles,
             ct);
         await ResolveCallsAsync(
-            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct, swiftManifestsExtracted,
+            repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct, swiftManifestsExtracted,
             swiftImportRebinding);
         var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
-            projectName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
-        CreateStubNodesForExternalTargets(projectName, buffer);
+            repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
+        CreateStubNodesForExternalTargets(repositoryName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
         // Phase 3 — Flush
@@ -752,8 +752,8 @@ public partial class IndexingPipeline
         {
             var (fileHashes, extractionVersions) = WithManifestRecords(
                 buffer.AllFileHashes, ExtractionVersionsFor(buffer.AllFileHashes.Keys, oversizeFiles), manifestHashRecords);
-            edgeCount = await _store.ReplaceProjectGraphAsync(
-                projectName,
+            edgeCount = await _store.ReplaceRepositoryGraphAsync(
+                repositoryName,
                 buffer.AllNodes.ToList(),
                 buffer.AllPendingEdges.ToList(),
                 fileHashes,
@@ -777,7 +777,7 @@ public partial class IndexingPipeline
             var (replacementNodes, replacementEdges) = BuildIncrementalSlice(
                 buffer,
                 replacementPaths,
-                includeProjectStructure: existingHashes.Count == 0);
+                includeRepositoryStructure: existingHashes.Count == 0);
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
             if (typeScriptModulesChanged)
                 AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
@@ -787,8 +787,8 @@ public partial class IndexingPipeline
             var (replacementHashes, replacementVersions) = WithManifestRecords(
                 sourceHashes, ExtractionVersionsFor(sourceHashes.Keys, oversizeFiles), manifestHashRecords);
 
-            edgeCount = await _store.ReplaceProjectFilesAsync(
-                projectName,
+            edgeCount = await _store.ReplaceRepositoryFilesAsync(
+                repositoryName,
                 replacementPaths,
                 replacementNodes,
                 replacementEdges,
@@ -817,8 +817,8 @@ public partial class IndexingPipeline
             _diagnostics?.RecordRustSemanticOutcomes(rustSemanticOutcomes);
 
         pipelineSw.Stop();
-        _logger.LogInformation("Indexed {Project}: {Nodes} nodes, {Edges} edges in {TotalMs}ms",
-            projectName, buffer.AllNodes.Count, edgeCount, pipelineSw.ElapsedMilliseconds);
+        _logger.LogInformation("Indexed {Repository}: {Nodes} nodes, {Edges} edges in {TotalMs}ms",
+            repositoryName, buffer.AllNodes.Count, edgeCount, pipelineSw.ElapsedMilliseconds);
     }
 
     // ── File Discovery & Hashing ─────────────────────────────────────────
@@ -978,17 +978,17 @@ public partial class IndexingPipeline
 
     /// <summary>
     /// Manifests (named one of <paramref name="manifestNames"/>) that own stored Package or Module
-    /// nodes of <paramref name="projectName"/>, or a stored manifest hash record, but were not
+    /// nodes of <paramref name="repositoryName"/>, or a stored manifest hash record, but were not
     /// discovered this run.
     /// </summary>
     private async Task<IReadOnlyList<string>> FindRemovedManifestPathsAsync(
-        string projectName,
+        string repositoryName,
         IReadOnlySet<string> manifestNames,
         IReadOnlySet<string> discoveredPaths,
         IEnumerable<string> storedHashPaths)
     {
-        var removed = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Package, int.MaxValue))
-            .Concat(await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
+        var removed = (await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Package, int.MaxValue))
+            .Concat(await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Module, int.MaxValue))
             .Select(node => node.FilePath)
             .OfType<string>()
             .Where(path => path.Length > 0)
@@ -1001,8 +1001,8 @@ public partial class IndexingPipeline
         if (removed.Count > 0)
         {
             _logger.LogInformation(
-                "Removing the package slices of {Count} manifest(s) of {Project} that are no longer present: {Manifests}",
-                removed.Count, projectName, string.Join(", ", removed));
+                "Removing the package slices of {Count} manifest(s) of {Repository} that are no longer present: {Manifests}",
+                removed.Count, repositoryName, string.Join(", ", removed));
         }
 
         return removed;
@@ -1186,9 +1186,9 @@ public partial class IndexingPipeline
     /// discovery no longer yields: the file was deleted, or it left the indexed universe (a skip
     /// pattern now excludes it, or no extractor supports its extension any more). A full scan
     /// fails closed: a missing checkout throws, and a scan that finds no files while hashes are
-    /// stored infers no deletions rather than wiping the project.
+    /// stored infers no deletions rather than wiping the repository.
     /// </summary>
-    private List<string> GetDeletedFiles(string projectName, string rootPath,
+    private List<string> GetDeletedFiles(string repositoryName, string rootPath,
         IReadOnlyList<string>? changedFilesOnly, List<string> discoveredFiles,
         Dictionary<string, FileHashRecord> existingHashes)
     {
@@ -1207,9 +1207,9 @@ public partial class IndexingPipeline
         if (discoveredFiles.Count == 0)
         {
             _logger.LogWarning(
-                "Full scan of {Project} at {Path} discovered no files while {Count} files are indexed; " +
-                "skipping deletion inference instead of removing the whole project",
-                projectName, rootPath, existingHashes.Count);
+                "Full scan of {Repository} at {Path} discovered no files while {Count} files are indexed; " +
+                "skipping deletion inference instead of removing the whole repository",
+                repositoryName, rootPath, existingHashes.Count);
             return [];
         }
 
@@ -1227,8 +1227,8 @@ public partial class IndexingPipeline
         if (deleted.Count > 0)
         {
             _logger.LogInformation(
-                "Full scan of {Project} found {Count} indexed files no longer discovered; removing them",
-                projectName, deleted.Count);
+                "Full scan of {Repository} found {Count} indexed files no longer discovered; removing them",
+                repositoryName, deleted.Count);
         }
 
         return deleted;
@@ -1334,9 +1334,9 @@ public partial class IndexingPipeline
                     {
                         var oversizePath = NormalizeRelativePath(Path.GetRelativePath(rootPath, filePath));
                         _logger.LogInformation(
-                            "Skipping extraction of {File} in {Project}: {SizeKb} KB exceeds the {LimitKb} KB limit",
-                            oversizePath, context.ProjectName, content.Length / 1024, limitKb);
-                        if (buffer.FindByQN($"{context.ProjectName}:{oversizePath}") is { Label: NodeLabel.File } fileNode)
+                            "Skipping extraction of {File} in {Repository}: {SizeKb} KB exceeds the {LimitKb} KB limit",
+                            oversizePath, context.RepositoryName, content.Length / 1024, limitKb);
+                        if (buffer.FindByQN($"{context.RepositoryName}:{oversizePath}") is { Label: NodeLabel.File } fileNode)
                         {
                             fileNode.Properties["skipped_reason"] = "oversize";
                             fileNode.Properties["size_kb"] = content.Length / 1024;
@@ -1447,13 +1447,13 @@ public partial class IndexingPipeline
     private static (List<GraphNode> Nodes, List<PendingEdge> Edges) BuildIncrementalSlice(
         GraphBuffer buffer,
         IReadOnlyList<string> replacementPaths,
-        bool includeProjectStructure)
+        bool includeRepositoryStructure)
     {
         var paths = replacementPaths
             .Select(NormalizeRelativePath)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var replacementNodes = buffer.AllNodes
-            .Where(node => includeProjectStructure ||
+            .Where(node => includeRepositoryStructure ||
                            (!string.IsNullOrWhiteSpace(node.FilePath) &&
                             paths.Contains(NormalizeRelativePath(node.FilePath))))
             .ToList();
@@ -1487,7 +1487,7 @@ public partial class IndexingPipeline
             }
         }
 
-        if (includeProjectStructure)
+        if (includeRepositoryStructure)
         {
             foreach (var node in buffer.AllNodes.Where(node =>
                          node.Label is NodeLabel.Repository or NodeLabel.DotnetProject))
@@ -1707,7 +1707,7 @@ public partial class IndexingPipeline
             }
 
             if (result.Metadata is not null && string.IsNullOrWhiteSpace(result.Metadata.Language))
-                throw new InvalidOperationException("A Rust result contained invalid project metadata.");
+                throw new InvalidOperationException("A Rust result contained invalid repository metadata.");
 
             prepared.Add(result with
             {

@@ -7,18 +7,18 @@ public partial class Neo4jGraphStore
 {
     // ── Security Findings ─────────────────────────────────────────────────
 
-    public async Task DeleteSecurityFindingsAsync(string project)
+    public async Task DeleteSecurityFindingsAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (f:SecurityFinding {project: $project}) DELETE f",
-                new { project });
+                "MATCH (f:SecurityFinding {repository: $repository}) DELETE f",
+                new { repository });
         });
     }
 
-    public async Task UpsertSecurityFindingsBatchAsync(string project, IReadOnlyList<SecurityFindingEntity> findings)
+    public async Task UpsertSecurityFindingsBatchAsync(string repository, IReadOnlyList<SecurityFindingEntity> findings)
     {
         if (findings.Count == 0) return;
 
@@ -46,7 +46,7 @@ public partial class Neo4jGraphStore
                 await tx.RunAsync("""
                     UNWIND $items AS f
                     CREATE (sf:SecurityFinding {
-                        project: $project,
+                        repository: $repository,
                         dotnetProject: f.dotnetProject,
                         category: f.category,
                         severity: f.severity,
@@ -60,21 +60,21 @@ public partial class Neo4jGraphStore
                         computedAt: f.computedAt
                     })
                     """,
-                    new { project, items });
+                    new { repository, items });
             });
         }
 
-        logger.LogInformation("Upserted {Count} security findings for {Project}", findings.Count, project);
+        logger.LogInformation("Upserted {Count} security findings for {Repository}", findings.Count, repository);
     }
 
-    public async Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string project)
+    public async Task<IReadOnlyList<SecurityFindingEntity>> GetSecurityFindingsAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             // Order by severity (critical first)
             var cursor = await tx.RunAsync("""
-                MATCH (f:SecurityFinding {project: $project})
+                MATCH (f:SecurityFinding {repository: $repository})
                 WITH f,
                      CASE f.severity
                          WHEN 'critical' THEN 0
@@ -85,7 +85,7 @@ public partial class Neo4jGraphStore
                      END AS severityOrder
                 RETURN f ORDER BY severityOrder
                 """,
-                new { project });
+                new { repository });
 
             var results = new List<SecurityFindingEntity>();
             await foreach (var record in cursor)
@@ -93,7 +93,7 @@ public partial class Neo4jGraphStore
                 var node = record["f"].As<INode>();
                 results.Add(new SecurityFindingEntity
                 {
-                    Project = node["project"].As<string>(),
+                    Repository = node["repository"].As<string>(),
                     DotnetProject = GetStringOrNull(node, "dotnetProject"),
                     Category = node["category"].As<string>(),
                     Severity = node["severity"].As<string>(),
@@ -112,15 +112,15 @@ public partial class Neo4jGraphStore
         });
     }
 
-    // ── Project Security Summaries ────────────────────────────────────────
+    // ── Repository Security Summaries ────────────────────────────────────────
 
-    public async Task UpsertProjectSecuritySummaryAsync(ProjectSecuritySummaryEntity summary)
+    public async Task UpsertRepositorySecuritySummaryAsync(RepositorySecuritySummaryEntity summary)
     {
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
-                MERGE (s:ProjectSecuritySummary {project: $project})
+                MERGE (s:RepositorySecuritySummary {repository: $repository})
                 SET s.securityScore = $securityScore,
                     s.criticalCount = $criticalCount,
                     s.highCount = $highCount,
@@ -131,7 +131,7 @@ public partial class Neo4jGraphStore
                 """,
                 new
                 {
-                    project = summary.Project,
+                    repository = summary.Repository,
                     securityScore = summary.SecurityScore,
                     criticalCount = summary.CriticalCount,
                     highCount = summary.HighCount,
@@ -143,20 +143,20 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task<ProjectSecuritySummaryEntity?> GetProjectSecuritySummaryAsync(string project)
+    public async Task<RepositorySecuritySummaryEntity?> GetRepositorySecuritySummaryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
         return await session.ExecuteReadAsync(async tx =>
         {
             var cursor = await tx.RunAsync(
-                "MATCH (s:ProjectSecuritySummary {project: $project}) RETURN s",
-                new { project });
+                "MATCH (s:RepositorySecuritySummary {repository: $repository}) RETURN s",
+                new { repository });
             if (await cursor.FetchAsync())
             {
                 var node = cursor.Current["s"].As<INode>();
-                return new ProjectSecuritySummaryEntity
+                return new RepositorySecuritySummaryEntity
                 {
-                    Project = node["project"].As<string>(),
+                    Repository = node["repository"].As<string>(),
                     SecurityScore = node.Properties.ContainsKey("securityScore") ? node["securityScore"].As<double>() : 10.0,
                     CriticalCount = node.Properties.ContainsKey("criticalCount") ? node["criticalCount"].As<int>() : 0,
                     HighCount = node.Properties.ContainsKey("highCount") ? node["highCount"].As<int>() : 0,

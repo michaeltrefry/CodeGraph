@@ -820,7 +820,7 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         }, "token").GetAwaiter().GetResult();
         return new McpHubService(
             store,
-            new EmptyProjectQueryService(),
+            new EmptyRepositoryQueryService(),
             factory,
             new SensitiveColumnPolicy(provider.GetRequiredService<IServiceScopeFactory>()),
             new MySqlSourceExposurePolicy(provider.GetRequiredService<IServiceScopeFactory>()),
@@ -902,18 +902,18 @@ public sealed class ShortcutUploadStagingAreaTests : IDisposable
         public Task UpdateLastSyncedAsync(long id) => Task.CompletedTask;
     }
 
-    private sealed class EmptyProjectQueryService : IProjectQueryService
+    private sealed class EmptyRepositoryQueryService : IRepositoryQueryService
     {
-        public Task<ProjectListResponse> ListAsync(string? search, string? group, int page, int pageSize) => throw new NotSupportedException();
+        public Task<RepositoryListResponse> ListAsync(string? search, string? group, int page, int pageSize) => throw new NotSupportedException();
         public Task<SchemaListResponse> ListSchemasAsync(string? search, string? server, string? database, int page, int pageSize) => throw new NotSupportedException();
         public Task<SchemaCatalogResponse?> GetSchemaCatalogAsync(string name) => throw new NotSupportedException();
-        public Task<ProjectDetailResponse?> GetDetailAsync(string name) => throw new NotSupportedException();
-        public Task<ProjectHealthResponse?> GetHealthAsync(string name) => throw new NotSupportedException();
+        public Task<RepositoryDetailResponse?> GetDetailAsync(string name) => throw new NotSupportedException();
+        public Task<RepositoryHealthResponse?> GetHealthAsync(string name) => throw new NotSupportedException();
         public Task<IReadOnlyList<FileMetrics>> GetMetricsAsync(string name, string? dotnetProject, int top) => throw new NotSupportedException();
         public Task<IReadOnlyList<FileMetrics>> GetHotspotsAsync(string name, int top) => throw new NotSupportedException();
         public Task<NodeListResponse> GetNodesAsync(string name, string? label, string? dotnetProject, int page, int pageSize) => throw new NotSupportedException();
         public Task<AnalysisBatchResponse?> GetBatchStatusAsync(string name) => throw new NotSupportedException();
-        public Task<ProjectSecurityResponse?> GetSecurityAsync(string name) => throw new NotSupportedException();
+        public Task<RepositorySecurityResponse?> GetSecurityAsync(string name) => throw new NotSupportedException();
         public Task<string?> GetReadmeAsync(string name) => throw new NotSupportedException();
     }
 }

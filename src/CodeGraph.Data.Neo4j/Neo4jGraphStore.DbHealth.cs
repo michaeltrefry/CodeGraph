@@ -7,15 +7,15 @@ public partial class Neo4jGraphStore : IDbHealthStore
 {
     private static readonly string[] ExpectedConstraintNames =
     [
-        "code_node_project_qn",
+        "code_node_repository_qn",
         "cross_repo_edge_unique",
         "repository_name",
         "repository_record_name",
-        "sync_state_project",
+        "sync_state_repository",
         "file_hash_unique",
         "sequence_name",
         "migration_history_script",
-        "repo_summary_project",
+        "repo_summary_repository",
         "project_analysis_unique",
         "node_analysis_nodeid",
         "file_metrics_unique",
@@ -44,7 +44,7 @@ public partial class Neo4jGraphStore : IDbHealthStore
         "analysis_batch_request_batch",
         "analysis_batch_request_custom",
         "file_metrics_health",
-        "security_finding_project",
+        "security_finding_repository",
         "security_finding_severity",
         "cluster_level",
         "cluster_id_level",
@@ -135,7 +135,7 @@ public partial class Neo4jGraphStore : IDbHealthStore
                     UNION ALL
 
                     MATCH (n:CodeNode)
-                    WITH coalesce(n.project, '') + '|' + coalesce(n.qualifiedName, '') AS key,
+                    WITH coalesce(n.repository, '') + '|' + coalesce(n.qualifiedName, '') AS key,
                          count(*) AS itemCount,
                          collect(toString(coalesce(n.appId, 0)))[0..5] AS sampleValues
                     WHERE itemCount > 1

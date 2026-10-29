@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace CodeGraph.Api.Controllers;
 
 [ApiController]
-[Route("api/projects/{repo}")]
+[Route("api/repositories/{repo}")]
 public class ProjectReviewsController(
     IProjectReviewService reviewService,
     ILogger<ProjectReviewsController> logger) : Controller
@@ -144,7 +144,7 @@ public class ProjectReviewsController(
 
     private static bool BelongsToRepo(ProjectReviewResponse? review, string repo)
         => review is not null &&
-           string.Equals(review.Run.Project, repo, StringComparison.OrdinalIgnoreCase);
+           string.Equals(review.Run.Repository, repo, StringComparison.OrdinalIgnoreCase);
 
     private static string BuildProgressMessage(string? status)
         => status?.Trim().ToLowerInvariant() switch

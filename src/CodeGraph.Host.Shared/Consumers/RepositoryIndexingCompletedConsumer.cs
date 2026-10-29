@@ -41,7 +41,7 @@ public class RepositoryIndexingCompletedConsumer(
             {
                 var sw = Stopwatch.StartNew();
                 logger.LogInformation("Running incremental cross-repo linking for {Repo}", message.Name);
-                await services.GetRequiredService<CrossRepoLinker>().LinkForProjectAsync(message.Name, ct);
+                await services.GetRequiredService<CrossRepoLinker>().LinkForRepositoryAsync(message.Name, ct);
                 logger.LogInformation("[Timing] Cross-repo linking for {Repo}: {ElapsedMs}ms", message.Name, sw.ElapsedMilliseconds);
             }, ex => logger.LogWarning(ex, "Cross-repo linking failed for {Repo} — continuing", message.Name));
         }
@@ -139,7 +139,7 @@ public class RepositoryIndexingCompletedConsumer(
             {
                 // Count by label instead of loading every node row of the repository.
                 var counts = await services.GetRequiredService<IGraphStore>()
-                    .GetNodeCountsByLabelForProjectAsync(message.Name);
+                    .GetNodeCountsByLabelForRepositoryAsync(message.Name);
                 var hasAnalyzableNodes = counts.GetValueOrDefault("Class") > 0 ||
                                          counts.GetValueOrDefault("Interface") > 0;
 

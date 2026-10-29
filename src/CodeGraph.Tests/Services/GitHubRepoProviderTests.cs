@@ -13,7 +13,7 @@ namespace CodeGraph.Tests.Services;
 public class GitHubRepoProviderTests
 {
     [Fact]
-    public async Task DiscoverProjectsAsync_CombinesAuthenticatedUserUsersAndOrganizations_AndDeduplicates()
+    public async Task DiscoverRepositoriesAsync_CombinesAuthenticatedUserUsersAndOrganizations_AndDeduplicates()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(Repo(1, "personal", "michaeltrefry"), Repo(2, "shared", "SceneWorks"));
@@ -26,44 +26,44 @@ public class GitHubRepoProviderTests
             userAccounts: "octocat",
             organizations: "SceneWorks");
 
-        var projects = await provider.DiscoverProjectsAsync();
+        var repositories = await provider.DiscoverRepositoriesAsync();
 
-        projects.Select(project => project.Id).ShouldBe([1, 2, 3, 4]);
+        repositories.Select(repository => repository.Id).ShouldBe([1, 2, 3, 4]);
         handler.RequestUris.ShouldContain(uri => uri.Contains("/user/repos?", StringComparison.Ordinal));
         handler.RequestUris.ShouldContain(uri => uri.Contains("/users/octocat/repos?", StringComparison.Ordinal));
         handler.RequestUris.ShouldContain(uri => uri.Contains("/orgs/SceneWorks/repos?", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_PreservesLegacyOrganizationOnlyBehavior()
+    public async Task DiscoverRepositoriesAsync_PreservesLegacyOrganizationOnlyBehavior()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(Repo(1, "org-repo", "acme"));
 
         var provider = CreateProvider(handler);
 
-        var projects = await provider.DiscoverProjectsAsync();
+        var repositories = await provider.DiscoverRepositoriesAsync();
 
-        projects.Single().PathWithNamespace.ShouldBe("acme/org-repo");
+        repositories.Single().PathWithNamespace.ShouldBe("acme/org-repo");
         handler.RequestUris.Single().ShouldContain("/orgs/acme/repos?");
         handler.RequestUris.ShouldNotContain(uri => uri.Contains("/user/repos?", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_UsesAuthenticatedUserWhenNoOwnersAreConfigured()
+    public async Task DiscoverRepositoriesAsync_UsesAuthenticatedUserWhenNoOwnersAreConfigured()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(Repo(1, "personal", "michaeltrefry"));
         var provider = CreateProvider(handler, organization: "");
 
-        var projects = await provider.DiscoverProjectsAsync();
+        var repositories = await provider.DiscoverRepositoriesAsync();
 
-        projects.Single().PathWithNamespace.ShouldBe("michaeltrefry/personal");
+        repositories.Single().PathWithNamespace.ShouldBe("michaeltrefry/personal");
         handler.RequestUris.Single().ShouldContain("/user/repos?");
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_ParsesMultipleExplicitScopes_AndCanDisableAuthenticatedUser()
+    public async Task DiscoverRepositoriesAsync_ParsesMultipleExplicitScopes_AndCanDisableAuthenticatedUser()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(Repo(1, "public-repo", "octocat"));
@@ -78,16 +78,16 @@ public class GitHubRepoProviderTests
             organizations: "SceneWorks, AnotherOrg",
             includeAuthenticatedUser: false);
 
-        var projects = await provider.DiscoverProjectsAsync();
+        var repositories = await provider.DiscoverRepositoriesAsync();
 
-        projects.Count.ShouldBe(4);
+        repositories.Count.ShouldBe(4);
         handler.RequestUris.ShouldNotContain(uri => uri.Contains("/user/repos?", StringComparison.Ordinal));
         handler.RequestUris.ShouldContain(uri => uri.Contains("/users/hubot/repos?", StringComparison.Ordinal));
         handler.RequestUris.ShouldContain(uri => uri.Contains("/orgs/AnotherOrg/repos?", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_PaginatesEachScope()
+    public async Task DiscoverRepositoriesAsync_PaginatesEachScope()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(Enumerable.Range(1, 100)
@@ -97,15 +97,15 @@ public class GitHubRepoProviderTests
 
         var provider = CreateProvider(handler);
 
-        var projects = await provider.DiscoverProjectsAsync();
+        var repositories = await provider.DiscoverRepositoriesAsync();
 
-        projects.Count.ShouldBe(101);
+        repositories.Count.ShouldBe(101);
         handler.RequestUris.ShouldContain(uri => uri.Contains("page=1", StringComparison.Ordinal));
         handler.RequestUris.ShouldContain(uri => uri.Contains("page=2", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_SkipsArchivedAndExcludedRepositories()
+    public async Task DiscoverRepositoriesAsync_SkipsArchivedAndExcludedRepositories()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(
@@ -117,13 +117,13 @@ public class GitHubRepoProviderTests
             handler,
             exclusionService: new TestExclusionService("excluded"));
 
-        var projects = await provider.DiscoverProjectsAsync();
+        var repositories = await provider.DiscoverRepositoriesAsync();
 
-        projects.Select(project => project.Name).ShouldBe(["kept"]);
+        repositories.Select(repository => repository.Name).ShouldBe(["kept"]);
     }
 
     [Fact]
-    public async Task SearchProjectsAsync_SearchesAcrossCombinedDiscoverySet()
+    public async Task SearchRepositoriesAsync_SearchesAcrossCombinedDiscoverySet()
     {
         using var handler = new StubHandler();
         handler.EnqueueRepositories(Repo(1, "personal", "michaeltrefry"));
@@ -131,9 +131,9 @@ public class GitHubRepoProviderTests
 
         var provider = CreateProvider(handler, organization: "", organizations: "SceneWorks");
 
-        var results = await provider.SearchProjectsAsync("sceneworks/galleries");
+        var results = await provider.SearchRepositoriesAsync("sceneworks/galleries");
 
-        results.Select(project => project.Name).ShouldBe(["galleries"]);
+        results.Select(repository => repository.Name).ShouldBe(["galleries"]);
         handler.RequestUris.ShouldNotContain(uri => uri.Contains("/search/repositories", StringComparison.Ordinal));
     }
 
@@ -152,14 +152,14 @@ public class GitHubRepoProviderTests
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_ReportsConfiguredScopeWhenGitHubRejectsIt()
+    public async Task DiscoverRepositoriesAsync_ReportsConfiguredScopeWhenGitHubRejectsIt()
     {
         using var handler = new StubHandler();
         handler.Enqueue(new HttpResponseMessage(HttpStatusCode.Forbidden));
         var provider = CreateProvider(handler, organization: "SceneWorks");
 
         var exception = await Should.ThrowAsync<HttpRequestException>(
-            () => provider.DiscoverProjectsAsync());
+            () => provider.DiscoverRepositoriesAsync());
 
         exception.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
         exception.Message.ShouldContain("organization 'SceneWorks'");
@@ -167,13 +167,13 @@ public class GitHubRepoProviderTests
     }
 
     [Fact]
-    public async Task DiscoverProjectsAsync_RequiresPersonalAccessToken()
+    public async Task DiscoverRepositoriesAsync_RequiresPersonalAccessToken()
     {
         using var handler = new StubHandler();
         var provider = CreateProvider(handler, personalAccessToken: "");
 
         var exception = await Should.ThrowAsync<InvalidOperationException>(
-            () => provider.DiscoverProjectsAsync());
+            () => provider.DiscoverRepositoriesAsync());
 
         exception.Message.ShouldContain("PersonalAccessToken");
     }
@@ -226,7 +226,7 @@ public class GitHubRepoProviderTests
                 ? "complete"
                 : null);
 
-        public Task<HashSet<string>> GetSecretFilePathsAsync(string project) =>
+        public Task<HashSet<string>> GetSecretFilePathsAsync(string repository) =>
             Task.FromResult(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
         public Task<IReadOnlyList<ExclusionRuleEntity>> ListRulesAsync() =>

@@ -7,13 +7,13 @@ public partial class IndexingPipeline
 {
     /// <summary>
     /// The Swift module scopes of the repository for call resolution: the SwiftPM targets and Xcode
-    /// projects of this run's buffer (and, when this run did not extract the manifests, an overlay,
+    /// repositories of this run's buffer (and, when this run did not extract the manifests, an overlay,
     /// the persisted ones), and every in-repository module import: this run's, plus, when the run
     /// writes a slice of a persisted graph, the persisted imports of files it did not re-extract
     /// (as re-bound by this run's import resolution), since re-exports live in those files.
     /// </summary>
     private async Task<SwiftModuleScopes> LoadSwiftModuleScopesAsync(
-        string projectName,
+        string repositoryName,
         GraphBuffer buffer,
         bool swiftManifestsExtracted,
         bool includePersistedImports,
@@ -24,7 +24,7 @@ public partial class IndexingPipeline
         var modules = buffer.AllNodes.Where(IsSwiftModuleProvider).Where(node => node.Label == NodeLabel.Module);
         if (!swiftManifestsExtracted)
         {
-            var persisted = (await _store.FindNodesByLabelAsync(projectName, NodeLabel.Module, int.MaxValue))
+            var persisted = (await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Module, int.MaxValue))
                 .Where(IsSwiftModuleProvider)
                 .Where(node => !excludedPersistedFiles.Contains(NormalizeRelativePath(node.FilePath ?? "")));
             modules = modules.Concat(persisted);
@@ -40,7 +40,7 @@ public partial class IndexingPipeline
             static string Key(PendingEdge edge) => $"{edge.SourceQN}\u001f{edge.TargetQN}\u001f{edge.Type}";
             var retracted = importRebinding.Retractions.Edges.Select(Key).ToHashSet(StringComparer.Ordinal);
             var persisted = (await _store.FindEdgesByPropertyAsync(
-                    projectName, [EdgeType.IMPORTS], SwiftImportProperty, ["module"], ct))
+                    repositoryName, [EdgeType.IMPORTS], SwiftImportProperty, ["module"], ct))
                 .Where(edge => !excludedPersistedFiles.Contains(NormalizeRelativePath(edge.SourceFilePath ?? "")))
                 .Select(ToPendingEdge)
                 .Where(edge => !retracted.Contains(Key(edge)));
@@ -53,7 +53,7 @@ public partial class IndexingPipeline
                            && PlainString(edge.Properties, "matched_by") == SwiftModuleResolver.MatchedByTarget)
             .Select(edge => new SwiftModuleImport(
                 edge.SourceQN, edge.TargetQN, PlainBool(edge.Properties, ExportedProperty)));
-        return new SwiftModuleScopes(moduleList, moduleImports, projectName);
+        return new SwiftModuleScopes(moduleList, moduleImports, repositoryName);
     }
 
     internal sealed record SwiftModuleImport(string FileQN, string ModuleQN, bool Exported);
@@ -80,7 +80,7 @@ public partial class IndexingPipeline
         private readonly Dictionary<string, HashSet<string>> _reexportsByScope = new(StringComparer.Ordinal);
         private readonly Dictionary<string, IReadOnlySet<string>> _visibleByFile = new(StringComparer.Ordinal);
 
-        public SwiftModuleScopes(IEnumerable<GraphNode> modules, IEnumerable<SwiftModuleImport> imports, string projectName = "")
+        public SwiftModuleScopes(IEnumerable<GraphNode> modules, IEnumerable<SwiftModuleImport> imports, string repositoryName = "")
         {
             // Roots of each module; SwiftPM modules sharing a root are one scope (union by root).
             var rootsByModule = new List<(GraphNode Module, bool IsXcode, List<string> Roots)>();
@@ -137,7 +137,7 @@ public partial class IndexingPipeline
                     _roots.Add((root, scope, isXcode));
             }
 
-            var filePrefix = projectName.Length > 0 ? projectName + ":" : null;
+            var filePrefix = repositoryName.Length > 0 ? repositoryName + ":" : null;
             foreach (var import in imports)
             {
                 if (!_scopeByModule.TryGetValue(import.ModuleQN, out var scope))

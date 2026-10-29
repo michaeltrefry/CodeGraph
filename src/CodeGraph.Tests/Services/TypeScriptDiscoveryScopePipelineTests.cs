@@ -19,10 +19,10 @@ namespace CodeGraph.Tests.Services;
 /// </summary>
 public class TypeScriptDiscoveryScopePipelineTests
 {
-    private const string Project = "Lens";
+    private const string Repository = "Lens";
 
     [Fact]
-    public async Task IndexProjectAsync_HandsTheSidecarOnlyTheFilesDiscoveryAdmits()
+    public async Task IndexRepositoryAsync_HandsTheSidecarOnlyTheFilesDiscoveryAdmits()
     {
         var rootPath = CreateRepository();
         try
@@ -54,7 +54,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     /// vendored package and a submodule's working tree.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_GitWorkingCopy_LeavesIgnoredPathsAndSubmodulesOutOfTheScope()
+    public async Task IndexRepositoryAsync_GitWorkingCopy_LeavesIgnoredPathsAndSubmodulesOutOfTheScope()
     {
         var rootPath = CreateRepository();
         try
@@ -102,7 +102,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     /// TypeScript scope, clamp and excluded slices) but lists the working copy once.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_GitWorkingCopy_IsListedOncePerRun()
+    public async Task IndexRepositoryAsync_GitWorkingCopy_IsListedOncePerRun()
     {
         var rootPath = CreateRepository();
         try
@@ -110,7 +110,7 @@ public class TypeScriptDiscoveryScopePipelineTests
             WriteApp(rootPath);
             WriteFile(rootPath, "Cargo.toml", "[package]\nname = \"lens\"\nversion = \"0.1.0\"\n");
             WriteFile(rootPath, "Package.swift", "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"Lens\")\n");
-            WriteFile(rootPath, "App/App.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            WriteFile(rootPath, "App/App.csproj", "<Repository Sdk=\"Microsoft.NET.Sdk\" />");
             GitWorkingCopyDiscoveryTests.Git(rootPath, "init", "-q");
             GitWorkingCopyDiscoveryTests.Git(rootPath, "add", ".");
             GitWorkingCopyDiscoveryTests.Commit(rootPath);
@@ -129,7 +129,7 @@ public class TypeScriptDiscoveryScopePipelineTests
                     cargoManifestExtractor: new CargoManifestExtractor(),
                     swiftPackageManifestExtractor: new SwiftPackageManifestExtractor()) { GitRunner = runner };
 
-                await pipeline.IndexProjectAsync(Project, rootPath, ct: CancellationToken.None);
+                await pipeline.IndexRepositoryAsync(Repository, rootPath, ct: CancellationToken.None);
 
                 runner.Listings.ShouldBe(1, $"run {run}");
             }
@@ -146,7 +146,7 @@ public class TypeScriptDiscoveryScopePipelineTests
 
     /// <summary>A pnpm monorepo's packages/* is the repository's own code, not a NuGet restore folder.</summary>
     [Fact]
-    public async Task IndexProjectAsync_PnpmWorkspacePackages_AreIndexedWithTheirModules()
+    public async Task IndexRepositoryAsync_PnpmWorkspacePackages_AreIndexedWithTheirModules()
     {
         var rootPath = CreateRepository();
         try
@@ -163,9 +163,9 @@ public class TypeScriptDiscoveryScopePipelineTests
 
             analyzer.IncludedFiles.ShouldHaveSingleItem()
                 .ShouldBe(["package.json", "packages/a/package.json", "packages/a/src/index.ts", "tsconfig.json"]);
-            (await store.GetFileHashesAsync(Project)).Keys.ShouldContain("packages/a/src/index.ts");
+            (await store.GetFileHashesAsync(Repository)).Keys.ShouldContain("packages/a/src/index.ts");
             store.Nodes.ShouldContain(node => node.Label == NodeLabel.Module
-                && node.QualifiedName == $"typescript-package:{Project}:@mono/a" && node.FilePath == "packages/a");
+                && node.QualifiedName == $"typescript-package:{Repository}:@mono/a" && node.FilePath == "packages/a");
             store.Nodes.ShouldContain(node => node.QualifiedName == "packages.a.src.index.Index"
                 && node.FilePath == "packages/a/src/index.ts");
         }
@@ -176,7 +176,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     }
 
     [Fact]
-    public async Task IndexProjectAsync_WithoutARootTsconfig_NeverPicksAnExcludedOne()
+    public async Task IndexRepositoryAsync_WithoutARootTsconfig_NeverPicksAnExcludedOne()
     {
         var rootPath = CreateRepository();
         try
@@ -201,7 +201,7 @@ public class TypeScriptDiscoveryScopePipelineTests
 
     /// <summary>A sidecar that reads more than it was given cannot put those files in the graph.</summary>
     [Fact]
-    public async Task IndexProjectAsync_SidecarOutputUnderExcludedPaths_IsDropped()
+    public async Task IndexRepositoryAsync_SidecarOutputUnderExcludedPaths_IsDropped()
     {
         var rootPath = CreateRepository();
         try
@@ -219,8 +219,8 @@ public class TypeScriptDiscoveryScopePipelineTests
                 .ShouldBe([
                     "Class:apps.web.src.widget.Widget:apps/web/src/widget.ts",
                     "Class:src.app.App:src/app.ts",
-                    $"Module:typescript-package:{Project}:@lens/app:",
-                    $"Module:typescript-package:{Project}:@lens/web:apps/web"
+                    $"Module:typescript-package:{Repository}:@lens/app:",
+                    $"Module:typescript-package:{Repository}:@lens/web:apps/web"
                 ]);
             // Edges of dropped worktree nodes create no stubs either.
             store.Nodes.ShouldNotContain(node => node.QualifiedName.Contains(".claude", StringComparison.Ordinal));
@@ -238,7 +238,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     /// incremental run removes them and restores the in-repo packages.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_PreviouslyIndexedExcludedTypeScriptSlices_AreRemovedOnTheNextRun()
+    public async Task IndexRepositoryAsync_PreviouslyIndexedExcludedTypeScriptSlices_AreRemovedOnTheNextRun()
     {
         var rootPath = CreateRepository();
         try
@@ -261,8 +261,8 @@ public class TypeScriptDiscoveryScopePipelineTests
                 .Select(node => $"{node.QualifiedName}:{node.FilePath}")
                 .Order(StringComparer.Ordinal)
                 .ShouldBe([
-                    $"typescript-package:{Project}:@lens/app:",
-                    $"typescript-package:{Project}:@lens/web:apps/web"
+                    $"typescript-package:{Repository}:@lens/app:",
+                    $"typescript-package:{Repository}:@lens/web:apps/web"
                 ]);
             // The restored modules keep their containment edges.
             var moduleIds = store.Nodes.Where(node => node.Label == NodeLabel.Module).Select(node => node.Id).ToHashSet();
@@ -283,7 +283,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     /// checkout-specific <c>import("/abs/path")</c> type text lose their last edge and are swept.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_TypeScriptVersionBump_SweepsStubsOfTheOldTypeText()
+    public async Task IndexRepositoryAsync_TypeScriptVersionBump_SweepsStubsOfTheOldTypeText()
     {
         var rootPath = CreateRepository();
         try
@@ -314,7 +314,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     /// by an excluded directory, one root module) are stale and removed.
     /// </summary>
     [Fact]
-    public async Task IndexProjectAsync_NoAdmittedTsconfig_RemovesStoredWorkspaceModules()
+    public async Task IndexRepositoryAsync_NoAdmittedTsconfig_RemovesStoredWorkspaceModules()
     {
         var rootPath = CreateRepository();
         try
@@ -325,14 +325,14 @@ public class TypeScriptDiscoveryScopePipelineTests
             var analyzer = new FakeTypeScriptAnalyzer(rootPath, honourScope: true);
             await IndexAsync(rootPath, store, analyzer);
             await SeedWorkspaceModulesAsync(store,
-                ($"typescript-package:{Project}:@lens/vendored", "web/node_modules/vendored"),
-                ($"typescript-package:{Project}:@lens/app", null));
+                ($"typescript-package:{Repository}:@lens/vendored", "web/node_modules/vendored"),
+                ($"typescript-package:{Repository}:@lens/app", null));
 
             await IndexAsync(rootPath, store, analyzer);
 
             analyzer.Tsconfigs.ShouldBeEmpty();
             store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Module);
-            store.Nodes.ShouldContain(node => node.QualifiedName == Project && node.Label == NodeLabel.Repository);
+            store.Nodes.ShouldContain(node => node.QualifiedName == Repository && node.Label == NodeLabel.Repository);
         }
         finally
         {
@@ -342,7 +342,7 @@ public class TypeScriptDiscoveryScopePipelineTests
 
     /// <summary>An unavailable sidecar (no result) says nothing about the workspace packages.</summary>
     [Fact]
-    public async Task IndexProjectAsync_SidecarUnavailable_KeepsTheWorkspaceModules()
+    public async Task IndexRepositoryAsync_SidecarUnavailable_KeepsTheWorkspaceModules()
     {
         var rootPath = CreateRepository();
         try
@@ -353,7 +353,7 @@ public class TypeScriptDiscoveryScopePipelineTests
             File.AppendAllText(Path.Combine(rootPath, "src/app.ts"), "// changed\n");
             // A module under an excluded directory is stale whether or not the sidecar runs.
             await SeedWorkspaceModulesAsync(store,
-                ($"typescript-package:{Project}:@lens/vendored", "web/node_modules/vendored"));
+                ($"typescript-package:{Repository}:@lens/vendored", "web/node_modules/vendored"));
 
             await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: true, unavailable: true));
 
@@ -361,8 +361,8 @@ public class TypeScriptDiscoveryScopePipelineTests
                 .Select(node => $"{node.QualifiedName}:{node.FilePath}")
                 .Order(StringComparer.Ordinal)
                 .ShouldBe([
-                    $"typescript-package:{Project}:@lens/app:",
-                    $"typescript-package:{Project}:@lens/web:apps/web"
+                    $"typescript-package:{Repository}:@lens/app:",
+                    $"typescript-package:{Repository}:@lens/web:apps/web"
                 ]);
         }
         finally
@@ -376,12 +376,12 @@ public class TypeScriptDiscoveryScopePipelineTests
     {
         await store.UpsertNodeBatchAsync(modules.Select(module => Node(NodeLabel.Module, module.QualifiedName,
             module.FilePath, new() { ["module_kind"] = "typescript_workspace_package" })).ToList());
-        var repository = store.Nodes.Single(node => node.QualifiedName == Project).Id;
+        var repository = store.Nodes.Single(node => node.QualifiedName == Repository).Id;
         foreach (var module in modules)
         {
             await store.InsertEdgeAsync(new GraphEdge
             {
-                Project = Project,
+                Repository = Repository,
                 SourceId = repository,
                 TargetId = store.Nodes.Single(node => node.QualifiedName == module.QualifiedName).Id,
                 Type = EdgeType.CONTAINS_PROJECT
@@ -404,7 +404,7 @@ public class TypeScriptDiscoveryScopePipelineTests
         long Id(string qualifiedName) => store.Nodes.Single(node => node.QualifiedName == qualifiedName).Id;
         await store.InsertEdgeAsync(new GraphEdge
         {
-            Project = Project,
+            Repository = Repository,
             SourceId = Id(".claude.worktrees.agent-1.src.app.App"),
             TargetId = Id(LegacyStubQn),
             Type = EdgeType.INJECTS
@@ -414,8 +414,8 @@ public class TypeScriptDiscoveryScopePipelineTests
         // root package (same qualified names, the vendored directories as file paths).
         foreach (var (qualifiedName, vendoredPath) in new[]
                  {
-                     ($"typescript-package:{Project}:@lens/web", "web/node_modules/vendored"),
-                     ($"typescript-package:{Project}:@lens/app", "vendor/node_modules/app")
+                     ($"typescript-package:{Repository}:@lens/web", "web/node_modules/vendored"),
+                     ($"typescript-package:{Repository}:@lens/app", "vendor/node_modules/app")
                  })
         {
             var module = store.Nodes.Single(node => node.QualifiedName == qualifiedName);
@@ -426,7 +426,7 @@ public class TypeScriptDiscoveryScopePipelineTests
     private static GraphNode Node(NodeLabel label, string qualifiedName, string? filePath,
         Dictionary<string, object>? properties = null) => new()
     {
-        Project = Project,
+        Repository = Repository,
         Label = label,
         Name = qualifiedName[(qualifiedName.LastIndexOf('.') + 1)..],
         QualifiedName = qualifiedName,
@@ -443,7 +443,7 @@ public class TypeScriptDiscoveryScopePipelineTests
             new LocalFileSystem(),
             NullLogger<IndexingPipeline>.Instance,
             typeScriptAnalyzer: analyzer);
-        await pipeline.IndexProjectAsync(Project, rootPath, ct: CancellationToken.None);
+        await pipeline.IndexRepositoryAsync(Repository, rootPath, ct: CancellationToken.None);
     }
 
     private static void WriteApp(string rootPath, string prefix = "")
@@ -476,7 +476,7 @@ public class TypeScriptDiscoveryScopePipelineTests
         File.WriteAllText(path, content);
     }
 
-    /// <summary>Registers .ts for discovery; the project analyzer covers every file.</summary>
+    /// <summary>Registers .ts for discovery; the repository analyzer covers every file.</summary>
     private sealed class NoOpTypeScriptExtractor : ICodeExtractor
     {
         public IReadOnlySet<string> SupportedExtensions { get; } = new HashSet<string> { ".ts" };
@@ -531,11 +531,11 @@ public class TypeScriptDiscoveryScopePipelineTests
             {
                 var name = JsonDocument.Parse(File.ReadAllText(Path.Combine(rootPath, manifest)))
                     .RootElement.GetProperty("name").GetString()!;
-                var qualifiedName = $"typescript-package:{context.ProjectName}:{name}";
+                var qualifiedName = $"typescript-package:{context.RepositoryName}:{name}";
                 nodes.Add(Node(NodeLabel.Module, qualifiedName,
                     Path.GetDirectoryName(manifest)!.Replace('\\', '/'),
                     new() { ["module_kind"] = "typescript_workspace_package" }));
-                edges.Add(new PendingEdge(context.ProjectName, qualifiedName, EdgeType.CONTAINS_PROJECT));
+                edges.Add(new PendingEdge(context.RepositoryName, qualifiedName, EdgeType.CONTAINS_PROJECT));
             }
 
             return Task.FromResult<IReadOnlyList<ExtractionResult>>([

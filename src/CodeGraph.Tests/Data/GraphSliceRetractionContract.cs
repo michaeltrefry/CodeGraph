@@ -19,9 +19,9 @@ namespace CodeGraph.Tests.Data;
 /// </summary>
 public class GraphSliceRetractionContract
 {
-    private static GraphNode Node(string project, string qualifiedName, string name, string? file, NodeLabel label) => new()
+    private static GraphNode Node(string repository, string qualifiedName, string name, string? file, NodeLabel label) => new()
     {
-        Project = project,
+        Repository = repository,
         Label = label,
         Name = name,
         QualifiedName = qualifiedName,
@@ -29,21 +29,21 @@ public class GraphSliceRetractionContract
         FilePath = file!
     };
 
-    private static async Task VerifyAsync(IGraphStore store, string project)
+    private static async Task VerifyAsync(IGraphStore store, string repository)
     {
-        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = project });
-        var type = $"{project}:a.swift#type:A";
-        var member = $"{project}:b.swift#extension:S#method:m()";
-        var other = $"{project}:b.swift#extension:T#method:n()";
-        await store.ReplaceProjectFilesAsync(
-            project,
+        await store.UpsertRepositoryAsync(new RepositoryEntity { Name = repository });
+        var type = $"{repository}:a.swift#type:A";
+        var member = $"{repository}:b.swift#extension:S#method:m()";
+        var other = $"{repository}:b.swift#extension:T#method:n()";
+        await store.ReplaceRepositoryFilesAsync(
+            repository,
             ["a.swift", "b.swift"],
             [
-                Node(project, type, "A", "a.swift", NodeLabel.Struct),
-                Node(project, member, "m", "b.swift", NodeLabel.Method),
-                Node(project, other, "n", "b.swift", NodeLabel.Method),
-                Node(project, "swift-external:S", "S", null, NodeLabel.Class),
-                Node(project, "swift-external:T", "T", null, NodeLabel.Class)
+                Node(repository, type, "A", "a.swift", NodeLabel.Struct),
+                Node(repository, member, "m", "b.swift", NodeLabel.Method),
+                Node(repository, other, "n", "b.swift", NodeLabel.Method),
+                Node(repository, "swift-external:S", "S", null, NodeLabel.Class),
+                Node(repository, "swift-external:T", "T", null, NodeLabel.Class)
             ],
             [
                 new PendingEdge("swift-external:S", member, EdgeType.DEFINES_METHOD,
@@ -56,19 +56,19 @@ public class GraphSliceRetractionContract
             ],
             new Dictionary<string, string> { ["a.swift"] = "1", ["b.swift"] = "1" });
 
-        (await store.FindNodesByFilesAsync(project, ["a.swift", "missing.swift"]))
+        (await store.FindNodesByFilesAsync(repository, ["a.swift", "missing.swift"]))
             .Select(node => node.QualifiedName).ShouldBe([type]);
-        (await store.FindNodesByNamesAsync(project, ["S", "m"]))
+        (await store.FindNodesByNamesAsync(repository, ["S", "m"]))
             .Select(node => node.QualifiedName).ShouldBe(["swift-external:S", member], ignoreOrder: true);
         // File-less nodes contribute no path; each path is listed once.
-        (await store.GetNodeFilePathsAsync(project)).ShouldBe(["a.swift", "b.swift"], ignoreOrder: true);
+        (await store.GetNodeFilePathsAsync(repository)).ShouldBe(["a.swift", "b.swift"], ignoreOrder: true);
 
         var found = (await store.FindEdgesByPropertyAsync(
-                project, [EdgeType.DEFINES_METHOD, EdgeType.IMPLEMENTS], "swift_source_name", ["S", "Z"]))
+                repository, [EdgeType.DEFINES_METHOD, EdgeType.IMPLEMENTS], "swift_source_name", ["S", "Z"]))
             .ShouldHaveSingleItem();
-        (await store.FindEdgesByPropertyAsync(project, [EdgeType.CALLS], "swift_source_name", ["S"]))
+        (await store.FindEdgesByPropertyAsync(repository, [EdgeType.CALLS], "swift_source_name", ["S"]))
             .ShouldHaveSingleItem().TargetQN.ShouldBe(other);
-        (await store.FindEdgesByPropertyAsync(project, [], "swift_source_name", ["S"])).ShouldBeEmpty();
+        (await store.FindEdgesByPropertyAsync(repository, [], "swift_source_name", ["S"])).ShouldBeEmpty();
         found.SourceQN.ShouldBe("swift-external:S");
         found.SourceFilePath.ShouldBeNullOrEmpty();
         found.TargetQN.ShouldBe(member);
@@ -78,27 +78,27 @@ public class GraphSliceRetractionContract
 
         // The stub edge is retracted (and so not preserved into the replaced file a.swift's
         // slice), S is left orphaned and removed; T keeps its edge and stays.
-        await store.ReplaceProjectFilesAsync(
-            project,
+        await store.ReplaceRepositoryFilesAsync(
+            repository,
             ["a.swift"],
-            [Node(project, type, "A", "a.swift", NodeLabel.Struct)],
+            [Node(repository, type, "A", "a.swift", NodeLabel.Struct)],
             [new PendingEdge(type, member, EdgeType.DEFINES_METHOD)],
             new Dictionary<string, string> { ["a.swift"] = "2" },
             retractions: new GraphSliceRetractions(
                 [new PendingEdge("swift-external:S", member, EdgeType.DEFINES_METHOD)],
                 ["swift-external:S", "swift-external:T"]));
 
-        (await store.FindNodeByQualifiedNameAsync(project, "swift-external:S")).ShouldBeNull();
-        (await store.FindNodeByQualifiedNameAsync(project, "swift-external:T")).ShouldNotBeNull();
-        var memberNode = (await store.FindNodeByQualifiedNameAsync(project, member)).ShouldNotBeNull();
+        (await store.FindNodeByQualifiedNameAsync(repository, "swift-external:S")).ShouldBeNull();
+        (await store.FindNodeByQualifiedNameAsync(repository, "swift-external:T")).ShouldNotBeNull();
+        var memberNode = (await store.FindNodeByQualifiedNameAsync(repository, member)).ShouldNotBeNull();
         var owners = await store.FindEdgesByTargetAsync(memberNode.Id);
         var ownerNodes = await store.FindNodesByIdBatchAsync(owners.Select(edge => edge.SourceId).ToList());
         owners.Select(edge => (ownerNodes[edge.SourceId].QualifiedName, edge.Type))
             .ShouldBe([(type, EdgeType.DEFINES_METHOD)]);
-        (await store.FindEdgesByPropertyAsync(project, [EdgeType.DEFINES_METHOD], "swift_source_name", ["S"]))
+        (await store.FindEdgesByPropertyAsync(repository, [EdgeType.DEFINES_METHOD], "swift_source_name", ["S"]))
             .ShouldBeEmpty();
 
-        await VerifyStaleModuleReplacementAsync(store, project);
+        await VerifyStaleModuleReplacementAsync(store, repository);
     }
 
     /// <summary>
@@ -107,16 +107,16 @@ public class GraphSliceRetractionContract
     /// directory or to no directory at all), and keeps the incoming edges of nodes outside the
     /// replaced slices.
     /// </summary>
-    private static async Task VerifyStaleModuleReplacementAsync(IGraphStore store, string project)
+    private static async Task VerifyStaleModuleReplacementAsync(IGraphStore store, string repository)
     {
         const string module = "typescript-package:SliceContract:@demo/web";
         const string importer = "app.App";
-        await store.ReplaceProjectFilesAsync(
-            project,
+        await store.ReplaceRepositoryFilesAsync(
+            repository,
             ["src/app.ts", "web/node_modules/vendored"],
             [
-                Node(project, importer, "App", "src/app.ts", NodeLabel.Class),
-                Node(project, module, "@demo/web", "web/node_modules/vendored", NodeLabel.Module)
+                Node(repository, importer, "App", "src/app.ts", NodeLabel.Class),
+                Node(repository, module, "@demo/web", "web/node_modules/vendored", NodeLabel.Module)
             ],
             [
                 new PendingEdge(importer, module, EdgeType.IMPORTS),
@@ -126,7 +126,7 @@ public class GraphSliceRetractionContract
 
         async Task ShouldBeRestoredAtAsync(string? filePath)
         {
-            var restored = (await store.FindNodeByQualifiedNameAsync(project, module)).ShouldNotBeNull();
+            var restored = (await store.FindNodeByQualifiedNameAsync(repository, module)).ShouldNotBeNull();
             (restored.FilePath ?? "").ShouldBe(filePath ?? "");
             var incoming = await store.FindEdgesByTargetAsync(restored.Id);
             var sources = await store.FindNodesByIdBatchAsync(incoming.Select(edge => edge.SourceId).ToList());
@@ -136,19 +136,19 @@ public class GraphSliceRetractionContract
         }
 
         // Back to its own directory: both slices in one write.
-        await store.ReplaceProjectFilesAsync(
-            project,
+        await store.ReplaceRepositoryFilesAsync(
+            repository,
             ["web/node_modules/vendored", "apps/web"],
-            [Node(project, module, "@demo/web", "apps/web", NodeLabel.Module)],
+            [Node(repository, module, "@demo/web", "apps/web", NodeLabel.Module)],
             [],
             new Dictionary<string, string>());
         await ShouldBeRestoredAtAsync("apps/web");
 
         // To no directory (a root package), written back with the slice that removes the copy.
-        await store.ReplaceProjectFilesAsync(
-            project,
+        await store.ReplaceRepositoryFilesAsync(
+            repository,
             ["apps/web"],
-            [Node(project, module, "@demo/web", null, NodeLabel.Module)],
+            [Node(repository, module, "@demo/web", null, NodeLabel.Module)],
             [],
             new Dictionary<string, string>());
         await ShouldBeRestoredAtAsync(null);
@@ -217,7 +217,7 @@ public class GraphSliceRetractionContract
                 await conn.OpenAsync();
                 await conn.ExecuteAsync("INSERT INTO repositories (name, created_at, updated_at) VALUES ('Legacy', NOW(), NOW())");
                 await conn.ExecuteAsync("""
-                    INSERT INTO nodes (project, label, name, qualified_name, file_path, start_line, end_line)
+                    INSERT INTO nodes (repository, label, name, qualified_name, file_path, start_line, end_line)
                     VALUES ('Legacy', 'Class', 'Stub', 'Legacy.Stub', NULL, 0, 0)
                     """);
                 await conn.ExecuteAsync(await File.ReadAllTextAsync(
@@ -257,15 +257,15 @@ public class GraphSliceRetractionContract
         await Neo4jTestSchema.EnsureAppliedAsync(options);
         await using var sessions = new Neo4jSessionFactory(options);
         var store = new Neo4jGraphStore(sessions, options, NullLogger<Neo4jGraphStore>.Instance);
-        var project = $"SliceContract_{Guid.NewGuid():N}";
+        var repository = $"SliceContract_{Guid.NewGuid():N}";
         try
         {
-            await VerifyAsync(store, project);
+            await VerifyAsync(store, repository);
         }
         finally
         {
-            await store.DeleteNodesByProjectAsync(project);
-            await store.DeleteRepositoryAsync(project);
+            await store.DeleteNodesByRepositoryAsync(repository);
+            await store.DeleteRepositoryAsync(repository);
         }
     }
 

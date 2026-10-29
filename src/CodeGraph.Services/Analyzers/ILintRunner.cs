@@ -6,7 +6,7 @@ public interface ILintRunner
     /// Runs ESLint against a repository and returns per-file error/warning counts.
     /// Returns an empty dictionary if ESLint is not available or not configured.
     /// </summary>
-    Task<IReadOnlyDictionary<string, LintResult>> LintProjectAsync(
+    Task<IReadOnlyDictionary<string, LintResult>> LintRepositoryAsync(
         string repoPath, CancellationToken ct = default);
 }
 

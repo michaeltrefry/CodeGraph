@@ -49,10 +49,10 @@ public class MySqlExclusionStore(CodeGraphDbContext db) : IExclusionStore
         return true;
     }
 
-    public async Task<HashSet<string>> GetSecretFilePathsAsync(string project)
+    public async Task<HashSet<string>> GetSecretFilePathsAsync(string repository)
     {
         var paths = await db.SecurityFindings.AsNoTracking()
-            .Where(f => f.Project == project && f.Category == "secret" && f.FilePath != null)
+            .Where(f => f.Repository == repository && f.Category == "secret" && f.FilePath != null)
             .Select(f => f.FilePath!)
             .Distinct()
             .ToListAsync();

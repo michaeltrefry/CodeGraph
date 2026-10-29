@@ -13,14 +13,14 @@ public partial class MySqlGraphStore
 
 
     public async Task<IReadOnlyList<GraphNode>> FindNodesByFilesAsync(
-        string project, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
+        string repository, IReadOnlyCollection<string> filePaths, CancellationToken ct = default)
     {
         var result = new List<GraphNode>();
         foreach (var chunk in ExpandPathVariants(filePaths.ToList()).Chunk(LookupBatchSize))
         {
             var batch = chunk.ToList();
             var nodes = await db.Nodes.AsNoTracking()
-                .Where(n => n.Project == project && batch.Contains(n.FilePath))
+                .Where(n => n.Repository == repository && batch.Contains(n.FilePath))
                 .OrderBy(n => n.Id)
                 .ToListAsync(ct);
             result.AddRange(nodes.Select(MapNode));
@@ -29,22 +29,22 @@ public partial class MySqlGraphStore
         return result.DistinctBy(node => node.Id).ToList();
     }
 
-    public async Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string project, CancellationToken ct = default) =>
+    public async Task<IReadOnlyList<string>> GetNodeFilePathsAsync(string repository, CancellationToken ct = default) =>
         await db.Nodes.AsNoTracking()
-            .Where(n => n.Project == project && n.FilePath != null && n.FilePath != "")
+            .Where(n => n.Repository == repository && n.FilePath != null && n.FilePath != "")
             .Select(n => n.FilePath!)
             .Distinct()
             .ToListAsync(ct);
 
     public async Task<IReadOnlyList<GraphNode>> FindNodesByNamesAsync(
-        string project, IReadOnlyCollection<string> names, CancellationToken ct = default)
+        string repository, IReadOnlyCollection<string> names, CancellationToken ct = default)
     {
         var result = new List<GraphNode>();
         foreach (var chunk in names.Distinct(StringComparer.Ordinal).Chunk(LookupBatchSize))
         {
             var batch = chunk.ToList();
             var nodes = await db.Nodes.AsNoTracking()
-                .Where(n => n.Project == project && batch.Contains(n.Name))
+                .Where(n => n.Repository == repository && batch.Contains(n.Name))
                 .OrderBy(n => n.Id)
                 .ToListAsync(ct);
             result.AddRange(nodes.Select(MapNode));
@@ -54,7 +54,7 @@ public partial class MySqlGraphStore
     }
 
     public async Task<IReadOnlyList<StoredEdge>> FindEdgesByPropertyAsync(
-        string project,
+        string repository,
         IReadOnlyCollection<EdgeType> types,
         string propertyKey,
         IReadOnlyCollection<string> values,
@@ -65,7 +65,7 @@ public partial class MySqlGraphStore
         if (types.Count == 0)
             return [];
 
-        // (project, type) narrows the scan through idx_edges_type before any JSON is inspected.
+        // (repository, type) narrows the scan through idx_edges_type before any JSON is inspected.
         var typeNames = types.Distinct().Select(type => type.ToString()).ToArray();
 
         await using var conn = await GetOpenConnectionAsync();
@@ -82,10 +82,10 @@ public partial class MySqlGraphStore
                 FROM edges edge
                 INNER JOIN nodes source ON source.id = edge.source_id
                 INNER JOIN nodes target ON target.id = edge.target_id
-                WHERE edge.project = @Project
+                WHERE edge.repository = @Repository
                   AND edge.type IN @Types
                   AND JSON_UNQUOTE(JSON_EXTRACT(edge.properties, '$."{propertyKey}"')) IN @Values
-                """, new { Project = project, Types = typeNames, Values = batch }, cancellationToken: ct));
+                """, new { Repository = repository, Types = typeNames, Values = batch }, cancellationToken: ct));
             foreach (var row in rows)
             {
                 if (!Enum.TryParse<EdgeType>(row.Type, out var type))
@@ -102,7 +102,7 @@ public partial class MySqlGraphStore
     private async Task DeleteRetractedEdgesAsync(
         MySqlConnection conn,
         MySqlTransaction transaction,
-        string project,
+        string repository,
         IReadOnlyList<PendingEdge> edges,
         CancellationToken ct)
     {
@@ -112,9 +112,9 @@ public partial class MySqlGraphStore
         var qnToId = new Dictionary<string, long>(StringComparer.Ordinal);
         foreach (var batch in qualifiedNames.Chunk(LookupBatchSize))
         {
-            var lookup = new DynamicParameters(new { Project = project });
+            var lookup = new DynamicParameters(new { Repository = repository });
             var rows = await conn.QueryAsync<(long Id, string QualifiedName)>(new CommandDefinition(
-                $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE project = @Project AND {QualifiedNameMatch(batch, lookup)}",
+                $"SELECT id AS Id, qualified_name AS QualifiedName FROM nodes WHERE repository = @Repository AND {QualifiedNameMatch(batch, lookup)}",
                 lookup, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             foreach (var row in rows)
                 qnToId[row.QualifiedName] = row.Id;
@@ -128,8 +128,8 @@ public partial class MySqlGraphStore
         foreach (var batch in keys.Chunk(Math.Max(1, options.GraphDeleteBatchSize)))
         {
             ct.ThrowIfCancellationRequested();
-            var sql = new StringBuilder("DELETE FROM edges WHERE project = @Project AND (");
-            var parameters = new DynamicParameters(new { Project = project });
+            var sql = new StringBuilder("DELETE FROM edges WHERE repository = @Repository AND (");
+            var parameters = new DynamicParameters(new { Repository = repository });
             for (var i = 0; i < batch.Length; i++)
             {
                 if (i > 0) sql.Append(" OR ");
@@ -148,17 +148,17 @@ public partial class MySqlGraphStore
     private async Task DeleteOrphanedNodesAsync(
         MySqlConnection conn,
         MySqlTransaction transaction,
-        string project,
+        string repository,
         IReadOnlyList<string> qualifiedNames,
         CancellationToken ct)
     {
         var orphanIds = new List<long>();
         foreach (var batch in qualifiedNames.Distinct(StringComparer.Ordinal).Chunk(LookupBatchSize))
         {
-            var lookup = new DynamicParameters(new { Project = project });
+            var lookup = new DynamicParameters(new { Repository = repository });
             orphanIds.AddRange(await conn.QueryAsync<long>(new CommandDefinition($"""
                 SELECT n.id FROM nodes n
-                WHERE n.project = @Project AND {QualifiedNameMatch(batch, lookup)}
+                WHERE n.repository = @Repository AND {QualifiedNameMatch(batch, lookup)}
                   AND (n.file_path IS NULL OR n.file_path = '')
                   AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
                   AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_id = n.id)

@@ -20,11 +20,11 @@ public interface ICodeExtractor
 }
 
 /// <summary>
-/// Shared context available to all extractors — foundational knowledge, project info.
+/// Shared context available to all extractors — foundational knowledge, repository info.
 /// </summary>
 public class ExtractorContext
 {
-    public required string ProjectName { get; init; }
+    public required string RepositoryName { get; init; }
     public required string RootPath { get; init; }
 
     /// <summary>

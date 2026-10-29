@@ -15,7 +15,7 @@ namespace CodeGraph.Tests.Services;
 
 public sealed class BranchOverlayServiceTests : IDisposable
 {
-    private const string Project = "OverlayRepo";
+    private const string Repository = "OverlayRepo";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"codegraph-overlay-test-{Guid.NewGuid():N}");
     private readonly InMemoryGraphStore _graph = new();
     private readonly InMemoryBranchOverlayStore _overlays = new();
@@ -55,7 +55,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         var cacheHeadBefore = GitFixture.Run(cache, "rev-parse", "HEAD");
         var service = CreateService(cache);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/feature");
         (await service.GetOverlayAsync(overlay.Id))!.Status.ShouldBe(BranchOverlayStatuses.Queued);
 
         await service.IndexOverlayAsync(overlay.Id);
@@ -92,8 +92,8 @@ public sealed class BranchOverlayServiceTests : IDisposable
         // Calls into unchanged files resolve against the persisted default-branch graph.
         var edges = await _overlays.GetOverlayEdgesAsync(overlay.Id);
         edges.ShouldContain(edge => edge.Type == EdgeType.CALLS
-                                    && edge.SourceQN == $"{Project}:src/e.py:epsilon"
-                                    && edge.TargetQN == $"{Project}:src/b.py:beta");
+                                    && edge.SourceQN == $"{Repository}:src/e.py:epsilon"
+                                    && edge.TargetQN == $"{Repository}:src/b.py:beta");
 
         _graph.Nodes.ShouldBe(defaultNodesBefore);
         _graph.Edges.ShouldBe(defaultEdgesBefore);
@@ -113,7 +113,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         SeedDefaultBranchIndex(baseSha);
         var service = CreateService(remote);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, headSha);
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, headSha);
         await service.IndexOverlayAsync(overlay.Id);
 
         var status = await service.GetOverlayAsync(overlay.Id);
@@ -131,7 +131,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         SeedDefaultBranchIndex(baseSha);
         var service = CreateService(cache);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/missing");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/missing");
         await Should.ThrowAsync<BranchOverlayIndexingException>(() => service.IndexOverlayAsync(overlay.Id));
 
         var status = await service.GetOverlayAsync(overlay.Id);
@@ -144,30 +144,30 @@ public sealed class BranchOverlayServiceTests : IDisposable
     public async Task CreateOverlayAsync_RejectsUnknownRepositoryAndOptionLikeRefs()
     {
         var service = CreateService(_root);
-        _graph.AddProject(Project);
+        _graph.AddRepository(Repository);
 
         await Should.ThrowAsync<KeyNotFoundException>(() => service.CreateOverlayAsync("u", "Nope", "main"));
-        await Should.ThrowAsync<ArgumentException>(() => service.CreateOverlayAsync("u", Project, "--upload-pack=evil"));
-        await Should.ThrowAsync<ArgumentException>(() => service.CreateOverlayAsync("u", Project, "main..other"));
+        await Should.ThrowAsync<ArgumentException>(() => service.CreateOverlayAsync("u", Repository, "--upload-pack=evil"));
+        await Should.ThrowAsync<ArgumentException>(() => service.CreateOverlayAsync("u", Repository, "main..other"));
     }
 
     [Fact]
     public async Task TtlSweep_DeletesOverlayDataAndStatusAnswersExpired()
     {
-        _graph.AddProject(Project);
+        _graph.AddRepository(Repository);
         var service = CreateService(_root, ttlHours: 24);
-        var old = await service.CreateOverlayAsync("u", Project, "factory/old");
+        var old = await service.CreateOverlayAsync("u", Repository, "factory/old");
         await _overlays.CompleteOverlayAsync(
             old.Id,
             new string('a', 40),
             new string('b', 40),
             [new BranchOverlayFileEntity { OverlayId = old.Id, FilePath = "src/a.py", ChangeKind = BranchOverlayChangeKinds.Modified }],
-            [new GraphNode { Project = Project, Label = NodeLabel.Function, Name = "alpha", QualifiedName = "q:alpha", FilePath = "src/a.py" }],
+            [new GraphNode { Repository = Repository, Label = NodeLabel.Function, Name = "alpha", QualifiedName = "q:alpha", FilePath = "src/a.py" }],
             [new PendingEdge("q:alpha", "q:beta", EdgeType.CALLS)],
             _time.GetUtcNow().UtcDateTime);
 
         _time.Now += TimeSpan.FromHours(23);
-        var fresh = await service.CreateOverlayAsync("u", Project, "factory/fresh");
+        var fresh = await service.CreateOverlayAsync("u", Repository, "factory/fresh");
         (await service.ExpireOverlaysAsync()).ShouldBeEmpty();
         (await service.GetOverlayAsync(old.Id))!.Status.ShouldBe(BranchOverlayStatuses.Ready);
 
@@ -214,7 +214,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         var service = CreateService(new ResyncingRepoProvider(
             Path.GetDirectoryName(cache)!, "src/a.py", "def alpha\ndef alpha_working_tree\n"));
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/feature");
         await service.IndexOverlayAsync(overlay.Id);
 
         // The provider really did reset and dirty the shared checkout.
@@ -241,7 +241,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         SeedDefaultBranchIndex(baseSha);
         var service = CreateService(cache);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/case");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/case");
         await service.IndexOverlayAsync(overlay.Id);
 
         (await service.GetOverlayAsync(overlay.Id))!.Status.ShouldBe(BranchOverlayStatuses.Ready);
@@ -287,7 +287,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         SeedDefaultBranchIndex(baseSha);
         var service = CreateService(cache);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/pods");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/pods");
         await service.IndexOverlayAsync(overlay.Id);
 
         (await service.GetOverlayAsync(overlay.Id))!.Status.ShouldBe(BranchOverlayStatuses.Ready);
@@ -311,7 +311,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         SeedDefaultBranchIndex(baseSha);
         var service = CreateService(cache);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/stale");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/stale");
         await Should.ThrowAsync<BranchOverlayTransientException>(() => service.IndexOverlayAsync(overlay.Id));
 
         var status = await service.GetOverlayAsync(overlay.Id);
@@ -333,7 +333,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         var git = new RecordingBranchOverlayGit();
         var service = CreateService(cache, git: git);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, headSha);
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, headSha);
         await service.IndexOverlayAsync(overlay.Id);
 
         var status = await service.GetOverlayAsync(overlay.Id);
@@ -358,7 +358,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         _graph.IndexingLockFailure = failure;
         var service = CreateService(_root);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/feature");
         var thrown = await Should.ThrowAsync<Exception>(() => service.IndexOverlayAsync(overlay.Id));
         thrown.ShouldBeSameAs(failure);
 
@@ -374,7 +374,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         var service = CreateService(new ThrowingRepoProvider(
             new InvalidOperationException("git fetch origin failed with exit code 128: Could not resolve host")));
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "factory/feature");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "factory/feature");
         var ex = await Should.ThrowAsync<BranchOverlayTransientException>(() => service.IndexOverlayAsync(overlay.Id));
         ex.Message.ShouldContain("Could not resolve host");
     }
@@ -386,7 +386,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
         SeedDefaultBranchIndex(new string('c', 40));
         var service = CreateService(cache);
 
-        var overlay = await service.CreateOverlayAsync("Michael", Project, "main");
+        var overlay = await service.CreateOverlayAsync("Michael", Repository, "main");
         await Should.ThrowAsync<BranchOverlayIndexingException>(() => service.IndexOverlayAsync(overlay.Id));
         (await service.GetOverlayAsync(overlay.Id))!.Error!.ShouldContain("Base commit");
     }
@@ -483,7 +483,7 @@ public sealed class BranchOverlayServiceTests : IDisposable
 
     private (string Remote, string Cache, string BaseSha) CreateRemoteAndSingleBranchCache()
     {
-        var remote = Path.Combine(_root, "remote", Project);
+        var remote = Path.Combine(_root, "remote", Repository);
         Directory.CreateDirectory(remote);
         GitFixture.Run(remote, "init", "-q", "-b", "main");
         GitFixture.Run(remote, "config", "commit.gpgsign", "false");
@@ -496,23 +496,23 @@ public sealed class BranchOverlayServiceTests : IDisposable
         GitFixture.Run(remote, "commit", "-q", "-m", "base");
         var baseSha = GitFixture.Run(remote, "rev-parse", "HEAD");
 
-        var cache = Path.Combine(_root, "cache", Project);
+        var cache = Path.Combine(_root, "cache", Repository);
         GitFixture.Run(_root, "clone", "-q", "--single-branch", remote, cache);
         return (remote, cache, baseSha);
     }
 
     private void SeedDefaultBranchIndex(string baseSha)
     {
-        _graph.AddProject(Project);
-        _graph.UpsertSyncStateAsync(new SyncStateEntity { Project = Project, LastCommitSha = baseSha });
+        _graph.AddRepository(Repository);
+        _graph.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = baseSha });
         foreach (var (path, name) in new[] { ("src/a.py", "alpha"), ("src/b.py", "beta"), ("src/c.py", "gamma"), ("src/d.py", "delta") })
         {
             _graph.AddNode(new GraphNode
             {
-                Project = Project,
+                Repository = Repository,
                 Label = NodeLabel.Function,
                 Name = name,
-                QualifiedName = $"{Project}:{path}:{name}",
+                QualifiedName = $"{Repository}:{path}:{name}",
                 FilePath = path
             });
         }

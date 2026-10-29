@@ -95,7 +95,7 @@ public sealed class BranchOverlayService(
 
         var overlay = new BranchOverlayEntity
         {
-            Project = repository.Name,
+            Repository = repository.Name,
             RequestedRef = gitRef,
             Status = BranchOverlayStatuses.Queued,
             RequestedByUsername = string.IsNullOrWhiteSpace(username) ? "unknown" : username.Trim().ToLowerInvariant(),
@@ -135,7 +135,7 @@ public sealed class BranchOverlayService(
 
             var overlay = new BranchOverlayEntity
             {
-                Project = repository.Name,
+                Repository = repository.Name,
                 RequestedRef = gitRef,
                 // Pinned: the worker indexes this commit even if the branch moves before it runs,
                 // so the head this request answers with is the head the overlay describes.
@@ -153,9 +153,9 @@ public sealed class BranchOverlayService(
 
     /// <summary>
     /// The commit the requested ref points at now. Branch and tag names are looked up on origin
-    /// from the repository checkout (read-only: no fetch, no ref writes, so no project lock).
+    /// from the repository checkout (read-only: no fetch, no ref writes, so no repository lock).
     /// </summary>
-    private async Task<string> ResolveRequestedHeadAsync(ProjectInfo repository, string gitRef, CancellationToken ct)
+    private async Task<string> ResolveRequestedHeadAsync(RepositoryInfo repository, string gitRef, CancellationToken ct)
     {
         if (BranchOverlayGit.IsFullSha(gitRef))
             return gitRef.ToLowerInvariant();
@@ -249,12 +249,12 @@ public sealed class BranchOverlayService(
         var workRoot = Path.Combine(Path.GetTempPath(), "codegraph-overlays", $"{overlayId}-{Guid.NewGuid():N}");
         try
         {
-            var repository = await graphStore.GetRepositoryByName(overlay.Project)
-                ?? throw new InvalidOperationException($"Repository '{overlay.Project}' was not found.");
-            var syncState = await graphStore.GetSyncStateAsync(overlay.Project);
+            var repository = await graphStore.GetRepositoryByName(overlay.Repository)
+                ?? throw new InvalidOperationException($"Repository '{overlay.Repository}' was not found.");
+            var syncState = await graphStore.GetSyncStateAsync(overlay.Repository);
             baseSha = FirstNonEmpty(syncState?.LastCommitSha, repository.LastCommitSha)
                 ?? throw new InvalidOperationException(
-                    $"Repository '{overlay.Project}' has no default-branch index commit to diff against.");
+                    $"Repository '{overlay.Repository}' has no default-branch index commit to diff against.");
 
             IReadOnlyList<OverlayGitChange> changes;
             List<string> extractPaths;
@@ -263,21 +263,21 @@ public sealed class BranchOverlayService(
 
             // Serialize git access with default-branch indexing of the same checkout. The lock is
             // released before extraction, which runs against a private materialized copy.
-            await using (await graphStore.AcquireProjectIndexingLockAsync(overlay.Project, ct))
+            await using (await graphStore.AcquireRepositoryIndexingLockAsync(overlay.Repository, ct))
             {
                 // For GitHub/GitLab providers this syncs the shared checkout (fetch origin and reset
                 // to the remote default branch), the same resync default-branch indexing performs,
-                // which is why it runs under the project lock. The overlay never reads the working
+                // which is why it runs under the repository lock. The overlay never reads the working
                 // tree: the head comes from the fetched overlay ref or a commit SHA.
                 ResolvedRepository resolved;
                 try
                 {
-                    resolved = await repoProvider.ResolveRepositoryAsync(overlay.Project, null, repository.RepoUrl, ct);
+                    resolved = await repoProvider.ResolveRepositoryAsync(overlay.Repository, null, repository.RepoUrl, ct);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException && !IsTransient(ex))
                 {
                     throw new BranchOverlayTransientException(
-                        $"Syncing the '{overlay.Project}' checkout failed: {ex.Message}", ex);
+                        $"Syncing the '{overlay.Repository}' checkout failed: {ex.Message}", ex);
                 }
 
                 // An overlay requested with reuse is pinned to the head its ref had at request time.
@@ -315,7 +315,7 @@ public sealed class BranchOverlayService(
             }
 
             var slice = await pipeline.ExtractOverlayAsync(
-                overlay.Project, workRoot, extractPaths, removedPaths, csprojPaths, ct);
+                overlay.Repository, workRoot, extractPaths, removedPaths, csprojPaths, ct);
             var files = BuildFileRows(overlayId, changes);
 
             if (!await overlayStore.CompleteOverlayAsync(
@@ -326,8 +326,8 @@ public sealed class BranchOverlayService(
 
             logger.LogInformation(
                 "Branch overlay {OverlayId} for {Repo}@{Ref} ready: head {HeadSha}, base {BaseSha}, {FileCount} files, {NodeCount} nodes, {EdgeCount} edges",
-                overlayId, overlay.Project, overlay.RequestedRef, headSha, baseSha, files.Count, slice.Nodes.Count, slice.Edges.Count);
-            return $"Branch overlay {overlayId} for {overlay.Project}@{overlay.RequestedRef} is ready " +
+                overlayId, overlay.Repository, overlay.RequestedRef, headSha, baseSha, files.Count, slice.Nodes.Count, slice.Edges.Count);
+            return $"Branch overlay {overlayId} for {overlay.Repository}@{overlay.RequestedRef} is ready " +
                    $"({files.Count} changed files, {slice.Nodes.Count} nodes).";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -339,7 +339,7 @@ public sealed class BranchOverlayService(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Branch overlay {OverlayId} for {Repo}@{Ref} failed",
-                overlayId, overlay.Project, overlay.RequestedRef);
+                overlayId, overlay.Repository, overlay.RequestedRef);
             var transient = IsTransient(ex);
             await overlayStore.MarkOverlayFailedAsync(
                 overlayId,
@@ -374,7 +374,7 @@ public sealed class BranchOverlayService(
 
     public BranchOverlayResponse Map(BranchOverlayEntity overlay) => new(
         overlay.Id,
-        overlay.Project,
+        overlay.Repository,
         overlay.RequestedRef,
         overlay.Status,
         overlay.HeadSha,
@@ -396,7 +396,7 @@ public sealed class BranchOverlayService(
 
     /// <summary>
     /// Failures that can succeed on a later attempt: lock waits (GET_LOCK timeout while a long
-    /// default-branch reindex holds the project lock), network/remote errors, and database errors.
+    /// default-branch reindex holds the repository lock), network/remote errors, and database errors.
     /// </summary>
     internal static bool IsTransient(Exception ex) => ex
         is BranchOverlayTransientException

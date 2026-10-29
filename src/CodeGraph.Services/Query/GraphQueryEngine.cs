@@ -18,12 +18,12 @@ public class GraphQueryEngine
     }
 
     /// <summary>
-    /// Search for nodes by name pattern, label, project.
+    /// Search for nodes by name pattern, label, repository.
     /// </summary>
     public async Task<SearchResult> SearchAsync(SearchRequest request, IGraphReader? graph = null)
     {
         var nodes = await (graph ?? _store).SearchNodesAsync(
-            request.Project,
+            request.Repository,
             request.NamePattern,
             request.Label,
             limit: request.Limit);
@@ -35,20 +35,20 @@ public class GraphQueryEngine
     /// Trace call path (callers/callees) from a function.
     /// </summary>
     public async Task<IReadOnlyList<TraversalEntry>> TraceCallPathAsync(
-        string functionName, string? project, TraceDirection direction,
+        string functionName, string? repository, TraceDirection direction,
         int maxDepth = 3, IGraphReader? graph = null)
-        => (await TraceCallPathWithStartAsync(functionName, project, direction, maxDepth, graph)).Entries;
+        => (await TraceCallPathWithStartAsync(functionName, repository, direction, maxDepth, graph)).Entries;
 
     /// <summary>
     /// <see cref="TraceCallPathAsync"/> plus the node the trace started from (null when no node matched).
     /// </summary>
     public async Task<CallPathResult> TraceCallPathWithStartAsync(
-        string functionName, string? project, TraceDirection direction,
+        string functionName, string? repository, TraceDirection direction,
         int maxDepth = 3, IGraphReader? graph = null)
     {
         var reader = graph ?? _store;
-        var candidates = project is not null
-            ? await reader.FindNodesByNameAsync(project, functionName)
+        var candidates = repository is not null
+            ? await reader.FindNodesByNameAsync(repository, functionName)
             : await reader.SearchNodesAsync(null, functionName, limit: 10);
 
         if (candidates.Count == 0)
@@ -66,11 +66,11 @@ public class GraphQueryEngine
     /// Trace data lineage: follow a model from origin through all services.
     /// </summary>
     public async Task<DataLineageResult> TraceDataLineageAsync(
-        string modelName, string? project, IGraphReader? graph = null)
+        string modelName, string? repository, IGraphReader? graph = null)
     {
         var reader = graph ?? _store;
-        var candidates = project is not null
-            ? await reader.FindNodesByNameAsync(project, modelName)
+        var candidates = repository is not null
+            ? await reader.FindNodesByNameAsync(repository, modelName)
             : await reader.SearchNodesAsync(null, modelName, limit: 10);
 
         if (candidates.Count == 0)
@@ -88,9 +88,9 @@ public class GraphQueryEngine
         // Trace inbound: who produces this model
         var inbound = await reader.TraverseAsync(modelNode.Id, TraceDirection.Inbound, 4, dataEdges);
 
-        // Cross-repo edges involving this model's project
-        var crossRepo = modelNode.Project is not null
-            ? await reader.FindCrossRepoEdgesAsync(modelNode.Project)
+        // Cross-repo edges involving this model's repository
+        var crossRepo = modelNode.Repository is not null
+            ? await reader.FindCrossRepoEdgesAsync(modelNode.Repository)
             : [];
 
         return new DataLineageResult(modelName, inbound, outbound, crossRepo) { ModelNode = modelNode };
@@ -100,11 +100,11 @@ public class GraphQueryEngine
     /// Find all consumers of an event/endpoint/model.
     /// </summary>
     public async Task<IReadOnlyList<ConsumerInfo>> FindConsumersAsync(
-        string name, string? project, IGraphReader? graph = null)
+        string name, string? repository, IGraphReader? graph = null)
     {
         var reader = graph ?? _store;
-        var candidates = project is not null
-            ? await reader.FindNodesByNameAsync(project, name)
+        var candidates = repository is not null
+            ? await reader.FindNodesByNameAsync(repository, name)
             : await reader.SearchNodesAsync(null, name, limit: 10);
 
         if (candidates.Count == 0)
@@ -131,7 +131,7 @@ public class GraphQueryEngine
                 {
                     results.Add(new ConsumerInfo(
                         entry.Node.Name,
-                        entry.Node.Project,
+                        entry.Node.Repository,
                         entry.Node.QualifiedName,
                         edgeType,
                         GraphNodeConfidence.IsLowConfidence(entry.Node)));
@@ -146,11 +146,11 @@ public class GraphQueryEngine
     /// Find all publishers to a queue/exchange.
     /// </summary>
     public async Task<IReadOnlyList<PublisherInfo>> FindPublishersAsync(
-        string name, string? project, IGraphReader? graph = null)
+        string name, string? repository, IGraphReader? graph = null)
     {
         var reader = graph ?? _store;
-        var candidates = project is not null
-            ? await reader.FindNodesByNameAsync(project, name)
+        var candidates = repository is not null
+            ? await reader.FindNodesByNameAsync(repository, name)
             : await reader.SearchNodesAsync(null, name, limit: 10);
 
         if (candidates.Count == 0)
@@ -166,7 +166,7 @@ public class GraphQueryEngine
             {
                 results.Add(new PublisherInfo(
                     entry.Node.Name,
-                    entry.Node.Project,
+                    entry.Node.Repository,
                     entry.Node.QualifiedName,
                     entry.EdgeType,
                     GraphNodeConfidence.IsLowConfidence(entry.Node)));
@@ -194,14 +194,14 @@ public class GraphQueryEngine
     private static readonly NodeLabel[] PackageLabels = [NodeLabel.Package, NodeLabel.NuGetPackage];
 
     /// <summary>
-    /// Get architecture overview for a project. Every figure is aggregated by the store over the
+    /// Get architecture overview for a repository. Every figure is aggregated by the store over the
     /// whole graph; only the listed rows are bounded.
     /// </summary>
-    public async Task<ArchitectureReport> GetArchitectureAsync(string project)
+    public async Task<ArchitectureReport> GetArchitectureAsync(string repository)
     {
-        var labelCounts = await _store.GetNodeCountsByLabelForProjectAsync(project);
-        var summary = await _store.GetRepositorySummaryAsync(project);
-        var crossRepoEdges = await _store.FindCrossRepoEdgesAsync(project);
+        var labelCounts = await _store.GetNodeCountsByLabelForRepositoryAsync(repository);
+        var summary = await _store.GetRepositorySummaryAsync(repository);
+        var crossRepoEdges = await _store.FindCrossRepoEdgesAsync(repository);
 
         var nodesByLabel = new Dictionary<NodeLabel, int>();
         foreach (var (label, count) in labelCounts)
@@ -212,7 +212,7 @@ public class GraphQueryEngine
 
         // Hotspots: methods/functions with high CALLS fan-in.
         var hotspots = (await _store.GetTopInDegreeNodesAsync(
-                project, CallEdges, CallableLabels, HotspotMinFanIn, ArchitectureHotspotLimit))
+                repository, CallEdges, CallableLabels, HotspotMinFanIn, ArchitectureHotspotLimit))
             .Select(entry => new HotspotInfo(
                 entry.Node.Name,
                 entry.Node.QualifiedName,
@@ -222,7 +222,7 @@ public class GraphQueryEngine
 
         // Key type relationships: the types most implemented/inherited, including external stubs.
         var supertypes = (await _store.GetTopInDegreeNodesAsync(
-                project, SupertypeEdges, targetLabels: null, minInDegree: 1, ArchitectureSupertypeLimit))
+                repository, SupertypeEdges, targetLabels: null, minInDegree: 1, ArchitectureSupertypeLimit))
             .Select(entry => new SupertypeInfo(
                 entry.Node.Name,
                 entry.Node.QualifiedName,
@@ -234,7 +234,7 @@ public class GraphQueryEngine
         // External package dependencies (every ecosystem); in-repo package definitions are not
         // dependencies. All referenced packages are counted, only the top rows are listed.
         var packages = (await _store.GetTopInDegreeNodesAsync(
-                project, PackageEdges, PackageLabels, minInDegree: 1, limit: int.MaxValue))
+                repository, PackageEdges, PackageLabels, minInDegree: 1, limit: int.MaxValue))
             .Where(entry => !IsTrue(entry.Node.Properties.GetValueOrDefault("is_definition")))
             .Select(entry => new PackageDependencyInfo(
                 entry.Node.Name,
@@ -243,11 +243,11 @@ public class GraphQueryEngine
                 entry.InDegree))
             .ToList();
 
-        var inboundDeps = crossRepoEdges.Where(e => e.TargetProject == project).ToList();
-        var outboundDeps = crossRepoEdges.Where(e => e.SourceProject == project).ToList();
+        var inboundDeps = crossRepoEdges.Where(e => e.TargetRepository == repository).ToList();
+        var outboundDeps = crossRepoEdges.Where(e => e.SourceRepository == repository).ToList();
 
         return new ArchitectureReport(
-            project,
+            repository,
             summary?.Summary,
             summary?.Confidence,
             nodesByLabel,
@@ -321,35 +321,35 @@ public class GraphQueryEngine
     /// <summary>
     /// Find repos with no inbound or outbound dependencies.
     /// </summary>
-    public async Task<IReadOnlyList<ProjectInfo>> FindArchivalCandidatesAsync()
+    public async Task<IReadOnlyList<RepositoryInfo>> FindArchivalCandidatesAsync()
     {
-        var noEdgeNames = (await _store.FindProjectsWithNoCrossRepoEdgesAsync()).ToHashSet();
-        var projects = await _store.ListRepositoriesAsync();
-        return projects.Where(p => noEdgeNames.Contains(p.Name)).ToList();
+        var noEdgeNames = (await _store.FindRepositoriesWithNoCrossRepoEdgesAsync()).ToHashSet();
+        var repositories = await _store.ListRepositoriesAsync();
+        return repositories.Where(p => noEdgeNames.Contains(p.Name)).ToList();
     }
 
     /// <summary>
     /// Find repos not updated within a given timeframe.
     /// </summary>
-    public async Task<IReadOnlyList<ProjectInfo>> FindStaleReposAsync(TimeSpan threshold)
+    public async Task<IReadOnlyList<RepositoryInfo>> FindStaleReposAsync(TimeSpan threshold)
     {
-        var projects = await _store.ListRepositoriesAsync();
+        var repositories = await _store.ListRepositoriesAsync();
         var cutoff = DateTime.UtcNow - threshold;
-        return projects.Where(p => p.IndexedAt < cutoff).ToList();
+        return repositories.Where(p => p.IndexedAt < cutoff).ToList();
     }
 
     /// <summary>
-    /// Get health summary, hotspot files, and AI analysis for a project.
+    /// Get health summary, hotspot files, and AI analysis for a repository.
     /// </summary>
-    public async Task<ProjectHealthReport> GetProjectHealthAsync(string project, int topHotspots = 10)
+    public async Task<RepositoryHealthReport> GetRepositoryHealthAsync(string repository, int topHotspots = 10)
     {
-        var summaries = await _store.GetProjectHealthSummariesAsync(project);
+        var summaries = await _store.GetProjectHealthSummariesAsync(repository);
         var repoSummary = summaries.FirstOrDefault(s => string.IsNullOrEmpty(s.DotnetProject));
-        var projectSummaries = summaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
-        var hotspots = await _store.GetHotspotsAsync(project, topHotspots);
-        var analyses = await _store.GetProjectHealthAnalysesAsync(project);
+        var dotnetProjectSummaries = summaries.Where(s => !string.IsNullOrEmpty(s.DotnetProject)).ToList();
+        var hotspots = await _store.GetHotspotsAsync(repository, topHotspots);
+        var analyses = await _store.GetProjectHealthAnalysesAsync(repository);
 
-        return new ProjectHealthReport(project, repoSummary, projectSummaries, hotspots, analyses);
+        return new RepositoryHealthReport(repository, repoSummary, dotnetProjectSummaries, hotspots, analyses);
     }
 }
 
@@ -358,7 +358,7 @@ public class GraphQueryEngine
 public record SearchRequest(
     string NamePattern,
     NodeLabel? Label = null,
-    string? Project = null,
+    string? Repository = null,
     int Limit = 20);
 
 public record SearchResult(
@@ -379,20 +379,20 @@ public record DataLineageResult(
 
 public record ConsumerInfo(
     string Name,
-    string Project,
+    string Repository,
     string QualifiedName,
     EdgeType EdgeType,
     bool LowConfidence = false);
 
 public record PublisherInfo(
     string Name,
-    string Project,
+    string Repository,
     string QualifiedName,
     EdgeType EdgeType,
     bool LowConfidence = false);
 
 public record ArchitectureReport(
-    string Project,
+    string Repository,
     string? Summary,
     ConfidenceLevel? Confidence,
     Dictionary<NodeLabel, int> NodeCounts,
@@ -404,14 +404,14 @@ public record ArchitectureReport(
     IReadOnlyDictionary<string, int> PackageDependencyCountsByEcosystem,
     IReadOnlyList<SupertypeInfo> TopSupertypes);
 
-/// <summary>An external package the project depends on, with how many of its manifests/projects reference it.</summary>
+/// <summary>An external package the repository depends on, with how many of its manifests/repositories reference it.</summary>
 public record PackageDependencyInfo(
     string Name,
     string Ecosystem,
     string? Version,
     int DependentCount);
 
-/// <summary>A type the project implements or inherits from, with how many of its types do.</summary>
+/// <summary>A type the repository implements or inherits from, with how many of its types do.</summary>
 public record SupertypeInfo(
     string Name,
     string QualifiedName,
@@ -425,9 +425,9 @@ public record HotspotInfo(
     int FanIn,
     string Reason);
 
-public record ProjectHealthReport(
-    string Project,
+public record RepositoryHealthReport(
+    string Repository,
     ProjectHealthSummaryEntity? RepoHealth,
-    IReadOnlyList<ProjectHealthSummaryEntity> ProjectHealths,
+    IReadOnlyList<ProjectHealthSummaryEntity> DotnetProjectHealths,
     IReadOnlyList<FileMetricsEntity> TopHotspots,
     IReadOnlyList<ProjectHealthAnalysisEntity> Analyses);

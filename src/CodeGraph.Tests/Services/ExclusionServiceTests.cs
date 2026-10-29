@@ -58,7 +58,7 @@ public class ExclusionServiceTests
     {
         await _service.CreateRuleAsync("group", "old-svn-repos", "complete", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("my-project", "old-svn-repos/sub");
+        var result = await _service.GetExclusionTypeAsync("my-repository", "old-svn-repos/sub");
         result.ShouldBe("complete");
     }
 
@@ -67,7 +67,7 @@ public class ExclusionServiceTests
     {
         await _service.CreateRuleAsync("group", "utilities", "no_analysis", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("my-project", "parent/utilities/child");
+        var result = await _service.GetExclusionTypeAsync("my-repository", "parent/utilities/child");
         result.ShouldBe("no_analysis");
     }
 
@@ -76,7 +76,7 @@ public class ExclusionServiceTests
     {
         await _service.CreateRuleAsync("group", "Utilities", "complete", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("my-project", "parent/utilities");
+        var result = await _service.GetExclusionTypeAsync("my-repository", "parent/utilities");
         result.ShouldBe("complete");
     }
 
@@ -86,7 +86,7 @@ public class ExclusionServiceTests
         await _service.CreateRuleAsync("group", "util", "complete", null, "test");
 
         // "utilities" contains "util" but is not an exact segment match
-        var result = await _service.GetExclusionTypeAsync("my-project", "utilities/sub");
+        var result = await _service.GetExclusionTypeAsync("my-repository", "utilities/sub");
         result.ShouldBeNull();
     }
 
@@ -95,7 +95,7 @@ public class ExclusionServiceTests
     {
         await _service.CreateRuleAsync("group", "utilities", "complete", null, "test");
 
-        var result = await _service.GetExclusionTypeAsync("my-project", null);
+        var result = await _service.GetExclusionTypeAsync("my-repository", null);
         result.ShouldBeNull();
     }
 
@@ -133,7 +133,7 @@ public class ExclusionServiceTests
         updated.Reason.ShouldBe("Changed");
 
         // Verify the change is reflected in lookups
-        var exclusionType = await _service.GetExclusionTypeAsync("my-project", "utilities");
+        var exclusionType = await _service.GetExclusionTypeAsync("my-repository", "utilities");
         exclusionType.ShouldBe("no_analysis");
     }
 
@@ -152,7 +152,7 @@ public class ExclusionServiceTests
         var deleted = await _service.DeleteRuleAsync(created.Id);
         deleted.ShouldBeTrue();
 
-        var exclusionType = await _service.GetExclusionTypeAsync("my-project", "utilities");
+        var exclusionType = await _service.GetExclusionTypeAsync("my-repository", "utilities");
         exclusionType.ShouldBeNull();
     }
 
@@ -169,13 +169,13 @@ public class ExclusionServiceTests
     public async Task CacheInvalidatedOnCreate()
     {
         // Prime the cache
-        var before = await _service.GetExclusionTypeAsync("my-project", "utilities");
+        var before = await _service.GetExclusionTypeAsync("my-repository", "utilities");
         before.ShouldBeNull();
 
         // Create a rule — should invalidate cache
         await _service.CreateRuleAsync("group", "utilities", "complete", null, "admin");
 
-        var after = await _service.GetExclusionTypeAsync("my-project", "utilities");
+        var after = await _service.GetExclusionTypeAsync("my-repository", "utilities");
         after.ShouldBe("complete");
     }
 
@@ -185,13 +185,13 @@ public class ExclusionServiceTests
         var created = await _service.CreateRuleAsync("group", "utilities", "complete", null, "admin");
 
         // Prime the cache
-        var before = await _service.GetExclusionTypeAsync("my-project", "utilities");
+        var before = await _service.GetExclusionTypeAsync("my-repository", "utilities");
         before.ShouldBe("complete");
 
         // Delete — should invalidate cache
         await _service.DeleteRuleAsync(created.Id);
 
-        var after = await _service.GetExclusionTypeAsync("my-project", "utilities");
+        var after = await _service.GetExclusionTypeAsync("my-repository", "utilities");
         after.ShouldBeNull();
     }
 
@@ -238,31 +238,31 @@ public class ExclusionServiceTests
         await _store.UpsertSecurityFindingsBatchAsync("TestRepo", [
             new SecurityFindingEntity
             {
-                Project = "TestRepo", Category = "secret", Severity = "critical",
+                Repository = "TestRepo", Category = "secret", Severity = "critical",
                 Title = "AWS Key", Description = "Found AWS key",
                 FilePath = "src/Config.cs", ComputedAt = DateTime.UtcNow
             },
             new SecurityFindingEntity
             {
-                Project = "TestRepo", Category = "secret", Severity = "high",
+                Repository = "TestRepo", Category = "secret", Severity = "high",
                 Title = "Connection String", Description = "Found conn string",
                 FilePath = "src/Config.cs", ComputedAt = DateTime.UtcNow
             },
             new SecurityFindingEntity
             {
-                Project = "TestRepo", Category = "secret", Severity = "critical",
+                Repository = "TestRepo", Category = "secret", Severity = "critical",
                 Title = "Private Key", Description = "Found private key",
                 FilePath = "src/Keys/private.cs", ComputedAt = DateTime.UtcNow
             },
             new SecurityFindingEntity
             {
-                Project = "TestRepo", Category = "vulnerability", Severity = "high",
+                Repository = "TestRepo", Category = "vulnerability", Severity = "high",
                 Title = "Vulnerable NuGet", Description = "Old package",
                 FilePath = "src/Service.cs", ComputedAt = DateTime.UtcNow
             },
             new SecurityFindingEntity
             {
-                Project = "TestRepo", Category = "attack_surface", Severity = "medium",
+                Repository = "TestRepo", Category = "attack_surface", Severity = "medium",
                 Title = "SQL Injection", Description = "String interpolation",
                 FilePath = "src/Data.cs", ComputedAt = DateTime.UtcNow
             }
@@ -278,7 +278,7 @@ public class ExclusionServiceTests
     }
 
     [Fact]
-    public async Task SecretFilePaths_EmptyForProjectWithNoFindings()
+    public async Task SecretFilePaths_EmptyForRepositoryWithNoFindings()
     {
         var secretPaths = await _service.GetSecretFilePathsAsync("NonExistent");
         secretPaths.Count.ShouldBe(0);
@@ -290,7 +290,7 @@ public class ExclusionServiceTests
         await _store.UpsertSecurityFindingsBatchAsync("TestRepo", [
             new SecurityFindingEntity
             {
-                Project = "TestRepo", Category = "secret", Severity = "critical",
+                Repository = "TestRepo", Category = "secret", Severity = "critical",
                 Title = "JWT Secret", Description = "Found JWT",
                 FilePath = null, ComputedAt = DateTime.UtcNow
             }
@@ -301,12 +301,12 @@ public class ExclusionServiceTests
     }
 
     [Fact]
-    public async Task SecretFilePaths_OnlyReturnsForRequestedProject()
+    public async Task SecretFilePaths_OnlyReturnsForRequestedRepository()
     {
         await _store.UpsertSecurityFindingsBatchAsync("RepoA", [
             new SecurityFindingEntity
             {
-                Project = "RepoA", Category = "secret", Severity = "critical",
+                Repository = "RepoA", Category = "secret", Severity = "critical",
                 Title = "AWS Key", Description = "Found",
                 FilePath = "src/config.cs", ComputedAt = DateTime.UtcNow
             }
@@ -314,7 +314,7 @@ public class ExclusionServiceTests
         await _store.UpsertSecurityFindingsBatchAsync("RepoB", [
             new SecurityFindingEntity
             {
-                Project = "RepoB", Category = "secret", Severity = "critical",
+                Repository = "RepoB", Category = "secret", Severity = "critical",
                 Title = "Private Key", Description = "Found",
                 FilePath = "src/key.cs", ComputedAt = DateTime.UtcNow
             }
