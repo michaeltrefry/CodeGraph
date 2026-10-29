@@ -108,8 +108,8 @@ public sealed record ItemView(
     AcceptanceReportView? AcceptanceReport = null,
     IReadOnlyList<AttemptView>? Attempts = null,
     int? AttemptCount = null,
-    // Filled by the messages story (S7): open questions and requests about the item.
-    IReadOnlyList<object>? OpenMessages = null,
+    // The messages story (S7): open questions and requests about the item.
+    IReadOnlyList<MessageLine>? OpenMessages = null,
     // The knowledge relevant to the item (S5): linked to it, scoped to its touches, its repository or the project.
     IReadOnlyList<KnowledgeRow>? Knowledge = null)
 {

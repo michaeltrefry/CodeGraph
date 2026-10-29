@@ -9,7 +9,8 @@ namespace CodeGraph.Services.Work;
 /// divided by three, which over-counts typical English and JSON, so a briefing within its estimate
 /// stays within the budget. Long handoff texts are always cut; when the briefing is still over
 /// budget, sections are shortened from the lowest rank up (the suggestion, other sessions, busy resources, goals,
-/// the focus item, then my own work beyond the first item, then my holds) and named in <c>truncated</c>.
+/// the focus item, the inbox lines down to its count, then my own work beyond the first item, then my holds)
+/// and named in <c>truncated</c>.
 /// Empty sections are left out.
 /// </summary>
 public static class WorkBriefings
@@ -93,6 +94,12 @@ public static class WorkBriefings
             null => null,
             { LatestHandoff: not null } focus => view with { Focus = focus with { LatestHandoff = null } },
             _ => view with { Focus = null }
+        }),
+        new("inbox", view => view.Inbox switch
+        {
+            { Items: { Count: > 1 } items } inbox => view with { Inbox = inbox with { Items = items.Take(items.Count - 1).ToList() } },
+            { Items: not null } inbox => view with { Inbox = inbox with { Items = null } },
+            _ => null
         }),
         new("my_work", view =>
         {

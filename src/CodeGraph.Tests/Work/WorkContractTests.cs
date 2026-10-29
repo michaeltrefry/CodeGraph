@@ -110,7 +110,7 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge"]);
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge", "post", "inbox", "ack"]);
         foreach (var tool in tools)
         {
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;
@@ -326,5 +326,13 @@ public sealed class WorkContractTests
         public Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<SyncPlanApplied> ApplyPlanAsync(Guid previewId, Guid? projectId, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<PostedMessage> PostMessageAsync(NewMessageSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
+        public Task<InboxPage> ReadInboxAsync(InboxQuery query, CancellationToken ct = default) => throw Fail();
+        public Task<long> GetInboxHeadAsync(CancellationToken ct = default) => throw Fail();
+        public Task<AckResult> AckAsync(AckSpec spec, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<int> CountUnreadAsync(string recipient, Guid projectId, CancellationToken ct = default) => throw Fail();
+        public Task MarkDeliveredAsync(string recipient, IReadOnlyList<Guid> messageIds, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<MessageEventView>> ReadMessageEventsAsync(Guid projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<long> GetMessageEventHeadAsync(CancellationToken ct = default) => throw Fail();
     }
 }

@@ -218,6 +218,7 @@ public sealed record BriefingView(
     BriefingItem? Focus = null,
     IReadOnlyList<BriefingSession>? OtherSessions = null,
     BriefingItem? SuggestedNext = null,
+    BriefingInbox? Inbox = null,
     IReadOnlyList<string>? Truncated = null,
     IReadOnlyList<HoldView>? MyHolds = null,
     IReadOnlyList<ResourceView>? Resources = null,

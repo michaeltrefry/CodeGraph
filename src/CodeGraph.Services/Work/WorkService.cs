@@ -91,6 +91,9 @@ public sealed partial class WorkService(
             WorkTools.Record => WorkJson.Parse<RecordRequest>(arguments, tool),
             WorkTools.Recall => WorkJson.Parse<RecallRequest>(arguments, tool),
             WorkTools.ImportKnowledge => WorkJson.Parse<ImportKnowledgeRequest>(arguments, tool),
+            WorkTools.Post => WorkJson.Parse<PostRequest>(arguments, tool),
+            WorkTools.Inbox => WorkJson.Parse<InboxRequest>(arguments, tool),
+            WorkTools.Ack => WorkJson.Parse<AckRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -157,8 +160,15 @@ public sealed partial class WorkService(
             RecordRequest record => await RecordAsync(record, actor, session, ct),
             RecallRequest recall => await RecallAsync(recall, session, ct),
             ImportKnowledgeRequest import => await ImportKnowledgeAsync(import, actor, session, ct),
+            PostRequest post => await PostAsync(post, actor, session, ct),
+            InboxRequest inbox => await InboxAsync(inbox, actor, session, ct),
+            AckRequest ack => await AckAsync(ack, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
+
+        // The briefing and the inbox carry their own unread count.
+        if (actor.SessionId is not null && request is not (GetBriefingRequest or InboxRequest))
+            result = await WithUnreadAsync(result, actor, session, ct);
         return (result, actor);
     }
 
@@ -280,10 +290,14 @@ public sealed partial class WorkService(
 
     private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, IReadOnlyList<string> paths, int budget, CancellationToken ct)
     {
-        var briefing = await Store.ReadBriefingAsync(sessionId, focus, ct);
+        var read = await Store.ReadBriefingAsync(sessionId, focus, ct);
         var warnings = await TryOverlapWarningsAsync(sessionId, BriefingOverlapDeadline, ct);
-        if (warnings.Count > 0) briefing = briefing with { OverlapWarnings = warnings };
-        return WorkBriefings.Fit(briefing with { Knowledge = await BriefingKnowledgeAsync(sessionId, briefing, paths, ct) }, budget);
+        if (warnings.Count > 0) read = read with { OverlapWarnings = warnings };
+        var briefing = WorkBriefings.Fit(read with { Knowledge = await BriefingKnowledgeAsync(sessionId, read, paths, ct) }, budget);
+        // A message shown in a briefing is delivered (§5.9); one the budget cut is not.
+        if (briefing.Inbox?.Items is { Count: > 0 } shown)
+            await Store.MarkDeliveredAsync(sessionId.ToString(), shown.Select(line => line.Id).ToList(), ct);
+        return briefing;
     }
 
     private int Budget(int? requested)
