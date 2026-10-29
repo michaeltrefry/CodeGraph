@@ -195,7 +195,8 @@ public sealed record BriefingView(
     BriefingInbox? Inbox = null,
     IReadOnlyList<string>? Truncated = null,
     IReadOnlyList<HoldView>? MyHolds = null,
-    IReadOnlyList<ResourceView>? Resources = null);
+    IReadOnlyList<ResourceView>? Resources = null,
+    IReadOnlyList<OverlapWarning>? OverlapWarnings = null);
 
 public sealed record BriefingProject(string Key, string Name, IReadOnlyList<string>? Goals = null);
 

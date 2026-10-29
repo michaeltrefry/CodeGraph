@@ -54,6 +54,10 @@ public static class CgRender
             foreach (var hold in myHolds.OfType<JsonObject>())
                 yield return "my hold: " + HoldLine(hold, withResource: true);
 
+        if (briefing["overlap_warnings"] is JsonArray overlaps)
+            foreach (var warning in overlaps.OfType<JsonObject>())
+                yield return $"overlap warning ({Str(warning["kind"])}): {Str(warning["message"])}";
+
         if (briefing["resources"] is JsonArray resources)
             foreach (var line in Resources(resources))
                 yield return line;
@@ -61,7 +65,7 @@ public static class CgRender
         // Sections of later stories (S5, S7, S8) print as they appear; unknown ones as their JSON.
         foreach (var (name, value) in briefing.AsObject())
         {
-            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "inbox" or "truncated" or "my_holds" or "resources" || value is null)
+            if (name is "session_id" or "budget_tokens" or "estimated_tokens" or "project" or "my_work" or "focus" or "other_sessions" or "suggested_next" or "inbox" or "truncated" or "my_holds" or "resources" or "overlap_warnings" || value is null)
                 continue;
             yield return $"{name.Replace('_', ' ')}: {value.ToJsonString()}";
         }

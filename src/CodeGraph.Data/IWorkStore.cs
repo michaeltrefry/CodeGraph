@@ -87,6 +87,13 @@ public interface IWorkStore : IWorkMessageStore
     /// <summary>Releases a hold or leaves the queue, then promotes waiters. Releasing an ended hold changes nothing.</summary>
     Task<ReleaseResult> ReleaseHoldAsync(Guid holdId, WorkActor actor, CancellationToken ct = default);
 
+    /// <summary>
+    /// The work areas of a project (sc-27872): each live claim held by a live session, on an
+    /// unfinished item that has touches. Read-only; a claim whose session is silent past the idle
+    /// threshold, or lapsed, is not listed.
+    /// </summary>
+    Task<IReadOnlyList<WorkArea>> ReadLiveWorkAreasAsync(Guid projectId, CancellationToken ct = default);
+
     // ---- Planning (sc-27868) -----------------------------------------------------------------
 
     /// <summary>
