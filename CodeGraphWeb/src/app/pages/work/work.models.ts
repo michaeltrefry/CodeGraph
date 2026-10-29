@@ -196,6 +196,8 @@ export interface ItemView {
   attempt_count?: number;
   open_messages?: MessageLine[];
   knowledge?: KnowledgeRow[];
+  /** Rules matched to this item (S9), read only here. */
+  rules?: { id: string; summary: string; version: number; priority: string; activity: string[]; recurrence?: number }[];
 }
 
 export interface WorkChange {

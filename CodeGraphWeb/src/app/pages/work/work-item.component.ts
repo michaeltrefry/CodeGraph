@@ -180,6 +180,13 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
               <wrk-message-composer [project]="it.project_key" [item]="it.key" (posted)="reload()" />
             </section>
 
+            @if ((it.rules ?? []).length > 0) {
+              <section class="wrk-card" aria-labelledby="wrk-h-rules">
+                <h2 id="wrk-h-rules">Rules that apply</h2>
+                <ul class="wrk-list" data-testid="rules">@for (r of it.rules; track r.id) { <li><div class="wrk-row"><span class="wrk-chip">{{ r.priority }}</span><span>{{ r.summary }}</span><span class="wrk-sub">{{ r.activity.join(', ') }}</span></div></li> }</ul>
+              </section>
+            }
+
             @if ((it.knowledge ?? []).length > 0) {
               <section class="wrk-card" aria-labelledby="wrk-h-know">
                 <h2 id="wrk-h-know">Relevant knowledge</h2>
