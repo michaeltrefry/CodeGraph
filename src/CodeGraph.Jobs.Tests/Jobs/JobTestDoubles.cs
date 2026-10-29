@@ -5,6 +5,7 @@ using CodeGraph.Models.Responses;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Assistant;
+using CodeGraph.Services.Work;
 
 namespace CodeGraph.Jobs.Tests.Jobs;
 
@@ -228,6 +229,18 @@ internal sealed class RecordingAssistantRetentionCleanupService : IAssistantRete
     public AssistantRetentionCleanupResult Result { get; set; } = new(1, 2, 3, 4, 5, 6);
 
     public Task<AssistantRetentionCleanupResult> CleanupAsync(CancellationToken ct = default)
+    {
+        Calls++;
+        return Task.FromResult(Result);
+    }
+}
+
+internal sealed class RecordingWorkMessageRetentionService : IWorkMessageRetentionService
+{
+    public int Calls { get; private set; }
+    public MessageRetentionResult Result { get; set; } = new(0, 0, 0);
+
+    public Task<MessageRetentionResult> CleanupAsync(CancellationToken ct = default)
     {
         Calls++;
         return Task.FromResult(Result);

@@ -32,6 +32,21 @@ public interface IWorkMessageStore
 
     /// <summary>The newest message event sequence, 0 when none.</summary>
     Task<long> GetMessageEventHeadAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Retention (sc-27887): deletes message events created before <paramref name="cutoff"/>, and messages
+    /// created and resolved before it whose every delivery was read before it, with their deliveries.
+    /// Never deletes an open question or request, a message with an unread delivery (so none that a new
+    /// session could still inherit), a message of an item that is not complete or closed, or the newest
+    /// delivery and event (so heads and AUTO_INCREMENT cursors stay as they were). Batches of at most
+    /// <paramref name="batchSize"/> rows, each under the messages lock.
+    /// </summary>
+    Task<MessageRetentionResult> PruneMessagesAsync(DateTime cutoff, int batchSize, CancellationToken ct = default);
+}
+
+public sealed record MessageRetentionResult(int MessagesDeleted, int DeliveriesDeleted, int EventsDeleted)
+{
+    public int TotalRowsDeleted => MessagesDeleted + DeliveriesDeleted + EventsDeleted;
 }
 
 /// <param name="ItemId">The item whose thread this is, or null.</param>
