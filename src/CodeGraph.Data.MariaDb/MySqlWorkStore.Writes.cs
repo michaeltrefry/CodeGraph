@@ -1,0 +1,916 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using CodeGraph.Data;
+using CodeGraph.Models.Work;
+using Dapper;
+using MySqlConnector;
+
+namespace CodeGraph.Data.MariaDb;
+
+public sealed partial class MySqlWorkStore
+{
+    private const string ProjectOperation = "project";
+    private const string FeatureOperation = "feature";
+    private const string ItemOperation = "item";
+    private const string PlanOperation = "plan";
+    private const string NextWorkOperation = "next_work";
+
+    // ---- Projects ----------------------------------------------------------------------------
+
+    public Task<WorkCreated<ProjectView>> CreateProjectAsync(NewProjectSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
+        // A project has no parent row to hold, so creates run one at a time under a named lock
+        // (KanbanBoard's kanban_project_creates): the look-up of the key and the INSERT of two
+        // concurrent creates cannot interleave, and the second finds the first one's project.
+        RunAsync([ProjectCreateLockName], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            if (keyHash is not null && await FindKeyAsync(connection, transaction, GlobalScope, ProjectOperation, keyHash, ct) is { EntityId: { } existing })
+            {
+                var current = await LoadProjectViewAsync(connection, transaction, existing, withCounts: false, ct);
+                if (current is not null)
+                    return new WorkCreated<ProjectView>(false, current);
+            }
+
+            var taken = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+                "SELECT id FROM work_projects WHERE project_key = @Key", new { spec.Key }, transaction, cancellationToken: ct));
+            if (taken is not null)
+                throw new WorkException(WorkErrorCodes.Conflict, $"Project key '{spec.Key}' is taken by another project. Nothing was created.");
+
+            await ValidateRepositoriesAsync(connection, transaction, null, spec.Repositories, ct);
+
+            var id = Guid.NewGuid();
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO work_projects (id, project_key, name, description, goals_json, version, created_by, created_by_kind, created_session_id, created_at, updated_at) " +
+                "VALUES (@id, @Key, @Name, @Description, @goals, 1, @actorName, @actorKind, @actorSession, @now, @now)",
+                new { id, spec.Key, spec.Name, spec.Description, goals = JsonSerializer.Serialize(spec.Goals), actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now },
+                transaction, cancellationToken: ct));
+            await WriteRepositoriesAsync(connection, transaction, id, spec.Repositories, ct);
+            if (keyHash is not null)
+                await InsertKeyAsync(connection, transaction, GlobalScope, ProjectOperation, keyHash, id, null, now, ct);
+
+            var view = (await LoadProjectViewAsync(connection, transaction, id, withCounts: false, ct))!;
+            await CommitAsync(connection, transaction,
+                [new PendingChange(id, view.Key, WorkEntityKind.Project, id, view.Key, WorkChangeKinds.ProjectCreated, Diff(null, Snapshot(view)))],
+                actor, now, ct);
+            return new WorkCreated<ProjectView>(true, view);
+        }, ct);
+
+    public Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
+        RunAsync([], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            // The conditional UPDATE is the first statement: it decides expected_version and holds
+            // the project's row, which every create in the project and every item write that names
+            // a repository also takes first.
+            await AdvanceAsync(connection, transaction, "work_projects", projectId, expectedVersion, now,
+                () => LoadProjectViewAsync(connection, transaction, projectId, withCounts: false, ct), "Project", ct);
+
+            var before = (await LoadProjectViewAsync(connection, transaction, projectId, withCounts: false, ct))!;
+            var name = patch.Name ?? before.Name;
+            var description = patch.ClearDescription ? null : patch.Description ?? before.Description;
+            var goals = patch.Goals ?? before.Goals;
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_projects SET name = @name, description = @description, goals_json = @goals WHERE id = @projectId",
+                new { name, description, goals = JsonSerializer.Serialize(goals), projectId }, transaction, cancellationToken: ct));
+
+            if (patch.Repositories is { } repositories)
+            {
+                await ValidateRepositoriesAsync(connection, transaction, projectId, repositories, ct);
+                var keptOwned = repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToHashSet(StringComparer.Ordinal);
+                var dropped = before.Repositories
+                    .Where(member => member.Role == RepositoryRole.Owned && !keptOwned.Contains(member.Repository))
+                    .Select(member => member.Repository)
+                    .ToArray();
+                if (dropped.Length > 0)
+                {
+                    var inUse = (await connection.QueryAsync<string>(new CommandDefinition(
+                        "SELECT DISTINCT repository_name FROM work_items WHERE project_id = @projectId AND repository_name IN @dropped",
+                        new { projectId, dropped }, transaction, cancellationToken: ct))).ToList();
+                    if (inUse.Count > 0)
+                        throw new WorkException(WorkErrorCodes.Conflict,
+                            $"Items of this project still name {string.Join(", ", inUse)} as their repository, so it cannot stop being an owned repository. Move or clear those items first. Nothing was changed.");
+                }
+
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM work_project_repositories WHERE project_id = @projectId", new { projectId }, transaction, cancellationToken: ct));
+                await WriteRepositoriesAsync(connection, transaction, projectId, repositories, ct);
+            }
+
+            var after = (await LoadProjectViewAsync(connection, transaction, projectId, withCounts: false, ct))!;
+            var beforeSnapshot = Snapshot(before);
+            beforeSnapshot["version"] = expectedVersion;
+            await CommitAsync(connection, transaction,
+                [new PendingChange(projectId, after.Key, WorkEntityKind.Project, projectId, after.Key, WorkChangeKinds.ProjectUpdated, Diff(beforeSnapshot, Snapshot(after)))],
+                actor, now, ct);
+            return after;
+        }, ct);
+
+    private static Dictionary<string, object?> Snapshot(ProjectView project) => new()
+    {
+        ["key"] = project.Key,
+        ["name"] = project.Name,
+        ["description"] = project.Description,
+        ["goals"] = project.Goals,
+        ["repositories"] = project.Repositories,
+        ["version"] = project.Version
+    };
+
+    // Every repository is one CodeGraph indexes, and an owned one is owned by no other project.
+    private static async Task ValidateRepositoriesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid? projectId, IReadOnlyList<RepositoryMemberView> repositories, CancellationToken ct)
+    {
+        if (repositories.Count == 0)
+            return;
+
+        var names = repositories.Select(member => member.Repository).ToArray();
+        var known = (await connection.QueryAsync<string>(new CommandDefinition(
+            "SELECT name FROM repositories WHERE name IN @names", new { names }, transaction, cancellationToken: ct))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = names.Where(name => !known.Contains(name)).ToList();
+        if (unknown.Count > 0)
+            throw WorkException.Invalid($"CodeGraph indexes no repository named {string.Join(", ", unknown.Select(name => $"'{name}'"))}. Nothing was changed.");
+
+        var owned = repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToArray();
+        if (owned.Length == 0)
+            return;
+
+        var elsewhere = (await connection.QueryAsync<(string RepositoryName, string ProjectKey)>(new CommandDefinition(
+            "SELECT r.repository_name, p.project_key FROM work_project_repositories r JOIN work_projects p ON p.id = r.project_id " +
+            "WHERE r.owned_repository IN @owned AND (@projectId IS NULL OR r.project_id <> @projectId)",
+            new { owned, projectId }, transaction, cancellationToken: ct))).ToList();
+        if (elsewhere.Count > 0)
+            throw new WorkException(WorkErrorCodes.Conflict,
+                $"A repository is owned by at most one project: {string.Join(", ", elsewhere.Select(hit => $"{hit.RepositoryName} is owned by {hit.ProjectKey}"))}. Make it a dependency here, or change the other project first. Nothing was changed.");
+    }
+
+    private static async Task WriteRepositoriesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, IReadOnlyList<RepositoryMemberView> repositories, CancellationToken ct)
+    {
+        try
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO work_project_repositories (project_id, repository_name, role, position) VALUES (@projectId, @Repository, @role, @position)",
+                repositories.Select((member, position) => new { projectId, member.Repository, role = JsonName(member.Role), position }),
+                transaction, cancellationToken: ct));
+        }
+        catch (MySqlException exception) when (exception.Number == MySqlDuplicateEntry && exception.Message.Contains("ux_work_project_repositories_owned", StringComparison.Ordinal))
+        {
+            // Another project took the repository as owned while this write ran.
+            throw new WorkException(WorkErrorCodes.Conflict, "A repository of this write was made owned by another project at the same time. Nothing was changed.");
+        }
+    }
+
+    // ---- Features ----------------------------------------------------------------------------
+
+    public Task<WorkCreated<FeatureView>> CreateFeatureAsync(Guid projectId, NewFeatureSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
+        RunAsync([], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            var project = await HoldProjectAsync(connection, transaction, projectId, ct);
+            if (keyHash is not null && await FindKeyAsync(connection, transaction, projectId, FeatureOperation, keyHash, ct) is { EntityId: { } existing })
+                return new WorkCreated<FeatureView>(false, (await LoadFeatureViewAsync(connection, transaction, existing, withCounts: false, ct))!);
+
+            var id = await InsertFeatureAsync(connection, transaction, project, project.NextFeatureNumber, spec, actor, now, ct);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_projects SET next_feature_number = next_feature_number + 1 WHERE id = @projectId", new { projectId }, transaction, cancellationToken: ct));
+            if (keyHash is not null)
+                await InsertKeyAsync(connection, transaction, projectId, FeatureOperation, keyHash, id, null, now, ct);
+
+            var view = (await LoadFeatureViewAsync(connection, transaction, id, withCounts: false, ct))!;
+            await CommitAsync(connection, transaction, [FeatureCreatedEntry(view)], actor, now, ct);
+            return new WorkCreated<FeatureView>(true, view);
+        }, ct);
+
+    private static async Task<Guid> InsertFeatureAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, int number, NewFeatureSpec spec, WorkActor actor, DateTime now, CancellationToken ct)
+    {
+        var id = Guid.NewGuid();
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO work_features (id, project_id, number, title, description, version, created_by, created_by_kind, created_session_id, created_at, updated_at) " +
+            "VALUES (@id, @projectId, @number, @Title, @Description, 1, @actorName, @actorKind, @actorSession, @now, @now)",
+            new { id, projectId = project.Id, number, spec.Title, spec.Description, actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now },
+            transaction, cancellationToken: ct));
+        await InsertDocumentsAsync(connection, transaction, id, 0, spec.Documents, actor, now, ct);
+        return id;
+    }
+
+    private static Task InsertDocumentsAsync(MySqlConnection connection, MySqlTransaction transaction, Guid featureId, int firstPosition, IReadOnlyList<DocumentSpec> documents, WorkActor actor, DateTime now, CancellationToken ct) =>
+        documents.Count == 0
+            ? Task.CompletedTask
+            : connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO work_feature_documents (id, feature_id, position, title, body, created_by, created_at, updated_at) " +
+                "VALUES (@id, @featureId, @position, @Title, @Body, @createdBy, @now, @now)",
+                documents.Select((document, index) => new { id = Guid.NewGuid(), featureId, position = firstPosition + index, document.Title, document.Body, createdBy = actor.Name, now }),
+                transaction, cancellationToken: ct));
+
+    private static PendingChange FeatureCreatedEntry(FeatureView feature) =>
+        new(feature.ProjectId, feature.ProjectKey, WorkEntityKind.Feature, feature.Id, feature.Key, WorkChangeKinds.FeatureCreated,
+            WithDocuments(Diff(null, Snapshot(feature)), feature.Documents, null));
+
+    private static Dictionary<string, object?> Snapshot(FeatureView feature) => new()
+    {
+        ["title"] = feature.Title,
+        ["description"] = feature.Description,
+        ["version"] = feature.Version
+    };
+
+    // One "document" change per document added ({id, title, body}), or changed (old and new).
+    private static JsonArray WithDocuments(JsonArray changes, IReadOnlyList<DocumentView> added, IReadOnlyList<(DocumentView Before, DocumentView After)>? changed)
+    {
+        foreach (var document in added)
+            changes.Add(Change("document", null, new { document.Id, document.Title, document.Body }));
+        foreach (var (before, after) in changed ?? [])
+            changes.Add(Change("document", new { before.Id, before.Title, before.Body }, new { after.Id, after.Title, after.Body }));
+        return changes;
+    }
+
+    public Task<FeatureView> UpdateFeatureAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
+        RunAsync([], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            await AdvanceAsync(connection, transaction, "work_features", featureId, expectedVersion, now,
+                () => LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct), "Feature", ct);
+
+            var before = (await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct))!;
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_features SET title = @title, description = @description WHERE id = @featureId",
+                new { title = patch.Title ?? before.Title, description = patch.ClearDescription ? null : patch.Description ?? before.Description, featureId },
+                transaction, cancellationToken: ct));
+
+            var changed = new List<(DocumentView Before, DocumentView After)>();
+            foreach (var documentPatch in patch.UpdateDocuments ?? [])
+            {
+                var document = before.Documents.FirstOrDefault(candidate => candidate.Id == documentPatch.Id)
+                    ?? throw WorkException.NotFound($"Feature {before.Key} has no document {documentPatch.Id}. Nothing was changed.");
+                var updated = document with { Title = documentPatch.Title ?? document.Title, Body = documentPatch.Body ?? document.Body, UpdatedAt = now };
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE work_feature_documents SET title = @Title, body = @Body, updated_at = @now WHERE id = @Id",
+                    new { updated.Title, updated.Body, now, updated.Id }, transaction, cancellationToken: ct));
+                changed.Add((document, updated));
+            }
+
+            var firstPosition = before.Documents.Count == 0 ? 0 : before.Documents.Max(document => document.Position) + 1;
+            await InsertDocumentsAsync(connection, transaction, featureId, firstPosition, patch.AddDocuments ?? [], actor, now, ct);
+
+            var after = (await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct))!;
+            var beforeSnapshot = Snapshot(before);
+            beforeSnapshot["version"] = expectedVersion;
+            var added = after.Documents.Where(document => before.Documents.All(existing => existing.Id != document.Id)).ToList();
+            await CommitAsync(connection, transaction,
+                [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated,
+                    WithDocuments(Diff(beforeSnapshot, Snapshot(after)), added, changed))],
+                actor, now, ct);
+            return after;
+        }, ct);
+
+    // ---- Items -------------------------------------------------------------------------------
+
+    public Task<WorkCreated<ItemView>> CreateItemAsync(Guid projectId, NewItemSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
+        // With or without a key the create starts by holding the project's row: creates into one
+        // project run one at a time, so each takes the next number after the one before it has
+        // committed (no gaps, no duplicates) and a keyed repeat finds the first one's item.
+        RunAsync([], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            var project = await HoldProjectAsync(connection, transaction, projectId, ct);
+            if (keyHash is not null && await FindKeyAsync(connection, transaction, projectId, ItemOperation, keyHash, ct) is { EntityId: { } existing })
+                return new WorkCreated<ItemView>(false, (await LoadItemViewAsync(connection, transaction, existing, ct))!);
+
+            if (spec.Repository is { } repository)
+                await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct);
+            if (spec.FeatureId is { } featureId)
+                await RequireFeatureAsync(connection, transaction, project, featureId, ct);
+            if (spec.BlockedBy.Count > 0)
+                await RequireItemsOfProjectAsync(connection, transaction, project, spec.BlockedBy, ct);
+
+            // A new item blocks nothing yet, so its blockers cannot close a cycle: no dependency lock.
+            var id = Guid.NewGuid();
+            await InsertItemAsync(connection, transaction, project.Id, id, project.NextItemNumber, spec.Title, spec.Type, spec.Status, spec.Priority,
+                spec.Description, spec.Labels, spec.Repository, spec.FeatureId, spec.Order, actor, now, ct);
+            await InsertEdgesAsync(connection, transaction, spec.BlockedBy.Distinct().Select(blocker => (id, blocker)), now, ct);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_projects SET next_item_number = next_item_number + 1 WHERE id = @projectId", new { projectId }, transaction, cancellationToken: ct));
+            if (keyHash is not null)
+                await InsertKeyAsync(connection, transaction, projectId, ItemOperation, keyHash, id, null, now, ct);
+
+            var view = (await LoadItemViewAsync(connection, transaction, id, ct))!;
+            await CommitAsync(connection, transaction, [ItemCreatedEntry(view)], actor, now, ct);
+            return new WorkCreated<ItemView>(true, view);
+        }, ct);
+
+    private static Task InsertItemAsync(
+        MySqlConnection connection, MySqlTransaction transaction, Guid projectId, Guid id, int number, string title, WorkItemType type, WorkStatus status,
+        WorkPriority priority, string? description, IReadOnlyList<string> labels, string? repository, Guid? featureId, int order, WorkActor actor, DateTime now, CancellationToken ct) =>
+        connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO work_items (id, project_id, number, feature_id, item_type, title, description, status, priority, sort_order, labels, repository_name, " +
+            "version, created_by, created_by_kind, created_session_id, created_at, updated_at) " +
+            "VALUES (@id, @projectId, @number, @featureId, @type, @title, @description, @status, @priority, @order, @labels, @repository, 1, @actorName, @actorKind, @actorSession, @now, @now)",
+            new
+            {
+                id, projectId, number, featureId, type = JsonName(type), title, description, status = WorkStatuses.Name(status), priority = JsonName(priority),
+                order, labels = JoinLabels(labels), repository, actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now
+            },
+            transaction, cancellationToken: ct));
+
+    private static Task InsertEdgesAsync(MySqlConnection connection, MySqlTransaction transaction, IEnumerable<(Guid Blocked, Guid Blocker)> edges, DateTime now, CancellationToken ct)
+    {
+        var rows = edges.Select(edge => new { blocked = edge.Blocked, blocker = edge.Blocker, now }).ToList();
+        return rows.Count == 0
+            ? Task.CompletedTask
+            : connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO work_item_dependencies (blocked_item_id, blocker_item_id, created_at) VALUES (@blocked, @blocker, @now)",
+                rows, transaction, cancellationToken: ct));
+    }
+
+    private static PendingChange ItemCreatedEntry(ItemView item)
+    {
+        var changes = Diff(null, Snapshot(item));
+        foreach (var blocker in item.BlockedBy)
+            changes.Add(Change("blocked_by", null, blocker.Key));
+        return new PendingChange(item.ProjectId, item.ProjectKey, WorkEntityKind.Item, item.Id, item.Key, WorkChangeKinds.ItemCreated, changes);
+    }
+
+    // The fields of an item an update or a create can change, as the feed names them. The claim
+    // is the stored one (a lapsed claim is still what is stored).
+    private static Dictionary<string, object?> Snapshot(ItemView item) => new()
+    {
+        ["title"] = item.Title,
+        ["description"] = item.Description,
+        ["type"] = item.Type,
+        ["status"] = item.Status,
+        ["priority"] = item.Priority,
+        ["order"] = item.Order,
+        ["labels"] = item.Labels.Count == 0 ? null : item.Labels,
+        ["repository"] = item.Repository,
+        ["feature"] = item.Feature?.Key,
+        ["version"] = item.Version
+    };
+
+    private static Dictionary<string, object?> ClaimSnapshot(ItemRow row) => new()
+    {
+        ["claim_holder"] = row.ClaimHolder,
+        ["claim_marker"] = row.ClaimMarker,
+        ["claim_expires_at"] = row.ClaimExpiresAt is { } expires ? Utc(expires) : null
+    };
+
+    public async Task<ItemView> UpdateItemAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
+    {
+        // A project id never changes, so it can be read before the write's transaction starts.
+        Guid projectId;
+        await using (var lookup = await OpenAsync(ct))
+        {
+            projectId = await lookup.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+                "SELECT project_id FROM work_items WHERE id = @itemId", new { itemId }, cancellationToken: ct))
+                ?? throw WorkException.NotFound($"There is no item {itemId}.");
+        }
+
+        var addsDependencies = patch.AddBlockedBy is { Count: > 0 };
+        // Two adds can each pass the cycle check and together close a loop, even when they share no
+        // item, so dependency adds run one at a time under a named lock. Do not replace it with a
+        // plain read followed by a write.
+        return await RunAsync(addsDependencies ? [DependencyLockName] : [], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+
+            // An update that names a repository reads the project's membership, so it holds the
+            // project's row first, like the project update that may drop that repository.
+            if (patch.Repository is not null)
+                await HoldProjectAsync(connection, transaction, projectId, ct);
+
+            // The rows of the item and of the blockers it adds, held in key order before anything is
+            // read. Without it the INSERT of an edge takes a shared lock on each row for its foreign
+            // keys one after the other, which deadlocked in KanbanBoard with writers holding them in
+            // the other order.
+            var held = new List<Guid> { itemId };
+            held.AddRange(patch.AddBlockedBy ?? []);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_items SET version = version WHERE id IN @held", new { held = held.Distinct().ToArray() }, transaction, cancellationToken: ct));
+
+            await AdvanceAsync(connection, transaction, "work_items", itemId, expectedVersion, now,
+                () => LoadItemViewAsync(connection, transaction, itemId, ct), "Item", ct);
+
+            var beforeRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+            var before = await ToViewAsync(connection, transaction, beforeRow, ct);
+            var project = (await ReadProjectRowAsync(connection, transaction, projectId, ct))!;
+            var extra = new JsonArray();
+
+            if (patch.Repository is { } repository)
+                await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct);
+            if (patch.FeatureId is { } featureId)
+                await RequireFeatureAsync(connection, transaction, project, featureId, ct);
+
+            var status = patch.Status ?? before.Status;
+            var claimFields = ApplyClaim(beforeRow, patch.Claim, status, actor, now);
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_items SET title = @title, description = @description, item_type = @type, status = @status, priority = @priority, " +
+                "sort_order = @order, labels = @labels, repository_name = @repository, feature_id = @featureId, " +
+                "claim_holder = @ClaimHolder, claim_marker = @ClaimMarker, claim_session_id = @ClaimSessionId, claimed_at = @ClaimedAt, claim_expires_at = @ClaimExpiresAt " +
+                "WHERE id = @itemId",
+                new
+                {
+                    title = patch.Title ?? before.Title,
+                    description = patch.ClearDescription ? null : patch.Description ?? before.Description,
+                    type = JsonName(patch.Type ?? before.Type),
+                    status = WorkStatuses.Name(status),
+                    priority = JsonName(patch.Priority ?? before.Priority),
+                    order = patch.Order ?? before.Order,
+                    labels = patch.ClearLabels ? null : patch.Labels is { } labels ? JoinLabels(labels) : beforeRow.Labels,
+                    repository = patch.ClearRepository ? null : patch.Repository ?? before.Repository,
+                    featureId = patch.ClearFeature ? null : patch.FeatureId ?? beforeRow.FeatureId,
+                    claimFields.ClaimHolder, claimFields.ClaimMarker, claimFields.ClaimSessionId, claimFields.ClaimedAt, claimFields.ClaimExpiresAt,
+                    itemId
+                },
+                transaction, cancellationToken: ct));
+
+            await AddDependenciesAsync(connection, transaction, project, itemId, patch.AddBlockedBy ?? [], before, extra, now, ct);
+            await RemoveDependenciesAsync(connection, transaction, itemId, patch.RemoveBlockedBy ?? [], before, extra, ct);
+            await WriteLinksAsync(connection, transaction, itemId, patch.AddLinks ?? [], patch.RemoveLinks ?? [], actor, extra, now, ct);
+            if (patch.Comment is { } comment)
+                await AddCommentAsync(connection, transaction, itemId, comment, actor, extra, now, ct);
+
+            var afterRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+            var after = await ToViewAsync(connection, transaction, afterRow, ct);
+            var beforeSnapshot = Snapshot(before);
+            beforeSnapshot["version"] = expectedVersion;
+            var changes = Diff(beforeSnapshot, Snapshot(after));
+            foreach (var change in Diff(ClaimSnapshot(beforeRow), ClaimSnapshot(afterRow)))
+                changes.Add(change!.DeepClone());
+            foreach (var change in extra)
+                changes.Add(change!.DeepClone());
+
+            await CommitAsync(connection, transaction,
+                [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes)],
+                actor, now, ct);
+            return after;
+        }, ct);
+    }
+
+    private sealed record ClaimFields(string? ClaimHolder, string? ClaimMarker, string? ClaimSessionId, DateTime? ClaimedAt, DateTime? ClaimExpiresAt);
+
+    // KanbanBoard's claim rules, decided while the transaction holds the item's row:
+    // claim succeeds when the item is unclaimed, its claim lapsed, or the same identity and marker
+    // hold it (the expiry is reset); renew needs the caller's live claim; release clears the
+    // caller's stored claim, live or lapsed. Finishing an item (complete, closed) releases it.
+    private static ClaimFields ApplyClaim(ItemRow row, ClaimSpec? claim, WorkStatus status, WorkActor actor, DateTime now)
+    {
+        var current = new ClaimFields(row.ClaimHolder, row.ClaimMarker, row.ClaimSessionId, row.ClaimedAt, row.ClaimExpiresAt);
+        var live = row.HasLiveClaim(now);
+        var mine = row.ClaimHolder == actor.Name && claim is not null && string.Equals(row.ClaimMarker, claim.Marker, StringComparison.Ordinal);
+        string Holder() => $"{row.ClaimHolder} (marker '{row.ClaimMarker}') until {Utc(row.ClaimExpiresAt!.Value):O}";
+
+        if (claim is not null)
+        {
+            switch (claim.Action)
+            {
+                case ClaimAction.Claim:
+                    if (live && !mine)
+                        throw new WorkException(WorkErrorCodes.AlreadyClaimed, $"{row.Key} is claimed by {Holder()}. Nothing was changed.");
+                    if (WorkStatuses.IsFinished(status))
+                        throw WorkException.Invalid($"{row.Key} is {WorkStatuses.Name(status)}: a finished item cannot be claimed. Nothing was changed.");
+                    current = new ClaimFields(actor.Name, claim.Marker, actor.SessionId, now, now.AddSeconds(claim.TtlSeconds));
+                    break;
+                case ClaimAction.Renew:
+                    if (live && !mine)
+                        throw new WorkException(WorkErrorCodes.AlreadyClaimed, $"{row.Key} is claimed by {Holder()}. Nothing was changed.");
+                    if (!live)
+                        throw new WorkException(WorkErrorCodes.Conflict, $"You hold no live claim on {row.Key} under marker '{claim.Marker}': it lapsed, was released, or never existed. Claim it again. Nothing was changed.");
+                    current = current with { ClaimExpiresAt = now.AddSeconds(claim.TtlSeconds) };
+                    break;
+                case ClaimAction.Release:
+                    if (live && !mine)
+                        throw new WorkException(WorkErrorCodes.AlreadyClaimed, $"{row.Key} is claimed by {Holder()}. Nothing was changed.");
+                    if (!mine)
+                        throw new WorkException(WorkErrorCodes.Conflict, $"You hold no claim on {row.Key} under marker '{claim.Marker}'. Nothing was changed.");
+                    current = new ClaimFields(null, null, null, null, null);
+                    break;
+            }
+        }
+
+        return WorkStatuses.IsFinished(status) ? new ClaimFields(null, null, null, null, null) : current;
+    }
+
+    private async Task AddDependenciesAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, Guid itemId, IReadOnlyList<Guid> blockers, ItemView before, JsonArray extra, DateTime now, CancellationToken ct)
+    {
+        if (blockers.Count == 0)
+            return;
+
+        await RequireItemsOfProjectAsync(connection, transaction, project, blockers, ct);
+        foreach (var blocker in blockers.Distinct())
+        {
+            if (before.BlockedBy.Any(existing => existing.Id == blocker))
+                continue;
+
+            if (blocker == itemId || await IsBlockedByAsync(connection, transaction, blocker, itemId, ct))
+            {
+                var blockerKey = await KeyOfAsync(connection, transaction, blocker, ct);
+                throw new WorkException(WorkErrorCodes.Cycle,
+                    $"{before.Key} blocked by {blockerKey} would make an item block itself, directly or through other items. Nothing was changed.");
+            }
+
+            await InsertEdgesAsync(connection, transaction, [(itemId, blocker)], now, ct);
+            extra.Add(Change("blocked_by", null, await KeyOfAsync(connection, transaction, blocker, ct)));
+        }
+    }
+
+    private static async Task RemoveDependenciesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, IReadOnlyList<Guid> blockers, ItemView before, JsonArray extra, CancellationToken ct)
+    {
+        foreach (var blocker in blockers.Distinct())
+        {
+            var existing = before.BlockedBy.FirstOrDefault(candidate => candidate.Id == blocker);
+            if (existing is null)
+                continue;
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM work_item_dependencies WHERE blocked_item_id = @itemId AND blocker_item_id = @blocker",
+                new { itemId, blocker }, transaction, cancellationToken: ct));
+            extra.Add(Change("blocked_by", existing.Key, null));
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="item"/> is blocked by <paramref name="candidateBlocker"/>, directly
+    /// or through other items: the one rule for a cycle. Making the candidate blocked by the item
+    /// would then close a loop. Runs under the dependency lock.
+    /// </summary>
+    private static async Task<bool> IsBlockedByAsync(MySqlConnection connection, MySqlTransaction transaction, Guid item, Guid candidateBlocker, CancellationToken ct)
+    {
+        var seen = new HashSet<Guid> { item };
+        var frontier = new List<Guid> { item };
+        while (frontier.Count > 0)
+        {
+            var blockers = (await connection.QueryAsync<Guid>(new CommandDefinition(
+                "SELECT blocker_item_id FROM work_item_dependencies WHERE blocked_item_id IN @frontier",
+                new { frontier = frontier.ToArray() }, transaction, cancellationToken: ct))).ToList();
+            if (blockers.Contains(candidateBlocker))
+                return true;
+
+            frontier = blockers.Where(seen.Add).ToList();
+        }
+
+        return false;
+    }
+
+    private static async Task<string> KeyOfAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, CancellationToken ct)
+    {
+        var row = await connection.QuerySingleAsync<(string ProjectKey, int Number)>(new CommandDefinition(
+            "SELECT p.project_key, i.number FROM work_items i JOIN work_projects p ON p.id = i.project_id WHERE i.id = @itemId",
+            new { itemId }, transaction, cancellationToken: ct));
+        return WorkKeys.Item(row.ProjectKey, row.Number);
+    }
+
+    private static async Task WriteLinksAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, IReadOnlyList<LinkSpec> add, IReadOnlyList<LinkSpec> remove, WorkActor actor, JsonArray extra, DateTime now, CancellationToken ct)
+    {
+        // The item's row is held, so the link writes of one item run one at a time and two
+        // identical adds never meet on the unique key.
+        foreach (var link in remove)
+        {
+            var kind = JsonName(link.Kind);
+            var urlHash = HashUrl(link.Url);
+            var existing = await connection.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
+                "SELECT id FROM work_item_links WHERE item_id = @itemId AND kind = @kind AND url_hash = @urlHash",
+                new { itemId, kind, urlHash }, transaction, cancellationToken: ct));
+            if (existing is not { } id)
+                continue;
+
+            await connection.ExecuteAsync(new CommandDefinition("DELETE FROM work_item_links WHERE id = @id", new { id }, transaction, cancellationToken: ct));
+            extra.Add(Change("link", new { id, kind, url = link.Url }, null));
+        }
+
+        foreach (var link in add)
+        {
+            var kind = JsonName(link.Kind);
+            var urlHash = HashUrl(link.Url);
+            var exists = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                "SELECT COUNT(*) FROM work_item_links WHERE item_id = @itemId AND kind = @kind AND url_hash = @urlHash",
+                new { itemId, kind, urlHash }, transaction, cancellationToken: ct)) > 0;
+            if (exists)
+                continue;
+
+            var id = Guid.NewGuid();
+            await connection.ExecuteAsync(new CommandDefinition(
+                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now)",
+                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now }, transaction, cancellationToken: ct));
+            extra.Add(Change("link", null, new { id, kind, url = link.Url }));
+        }
+    }
+
+    private static async Task AddCommentAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, string body, WorkActor actor, JsonArray extra, DateTime now, CancellationToken ct)
+    {
+        // Every comment of an item is later than the ones committed before it, whatever the clocks
+        // of the writers say (the item's row is held, so comment writes of one item run one at a
+        // time): a reader paging comments by time never has a new one land behind it.
+        var latest = await connection.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "SELECT MAX(created_at) FROM work_item_comments WHERE item_id = @itemId", new { itemId }, transaction, cancellationToken: ct));
+        var createdAt = latest is { } last && last >= now ? last.AddTicks(10) : now;
+        var id = Guid.NewGuid();
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO work_item_comments (id, item_id, author, author_kind, author_session_id, body, created_at) VALUES (@id, @itemId, @author, @kind, @session, @body, @createdAt)",
+            new { id, itemId, author = actor.Name, kind = actor.Kind, session = actor.SessionId, body, createdAt }, transaction, cancellationToken: ct));
+        extra.Add(Change("comment", null, new { id, author = actor.Name, body }));
+    }
+
+    // ---- Plans -------------------------------------------------------------------------------
+
+    private sealed record StoredPlanResult(Dictionary<string, CreatedRef> Features, Dictionary<string, CreatedRef> Items);
+
+    public Task<PlanResult> ImportPlanAsync(Guid projectId, PlanSpec plan, WorkActor actor, string keyHash, CancellationToken ct = default) =>
+        // The plan's items are all new, so its edges can only name each other and the service has
+        // already checked them for a cycle: no dependency lock. The import holds the project's row
+        // like a create, so its numbers follow the earlier creates without gaps.
+        RunAsync([], async connection =>
+        {
+            var now = Now();
+            await using var transaction = await connection.BeginTransactionAsync(ct);
+            var project = await HoldProjectAsync(connection, transaction, projectId, ct);
+            if (await FindKeyAsync(connection, transaction, projectId, PlanOperation, keyHash, ct) is { ResultJson: { } stored })
+            {
+                // The answer of the first import, whatever has happened to its objects since.
+                var earlier = JsonSerializer.Deserialize<StoredPlanResult>(stored, WorkJson.Options)!;
+                return new PlanResult(false, project.Id, project.ProjectKey, earlier.Features, earlier.Items);
+            }
+
+            var owned = (await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT repository_name FROM work_project_repositories WHERE project_id = @projectId AND role = 'owned'",
+                new { projectId }, transaction, cancellationToken: ct))).ToHashSet(StringComparer.Ordinal);
+            foreach (var item in plan.Items)
+            {
+                if (item.Repository is { } repository && !owned.Contains(repository))
+                    throw WorkException.Invalid($"Item '{item.Ref}': '{repository}' is not an owned repository of {project.ProjectKey}. Nothing was created.");
+            }
+
+            var features = new Dictionary<string, CreatedRef>(StringComparer.Ordinal);
+            var featureIds = new List<Guid>();
+            for (var index = 0; index < plan.Features.Count; index++)
+            {
+                var number = project.NextFeatureNumber + index;
+                var id = await InsertFeatureAsync(connection, transaction, project, number, plan.Features[index].Feature, actor, now, ct);
+                featureIds.Add(id);
+                features[plan.Features[index].Ref] = new CreatedRef(id, WorkKeys.Feature(project.ProjectKey, number));
+            }
+
+            var items = new Dictionary<string, CreatedRef>(StringComparer.Ordinal);
+            var itemIds = plan.Items.Select(_ => Guid.NewGuid()).ToList();
+            for (var index = 0; index < plan.Items.Count; index++)
+            {
+                var item = plan.Items[index];
+                var number = project.NextItemNumber + index;
+                // Each item a microsecond after the one before it, so lists ordered by creation
+                // return them in the order of the plan.
+                await InsertItemAsync(connection, transaction, project.Id, itemIds[index], number, item.Title, item.Type, item.Status, item.Priority,
+                    item.Description, item.Labels, item.Repository, item.FeatureIndex is { } featureIndex ? featureIds[featureIndex] : null,
+                    item.Order, actor, now.AddTicks(index * 10), ct);
+                items[item.Ref] = new CreatedRef(itemIds[index], WorkKeys.Item(project.ProjectKey, number));
+            }
+
+            await InsertEdgesAsync(connection, transaction,
+                plan.Items.SelectMany((item, index) => item.BlockedBy.Distinct().Select(blocker => (itemIds[index], itemIds[blocker]))), now, ct);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE work_projects SET next_item_number = next_item_number + @items, next_feature_number = next_feature_number + @features WHERE id = @projectId",
+                new { items = plan.Items.Count, features = plan.Features.Count, projectId }, transaction, cancellationToken: ct));
+            await InsertKeyAsync(connection, transaction, projectId, PlanOperation, keyHash, null,
+                JsonSerializer.Serialize(new StoredPlanResult(features, items), WorkJson.Options), now, ct);
+
+            // The features before the items that name them, in the order of the plan.
+            var entries = new List<PendingChange>();
+            foreach (var featureId in featureIds)
+                entries.Add(FeatureCreatedEntry((await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct))!));
+            foreach (var itemId in itemIds)
+                entries.Add(ItemCreatedEntry((await LoadItemViewAsync(connection, transaction, itemId, ct))!));
+
+            await CommitAsync(connection, transaction, entries, actor, now, ct);
+            return new PlanResult(true, project.Id, project.ProjectKey, features, items);
+        }, ct);
+
+    // ---- next_work ---------------------------------------------------------------------------
+
+    public async Task<NextWorkResult> NextWorkAsync(NextWorkSpec spec, WorkActor actor, CancellationToken ct = default)
+    {
+        // The calls of one identity in one project run one at a time, so the look-up of its key and
+        // of its existing claim cannot race its own retry. Between identities the conditional
+        // UPDATE of the claim decides: two callers never get one item.
+        var lockName = $"next_work\n{actor.Name}\n{spec.ProjectId}";
+        return await RunAsync([lockName], async connection =>
+        {
+            var now = Now();
+            if (await ReadProjectRowAsync(connection, null, spec.ProjectId, ct) is null)
+                throw WorkException.NotFound($"There is no project {spec.ProjectId}.");
+
+            if (spec.KeyHash is { } keyHash && await FindKeyAsync(connection, null, spec.ProjectId, NextWorkOperation, keyHash, ct) is { } earlier)
+            {
+                // The same allocation as the first call, as it is now.
+                return earlier.EntityId is { } allocated
+                    ? new NextWorkResult(await LoadItemViewAsync(connection, null, allocated, ct), Reused: true)
+                    : new NextWorkResult(null, Reused: true, Reason: "no_ready_work");
+            }
+
+            if (!spec.Another)
+            {
+                var existing = await connection.QueryFirstOrDefaultAsync<Guid?>(new CommandDefinition(
+                    "SELECT id FROM work_items WHERE project_id = @ProjectId AND claim_holder = @holder AND claim_marker = @Marker " +
+                    "AND claim_expires_at > @now AND status NOT IN ('complete', 'closed') ORDER BY claimed_at, number LIMIT 1",
+                    new { spec.ProjectId, holder = actor.Name, spec.Marker, now }, cancellationToken: ct));
+                if (existing is { } claimed)
+                {
+                    if (spec.KeyHash is { } existingKey)
+                    {
+                        await using var keyTransaction = await connection.BeginTransactionAsync(ct);
+                        await InsertKeyAsync(connection, keyTransaction, spec.ProjectId, NextWorkOperation, existingKey, claimed, null, now, ct);
+                        await keyTransaction.CommitAsync(ct);
+                    }
+
+                    return new NextWorkResult(await LoadItemViewAsync(connection, null, claimed, ct), Reused: true);
+                }
+            }
+
+            // Every lost race means another caller claimed an item, so the rounds make progress.
+            for (var round = 0; round < 10; round++)
+            {
+                var candidates = await ReadyCandidatesAsync(connection, spec, now, ct);
+                if (candidates.Count == 0)
+                    return new NextWorkResult(null, Reused: false, Reason: "no_ready_work");
+
+                foreach (var candidate in candidates)
+                {
+                    if (await TryClaimAsync(connection, candidate, spec, actor, ct) is { } item)
+                        return new NextWorkResult(item, Reused: false);
+                }
+            }
+
+            throw WorkException.Busy("Other callers took every ready item this call tried, ten times over. Nothing was claimed; try again.");
+        }, ct);
+    }
+
+    private static async Task<IReadOnlyList<Guid>> ReadyCandidatesAsync(MySqlConnection connection, NextWorkSpec spec, DateTime now, CancellationToken ct)
+    {
+        var parameters = new DynamicParameters(new { spec.ProjectId, now });
+        var where = new List<string> { "i.project_id = @ProjectId", AvailableCondition };
+        if (spec.Repository is { } repository)
+        {
+            where.Add("i.repository_name = @repository");
+            parameters.Add("repository", repository);
+        }
+
+        if (spec.Type is { } type)
+        {
+            where.Add("i.item_type = @type");
+            parameters.Add("type", JsonName(type));
+        }
+
+        if (spec.Label is { } label)
+        {
+            where.Add(LabelCondition);
+            parameters.Add("label", label);
+        }
+
+        return (await connection.QueryAsync<Guid>(new CommandDefinition(
+            $"SELECT i.id FROM work_items i WHERE {string.Join(" AND ", where)} ORDER BY i.priority_rank, i.sort_order, i.created_at, i.number LIMIT 25",
+            parameters, cancellationToken: ct))).ToList();
+    }
+
+    // Claims one candidate, or returns null when another caller got it first (or it stopped being
+    // available). The row is held first, so the read after it reports the claim the UPDATE
+    // replaces; the blockers are read with a locking read, so a blocker reopened at the same time
+    // either commits first and is seen, or waits for this claim.
+    private async Task<ItemView?> TryClaimAsync(MySqlConnection connection, Guid itemId, NextWorkSpec spec, WorkActor actor, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                var now = Now();
+                await using var transaction = await connection.BeginTransactionAsync(ct);
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE work_items SET version = version WHERE id = @itemId", new { itemId }, transaction, cancellationToken: ct));
+                var before = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+                var unfinished = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                    "SELECT COUNT(*) FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
+                    "WHERE d.blocked_item_id = @itemId AND b.status <> 'complete' LOCK IN SHARE MODE",
+                    new { itemId }, transaction, cancellationToken: ct));
+                if (unfinished > 0)
+                    return null;
+
+                var expiresAt = now.AddSeconds(spec.TtlSeconds);
+                var claimed = await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE work_items SET claim_holder = @holder, claim_marker = @Marker, claim_session_id = @session, claimed_at = @now, " +
+                    "claim_expires_at = @expiresAt, version = version + 1 " +
+                    "WHERE id = @itemId AND status = 'ready' AND (claim_holder IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= @now)",
+                    new { holder = actor.Name, spec.Marker, session = actor.SessionId, now, expiresAt, itemId }, transaction, cancellationToken: ct));
+                if (claimed == 0)
+                    return null;
+
+                if (spec.KeyHash is { } keyHash)
+                    await InsertKeyAsync(connection, transaction, spec.ProjectId, NextWorkOperation, keyHash, itemId, null, now, ct);
+
+                var afterRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+                var after = await ToViewAsync(connection, transaction, afterRow, ct);
+                var changes = Diff(ClaimSnapshot(before), ClaimSnapshot(afterRow));
+                changes.Add(Change("version", before.Version, afterRow.Version));
+                await CommitAsync(connection, transaction,
+                    [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.Claimed, changes)],
+                    actor, now, ct);
+                return after;
+            }
+            catch (MySqlException exception) when (exception.Number == MySqlDeadlock && attempt < DeadlockAttempts)
+            {
+                // Rolled back by the server; try the same candidate again.
+            }
+        }
+    }
+
+    // ---- Shared ------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Holds the project's row until the transaction ends, as its first statement, and reads it: the
+    /// creates of one project then run one at a time and each reads the counters after the one
+    /// before it committed (a read before the hold would fix the REPEATABLE READ view too early).
+    /// </summary>
+    private static async Task<ProjectRow> HoldProjectAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, CancellationToken ct)
+    {
+        var held = await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE work_projects SET version = version WHERE id = @projectId", new { projectId }, transaction, cancellationToken: ct));
+        if (held == 0)
+            throw WorkException.NotFound($"There is no project {projectId}.");
+        return (await ReadProjectRowAsync(connection, transaction, projectId, ct))!;
+    }
+
+    /// <summary>
+    /// The conditional versioned UPDATE: advances the version only when the object still has the
+    /// expected one, and holds its row until the transaction ends. Of several writers passing the
+    /// same expected_version exactly one succeeds; the others are refused conflict with the
+    /// current object. Do not replace it with a read followed by a write.
+    /// </summary>
+    private static async Task AdvanceAsync(MySqlConnection connection, MySqlTransaction transaction, string table, Guid id, long expectedVersion, DateTime now, Func<Task<object?>> current, string noun, CancellationToken ct)
+    {
+        var advanced = await connection.ExecuteAsync(new CommandDefinition(
+            $"UPDATE {table} SET version = version + 1, updated_at = @now WHERE id = @id AND version = @expectedVersion",
+            new { now, id, expectedVersion }, transaction, cancellationToken: ct));
+        if (advanced > 0)
+            return;
+
+        var state = await current();
+        if (state is null)
+            throw WorkException.NotFound($"There is no {noun.ToLowerInvariant()} {id}.");
+
+        var version = state switch
+        {
+            ProjectView project => project.Version,
+            FeatureView feature => feature.Version,
+            ItemView item => item.Version,
+            _ => 0
+        };
+        throw new WorkException(WorkErrorCodes.Conflict,
+            $"{noun} is at version {version}, not {expectedVersion}: it was changed after it was read. Nothing was changed; merge with the current state (in current) and repeat the call.",
+            state);
+    }
+
+    private static async Task AdvanceAsync<T>(MySqlConnection connection, MySqlTransaction transaction, string table, Guid id, long expectedVersion, DateTime now, Func<Task<T?>> current, string noun, CancellationToken ct)
+        where T : class =>
+        await AdvanceAsync(connection, transaction, table, id, expectedVersion, now, async () => (object?)await current(), noun, ct);
+
+    private static async Task RequireOwnedRepositoryAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, string repository, CancellationToken ct)
+    {
+        var owned = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM work_project_repositories WHERE project_id = @projectId AND repository_name = @repository AND role = 'owned'",
+            new { projectId = project.Id, repository }, transaction, cancellationToken: ct));
+        if (owned == 0)
+            throw WorkException.Invalid($"'{repository}' is not an owned repository of {project.ProjectKey}: an item's repository must be one. Nothing was changed.");
+    }
+
+    private static async Task RequireFeatureAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, Guid featureId, CancellationToken ct)
+    {
+        var found = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM work_features WHERE id = @featureId AND project_id = @projectId",
+            new { featureId, projectId = project.Id }, transaction, cancellationToken: ct));
+        if (found == 0)
+            throw WorkException.Invalid($"Feature {featureId} is not a feature of {project.ProjectKey}. Nothing was changed.");
+    }
+
+    private static async Task RequireItemsOfProjectAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, IReadOnlyList<Guid> itemIds, CancellationToken ct)
+    {
+        var ids = itemIds.Distinct().ToArray();
+        var found = (await connection.QueryAsync<Guid>(new CommandDefinition(
+            "SELECT id FROM work_items WHERE id IN @ids AND project_id = @projectId", new { ids, projectId = project.Id }, transaction, cancellationToken: ct))).ToHashSet();
+        var missing = ids.Where(id => !found.Contains(id)).ToList();
+        if (missing.Count > 0)
+            throw WorkException.Invalid($"{string.Join(", ", missing)} {(missing.Count == 1 ? "is not an item" : "are not items")} of {project.ProjectKey}: dependencies stay within a project. Nothing was changed.");
+    }
+
+    private sealed class KeyRow
+    {
+        public Guid? EntityId { get; init; }
+        public string? ResultJson { get; init; }
+    }
+
+    private static Task<KeyRow?> FindKeyAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid scopeId, string operation, string keyHash, CancellationToken ct) =>
+        connection.QuerySingleOrDefaultAsync<KeyRow>(new CommandDefinition(
+            "SELECT entity_id, result_json FROM work_idempotency_keys WHERE scope_id = @scopeId AND operation = @operation AND key_hash = @keyHash",
+            new { scopeId, operation, keyHash }, transaction, cancellationToken: ct));
+
+    private static Task InsertKeyAsync(MySqlConnection connection, MySqlTransaction transaction, Guid scopeId, string operation, string keyHash, Guid? entityId, string? resultJson, DateTime now, CancellationToken ct) =>
+        connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO work_idempotency_keys (scope_id, operation, key_hash, entity_id, result_json, created_at) VALUES (@scopeId, @operation, @keyHash, @entityId, @resultJson, @now)",
+            new { scopeId, operation, keyHash, entityId, resultJson, now }, transaction, cancellationToken: ct));
+}
