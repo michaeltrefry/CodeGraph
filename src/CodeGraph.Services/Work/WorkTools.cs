@@ -38,7 +38,7 @@ public static class WorkTools
     [
         new(CreateWork, "Create Work", typeof(CreateWorkRequest),
             "Create work in a Project: a new_project; or, in project, one feature (with documents), one item, or a whole plan. " +
-            "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, 1 to 3 acceptance_criteria, inherits (requirements of their feature) and touches. " +
+            "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, up to 3 acceptance_criteria (0 allowed for backward compatibility), inherits (requirements of their feature) and touches. " +
             "A plan is all-or-nothing: features (with documents) and items with caller refs (kept, so sync_plan can re-plan by them), an item naming its feature by ref and its blockers by ref in blocked_by; " +
             "a malformed item, a duplicate ref, an unknown ref or a dependency cycle (refused cycle) creates nothing. A plan holds at most 200 items, 20 features, " +
             "20 documents, 500 dependencies and 2 MB of JSON, and needs idempotency_key. Answers the created object (with created), or for a plan the id and key " +
@@ -68,7 +68,7 @@ public static class WorkTools
             "record a handoff, and claim, renew or release it (claims are advisory and do not stop other writes). Complete is set only here, by the agent or person " +
             "who judges the work done, optionally with acceptance_report (summary and the state and evidence of named criteria; not validated); a merge only flags " +
             "merged_awaiting_acceptance. A feature takes goals, requirements (an active one left out must be in drop_requirements with a decision) and " +
-            "acceptance_tests; an item takes goal, acceptance_criteria (1 to 3), inherits (requirements of its feature) and touches. With session_id a claim is the session's and lasts " +
+            "acceptance_tests; an item takes goal, acceptance_criteria (at most 3; 0 allowed for backward compatibility), inherits (requirements of its feature) and touches. With session_id a claim is the session's and lasts " +
             "while the session is live (leave marker and ttl_seconds out); a retried claim the session already holds answers it. A session whose claim on the item " +
             "lapsed is refused claim_lost until it reclaims the unclaimed item (claim) or lets go of it (release_claim). Answers the object as it is after the write, " +
             "with its new version." + Sessions + Errors,

@@ -388,6 +388,7 @@ public sealed partial class MySqlWorkStore
         ["inherits"] = item.Inherits,
         ["touches"] = item.Touches,
         ["merged_awaiting_acceptance"] = item.MergedAwaitingAcceptance,
+        ["acceptance_report"] = item.AcceptanceReport,
         ["version"] = item.Version
     };
 
@@ -436,6 +437,7 @@ public sealed partial class MySqlWorkStore
             // holder now, unless it reclaims the unclaimed item or lets go of it. A session that still
             // holds its claim is never refused: its heartbeat renewed the claim before this call.
             var effective = patch;
+            var abandonLapsed = false;
             var current = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
             if (actor.SessionId is { } sessionId && await HasOpenSessionClaimAsync(connection, transaction, sessionId, itemId, ct))
             {
@@ -452,7 +454,10 @@ public sealed partial class MySqlWorkStore
                         // Letting go of a claim that is no longer the session's: the item's claim is
                         // someone else's (or none) and stays as it is.
                         await CloseSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
-                        if (effective.IsEmptyBesidesClaim)
+                        // The session's attempt, still active because nobody claimed the item since
+                        // its claim lapsed, ends with this release: an item write, versioned and fed.
+                        abandonLapsed = (await ActiveAttemptAsync(connection, transaction, itemId, ct))?.SessionId == sessionId;
+                        if (effective.IsEmptyBesidesClaim && !abandonLapsed)
                         {
                             var unchanged = await ToViewAsync(connection, transaction, current, ct);
                             await transaction.CommitAsync(ct);
@@ -586,6 +591,8 @@ public sealed partial class MySqlWorkStore
                         $"{before.Key} was marked {WorkStatuses.Name(status)} by {actor.Name}.", now, extra, ct);
                 else if (effective.Claim is { Action: ClaimAction.Release })
                     await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, $"The claim was released by {actor.Name}.", now, extra, ct);
+                else if (abandonLapsed && attempt.SessionId == actor.SessionId)
+                    await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, "The session's claim lapsed and the session let go of the item.", now, extra, ct);
             }
 
             var afterRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;

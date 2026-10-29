@@ -185,7 +185,8 @@ public sealed record NoticeView(
     Guid? SupersededAttempt = null,
     JsonElement? Changes = null);
 
-public sealed record PlanItemChange(string Ref, string? Key, string Title, JsonElement? Changes = null, bool? Pivot = null);
+/// <param name="ReopensFinished">true when the entry changes an item that is complete or closed: confirming rewrites or reopens finished work.</param>
+public sealed record PlanItemChange(string Ref, string? Key, string Title, JsonElement? Changes = null, bool? Pivot = null, bool? ReopensFinished = null);
 
 public sealed record PlanDependencyChange(string Item, string BlockedBy);
 

@@ -205,7 +205,10 @@ public sealed class WorkPlanningMariaDbTests(WorkDatabase db) : IClassFixture<Wo
             .Code.ShouldBe(WorkErrorCodes.Cycle);
         (await db.RefusedAsync(WorkTools.SyncPlan, new { feature, plan = new { items = new object[] { new { @ref = "a", status = "complete" }, new { @ref = "b" }, new { @ref = "c" } } } }))
             .Message.ShouldContain("never completes");
-        (await db.RefusedAsync(WorkTools.SyncPlan, new { feature, plan = new { items = Items(items), itemz = 1 } })).Message.ShouldContain("items");
+        var misspelt = await db.RefusedAsync(WorkTools.SyncPlan, new { feature, plan = new { items = Items(items), itemz = 1 } });
+        misspelt.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        misspelt.Message.ShouldContain("no argument 'plan.itemz'");
+        misspelt.Message.ShouldContain("title, description, goals, requirements, drop_requirements, acceptance_tests, items");
         (await db.RefusedAsync(WorkTools.SyncPlan, new { feature, plan = new { items = Items(items) }, confirm = preview.GetProperty("preview_token").GetString() }))
             .Code.ShouldBe(WorkErrorCodes.InvalidArgument);
 
@@ -561,5 +564,142 @@ public sealed class WorkPlanningMariaDbTests(WorkDatabase db) : IClassFixture<Wo
             .Message.ShouldContain("inherits");
         var moved = await db.UpdateAsync(Key(loose), new { clear = new[] { "feature", "inherits" } });
         moved.TryGetProperty("ref", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task A_preview_closing_an_item_goes_stale_when_an_outside_item_is_made_blocked_by_it()
+    {
+        var (project, feature, items) = await NewPlanAsync("OB");
+        var outsider = await db.NewItemAsync(project, "Outside, later blocked by c");
+        var preview = await PreviewAsync(feature, new { items = new object[] { new { @ref = "a" }, new { @ref = "b" } } });
+        preview.GetProperty("items_closed").EnumerateArray().Single().GetProperty("key").GetString().ShouldBe(items["c"]);
+
+        // Only the outsider's version changes, but the edge into c (in scope) changes what closing c does.
+        await db.UpdateAsync(Key(outsider), new { add_blocked_by = new[] { items["c"] } });
+        (await db.RefusedAsync(WorkTools.SyncPlan, new { confirm = preview.GetProperty("preview_token").GetString() })).Code.ShouldBe(WorkErrorCodes.Conflict);
+
+        var fresh = await PreviewAsync(feature, new { items = new object[] { new { @ref = "a" }, new { @ref = "b" } } });
+        Strings(fresh, "warnings").ShouldContain(warning => warning.StartsWith(Key(outsider)) && warning.Contains("cancelled_prerequisite"));
+    }
+
+    [Fact]
+    public async Task A_plan_entry_setting_a_claimed_item_closed_is_previewed_as_a_close_and_applied_as_one()
+    {
+        var (project, feature, items) = await NewPlanAsync("SC");
+        var holder = await StartAsync(project, "claude-code");
+        (await db.CallAsync(WorkTools.NextWork, new { project, session_id = holder }, "michael")).GetProperty("item").GetProperty("key").GetString().ShouldBe(items["a"]);
+
+        var preview = await PreviewAsync(feature, new { items = new object[] { new { @ref = "a", status = "closed" }, new { @ref = "b" }, new { @ref = "c" } } }, "bob");
+        var pivot = preview.GetProperty("pivots").EnumerateArray().Single();
+        (pivot.GetProperty("key").GetString(), pivot.GetProperty("action").GetString()).ShouldBe((items["a"], "close"));
+        var applied = await ConfirmAsync(preview, "bob");
+        applied.GetProperty("closed").EnumerateArray().Single().GetString().ShouldBe(items["a"]);
+        applied.GetProperty("pivots").EnumerateArray().Single().GetProperty("action").GetString().ShouldBe("close");
+
+        var item = await db.CallAsync(WorkTools.GetWork, new { id = items["a"], session_id = holder }, "michael");
+        item.TryGetProperty("claim", out _).ShouldBeFalse();
+        item.GetProperty("attempts").EnumerateArray().Single().GetProperty("outcome").GetString().ShouldBe("superseded");
+        item.GetProperty("notices").EnumerateArray().Single().GetProperty("closed").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task A_notice_to_a_sessionless_holder_reaches_its_identitys_next_call_with_or_without_a_session_once()
+    {
+        var (project, feature, items) = await NewPlanAsync("NS");
+        var current = await db.CallAsync(WorkTools.GetWork, new { id = items["a"] });
+        await db.CallAsync(WorkTools.UpdateWork, new { id = items["a"], expected_version = current.GetProperty("version").GetInt64(), claim = new { marker = "run-7" } }, "michael");
+
+        await ConfirmAsync(await PreviewAsync(feature, new { items = new object[] { new { @ref = "a", title = "Store, retitled" }, new { @ref = "b" }, new { @ref = "c" } } }, "bob"), "bob");
+
+        // Another identity's calls never see it; the holder's next call (here with a session) does, once.
+        (await db.CallAsync(WorkTools.GetWork, new { id = items["b"] }, "carol")).TryGetProperty("notices", out _).ShouldBeFalse();
+        var session = await StartAsync(project, "codex");
+        var next = await db.CallAsync(WorkTools.GetWork, new { id = items["b"], session_id = session }, "michael");
+        var notice = next.GetProperty("notices").EnumerateArray().Single();
+        (notice.GetProperty("kind").GetString(), notice.GetProperty("item").GetString()).ShouldBe(("changed_by_replan", items["a"]));
+        (await db.CallAsync(WorkTools.GetWork, new { id = items["b"] }, "michael")).TryGetProperty("notices", out _).ShouldBeFalse();
+        (await db.CallAsync(WorkTools.GetWork, new { id = items["b"], session_id = session }, "michael")).TryGetProperty("notices", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task A_lapsed_session_letting_go_of_an_unclaimed_item_abandons_its_attempt_so_a_replan_notifies_nobody()
+    {
+        var (project, feature, items) = await NewPlanAsync("LR");
+        var holder = await StartAsync(project, "claude-code");
+        (await db.CallAsync(WorkTools.NextWork, new { project, session_id = holder }, "michael")).GetProperty("item").GetProperty("key").GetString().ShouldBe(items["a"]);
+        db.Clock.Advance(PastIdle);
+
+        var feedBefore = (await db.AllChangesAsync(project)).Count;
+        var current = await db.CallAsync(WorkTools.GetWork, new { id = items["a"] });
+        var released = (await db.CallAsync(WorkTools.UpdateWork, new
+        {
+            id = items["a"], expected_version = current.GetProperty("version").GetInt64(), session_id = holder, release_claim = new { }
+        }, "michael")).GetProperty("item");
+        released.GetProperty("version").GetInt64().ShouldBe(current.GetProperty("version").GetInt64() + 1);
+        var attempt = released.GetProperty("attempts").EnumerateArray().Single();
+        attempt.GetProperty("outcome").GetString().ShouldBe("abandoned");
+        var entry = (await db.AllChangesAsync(project)).Skip(feedBefore).Single();
+        entry.GetProperty("entity_key").GetString().ShouldBe(items["a"]);
+        entry.GetProperty("changes").EnumerateArray().ShouldContain(change => change.GetProperty("field").GetString() == "attempt");
+
+        var preview = await PreviewAsync(feature, new { items = new object[] { new { @ref = "a", title = "Store, retitled" }, new { @ref = "b" }, new { @ref = "c" } } }, "bob");
+        preview.TryGetProperty("pivots", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task A_lapsed_session_letting_go_of_an_item_whose_stored_claim_is_gone_still_abandons_its_attempt_with_a_feed_entry()
+    {
+        var (project, _, items) = await NewPlanAsync("LG");
+        var holder = await StartAsync(project, "claude-code");
+        (await db.CallAsync(WorkTools.NextWork, new { project, session_id = holder }, "michael")).GetProperty("item").GetProperty("key").GetString().ShouldBe(items["a"]);
+        db.Clock.Advance(PastIdle);
+        // The item's stored claim is gone (as for a claim from before attempts existed, or one cleared
+        // out of band) while the session's attempt is still active.
+        await using (var connection = new MySqlConnector.MySqlConnection(db.ConnectionString))
+            await Dapper.SqlMapper.ExecuteAsync(connection,
+                "UPDATE work_items i JOIN work_projects p ON p.id = i.project_id SET i.claim_holder = NULL, i.claim_marker = NULL, i.claim_session_id = NULL, " +
+                "i.claimed_at = NULL, i.claim_expires_at = NULL WHERE p.project_key = @project", new { project });
+
+        var feedBefore = (await db.AllChangesAsync(project)).Count;
+        var current = await db.CallAsync(WorkTools.GetWork, new { id = items["a"] });
+        var released = (await db.CallAsync(WorkTools.UpdateWork, new
+        {
+            id = items["a"], expected_version = current.GetProperty("version").GetInt64(), session_id = holder, release_claim = new { }
+        }, "michael")).GetProperty("item");
+        released.GetProperty("attempts").EnumerateArray().Single().GetProperty("outcome").GetString().ShouldBe("abandoned");
+        released.GetProperty("version").GetInt64().ShouldBe(current.GetProperty("version").GetInt64() + 1);
+        (await db.AllChangesAsync(project)).Skip(feedBefore).Single().GetProperty("changes").EnumerateArray()
+            .ShouldContain(change => change.GetProperty("field").GetString() == "attempt");
+    }
+
+    [Fact]
+    public async Task A_plan_entry_that_changes_a_finished_item_is_called_out_as_reopens_finished()
+    {
+        var (_, feature, items) = await NewPlanAsync("RF");
+        await db.UpdateAsync(items["c"], new { status = "closed" });
+
+        var preview = await PreviewAsync(feature, new { items = new object[] { new { @ref = "a" }, new { @ref = "b" }, new { @ref = "c", status = "ready" } } });
+        var edited = preview.GetProperty("items_edited").EnumerateArray().Single();
+        edited.GetProperty("key").GetString().ShouldBe(items["c"]);
+        edited.GetProperty("reopens_finished").GetBoolean().ShouldBeTrue();
+        Strings(preview, "warnings").ShouldContain(warning => warning.Contains(items["c"]) && warning.Contains("reopens_finished"));
+
+        // An entry that leaves the finished item as it is reopens nothing.
+        var quiet = await PreviewAsync(feature, new { items = new object[] { new { @ref = "a" }, new { @ref = "b" }, new { @ref = "c" } } });
+        quiet.GetProperty("unchanged").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task An_acceptance_report_added_to_a_complete_item_is_a_visible_feed_change()
+    {
+        var (project, _, items) = await NewPlanAsync("AR");
+        await db.UpdateAsync(items["a"], new { status = "complete" });
+        var feedBefore = (await db.AllChangesAsync(project)).Count;
+
+        await db.UpdateAsync(items["a"], new { acceptance_report = new { summary = "Verified after the fact." } });
+        var change = (await db.AllChangesAsync(project)).Skip(feedBefore).Single().GetProperty("changes").EnumerateArray()
+            .Single(entry => entry.GetProperty("field").GetString() == "acceptance_report");
+        change.GetProperty("old").ValueKind.ShouldBe(JsonValueKind.Null);
+        change.GetProperty("new").GetProperty("summary").GetString().ShouldBe("Verified after the fact.");
     }
 }

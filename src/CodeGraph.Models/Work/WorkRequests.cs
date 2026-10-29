@@ -455,7 +455,7 @@ internal static class WorkRequestText
 
     public const string Goal = "What the item is for, at most 2000 characters.";
 
-    public const string AcceptanceCriteria = "1 to 3 acceptance criteria, each with text and optionally id, state (unmet or met) and evidence.";
+    public const string AcceptanceCriteria = "At most 3 acceptance criteria (plan 1 to 3; an item may have none, for backward compatibility), each with text and optionally id, state (unmet or met) and evidence.";
 
     public const string Inherits = "the requirements (E2) of the item's feature that the item serves; a feature is complete only when every active requirement is inherited by a complete item.";
 

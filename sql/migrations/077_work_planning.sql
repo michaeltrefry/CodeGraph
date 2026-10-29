@@ -11,7 +11,8 @@
 --
 -- Lock order (extends 073): the dependency named lock, then a plan preview's row (sync_plan
 -- confirm only), then the project's row, then the feature's row, then rows of work_items in key
--- order, then the change-feed named lock.
+-- order (one UPDATE ... WHERE id IN (...) ORDER BY id over every item the preview covers or the
+-- plan names), then the change-feed named lock.
 
 ALTER TABLE work_features ADD COLUMN IF NOT EXISTS goals_json LONGTEXT NULL;
 ALTER TABLE work_features ADD COLUMN IF NOT EXISTS requirements_json LONGTEXT NULL;

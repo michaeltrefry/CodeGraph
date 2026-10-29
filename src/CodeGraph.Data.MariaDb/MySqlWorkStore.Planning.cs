@@ -287,8 +287,10 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default)
     {
+        // The session's notices, and those of the identity's claims made without a session, which
+        // reach the identity's next call with or without a session.
         var (where, parameters) = actor.SessionId is { } session
-            ? ("session_id = @session", new { session = (string?)session, identity = actor.Name })
+            ? ("(session_id = @session OR (session_id IS NULL AND identity = @identity))", new { session = (string?)session, identity = actor.Name })
             : ("session_id IS NULL AND identity = @identity", new { session = (string?)null, identity = actor.Name });
 
         // Most calls have none: answer that without a locking read.
@@ -376,7 +378,9 @@ public sealed partial class MySqlWorkStore
         var edges = (await connection.QueryAsync<(Guid Blocked, Guid Blocker)>(new CommandDefinition(
             "SELECT d.blocked_item_id, d.blocker_item_id FROM work_item_dependencies d JOIN work_items i ON i.id = d.blocked_item_id WHERE i.project_id = @projectId",
             new { projectId = feature.ProjectId }, transaction, cancellationToken: ct))).ToList();
-        var scopeEdges = edges.Where(edge => rows.ContainsKey(edge.Blocked)).Select(edge => $"{edge.Blocked}>{edge.Blocker}").Order(StringComparer.Ordinal);
+        // Edges on either side of the scope: an outside item made blocked by an item the plan closes
+        // changes what the plan does to it (cancelled_prerequisite), so it stales the preview too.
+        var scopeEdges = edges.Where(edge => rows.ContainsKey(edge.Blocked) || rows.ContainsKey(edge.Blocker)).Select(edge => $"{edge.Blocked}>{edge.Blocker}").Order(StringComparer.Ordinal);
         var edgesHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", scopeEdges))));
         return new PlanScope
         {
@@ -648,6 +652,16 @@ public sealed partial class MySqlWorkStore
             Closed = closed, EdgesAdded = added, EdgesRemoved = removed, ActiveAttempts = attempts, Warnings = []
         };
 
+        // No silent reopen: an entry that changes finished work says so.
+        foreach (var index in edited.Where(index => ReopensFinished(diff, index)))
+        {
+            var row = matched[index]!;
+            var status = (WorkStatus)after[index]["status"]!;
+            diff.Warnings.Add(WorkStatuses.IsFinished(status)
+                ? $"{row.Key} is {row.Status}; the plan entry '{plan.Items[index].Ref}' changes it anyway (reopens_finished)."
+                : $"{row.Key} is {row.Status}; the plan entry '{plan.Items[index].Ref}' reopens it as {WorkStatuses.Name(status)} (reopens_finished).");
+        }
+
         // Items left blocked by a closed prerequisite after the plan (they show cancelled_prerequisite).
         var closedAfter = new HashSet<Guid>(closed.Select(row => row.Id));
         for (var index = 0; index < plan.Items.Count; index++)
@@ -689,8 +703,17 @@ public sealed partial class MySqlWorkStore
         return new PlanPivot(row.Key, action, row.HasLiveClaim(now) ? new HolderView(row.ClaimHolder!, row.ClaimSessionId) : null);
     }
 
+    // A plan entry that sets an open item's status to closed closes it (claim ended), like leaving it out.
+    private static bool ClosesByStatus(PlanDiff diff, int index) =>
+        diff.After[index]["status"] is WorkStatus.Closed && diff.Matched[index] is { Status: not "closed" };
+
+    // A plan entry that changes an item that is complete or closed: it reopens or rewrites finished work.
+    private static bool ReopensFinished(PlanDiff diff, int index) =>
+        diff.Material.Contains(index) && diff.Matched[index] is { Status: "complete" or "closed" };
+
     private static List<PlanPivot> Pivots(PlanDiff diff, DateTime now) =>
-        diff.Edited.Where(diff.Material.Contains).Select(index => diff.Matched[index]!).Where(row => diff.IsPivot(row, now)).Select(row => Pivot(diff, row, "edit", now))
+        diff.Edited.Where(diff.Material.Contains).Where(index => diff.IsPivot(diff.Matched[index]!, now))
+            .Select(index => Pivot(diff, diff.Matched[index]!, ClosesByStatus(diff, index) ? "close" : "edit", now))
             .Concat(diff.Closed.Where(row => diff.IsPivot(row, now)).Select(row => Pivot(diff, row, "close", now)))
             .ToList();
 
@@ -715,7 +738,8 @@ public sealed partial class MySqlWorkStore
                 changes.Add(Change("ref", row.PlanRef, diff.Plan.Items[index].Ref));
             return new PlanItemChange(diff.Plan.Items[index].Ref, row.Key, (string)diff.After[index]["title"]!,
                 changes.Count == 0 ? null : JsonSerializer.SerializeToElement(changes, WorkJson.Options),
-                diff.Material.Contains(index) && diff.IsPivot(row, now) ? true : null);
+                diff.Material.Contains(index) && diff.IsPivot(row, now) ? true : null,
+                ReopensFinished(diff, index) ? true : null);
         }).ToList();
         var itemsClosed = diff.Closed.Select(row => new PlanItemChange(row.PlanRef ?? row.Key, row.Key, row.Title, null, diff.IsPivot(row, now) ? true : null)).ToList();
         var pivots = Pivots(diff, now);
@@ -807,12 +831,13 @@ public sealed partial class MySqlWorkStore
                 "UPDATE work_projects SET version = version WHERE id = @projectId", new { projectId = preview.ProjectId }, transaction, cancellationToken: ct));
             await connection.ExecuteAsync(new CommandDefinition(
                 "SELECT id FROM work_features WHERE id = @featureId FOR UPDATE", new { featureId = preview.FeatureId }, transaction, cancellationToken: ct));
-            var held = (await connection.QueryAsync<Guid>(new CommandDefinition(
-                "SELECT id FROM work_items WHERE feature_id = @featureId FOR UPDATE", new { featureId = preview.FeatureId }, transaction, cancellationToken: ct))).ToList();
-            var others = bound.Items.Keys.Concat(NamedIds(plan)).Except(held).Distinct().Order().ToArray();
-            if (others.Length > 0)
+            // Every item the preview covers or the plan names, in one statement in key order (as every
+            // other multi-item write holds them). An item filed into the feature after the preview
+            // is not held, but it makes the scope below differ from the bound one: refused stale.
+            var held = bound.Items.Keys.Concat(NamedIds(plan)).Distinct().ToArray();
+            if (held.Length > 0)
                 await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE work_items SET version = version WHERE id IN @others", new { others }, transaction, cancellationToken: ct));
+                    "UPDATE work_items SET version = version WHERE id IN @held ORDER BY id", new { held }, transaction, cancellationToken: ct));
 
             var scope = await ReadScopeAsync(connection, transaction, preview.FeatureId, plan, ct);
             var same = scope.Versions.FeatureVersion == bound.FeatureVersion &&
