@@ -44,6 +44,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         "e.item_id, wi.number AS item_number, wi.title AS item_title, e.feature_id, wf.number AS feature_number, wf.title AS feature_title, " +
         "e.supersedes_id, e.superseded_by_id, e.status_reason, e.source_file, e.verified_commit, e.verified_at, e.revision, e.version, " +
         "e.author, e.author_kind, e.author_session_id, e.author_harness, e.author_model, e.author_host, e.created_at, e.updated_at, " +
+        "e.rule_state, e.rule_reason, e.rule_since, e.rejected_reason, e.recurrence, e.priority, " +
         StaleCondition + " AS stale";
 
     private const string KnowledgeFrom =
@@ -85,6 +86,16 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         public DateTime CreatedAt { get; init; }
         public DateTime UpdatedAt { get; init; }
         public long Stale { get; init; }
+
+        // Lessons (S9).
+        public string? RuleState { get; init; }
+        public string? RuleReason { get; init; }
+        public DateTime? RuleSince { get; init; }
+        public string? RejectedReason { get; init; }
+        public int? Recurrence { get; init; }
+        public string? Priority { get; init; }
+
+        public bool IsRule => RuleState == "rule";
 
         // Set only by the briefing's query of entries without paths: 1 when the entry names no repository.
         public long ProjectWide { get; init; }
@@ -182,16 +193,19 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 return new RecordResult(false, earlier);
             }
 
-            var supersededRow = await InsertKnowledgeAsync(connection, transaction, project, [spec], null, null, null, actor, now, ct);
+            var outcome = await InsertKnowledgeAsync(connection, transaction, project, [spec], null, null, null, actor, now, ct);
+            // A lesson merged into an existing one (same_as, or an exact normalized match) stores no new entry.
+            var effective = outcome.EntryOf(spec.Id);
             if (keyHash is not null)
-                await InsertKeyAsync(connection, transaction, projectId, KnowledgeOperation, keyHash, spec.Id, null, now, ct);
+                await InsertKeyAsync(connection, transaction, projectId, KnowledgeOperation, keyHash, effective, null, now, ct);
 
-            var view = (await LoadKnowledgeViewAsync(connection, transaction, spec.Id, withRevisions: false, ct))!;
+            var view = (await LoadKnowledgeViewAsync(connection, transaction, effective, withRevisions: false, ct))!;
             KnowledgeRow? superseded = null;
-            if (supersededRow is { } old)
+            if (outcome.Superseded is { } old)
                 superseded = ToRow((await ReadKnowledgeRowAsync(connection, transaction, old, ct))!);
             await transaction.CommitAsync(ct);
-            return new RecordResult(true, view, superseded);
+            var merged = outcome.Merged.Contains(spec.Id);
+            return new RecordResult(!merged, view, superseded, merged ? true : null);
         }, ct);
 
     /// <summary>
@@ -199,12 +213,15 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     /// each linked to its own item, else <paramref name="itemId"/>; scoped to its repositories, else
     /// <paramref name="defaultRepository"/>, else the whole project. Refuses (and so rolls the whole
     /// write back) a repository that is not a member of the project or a node that is not in one.
-    /// Answers the id of the entry a spec superseded, if any.
+    /// Answers the id of the entry a spec superseded, if any, and the lessons merged into existing ones.
+    /// A lesson (S9) naming same_as, or with an exact normalized match of overlapping applies-when
+    /// (and no contradicts), is merged into that lesson as a correction event instead of stored.
     /// </summary>
-    private async Task<Guid?> InsertKnowledgeAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, IReadOnlyList<KnowledgeSpec> specs,
+    private async Task<KnowledgeInsertOutcome> InsertKnowledgeAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, IReadOnlyList<KnowledgeSpec> specs,
         Guid? itemId, Guid? featureId, string? defaultRepository, WorkActor actor, DateTime now, CancellationToken ct)
     {
         Guid? superseded = null;
+        var merged = new Dictionary<Guid, Guid>();
         foreach (var spec in specs)
         {
             var linkedItem = spec.ItemId ?? itemId;
@@ -214,6 +231,16 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                     "SELECT project_id FROM work_items WHERE id = @item", new { item }, transaction, cancellationToken: ct));
                 if (itemProject != project.Id)
                     throw WorkException.Invalid($"Item {item} is not an item of {project.ProjectKey}: knowledge stays within its project. Nothing was changed.");
+            }
+
+            if (spec.Kind != KnowledgeKind.Lesson && (spec.SameAs is not null || spec.Contradicts is not null))
+                throw WorkException.Invalid("same_as and contradicts are fields of lessons. Nothing was changed.");
+            if (spec.Kind == KnowledgeKind.Lesson && spec.Supersedes is null &&
+                await LessonMergeTargetAsync(connection, transaction, project, spec, ct) is { } target)
+            {
+                await AddLessonEventAsync(connection, transaction, project, target, spec, linkedItem, actor, now, ct);
+                merged[spec.Id] = target;
+                continue;
             }
 
             var (repositories, nodes) = await ResolveScopeAsync(connection, transaction, project,
@@ -237,6 +264,8 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 transaction, cancellationToken: ct));
             await WriteScopeAsync(connection, transaction, spec.Id, repositories, spec.Paths, nodes, ct);
             await SnapshotFilesAsync(connection, transaction, spec.Id, project.Id, repositories, spec.Paths, nodes, ct);
+            if (spec.Kind == KnowledgeKind.Lesson)
+                await InitLessonAsync(connection, transaction, project, spec, linkedItem, actor, now, ct);
             await InsertRevisionAsync(connection, transaction, spec.Id, 1, "created", actor, now, ct);
 
             if (spec.Supersedes is { } replaced)
@@ -247,12 +276,24 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @by WHERE id = @id",
                     new { by = spec.Id, id = replaced.EntryId }, transaction, cancellationToken: ct));
+                // A lesson replacing a lesson (S9) takes over its corrections, recurrence, links, open
+                // challenges and rule status: a rule superseded by a new wording stays a rule.
+                if (old.Kind == "lesson" && spec.Kind == KnowledgeKind.Lesson)
+                    await TransferLessonAsync(connection, transaction, old, spec.Id, actor, now, uniteAppliesWhen: false, ct);
                 await InsertRevisionAsync(connection, transaction, replaced.EntryId, old.Revision, "superseded", actor, now, ct);
                 superseded = replaced.EntryId;
             }
         }
 
-        return superseded;
+        return new KnowledgeInsertOutcome(superseded, merged);
+    }
+
+    /// <summary>What <see cref="InsertKnowledgeAsync"/> did: the entry superseded, and spec id → lesson for the lessons merged.</summary>
+    private sealed record KnowledgeInsertOutcome(Guid? Superseded, IReadOnlyDictionary<Guid, Guid> MergedInto)
+    {
+        public IEnumerable<Guid> Merged => MergedInto.Keys;
+
+        public Guid EntryOf(Guid specId) => MergedInto.TryGetValue(specId, out var target) ? target : specId;
     }
 
     /// <summary>
@@ -266,10 +307,22 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         var stored = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns}, e.summary_hash AS summary_hash {KnowledgeFrom} WHERE e.author_session_id = @session ORDER BY e.created_at",
             new { session = session.Id }, transaction, cancellationToken: ct))).ToList();
+        // A correction its end merged into an existing lesson (S9) is that lesson's event.
+        var mergedIds = (await connection.QueryAsync<(Guid EntryId, string SummaryHash)>(new CommandDefinition(
+            "SELECT entry_id, summary_hash FROM lesson_events WHERE session_id = @session", new { session = session.Id }, transaction, cancellationToken: ct))).ToList();
+        var mergedRows = mergedIds.Count == 0
+            ? []
+            : (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
+                $"SELECT {KnowledgeColumns}, e.summary_hash AS summary_hash {KnowledgeFrom} WHERE e.id IN @ids",
+                new { ids = mergedIds.Select(merged => merged.EntryId.ToString()).Distinct().ToArray() }, transaction, cancellationToken: ct))).ToDictionary(row => row.Id);
         var rows = new List<KnowledgeRow>();
         foreach (var spec in knowledge)
         {
-            var match = stored.FirstOrDefault(row => row.Kind == JsonName(spec.Kind) && row.SummaryHash == KnowledgePaths.HashSummary(spec.Summary));
+            var hash = KnowledgePaths.HashSummary(spec.Summary);
+            var match = stored.FirstOrDefault(row => row.Kind == JsonName(spec.Kind) && row.SummaryHash == hash);
+            if (match is null && spec.Kind == KnowledgeKind.Lesson &&
+                mergedIds.FirstOrDefault(merged => merged.SummaryHash == hash) is { EntryId: var entryId } && mergedRows.TryGetValue(entryId, out var into))
+                match = into;
             if (match is null)
                 throw WorkException.Invalid(
                     $"Session {session.Id} has ended, so its save points can no longer be stored ('{spec.Summary}' is not one its end stored). " +
@@ -281,7 +334,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     }
 
     public Task<KnowledgeView> ReviseKnowledgeAsync(Guid entryId, long expectedVersion, KnowledgeSpec state, WorkActor actor, CancellationToken ct = default) =>
-        ChangeKnowledgeAsync(entryId, expectedVersion, "revised", actor, async (connection, transaction, before, now) =>
+        ChangeKnowledgeAsync(entryId, expectedVersion, "revised", actor, (connection, transaction, before, now) =>
+            ApplyRevisionAsync(connection, transaction, entryId, before, state, now, ct), ct);
+
+    // The content of a revision (record revise, and a challenge resolved amend): the entry's fields,
+    // scope and file baselines replaced by <paramref name="state"/>, within the caller's transaction.
+    private async Task ApplyRevisionAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, KnowledgeEntryRow before, KnowledgeSpec state, DateTime now, CancellationToken ct)
         {
             var project = (await ReadProjectRowAsync(connection, transaction, before.ProjectId, ct))!;
             var (repositories, nodes) = await ResolveScopeAsync(connection, transaction, project, state.Repositories ?? [], state.Nodes, ct);
@@ -298,7 +356,10 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 transaction, cancellationToken: ct));
             await WriteScopeAsync(connection, transaction, entryId, repositories, state.Paths, nodes, ct);
             await SnapshotFilesAsync(connection, transaction, entryId, before.ProjectId, repositories, state.Paths, nodes, ct);
-        }, ct);
+            // A lesson given an applies-when activity may now be a rule (prompt source, or recurrence).
+            if (before.Kind == "lesson")
+                await PromoteIfDueAsync(connection, transaction, entryId, now, promptEvent: false, ct);
+        }
 
     public Task<KnowledgeView> RetractKnowledgeAsync(Guid entryId, long expectedVersion, string reason, WorkActor actor, CancellationToken ct = default) =>
         ChangeKnowledgeAsync(entryId, expectedVersion, "retracted", actor, (connection, transaction, _, _) =>
@@ -586,7 +647,8 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             VerifiedFiles: files.Count == 0 ? null : files.Select(file => new KnowledgeFileView(file.RepositoryName, file.Path)).ToList(),
             StaleFiles: stale.Count == 0 ? null : stale,
             SourceFile: row.SourceFile,
-            Revisions: revisions);
+            Revisions: revisions,
+            Lesson: row.Kind == "lesson" ? await LoadLessonViewAsync(connection, transaction, row, withEvents: withRevisions, ct) : null);
     }
 
     private static KnowledgeRow ToRow(KnowledgeEntryRow row, string? match = null)
@@ -598,7 +660,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             PossiblyStale: row.PossiblyStale ? true : null,
             MadeAutonomously: row.MadeAutonomously == true ? true : null,
             Item: row.ItemKey,
-            Match: match);
+            Match: match,
+            Rule: row.IsRule ? true : null,
+            Recurrence: row.Recurrence is > 1 ? row.Recurrence : null);
     }
 
     public async Task<KnowledgeView?> GetKnowledgeAsync(Guid entryId, bool withRevisions, CancellationToken ct = default)
@@ -612,10 +676,24 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         if (entryIds.Count == 0)
             return [];
         await using var connection = await OpenAsync(ct);
+        // A lesson a write merged into an existing one (S9) answers as that lesson, marked merged.
+        var ids = entryIds.Distinct().ToArray();
+        var mergedInto = (await connection.QueryAsync<(Guid CorrectionId, Guid EntryId)>(new CommandDefinition(
+            "SELECT correction_id, entry_id FROM lesson_events WHERE correction_id IN @ids AND correction_id <> entry_id",
+            new { ids }, cancellationToken: ct))).ToDictionary(merged => merged.CorrectionId, merged => merged.EntryId);
         var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
-            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.id IN @ids", new { ids = entryIds.Distinct().ToArray() }, cancellationToken: ct)))
+            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.id IN @ids", new { ids = ids.Concat(mergedInto.Values).Distinct().ToArray() }, cancellationToken: ct)))
             .ToDictionary(row => row.Id);
-        return entryIds.Where(rows.ContainsKey).Select(id => ToRow(rows[id])).ToList();
+        var answered = new List<KnowledgeRow>();
+        foreach (var id in entryIds)
+        {
+            if (mergedInto.TryGetValue(id, out var target) && rows.TryGetValue(target, out var into))
+                answered.Add(ToRow(into) with { Merged = true });
+            else if (rows.TryGetValue(id, out var row))
+                answered.Add(ToRow(row));
+        }
+
+        return answered;
     }
 
     public async Task<RecallPage> RecallAsync(RecallSpec spec, CancellationToken ct = default)
@@ -655,6 +733,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         {
             where.Append(" AND e.source_kind = @source");
             parameters.Add("source", JsonName(source));
+        }
+
+        if (spec.RuleStates is { Count: > 0 } ruleStates)
+        {
+            where.Append(" AND e.rule_state IN @ruleStates");
+            parameters.Add("ruleStates", ruleStates.Select(JsonName).ToArray());
         }
 
         for (var index = 0; index < spec.Words.Count; index++)
@@ -774,6 +858,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         const string unscoped = "NOT EXISTS (SELECT 1 FROM knowledge_entry_repositories r WHERE r.entry_id = e.id)";
         const string inRepository = "EXISTS (SELECT 1 FROM knowledge_entry_repositories r WHERE r.entry_id = e.id AND r.repository_name = @repository)";
         var notItem = context.ItemIds.Count == 0 ? "" : " AND (e.item_id IS NULL OR e.item_id NOT IN @items)";
+        // Lessons beyond the item (S9): a task-scoped lesson lives on its item. A briefing serves
+        // rules in its own section (by applies-when), so its other tiers take no lesson; an item brief
+        // takes a rule that is not addressed locally.
+        notItem += context.RulesServedApart
+            ? " AND e.kind <> 'lesson'"
+            : " AND (e.kind <> 'lesson' OR (e.rule_state = 'rule' AND NOT EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id)))";
 
         var ranked = new List<(KnowledgeEntryRow Row, int Tier, string Match)>();
         if (context.ItemIds.Count > 0)
@@ -818,7 +908,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         return ranked
             .OrderBy(entry => entry.Tier)
             // A lesson from the human's prompt first (highest priority), then the newest.
-            .ThenByDescending(entry => entry.Row.DetailsJson is { } json && json.Contains("\"kind\":\"prompt\"", StringComparison.Ordinal))
+            .ThenByDescending(entry => entry.Row.Priority == "highest")
             .ThenByDescending(entry => entry.Row.UpdatedAt)
             .Take(context.Limit)
             .Select(entry => ToRow(entry.Row, entry.Match))

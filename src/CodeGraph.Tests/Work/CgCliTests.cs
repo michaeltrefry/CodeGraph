@@ -156,6 +156,50 @@ public sealed class CgCliTests
         }
     }
 
+    [Fact]
+    public async Task Brief_passes_the_activity_from_the_flag_or_the_environment_and_prints_rules_as_data()
+    {
+        var sessionFile = Path.Combine(Path.GetTempPath(), $"cg-test-{Guid.NewGuid():N}");
+        var sessionId = Guid.NewGuid().ToString();
+        var briefing = $$"""
+            {"session_id":"{{sessionId}}","budget_tokens":1500,"estimated_tokens":80,"project":{"key":"SW","name":"SceneWorks"},
+             "rules":[{"id":"00000000-0000-0000-0000-000000000002","summary":"Slice by mechanism, by cell is wrong","version":1,"priority":"highest","activity":["slicing"],
+               "contradicts":[{"id":"00000000-0000-0000-0000-000000000003","summary":"Slice by cell","status":"active"}],"challenges":[{"id":"00000000-0000-0000-0000-000000000004","reason":"x","evidence":["y"]}]}]}
+            """;
+        var requests = new List<string>();
+        var bodies = new List<string>();
+        var handler = new StubHandler(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.PathAndQuery}");
+            if (request.Content is not null)
+                bodies.Add(request.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+            return request.Method == HttpMethod.Post
+                ? (HttpStatusCode.OK, $$"""{"created":true,"session":{"id":"{{sessionId}}"},"briefing":{{briefing}}}""")
+                : (HttpStatusCode.OK, briefing);
+        });
+
+        try
+        {
+            var environment = Env("http://codegraph.test", sessionFile);
+            environment["CODEGRAPH_ACTIVITY"] = "slicing, planning";
+            environment["CODEGRAPH_SKILLS"] = "shortcut-plan";
+            var first = await RunAsync(environment, handler, "brief");
+            var second = await RunAsync(environment, handler, "brief", "--activity", "reviewing,merging", "--activity", "testing", "--skills", "shortcut-story,shortcut-epic");
+
+            var started = JsonDocument.Parse(bodies.Single()).RootElement;
+            started.GetProperty("activity").EnumerateArray().Select(value => value.GetString()).ShouldBe(["slicing", "planning"]);
+            started.GetProperty("skills").EnumerateArray().Select(value => value.GetString()).ShouldBe(["shortcut-plan"]);
+            requests[1].ShouldBe($"GET /api/work/sessions/{sessionId}/briefing?activity={Uri.EscapeDataString("reviewing,merging,testing")}&skills={Uri.EscapeDataString("shortcut-story,shortcut-epic")}");
+            first.Lines.ShouldContain("rule (highest, slicing): Slice by mechanism, by cell is wrong · contradicts: Slice by cell · challenged 1x");
+            second.Exit.ShouldBe(0);
+            (await RunAsync(environment, handler, "brief", "--activity")).Exit.ShouldBe(2);
+        }
+        finally
+        {
+            File.Delete(sessionFile);
+        }
+    }
+
     private static Dictionary<string, string?> HomeEnv(string home, string harness, string? harnessSession = null)
     {
         var environment = Env("http://codegraph.test");
