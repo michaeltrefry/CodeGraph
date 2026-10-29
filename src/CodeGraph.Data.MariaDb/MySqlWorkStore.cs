@@ -54,6 +54,9 @@ public sealed partial class MySqlWorkStore(
     private static readonly Guid GlobalScope = Guid.Empty;
 
     private const int MySqlDeadlock = 1213;
+    // ER_CHECKREAD: with innodb_snapshot_isolation (the default from MariaDB 11.6.2) a locking read of a
+    // row changed after the transaction's snapshot fails instead of waiting. Retried like a deadlock.
+    private const int MySqlRecordChanged = 1020;
     private const int MySqlLockWaitTimeout = 1205;
     private const int MySqlDuplicateEntry = 1062;
 
@@ -111,7 +114,7 @@ public sealed partial class MySqlWorkStore(
                 {
                     return await body(connection);
                 }
-                catch (MySqlException exception) when (exception.Number == MySqlDeadlock)
+                catch (MySqlException exception) when (exception.Number is MySqlDeadlock or MySqlRecordChanged)
                 {
                     // The server rolled the transaction back; nothing of the attempt is stored.
                     if (attempt == DeadlockAttempts)

@@ -105,7 +105,7 @@ public sealed partial class MySqlWorkStore
     private static bool IsTransient(Exception exception) => exception switch
     {
         WorkException work => work.Code == WorkErrorCodes.Busy,
-        MySqlException mysql => mysql.IsTransient || mysql.Number is MySqlDeadlock or MySqlLockWaitTimeout,
+        MySqlException mysql => mysql.IsTransient || mysql.Number is MySqlDeadlock or MySqlRecordChanged or MySqlLockWaitTimeout,
         _ => false
     };
 

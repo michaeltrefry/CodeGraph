@@ -1060,7 +1060,7 @@ public sealed partial class MySqlWorkStore
                     actor, now, ct);
                 return new NextWorkResult(after with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) }, Reused: false, Recovery: recovery);
             }
-            catch (MySqlException exception) when (exception.Number == MySqlDeadlock && attempt < DeadlockAttempts)
+            catch (MySqlException exception) when (exception.Number is (MySqlDeadlock or MySqlRecordChanged) && attempt < DeadlockAttempts)
             {
                 // Rolled back by the server; try the same candidate again.
             }
