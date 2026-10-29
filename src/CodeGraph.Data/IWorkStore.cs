@@ -86,7 +86,83 @@ public interface IWorkStore
 
     /// <summary>Releases a hold or leaves the queue, then promotes waiters. Releasing an ended hold changes nothing.</summary>
     Task<ReleaseResult> ReleaseHoldAsync(Guid holdId, WorkActor actor, CancellationToken ct = default);
+
+    // ---- Planning (sc-27868) -----------------------------------------------------------------
+
+    /// <summary>
+    /// The preview of a revised plan of a feature: what applying it would change, stored with the
+    /// versions of everything it covers under a token of <paramref name="actor"/>'s identity. Writes
+    /// no work: only the preview row.
+    /// </summary>
+    Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>
+    /// Applies a stored preview all-or-nothing, if nothing it covers changed since (else conflict).
+    /// A preview applied already answers its stored result (repeated). With
+    /// <paramref name="projectId"/>, a preview of another project is refused.
+    /// </summary>
+    Task<SyncPlanApplied> ApplyPlanAsync(Guid previewId, Guid? projectId, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>
+    /// The undelivered notices for <paramref name="actor"/> (its session; or, without one, its
+    /// identity's claims made without a session), marked delivered.
+    /// </summary>
+    Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default);
 }
+
+/// <summary>A requirement as a write names it (validated for shape).</summary>
+public sealed record RequirementSpec(string Id, string Text);
+
+public sealed record RequirementDropSpec(string Id, string Decision);
+
+/// <summary>Acceptance criteria as written: an id null when the caller left it to the position.</summary>
+public sealed record CriterionSpec(string? Id, string Text, AcceptanceState? State, string? Evidence);
+
+public sealed record AcceptanceReportSpec(string? Summary, IReadOnlyList<AcceptanceResultView> Criteria);
+
+/// <summary>The planning fields of a new item.</summary>
+public sealed record ItemPlanFields(
+    string? Goal = null,
+    IReadOnlyList<CriterionSpec>? AcceptanceCriteria = null,
+    IReadOnlyList<string>? Inherits = null,
+    IReadOnlyList<string>? Touches = null,
+    string? Ref = null);
+
+/// <summary>The planning fields of a new feature.</summary>
+public sealed record FeaturePlanFields(
+    IReadOnlyList<string>? Goals = null,
+    IReadOnlyList<RequirementSpec>? Requirements = null,
+    IReadOnlyList<string>? AcceptanceTests = null);
+
+/// <summary>A blocker in a revised plan: another item of the plan (by index) or an item of the project.</summary>
+public sealed record PlanBlockerSpec(int? PlanIndex, Guid? ItemId);
+
+/// <param name="KeyMatch">The item the ref names when the ref is the key of an item of the project.</param>
+public sealed record RevisedItemSpec(
+    string Ref,
+    Guid? KeyMatch,
+    string? Title,
+    WorkItemType? Type,
+    WorkStatus? Status,
+    WorkPriority? Priority,
+    string? Description,
+    string? Goal,
+    IReadOnlyList<string>? Labels,
+    string? Repository,
+    IReadOnlyList<CriterionSpec>? AcceptanceCriteria,
+    IReadOnlyList<string>? Inherits,
+    IReadOnlyList<string>? Touches,
+    IReadOnlyList<PlanBlockerSpec>? BlockedBy,
+    int? Order);
+
+public sealed record RevisedPlanSpec(
+    string? Title,
+    string? Description,
+    IReadOnlyList<string>? Goals,
+    IReadOnlyList<RequirementSpec>? Requirements,
+    IReadOnlyList<RequirementDropSpec>? DropRequirements,
+    IReadOnlyList<string>? AcceptanceTests,
+    IReadOnlyList<RevisedItemSpec> Items);
 
 public sealed record AcquireSpec(
     Guid ProjectId,
@@ -142,14 +218,20 @@ public sealed record DocumentSpec(string Title, string Body);
 
 public sealed record DocumentPatchSpec(Guid Id, string? Title, string? Body);
 
-public sealed record NewFeatureSpec(string Title, string? Description, IReadOnlyList<DocumentSpec> Documents);
+public sealed record NewFeatureSpec(string Title, string? Description, IReadOnlyList<DocumentSpec> Documents, FeaturePlanFields? Plan = null);
 
 public sealed record FeaturePatchSpec(
     string? Title = null,
     string? Description = null,
     bool ClearDescription = false,
     IReadOnlyList<DocumentSpec>? AddDocuments = null,
-    IReadOnlyList<DocumentPatchSpec>? UpdateDocuments = null);
+    IReadOnlyList<DocumentPatchSpec>? UpdateDocuments = null,
+    IReadOnlyList<string>? Goals = null,
+    bool ClearGoals = false,
+    IReadOnlyList<RequirementSpec>? Requirements = null,
+    IReadOnlyList<RequirementDropSpec>? DropRequirements = null,
+    IReadOnlyList<string>? AcceptanceTests = null,
+    bool ClearAcceptanceTests = false);
 
 public sealed record NewItemSpec(
     string Title,
@@ -161,7 +243,8 @@ public sealed record NewItemSpec(
     string? Repository,
     Guid? FeatureId,
     IReadOnlyList<Guid> BlockedBy,
-    int Order);
+    int Order,
+    ItemPlanFields? Plan = null);
 
 public sealed record LinkSpec(WorkLinkKind Kind, string Url);
 
@@ -194,14 +277,27 @@ public sealed record ItemPatchSpec(
     IReadOnlyList<LinkSpec>? RemoveLinks = null,
     string? Comment = null,
     ClaimSpec? Claim = null,
-    HandoffSpec? Handoff = null)
+    HandoffSpec? Handoff = null,
+    string? Goal = null,
+    bool ClearGoal = false,
+    IReadOnlyList<CriterionSpec>? AcceptanceCriteria = null,
+    bool ClearAcceptanceCriteria = false,
+    IReadOnlyList<string>? Inherits = null,
+    bool ClearInherits = false,
+    IReadOnlyList<string>? Touches = null,
+    bool ClearTouches = false,
+    AcceptanceReportSpec? AcceptanceReport = null,
+    // Set from merge evidence (S6); not a tool argument. Never completes the item.
+    bool? MergedAwaitingAcceptance = null)
 {
     /// <summary>Whether the patch only claims the item (a retried claim may then answer the claim it already holds).</summary>
     public bool IsClaimOnly =>
         Claim is { Action: ClaimAction.Claim } && Title is null && Description is null && !ClearDescription && Type is null && Status is null &&
         Priority is null && Labels is null && !ClearLabels && Repository is null && !ClearRepository && FeatureId is null && !ClearFeature &&
         Order is null && AddBlockedBy is not { Count: > 0 } && RemoveBlockedBy is not { Count: > 0 } && AddLinks is not { Count: > 0 } &&
-        RemoveLinks is not { Count: > 0 } && Comment is null && Handoff is null;
+        RemoveLinks is not { Count: > 0 } && Comment is null && Handoff is null &&
+        Goal is null && !ClearGoal && AcceptanceCriteria is null && !ClearAcceptanceCriteria && Inherits is null && !ClearInherits &&
+        Touches is null && !ClearTouches && AcceptanceReport is null && MergedAwaitingAcceptance is null;
 
     /// <summary>The patch without its claim action.</summary>
     public bool IsEmptyBesidesClaim => (this with { Claim = new ClaimSpec(ClaimAction.Claim, "", 0) }).IsClaimOnly;
@@ -222,7 +318,8 @@ public sealed record PlanItemSpec(
     string? Repository,
     int? FeatureIndex,
     IReadOnlyList<int> BlockedBy,
-    int Order);
+    int Order,
+    ItemPlanFields? Plan = null);
 
 public sealed record PlanSpec(IReadOnlyList<PlanFeatureSpec> Features, IReadOnlyList<PlanItemSpec> Items);
 

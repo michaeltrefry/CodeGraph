@@ -166,14 +166,15 @@ public sealed record EndSessionResult(SessionView Session, IReadOnlyList<WorkRow
 /// <summary>
 /// What the next holder of an item needs to continue it (§5.9): the previous holder, the branch and
 /// PR links, the latest handoff, or when the previous session stopped without one its last change
-/// to the item. Acceptance criteria not yet met join it when items carry acceptance criteria (S4).
+/// to the item, and the acceptance criteria not yet reported met.
 /// </summary>
 public sealed record RecoveryView(
     HolderView? PreviousHolder,
     IReadOnlyList<string>? Branches = null,
     IReadOnlyList<string>? Prs = null,
     HandoffView? LatestHandoff = null,
-    ChangeView? LastActivity = null);
+    ChangeView? LastActivity = null,
+    IReadOnlyList<AcceptanceCriterionView>? UnmetAcceptance = null);
 
 // ---- Briefing ---------------------------------------------------------------------------------
 
@@ -207,7 +208,8 @@ public sealed record BriefingItem(
     IReadOnlyList<string>? Branches = null,
     IReadOnlyList<string>? Prs = null,
     HandoffView? LatestHandoff = null,
-    HolderView? PreviousHolder = null);
+    HolderView? PreviousHolder = null,
+    IReadOnlyList<AcceptanceCriterionView>? UnmetAcceptance = null);
 
 public sealed record BriefingSession(
     string SessionId,
