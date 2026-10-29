@@ -411,14 +411,37 @@ public sealed partial class MySqlWorkStore
     /// </summary>
     private async Task<IReadOnlyList<HoldView>> ReleaseSessionHoldsAsync(MySqlConnection connection, MySqlTransaction transaction, Guid sessionId, DateTime now, CancellationToken ct)
     {
-        var resourceIds = (await connection.QueryAsync<Guid>(new CommandDefinition(
-            "SELECT DISTINCT resource_id FROM work_holds WHERE session_id = @sessionId AND state IN ('held', 'waiting') ORDER BY resource_id FOR UPDATE",
-            new { sessionId = sessionId.ToString() }, transaction, cancellationToken: ct))).ToList();
-        var released = new List<HoldView>();
-        foreach (var resourceId in resourceIds)
+        // Resource rows first, then hold rows (the order acquire, renew and release use). The ids
+        // come from a plain read on a fresh connection, which sees what is committed now (this
+        // transaction's repeatable-read snapshot may not); a hold created while the rows are being
+        // locked shows up on the next round, until a round finds nothing new.
+        var locked = new HashSet<Guid>();
+        var resources = new List<ResourceRow>();
+        while (true)
         {
-            await LockResourceAsync(connection, transaction, resourceId, ct);
-            var resource = (await ReadResourceRowAsync(connection, transaction, resourceId, ct))!;
+            List<Guid> current;
+            await using (var reader = await OpenAsync(ct))
+            {
+                current = (await reader.QueryAsync<Guid>(new CommandDefinition(
+                    "SELECT DISTINCT resource_id FROM work_holds WHERE session_id = @sessionId AND state IN ('held', 'waiting') ORDER BY resource_id",
+                    new { sessionId = sessionId.ToString() }, cancellationToken: ct))).ToList();
+            }
+
+            var fresh = current.Where(id => !locked.Contains(id)).ToList();
+            if (fresh.Count == 0)
+                break;
+            foreach (var resourceId in fresh)
+            {
+                await LockResourceAsync(connection, transaction, resourceId, ct);
+                locked.Add(resourceId);
+                resources.Add((await ReadResourceRowAsync(connection, transaction, resourceId, ct))!);
+            }
+        }
+
+        var released = new List<HoldView>();
+        foreach (var resource in resources.OrderBy(resource => resource.Id))
+        {
+            var resourceId = resource.Id;
             // The session's own entries end first, so a waiter of this session is reported cancelled
             // rather than swept as a dead waiter; a hold that already lapsed is expired, not released.
             // Locking reads: a repeatable-read snapshot could miss a hold or waiter created meanwhile.

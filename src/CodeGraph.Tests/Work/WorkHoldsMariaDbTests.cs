@@ -263,6 +263,41 @@ public sealed class WorkHoldsMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
     }
 
     [Fact]
+    public async Task A_hold_created_on_a_second_resource_while_end_session_waits_for_the_first_is_still_released()
+    {
+        var project = await db.NewProjectAsync("HV");
+        var session = await StartAsync(project);
+        await AcquireAsync(project, "gpu:first", session: session);
+        var second = (await AcquireAsync(project, "gpu:second", user: "bob")).GetProperty("resource").GetProperty("id").GetString()!;
+        var releaser = HoldId(await AcquireAsync(project, "gpu:second", user: "bob"));
+        await ReleaseAsync(releaser, "bob");
+
+        await using var blocker = new MySqlConnection(db.ConnectionString);
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await blocker.ExecuteAsync(
+            "SELECT id FROM work_resources WHERE name = 'gpu:first' AND project_id = (SELECT id FROM work_projects WHERE project_key = @project) FOR UPDATE",
+            new { project }, transaction);
+
+        // end_session finds only gpu:first and waits for its row ...
+        var ending = db.CallAsync(WorkTools.EndSession, new { session_id = session }, "michael");
+        await Task.Delay(1000);
+        ending.IsCompleted.ShouldBeFalse();
+
+        // ... a hold of the session lands on another resource meanwhile (a concurrent acquire's commit) ...
+        await blocker.ExecuteAsync(
+            "INSERT INTO work_holds (id, resource_id, project_id, identity, session_id, purpose, priority, state, ttl_seconds, requested_at, granted_at, expires_at) " +
+            "SELECT UUID(), @second, project_id, 'michael', @session, 'late', 'medium', 'held', 3600, NOW(6), NOW(6), DATE_ADD(NOW(6), INTERVAL 1 HOUR) FROM work_resources WHERE id = @second",
+            new { second, session }, transaction);
+        await transaction.CommitAsync();
+
+        // ... and is released too.
+        var ended = await ending;
+        ended.GetProperty("released_holds").EnumerateArray().Select(hold => hold.GetProperty("resource").GetString())
+            .ShouldBe(["gpu:first", "gpu:second"], ignoreOrder: true);
+    }
+
+    [Fact]
     public async Task Concurrent_acquires_never_exceed_capacity()
     {
         var project = await db.NewProjectAsync("HC");
