@@ -93,6 +93,9 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
+      # Wiki attachments (uploads/wiki) and imported work-item files (uploads/work-items, sc-27876):
+      # shared by the API, which serves them, and the Jobs host, whose WorkImport job downloads them.
+      - codegraph-uploads:/app/uploads
     restart: unless-stopped
     depends_on:
       codegraph-metrics:
@@ -305,6 +308,9 @@ services:
     volumes:
       - ${CODEGRAPH_DOCKER_REPOS_MOUNT:-../}:/repos/workspace
       - ${CODEGRAPH_DOCKER_MODELS_MOUNT:-./.cache/models}:/models
+      # Wiki attachments (uploads/wiki) and imported work-item files (uploads/work-items, sc-27876):
+      # shared by the API, which serves them, and the Jobs host, whose WorkImport job downloads them.
+      - codegraph-uploads:/app/uploads
     restart: unless-stopped
     depends_on:
       codegraph-indexer:
@@ -326,3 +332,4 @@ services:
 volumes:
   codegraph-cargo-registry:
   codegraph-cargo-git:
+  codegraph-uploads:

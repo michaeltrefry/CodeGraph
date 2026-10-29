@@ -26,7 +26,8 @@ public sealed record MappedStory(
     IReadOnlyList<string> RepositoryCandidates,
     IReadOnlyList<long> Blockers,
     IReadOnlyList<(string Verb, long Other)> Relations,
-    bool BlockedWithoutEdges);
+    bool BlockedWithoutEdges,
+    IReadOnlyList<string> HistoricalLinks);
 
 /// <summary>
 /// The Shortcut → CodeGraph mapping table of design §10.1, as pure functions over parsed payloads.
@@ -214,6 +215,13 @@ public static partial class ShortcutMapper
             story.StartedAt, story.CompletedAt, state?.Name,
             story.TeamId is { } team && teams.TryGetValue(team, out var named) ? named.Name : null);
 
+        // PR links that must never move the item later: every PR of a finished story, and the merged or
+        // closed PRs of an open one. A PR still open in Shortcut stays live (S6 may move the item by it).
+        var finished = status is WorkStatus.Complete or WorkStatus.Closed;
+        var historical = story.PullRequests.Where(pr => finished || pr.Merged || pr.Closed).Select(pr => pr.Url)
+            .Concat(finished ? story.ExternalLinks.Where(url => LinkKind(url) == WorkLinkKind.Pr) : [])
+            .Distinct(StringComparer.Ordinal).ToList();
+
         return new MappedStory(
             story.Id,
             string.IsNullOrWhiteSpace(story.Name) ? Alias(story.Id) : story.Name.Trim(),
@@ -232,7 +240,8 @@ public static partial class ShortcutMapper
             RepositoryCandidates(story),
             blockers,
             relations,
-            blockedWithoutEdges);
+            blockedWithoutEdges,
+            historical);
     }
 
     /// <summary>Feature documents of an epic: its linked Shortcut Docs, and its comments (a feature has no comment thread) with authors and times.</summary>

@@ -187,9 +187,9 @@ public sealed class WorkImportStagingRunTests(WorkDatabase db) : IClassFixture<W
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
         // Read only: the files are read and never written.
         var files = Directory.EnumerateFiles(memoryDirectory, "*.md").Select(path => new MemoryFile(path, File.ReadAllText(path))).ToList();
-        var candidates = NativeMemoryParser.ParseClaude(files, repositoryRoot).ToList();
+        var candidates = NativeMemoryParser.ParseClaude(files, new RepositoryCheckout(repositoryRoot)).ToList();
         if (Environment.GetEnvironmentVariable("CODEGRAPH_CODEX_MEMORY") is { } codex && File.Exists(codex))
-            candidates.AddRange(NativeMemoryParser.ParseCodex(new MemoryFile(codex, File.ReadAllText(codex)), repositoryRoot, "CodeGraph"));
+            candidates.AddRange(NativeMemoryParser.ParseCodex(new MemoryFile(codex, File.ReadAllText(codex)), new RepositoryCheckout(repositoryRoot), "CodeGraph"));
 
         var key = await db.NewProjectAsync("MEMDEMO", "inference");
         var before = await CountAsync("SELECT COUNT(*) FROM knowledge_entries");

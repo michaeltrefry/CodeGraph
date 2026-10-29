@@ -18,7 +18,11 @@ public sealed class WorkImportJobRequest
     public DateTime? UpdatedSince { get; set; }
 }
 
-/// <summary>Runs one recorded import (sc-27876): a dry run, a full import or a delta sync. Sources are only read.</summary>
+/// <summary>
+/// Runs one recorded import (sc-27876): a dry run, a full import or a delta sync. Sources are only read.
+/// No WorkImport schedule is seeded: it needs the source token and approved settings first. The owner
+/// creates the delta schedule after the full import and removes it at cutover (deploy/README.md).
+/// </summary>
 // The runner is registered with the MariaDB provider only; without it the job fails with a plain message.
 public class WorkImportJob(IWorkImportRunner? runner = null) : IJobCommand<WorkImportJobRequest>
 {

@@ -75,7 +75,12 @@ internal sealed class WorkRestHost : IAsyncDisposable
                         })
                         .AddScheme<AuthenticationSchemeOptions, SignedInPersonHandler>(CodeGraphAuthenticationDefaults.Scheme, _ => { })
                         .AddScheme<AuthenticationSchemeOptions, McpPatAuthenticationHandler>(McpPatAuthenticationDefaults.Scheme, _ => { });
-                    services.AddAuthorization();
+                    // The admin policy as Startup registers it (web scheme only); every signed-in test person is an admin here.
+                    services.AddAuthorization(options => options.AddPolicy(CodeGraphAuthenticationDefaults.AdminPolicy, policy =>
+                    {
+                        policy.AuthenticationSchemes.Add(CodeGraphAuthenticationDefaults.Scheme);
+                        policy.RequireAuthenticatedUser();
+                    }));
                 })
                 .Configure(app =>
                 {

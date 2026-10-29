@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
@@ -35,6 +36,9 @@ public interface IShortcutSource
 
     /// <summary>The file's bytes, at most <paramref name="maxBytes"/>; null when it is larger.</summary>
     Task<byte[]?> DownloadFileAsync(string url, long maxBytes, CancellationToken ct);
+
+    /// <summary>What the source could not read completely (a search window over Shortcut's result cap).</summary>
+    IReadOnlyList<string> Warnings { get; }
 }
 
 /// <summary>Spaces requests to at most N a minute (Shortcut allows 200) and backs off on 429 and 5xx.</summary>
@@ -97,12 +101,63 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
 
     public int Requests => limiter.Requests;
 
+    private readonly List<string> warnings = [];
+
+    public IReadOnlyList<string> Warnings => warnings;
+
+    /// <summary>A Shortcut host: shortcut.com or a subdomain of it. The token is sent to nothing else.</summary>
+    public static bool IsShortcutHost(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttps &&
+        (uri.Host.Equals("shortcut.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".shortcut.com", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Whether a redirect target is a public host: no loopback, private, link-local or otherwise internal address.</summary>
+    public static async Task<bool> IsPublicHostAsync(Uri uri, CancellationToken ct)
+    {
+        if (uri.Scheme != Uri.UriSchemeHttps || uri.IsLoopback || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            return false;
+        IPAddress[] addresses;
+        try
+        {
+            addresses = IPAddress.TryParse(uri.Host, out var literal) ? [literal] : await Dns.GetHostAddressesAsync(uri.DnsSafeHost, ct);
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+
+        return addresses.Length > 0 && addresses.All(IsPublicAddress);
+    }
+
+    private static bool IsPublicAddress(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+        if (IPAddress.IsLoopback(address) || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || address.Equals(IPAddress.IPv6None))
+            return false;
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+            return !(address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal || address.IsIPv6Multicast);
+        var bytes = address.GetAddressBytes();
+        return bytes[0] switch
+        {
+            0 or 10 or 127 => false,
+            100 when bytes[1] >= 64 && bytes[1] <= 127 => false, // carrier-grade NAT
+            169 when bytes[1] == 254 => false,
+            172 when bytes[1] >= 16 && bytes[1] <= 31 => false,
+            192 when bytes[1] == 168 => false,
+            >= 224 => false,
+            _ => true
+        };
+    }
+
     private async Task<JsonElement?> GetJsonAsync(string path, CancellationToken ct, bool allowNotFound = false)
     {
         for (var attempt = 1; ; attempt++)
         {
             await limiter.WaitAsync(ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            var target = request.RequestUri!.IsAbsoluteUri ? request.RequestUri : new Uri(http.BaseAddress!, request.RequestUri);
+            if (!IsShortcutHost(target))
+                throw new HttpRequestException($"Refusing to send the Shortcut token to {target.Host}.");
             request.Headers.Add("Shortcut-Token", token);
             using var response = await http.SendAsync(request, ct);
             if (response.IsSuccessStatusCode)
@@ -160,7 +215,9 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
     public async Task<IReadOnlyList<ShortcutStorySummary>> ListStoriesAsync(DateTime? updatedSince, CancellationToken ct)
     {
         var found = new Dictionary<long, ShortcutStorySummary>();
-        var filter = updatedSince is { } since ? $" updated:{since:yyyy-MM-dd}..*" : "";
+        // Search filters by whole days: a day earlier, so nothing updated on the boundary day (in any
+        // time zone) is missed; the exact bound is applied below.
+        var filter = updatedSince is { } since ? $" updated:{since.AddDays(-1):yyyy-MM-dd}..*" : "";
         await CollectAsync(new DateOnly(2000, 1, 1), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1), filter, found, ct);
         return found.Values
             // Search filters by day; the exact bound is applied here.
@@ -175,6 +232,8 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
         var path = $"search/stories?detail=slim&page_size=25&query={Uri.EscapeDataString(query)}";
         var first = (await GetJsonAsync(path, ct))!.Value;
         var total = (int)(ShortcutPayload.Long(first, "total") ?? 0);
+        if (total > SearchCap && to.DayNumber == from.DayNumber)
+            warnings.Add($"More than {SearchCap} stories ({total}) were created on {from:yyyy-MM-dd}: Shortcut's search answers at most {SearchCap}, so some of them were not read. Run the import again with a narrower updated_since, or read that day's stories by another filter.");
         if (total > SearchCap && to.DayNumber - from.DayNumber > 0)
         {
             var middle = DateOnly.FromDayNumber(from.DayNumber + (to.DayNumber - from.DayNumber) / 2);
@@ -210,19 +269,24 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
     public async Task<byte[]?> DownloadFileAsync(string url, long maxBytes, CancellationToken ct)
     {
         var target = new Uri(url);
-        var authenticated = true;
+        var authenticated = IsShortcutHost(target);
         for (var attempt = 1; ; attempt++)
         {
             await limiter.WaitAsync(ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, target);
-            // The token goes to Shortcut only, never to the storage host a redirect names.
-            if (authenticated)
+            // The token goes to Shortcut hosts only: not to a file URL elsewhere, nor to the storage
+            // host a redirect names.
+            if (authenticated && IsShortcutHost(target))
                 request.Headers.Add("Shortcut-Token", token);
+            else if (!await IsPublicHostAsync(target, ct))
+                throw new HttpRequestException($"Refusing to download a file from {target.Host}: not a public host.");
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if ((int)response.StatusCode is >= 300 and < 400 && response.Headers.Location is { } location && attempt < MaxAttempts)
             {
                 target = location.IsAbsoluteUri ? location : new Uri(target, location);
-                authenticated = target.Host.EndsWith("shortcut.com", StringComparison.OrdinalIgnoreCase);
+                if (!await IsPublicHostAsync(target, ct))
+                    throw new HttpRequestException($"Refusing to follow a redirect to {target.Host}: not a public host.");
+                authenticated = IsShortcutHost(target);
                 continue;
             }
 
@@ -274,6 +338,8 @@ public sealed class RecordedShortcutSource : IShortcutSource
     public Dictionary<string, byte[]> Files { get; } = new(StringComparer.Ordinal);
 
     public int StoryReads { get; private set; }
+
+    public IReadOnlyList<string> Warnings { get; } = [];
 
     public static RecordedShortcutSource FromDirectory(string directory)
     {

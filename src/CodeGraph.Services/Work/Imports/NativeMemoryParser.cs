@@ -34,10 +34,10 @@ public static partial class NativeMemoryParser
     public static bool IsClaudeMemoryFile(string path) =>
         path.EndsWith(".md", StringComparison.OrdinalIgnoreCase) && !System.IO.Path.GetFileName(path).Equals("MEMORY.md", StringComparison.OrdinalIgnoreCase);
 
-    public static IReadOnlyList<MemoryCandidate> ParseClaude(IEnumerable<MemoryFile> files, string? repositoryRoot)
+    public static IReadOnlyList<MemoryCandidate> ParseClaude(IEnumerable<MemoryFile> files, RepositoryCheckout? checkout)
     {
         var result = new List<MemoryCandidate>();
-        var index = repositoryRoot is null ? null : new RepositoryIndex(repositoryRoot);
+        var index = checkout;
         foreach (var file in files.Where(file => IsClaudeMemoryFile(file.Path)).OrderBy(file => file.Path, StringComparer.Ordinal))
         {
             var text = file.Content.Replace("\r\n", "\n");
@@ -67,10 +67,10 @@ public static partial class NativeMemoryParser
     }
 
     /// <summary>Codex task groups; with <paramref name="cwdFilter"/> only the groups whose applies_to or scope names it (a repository name).</summary>
-    public static IReadOnlyList<MemoryCandidate> ParseCodex(MemoryFile file, string? repositoryRoot, string? cwdFilter)
+    public static IReadOnlyList<MemoryCandidate> ParseCodex(MemoryFile file, RepositoryCheckout? checkout, string? cwdFilter)
     {
         var result = new List<MemoryCandidate>();
-        var index = repositoryRoot is null ? null : new RepositoryIndex(repositoryRoot);
+        var index = checkout;
         var groups = Regex.Split(file.Content.Replace("\r\n", "\n"), @"(?m)^# Task Group:\s*").Skip(1);
         foreach (var group in groups)
         {
@@ -110,7 +110,7 @@ public static partial class NativeMemoryParser
     }
 
     private static MemoryCandidate Candidate(string harness, string? type, KnowledgeKind kind, string summary, string body, string? name, string sourceFile,
-        RepositoryIndex? index, bool personal)
+        RepositoryCheckout? index, bool personal)
     {
         var tokens = PathToken().Matches(body + "\n" + summary).Select(match => match.Groups["path"].Value.TrimEnd('.', ','))
             .Where(path => !path.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !path.Contains("://", StringComparison.Ordinal) && !path.StartsWith('~'))
@@ -165,48 +165,97 @@ public static partial class NativeMemoryParser
 
     private static string Cut(string text, int length) => text.Length <= length ? text : text[..length];
 
-    /// <summary>
-    /// The files of a checkout, to tell a repository path a memory names from a phrase that only looks
-    /// like one ("Python/Rust", "build/test"): a token with a slash is a path when it exists, when it has a
-    /// file extension, or when it starts at a top-level entry of the repository; a bare file name counts
-    /// only when some file has it (an unknown bare name may be an example, not a claim).
-    /// </summary>
-    private sealed class RepositoryIndex
+}
+
+/// <summary>
+/// The paths of a repository checkout known to CodeGraph, to tell a repository path a memory names from
+/// a phrase that only looks like one ("Python/Rust", "build/test"). Tokens are only looked up in an index
+/// built by one bounded walk of the checkout: the filesystem is never probed with a caller's token. The
+/// walk stays inside the root (symbolic links, file or directory, are not followed or listed), skips
+/// .git, bin, obj, node_modules and similar, stops at <see cref="MaxDepth"/> levels and
+/// <see cref="MaxEntries"/> entries, and skips what it may not read.
+/// A token with a slash is a path when it is in the index, when it has a file extension, or when it starts
+/// at a top-level entry; a bare file name counts only when some file has it (an unknown bare name may be an
+/// example, not a claim). Absolute tokens, tokens with .. or a drive, and unsafe names are never paths.
+/// </summary>
+public sealed class RepositoryCheckout
+{
+    public const int MaxDepth = 16;
+    public const int MaxEntries = 100_000;
+    private static readonly HashSet<string> Skipped = new(StringComparer.OrdinalIgnoreCase)
+        { ".git", "bin", "obj", "node_modules", ".claude", ".angular", "dist", ".venv", "target", ".cache" };
+
+    private readonly HashSet<string> topLevel = new(StringComparer.Ordinal);
+    private readonly HashSet<string> entries = new(StringComparer.Ordinal);
+    private readonly List<string> files = [];
+
+    /// <summary>Whether the walk stopped at its bounds before it saw everything.</summary>
+    public bool Truncated { get; }
+
+    public RepositoryCheckout(string root)
     {
-        private static readonly HashSet<string> Skipped = new(StringComparer.OrdinalIgnoreCase) { ".git", "bin", "obj", "node_modules", ".claude", ".angular", "dist" };
-
-        private readonly string root;
-        private readonly HashSet<string> topLevel;
-        private readonly List<string> files = [];
-
-        public RepositoryIndex(string root)
+        var pending = new Stack<(DirectoryInfo Directory, int Depth)>();
+        pending.Push((new DirectoryInfo(root), 0));
+        while (pending.Count > 0)
         {
-            this.root = root;
-            topLevel = Directory.EnumerateFileSystemEntries(root).Select(System.IO.Path.GetFileName).OfType<string>().ToHashSet(StringComparer.Ordinal);
-            var pending = new Stack<string>([root]);
-            while (pending.Count > 0)
+            var (directory, depth) = pending.Pop();
+            FileSystemInfo[] children;
+            try
             {
-                var directory = pending.Pop();
-                foreach (var file in Directory.EnumerateFiles(directory))
-                    files.Add(System.IO.Path.GetRelativePath(root, file).Replace('\\', '/'));
-                foreach (var child in Directory.EnumerateDirectories(directory))
-                    if (!Skipped.Contains(System.IO.Path.GetFileName(child)))
-                        pending.Push(child);
+                children = directory.GetFileSystemInfos();
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+            {
+                continue;
+            }
+
+            foreach (var child in children)
+            {
+                if (child.Attributes.HasFlag(FileAttributes.ReparsePoint) || child.LinkTarget is not null)
+                    continue;
+                if (entries.Count >= MaxEntries)
+                {
+                    Truncated = true;
+                    return;
+                }
+
+                var relative = System.IO.Path.GetRelativePath(root, child.FullName).Replace('\\', '/');
+                if (relative.StartsWith("..", StringComparison.Ordinal))
+                    continue;
+                if (depth == 0)
+                    topLevel.Add(child.Name);
+                if (child is DirectoryInfo childDirectory)
+                {
+                    if (Skipped.Contains(child.Name))
+                        continue;
+                    entries.Add(relative);
+                    if (depth + 1 < MaxDepth)
+                        pending.Push((childDirectory, depth + 1));
+                    else
+                        Truncated = true;
+                }
+                else
+                {
+                    entries.Add(relative);
+                    files.Add(relative);
+                }
             }
         }
+    }
 
-        /// <returns>Whether the token is a repository path, and the path it resolves to (null: it no longer exists).</returns>
-        public (bool IsPath, string? Found) Resolve(string token)
-        {
-            if (File.Exists(System.IO.Path.Combine(root, token)) || Directory.Exists(System.IO.Path.Combine(root, token)))
-                return (true, token);
-            var suffix = files.FirstOrDefault(file => file.EndsWith("/" + token, StringComparison.Ordinal));
-            if (suffix is not null)
-                return (true, suffix);
-            if (!token.Contains('/'))
-                return (false, null);
-            var hasExtension = System.IO.Path.HasExtension(token) && !char.IsDigit(System.IO.Path.GetExtension(token).ElementAtOrDefault(1));
-            return hasExtension || topLevel.Contains(token[..token.IndexOf('/')]) ? (true, null) : (false, null);
-        }
+    /// <returns>Whether the token is a repository path, and the path it resolves to (null: it no longer exists).</returns>
+    public (bool IsPath, string? Found) Resolve(string token)
+    {
+        if (!RepoFileResolver.IsSafeRelativePath(token) || token.Contains('\\'))
+            return (false, null);
+        if (entries.Contains(token))
+            return (true, token);
+        var suffix = files.FirstOrDefault(file => file.EndsWith("/" + token, StringComparison.Ordinal));
+        if (suffix is not null)
+            return (true, suffix);
+        if (!token.Contains('/'))
+            return (false, null);
+        var hasExtension = System.IO.Path.HasExtension(token) && !char.IsDigit(System.IO.Path.GetExtension(token).ElementAtOrDefault(1));
+        return hasExtension || topLevel.Contains(token[..token.IndexOf('/')]) ? (true, null) : (false, null);
     }
 }

@@ -15,11 +15,23 @@ ALTER TABLE work_features ADD COLUMN IF NOT EXISTS requirements_unreconciled TIN
 -- An imported comment keeps its source id, so a re-run inserts only the comments that are new and
 -- updates the text of an edited one.
 ALTER TABLE work_item_comments ADD COLUMN IF NOT EXISTS external_id VARCHAR(100) NULL;
+-- The source's own time of an imported comment. created_at keeps the item's comment order (every
+-- comment is later than the ones committed before it), so a comment that arrives in a delta sync
+-- with an older source time gets a later created_at and keeps its source time here.
+ALTER TABLE work_item_comments ADD COLUMN IF NOT EXISTS source_created_at DATETIME(6) NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_work_item_comments_external ON work_item_comments (item_id, external_id);
+
+-- A PR link an import wrote for a PR that was already merged or closed in the source (a historical
+-- PR): GitHub events on it never move the item. When GitHub evidence or an agent adds the same link
+-- again, the link changes owner and stops being historical.
+ALTER TABLE work_item_links ADD COLUMN IF NOT EXISTS historical TINYINT(1) NOT NULL DEFAULT 0;
 
 -- What each source object became: the idempotency key of every import write. content_hash is the
 -- hash of the mapped object, so an unchanged source object writes nothing on a re-run.
 -- edges_json: the blockers the import itself added to an item, the only ones a re-run may remove.
+-- snapshot_json: the mapped fields as the last run wrote them, the base of the three-way merge of a
+-- delta sync (only fields that changed in the source since are written; CodeGraph-side changes to
+-- the others survive). relations_json: the blockers the source named at the last dependency sync.
 CREATE TABLE IF NOT EXISTS work_import_records (
     source VARCHAR(16) NOT NULL,
     external_kind VARCHAR(16) NOT NULL,
@@ -29,6 +41,8 @@ CREATE TABLE IF NOT EXISTS work_import_records (
     project_id CHAR(36) NOT NULL,
     content_hash CHAR(64) NOT NULL,
     edges_json LONGTEXT NULL,
+    snapshot_json LONGTEXT NULL,
+    relations_json LONGTEXT NULL,
     source_updated_at DATETIME(6) NULL,
     imported_at DATETIME(6) NOT NULL,
     PRIMARY KEY (source, external_kind, external_id),

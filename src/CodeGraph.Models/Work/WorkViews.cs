@@ -77,7 +77,9 @@ public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt,
 public sealed record LinkView(Guid Id, WorkLinkKind Kind, string Url, DateTime CreatedAt);
 
 /// <param name="AuthorKind">Set when the author is not a CodeGraph user: <c>agent</c> or <c>system</c> (an imported comment keeps its source author and time).</param>
-public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null, string? AuthorKind = null);
+/// <param name="SourceCreatedAt">An imported comment's time in its source tracker, when it differs from CreatedAt (which keeps the item's comment order).</param>
+public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null, string? AuthorKind = null,
+    DateTime? SourceCreatedAt = null);
 
 public sealed record ItemView(
     Guid Id,

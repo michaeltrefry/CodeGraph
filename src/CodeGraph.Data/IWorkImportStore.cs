@@ -17,18 +17,19 @@ public interface IWorkImportStore
     Task<ImportWrite> UpsertImportedItemAsync(ImportedItemSpec spec, WorkActor actor, CancellationToken ct = default);
 
     /// <summary>
-    /// Makes the item's imported blockers <paramref name="blockers"/>: adds the missing ones (cycle-checked
-    /// under the dependency lock; a blocker that would close a cycle is answered in
-    /// <see cref="DependencySync.Cycles"/> and not added) and removes only blockers an earlier run imported.
-    /// Blockers added by anyone else are never touched.
+    /// Brings the source's blockers of the item (<paramref name="blockers"/>) over as a three-way merge
+    /// against the blockers of the last sync: nothing is done when they are unchanged; a blocker the source
+    /// added gets an edge (cycle-checked under the dependency lock; a cycle is answered in
+    /// <see cref="DependencySync.Cycles"/>); a blocker the source dropped loses its edge only when the
+    /// import inserted it. Edges anyone else added are never removed.
     /// </summary>
     Task<DependencySync> SyncImportedDependenciesAsync(string source, string externalKind, string externalId, IReadOnlyList<Guid> blockers, WorkActor actor, CancellationToken ct = default);
 
     /// <summary>Adds comments keyed by their external id (a repeat changes nothing) to an item, as one fed write.</summary>
     Task<int> AddImportedCommentsAsync(Guid itemId, IReadOnlyList<ImportedComment> comments, WorkActor actor, CancellationToken ct = default);
 
-    /// <summary>Whether the item already has the attachment of <paramref name="externalId"/> recorded.</summary>
-    Task<bool> HasAttachmentAsync(Guid itemId, string externalId, CancellationToken ct = default);
+    /// <summary>The storage path of the item's stored copy of the attachment, or null when it has none.</summary>
+    Task<string?> GetStoredAttachmentPathAsync(Guid itemId, string externalId, CancellationToken ct = default);
 
     Task AddAttachmentAsync(Guid itemId, NewAttachmentSpec attachment, WorkActor actor, CancellationToken ct = default);
 
@@ -42,19 +43,24 @@ public interface IWorkImportStore
     /// <summary>Starts a run, refused (conflict) while another run of the source is alive (heartbeat within <paramref name="staleAfter"/>).</summary>
     Task<Guid> StartImportRunAsync(string source, ImportMode mode, DateTime? updatedSince, string startedBy, TimeSpan staleAfter, CancellationToken ct = default);
 
-    Task HeartbeatImportRunAsync(Guid runId, ImportReport report, CancellationToken ct = default);
+    /// <summary>Moves the run's heartbeat, and with a report saves its progress (never replaced by null). Only a running run.</summary>
+    Task HeartbeatImportRunAsync(Guid runId, ImportReport? report, CancellationToken ct = default);
 
-    Task CompleteImportRunAsync(Guid runId, string status, ImportReport report, string? error, CancellationToken ct = default);
+    /// <summary>Ends the run, only while it is still running; false when it was not (a later start declared it dead).</summary>
+    Task<bool> CompleteImportRunAsync(Guid runId, string status, ImportReport? report, string? error, CancellationToken ct = default);
 
     Task<ImportRunView?> GetImportRunAsync(Guid runId, CancellationToken ct = default);
 
     Task<IReadOnlyList<ImportRunView>> ListImportRunsAsync(string source, int limit, CancellationToken ct = default);
 
-    /// <summary>The start of the newest completed import run of the source (the default updated_since of a delta sync).</summary>
-    Task<DateTime?> LastCompletedImportStartAsync(string source, CancellationToken ct = default);
+    /// <summary>The newest completed import run of the source with its report (a delta continues from its start and retries its failures).</summary>
+    Task<ImportRunView?> LastCompletedImportAsync(string source, CancellationToken ct = default);
 }
 
-public sealed record ImportRecord(string ExternalId, string EntityKind, Guid EntityId, Guid ProjectId, string ContentHash, IReadOnlyList<Guid> Edges, DateTime? SourceUpdatedAt);
+/// <param name="Edges">The blockers whose edges the import inserted (the only ones it may remove).</param>
+/// <param name="HasRelations">Whether a dependency sync recorded the source's blockers.</param>
+public sealed record ImportRecord(string ExternalId, string EntityKind, Guid EntityId, Guid ProjectId, string ContentHash, IReadOnlyList<Guid> Edges, DateTime? SourceUpdatedAt,
+    bool HasRelations = false);
 
 public enum ImportOutcome
 {
@@ -108,7 +114,9 @@ public sealed record ImportedItemSpec(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     int Order,
-    string ContentHash);
+    string ContentHash,
+    // PR links of PRs already merged or closed in the source: GitHub events on them never move the item.
+    IReadOnlyList<string>? HistoricalLinks = null);
 
 public sealed record NewAttachmentSpec(string ExternalId, string Filename, string ContentType, long SizeBytes, string? Sha256, string? StoragePath, string? SourceUrl, string? SkippedReason, DateTime CreatedAt);
 

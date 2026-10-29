@@ -233,7 +233,7 @@ public sealed class WorkImportMariaDbTests(WorkDatabase db) : IClassFixture<Work
         delta.Status.ShouldBe(ImportRunStatuses.Completed, delta.Error);
         delta.UpdatedSince.ShouldNotBeNull();
         delta.Report!.Stories.Seen.ShouldBe(1);
-        delta.Report.Written.ItemsUpdated.ShouldBe(1);
+        delta.Report.Written.ItemsUpdated.ShouldBe(1, JsonSerializer.Serialize(delta.Report, WorkJson.Options));
         var renamed = await GetAsync("sc-27866");
         renamed.GetProperty("id").GetString().ShouldBe(s2.GetProperty("id").GetString());
         renamed.GetProperty("title").GetString().ShouldBe("S2 — Sessions, briefing and cg CLI (renamed in Shortcut)");
@@ -308,7 +308,7 @@ public sealed class WorkImportMariaDbTests(WorkDatabase db) : IClassFixture<Work
             new MemoryFile("/memory/commands.md", "---\nname: Build\ndescription: Build the solution with dotnet build CodeGraph.sln\ntype: reference\n---\nRun `dotnet build CodeGraph.sln`; migrations are in sql/migrations."),
             new MemoryFile("/memory/flow.md", "---\nname: flow\ndescription: Prefers continuous work\ntype: feedback\n---\nKeep going until the epic is done.")
         };
-        var candidates = NativeMemoryParser.ParseClaude(files, repositoryRoot);
+        var candidates = NativeMemoryParser.ParseClaude(files, new RepositoryCheckout(repositoryRoot));
         candidates.Select(candidate => candidate.Candidate.Verification).ShouldBe([ImportVerification.Verified, ImportVerification.Personal]);
         var before = await CountAsync("SELECT COUNT(*) FROM knowledge_entries");
 

@@ -527,6 +527,7 @@ public sealed partial class MySqlWorkStore(
         public string? AuthorSessionId { get; init; }
         public string? Harness { get; init; }
         public string AuthorKind { get; init; } = "";
+        public DateTime? SourceCreatedAt { get; init; }
     }
 
     private sealed class AttachmentRow
@@ -562,11 +563,12 @@ public sealed partial class MySqlWorkStore(
             new { id = row.Id }, transaction, cancellationToken: ct)))
             .Select(link => new LinkView(link.Id, ParseName<WorkLinkKind>(link.Kind), link.Url, Utc(link.CreatedAt))).ToList();
         var comments = (await connection.QueryAsync<CommentRow>(new CommandDefinition(
-            "SELECT c.id, c.author, c.author_kind, c.body, c.created_at, c.author_session_id, COALESCE(s.harness, c.author_harness) AS harness FROM work_item_comments c " +
+            "SELECT c.id, c.author, c.author_kind, c.body, c.created_at, c.source_created_at, c.author_session_id, COALESCE(s.harness, c.author_harness) AS harness FROM work_item_comments c " +
             "LEFT JOIN work_sessions s ON s.id = c.author_session_id WHERE c.item_id = @id ORDER BY c.created_at, c.id",
             new { id = row.Id }, transaction, cancellationToken: ct)))
             .Select(comment => new CommentView(comment.Id, comment.Author, comment.Body, Utc(comment.CreatedAt), comment.AuthorSessionId, comment.Harness,
-                comment.AuthorKind is WorkActor.AgentKind or WorkActor.SystemKind ? comment.AuthorKind : null)).ToList();
+                comment.AuthorKind is WorkActor.AgentKind or WorkActor.SystemKind ? comment.AuthorKind : null,
+                comment.SourceCreatedAt is { } source && source != comment.CreatedAt ? Utc(source) : null)).ToList();
         var attachments = row.ImportedJson is null
             ? []
             : (await connection.QueryAsync<AttachmentRow>(new CommandDefinition(

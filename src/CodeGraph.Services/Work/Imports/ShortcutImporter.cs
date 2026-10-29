@@ -1,4 +1,6 @@
+using System.Data.Common;
 using System.Globalization;
+using System.Text.Json;
 using System.Security.Cryptography;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
@@ -67,18 +69,33 @@ public sealed class ShortcutImporter(
         }
     }
 
-    public async Task<ImportReport> RunAsync(IShortcutSource source, ImportMode mode, DateTime? updatedSince, Func<ImportReport, Task>? heartbeat, CancellationToken ct)
+    /// <summary>
+    /// Whether a failure belongs to one source object (recorded in the report, the run goes on): a
+    /// refused write, an HTTP failure or timeout (not the run's own cancellation), a database error the
+    /// store did not retry away, an unreadable payload or file.
+    /// </summary>
+    public static bool IsItemFailure(Exception exception, CancellationToken ct) =>
+        exception is WorkException or HttpRequestException or IOException or DbException or JsonException
+        || (exception is OperationCanceledException && !ct.IsCancellationRequested);
+
+    /// <param name="report">Filled as the run goes, so a failed run keeps the progress it made.</param>
+    /// <param name="retry">Source ids a previous run failed on (sc-N, epic-N): read again whatever updated_since says.</param>
+    /// <param name="progress">Called every 100 stories to save the progress.</param>
+    public async Task<ImportReport> RunAsync(IShortcutSource source, ImportMode mode, DateTime? updatedSince, ImportReport report, IReadOnlyCollection<string>? retry,
+        Func<ImportReport, Task>? progress, CancellationToken ct)
     {
+        var retried = (retry ?? []).ToHashSet(StringComparer.Ordinal);
         var stored = await imports.GetImportSettingsAsync(ImportSources.Shortcut, ct);
         var approved = stored?.ApprovedAt is not null;
         if (mode == ImportMode.Import && !approved)
             throw WorkException.Invalid("The team → project table has not been approved. Review the dry-run report, then approve the table (PUT /api/work/imports/shortcut/settings with approve: true) before importing. Nothing was imported.");
         // A dry run before approval reports the saved (unapproved) table, or the proposal.
         var settings = stored ?? await ProposeAsync(source, ct);
-        var report = new ImportReport
-        {
-            Source = ImportSources.Shortcut, Mode = mode, UpdatedSince = updatedSince, SettingsApproved = approved, HoldingProject = settings.HoldingProjectKey
-        };
+        report.Source = ImportSources.Shortcut;
+        report.Mode = mode;
+        report.UpdatedSince = updatedSince;
+        report.SettingsApproved = approved;
+        report.HoldingProject = settings.HoldingProjectKey;
 
         var teams = (await source.ListTeamsAsync(ct)).ToDictionary(team => team.Id, StringComparer.Ordinal);
         var memberList = await source.ListMembersAsync(ct);
@@ -153,7 +170,7 @@ public sealed class ShortcutImporter(
             ct.ThrowIfCancellationRequested();
             var teamRow = TeamRow(listed.TeamIds.FirstOrDefault());
             epicProject[listed.Id] = epicRecords.TryGetValue(Id(listed.Id), out var known) ? KeyOf(targets, known.ProjectId) ?? teamRow.ProjectKey : teamRow.ProjectKey;
-            if (updatedSince is { } since && listed.UpdatedAt < since)
+            if (updatedSince is { } since && listed.UpdatedAt < since && !retried.Contains("epic-" + Id(listed.Id)))
                 continue;
             report.Epics.Seen++;
             if (listed.Archived)
@@ -162,21 +179,21 @@ public sealed class ShortcutImporter(
                 continue;
             }
 
-            var epic = await source.GetEpicAsync(listed.Id, ct) ?? listed;
-            var projectKey = epicProject[listed.Id];
-            teamRow.Epics++;
-            report.Epics.Mapped++;
-            if (epic.Done) report.Epics.Done++; else report.Epics.Open++;
-            report.Project(projectKey).Features++;
-            if (!epic.Done)
-                report.ReconcileTasks++;
-            var documents = epic.RelatedDocuments > 0 || listed.RelatedDocuments > 0 ? await source.ListEpicDocumentsAsync(epic.Id, ct) : [];
-            report.Documents += documents.Count;
-            if (mode != ImportMode.Import)
-                continue;
-
             try
             {
+                var epic = await source.GetEpicAsync(listed.Id, ct) ?? listed;
+                var projectKey = epicProject[listed.Id];
+                var documents = epic.RelatedDocuments > 0 || listed.RelatedDocuments > 0 ? await source.ListEpicDocumentsAsync(epic.Id, ct) : [];
+                teamRow.Epics++;
+                report.Epics.Mapped++;
+                if (epic.Done) report.Epics.Done++; else report.Epics.Open++;
+                report.Project(projectKey).Features++;
+                if (!epic.Done)
+                    report.ReconcileTasks++;
+                report.Documents += documents.Count;
+                if (mode != ImportMode.Import)
+                    continue;
+
                 var target = targets[projectKey];
                 var spec = new ImportedFeatureSpec(ImportSources.Shortcut, Id(epic.Id), await EnsureProjectAsync(target), epic.Name.Trim().Length == 0 ? $"Epic {epic.Id}" : epic.Name.Trim(),
                     epic.Description, ShortcutMapper.EpicDocuments(epic, documents, members), !epic.Done, ShortcutMapper.EpicImported(epic, members, teams),
@@ -196,15 +213,22 @@ public sealed class ShortcutImporter(
                     report.Written.ReconcileTasksCreated++;
                 }
             }
-            catch (Exception exception) when (exception is WorkException or HttpRequestException)
+            catch (Exception exception) when (IsItemFailure(exception, ct))
             {
                 report.Written.Failures++;
-                report.AddWarning($"Epic {epic.Id}: {exception.Message}");
+                report.FailedIds.Add("epic-" + Id(listed.Id));
+                report.AddWarning($"Epic {listed.Id}: {exception.Message}");
             }
         }
 
         // ---- Stories → items -------------------------------------------------------------------
-        var summaries = await source.ListStoriesAsync(updatedSince, ct);
+        var summaries = (await source.ListStoriesAsync(updatedSince, ct)).ToList();
+        // A delta reads again what the previous run failed on.
+        foreach (var failed in retried.Where(id => id.StartsWith("sc-", StringComparison.Ordinal)))
+            if (long.TryParse(failed["sc-".Length..], NumberStyles.None, CultureInfo.InvariantCulture, out var retryId) && summaries.All(summary => summary.Id != retryId))
+                summaries.Add(new ShortcutStorySummary(retryId, DateTime.UnixEpoch));
+        foreach (var warning in source.Warnings)
+            report.AddWarning(warning);
         if (updatedSince is null)
             report.Stories.ArchivedSkipped = await source.CountArchivedStoriesAsync(ct);
         var storyProject = new Dictionary<long, string>();
@@ -216,9 +240,21 @@ public sealed class ShortcutImporter(
         foreach (var summary in summaries)
         {
             ct.ThrowIfCancellationRequested();
-            if (++processed % 100 == 0 && heartbeat is not null)
-                await heartbeat(report);
-            var story = await source.GetStoryAsync(summary.Id, ct);
+            if (++processed % 100 == 0 && progress is not null)
+                await progress(report);
+            ShortcutStory? story;
+            try
+            {
+                story = await source.GetStoryAsync(summary.Id, ct);
+            }
+            catch (Exception exception) when (IsItemFailure(exception, ct))
+            {
+                report.Written.Failures++;
+                report.FailedIds.Add(ShortcutMapper.Alias(summary.Id));
+                report.AddWarning($"sc-{summary.Id}: {exception.Message}");
+                continue;
+            }
+
             if (story is null)
             {
                 report.AddWarning($"sc-{summary.Id} was listed but could not be read.");
@@ -280,16 +316,18 @@ public sealed class ShortcutImporter(
                 var spec = new ImportedItemSpec(ImportSources.Shortcut, "story", Id(story.Id), await EnsureProjectAsync(target),
                     story.EpicId is { } featureEpic && featureIds.TryGetValue(featureEpic, out var featureId) ? featureId : null,
                     mapped.Title, mapped.Type, mapped.Status, WorkPriority.Medium, mapped.Description, mapped.Labels, repository,
-                    mapped.AcceptanceCriteria, mapped.Comments, mapped.Links, mapped.Aliases, mapped.Imported, mapped.CreatedAt, mapped.UpdatedAt, 0, "");
+                    mapped.AcceptanceCriteria, mapped.Comments, mapped.Links, mapped.Aliases, mapped.Imported, mapped.CreatedAt, mapped.UpdatedAt, 0, "",
+                    mapped.HistoricalLinks);
                 var written = await imports.UpsertImportedItemAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
                 Count(report, written.Outcome, feature: false);
                 foreach (var warning in written.Warnings ?? [])
                     report.AddWarning($"sc-{story.Id}: {warning}");
                 await StoreFilesAsync(source, story, written.Id, report, ct);
             }
-            catch (Exception exception) when (exception is WorkException or HttpRequestException)
+            catch (Exception exception) when (IsItemFailure(exception, ct))
             {
                 report.Written.Failures++;
+                report.FailedIds.Add(ShortcutMapper.Alias(story.Id));
                 report.AddWarning($"sc-{story.Id}: {exception.Message}");
             }
         }
@@ -323,7 +361,7 @@ public sealed class ShortcutImporter(
 
             if (mode != ImportMode.Import || !storyRecords.TryGetValue(Id(storyId), out var record))
                 continue;
-            if (mappedBlockers.Count == 0 && record.Edges.Count == 0)
+            if (mappedBlockers.Count == 0 && record.Edges.Count == 0 && !record.HasRelations)
                 continue;
             try
             {
@@ -333,9 +371,10 @@ public sealed class ShortcutImporter(
                 foreach (var cycle in sync.Cycles)
                     report.UnmappedRelations.Add(new ImportRelationIssue(ShortcutMapper.Alias(storyId), "blocked_by", KeyOfStory(storyRecords, cycle), "cycle"));
             }
-            catch (WorkException exception)
+            catch (Exception exception) when (IsItemFailure(exception, ct))
             {
                 report.Written.Failures++;
+                report.FailedIds.Add(ShortcutMapper.Alias(storyId));
                 report.AddWarning($"sc-{storyId} dependencies: {exception.Message}");
             }
         }
@@ -349,7 +388,16 @@ public sealed class ShortcutImporter(
                     continue;
                 var comments = group.Select(issue => new ImportedComment($"xproject:{issue.To}", Actor.Name, WorkActor.SystemKind,
                     $"Blocked by {issue.To} in Shortcut, an item of another project: dependencies stay within a project, so this is noted, not an edge.", DateTime.UtcNow)).ToList();
-                report.Written.RelationComments += await imports.AddImportedCommentsAsync(record.EntityId, comments, Actor, ct);
+                try
+                {
+                    report.Written.RelationComments += await imports.AddImportedCommentsAsync(record.EntityId, comments, Actor, ct);
+                }
+                catch (Exception exception) when (IsItemFailure(exception, ct))
+                {
+                    report.Written.Failures++;
+                    report.FailedIds.Add(group.Key);
+                    report.AddWarning($"{group.Key} cross-project notes: {exception.Message}");
+                }
             }
         }
 
@@ -370,7 +418,8 @@ public sealed class ShortcutImporter(
         foreach (var file in story.Files)
         {
             var externalId = Id(file.Id);
-            if (await imports.HasAttachmentAsync(itemId, externalId, ct))
+            // A record whose stored file went missing counts as not stored: it is downloaded again.
+            if (await imports.GetStoredAttachmentPathAsync(itemId, externalId, ct) is { } stored && files.Exists(stored))
                 continue;
             if (file.Size > max)
             {
@@ -385,6 +434,7 @@ public sealed class ShortcutImporter(
                 if (bytes is null)
                 {
                     report.Attachments.Failed++;
+                    report.FailedIds.Add(ShortcutMapper.Alias(story.Id));
                     await imports.AddAttachmentAsync(itemId, new NewAttachmentSpec(externalId, file.Name, file.ContentType, file.Size, null, null, file.Url,
                         "The download failed or exceeded the size bound.", file.CreatedAt), Actor, ct);
                     continue;
@@ -396,9 +446,10 @@ public sealed class ShortcutImporter(
                 report.Attachments.Stored++;
                 report.Written.AttachmentsStored++;
             }
-            catch (Exception exception) when (exception is HttpRequestException or IOException)
+            catch (Exception exception) when (IsItemFailure(exception, ct))
             {
                 report.Attachments.Failed++;
+                report.FailedIds.Add(ShortcutMapper.Alias(story.Id));
                 report.AddWarning($"sc-{story.Id} file {file.Id}: {exception.Message}");
             }
         }

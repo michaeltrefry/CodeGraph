@@ -207,7 +207,8 @@ public sealed class KanbanImporter(IWorkStore work, IWorkImportStore imports)
     /// <summary>The proposed settings: the Code Review epic into the SceneWorks project (key SW), which the owner confirms.</summary>
     public static ImportSettings Propose() => new(DefaultProject, [], KanbanEpicId: CodeReviewEpicId);
 
-    public async Task<ImportReport> RunAsync(IKanbanSource source, ImportMode mode, CancellationToken ct)
+    /// <param name="report">Filled as the run goes, so a failed run keeps the progress it made.</param>
+    public async Task<ImportReport> RunAsync(IKanbanSource source, ImportMode mode, ImportReport report, CancellationToken ct)
     {
         var stored = await imports.GetImportSettingsAsync(ImportSources.Kanban, ct);
         var approved = stored?.ApprovedAt is not null;
@@ -215,8 +216,14 @@ public sealed class KanbanImporter(IWorkStore work, IWorkImportStore imports)
             throw WorkException.Invalid("The KanbanBoard target project has not been approved (PUT /api/work/imports/kanban/settings with approve: true). Nothing was imported.");
         var settings = approved ? stored! : stored ?? Propose();
         var epicId = settings.KanbanEpicId ?? CodeReviewEpicId;
+        // D23: only the Code Review epic is imported; the rest stays in KanbanBoard.
+        if (epicId != CodeReviewEpicId)
+            throw WorkException.Invalid($"Only the KanbanBoard epic SceneWorks Code Review 2026-10-27 ({CodeReviewEpicId}) is imported; the settings name {epicId}. Nothing was imported.");
         var projectKey = settings.HoldingProjectKey;
-        var report = new ImportReport { Source = ImportSources.Kanban, Mode = mode, SettingsApproved = approved, HoldingProject = projectKey };
+        report.Source = ImportSources.Kanban;
+        report.Mode = mode;
+        report.SettingsApproved = approved;
+        report.HoldingProject = projectKey;
 
         var epic = await source.GetEpicAsync(epicId, ct) ?? throw WorkException.NotFound($"KanbanBoard has no epic {epicId}.");
         var documents = await source.ListEpicDocumentsAsync(epicId, ct);
@@ -303,15 +310,26 @@ public sealed class KanbanImporter(IWorkStore work, IWorkImportStore imports)
             if (mode != ImportMode.Import)
                 continue;
 
-            var spec = new ImportedItemSpec(ImportSources.Kanban, "item", item.Id, target!.Id, featureId, item.Title, Type(item.Type), status, Priority(item.Priority),
-                item.Description, item.Labels, repository, [], comments, links, [], new ImportedView(ImportSources.Kanban, item.Id, item.Url),
-                item.CreatedAt, item.UpdatedAt, 0, "");
-            var written = await imports.UpsertImportedItemAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
-            switch (written.Outcome)
+            try
             {
-                case ImportOutcome.Created: report.Written.ItemsCreated++; break;
-                case ImportOutcome.Updated: report.Written.ItemsUpdated++; break;
-                default: report.Written.ItemsUnchanged++; break;
+                // KanbanBoard links carry no PR state: a finished item's PR links are historical.
+                var historical = status is WorkStatus.Complete or WorkStatus.Closed ? links.Where(link => link.Kind == WorkLinkKind.Pr).Select(link => link.Url).ToList() : [];
+                var spec = new ImportedItemSpec(ImportSources.Kanban, "item", item.Id, target!.Id, featureId, item.Title, Type(item.Type), status, Priority(item.Priority),
+                    item.Description, item.Labels, repository, [], comments, links, [], new ImportedView(ImportSources.Kanban, item.Id, item.Url),
+                    item.CreatedAt, item.UpdatedAt, 0, "", historical);
+                var written = await imports.UpsertImportedItemAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
+                switch (written.Outcome)
+                {
+                    case ImportOutcome.Created: report.Written.ItemsCreated++; break;
+                    case ImportOutcome.Updated: report.Written.ItemsUpdated++; break;
+                    default: report.Written.ItemsUnchanged++; break;
+                }
+            }
+            catch (Exception exception) when (ShortcutImporter.IsItemFailure(exception, ct))
+            {
+                report.Written.Failures++;
+                report.FailedIds.Add(item.Id);
+                report.AddWarning($"{item.Id}: {exception.Message}");
             }
         }
 
@@ -321,13 +339,22 @@ public sealed class KanbanImporter(IWorkStore work, IWorkImportStore imports)
             foreach (var item in items)
             {
                 var blockers = item.Blockers.Where(records.ContainsKey).Select(blocker => records[blocker].EntityId).ToList();
-                if (blockers.Count == 0 && (!records.TryGetValue(item.Id, out var record) || record.Edges.Count == 0))
+                if (!records.TryGetValue(item.Id, out var record) || (blockers.Count == 0 && record.Edges.Count == 0 && !record.HasRelations))
                     continue;
-                var sync = await imports.SyncImportedDependenciesAsync(ImportSources.Kanban, "item", item.Id, blockers, Actor, ct);
-                report.Written.DependenciesAdded += sync.Added;
-                report.Written.DependenciesRemoved += sync.Removed;
-                foreach (var cycle in sync.Cycles)
-                    report.UnmappedRelations.Add(new ImportRelationIssue(item.Id, "blocked_by", cycle.ToString(), "cycle"));
+                try
+                {
+                    var sync = await imports.SyncImportedDependenciesAsync(ImportSources.Kanban, "item", item.Id, blockers, Actor, ct);
+                    report.Written.DependenciesAdded += sync.Added;
+                    report.Written.DependenciesRemoved += sync.Removed;
+                    foreach (var cycle in sync.Cycles)
+                        report.UnmappedRelations.Add(new ImportRelationIssue(item.Id, "blocked_by", cycle.ToString(), "cycle"));
+                }
+                catch (Exception exception) when (ShortcutImporter.IsItemFailure(exception, ct))
+                {
+                    report.Written.Failures++;
+                    report.FailedIds.Add(item.Id);
+                    report.AddWarning($"{item.Id} dependencies: {exception.Message}");
+                }
             }
         }
 

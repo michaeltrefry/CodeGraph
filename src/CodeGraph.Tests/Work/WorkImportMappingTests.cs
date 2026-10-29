@@ -280,7 +280,7 @@ public sealed class WorkImportMappingTests
         var handler = new FakeShortcut
         {
             Answer = request => request.RequestUri!.Host == "media.app.shortcut.com"
-                ? new HttpResponseMessage(HttpStatusCode.Found) { Headers = { Location = new Uri("https://storage.example.invalid/signed/file.png") } }
+                ? new HttpResponseMessage(HttpStatusCode.Found) { Headers = { Location = new Uri("https://93.184.216.34/signed/file.png") } }
                 : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[100]) }
         };
         var source = Rest(handler);
@@ -289,6 +289,65 @@ public sealed class WorkImportMappingTests
         handler.Requests[0].ShouldEndWith(" [token]");
         handler.Requests[1].ShouldNotEndWith(" [token]");
         (await source.DownloadFileAsync("https://media.app.shortcut.com/api/attachments/files/x/file.png", 50, CancellationToken.None)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task The_token_goes_only_to_shortcut_hosts_and_never_to_an_internal_address()
+    {
+        ShortcutRestSource.IsShortcutHost(new Uri("https://media.app.shortcut.com/x")).ShouldBeTrue();
+        ShortcutRestSource.IsShortcutHost(new Uri("https://shortcut.com/x")).ShouldBeTrue();
+        ShortcutRestSource.IsShortcutHost(new Uri("https://evilshortcut.com/x")).ShouldBeFalse();
+        ShortcutRestSource.IsShortcutHost(new Uri("https://shortcut.com.attacker.example/x")).ShouldBeFalse();
+        ShortcutRestSource.IsShortcutHost(new Uri("http://api.app.shortcut.com/x")).ShouldBeFalse();
+        foreach (var internalHost in new[] { "https://10.0.0.5/f", "https://127.0.0.1/f", "https://169.254.169.254/latest", "https://192.168.1.2/f", "https://[::1]/f", "https://localhost/f" })
+            (await ShortcutRestSource.IsPublicHostAsync(new Uri(internalHost), CancellationToken.None)).ShouldBeFalse(internalHost);
+
+        // A file URL off Shortcut gets no token; a redirect to an internal address is not followed.
+        var handler = new FakeShortcut { Answer = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[3]) } };
+        (await Rest(handler).DownloadFileAsync("https://93.184.216.34/file.png", 100, CancellationToken.None))!.Length.ShouldBe(3);
+        handler.Requests.Single().ShouldNotEndWith(" [token]");
+        var redirecting = new FakeShortcut
+        {
+            Answer = _ => new HttpResponseMessage(HttpStatusCode.Found) { Headers = { Location = new Uri("https://169.254.169.254/latest/meta-data") } }
+        };
+        await Should.ThrowAsync<HttpRequestException>(() => Rest(redirecting).DownloadFileAsync("https://media.app.shortcut.com/f.png", 100, CancellationToken.None));
+        redirecting.Requests.Count.ShouldBe(1);
+        await Should.ThrowAsync<HttpRequestException>(() => Rest(handler).DownloadFileAsync("https://10.1.2.3/file.png", 100, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_delta_searches_from_a_day_before_updated_since_and_keeps_the_exact_bound()
+    {
+        var handler = new FakeShortcut
+        {
+            Answer = _ => FakeShortcut.Json(new
+            {
+                total = 2,
+                data = new object[]
+                {
+                    new { id = 1, updated_at = "2026-10-09T23:00:00Z", archived = false },
+                    new { id = 2, updated_at = "2026-10-10T12:30:00Z", archived = false }
+                },
+                next = (string?)null
+            })
+        };
+
+        var stories = await Rest(handler).ListStoriesAsync(new DateTime(2026, 10, 10, 12, 0, 0, DateTimeKind.Utc), CancellationToken.None);
+
+        handler.Requests[0].ShouldContain("updated:2026-10-09..*");
+        stories.Select(story => story.Id).ShouldBe([2L]);
+    }
+
+    [Fact]
+    public async Task A_single_day_over_the_search_cap_is_warned_about()
+    {
+        var handler = new FakeShortcut { Answer = _ => FakeShortcut.Json(new { total = 1500, data = Array.Empty<object>(), next = (string?)null }) };
+        var source = Rest(handler);
+
+        await source.ListStoriesAsync(null, CancellationToken.None);
+
+        source.Warnings.ShouldNotBeEmpty();
+        source.Warnings[0].ShouldContain("More than 1000 stories");
     }
 
     // ---- Native memory -------------------------------------------------------------------------
@@ -310,7 +369,7 @@ public sealed class WorkImportMappingTests
                 new MemoryFile("/m/pref.md", "---\nname: flow\ndescription: \"Prefers continuous work\"\nmetadata:\n  node_type: memory\n  type: feedback\n---\nKeep going.")
             };
 
-            var candidates = NativeMemoryParser.ParseClaude(files, root);
+            var candidates = NativeMemoryParser.ParseClaude(files, new RepositoryCheckout(root));
 
             candidates.Count.ShouldBe(4);
             var byFile = candidates.ToDictionary(candidate => candidate.Candidate.SourceFile);
@@ -326,6 +385,42 @@ public sealed class WorkImportMappingTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void The_checkout_index_never_resolves_tokens_outside_the_repository()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cg-checkout-" + Guid.NewGuid().ToString("N"));
+        var outside = Path.Combine(Path.GetTempPath(), "cg-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "src"));
+        Directory.CreateDirectory(Path.Combine(root, "node_modules", "pkg"));
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(root, "src", "A.cs"), "");
+        File.WriteAllText(Path.Combine(root, "node_modules", "pkg", "index.js"), "");
+        File.WriteAllText(Path.Combine(outside, "secret.txt"), "");
+        Directory.CreateSymbolicLink(Path.Combine(root, "linked"), outside);
+        try
+        {
+            var checkout = new RepositoryCheckout(root);
+            checkout.Resolve("src/A.cs").ShouldBe((true, "src/A.cs"));
+            checkout.Resolve("A.cs").ShouldBe((true, "src/A.cs"));
+            // Absolute, parent, drive and backslash tokens are never paths, and nothing outside the root resolves.
+            checkout.Resolve(Path.Combine(outside, "secret.txt")).IsPath.ShouldBeFalse();
+            checkout.Resolve("/etc/passwd").IsPath.ShouldBeFalse();
+            checkout.Resolve("../" + Path.GetFileName(outside) + "/secret.txt").IsPath.ShouldBeFalse();
+            checkout.Resolve("C:/Windows/win.ini").IsPath.ShouldBeFalse();
+            checkout.Resolve("src\\A.cs").IsPath.ShouldBeFalse();
+            // A symbolic link is not followed; skipped directories are not indexed.
+            checkout.Resolve("linked/secret.txt").Found.ShouldBeNull();
+            checkout.Resolve("secret.txt").IsPath.ShouldBeFalse();
+            checkout.Resolve("node_modules/pkg/index.js").Found.ShouldBeNull();
+            checkout.Truncated.ShouldBeFalse();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            Directory.Delete(outside, recursive: true);
         }
     }
 

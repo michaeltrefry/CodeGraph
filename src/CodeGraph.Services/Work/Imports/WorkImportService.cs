@@ -20,6 +20,8 @@ public sealed class RestWorkImportSourceFactory(IHttpClientFactory http, IMcpHub
     public async Task<IKanbanSource> KanbanAsync(CancellationToken ct) => await KanbanRestSource.CreateAsync(http, hub, options, ct);
 }
 
+public sealed record StartedRun(Guid RunId, string Source, ImportMode Mode, DateTime? UpdatedSince, IReadOnlyList<string> Retry);
+
 /// <summary>What the WorkImport job runs: one recorded import run, to completion.</summary>
 public interface IWorkImportRunner
 {
@@ -79,47 +81,99 @@ public sealed partial class WorkImportService(
             throw WorkException.Invalid($"Each team appears once in the table; repeated: {string.Join(", ", duplicates)}. Nothing was saved.");
         if (settings.Members?.FirstOrDefault(member => member.Kind is not (WorkActor.UserKind or WorkActor.AgentKind)) is { } wrong)
             throw WorkException.Invalid($"A member's kind is user or agent; {wrong.MemberId} has '{wrong.Kind}'. Nothing was saved.");
+        if (source == ImportSources.Kanban && settings.KanbanEpicId is { } epic && epic != KanbanImporter.CodeReviewEpicId)
+            throw WorkException.Invalid($"Only the KanbanBoard epic SceneWorks Code Review 2026-10-27 ({KanbanImporter.CodeReviewEpicId}) is imported (D23); not {epic}. Nothing was saved.");
         return await imports.SaveImportSettingsAsync(source, settings, approve ? user : null, ct);
     }
 
-    /// <summary>Records a run and returns its id; <see cref="ExecuteAsync"/> then does the work.</summary>
-    public async Task<(Guid RunId, ImportMode Mode, DateTime? UpdatedSince)> StartAsync(string source, string? modeName, DateTime? updatedSince, string user, CancellationToken ct)
+    /// <summary>
+    /// Records a run and returns its id; <see cref="ExecuteAsync"/> then does the work. A delta continues
+    /// from the start of the last completed import (or <paramref name="updatedSince"/>) and reads again
+    /// what that run failed on.
+    /// </summary>
+    public async Task<StartedRun> StartAsync(string source, string? modeName, DateTime? updatedSince, string user, CancellationToken ct)
     {
         RequireSource(source);
         var (mode, delta) = ParseMode(modeName);
         if (delta && source == ImportSources.Kanban)
             throw WorkException.Invalid("The KanbanBoard import has no delta mode: run import again (it is idempotent).");
-        if (delta && updatedSince is null)
-            updatedSince = await imports.LastCompletedImportStartAsync(source, ct)
+        IReadOnlyList<string> retry = [];
+        if (delta)
+        {
+            var last = await imports.LastCompletedImportAsync(source, ct);
+            updatedSince ??= last?.StartedAt
                 ?? throw WorkException.Invalid("A delta sync needs updated_since, or a completed import to continue from. Run a full import first.");
+            retry = last?.Report?.FailedIds ?? [];
+        }
+
         if (mode == ImportMode.Import && (await imports.GetImportSettingsAsync(source, ct))?.ApprovedAt is null)
             throw WorkException.Invalid($"The {source} import settings are not approved yet: review the dry-run report, then approve them. Nothing was imported.");
         var runId = await imports.StartImportRunAsync(source, mode, updatedSince, user, StaleAfter, ct);
-        return (runId, mode, updatedSince);
+        return new StartedRun(runId, source, mode, updatedSince, retry);
     }
 
-    public async Task<ImportRunView> ExecuteAsync(Guid runId, string source, ImportMode mode, DateTime? updatedSince, CancellationToken ct)
+    /// <summary>How often a run's heartbeat moves while it works, in every phase.</summary>
+    public static TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    public async Task<ImportRunView> ExecuteAsync(StartedRun run, CancellationToken ct)
     {
-        var report = new ImportReport { Source = source, Mode = mode, UpdatedSince = updatedSince };
+        // The importer fills this report as it goes: a failed run is completed with the progress it made.
+        var report = new ImportReport { Source = run.Source, Mode = run.Mode, UpdatedSince = run.UpdatedSince };
+        using var beating = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var heartbeat = BeatAsync(run.RunId, beating.Token);
         try
         {
-            report = source == ImportSources.Shortcut
-                ? await shortcut.RunAsync(await sources.ShortcutAsync(ct), mode, updatedSince, progress => imports.HeartbeatImportRunAsync(runId, progress, ct), ct)
-                : await kanban.RunAsync(await sources.KanbanAsync(ct), mode, ct);
-            await imports.CompleteImportRunAsync(runId, ImportRunStatuses.Completed, report, null, CancellationToken.None);
+            if (run.Source == ImportSources.Shortcut)
+                await shortcut.RunAsync(await sources.ShortcutAsync(ct), run.Mode, run.UpdatedSince, report, run.Retry,
+                    progress => imports.HeartbeatImportRunAsync(run.RunId, progress, ct), ct);
+            else
+                await kanban.RunAsync(await sources.KanbanAsync(ct), run.Mode, report, ct);
+            await StopAsync(beating, heartbeat);
+            if (!await imports.CompleteImportRunAsync(run.RunId, ImportRunStatuses.Completed, report, null, CancellationToken.None))
+                log.LogWarning("Import run {RunId} was no longer running when it finished; its result was not recorded", run.RunId);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            log.LogError(exception, "Import run {RunId} of {Source} failed", runId, source);
-            await imports.CompleteImportRunAsync(runId, ImportRunStatuses.Failed, report, exception.Message, CancellationToken.None);
+            log.LogError(exception, "Import run {RunId} of {Source} failed", run.RunId, run.Source);
+            await StopAsync(beating, heartbeat);
+            await imports.CompleteImportRunAsync(run.RunId, ImportRunStatuses.Failed, report, exception.Message, CancellationToken.None);
         }
 
-        return (await imports.GetImportRunAsync(runId, CancellationToken.None))!;
+        return (await imports.GetImportRunAsync(run.RunId, CancellationToken.None))!;
+    }
+
+    private async Task BeatAsync(Guid runId, CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(HeartbeatInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                try
+                {
+                    // The heartbeat only: the progress report is saved by the importer itself.
+                    await imports.HeartbeatImportRunAsync(runId, null, ct);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    log.LogWarning(exception, "Heartbeat of import run {RunId} failed", runId);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private static async Task StopAsync(CancellationTokenSource beating, Task heartbeat)
+    {
+        await beating.CancelAsync();
+        await heartbeat;
     }
 
     public async Task<ImportRunView> RunAsync(string source, string? modeName, DateTime? updatedSince, string user, CancellationToken ct)
     {
-        var (runId, mode, since) = await StartAsync(source, modeName, updatedSince, user, ct);
-        return await ExecuteAsync(runId, source, mode, since, ct);
+        var run = await StartAsync(source, modeName, updatedSince, user, ct);
+        return await ExecuteAsync(run, ct);
     }
 }

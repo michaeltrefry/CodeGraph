@@ -107,6 +107,8 @@ public sealed class ImportReport
     public int ReconcileTasks { get; set; }
     public ImportWriteCounts Written { get; set; } = new();
     public List<string> Warnings { get; set; } = [];
+    /// <summary>The source objects this run failed on (sc-N, epic-N): the next delta sync reads them again.</summary>
+    public List<string> FailedIds { get; set; } = [];
 
     public ImportProjectCounts Project(string key) =>
         Projects.TryGetValue(key, out var counts) ? counts : Projects[key] = new ImportProjectCounts();
@@ -208,8 +210,11 @@ public sealed class MemoryCandidatesRequest
     /// <summary>claude (memory/*.md files with frontmatter) or codex (MEMORY.md task groups).</summary>
     public required string Harness { get; init; }
     public required List<MemoryFileInput> Files { get; init; }
-    /// <summary>A checkout of the repository readable by the server, for the path pre-check; left out, every candidate pre-checks as unverifiable.</summary>
-    public string? RepositoryRoot { get; init; }
+    /// <summary>
+    /// The repository (as CodeGraph indexes it) whose checkout the path pre-check reads; left out, every
+    /// candidate pre-checks as unverifiable. Only checkouts CodeGraph knows are read, never a caller's path.
+    /// </summary>
+    public string? Repository { get; init; }
     /// <summary>Codex: only task groups whose scope or applies_to names this (a repository name).</summary>
     public string? CwdFilter { get; init; }
 }
@@ -222,8 +227,12 @@ public sealed class WorkImportOptions
     public int ShortcutRequestsPerMinute { get; set; } = 180;
     public string ShortcutBaseUrl { get; set; } = "https://api.app.shortcut.com/api/v3/";
     public string KanbanBaseUrl { get; set; } = "https://kanban.trefry.net/";
-    /// <summary>Where downloaded attachments are stored. Default: the wiki attachment root's work-items folder.</summary>
-    public string? AttachmentStoragePath { get; set; }
+    /// <summary>
+    /// Where downloaded attachments are stored, relative to the host's working directory (/app in the
+    /// containers). Both the API and the Jobs host read and write it, so it must be shared storage: the
+    /// codegraph-uploads volume at /app/uploads in docker-compose.
+    /// </summary>
+    public string? AttachmentStoragePath { get; set; } = "uploads/work-items";
     /// <summary>The size bound per file; a larger file is recorded with its link and not downloaded.</summary>
     public long MaxAttachmentBytes { get; set; } = 50L * 1024 * 1024;
 }
