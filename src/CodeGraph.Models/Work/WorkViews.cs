@@ -91,7 +91,8 @@ public sealed record ItemView(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     IReadOnlyList<HandoffView>? Handoffs = null,
-    int? HandoffCount = null)
+    int? HandoffCount = null,
+    IReadOnlyList<KnowledgeRow>? Knowledge = null)
 {
     public string Kind => "item";
 }
@@ -126,7 +127,8 @@ public sealed record CreateWorkResult(
     FeatureView? Feature = null,
     ItemView? Item = null);
 
-public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null);
+/// <param name="Recorded">The knowledge entries the save-point fields stored with the write (S5).</param>
+public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null, IReadOnlyList<KnowledgeRow>? Recorded = null);
 
 /// <param name="Reused">true when this is the caller's existing claim or the allocation of a repeated key, not a new claim.</param>
 /// <param name="Reason">Why there is no item: <c>no_ready_work</c>.</param>

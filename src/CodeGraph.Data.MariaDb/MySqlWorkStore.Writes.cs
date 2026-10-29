@@ -101,8 +101,16 @@ public sealed partial class MySqlWorkStore
             var after = (await LoadProjectViewAsync(connection, transaction, projectId, withCounts: false, ct))!;
             var beforeSnapshot = Snapshot(before);
             beforeSnapshot["version"] = expectedVersion;
+            var projectChanges = Diff(beforeSnapshot, Snapshot(after));
+            // The save-point fields (S5): in this transaction, project-wide unless they name repositories.
+            if (patch.Knowledge is { Count: > 0 } knowledge)
+            {
+                await InsertKnowledgeAsync(connection, transaction, (await ReadProjectRowAsync(connection, transaction, projectId, ct))!, knowledge, null, null, null, actor, now, ct);
+                projectChanges.Add(Change("knowledge", null, knowledge.Select(entry => entry.Id.ToString()).ToList()));
+            }
+
             await CommitAsync(connection, transaction,
-                [new PendingChange(projectId, after.Key, WorkEntityKind.Project, projectId, after.Key, WorkChangeKinds.ProjectUpdated, Diff(beforeSnapshot, Snapshot(after)))],
+                [new PendingChange(projectId, after.Key, WorkEntityKind.Project, projectId, after.Key, WorkChangeKinds.ProjectUpdated, projectChanges)],
                 actor, now, ct);
             return after;
         }, ct);
@@ -265,9 +273,17 @@ public sealed partial class MySqlWorkStore
             var beforeSnapshot = Snapshot(before);
             beforeSnapshot["version"] = expectedVersion;
             var added = after.Documents.Where(document => before.Documents.All(existing => existing.Id != document.Id)).ToList();
+            var featureChanges = WithDocuments(Diff(beforeSnapshot, Snapshot(after)), added, changed);
+            // The save-point fields (S5): in this transaction, linked to the feature.
+            if (patch.Knowledge is { Count: > 0 } knowledge)
+            {
+                var project = (await ReadProjectRowAsync(connection, transaction, after.ProjectId, ct))!;
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, null, featureId, null, actor, now, ct);
+                featureChanges.Add(Change("knowledge", null, knowledge.Select(entry => entry.Id.ToString()).ToList()));
+            }
+
             await CommitAsync(connection, transaction,
-                [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated,
-                    WithDocuments(Diff(beforeSnapshot, Snapshot(after)), added, changed))],
+                [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated, featureChanges)],
                 actor, now, ct);
             return after;
         }, ct);
@@ -502,6 +518,15 @@ public sealed partial class MySqlWorkStore
             {
                 var written = await InsertHandoffAsync(connection, transaction, itemId, handoff, actor, now, ct);
                 extra.Add(Change("handoff", null, written.Id.ToString()));
+            }
+
+            // The save-point fields (S5): in this transaction, linked to the item, scoped by default
+            // to the repository the item has after this write.
+            if (effective.Knowledge is { Count: > 0 } knowledge)
+            {
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, itemId, null,
+                    effective.ClearRepository ? null : patchedRepository ?? before.Repository, actor, now, ct);
+                extra.Add(Change("knowledge", null, knowledge.Select(entry => entry.Id.ToString()).ToList()));
             }
 
             var afterRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;

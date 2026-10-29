@@ -60,8 +60,10 @@ public interface IWorkStore
     /// <summary>
     /// Ends the session: writes the handoff (on <paramref name="itemId"/>, or the one item the session
     /// holds), releases every claim of the session. Ending an ended session changes nothing and answers it.
+    /// <paramref name="knowledge"/> (the save-point fields, S5) is stored in the same transaction,
+    /// linked to the handoff's item, else <paramref name="itemId"/>, else the one item the session holds.
     /// </summary>
-    Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default);
+    Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default);
 
     Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default);
 
@@ -108,7 +110,9 @@ public sealed record ProjectPatchSpec(
     string? Description = null,
     bool ClearDescription = false,
     IReadOnlyList<string>? Goals = null,
-    IReadOnlyList<RepositoryMemberView>? Repositories = null);
+    IReadOnlyList<RepositoryMemberView>? Repositories = null,
+    // The save-point fields (S5), project-wide unless they name repositories.
+    IReadOnlyList<KnowledgeSpec>? Knowledge = null);
 
 public sealed record DocumentSpec(string Title, string Body);
 
@@ -121,7 +125,9 @@ public sealed record FeaturePatchSpec(
     string? Description = null,
     bool ClearDescription = false,
     IReadOnlyList<DocumentSpec>? AddDocuments = null,
-    IReadOnlyList<DocumentPatchSpec>? UpdateDocuments = null);
+    IReadOnlyList<DocumentPatchSpec>? UpdateDocuments = null,
+    // The save-point fields (S5), linked to the feature.
+    IReadOnlyList<KnowledgeSpec>? Knowledge = null);
 
 public sealed record NewItemSpec(
     string Title,
@@ -166,14 +172,16 @@ public sealed record ItemPatchSpec(
     IReadOnlyList<LinkSpec>? RemoveLinks = null,
     string? Comment = null,
     ClaimSpec? Claim = null,
-    HandoffSpec? Handoff = null)
+    HandoffSpec? Handoff = null,
+    // The save-point fields (S5): knowledge entries stored in the write's transaction, linked to the item.
+    IReadOnlyList<KnowledgeSpec>? Knowledge = null)
 {
     /// <summary>Whether the patch only claims the item (a retried claim may then answer the claim it already holds).</summary>
     public bool IsClaimOnly =>
         Claim is { Action: ClaimAction.Claim } && Title is null && Description is null && !ClearDescription && Type is null && Status is null &&
         Priority is null && Labels is null && !ClearLabels && Repository is null && !ClearRepository && FeatureId is null && !ClearFeature &&
         Order is null && AddBlockedBy is not { Count: > 0 } && RemoveBlockedBy is not { Count: > 0 } && AddLinks is not { Count: > 0 } &&
-        RemoveLinks is not { Count: > 0 } && Comment is null && Handoff is null;
+        RemoveLinks is not { Count: > 0 } && Comment is null && Handoff is null && Knowledge is not { Count: > 0 };
 
     /// <summary>The patch without its claim action.</summary>
     public bool IsEmptyBesidesClaim => (this with { Claim = new ClaimSpec(ClaimAction.Claim, "", 0) }).IsClaimOnly;

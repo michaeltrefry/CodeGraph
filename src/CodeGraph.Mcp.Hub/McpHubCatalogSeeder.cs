@@ -241,8 +241,10 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
                 readOnly,
                 destructive,
                 EnabledByDefault: true,
-                // Native CodeGraph tools are sensible defaults to pre-check at token creation.
-                DefaultSelected: true,
+                // Native CodeGraph tools are sensible defaults to pre-check at token creation, except
+                // the memory tools hidden from the default listing (D17; migration 078 clears the flag
+                // on catalogs seeded before).
+                DefaultSelected: !McpHubExplicitEntitlementPolicy.HiddenMemoryTools.Contains(name!),
                 // UI grouping label derived from the tool's declared MCP hints. Note that many
                 // CodeGraph tool attributes do not set ReadOnly = true, so they fall into "write"
                 // here — tightening those attribute hints is separate attribute-hygiene work.

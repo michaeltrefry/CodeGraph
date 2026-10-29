@@ -110,7 +110,7 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing"]);
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "record", "recall", "import_knowledge"]);
         foreach (var tool in tools)
         {
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;
@@ -315,7 +315,7 @@ public sealed class WorkContractTests
         public Task<IReadOnlyList<ChangeView>> ReadChangesAsync(Guid? projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
         public Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
         public Task<WorkActor> TouchSessionAsync(Guid sessionId, WorkActor actor, CancellationToken ct = default) => throw Fail();
-        public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default) => throw Fail();
         public Task<BriefingView> ReadBriefingAsync(Guid sessionId, Guid? focusItemId, CancellationToken ct = default) => throw Fail();
         public Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default) => throw Fail();

@@ -139,7 +139,7 @@ public sealed partial class MySqlWorkStore
         return owners.Count == 1 ? owners[0] : null;
     }
 
-    public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default) =>
+    public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -232,6 +232,33 @@ public sealed partial class MySqlWorkStore
                 entries.Add(new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes));
                 if (releases)
                     released.Add(new WorkRow(after.Id, after.Key, "item", after.Title, WorkStatuses.Parse(after.Status), Version: after.Version));
+            }
+
+            // The save-point fields (S5), in this transaction: linked to the handoff's item, else the
+            // item named, else the one item the session holds; scoped by default to that item's repository.
+            if (knowledge is { Count: > 0 })
+            {
+                var linked = target ?? itemId;
+                if (linked is null)
+                {
+                    var open = (await connection.QueryAsync<Guid>(new CommandDefinition(
+                        "SELECT item_id FROM work_session_claims WHERE session_id = @id AND released_at IS NULL",
+                        new { id = sessionId.ToString() }, transaction, cancellationToken: ct))).Union(held).Distinct().ToList();
+                    linked = open.Count == 1 ? open[0] : null;
+                }
+
+                string? repository = null;
+                if (linked is { } linkedItem)
+                {
+                    var linkedRow = await ReadItemRowAsync(connection, transaction, linkedItem, ct)
+                        ?? throw WorkException.NotFound($"There is no item {linkedItem}.");
+                    if (linkedRow.ProjectId != session.ProjectId)
+                        throw WorkException.Invalid($"{linkedRow.Key} belongs to another project than the session. Nothing was changed.");
+                    repository = linkedRow.RepositoryName;
+                }
+
+                var project = (await ReadProjectRowAsync(connection, transaction, session.ProjectId, ct))!;
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, linked, null, repository, sessionActor, now, ct);
             }
 
             await connection.ExecuteAsync(new CommandDefinition(

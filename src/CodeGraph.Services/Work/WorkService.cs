@@ -24,10 +24,11 @@ public interface IWorkService
 /// database (ported from KanbanBoard's TryNew / EpicPlans.ReadAsync / IdempotencyKeys), resolution
 /// of keys and ids, and the change feed's cursor and long-poll. The store does the rest.
 /// </summary>
-public sealed class WorkService(
+public sealed partial class WorkService(
     IWorkStore? store = null,
     TimeProvider? timeProvider = null,
-    IOptions<WorkSessionOptions>? sessionOptions = null) : IWorkService
+    IOptions<WorkSessionOptions>? sessionOptions = null,
+    IKnowledgeStore? knowledgeStore = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -37,6 +38,12 @@ public sealed class WorkService(
     private readonly WorkSessionOptions sessions = sessionOptions?.Value ?? new WorkSessionOptions();
 
     private IWorkStore Store => store
+        ?? throw new WorkStoreUnavailableException();
+
+    // The knowledge store (S5) is the work store on MariaDB; it is taken from the work store when
+    // not passed on its own.
+    private IKnowledgeStore Knowledge => knowledgeStore
+        ?? store as IKnowledgeStore
         ?? throw new WorkStoreUnavailableException();
 
     /// <summary>The identity a write is attributed to (E3): the authenticated user, or <c>anonymous</c>.</summary>
@@ -64,6 +71,9 @@ public sealed class WorkService(
             WorkTools.StartSession => WorkJson.Parse<StartSessionRequest>(arguments, tool),
             WorkTools.EndSession => WorkJson.Parse<EndSessionRequest>(arguments, tool),
             WorkTools.GetBriefing => WorkJson.Parse<GetBriefingRequest>(arguments, tool),
+            WorkTools.Record => WorkJson.Parse<RecordRequest>(arguments, tool),
+            WorkTools.Recall => WorkJson.Parse<RecallRequest>(arguments, tool),
+            WorkTools.ImportKnowledge => WorkJson.Parse<ImportKnowledgeRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -97,6 +107,9 @@ public sealed class WorkService(
             NextWorkRequest next => await NextAsync(next, actor, session, ct),
             ChangesRequest changes => await ChangesAsync(changes, session, ct),
             GetBriefingRequest briefing => await GetBriefingAsync(briefing, actor, ct),
+            RecordRequest record => await RecordAsync(record, actor, session, ct),
+            RecallRequest recall => await RecallAsync(recall, session, ct),
+            ImportKnowledgeRequest import => await ImportKnowledgeAsync(import, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
     }
@@ -127,6 +140,7 @@ public sealed class WorkService(
         }
 
         var budget = Budget(request.BudgetTokens);
+        var briefingPaths = ReadPaths(request.Paths, "paths");
         var spec = new NewSessionSpec(
             projectId,
             Text(request.Harness, "harness", WorkSessionLimits.MaxHarnessLength),
@@ -137,7 +151,7 @@ public sealed class WorkService(
             Optional(request.Worktree, "worktree", WorkSessionLimits.MaxWorktreeLength),
             Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength));
         var created = await Store.StartSessionAsync(spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
-        var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, budget, ct);
+        var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, briefingPaths, budget, ct);
         return new StartSessionResult(created.Created, created.Value, briefing);
     }
 
@@ -146,8 +160,9 @@ public sealed class WorkService(
         var sessionId = SessionIdOf(request.SessionId);
         var session = await Store.GetSessionAsync(sessionId, ct)
             ?? throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}.");
-        if (request.Item is not null && request.Handoff is null)
-            throw WorkException.Invalid("item names the item a handoff is about; pass handoff with it. Nothing was changed.");
+        var knowledge = ReadSavePoints(request.Decisions, request.Attempts, request.Corrections, request.Findings, linkedItem: null);
+        if (request.Item is not null && request.Handoff is null && knowledge.Count == 0)
+            throw WorkException.Invalid("item names the item a handoff (or the save-point fields) is about; pass handoff, decisions, attempts, corrections or findings with it. Nothing was changed.");
 
         Guid? itemId = null;
         if (request.Item is { } item)
@@ -157,13 +172,15 @@ public sealed class WorkService(
         }
 
         var handoff = request.Handoff is { } input ? ReadHandoff(input, "handoff") : null;
-        return await Store.EndSessionAsync(sessionId, itemId, handoff, actor, ct);
+        var ended = await Store.EndSessionAsync(sessionId, itemId, handoff, knowledge, actor, ct);
+        return ended with { Recorded = await RecordedAsync(knowledge, ct) };
     }
 
     private async Task<object> GetBriefingAsync(GetBriefingRequest request, WorkActor actor, CancellationToken ct)
     {
         var sessionId = SessionIdOf(request.SessionId);
         var budget = Budget(request.BudgetTokens);
+        var paths = ReadPaths(request.Paths, "paths");
         Guid? focus = null;
         if (request.Item is { } item)
         {
@@ -172,11 +189,14 @@ public sealed class WorkService(
             focus = (await RequireOfProjectAsync(item, WorkEntityKind.Item, project, "item", ct)).Id;
         }
 
-        return await BriefingAsync(sessionId, focus, budget, ct);
+        return await BriefingAsync(sessionId, focus, paths, budget, ct);
     }
 
-    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, int budget, CancellationToken ct) =>
-        WorkBriefings.Fit(await Store.ReadBriefingAsync(sessionId, focus, ct), budget);
+    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, IReadOnlyList<string> paths, int budget, CancellationToken ct)
+    {
+        var briefing = await Store.ReadBriefingAsync(sessionId, focus, ct);
+        return WorkBriefings.Fit(briefing with { Knowledge = await BriefingKnowledgeAsync(sessionId, briefing, paths, ct) }, budget);
+    }
 
     private int Budget(int? requested)
     {
@@ -390,12 +410,14 @@ public sealed class WorkService(
     {
         var target = await RequireAsync(request.Id, "id", ct);
         await RequireSessionProjectAsync(session, target.ProjectId, ct);
-        return target.Kind switch
+        var found = target.Kind switch
         {
             WorkEntityKind.Project => await Store.GetProjectAsync(target.Id, ct),
             WorkEntityKind.Feature => await Store.GetFeatureAsync(target.Id, ct),
             _ => (object?)await Store.GetItemAsync(target.Id, request.Detail == WorkDetail.Full, ct)
         } ?? throw WorkException.NotFound($"There is no project, feature or item '{request.Id}'.");
+        // The item brief (§5.2) carries the knowledge relevant to it (S5).
+        return found is ItemView item ? item with { Knowledge = await ItemKnowledgeAsync(item, ct) } : found;
     }
 
     private async Task<object> FindAsync(FindWorkRequest request, SessionView? session, CancellationToken ct)
@@ -449,12 +471,14 @@ public sealed class WorkService(
 
     // ---- update_work -------------------------------------------------------------------------
 
-    private static readonly string[] ProjectFields = ["name", "description", "goals", "repositories", "clear"];
-    private static readonly string[] FeatureFields = ["title", "description", "add_documents", "update_documents", "clear"];
+    // Declared before the lists that spread it (static initializers run in textual order).
+    private static readonly string[] SavePointFields = ["decisions", "attempts", "corrections", "findings"];
+    private static readonly string[] ProjectFields = ["name", "description", "goals", "repositories", "clear", .. SavePointFields];
+    private static readonly string[] FeatureFields = ["title", "description", "add_documents", "update_documents", "clear", .. SavePointFields];
     private static readonly string[] ItemFields =
     [
         "title", "description", "type", "status", "priority", "labels", "repository", "feature", "order", "add_blocked_by", "remove_blocked_by",
-        "add_links", "remove_links", "comment", "claim", "renew_claim", "release_claim", "handoff", "clear"
+        "add_links", "remove_links", "comment", "claim", "renew_claim", "release_claim", "handoff", "clear", .. SavePointFields
     ];
 
     private async Task<object> UpdateAsync(UpdateWorkRequest request, WorkActor actor, SessionView? session, CancellationToken ct)
@@ -487,27 +511,38 @@ public sealed class WorkService(
         if (both.Count > 0)
             throw WorkException.Invalid($"{string.Join(", ", both)} is both passed and named in clear. Nothing was changed.");
 
+        // The save-point fields (S5) are stored by the same write, in its transaction.
+        var knowledge = ReadSavePoints(request.Decisions, request.Attempts, request.Corrections, request.Findings, linkedItem: null);
+        UpdateWorkResult result;
         switch (target.Kind)
         {
             case WorkEntityKind.Project:
-                return new UpdateWorkResult(Project: await Store.UpdateProjectAsync(target.Id, request.ExpectedVersion, new ProjectPatchSpec(
+                result = new UpdateWorkResult(Project: await Store.UpdateProjectAsync(target.Id, request.ExpectedVersion, new ProjectPatchSpec(
                     request.Name is { } name ? Text(name, "name", WorkLimits.MaxProjectNameLength) : null,
                     OptionalText(request.Description, "description"),
                     clear.Contains("description"),
                     request.Goals is { } goals ? ReadGoals(goals, "goals") : null,
-                    request.Repositories is { } repositories ? ReadRepositories(repositories, "repositories") : null), actor, ct));
+                    request.Repositories is { } repositories ? ReadRepositories(repositories, "repositories") : null,
+                    knowledge), actor, ct));
+                break;
 
             case WorkEntityKind.Feature:
-                return new UpdateWorkResult(Feature: await Store.UpdateFeatureAsync(target.Id, request.ExpectedVersion, new FeaturePatchSpec(
+                result = new UpdateWorkResult(Feature: await Store.UpdateFeatureAsync(target.Id, request.ExpectedVersion, new FeaturePatchSpec(
                     request.Title is { } title ? Text(title, "title", WorkLimits.MaxTitleLength) : null,
                     OptionalText(request.Description, "description"),
                     clear.Contains("description"),
                     request.AddDocuments is { } add ? ReadDocuments(add, "add_documents") : null,
-                    request.UpdateDocuments?.Select((document, index) => ReadDocumentPatch(document, $"update_documents[{index}]")).ToList()), actor, ct));
+                    request.UpdateDocuments?.Select((document, index) => ReadDocumentPatch(document, $"update_documents[{index}]")).ToList(),
+                    knowledge), actor, ct));
+                break;
 
             default:
-                return new UpdateWorkResult(Item: await Store.UpdateItemAsync(target.Id, request.ExpectedVersion, await ReadItemPatchAsync(request, target, clear, actor, ct), actor, ct));
+                var patch = await ReadItemPatchAsync(request, target, clear, actor, ct) with { Knowledge = knowledge };
+                result = new UpdateWorkResult(Item: await Store.UpdateItemAsync(target.Id, request.ExpectedVersion, patch, actor, ct));
+                break;
         }
+
+        return result with { Recorded = await RecordedAsync(knowledge, ct) };
     }
 
     private static DocumentPatchSpec ReadDocumentPatch(DocumentPatchInput input, string where)
