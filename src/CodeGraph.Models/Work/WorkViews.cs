@@ -16,6 +16,10 @@ public sealed record WorkActor(
 {
     public const string UserKind = "user";
     public const string SessionKind = "session";
+    /// <summary>A write made by CodeGraph itself, such as an import (<c>import:shortcut</c>).</summary>
+    public const string SystemKind = "system";
+    /// <summary>An imported comment written by an agent account (Claude, Codex) in the source tracker.</summary>
+    public const string AgentKind = "agent";
 }
 
 public sealed record RepositoryMemberView(string Repository, RepositoryRole Role);
@@ -55,7 +59,11 @@ public sealed record FeatureView(
     FeatureCompletionView? Completion = null,
     IReadOnlyList<string>? Goals = null,
     IReadOnlyList<RequirementView>? Requirements = null,
-    IReadOnlyList<string>? AcceptanceTests = null)
+    IReadOnlyList<string>? AcceptanceTests = null,
+    // Set on a feature imported from another tracker (sc-27876).
+    ImportedView? Imported = null,
+    // true while an imported open feature's requirements still live only in its description.
+    bool? RequirementsUnreconciled = null)
 {
     public string Kind => "feature";
 }
@@ -68,7 +76,8 @@ public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt,
 
 public sealed record LinkView(Guid Id, WorkLinkKind Kind, string Url, DateTime CreatedAt);
 
-public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null);
+/// <param name="AuthorKind">Set when the author is not a CodeGraph user: <c>agent</c> or <c>system</c> (an imported comment keeps its source author and time).</param>
+public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null, string? AuthorKind = null);
 
 public sealed record ItemView(
     Guid Id,
@@ -111,7 +120,10 @@ public sealed record ItemView(
     // The messages story (S7): open questions and requests about the item.
     IReadOnlyList<MessageLine>? OpenMessages = null,
     // The knowledge relevant to the item (S5): linked to it, scoped to its touches, its repository or the project.
-    IReadOnlyList<KnowledgeRow>? Knowledge = null)
+    IReadOnlyList<KnowledgeRow>? Knowledge = null,
+    // Set on an item imported from another tracker (sc-27876): it may lack AC, repository, inherits and touches.
+    ImportedView? Imported = null,
+    IReadOnlyList<AttachmentView>? Attachments = null)
 {
     public string Kind => "item";
 }

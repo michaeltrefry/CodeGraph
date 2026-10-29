@@ -1,0 +1,16 @@
+{
+  "id": 7840,
+  "name": "SceneWorks: PiD pixel-diffusion decoder — optional per-generation VAE replacement (catalog-wide)",
+  "app_url": "https://app.shortcut.com/trefry/epic/7840",
+  "description": "Optional per-generation VAE replacement…",
+  "archived": false,
+  "completed": false,
+  "state": "in progress",
+  "epic_state_id": 500000003,
+  "team_id": "69f08f42-4c78-4015-8da6-0abb1fe0825f",
+  "objective_id": null,
+  "owner_ids": [],
+  "created_at": "2026-06-20T10:00:00Z",
+  "updated_at": "2026-06-25T00:48:02Z",
+  "comments": []
+}

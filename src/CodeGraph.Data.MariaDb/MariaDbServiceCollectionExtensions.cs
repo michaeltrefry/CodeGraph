@@ -58,6 +58,8 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IWorkStore, MySqlWorkStore>();
         // The knowledge store (S5) is the work store: save points share the work write's transaction.
         services.AddTransient<IKnowledgeStore, MySqlWorkStore>();
+        // Imports (sc-27876) write through the work store, with its locks and change feed.
+        services.AddTransient<IWorkImportStore, MySqlWorkStore>();
 
         return services;
     }

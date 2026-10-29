@@ -230,7 +230,8 @@ export class AdminSchedulesComponent implements OnInit {
     { value: 'ProcessBatchAnalysis', label: 'Process Batch Analysis', description: 'Poll pending analysis batches and store completed results.' },
     { value: 'LinkAndDetect', label: 'Link And Detect', description: 'Run cross-repo linking and community detection in one pass.' },
     { value: 'DetectCommunities', label: 'Detect Communities', description: 'Re-run community detection using the current graph edges.' },
-    { value: 'RegenerateMcpDocs', label: 'Regenerate MCP Docs', description: 'Rebuild MCP documentation wiki pages from current tool metadata.' }
+    { value: 'RegenerateMcpDocs', label: 'Regenerate MCP Docs', description: 'Rebuild MCP documentation wiki pages from current tool metadata.' },
+    { value: 'WorkImport', label: 'Work Import (Shortcut delta sync)', description: 'Bring Shortcut changes since the last completed import into the work tracker (read-only on Shortcut). Needs an approved team-to-project table.' }
   ];
 
   schedules = signal<JobSchedule[]>([]);

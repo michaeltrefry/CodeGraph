@@ -49,6 +49,7 @@ using CodeGraph.Services.Query;
 using CodeGraph.Services.Reviews;
 using CodeGraph.Services.WikiRag;
 using CodeGraph.Services.Work;
+using CodeGraph.Services.Work.Imports;
 
 namespace CodeGraph.Api;
 
@@ -540,6 +541,8 @@ public static class Startup
             services.AddApplicationDatabaseLogging(configuration, ApplicationLogServices.Api);
             services.AddSingleton<Neo4jSessionFactory>();
             services.AddTransient<INeo4jToMariaDbGraphExporter, Neo4jGraphStore>();
+            // Imports (sc-27876): the REST trigger and the WorkImport job write through the MariaDB work store.
+            services.AddCodeGraphWorkImports(configuration);
             return;
         }
 

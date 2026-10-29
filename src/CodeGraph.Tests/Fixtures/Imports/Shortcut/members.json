@@ -1,0 +1,6 @@
+[
+  { "id": "69f08f42-a951-46b3-b1a0-897a12271e62", "name": "Michael Trefry", "email_address": "owner@example.invalid", "mention_name": "michaeltrefry1818", "role": "admin", "disabled": false, "is_owner": true },
+  { "id": "69f0ba01-654c-426b-b546-05dd508b2eab", "name": "Claude Anthropic", "email_address": "agent-one@example.invalid", "mention_name": "claudeanthropic", "role": "admin", "disabled": false, "is_owner": false },
+  { "id": "69f0ba01-0687-4592-ab25-6d74829d63d9", "name": "Codex OpenAI", "email_address": "agent-two@example.invalid", "mention_name": "codexopenai", "role": "admin", "disabled": false, "is_owner": false },
+  { "id": "6a3216c9-a8dd-46cc-aebc-e83735cf7e0a", "name": "Second Member", "email_address": "member@example.invalid", "mention_name": "member6598", "role": "admin", "disabled": false, "is_owner": false }
+]

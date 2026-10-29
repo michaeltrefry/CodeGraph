@@ -15,6 +15,8 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
         services.AddTransient<RegenerateMcpDocsJob>();
         services.AddTransient<AssistantRetentionCleanupJob>();
         services.AddTransient<IngestConventionEmbeddingsJob>();
+        // Needs IWorkImportRunner (AddCodeGraphWorkImports) where it runs.
+        services.AddTransient<WorkImportJob>();
         services.AddTransient<IJobCommandDispatcher, JobCommandDispatcher>();
         services.AddSingleton<IJobScheduleClock, SystemJobScheduleClock>();
         services.AddTransient<IJobScheduleService, JobScheduleService>();

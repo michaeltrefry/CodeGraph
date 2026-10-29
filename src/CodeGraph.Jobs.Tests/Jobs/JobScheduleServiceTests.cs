@@ -355,7 +355,8 @@ public class JobScheduleServiceTests
             new DetectCommunitiesJob(indexerClient),
             new RegenerateMcpDocsJob(mcpDocService ?? new RecordingMcpDocService()),
             new AssistantRetentionCleanupJob(new RecordingAssistantRetentionCleanupService()),
-            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()));
+            new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
+            new WorkImportJob());
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService
