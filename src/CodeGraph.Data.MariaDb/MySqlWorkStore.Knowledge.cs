@@ -14,8 +14,9 @@ namespace CodeGraph.Data.MariaDb;
 // Freshness is computed from data the indexer already keeps: knowledge_entry_files holds the
 // file_hashes.content_hash of every indexed file an entry was verified against, and an entry reads
 // possibly_stale while any of them now has another hash or is no longer indexed. Nothing is crawled,
-// and reads never write: a file not indexed when its entry was recorded gets its baseline from the
-// index write that first stores it (KnowledgeBaselines, called by MySqlGraphStore).
+// and reads never write: a file not indexed when its entry was recorded gets its baseline after
+// commit, best effort, from whichever of the index write and the knowledge write commits later
+// (KnowledgeBaselines, called by MySqlGraphStore and by the wrappers below).
 //
 // Lock order: project row, then work items, then knowledge rows. A write that stores knowledge holds
 // the project first (save points included).
@@ -97,9 +98,76 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     private sealed record NodeRef(long Id, string Repository, string QualifiedName, string? FilePath);
 
+    // ---- Post-commit baselines ----------------------------------------------------------------
+    //
+    // Every write that stores knowledge (record, revise/verify/retract, save points, import) is the
+    // *CoreAsync transaction followed, once it has committed, by the best-effort adoption of the
+    // pending file baselines of what it stored, from file hashes committed by then (see
+    // KnowledgeBaselines for why this and the indexer's own adoption cannot both miss).
+
+    private Task AdoptPendingAsync(IEnumerable<Guid>? entryIds, CancellationToken ct) =>
+        KnowledgeBaselines.AdoptPendingAsync(options.ConnectionString, entryIds?.Distinct().ToList() ?? [], log, ct);
+
+    private static IEnumerable<Guid>? IdsOf(IReadOnlyList<KnowledgeSpec>? specs) => specs?.Select(spec => spec.Id);
+
+    public async Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default)
+    {
+        var result = await UpdateProjectCoreAsync(projectId, expectedVersion, patch, actor, ct);
+        await AdoptPendingAsync(IdsOf(patch.Knowledge), ct);
+        return result;
+    }
+
+    public async Task<FeatureView> UpdateFeatureAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default)
+    {
+        var result = await UpdateFeatureCoreAsync(featureId, expectedVersion, patch, actor, ct);
+        await AdoptPendingAsync(IdsOf(patch.Knowledge), ct);
+        return result;
+    }
+
+    public async Task<ItemView> UpdateItemAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
+    {
+        var result = await UpdateItemCoreAsync(itemId, expectedVersion, patch, actor, ct);
+        await AdoptPendingAsync(IdsOf(patch.Knowledge), ct);
+        return result;
+    }
+
+    public async Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default)
+    {
+        var result = await EndSessionCoreAsync(sessionId, itemId, handoff, knowledge, actor, ct);
+        await AdoptPendingAsync(IdsOf(knowledge), ct);
+        return result;
+    }
+
+    public async Task<RecordResult> RecordKnowledgeAsync(Guid projectId, KnowledgeSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default)
+    {
+        var result = await RecordKnowledgeCoreAsync(projectId, spec, actor, keyHash, ct);
+        if (!result.Created)
+            return result;
+        await AdoptPendingAsync([result.Entry.Id], ct);
+        // Answer the entry with the baselines just adopted.
+        return result with { Entry = await GetKnowledgeAsync(result.Entry.Id, withRevisions: false, ct) ?? result.Entry };
+    }
+
+    private async Task<KnowledgeView> ChangeKnowledgeAsync(Guid entryId, long expectedVersion, string action, WorkActor actor,
+        Func<MySqlConnection, MySqlTransaction, KnowledgeEntryRow, DateTime, Task> change, CancellationToken ct)
+    {
+        var view = await ChangeKnowledgeCoreAsync(entryId, expectedVersion, action, actor, change, ct);
+        await AdoptPendingAsync([entryId], ct);
+        return await GetKnowledgeAsync(entryId, withRevisions: false, ct) ?? view;
+    }
+
+    public async Task<ImportKnowledgeResult> ImportKnowledgeAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
+        IReadOnlyList<int>? accept, string? keyHash, WorkActor actor, CancellationToken ct = default)
+    {
+        var result = await ImportKnowledgeCoreAsync(projectId, candidates, previewToken, accept, keyHash, actor, ct);
+        if (result.Stored)
+            await AdoptPendingAsync(result.Candidates.Select(candidate => candidate.Entry?.Id).OfType<Guid>(), ct);
+        return result;
+    }
+
     // ---- Writes ------------------------------------------------------------------------------
 
-    public Task<RecordResult> RecordKnowledgeAsync(Guid projectId, KnowledgeSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
+    private Task<RecordResult> RecordKnowledgeCoreAsync(Guid projectId, KnowledgeSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -254,7 +322,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     // A change of an existing entry: the versioned advance, the entry must be active, the change, a
     // revision with the entry as it is after, all in one transaction.
-    private Task<KnowledgeView> ChangeKnowledgeAsync(Guid entryId, long expectedVersion, string action, WorkActor actor,
+    private Task<KnowledgeView> ChangeKnowledgeCoreAsync(Guid entryId, long expectedVersion, string action, WorkActor actor,
         Func<MySqlConnection, MySqlTransaction, KnowledgeEntryRow, DateTime, Task> change, CancellationToken ct) =>
         RunAsync([], async connection =>
         {
@@ -377,7 +445,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     /// The files the entry is verified against, with their indexed content hash now: its concrete
     /// paths (not globs) in its repositories (the project's when it names none) and its nodes' files.
     /// A path not indexed yet in a repository the entry names (or a node's file) is kept with a NULL
-    /// hash and baselined by the index write that first stores the file (<see cref="KnowledgeBaselines"/>).
+    /// hash and baselined after commit by the index write or this write, whichever commits later (<see cref="KnowledgeBaselines"/>).
     /// A found file is stored in the spelling file_hashes uses, so the freshness join is exact; paths
     /// are looked up in both separator spellings.
     /// </summary>
@@ -758,7 +826,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     // ---- Import (§10.3) --------------------------------------------------------------------------
 
-    public Task<ImportKnowledgeResult> ImportKnowledgeAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
+    private Task<ImportKnowledgeResult> ImportKnowledgeCoreAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
         IReadOnlyList<int>? accept, string? keyHash, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {

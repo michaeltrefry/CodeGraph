@@ -56,7 +56,7 @@ public sealed partial class MySqlWorkStore
             return new WorkCreated<ProjectView>(true, view);
         }, ct);
 
-    public Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
+    private Task<ProjectView> UpdateProjectCoreAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -240,7 +240,7 @@ public sealed partial class MySqlWorkStore
         return changes;
     }
 
-    public Task<FeatureView> UpdateFeatureAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
+    private Task<FeatureView> UpdateFeatureCoreAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -385,7 +385,7 @@ public sealed partial class MySqlWorkStore
         ["claim_expires_at"] = row.ClaimExpiresAt is { } expires ? Utc(expires) : null
     };
 
-    public async Task<ItemView> UpdateItemAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
+    private async Task<ItemView> UpdateItemCoreAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
     {
         // A project id never changes, so it can be read before the write's transaction starts.
         Guid projectId;

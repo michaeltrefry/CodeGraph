@@ -188,10 +188,10 @@ public partial class MySqlGraphStore
                     sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
-            // Knowledge entries waiting for these files' first hash take it as their baseline (sc-27869).
-            await KnowledgeBaselines.AdoptAsync(conn, transaction, project, fileHashes.ToList(), GraphWriteTimeout, ct);
-
             await transaction.CommitAsync(ct);
+            // After the commit, on its own connection, best effort (sc-27869): knowledge entries
+            // waiting for these files' first hash take it as their baseline. Never fails the index write.
+            await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, project, fileHashes.ToList(), logger, ct);
             return resolvedEdges.Count;
         }
         catch
@@ -360,9 +360,6 @@ public partial class MySqlGraphStore
                     sql.ToString(), parameters, transaction, commandTimeout: GraphWriteTimeout, cancellationToken: ct));
             }
 
-            // Knowledge entries waiting for these files' first hash take it as their baseline (sc-27869).
-            await KnowledgeBaselines.AdoptAsync(conn, transaction, project, fileHashes.ToList(), GraphWriteTimeout, ct);
-
             if (syncState is not null)
             {
                 await conn.ExecuteAsync(new CommandDefinition("""
@@ -385,6 +382,9 @@ public partial class MySqlGraphStore
             }
 
             await transaction.CommitAsync(ct);
+            // After the commit, on its own connection, best effort (sc-27869): knowledge entries
+            // waiting for these files' first hash take it as their baseline. Never fails the index write.
+            await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, project, fileHashes.ToList(), logger, ct);
             return resolvedEdges.Count;
         }
         catch

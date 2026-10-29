@@ -886,8 +886,9 @@ public partial class MySqlGraphStore(
             await conn.ExecuteAsync(sql.ToString(), parameters);
         }
 
-        // Knowledge entries waiting for these files' first hash take it as their baseline (sc-27869).
-        await KnowledgeBaselines.AdoptAsync(conn, null, project, hashes.ToList(), null, ct);
+        // After the write, on its own connection, best effort (sc-27869): knowledge entries waiting
+        // for these files' first hash take it as their baseline. Never fails the hash write.
+        await KnowledgeBaselines.AdoptWrittenAsync(options.ConnectionString, project, hashes.ToList(), logger, ct);
     }
 
     public async Task DeleteFileHashesAsync(string project, IReadOnlyList<string> relPaths)

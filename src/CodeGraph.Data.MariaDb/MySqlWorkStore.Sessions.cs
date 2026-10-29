@@ -139,7 +139,7 @@ public sealed partial class MySqlWorkStore
         return owners.Count == 1 ? owners[0] : null;
     }
 
-    public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) =>
+    private Task<EndSessionResult> EndSessionCoreAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
