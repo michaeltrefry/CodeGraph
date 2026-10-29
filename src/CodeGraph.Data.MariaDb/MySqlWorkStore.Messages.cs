@@ -774,6 +774,25 @@ public sealed partial class MySqlWorkStore
             Utc(entry.CreatedAt), entry.Recipient, lines.GetValueOrDefault(entry.MessageId))).ToList();
     }
 
+    public async Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var limit = Math.Clamp(query.Limit, 1, WorkLimits.MaxPageSize);
+        var rows = (await connection.QueryAsync<MessageRow>(new CommandDefinition(
+            $"SELECT {MessageColumns} FROM work_messages m{MessageJoins} WHERE m.project_id = @projectId " +
+            "AND (@channel IS NULL OR m.channel = @channel) AND (@itemId IS NULL OR m.item_id = @itemId) " +
+            "AND (@featureId IS NULL OR m.feature_id = @featureId) AND (@resource IS NULL OR m.resource_name = @resource) " +
+            "AND (@openOnly = 0 OR m.state = 'open') AND (@toHuman = 0 OR m.to_human = 1) AND (@before IS NULL OR m.sequence < @before) " +
+            "ORDER BY m.sequence DESC LIMIT @take",
+            new
+            {
+                projectId = query.ProjectId, channel = query.Channel, itemId = query.ItemId, featureId = query.FeatureId, resource = query.Resource,
+                openOnly = query.OpenOnly ? 1 : 0, toHuman = query.ToHuman ? 1 : 0, before = query.Before, take = limit + 1
+            }, cancellationToken: ct))).ToList();
+        var page = rows.Take(limit).ToList();
+        return new MessageListPage(page.Select(ToView).ToList(), rows.Count > limit ? page[^1].Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);
+    }
+
     public async Task<long> GetMessageEventHeadAsync(CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);

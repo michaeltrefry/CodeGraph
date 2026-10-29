@@ -95,7 +95,8 @@ public sealed class GitHubWorkEvidenceService : IGitHubWorkEvidenceService
                     return null;
 
                 return new GitHubEvidenceSpec(delivery, GitHubEvidenceKind.Push, names, [branch], pusher,
-                    Branch: branch, BranchUrl: BranchUrl(htmlUrl, branch));
+                    Branch: branch, BranchUrl: BranchUrl(htmlUrl, branch), Url: $"{htmlUrl}/commit/{after}", ExternalId: after,
+                    Body: CommitList(root));
             }
 
             case "pull_request":
@@ -135,6 +136,7 @@ public sealed class GitHubWorkEvidenceService : IGitHubWorkEvidenceService
                     Branch: branch, BranchUrl: headRepository is null || branch is null ? null : BranchUrl(headRepository, branch),
                     PullRequestUrl: Str(pull, "html_url"), PullRequestNumber: number, Title: title, Description: description,
                     Url: Str(pull, "html_url"),
+                    ExternalId: kind == GitHubEvidenceKind.PullRequestMerged ? Str(pull, "merge_commit_sha") : null,
                     Source: actorIsBot ? GitHubEvidenceSources.Bot : GitHubEvidenceSources.Human);
             }
 
@@ -220,6 +222,24 @@ public sealed class GitHubWorkEvidenceService : IGitHubWorkEvidenceService
     {
         if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
             names.Add(name.Trim());
+    }
+
+    /// <summary>The push's commits, one per line as "sha first-line-of-message", the newest 20 (GitHub lists oldest first, so newest last).</summary>
+    private static string? CommitList(JsonElement root)
+    {
+        if (!root.TryGetProperty("commits", out var commits) || commits.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var lines = commits.EnumerateArray()
+            .Select(commit => (Id: Str(commit, "id"), Message: Str(commit, "message")))
+            .Where(commit => !string.IsNullOrWhiteSpace(commit.Id))
+            .Select(commit =>
+            {
+                var first = (commit.Message ?? "").Split('\n', 2)[0].Trim();
+                return $"{commit.Id} {(first.Length <= 120 ? first : first[..119] + "…")}".TrimEnd();
+            })
+            .ToList();
+        return lines.Count == 0 ? null : string.Join('\n', lines.Skip(Math.Max(0, lines.Count - 20)));
     }
 
     private static JsonElement Obj(JsonElement element, string name) =>

@@ -39,6 +39,7 @@ describe('app browser shell', () => {
       'Review',
       'Clusters',
       'Impact',
+      'Work',
       'Ask',
       'Wiki',
       'Tokens'

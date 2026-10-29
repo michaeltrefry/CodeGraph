@@ -73,6 +73,20 @@ public interface IWorkStore : IWorkMessageStore
     /// <summary>The project owning <paramref name="repository"/>, if exactly one does.</summary>
     Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
 
+    // ---- Read-only listings for the UI (sc-27874) ---------------------------------------------
+
+    /// <summary>The sessions of a project, most recently seen first: the live ones, or with <paramref name="liveOnly"/> false the ended and silent ones too.</summary>
+    Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default);
+
+    /// <summary>A page of a project's resources by name (after <paramref name="afterName"/>), each with its holders and queued waiters as of now. Nothing is swept or written.</summary>
+    Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default);
+
+    /// <summary>The newest <paramref name="limit"/> change feed entries of a project, oldest first (read only).</summary>
+    Task<IReadOnlyList<ChangeView>> ReadRecentChangesAsync(Guid projectId, int limit, CancellationToken ct = default);
+
+    /// <summary>The newest <paramref name="limit"/> change feed entries of one feature or item, oldest first (read only).</summary>
+    Task<IReadOnlyList<ChangeView>> ReadEntityChangesAsync(Guid entityId, int limit, CancellationToken ct = default);
+
     // ---- Resources and holds (sc-27872) -------------------------------------------------------
 
     /// <summary>
