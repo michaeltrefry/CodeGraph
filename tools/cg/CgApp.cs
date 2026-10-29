@@ -26,10 +26,11 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
     public static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(1500);
 
     public const string Usage =
-        "usage: cg brief [--budget N] [--item KEY] [--activity A[,B]]... | cg inbox [--ack] | cg end [--item KEY] [--done TEXT] [--next TEXT] [--decision TEXT]... " +
+        "usage: cg brief [--budget N] [--item KEY] [--activity A[,B]]... [--skills S[,T]]... | cg inbox [--ack] | cg end [--item KEY] [--done TEXT] [--next TEXT] [--decision TEXT]... " +
         "[--open TEXT]... [--correction TEXT]... [--branch NAME] [--commit SHA] | cg hold renew HOLD_ID [--ttl SECONDS] | cg hold release HOLD_ID\n" +
         "environment: CODEGRAPH_URL (API base URL), CODEGRAPH_TOKEN (personal access token), CODEGRAPH_PROJECT, CODEGRAPH_HARNESS, " +
         "CODEGRAPH_ACTIVITY (comma list of activities for the briefing's rules, when --activity is not given), " +
+        "CODEGRAPH_SKILLS (comma list of the skills the harness loaded, when --skills is not given), " +
         "CODEGRAPH_MODEL, CODEGRAPH_INTENT, CODEGRAPH_REPOSITORY, CODEGRAPH_BRANCH, CODEGRAPH_SESSION_ID, CODEGRAPH_SESSION_FILE, " +
         "CODEGRAPH_HARNESS_SESSION (the harness's own session id, to keep one cg session per harness session; read from CLAUDE_CODE_SESSION_ID " +
         "or CODEX_THREAD_ID when unset), CODEGRAPH_GIT (git executable)";
@@ -143,6 +144,9 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         var activities = Activities(options);
         if (activities.Count > 0)
             query.Add($"activity={Uri.EscapeDataString(string.Join(',', activities))}");
+        var skills = Skills(options);
+        if (skills.Count > 0)
+            query.Add($"skills={Uri.EscapeDataString(string.Join(',', skills))}");
 
         if (ReadSessionId() is { } known)
         {
@@ -175,6 +179,8 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
             start["budget_tokens"] = startBudget;
         if (activities.Count > 0)
             start["activity"] = new JsonArray(activities.Select(activity => (JsonNode?)activity).ToArray());
+        if (skills.Count > 0)
+            start["skills"] = new JsonArray(skills.Select(skill => (JsonNode?)skill).ToArray());
 
         var (startStatus, started) = await SendAsync(http, HttpMethod.Post, "api/work/sessions", start, ct);
         if (startStatus != 200)
@@ -494,6 +500,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         public List<string> OpenIssues { get; } = [];
         public List<string> Corrections { get; } = [];
         public List<string> Activities { get; } = [];
+        public List<string> Skills { get; } = [];
         public string? HoldAction { get; private set; }
         public string? HoldId { get; private set; }
         public int? Ttl { get; private set; }
@@ -517,7 +524,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
 
             var allowed = command switch
             {
-                "brief" => new[] { "--budget", "--item", "--activity" },
+                "brief" => new[] { "--budget", "--item", "--activity", "--skills" },
                 "inbox" => [],
                 "hold" => options.HoldAction == "renew" ? ["--ttl"] : [],
                 _ => ["--item", "--done", "--next", "--decision", "--open", "--correction", "--branch", "--commit"]
@@ -553,6 +560,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
                     case "--open": options.OpenIssues.Add(value); break;
                     case "--correction": options.Corrections.Add(value); break;
                     case "--activity": options.Activities.AddRange(SplitList(value)); break;
+                    case "--skills": options.Skills.AddRange(SplitList(value)); break;
                 }
             }
 
@@ -568,5 +576,11 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
     private List<string> Activities(Options options) =>
         options.Activities.Count > 0 ? options.Activities.Distinct().ToList()
         : Env("CODEGRAPH_ACTIVITY") is { } listed ? SplitList(listed).Distinct().ToList()
+        : [];
+
+    // The skills the harness has loaded (a rule a loaded skill carries is not served): --skills, else CODEGRAPH_SKILLS.
+    private List<string> Skills(Options options) =>
+        options.Skills.Count > 0 ? options.Skills.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+        : Env("CODEGRAPH_SKILLS") is { } listed ? SplitList(listed).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
         : [];
 }

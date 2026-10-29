@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS lesson_events (
     served TINYINT(1) NULL,
     source_kind VARCHAR(16) NULL,
     source_ref VARCHAR(500) NULL,
+    -- source_ref trimmed and lower-cased on write: the key review evidence is matched on (unlearned_reviews).
+    source_ref_key VARCHAR(500) NULL,
     summary VARCHAR(500) NOT NULL,
     summary_hash CHAR(64) NOT NULL,
     what MEDIUMTEXT NULL,
@@ -59,10 +61,15 @@ CREATE TABLE IF NOT EXISTS lesson_events (
     session_id VARCHAR(64) NULL,
     author VARCHAR(255) NOT NULL,
     author_kind VARCHAR(16) NOT NULL DEFAULT 'user',
+    -- The recording session's attribution, written with the row and copied again by the session prune (085's rule).
+    author_harness VARCHAR(64) NULL,
+    author_model VARCHAR(128) NULL,
+    author_host VARCHAR(255) NULL,
     created_at DATETIME(6) NOT NULL,
     PRIMARY KEY (correction_id),
     KEY ix_lesson_events_entry (entry_id, event_hash),
     KEY ix_lesson_events_session (session_id, summary_hash),
+    KEY ix_lesson_events_source_ref (project_id, source_ref_key),
     CONSTRAINT fk_lesson_events_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -76,9 +83,13 @@ CREATE TABLE IF NOT EXISTS lesson_links (
     author VARCHAR(255) NOT NULL,
     author_kind VARCHAR(16) NOT NULL DEFAULT 'user',
     author_session_id VARCHAR(64) NULL,
+    author_harness VARCHAR(64) NULL,
+    author_model VARCHAR(128) NULL,
+    author_host VARCHAR(255) NULL,
     created_at DATETIME(6) NOT NULL,
     PRIMARY KEY (entry_id, other_id, relation),
     KEY ix_lesson_links_other (other_id),
+    KEY ix_lesson_links_author_session (author_session_id),
     CONSTRAINT fk_lesson_links_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE,
     CONSTRAINT fk_lesson_links_other FOREIGN KEY (other_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -98,12 +109,19 @@ CREATE TABLE IF NOT EXISTS lesson_challenges (
     author_kind VARCHAR(16) NOT NULL DEFAULT 'user',
     author_session_id VARCHAR(64) NULL,
     author_harness VARCHAR(64) NULL,
+    author_model VARCHAR(128) NULL,
+    author_host VARCHAR(255) NULL,
     resolved_by VARCHAR(255) NULL,
     resolved_by_kind VARCHAR(16) NULL,
     resolved_by_session_id VARCHAR(64) NULL,
+    resolved_by_harness VARCHAR(64) NULL,
+    resolved_by_model VARCHAR(128) NULL,
+    resolved_by_host VARCHAR(255) NULL,
     created_at DATETIME(6) NOT NULL,
     resolved_at DATETIME(6) NULL,
     PRIMARY KEY (id),
+    KEY ix_lesson_challenges_author_session (author_session_id),
+    KEY ix_lesson_challenges_resolver_session (resolved_by_session_id),
     KEY ix_lesson_challenges_entry (entry_id, status),
     KEY ix_lesson_challenges_project (project_id, status, created_at),
     CONSTRAINT fk_lesson_challenges_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
@@ -123,8 +141,12 @@ CREATE TABLE IF NOT EXISTS lesson_addressed_by (
     author VARCHAR(255) NOT NULL,
     author_kind VARCHAR(16) NOT NULL DEFAULT 'user',
     author_session_id VARCHAR(64) NULL,
+    author_harness VARCHAR(64) NULL,
+    author_model VARCHAR(128) NULL,
+    author_host VARCHAR(255) NULL,
     created_at DATETIME(6) NOT NULL,
     PRIMARY KEY (entry_id, kind, name, harness),
+    KEY ix_lesson_addressed_by_author_session (author_session_id),
     CONSTRAINT fk_lesson_addressed_by_entry FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -145,9 +167,9 @@ CREATE TABLE IF NOT EXISTS lesson_embeddings (
 -- The served-rule log (R26): which rules each session's briefings served (or item briefs read with
 -- that session), so a recurrence can be read as with or without its rule served. One row per session
 -- and rule, so it is bounded by sessions x rules served (at most 10 per briefing); it is kept for the
--- life of the rule (deleted with it) because the with/without-served signal and the unmatched view
--- read its history. Sessions are never deleted today; a future session-pruning job should delete
--- these rows with the session (session_id is the only attribution column here).
+-- life of the rule (deleted with it) because the served_sessions count and the unmatched view read its
+-- history. PruneWorkSessions keeps these rows when it deletes their session: session_id here is serve
+-- bookkeeping (which session was served), not attribution; nothing reads the session behind it.
 CREATE TABLE IF NOT EXISTS lesson_served (
     session_id VARCHAR(64) NOT NULL,
     entry_id CHAR(36) NOT NULL,

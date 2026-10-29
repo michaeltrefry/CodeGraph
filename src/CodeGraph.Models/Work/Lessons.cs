@@ -118,7 +118,7 @@ public static class LessonLimits
     public const int MaxShownChallenges = 3;
     public const int MaxSkills = 50;
     /// <summary>Lessons of the pool embedded on one similarity call when they have no stored embedding yet.</summary>
-    public const int MaxEmbedPerCall = 200;
+    public const int MaxEmbedPerCall = 25;
 }
 
 // ---- Inputs ---------------------------------------------------------------------------------------

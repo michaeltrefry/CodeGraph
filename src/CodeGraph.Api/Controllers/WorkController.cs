@@ -142,15 +142,15 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         JsonObject arguments;
         try
         {
-            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item", "paths", "activity"], integers: ["budget_tokens"], booleans: []);
+            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item", "paths", "activity", "skills"], integers: ["budget_tokens"], booleans: []);
         }
         catch (WorkException exception)
         {
             return Refuse(exception);
         }
 
-        // paths and activity are comma-separated lists on the query string.
-        foreach (var list in new[] { "paths", "activity" })
+        // paths, activity and skills are comma-separated lists on the query string.
+        foreach (var list in new[] { "paths", "activity", "skills" })
         {
             if (arguments[list] is JsonNode values)
                 arguments[list] = new JsonArray(values.GetValue<string>().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

@@ -171,18 +171,38 @@ public sealed partial class MySqlWorkStore
         return row;
     }
 
+    // The key a correction's source ref is matched on (review evidence: URL or id), normalised on write
+    // so the unlearned_reviews anti-join can use its index.
+    private static string? SourceRefKey(string? reference) =>
+        reference is { Length: > 0 } ? reference.Trim().ToLowerInvariant() is { Length: > 0 } key ? key[..Math.Min(key.Length, 500)] : null : null;
+
+    // A ref-less correction from a session is one event per (session, item); one recorded without an
+    // item (an end_session that holds nothing any more) is the same event as that session's
+    // correction of this lesson on any item, and the reverse. Otherwise the exact key.
+    private static async Task<bool> EventSeenAsync(MySqlConnection connection, MySqlTransaction transaction, Guid target, string key, WorkActor actor, CancellationToken ct)
+    {
+        var sessionPrefix = actor.SessionId is { Length: > 0 } session ? $"session:{session}:item:" : null;
+        var anyItem = sessionPrefix is not null && key.StartsWith(sessionPrefix, StringComparison.Ordinal);
+        return await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @target AND counted = 1 AND (event_hash = @hash" +
+            (!anyItem ? "" : key == sessionPrefix + "none" ? " OR event_key LIKE @prefixLike" : " OR event_key = @none") + "))",
+            new { target, hash = Sha(key), prefixLike = EscapeLike(sessionPrefix ?? "") + "%", none = sessionPrefix + "none" }, transaction, cancellationToken: ct));
+    }
+
     private static Task InsertEventAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, Guid entryId, KnowledgeSpec spec,
         string key, bool counted, bool ruleAtEvent, bool? served, Guid? item, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, " +
-            "summary, summary_hash, what, item_id, session_id, author, author_kind, created_at) VALUES (@correction, @entryId, @projectId, @key, @hash, @counted, " +
-            "@ruleAtEvent, @served, @sourceKind, @sourceRef, @summary, @summaryHash, @what, @item, @session, @author, @authorKind, @now)",
+            "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, source_ref_key, " +
+            "summary, summary_hash, what, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
+            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @item, @session, @author, @authorKind, " +
+            "@harness, @model, @host, @now)",
             new
             {
                 correction = spec.Id, entryId, projectId, key = key.Length > 600 ? key[..600] : key, hash = Sha(key), counted, ruleAtEvent, served,
                 sourceKind = spec.Details?.Source is { } source ? JsonName(source.Kind) : null, sourceRef = spec.Details?.Source?.Ref,
+                sourceRefKey = SourceRefKey(spec.Details?.Source?.Ref),
                 summary = spec.Summary, summaryHash = KnowledgePaths.HashSummary(spec.Summary), what = spec.Details?.What, item,
-                session = actor.SessionId, author = actor.Name, authorKind = actor.Kind, now
+                session = actor.SessionId, author = actor.Name, authorKind = actor.Kind, harness = actor.Harness, model = actor.Model, host = actor.Host, now
             },
             transaction, cancellationToken: ct));
 
@@ -220,9 +240,7 @@ public sealed partial class MySqlWorkStore
     {
         var lesson = await RequireLessonAsync(connection, transaction, project.Id, target, "same_as", ct);
         var key = EventKey(spec, actor, item);
-        var counted = !await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
-            "SELECT EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @target AND event_hash = @hash AND counted = 1)",
-            new { target, hash = Sha(key) }, transaction, cancellationToken: ct));
+        var counted = !await EventSeenAsync(connection, transaction, target, key, actor, ct);
         bool? served = null;
         if (lesson.IsRule && actor.SessionId is { } session)
             served = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
@@ -252,7 +270,9 @@ public sealed partial class MySqlWorkStore
                 now, target
             },
             transaction, cancellationToken: ct));
-        await PromoteIfDueAsync(connection, transaction, target, now, spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct);
+        // Only a new event of the human's prompt promotes through the prompt path (which overrides a
+        // rejection); a redelivery that only widens applies-when is evaluated like any other change.
+        await PromoteIfDueAsync(connection, transaction, target, now, counted && spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct);
         await InsertRevisionAsync(connection, transaction, target, lesson.Revision + 1, counted ? "recurred" : "widened", actor, now, ct);
     }
 
@@ -350,9 +370,10 @@ public sealed partial class MySqlWorkStore
 
     private static Task LinkContradictionAsync(MySqlConnection connection, MySqlTransaction transaction, Guid a, Guid b, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
-            "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, created_at) VALUES " +
-            "(@a, @b, 'contradicts', @author, @authorKind, @session, @now), (@b, @a, 'contradicts', @author, @authorKind, @session, @now)",
-            new { a, b, author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, now }, transaction, cancellationToken: ct));
+            "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) VALUES " +
+            "(@a, @b, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now), (@b, @a, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now)",
+            new { a, b, author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now },
+            transaction, cancellationToken: ct));
 
     // ---- Lesson views ---------------------------------------------------------------------------
 
@@ -521,7 +542,9 @@ public sealed partial class MySqlWorkStore
             new { model = embedder.Model, ids = lessons.Select(lesson => lesson.Id.ToString()).ToArray() }, cancellationToken: ct))).ToList();
         var hashes = lessons.ToDictionary(lesson => lesson.Id, lesson => lesson.SummaryHash);
         var vectors = stored.Where(row => hashes.TryGetValue(row.EntryId, out var hash) && hash == row.SummaryHash)
-            .ToDictionary(row => row.EntryId, row => ToFloats(row.Vector));
+            .Select(row => (row.EntryId, Vector: ToFloats(row.Vector)))
+            .Where(row => Usable(row.Vector))
+            .ToDictionary(row => row.EntryId, row => row.Vector);
         var missing = lessons.Where(lesson => !vectors.ContainsKey(lesson.Id)).Take(LessonLimits.MaxEmbedPerCall).ToList();
         if (missing.Count == 0)
             return vectors;
@@ -539,17 +562,25 @@ public sealed partial class MySqlWorkStore
 
         if (embedded.Count != missing.Count)
             return null;
+        // A vector that is all zeros (or not finite) is what a provider answers when inference failed:
+        // never stored or scored, so the pair falls back to the lexical score and a later call embeds again.
+        var usable = missing.Select((lesson, index) => (lesson, vector: embedded[index])).Where(pair => Usable(pair.vector)).ToList();
+        if (usable.Count == 0)
+            return vectors;
         var now = Now();
         await connection.ExecuteAsync(new CommandDefinition(
             "REPLACE INTO lesson_embeddings (entry_id, model, summary_hash, dimensions, vector, created_at) VALUES (@entryId, @model, @hash, @dimensions, @vector, @now)",
-            missing.Select((lesson, index) => new
+            usable.Select(pair => new
             {
-                entryId = lesson.Id, model = embedder.Model, hash = lesson.SummaryHash, dimensions = embedded[index].Length, vector = ToBytes(embedded[index]), now
+                entryId = pair.lesson.Id, model = embedder.Model, hash = pair.lesson.SummaryHash, dimensions = pair.vector.Length, vector = ToBytes(pair.vector), now
             }), cancellationToken: ct));
-        for (var index = 0; index < missing.Count; index++)
-            vectors[missing[index].Id] = embedded[index];
+        foreach (var (lesson, vector) in usable)
+            vectors[lesson.Id] = vector;
         return vectors;
     }
+
+    private static bool Usable(float[] vector) =>
+        vector.Length > 0 && vector.All(float.IsFinite) && vector.Any(value => value != 0f);
 
     private static byte[] ToBytes(float[] vector)
     {
@@ -581,6 +612,8 @@ public sealed partial class MySqlWorkStore
     }
 
     // ---- Rules in briefings ---------------------------------------------------------------------
+
+    private const int MaxRuleScan = 2_000;
 
     private const string ActiveRule = "e.project_id = @projectId AND e.kind = 'lesson' AND e.status = 'active' AND e.rule_state = 'rule'";
 
@@ -638,18 +671,25 @@ public sealed partial class MySqlWorkStore
         if (context.Paths.Count == 0)
             location.Append(" AND JSON_EXTRACT(e.details_json, '$.applies_when.paths') IS NULL");
 
-        var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
-            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE {ActiveRule} AND ({string.Join(" OR ", clauses)}){location} " +
-            $"AND NOT EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id AND ({string.Join(" OR ", addressed)})) " +
-            "ORDER BY CASE e.priority WHEN 'highest' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, COALESCE(e.recurrence, 1) DESC, e.updated_at DESC, e.id " +
-            $"LIMIT {MaxRelevantCandidates}",
-            parameters, cancellationToken: ct))).ToList();
+        // Path globs are matched here, after SQL ranked the candidates: pages of MaxRelevantCandidates
+        // are read in rank order until enough match, at most MaxRuleScan rows (bounded, never a full scan).
+        var chosen = new List<(KnowledgeEntryRow row, KnowledgeDetails? details)>();
+        for (var offset = 0; chosen.Count < context.Limit && offset < MaxRuleScan; offset += MaxRelevantCandidates)
+        {
+            var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
+                $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE {ActiveRule} AND ({string.Join(" OR ", clauses)}){location} " +
+                $"AND NOT EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id AND ({string.Join(" OR ", addressed)})) " +
+                "ORDER BY CASE e.priority WHEN 'highest' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, COALESCE(e.recurrence, 1) DESC, e.updated_at DESC, e.id " +
+                $"LIMIT {MaxRelevantCandidates} OFFSET {offset}",
+                parameters, cancellationToken: ct))).ToList();
+            chosen.AddRange(rows
+                .Select(row => (row, details: row.DetailsJson is { } json ? JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) : null))
+                .Where(pair => LocationMatches(pair.details?.AppliesWhen, context))
+                .Take(context.Limit - chosen.Count));
+            if (rows.Count < MaxRelevantCandidates)
+                break;
+        }
 
-        var chosen = rows
-            .Select(row => (row, details: row.DetailsJson is { } json ? JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) : null))
-            .Where(pair => LocationMatches(pair.details?.AppliesWhen, context))
-            .Take(context.Limit)
-            .ToList();
         var ids = chosen.Select(pair => pair.row.Id).ToList();
         var contradicts = await ReadContradictionsAsync(connection, null, ids, activeOnly: true, ct);
         var challenges = await ReadChallengesAsync(connection, null, ids, openOnly: true, ct);
@@ -865,13 +905,15 @@ public sealed partial class MySqlWorkStore
                     break;
                 default:
                     await connection.ExecuteAsync(new CommandDefinition(
-                        "INSERT INTO lesson_addressed_by (entry_id, kind, name, harness, ref, author, author_kind, author_session_id, created_at) " +
-                        "VALUES (@entryId, @kind, @name, @harness, @ref, @author, @authorKind, @session, @now) " +
-                        "ON DUPLICATE KEY UPDATE ref = @ref, author = @author, author_kind = @authorKind, author_session_id = @session, created_at = @now",
+                        "INSERT INTO lesson_addressed_by (entry_id, kind, name, harness, ref, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
+                        "VALUES (@entryId, @kind, @name, @harness, @ref, @author, @authorKind, @session, @actorHarness, @actorModel, @actorHost, @now) " +
+                        "ON DUPLICATE KEY UPDATE ref = @ref, author = @author, author_kind = @authorKind, author_session_id = @session, author_harness = @actorHarness, " +
+                        "author_model = @actorModel, author_host = @actorHost, created_at = @now",
                         new
                         {
                             entryId, kind = JsonName(addressedBy!.Kind), name = addressedBy.Name, harness = addressedBy.Harness ?? "", @ref = addressedBy.Ref,
-                            author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, now
+                            author = actor.Name, authorKind = actor.Kind, session = actor.SessionId,
+                            actorHarness = actor.Harness, actorModel = actor.Model, actorHost = actor.Host, now
                         },
                         transaction, cancellationToken: ct));
                     break;
@@ -914,12 +956,12 @@ public sealed partial class MySqlWorkStore
 
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO lesson_challenges (id, entry_id, project_id, status, reason, evidence_json, author, author_kind, author_session_id, author_harness, created_at) " +
-                "VALUES (@id, @entryId, @projectId, 'open', @reason, @evidence, @author, @authorKind, @session, @harness, @now)",
+                "INSERT INTO lesson_challenges (id, entry_id, project_id, status, reason, evidence_json, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
+                "VALUES (@id, @entryId, @projectId, 'open', @reason, @evidence, @author, @authorKind, @session, @harness, @model, @host, @now)",
                 new
                 {
                     id, entryId, projectId, reason, evidence = JsonSerializer.Serialize(evidence, WorkJson.Options),
-                    author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, now
+                    author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now
                 },
                 transaction, cancellationToken: ct));
             if (keyHash is not null)
@@ -967,11 +1009,12 @@ public sealed partial class MySqlWorkStore
 
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE lesson_challenges SET status = @status, resolution_reason = @reason, resolved_by = @by, resolved_by_kind = @byKind, resolved_by_session_id = @bySession, " +
+                "resolved_by_harness = @byHarness, resolved_by_model = @byModel, resolved_by_host = @byHost, " +
                 "resolved_at = @now WHERE id = @challengeId",
                 new
                 {
                     status = JsonName(outcome switch { ChallengeOutcome.Amend => ChallengeStatus.Amended, ChallengeOutcome.Retract => ChallengeStatus.Retracted, _ => ChallengeStatus.Upheld }),
-                    reason, by = actor.Name, byKind = actor.Kind, bySession = actor.SessionId, now, challengeId
+                    reason, by = actor.Name, byKind = actor.Kind, bySession = actor.SessionId, byHarness = actor.Harness, byModel = actor.Model, byHost = actor.Host, now, challengeId
                 },
                 transaction, cancellationToken: ct));
             await InsertRevisionAsync(connection, transaction, challenge.EntryId, before.Revision, action, actor, now, ct);
@@ -1082,8 +1125,8 @@ public sealed partial class MySqlWorkStore
             "LEFT(g.body, 400) AS body FROM work_github_evidence g JOIN work_items i ON i.id = g.item_id JOIN work_projects p ON p.id = i.project_id " +
             "WHERE i.project_id = @projectId AND g.superseded = 0 AND (g.kind = 'review_comment' OR (g.kind = 'review' AND g.body IS NOT NULL AND g.body <> '')) " +
             (source is null ? "" : "AND g.source = @source ") +
-            "AND NOT EXISTS (SELECT 1 FROM lesson_events le WHERE le.project_id = i.project_id AND le.source_ref IS NOT NULL AND " +
-            "(LOWER(le.source_ref) = LOWER(g.url) OR le.source_ref = g.external_id)) " +
+            "AND NOT EXISTS (SELECT 1 FROM lesson_events le WHERE le.project_id = i.project_id AND " +
+            "le.source_ref_key IN (LOWER(TRIM(g.url)), LOWER(TRIM(g.external_id)))) " +
             $"ORDER BY g.created_at DESC, g.id LIMIT {spec.Limit + 1} OFFSET {spec.Offset}",
             new { projectId = spec.ProjectId, source }, cancellationToken: ct))).ToList();
         var more = rows.Count > spec.Limit;

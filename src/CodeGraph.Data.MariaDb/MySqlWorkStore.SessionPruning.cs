@@ -39,6 +39,12 @@ public sealed partial class MySqlWorkStore : IWorkSessionPruner
         ("work_attempts", "session_id", "harness", "model", "host"),
         ("work_holds", "session_id", "harness", "model", "host"),
         ("knowledge_revisions", "author_session_id", "author_harness", "author_model", "author_host"),
+        // Lessons (sc-27873). lesson_served.session_id is serve bookkeeping, kept as is (see 084).
+        ("lesson_events", "session_id", "author_harness", "author_model", "author_host"),
+        ("lesson_links", "author_session_id", "author_harness", "author_model", "author_host"),
+        ("lesson_challenges", "author_session_id", "author_harness", "author_model", "author_host"),
+        ("lesson_challenges", "resolved_by_session_id", "resolved_by_harness", "resolved_by_model", "resolved_by_host"),
+        ("lesson_addressed_by", "author_session_id", "author_harness", "author_model", "author_host"),
     ];
 
     public async Task<WorkSessionPruneResult> PruneSessionsAsync(DateTime cutoffUtc, int batchSize, CancellationToken ct = default)

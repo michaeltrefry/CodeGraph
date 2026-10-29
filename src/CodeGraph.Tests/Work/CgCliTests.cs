@@ -182,11 +182,14 @@ public sealed class CgCliTests
         {
             var environment = Env("http://codegraph.test", sessionFile);
             environment["CODEGRAPH_ACTIVITY"] = "slicing, planning";
+            environment["CODEGRAPH_SKILLS"] = "shortcut-plan";
             var first = await RunAsync(environment, handler, "brief");
-            var second = await RunAsync(environment, handler, "brief", "--activity", "reviewing,merging", "--activity", "testing");
+            var second = await RunAsync(environment, handler, "brief", "--activity", "reviewing,merging", "--activity", "testing", "--skills", "shortcut-story,shortcut-epic");
 
-            JsonDocument.Parse(bodies.Single()).RootElement.GetProperty("activity").EnumerateArray().Select(value => value.GetString()).ShouldBe(["slicing", "planning"]);
-            requests[1].ShouldBe($"GET /api/work/sessions/{sessionId}/briefing?activity={Uri.EscapeDataString("reviewing,merging,testing")}");
+            var started = JsonDocument.Parse(bodies.Single()).RootElement;
+            started.GetProperty("activity").EnumerateArray().Select(value => value.GetString()).ShouldBe(["slicing", "planning"]);
+            started.GetProperty("skills").EnumerateArray().Select(value => value.GetString()).ShouldBe(["shortcut-plan"]);
+            requests[1].ShouldBe($"GET /api/work/sessions/{sessionId}/briefing?activity={Uri.EscapeDataString("reviewing,merging,testing")}&skills={Uri.EscapeDataString("shortcut-story,shortcut-epic")}");
             first.Lines.ShouldContain("rule (highest, slicing): Slice by mechanism, by cell is wrong · contradicts: Slice by cell · challenged 1x");
             second.Exit.ShouldBe(0);
             (await RunAsync(environment, handler, "brief", "--activity")).Exit.ShouldBe(2);

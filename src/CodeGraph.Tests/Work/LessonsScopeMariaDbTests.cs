@@ -294,4 +294,103 @@ public sealed class LessonsScopeMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         var queued = (await db.CallAsync(WorkTools.ReviewQueue, new { project = key })).GetProperty("items").EnumerateArray().Single(item => item.GetProperty("kind").GetString() == "challenge");
         (queued.GetProperty("challenges").GetArrayLength(), queued.GetProperty("more_challenges").GetInt32()).ShouldBe((LessonLimits.MaxShownChallenges, 2));
     }
+
+    [Fact]
+    public async Task A_widened_only_redelivery_of_a_prompt_correction_does_not_promote_a_rejected_lesson_but_a_new_prompt_event_does()
+    {
+        var key = await ProjectAsync("SJ");
+        var id = Id(await RecordAsync(key, "Squash before merging", "prompt", null, "prompt-1"));
+        await db.CallAsync(WorkTools.Promote, new { id, expected_version = (await LessonAsync(id)).GetProperty("version").GetInt64(), action = "reject", reason = "Team prefers merge commits" });
+
+        // The same prompt event again, now with an activity: widened, not counted, still rejected.
+        var redelivered = await RecordAsync(key, "Squash before merging", "prompt", ["merging"], "prompt-1");
+        Id(redelivered).ShouldBe(id);
+        var lesson = await LessonAsync(id);
+        (lesson.GetProperty("lesson").GetProperty("state").GetString(), lesson.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32()).ShouldBe(("rejected", 1));
+        lesson.GetProperty("details").GetProperty("applies_when").GetProperty("activity").EnumerateArray().Single().GetString().ShouldBe("merging");
+        RuleIds(await BriefingAsync(key, ["merging"])).ShouldBeEmpty();
+
+        // A new correction from the human's prompt is a rule at once, over the rejection (R24).
+        await RecordAsync(key, "Squash before merging", "prompt", ["merging"], "prompt-2");
+        (await LessonAsync(id)).GetProperty("lesson").GetProperty("state").GetString().ShouldBe("rule");
+    }
+
+    [Fact]
+    public async Task A_correction_without_a_ref_reported_on_an_item_and_again_at_end_session_without_one_counts_once()
+    {
+        var key = await ProjectAsync("SK");
+        await db.NewItemAsync(key, "Fix the store");
+        var session = (await db.CallAsync(WorkTools.StartSession, new { project = key, harness = "claude-code" })).GetProperty("session").GetProperty("id").GetString();
+        var claimed = (await db.CallAsync(WorkTools.NextWork, new { project = key, session_id = session })).GetProperty("item");
+        var correction = new { what = "Wrote the SQL by hand", correct_behavior = "Use the store's helpers for SQL", applies_when = new { activity = new[] { "implementing" } }, source = new { kind = "agent" } };
+        // Reported on the item, then the item is let go of in the same call ...
+        var updated = await db.CallAsync(WorkTools.UpdateWork, new
+        {
+            id = claimed.GetProperty("key").GetString(), expected_version = claimed.GetProperty("version").GetInt64(), session_id = session,
+            corrections = new[] { correction }, release_claim = new { }
+        });
+        var lessonId = updated.GetProperty("recorded")[0].GetProperty("id").GetString()!;
+        // ... and again at the end, which holds no item now.
+        var ended = await db.CallAsync(WorkTools.EndSession, new { session_id = session, corrections = new[] { correction } });
+        ended.GetProperty("recorded")[0].GetProperty("id").GetString().ShouldBe(lessonId);
+        (await LessonAsync(lessonId)).GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(1);
+    }
+
+    private sealed class ZeroEmbedder : IEmbeddingService
+    {
+        // What OnnxEmbeddingService answers when inference fails: zero vectors of its dimension.
+        public bool IsAvailable => true;
+        public string ModelName => "zeros-1";
+        public int Dimensions => 4;
+        public float[] GenerateEmbedding(string text) => new float[Dimensions];
+        public IReadOnlyList<float[]> GenerateEmbeddings(IReadOnlyList<string> texts) => texts.Select(_ => new float[Dimensions]).ToList();
+    }
+
+    [Fact]
+    public async Task Zero_vectors_from_a_failing_provider_are_never_stored_or_scored_and_the_pair_falls_back_to_lexical()
+    {
+        var service = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }), embeddingService: new ZeroEmbedder());
+        async Task<JsonElement> CallAsync(object arguments)
+        {
+            var result = await service.ExecuteAsync(WorkTools.Record, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), new WorkActor("alice"));
+            return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
+        }
+
+        var key = await ProjectAsync("SZ");
+        var first = Id(await CallAsync(new { project = key, entry = new { kind = "lesson", summary = "Run the tests before pushing", source = new { kind = "agent" } } }));
+        var second = await CallAsync(new { project = key, entry = new { kind = "lesson", summary = "Run the test suite before pushing", source = new { kind = "agent" } } });
+        var candidate = second.GetProperty("similar").EnumerateArray().Single().GetProperty("candidates").EnumerateArray().Single();
+        (candidate.GetProperty("id").GetString(), candidate.GetProperty("method").GetString()).ShouldBe((first, "lexical"));
+
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM lesson_embeddings WHERE model = 'zeros-1'")).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Pruning_a_session_keeps_its_served_rule_log_and_copies_its_attribution_onto_lesson_rows()
+    {
+        var key = await ProjectAsync("SP");
+        var rule = Id(await RecordAsync(key, "Keep the lock order", "prompt", ["implementing"]));
+        var started = await db.CallAsync(WorkTools.StartSession, new { project = key, harness = "codex", model = "gpt-5", host = "box", activity = new[] { "implementing" } }, "carol");
+        var session = started.GetProperty("session").GetProperty("id").GetString()!;
+        RuleIds(started.GetProperty("briefing")).ShouldBe([rule]);
+        await db.CallAsync(WorkTools.Record, new
+        {
+            session_id = session,
+            entry = new { kind = "lesson", summary = "Keep the lock order", source = new { kind = "agent" }, applies_when = new { activity = new[] { "implementing" } }, same_as = rule }
+        }, "carol");
+        await db.CallAsync(WorkTools.EndSession, new { session_id = session }, "carol");
+
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var old = db.Clock.GetUtcNow().UtcDateTime.AddDays(-400);
+        await connection.ExecuteAsync("UPDATE work_sessions SET last_seen_at = @old, ended_at = @old WHERE id = @session", new { session, old });
+        await ((CodeGraph.Data.IWorkSessionPruner)db.Store).PruneSessionsAsync(db.Clock.GetUtcNow().UtcDateTime.AddDays(-300), 100);
+
+        (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM work_sessions WHERE id = @session", new { session })).ShouldBe(0);
+        (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM lesson_served WHERE session_id = @session", new { session })).ShouldBe(1);
+        (await connection.ExecuteScalarAsync<string>("SELECT CONCAT(author_harness, '/', author_model, '/', author_host) FROM lesson_events WHERE session_id = @session", new { session }))
+            .ShouldBe("codex/gpt-5/box");
+        var lesson = (await LessonAsync(rule)).GetProperty("lesson");
+        (lesson.GetProperty("served_sessions").GetInt32(), lesson.GetProperty("recurrence").GetProperty("while_served").GetInt32()).ShouldBe((1, 1));
+    }
 }
