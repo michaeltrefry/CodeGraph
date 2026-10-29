@@ -2,10 +2,20 @@ namespace CodeGraph.Models.Work;
 
 // What the work tools answer. Serialized with WorkJson.Options (snake_case, nulls left out).
 
-/// <summary>Who made a write. S2 adds the session (harness, model, host) through <see cref="SessionId"/>.</summary>
-public sealed record WorkActor(string Name, string Kind = WorkActor.UserKind, string? SessionId = null)
+/// <summary>
+/// Who made a write (E3): the authenticated identity, and when the call carried a session, that
+/// session with its harness, model and host (<see cref="Kind"/> is then <c>session</c>).
+/// </summary>
+public sealed record WorkActor(
+    string Name,
+    string Kind = WorkActor.UserKind,
+    string? SessionId = null,
+    string? Harness = null,
+    string? Model = null,
+    string? Host = null)
 {
     public const string UserKind = "user";
+    public const string SessionKind = "session";
 }
 
 public sealed record RepositoryMemberView(string Repository, RepositoryRole Role);
@@ -53,7 +63,7 @@ public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt,
 
 public sealed record LinkView(Guid Id, WorkLinkKind Kind, string Url, DateTime CreatedAt);
 
-public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt);
+public sealed record CommentView(Guid Id, string Author, string Body, DateTime CreatedAt, string? SessionId = null, string? Harness = null);
 
 public sealed record ItemView(
     Guid Id,
@@ -79,7 +89,8 @@ public sealed record ItemView(
     long Version,
     string CreatedBy,
     DateTime CreatedAt,
-    DateTime UpdatedAt)
+    DateTime UpdatedAt,
+    IReadOnlyList<HandoffView>? Handoffs = null)
 {
     public string Kind => "item";
 }
@@ -118,7 +129,8 @@ public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? 
 
 /// <param name="Reused">true when this is the caller's existing claim or the allocation of a repeated key, not a new claim.</param>
 /// <param name="Reason">Why there is no item: <c>no_ready_work</c>.</param>
-public sealed record NextWorkResult(ItemView? Item, bool Reused, string? Reason = null);
+/// <param name="Recovery">Set when the item was in progress and its previous claim had lapsed or been released: what the new holder needs to continue it.</param>
+public sealed record NextWorkResult(ItemView? Item, bool Reused, string? Reason = null, RecoveryView? Recovery = null);
 
 public sealed record ChangeView(
     long Sequence,

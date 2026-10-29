@@ -21,7 +21,12 @@ public sealed class WorkRestPipelineTests
         (HttpMethod.Get, "/api/work/changes", WorkTools.Changes, null),
         (HttpMethod.Get, "/api/work/SW-1", WorkTools.GetWork, null),
         (HttpMethod.Patch, "/api/work/SW-1", WorkTools.UpdateWork, """{"expected_version":1,"title":"x"}"""),
+        (HttpMethod.Post, "/api/work/sessions", WorkTools.StartSession, """{"project":"SW","harness":"codex"}"""),
+        (HttpMethod.Post, $"/api/work/sessions/{SessionId}/end", WorkTools.EndSession, "{}"),
+        (HttpMethod.Get, $"/api/work/sessions/{SessionId}/briefing", WorkTools.GetBriefing, null),
     ];
+
+    private const string SessionId = "6f1c2c1e-7a55-4c1e-9a43-0c2f4f2e9b11";
 
     [Fact]
     public async Task A_token_selecting_only_read_tools_reads_but_cannot_write_over_rest()

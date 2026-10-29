@@ -43,7 +43,52 @@ public interface IWorkStore
 
     /// <summary>Entries after <paramref name="afterSequence"/>, oldest first.</summary>
     Task<IReadOnlyList<ChangeView>> ReadChangesAsync(Guid? projectId, long afterSequence, int limit, CancellationToken ct = default);
+
+    // ---- Sessions (sc-27866) -----------------------------------------------------------------
+
+    /// <summary>Registers a session of <paramref name="actor"/>'s identity; a repeated key answers the first one.</summary>
+    Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default);
+
+    /// <summary>
+    /// The heartbeat: renews the session and its live claims, and answers the actor the call is
+    /// attributed to (the identity with the session's harness, model and host). Refused when the
+    /// session does not exist (not_found), belongs to another identity or has ended (invalid_argument).
+    /// </summary>
+    Task<WorkActor> TouchSessionAsync(Guid sessionId, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>
+    /// Ends the session: writes the handoff (on <paramref name="itemId"/>, or the one item the session
+    /// holds), releases every claim of the session. Ending an ended session changes nothing and answers it.
+    /// </summary>
+    Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default);
+
+    Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default);
+
+    /// <summary>Every section of the briefing of a session, unbudgeted (each list capped).</summary>
+    Task<BriefingView> ReadBriefingAsync(Guid sessionId, Guid? focusItemId, CancellationToken ct = default);
+
+    /// <summary>The project owning <paramref name="repository"/>, if exactly one does.</summary>
+    Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
 }
+
+public sealed record NewSessionSpec(
+    Guid ProjectId,
+    string Harness,
+    string? Model,
+    string? Host,
+    string? Repository,
+    string? Branch,
+    string? Worktree,
+    string? Intent);
+
+public sealed record HandoffSpec(
+    string? Done,
+    IReadOnlyList<string> Decisions,
+    IReadOnlyList<string> OpenIssues,
+    IReadOnlyList<string> Corrections,
+    string? NextAction,
+    string? Branch,
+    string? Commit);
 
 public sealed record WorkTarget(WorkEntityKind Kind, Guid Id, Guid ProjectId);
 
@@ -119,7 +164,19 @@ public sealed record ItemPatchSpec(
     IReadOnlyList<LinkSpec>? AddLinks = null,
     IReadOnlyList<LinkSpec>? RemoveLinks = null,
     string? Comment = null,
-    ClaimSpec? Claim = null);
+    ClaimSpec? Claim = null,
+    HandoffSpec? Handoff = null)
+{
+    /// <summary>Whether the patch only claims the item (a retried claim may then answer the claim it already holds).</summary>
+    public bool IsClaimOnly =>
+        Claim is { Action: ClaimAction.Claim } && Title is null && Description is null && !ClearDescription && Type is null && Status is null &&
+        Priority is null && Labels is null && !ClearLabels && Repository is null && !ClearRepository && FeatureId is null && !ClearFeature &&
+        Order is null && AddBlockedBy is not { Count: > 0 } && RemoveBlockedBy is not { Count: > 0 } && AddLinks is not { Count: > 0 } &&
+        RemoveLinks is not { Count: > 0 } && Comment is null && Handoff is null;
+
+    /// <summary>The patch without its claim action.</summary>
+    public bool IsEmptyBesidesClaim => (this with { Claim = new ClaimSpec(ClaimAction.Claim, "", 0) }).IsClaimOnly;
+}
 
 public sealed record PlanFeatureSpec(string Ref, NewFeatureSpec Feature);
 

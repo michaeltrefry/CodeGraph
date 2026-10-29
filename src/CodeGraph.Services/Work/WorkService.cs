@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services.Work;
 
@@ -23,13 +24,17 @@ public interface IWorkService
 /// database (ported from KanbanBoard's TryNew / EpicPlans.ReadAsync / IdempotencyKeys), resolution
 /// of keys and ids, and the change feed's cursor and long-poll. The store does the rest.
 /// </summary>
-public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProvider = null) : IWorkService
+public sealed class WorkService(
+    IWorkStore? store = null,
+    TimeProvider? timeProvider = null,
+    IOptions<WorkSessionOptions>? sessionOptions = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
+    private readonly WorkSessionOptions sessions = sessionOptions?.Value ?? new WorkSessionOptions();
 
     private IWorkStore Store => store
         ?? throw new WorkStoreUnavailableException();
@@ -45,16 +50,161 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
         return new WorkActor(name.Length <= 255 ? name : name[..255]);
     }
 
-    public async Task<object> ExecuteAsync(string tool, JsonElement arguments, WorkActor actor, CancellationToken ct = default) => tool switch
+    public async Task<object> ExecuteAsync(string tool, JsonElement arguments, WorkActor actor, CancellationToken ct = default)
     {
-        WorkTools.CreateWork => await CreateAsync(arguments, WorkJson.Parse<CreateWorkRequest>(arguments, tool), actor, ct),
-        WorkTools.GetWork => await GetAsync(WorkJson.Parse<GetWorkRequest>(arguments, tool), ct),
-        WorkTools.FindWork => await FindAsync(WorkJson.Parse<FindWorkRequest>(arguments, tool), ct),
-        WorkTools.UpdateWork => await UpdateAsync(WorkJson.Parse<UpdateWorkRequest>(arguments, tool), actor, ct),
-        WorkTools.NextWork => await NextAsync(WorkJson.Parse<NextWorkRequest>(arguments, tool), actor, ct),
-        WorkTools.Changes => await ChangesAsync(WorkJson.Parse<ChangesRequest>(arguments, tool), ct),
-        _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
-    };
+        // Every argument is read before anything is written, the heartbeat included.
+        object request = tool switch
+        {
+            WorkTools.CreateWork => WorkJson.Parse<CreateWorkRequest>(arguments, tool),
+            WorkTools.GetWork => WorkJson.Parse<GetWorkRequest>(arguments, tool),
+            WorkTools.FindWork => WorkJson.Parse<FindWorkRequest>(arguments, tool),
+            WorkTools.UpdateWork => WorkJson.Parse<UpdateWorkRequest>(arguments, tool),
+            WorkTools.NextWork => WorkJson.Parse<NextWorkRequest>(arguments, tool),
+            WorkTools.Changes => WorkJson.Parse<ChangesRequest>(arguments, tool),
+            WorkTools.StartSession => WorkJson.Parse<StartSessionRequest>(arguments, tool),
+            WorkTools.EndSession => WorkJson.Parse<EndSessionRequest>(arguments, tool),
+            WorkTools.GetBriefing => WorkJson.Parse<GetBriefingRequest>(arguments, tool),
+            _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
+        };
+
+        switch (request)
+        {
+            case StartSessionRequest start:
+                return await StartSessionAsync(start, actor, ct);
+            case EndSessionRequest end:
+                // Not a heartbeat: ending an ended session must answer it, not refuse it.
+                return await EndSessionAsync(end, actor, ct);
+        }
+
+        // The heartbeat (§5.4): a call carrying a session renews it and its live claims first, and
+        // everything the call writes is attributed to that session.
+        if (request is ISessionArguments { SessionId: { } sessionId })
+            actor = await Store.TouchSessionAsync(SessionIdOf(sessionId), actor, ct);
+
+        return request switch
+        {
+            CreateWorkRequest create => await CreateAsync(arguments, create, actor, ct),
+            GetWorkRequest get => await GetAsync(get, ct),
+            FindWorkRequest find => await FindAsync(find, ct),
+            UpdateWorkRequest update => await UpdateAsync(update, actor, ct),
+            NextWorkRequest next => await NextAsync(next, actor, ct),
+            ChangesRequest changes => await ChangesAsync(changes, ct),
+            GetBriefingRequest briefing => await GetBriefingAsync(briefing, actor, ct),
+            _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
+        };
+    }
+
+    // ---- Sessions ----------------------------------------------------------------------------
+
+    private static Guid SessionIdOf(string value) =>
+        Guid.TryParse(value.Trim(), out var id)
+            ? id
+            : throw WorkException.Invalid($"session_id '{value}' is not a session id; pass the id start_session answered.");
+
+    private async Task<object> StartSessionAsync(StartSessionRequest request, WorkActor actor, CancellationToken ct)
+    {
+        var repository = OptionalName(request.Repository, "repository");
+        Guid projectId;
+        if (request.Project is { } project)
+        {
+            projectId = (await RequireProjectAsync(project, "project", ct)).Id;
+        }
+        else if (repository is not null)
+        {
+            projectId = await Store.FindOwningProjectAsync(repository, ct)
+                ?? throw WorkException.Invalid($"No single project owns repository '{repository}'; pass project. Nothing was changed.");
+        }
+        else
+        {
+            throw WorkException.Invalid("start_session needs project (or a repository owned by exactly one project). Nothing was changed.");
+        }
+
+        var budget = Budget(request.BudgetTokens);
+        var spec = new NewSessionSpec(
+            projectId,
+            Text(request.Harness, "harness", WorkSessionLimits.MaxHarnessLength),
+            Optional(request.Model, "model", WorkSessionLimits.MaxModelLength),
+            Optional(request.Host, "host", WorkSessionLimits.MaxHostLength),
+            repository,
+            Optional(request.Branch, "branch", WorkSessionLimits.MaxBranchLength),
+            Optional(request.Worktree, "worktree", WorkSessionLimits.MaxWorktreeLength),
+            Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength));
+        var created = await Store.StartSessionAsync(spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
+        var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, budget, ct);
+        return new StartSessionResult(created.Created, created.Value, briefing);
+    }
+
+    private async Task<object> EndSessionAsync(EndSessionRequest request, WorkActor actor, CancellationToken ct)
+    {
+        var sessionId = SessionIdOf(request.SessionId);
+        var session = await Store.GetSessionAsync(sessionId, ct)
+            ?? throw WorkException.NotFound($"There is no session {sessionId}.");
+        if (request.Item is not null && request.Handoff is null)
+            throw WorkException.Invalid("item names the item a handoff is about; pass handoff with it. Nothing was changed.");
+
+        Guid? itemId = null;
+        if (request.Item is { } item)
+        {
+            var project = new WorkTarget(WorkEntityKind.Project, session.ProjectId, session.ProjectId);
+            itemId = (await RequireOfProjectAsync(item, WorkEntityKind.Item, project, "item", ct)).Id;
+        }
+
+        var handoff = request.Handoff is { } input ? ReadHandoff(input, "handoff") : null;
+        return await Store.EndSessionAsync(sessionId, itemId, handoff, actor, ct);
+    }
+
+    private async Task<object> GetBriefingAsync(GetBriefingRequest request, WorkActor actor, CancellationToken ct)
+    {
+        var sessionId = SessionIdOf(request.SessionId);
+        var budget = Budget(request.BudgetTokens);
+        Guid? focus = null;
+        if (request.Item is { } item)
+        {
+            var session = (await Store.GetSessionAsync(sessionId, ct))!;
+            var project = new WorkTarget(WorkEntityKind.Project, session.ProjectId, session.ProjectId);
+            focus = (await RequireOfProjectAsync(item, WorkEntityKind.Item, project, "item", ct)).Id;
+        }
+
+        return await BriefingAsync(sessionId, focus, budget, ct);
+    }
+
+    private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, int budget, CancellationToken ct) =>
+        WorkBriefings.Fit(await Store.ReadBriefingAsync(sessionId, focus, ct), budget);
+
+    private int Budget(int? requested)
+    {
+        var budget = requested ?? sessions.DefaultBriefingTokens;
+        if (budget is < WorkSessionLimits.MinBriefingTokens or > WorkSessionLimits.MaxBriefingTokens)
+            throw WorkException.Invalid($"budget_tokens must be {WorkSessionLimits.MinBriefingTokens} to {WorkSessionLimits.MaxBriefingTokens}.");
+        return budget;
+    }
+
+    private static HandoffSpec ReadHandoff(HandoffInput input, string where)
+    {
+        var spec = new HandoffSpec(
+            Optional(input.Done, $"{where}.done", WorkSessionLimits.MaxHandoffText),
+            Entries(input.Decisions, $"{where}.decisions"),
+            Entries(input.OpenIssues, $"{where}.open_issues"),
+            Entries(input.Corrections, $"{where}.corrections"),
+            Optional(input.NextAction, $"{where}.next_action", WorkSessionLimits.MaxHandoffText),
+            Optional(input.Branch, $"{where}.branch", WorkSessionLimits.MaxBranchLength),
+            Optional(input.Commit, $"{where}.commit", WorkSessionLimits.MaxCommitLength));
+        if (spec is { Done: null, NextAction: null, Branch: null, Commit: null, Decisions.Count: 0, OpenIssues.Count: 0, Corrections.Count: 0 })
+            throw WorkException.Invalid($"{where} is empty: pass at least one of done, decisions, open_issues, corrections, next_action, branch, commit. Nothing was changed.");
+        return spec;
+
+        static IReadOnlyList<string> Entries(IReadOnlyList<string>? values, string argument)
+        {
+            if (values is null)
+                return [];
+            if (values.Count > WorkSessionLimits.MaxHandoffEntries)
+                throw WorkException.Invalid($"{argument} holds at most {WorkSessionLimits.MaxHandoffEntries} entries.");
+            return values.Select((value, index) => Text(value, $"{argument}[{index}]", WorkSessionLimits.MaxHandoffText)).ToList();
+        }
+    }
+
+    private static string? Optional(string? value, string argument, int maxLength) =>
+        value is null ? null : Text(value, argument, maxLength);
 
     // ---- create_work -------------------------------------------------------------------------
 
@@ -294,7 +444,7 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
     private static readonly string[] ItemFields =
     [
         "title", "description", "type", "status", "priority", "labels", "repository", "feature", "order", "add_blocked_by", "remove_blocked_by",
-        "add_links", "remove_links", "comment", "claim", "renew_claim", "release_claim", "clear"
+        "add_links", "remove_links", "comment", "claim", "renew_claim", "release_claim", "handoff", "clear"
     ];
 
     private async Task<object> UpdateAsync(UpdateWorkRequest request, WorkActor actor, CancellationToken ct)
@@ -303,7 +453,7 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
         // The fields this call sets: everything it passed with a value, besides the address.
         var passed = JsonSerializer.SerializeToNode(request, WorkJson.Options)!.AsObject()
             .Select(property => property.Key)
-            .Where(name => name is not ("id" or "expected_version"))
+            .Where(name => name is not ("id" or "expected_version" or "session_id"))
             .ToList();
         var (valid, clearable) = target.Kind switch
         {
@@ -345,7 +495,7 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
                     request.UpdateDocuments?.Select((document, index) => ReadDocumentPatch(document, $"update_documents[{index}]")).ToList()), actor, ct));
 
             default:
-                return new UpdateWorkResult(Item: await Store.UpdateItemAsync(target.Id, request.ExpectedVersion, await ReadItemPatchAsync(request, target, clear, ct), actor, ct));
+                return new UpdateWorkResult(Item: await Store.UpdateItemAsync(target.Id, request.ExpectedVersion, await ReadItemPatchAsync(request, target, clear, actor, ct), actor, ct));
         }
     }
 
@@ -361,7 +511,7 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
             input.Body is { } body ? NonEmpty(body, $"{where}.body") : null);
     }
 
-    private async Task<ItemPatchSpec> ReadItemPatchAsync(UpdateWorkRequest request, WorkTarget item, IReadOnlyList<string> clear, CancellationToken ct)
+    private async Task<ItemPatchSpec> ReadItemPatchAsync(UpdateWorkRequest request, WorkTarget item, IReadOnlyList<string> clear, WorkActor actor, CancellationToken ct)
     {
         var project = new WorkTarget(WorkEntityKind.Project, item.ProjectId, item.ProjectId);
         var claims = new[] { ("claim", request.Claim is not null), ("renew_claim", request.RenewClaim is not null), ("release_claim", request.ReleaseClaim is not null) }
@@ -369,9 +519,9 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
         if (claims.Count > 1)
             throw WorkException.Invalid($"Pass at most one of claim, renew_claim, release_claim; this call passes {string.Join(" and ", claims)}. Nothing was changed.");
 
-        ClaimSpec? claim = request.Claim is { } take ? new ClaimSpec(ClaimAction.Claim, Marker(take.Marker, "claim.marker"), Ttl(take.TtlSeconds, "claim.ttl_seconds"))
-            : request.RenewClaim is { } renew ? new ClaimSpec(ClaimAction.Renew, Marker(renew.Marker, "renew_claim.marker"), Ttl(renew.TtlSeconds, "renew_claim.ttl_seconds"))
-            : request.ReleaseClaim is { } release ? new ClaimSpec(ClaimAction.Release, Marker(release.Marker, "release_claim.marker"), 0)
+        ClaimSpec? claim = request.Claim is { } take ? new ClaimSpec(ClaimAction.Claim, ClaimMarker(take.Marker, actor, "claim.marker"), ClaimTtl(take.TtlSeconds, actor, "claim.ttl_seconds"))
+            : request.RenewClaim is { } renew ? new ClaimSpec(ClaimAction.Renew, ClaimMarker(renew.Marker, actor, "renew_claim.marker"), ClaimTtl(renew.TtlSeconds, actor, "renew_claim.ttl_seconds"))
+            : request.ReleaseClaim is { } release ? new ClaimSpec(ClaimAction.Release, ClaimMarker(release.Marker, actor, "release_claim.marker"), 0)
             : null;
 
         var add = new List<Guid>();
@@ -402,7 +552,8 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
             AddLinks: request.AddLinks?.Select((link, index) => ReadLink(link, $"add_links[{index}]")).ToList(),
             RemoveLinks: request.RemoveLinks?.Select((link, index) => ReadLink(link, $"remove_links[{index}]")).ToList(),
             Comment: request.Comment is { } comment ? NonEmpty(comment, "comment") : null,
-            Claim: claim);
+            Claim: claim,
+            Handoff: request.Handoff is { } handoff ? ReadHandoff(handoff, "handoff") : null);
     }
 
     // ---- next_work ---------------------------------------------------------------------------
@@ -412,8 +563,8 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
         var project = await RequireProjectAsync(request.Project, "project", ct);
         return await Store.NextWorkAsync(new NextWorkSpec(
             project.Id,
-            Marker(request.Marker, "marker"),
-            Ttl(request.TtlSeconds, "ttl_seconds"),
+            ClaimMarker(request.Marker, actor, "marker"),
+            ClaimTtl(request.TtlSeconds, actor, "ttl_seconds"),
             request.Another ?? false,
             request.IdempotencyKey is { } key ? HashKey(actor, key) : null,
             OptionalName(request.Repository, "repository"),
@@ -544,6 +695,28 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
         if (string.IsNullOrWhiteSpace(value) || value.Length > WorkLimits.MaxMarkerLength || value.Any(char.IsControl))
             throw WorkException.Invalid($"{argument} must be 1 to {WorkLimits.MaxMarkerLength} characters without control characters.");
         return value;
+    }
+
+    // With a session the claim belongs to the session: its id is the marker and it lasts while the
+    // session is live. Without one the caller names a marker and a time to live.
+    private static string ClaimMarker(string? marker, WorkActor actor, string argument)
+    {
+        if (actor.SessionId is { } session)
+            return marker is null
+                ? session
+                : throw WorkException.Invalid($"{argument} is not passed with session_id: the claim is bound to the session. Nothing was changed.");
+        return marker is null
+            ? throw WorkException.Invalid($"{argument} is required without session_id: the caller-chosen id of the claim (or pass session_id). Nothing was changed.")
+            : Marker(marker, argument);
+    }
+
+    private static int ClaimTtl(int? value, WorkActor actor, string argument)
+    {
+        if (actor.SessionId is not null)
+            return value is null
+                ? 0
+                : throw WorkException.Invalid($"{argument} is not passed with session_id: a session's claim lasts while the session is live (heartbeat). Nothing was changed.");
+        return Ttl(value, argument);
     }
 
     private static int Ttl(int? value, string argument)

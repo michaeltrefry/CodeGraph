@@ -86,6 +86,45 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
         rows.Select(row => row.GetProperty("key").GetString()).ShouldBe([$"{key}-1", $"{key}-2"]);
     }
 
+    [Fact]
+    public async Task Two_sessions_over_mcp_see_each_other_and_a_session_that_lost_its_claim_gets_a_claim_lost_tool_error()
+    {
+        using var host = await StartHostAsync();
+        var claude = await Client.ConnectAsync(host, "claude-agent");
+        var codex = await Client.ConnectAsync(host, "codex-agent");
+        var key = "MS" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await claude.CallAsync("create_work", new { new_project = new { key, name = "Sessions over MCP" } });
+        await claude.CallAsync("create_work", new { project = key, item = new { title = "Only item", status = "ready" } });
+
+        var claudeSession = (await claude.CallAsync("start_session", new { project = key, harness = "claude-code" })).Result.GetProperty("session").GetProperty("id").GetString()!;
+        var codexSession = (await codex.CallAsync("start_session", new { project = key, harness = "codex" })).Result.GetProperty("session").GetProperty("id").GetString()!;
+        var item = (await claude.CallAsync("next_work", new { project = key, session_id = claudeSession })).Result.GetProperty("item");
+
+        var briefing = (await codex.CallAsync("get_briefing", new { session_id = codexSession })).Result;
+        var other = briefing.GetProperty("other_sessions").EnumerateArray().Single();
+        other.GetProperty("session_id").GetString().ShouldBe(claudeSession);
+        other.GetProperty("holds").EnumerateArray().Single().GetProperty("key").GetString().ShouldBe($"{key}-1");
+
+        // The claude session starts the item and goes silent past the idle threshold; codex recovers
+        // it, and claude's next write on it is claim_lost naming the codex session.
+        await claude.CallAsync("update_work", new { id = $"{key}-1", expected_version = item.GetProperty("version").GetInt64(), session_id = claudeSession, status = "in_progress" });
+        db.Clock.Advance(TimeSpan.FromSeconds(WorkDatabase.IdleSeconds + 5));
+        var recovered = (await codex.CallAsync("next_work", new { project = key, session_id = codexSession })).Result;
+        recovered.GetProperty("recovery").GetProperty("previous_holder").GetProperty("session_id").GetString().ShouldBe(claudeSession);
+
+        var lost = await claude.CallAsync("update_work", new
+        {
+            id = $"{key}-1",
+            expected_version = recovered.GetProperty("item").GetProperty("version").GetInt64(),
+            session_id = claudeSession,
+            comment = "I am back"
+        });
+        lost.IsError.ShouldBeTrue();
+        lost.Result.GetProperty("code").GetString().ShouldBe("claim_lost");
+        lost.Result.GetProperty("message").GetString()!.ShouldContain(codexSession);
+        lost.Result.GetProperty("current").GetProperty("claim").GetProperty("session_id").GetString().ShouldBe(codexSession);
+    }
+
     [Theory]
     [InlineData("""{"id":"X-1","expected_versoin":1,"title":"t"}""", "expected_versoin")]
     [InlineData("""{"id":"X-1","expected_version":"1","title":"t"}""", "expected_version")]

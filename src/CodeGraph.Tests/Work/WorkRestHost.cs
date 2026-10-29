@@ -45,6 +45,9 @@ internal sealed class WorkRestHost : IAsyncDisposable
 
     public HttpClient Client { get; }
 
+    /// <summary>A handler that sends requests into the test server (for clients such as cg).</summary>
+    public HttpMessageHandler CreateHandler() => host.GetTestServer().CreateHandler();
+
     public static async Task<WorkRestHost> StartAsync(IWorkService work)
     {
         var hub = new InMemoryMcpHubStore();

@@ -398,6 +398,48 @@ public sealed partial class MySqlWorkStore
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_items SET version = version WHERE id IN @held", new { held = held.Distinct().ToArray() }, transaction, cancellationToken: ct));
 
+            // A session's write on an item whose claim it lost (§5.9): refused claim_lost naming the
+            // holder now, unless it reclaims the unclaimed item or lets go of it. A session that still
+            // holds its claim is never refused: its heartbeat renewed the claim before this call.
+            var effective = patch;
+            var current = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
+            if (actor.SessionId is { } sessionId && await HasOpenSessionClaimAsync(connection, transaction, sessionId, itemId, ct))
+            {
+                var heldByMe = current.ClaimSessionId == sessionId && current.HasLiveClaim(now);
+                if (!heldByMe)
+                {
+                    var reclaim = effective.Claim is { Action: ClaimAction.Claim } && !current.HasLiveClaim(now);
+                    var release = effective.Claim is { Action: ClaimAction.Release };
+                    if (!reclaim && !release)
+                        throw await ClaimLostAsync(connection, transaction, current, now, ct);
+
+                    if (release && current.ClaimSessionId != sessionId)
+                    {
+                        // Letting go of a claim that is no longer the session's: the item's claim is
+                        // someone else's (or none) and stays as it is.
+                        await CloseSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
+                        if (effective.IsEmptyBesidesClaim)
+                        {
+                            var unchanged = await ToViewAsync(connection, transaction, current, ct);
+                            await transaction.CommitAsync(ct);
+                            return unchanged;
+                        }
+
+                        effective = effective with { Claim = null };
+                    }
+                }
+            }
+
+            // A retried claim whose first answer was lost: the caller holds the claim already, so the
+            // retry answers it rather than conflict on the version the first call advanced.
+            if (effective.IsClaimOnly && current.Version != expectedVersion && current.HasLiveClaim(now) &&
+                current.ClaimHolder == actor.Name && string.Equals(current.ClaimMarker, effective.Claim!.Marker, StringComparison.Ordinal))
+            {
+                var holding = await ToViewAsync(connection, transaction, current, ct);
+                await transaction.CommitAsync(ct);
+                return holding;
+            }
+
             await AdvanceAsync(connection, transaction, "work_items", itemId, expectedVersion, now,
                 () => LoadItemViewAsync(connection, transaction, itemId, ct), "Item", ct);
 
@@ -406,14 +448,21 @@ public sealed partial class MySqlWorkStore
             var project = (await ReadProjectRowAsync(connection, transaction, projectId, ct))!;
             var extra = new JsonArray();
 
-            var patchedRepository = patch.Repository is { } repository
+            var patchedRepository = effective.Repository is { } repository
                 ? await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct)
                 : null;
-            if (patch.FeatureId is { } featureId)
+            if (effective.FeatureId is { } featureId)
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
 
-            var status = patch.Status ?? before.Status;
-            var claimFields = ApplyClaim(beforeRow, patch.Claim, status, actor, now);
+            var status = effective.Status ?? before.Status;
+            var claimFields = ApplyClaim(beforeRow, effective.Claim, status, actor, now);
+            if (actor.SessionId is { } claimingSession)
+            {
+                if (effective.Claim is { Action: ClaimAction.Claim })
+                    await OpenSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
+                else if (effective.Claim is { Action: ClaimAction.Release } || WorkStatuses.IsFinished(status))
+                    await CloseSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
+            }
 
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_items SET title = @title, description = @description, item_type = @type, status = @status, priority = @priority, " +
@@ -422,25 +471,30 @@ public sealed partial class MySqlWorkStore
                 "WHERE id = @itemId",
                 new
                 {
-                    title = patch.Title ?? before.Title,
-                    description = patch.ClearDescription ? null : patch.Description ?? before.Description,
-                    type = JsonName(patch.Type ?? before.Type),
+                    title = effective.Title ?? before.Title,
+                    description = effective.ClearDescription ? null : effective.Description ?? before.Description,
+                    type = JsonName(effective.Type ?? before.Type),
                     status = WorkStatuses.Name(status),
-                    priority = JsonName(patch.Priority ?? before.Priority),
-                    order = patch.Order ?? before.Order,
-                    labels = patch.ClearLabels ? null : patch.Labels is { } labels ? JoinLabels(labels) : beforeRow.Labels,
-                    repository = patch.ClearRepository ? null : patchedRepository ?? before.Repository,
-                    featureId = patch.ClearFeature ? null : patch.FeatureId ?? beforeRow.FeatureId,
+                    priority = JsonName(effective.Priority ?? before.Priority),
+                    order = effective.Order ?? before.Order,
+                    labels = effective.ClearLabels ? null : effective.Labels is { } labels ? JoinLabels(labels) : beforeRow.Labels,
+                    repository = effective.ClearRepository ? null : patchedRepository ?? before.Repository,
+                    featureId = effective.ClearFeature ? null : effective.FeatureId ?? beforeRow.FeatureId,
                     claimFields.ClaimHolder, claimFields.ClaimMarker, claimFields.ClaimSessionId, claimFields.ClaimedAt, claimFields.ClaimExpiresAt,
                     itemId
                 },
                 transaction, cancellationToken: ct));
 
-            await AddDependenciesAsync(connection, transaction, project, itemId, patch.AddBlockedBy ?? [], before, extra, now, ct);
-            await RemoveDependenciesAsync(connection, transaction, itemId, patch.RemoveBlockedBy ?? [], before, extra, ct);
-            await WriteLinksAsync(connection, transaction, itemId, patch.AddLinks ?? [], patch.RemoveLinks ?? [], actor, extra, now, ct);
-            if (patch.Comment is { } comment)
+            await AddDependenciesAsync(connection, transaction, project, itemId, effective.AddBlockedBy ?? [], before, extra, now, ct);
+            await RemoveDependenciesAsync(connection, transaction, itemId, effective.RemoveBlockedBy ?? [], before, extra, ct);
+            await WriteLinksAsync(connection, transaction, itemId, effective.AddLinks ?? [], effective.RemoveLinks ?? [], actor, extra, now, ct);
+            if (effective.Comment is { } comment)
                 await AddCommentAsync(connection, transaction, itemId, comment, actor, extra, now, ct);
+            if (effective.Handoff is { } handoff)
+            {
+                var written = await InsertHandoffAsync(connection, transaction, itemId, handoff, actor, now, ct);
+                extra.Add(Change("handoff", null, written.Id.ToString()));
+            }
 
             var afterRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
             var after = await ToViewAsync(connection, transaction, afterRow, ct);
@@ -465,7 +519,8 @@ public sealed partial class MySqlWorkStore
     // claim succeeds when the item is unclaimed, its claim lapsed, or the same identity and marker
     // hold it (the expiry is reset); renew needs the caller's live claim; release clears the
     // caller's stored claim, live or lapsed. Finishing an item (complete, closed) releases it.
-    private static ClaimFields ApplyClaim(ItemRow row, ClaimSpec? claim, WorkStatus status, WorkActor actor, DateTime now)
+    // A session's claim lasts while the session is live: its expiry is the heartbeat deadline.
+    private ClaimFields ApplyClaim(ItemRow row, ClaimSpec? claim, WorkStatus status, WorkActor actor, DateTime now)
     {
         var current = new ClaimFields(row.ClaimHolder, row.ClaimMarker, row.ClaimSessionId, row.ClaimedAt, row.ClaimExpiresAt);
         var live = row.HasLiveClaim(now);
@@ -481,14 +536,14 @@ public sealed partial class MySqlWorkStore
                         throw new WorkException(WorkErrorCodes.AlreadyClaimed, $"{row.Key} is claimed by {Holder()}. Nothing was changed.");
                     if (WorkStatuses.IsFinished(status))
                         throw WorkException.Invalid($"{row.Key} is {WorkStatuses.Name(status)}: a finished item cannot be claimed. Nothing was changed.");
-                    current = new ClaimFields(actor.Name, claim.Marker, actor.SessionId, now, now.AddSeconds(claim.TtlSeconds));
+                    current = new ClaimFields(actor.Name, claim.Marker, actor.SessionId, now, now.AddSeconds(ClaimTtl(claim.TtlSeconds, actor)));
                     break;
                 case ClaimAction.Renew:
                     if (live && !mine)
                         throw new WorkException(WorkErrorCodes.AlreadyClaimed, $"{row.Key} is claimed by {Holder()}. Nothing was changed.");
                     if (!live)
                         throw new WorkException(WorkErrorCodes.Conflict, $"You hold no live claim on {row.Key} under marker '{claim.Marker}': it lapsed, was released, or never existed. Claim it again. Nothing was changed.");
-                    current = current with { ClaimExpiresAt = now.AddSeconds(claim.TtlSeconds) };
+                    current = current with { ClaimExpiresAt = now.AddSeconds(ClaimTtl(claim.TtlSeconds, actor)) };
                     break;
                 case ClaimAction.Release:
                     if (live && !mine)
@@ -502,6 +557,8 @@ public sealed partial class MySqlWorkStore
 
         return WorkStatuses.IsFinished(status) ? new ClaimFields(null, null, null, null, null) : current;
     }
+
+    private int ClaimTtl(int ttlSeconds, WorkActor actor) => actor.SessionId is null ? ttlSeconds : idleSeconds;
 
     private async Task AddDependenciesAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, Guid itemId, IReadOnlyList<Guid> blockers, ItemView before, JsonArray extra, DateTime now, CancellationToken ct)
     {
@@ -711,10 +768,18 @@ public sealed partial class MySqlWorkStore
 
             if (spec.KeyHash is { } keyHash && await FindKeyAsync(connection, null, spec.ProjectId, NextWorkOperation, keyHash, ct) is { } earlier)
             {
-                // The same allocation as the first call, as it is now.
-                return earlier.EntityId is { } allocated
-                    ? new NextWorkResult(await LoadItemViewAsync(connection, null, allocated, ct), Reused: true)
-                    : new NextWorkResult(null, Reused: true, Reason: "no_ready_work");
+                if (earlier.EntityId is not { } allocated)
+                    return new NextWorkResult(null, Reused: true, Reason: "no_ready_work");
+
+                // The same allocation as the first call, while the caller still holds it. When its
+                // claim lapsed and passed on (or ended), the repeat says so instead of answering an
+                // item that is no longer the caller's.
+                var row = (await ReadItemRowAsync(connection, null, allocated, ct))!;
+                var stillMine = row.HasLiveClaim(now) && row.ClaimHolder == actor.Name && string.Equals(row.ClaimMarker, spec.Marker, StringComparison.Ordinal);
+                if (stillMine || WorkStatuses.IsFinished(WorkStatuses.Parse(row.Status)))
+                    return new NextWorkResult(await ToViewAsync(connection, null, row, ct), Reused: true);
+
+                throw await ClaimLostAsync(connection, null, row, now, ct);
             }
 
             if (!spec.Another)
@@ -736,28 +801,36 @@ public sealed partial class MySqlWorkStore
                 }
             }
 
-            // Every lost race means another caller claimed an item, so the rounds make progress.
-            for (var round = 0; round < 10; round++)
+            // Recoverable items (in progress, claim lapsed or released) before fresh ready ones,
+            // with the same filters (§5.9). Every lost race means another caller claimed an item,
+            // so the rounds make progress.
+            foreach (var recover in new[] { true, false })
             {
-                var candidates = await ReadyCandidatesAsync(connection, spec, now, ct);
-                if (candidates.Count == 0)
-                    return new NextWorkResult(null, Reused: false, Reason: "no_ready_work");
-
-                foreach (var candidate in candidates)
+                for (var round = 0; round < 10; round++)
                 {
-                    if (await TryClaimAsync(connection, candidate, spec, actor, ct) is { } item)
-                        return new NextWorkResult(item, Reused: false);
+                    var candidates = await CandidatesAsync(connection, spec, recover ? RecoverableCondition : AvailableCondition, now, ct);
+                    if (candidates.Count == 0)
+                        break;
+
+                    foreach (var candidate in candidates)
+                    {
+                        if (await TryClaimAsync(connection, candidate, recover, spec, actor, ct) is { } claimed)
+                            return claimed;
+                    }
+
+                    if (round == 9)
+                        throw WorkException.Busy("Other callers took every item this call tried, ten times over. Nothing was claimed; try again.");
                 }
             }
 
-            throw WorkException.Busy("Other callers took every ready item this call tried, ten times over. Nothing was claimed; try again.");
+            return new NextWorkResult(null, Reused: false, Reason: "no_ready_work");
         }, ct);
     }
 
-    private static async Task<IReadOnlyList<Guid>> ReadyCandidatesAsync(MySqlConnection connection, NextWorkSpec spec, DateTime now, CancellationToken ct)
+    private static async Task<IReadOnlyList<Guid>> CandidatesAsync(MySqlConnection connection, NextWorkSpec spec, string condition, DateTime now, CancellationToken ct)
     {
         var parameters = new DynamicParameters(new { spec.ProjectId, now });
-        var where = new List<string> { "i.project_id = @ProjectId", AvailableCondition };
+        var where = new List<string> { "i.project_id = @ProjectId", condition };
         if (spec.Repository is { } repository)
         {
             where.Add("i.repository_name = @repository");
@@ -784,8 +857,9 @@ public sealed partial class MySqlWorkStore
     // Claims one candidate, or returns null when another caller got it first (or it stopped being
     // available). The row is held first, so the read after it reports the claim the UPDATE
     // replaces; the blockers are read with a locking read, so a blocker reopened at the same time
-    // either commits first and is seen, or waits for this claim.
-    private async Task<ItemView?> TryClaimAsync(MySqlConnection connection, Guid itemId, NextWorkSpec spec, WorkActor actor, CancellationToken ct)
+    // either commits first and is seen, or waits for this claim. A recovered item keeps its status
+    // and answers what its previous holder left (read before the claim is replaced).
+    private async Task<NextWorkResult?> TryClaimAsync(MySqlConnection connection, Guid itemId, bool recover, NextWorkSpec spec, WorkActor actor, CancellationToken ct)
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -803,15 +877,19 @@ public sealed partial class MySqlWorkStore
                 if (unfinished > 0)
                     return null;
 
-                var expiresAt = now.AddSeconds(spec.TtlSeconds);
+                var status = recover ? "in_progress" : "ready";
+                var expiresAt = now.AddSeconds(ClaimTtl(spec.TtlSeconds, actor));
                 var claimed = await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET claim_holder = @holder, claim_marker = @Marker, claim_session_id = @session, claimed_at = @now, " +
                     "claim_expires_at = @expiresAt, version = version + 1 " +
-                    "WHERE id = @itemId AND status = 'ready' AND (claim_holder IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= @now)",
-                    new { holder = actor.Name, spec.Marker, session = actor.SessionId, now, expiresAt, itemId }, transaction, cancellationToken: ct));
+                    "WHERE id = @itemId AND status = @status AND (claim_holder IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= @now)",
+                    new { holder = actor.Name, spec.Marker, session = actor.SessionId, now, expiresAt, itemId, status }, transaction, cancellationToken: ct));
                 if (claimed == 0)
                     return null;
 
+                var recovery = recover ? await LoadRecoveryAsync(connection, transaction, before, ct) : null;
+                if (actor.SessionId is { } sessionId)
+                    await OpenSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
                 if (spec.KeyHash is { } keyHash)
                     await InsertKeyAsync(connection, transaction, spec.ProjectId, NextWorkOperation, keyHash, itemId, null, now, ct);
 
@@ -820,9 +898,9 @@ public sealed partial class MySqlWorkStore
                 var changes = Diff(ClaimSnapshot(before), ClaimSnapshot(afterRow));
                 changes.Add(Change("version", before.Version, afterRow.Version));
                 await CommitAsync(connection, transaction,
-                    [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.Claimed, changes)],
+                    [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);
-                return after;
+                return new NextWorkResult(after, Reused: false, Recovery: recovery);
             }
             catch (MySqlException exception) when (exception.Number == MySqlDeadlock && attempt < DeadlockAttempts)
             {
