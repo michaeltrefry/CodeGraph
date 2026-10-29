@@ -8,9 +8,9 @@ public interface IWorkSessionPruner
 {
     /// <summary>
     /// Deletes every session whose end (or, if it never ended, its last heartbeat) is before
-    /// <paramref name="cutoffUtc"/> together with its closed claim rows. A session is kept while it has an
-    /// open claim row or any change-feed entry, handoff, comment, item, feature or project that names it,
-    /// because those rows resolve its harness, model and host through the session row.
+    /// <paramref name="cutoffUtc"/> together with its closed claim rows. A session is kept while it has an open claim row or an item claimed by it, a live hold or
+    /// queued waiter, or a direct message a later session may still inherit. Any other row that names the
+    /// session keeps its harness, model and host: they are copied onto it before the session is deleted.
     /// </summary>
     Task<WorkSessionPruneResult> PruneSessionsAsync(DateTime cutoffUtc, int batchSize, CancellationToken ct = default);
 }

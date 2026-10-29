@@ -395,7 +395,7 @@ public sealed partial class MySqlWorkStore
     private static async Task<IReadOnlyList<HandoffView>> ReadHandoffsAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, int? limit, CancellationToken ct)
     {
         var rows = await connection.QueryAsync<HandoffRow>(new CommandDefinition(
-            "SELECT h.id, h.author, h.author_session_id, s.harness, h.done, h.decisions_json, h.open_issues_json, h.corrections_json, h.next_action, " +
+            "SELECT h.id, h.author, h.author_session_id, COALESCE(s.harness, h.author_harness) AS harness, h.done, h.decisions_json, h.open_issues_json, h.corrections_json, h.next_action, " +
             "h.branch, h.commit_sha, h.created_at FROM work_handoffs h LEFT JOIN work_sessions s ON s.id = h.author_session_id " +
             "WHERE h.item_id = @itemId ORDER BY h.created_at DESC, h.id" + (limit is { } count ? $" LIMIT {count}" : string.Empty),
             new { itemId }, transaction, cancellationToken: ct));
@@ -444,7 +444,7 @@ public sealed partial class MySqlWorkStore
                     : ("1 = 1", new { id = before.Id, who = "" });
             var row = await connection.QueryFirstOrDefaultAsync<ChangeRow>(new CommandDefinition(
                 "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
-                "s.harness, s.model, s.host, c.changes, c.created_at FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id " +
+                "COALESCE(s.harness, c.actor_harness) AS harness, COALESCE(s.model, c.actor_model) AS model, COALESCE(s.host, c.actor_host) AS host, c.changes, c.created_at FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id " +
                 $"WHERE c.entity_id = @id AND {where} ORDER BY c.sequence DESC LIMIT 1",
                 parameters, transaction, cancellationToken: ct));
             last = row is null ? null : ToView(row);

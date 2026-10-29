@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Work;
@@ -22,6 +23,9 @@ public sealed class WorkSessionPruningMariaDbTests(WorkDatabase db) : IClassFixt
         var started = await db.CallAsync(WorkTools.StartSession, new { project, harness, model = "opus", host = "dev-mac", idempotency_key = idempotencyKey }, "michael");
         return started.GetProperty("session").GetProperty("id").GetString()!;
     }
+
+    private async Task<string> FeedAsync() =>
+        JsonSerializer.Serialize(await db.Store.ReadChangesAsync(null, 0, 10_000), WorkJson.Options);
 
     private async Task<MySqlConnection> OpenAsync()
     {
@@ -112,33 +116,86 @@ public sealed class WorkSessionPruningMariaDbTests(WorkDatabase db) : IClassFixt
     }
 
     [Fact]
-    public async Task A_session_named_by_the_change_feed_or_a_handoff_survives_so_its_harness_model_and_host_still_resolve_but_its_closed_claim_rows_go()
+    public async Task Attribution_on_feed_handoffs_comments_messages_knowledge_attempts_and_holds_is_unchanged_after_its_session_is_pruned()
     {
         var project = await db.NewProjectAsync("PA");
         var key = (await db.NewItemAsync(project, "Attributed")).GetProperty("key").GetString()!;
         var session = await StartAsync(project, harness: "codex");
         await db.CallAsync(WorkTools.NextWork, new { project, session_id = session }, "michael");
+        var current = await db.CallAsync(WorkTools.GetWork, new { id = key });
+        await db.CallAsync(WorkTools.UpdateWork, new { id = key, session_id = session, expected_version = current.GetProperty("version").GetInt64(), comment = "Working." }, "michael");
+        await db.CallAsync(WorkTools.Post, new { session_id = session, item = key, body = "Status from the session." }, "michael");
+        await db.CallAsync(WorkTools.Record, new { session_id = session, entry = new { kind = "fact", summary = "A fact from the session" } }, "michael");
+        var hold = (await db.CallAsync(WorkTools.Acquire, new { session_id = session, resource = "gpu:prune", ttl_seconds = 3600, purpose = "run" }, "michael")).GetProperty("hold").GetProperty("id").GetString()!;
+        await db.CallAsync(WorkTools.Release, new { hold_id = hold }, "michael");
         await db.CallAsync(WorkTools.EndSession, new { session_id = session, item = key, handoff = new { done = "Did it." } }, "michael");
+
+        var changesBefore = await FeedAsync();
+        var itemBefore = (await db.CallAsync(WorkTools.GetWork, new { id = key, detail = "full" })).GetRawText();
+        changesBefore.ShouldContain("codex");
+        itemBefore.ShouldContain("codex");
 
         await using var connection = await OpenAsync();
         (await ClaimRowsAsync(connection, session, open: false)).ShouldBe(1);
         var old = Cutoff.AddDays(-40);
         await SetTimesAsync(connection, session, old, old);
-        var feedBefore = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM work_changes WHERE actor_session_id = @session", new { session });
-        feedBefore.ShouldBeGreaterThan(0);
-        var handoffs = await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM work_handoffs WHERE author_session_id = @session", new { session });
-        handoffs.ShouldBe(1);
 
         await Pruner.PruneSessionsAsync(Cutoff, 100);
 
-        (await ExistsAsync(connection, session)).ShouldBeTrue();
+        (await ExistsAsync(connection, session)).ShouldBeFalse("a referenced session is deleted once its attribution is on the rows");
         (await ClaimRowsAsync(connection, session)).ShouldBe(0);
-        (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM work_changes WHERE actor_session_id = @session", new { session })).ShouldBe(feedBefore);
-        var attributed = await connection.QueryAsync<(string Harness, string Host)>(
-            "SELECT s.harness, s.host FROM work_changes c JOIN work_sessions s ON s.id = c.actor_session_id WHERE c.actor_session_id = @session", new { session });
-        attributed.ShouldAllBe(row => row.Harness == "codex" && row.Host == "dev-mac");
-        var item = await db.CallAsync(WorkTools.GetWork, new { id = key });
-        item.GetProperty("handoffs").EnumerateArray().Single().GetProperty("harness").GetString().ShouldBe("codex");
+        (await FeedAsync()).ShouldBe(changesBefore);
+        (await db.CallAsync(WorkTools.GetWork, new { id = key, detail = "full" })).GetRawText().ShouldBe(itemBefore);
+
+        // Messages, knowledge, attempts and holds carry the attribution in their own columns.
+        async Task<int> Resolved(string table, string sessionColumn, string harness, string model, string host) =>
+            await connection.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(*) FROM {table} WHERE {sessionColumn} = @session AND {harness} = 'codex' AND {model} = 'opus' AND {host} = 'dev-mac'", new { session });
+        (await Resolved("work_changes", "actor_session_id", "actor_harness", "actor_model", "actor_host")).ShouldBeGreaterThan(0);
+        (await Resolved("work_handoffs", "author_session_id", "author_harness", "author_model", "author_host")).ShouldBe(1);
+        (await Resolved("work_item_comments", "author_session_id", "author_harness", "author_model", "author_host")).ShouldBe(1);
+        (await Resolved("work_messages", "sender_session_id", "sender_harness", "sender_model", "sender_host")).ShouldBe(1);
+        (await Resolved("work_message_events", "actor_session_id", "actor_harness", "actor_model", "actor_host")).ShouldBeGreaterThan(0);
+        (await Resolved("work_attempts", "session_id", "harness", "model", "host")).ShouldBe(1);
+        (await Resolved("work_holds", "session_id", "harness", "model", "host")).ShouldBe(1);
+        (await Resolved("knowledge_revisions", "author_session_id", "author_harness", "author_model", "author_host")).ShouldBeGreaterThan(0);
+        (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM knowledge_entries WHERE author_session_id = @session AND author_harness = 'codex'", new { session })).ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task A_session_with_a_live_hold_is_kept_even_when_idle_beyond_the_cutoff()
+    {
+        var project = await db.NewProjectAsync("PH");
+        var session = await StartAsync(project);
+        await db.CallAsync(WorkTools.Acquire, new { session_id = session, resource = "gpu:live", ttl_seconds = 3600, purpose = "run" }, "michael");
+        await using var connection = await OpenAsync();
+        await SetTimesAsync(connection, session, Cutoff.AddDays(-9), null);
+
+        // Real time is far after the cutoff in this test, so the hold is live only if its expiry is ahead of now.
+        await Pruner.PruneSessionsAsync(Cutoff, 100);
+
+        (await ExistsAsync(connection, session)).ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task A_session_with_an_unread_direct_message_still_inheritable_is_kept_and_pruned_once_outside_the_inherit_window()
+    {
+        var project = await db.NewProjectAsync("PM");
+        var recipient = await StartAsync(project);
+        var sender = await StartAsync(project);
+        await db.CallAsync(WorkTools.Post, new { session_id = sender, to_session = recipient, kind = "info", body = "Direct, unread." }, "michael");
+        await using var connection = await OpenAsync();
+        await SetTimesAsync(connection, recipient, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow.AddDays(-1));
+        await SetTimesAsync(connection, sender, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow.AddDays(-1));
+
+        // The window of retention is wider than the message's: a cutoff of now makes both sessions old.
+        await Pruner.PruneSessionsAsync(DateTime.UtcNow, 100);
+        (await ExistsAsync(connection, recipient)).ShouldBeTrue("a later session may still inherit its unread direct message");
+        (await ExistsAsync(connection, sender)).ShouldBeFalse();
+
+        await SetTimesAsync(connection, recipient, DateTime.UtcNow.AddDays(-9), DateTime.UtcNow.AddDays(-9));
+        await Pruner.PruneSessionsAsync(DateTime.UtcNow, 100);
+        (await ExistsAsync(connection, recipient)).ShouldBeFalse();
     }
 
     [Fact]

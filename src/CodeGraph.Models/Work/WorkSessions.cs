@@ -23,7 +23,7 @@ public sealed class WorkSessionOptions
     public int RetentionDays { get; set; } = 30;
 
     /// <summary>Sessions deleted per transaction by the prune job.</summary>
-    public int PruneBatchSize { get; set; } = 500;
+    public int PruneBatchSize { get; set; } = 100;
 }
 
 /// <summary>A tool argument type that can carry the caller's session.</summary>
