@@ -27,6 +27,7 @@ public static class WorkBriefings
             MyWork = briefing.MyWork?.Select(Shorten).ToList(),
             Focus = briefing.Focus is { } focus ? Shorten(focus) : null,
             SuggestedNext = briefing.SuggestedNext is { } next ? Shorten(next) : null,
+            Knowledge = briefing.Knowledge?.Select(row => row with { Summary = CutTo(row.Summary, KnowledgeLimits.BriefingSummaryLength)! }).ToList(),
             Truncated = null
         };
 
@@ -73,6 +74,13 @@ public static class WorkBriefings
             null => null,
             { Count: 1 } => view with { Resources = null },
             var resources => view with { Resources = resources.Take(resources.Count - 1).ToList() }
+        }),
+        // Knowledge rows are ranked (item, path, repository, project): the last goes first.
+        new("knowledge", view => view.Knowledge switch
+        {
+            null => null,
+            { Count: 1 } => view with { Knowledge = null },
+            var rows => view with { Knowledge = rows.Take(rows.Count - 1).ToList() }
         }),
         new("project", view => view.Project.Goals switch
         {
@@ -126,8 +134,10 @@ public static class WorkBriefings
     private static IReadOnlyList<string>? CutList(IReadOnlyList<string>? values) =>
         values?.Take(MaxHandoffListEntries).Select(value => Cut(value)!).ToList();
 
-    private static string? Cut(string? text) =>
-        text is null || text.Length <= WorkSessionLimits.BriefingTextLength
+    private static string? Cut(string? text) => CutTo(text, WorkSessionLimits.BriefingTextLength);
+
+    private static string? CutTo(string? text, int length) =>
+        text is null || text.Length <= length
             ? text
-            : text[..(WorkSessionLimits.BriefingTextLength - 1)] + "…";
+            : text[..(length - 1)] + "…";
 }

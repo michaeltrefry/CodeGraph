@@ -361,6 +361,21 @@ public sealed class UpdateWorkRequest : ISessionArguments
 
     [Description("Optional fields to empty: description (any kind); goals, acceptance_tests (feature); labels, repository, feature, goal, acceptance_criteria, inherits, touches (item).")]
     public List<string>? Clear { get; init; }
+
+    // Save points (§5.8, S5): knowledge entries stored in the same transaction as the write, on any
+    // kind; on an item they are linked to it and scoped to its repository unless they name others.
+
+    [Description(SavePointText.Decisions)]
+    public List<DecisionInput>? Decisions { get; init; }
+
+    [Description(SavePointText.Attempts)]
+    public List<AttemptInput>? Attempts { get; init; }
+
+    [Description(SavePointText.Corrections)]
+    public List<CorrectionInput>? Corrections { get; init; }
+
+    [Description(SavePointText.Findings)]
+    public List<FindingInput>? Findings { get; init; }
 }
 
 public sealed class DocumentPatchInput

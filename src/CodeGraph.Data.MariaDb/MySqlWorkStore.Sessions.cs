@@ -139,7 +139,7 @@ public sealed partial class MySqlWorkStore
         return owners.Count == 1 ? owners[0] : null;
     }
 
-    public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default) =>
+    private Task<EndSessionResult> EndSessionCoreAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -150,9 +150,18 @@ public sealed partial class MySqlWorkStore
             if (session.EndedAt is not null)
             {
                 // A repeat (say, after a lost answer): the session as it ended, nothing written again.
+                // Save points passed to an ended session must be the ones its end stored (a retry);
+                // new ones would be dropped silently, so they are refused.
+                IReadOnlyList<KnowledgeRow>? repeated = null;
+                if (knowledge is { Count: > 0 })
+                    repeated = await RequireRepeatedSavePointsAsync(connection, transaction, session, knowledge, ct);
                 await transaction.CommitAsync(ct);
-                return new EndSessionResult(ToView(session, now), []);
+                return new EndSessionResult(ToView(session, now), [], Recorded: repeated);
             }
+
+            // Save points (S5) reference the project: hold its row before the items' (project, items, knowledge).
+            if (knowledge is { Count: > 0 })
+                await HoldProjectAsync(connection, transaction, session.ProjectId, ct);
 
             var sessionActor = ActorOf(session);
             var held = (await connection.QueryAsync<Guid>(new CommandDefinition(
@@ -243,6 +252,32 @@ public sealed partial class MySqlWorkStore
                     released.Add(new WorkRow(after.Id, after.Key, "item", after.Title, WorkStatuses.Parse(after.Status), Version: after.Version));
             }
 
+            // The save-point fields (S5), in this transaction: linked to the handoff's item, else the
+            // item named, else the one item the session holds (read before the session's claims are
+            // closed below); scoped by default to that item's repository.
+            Guid? linked = null;
+            string? linkedRepository = null;
+            if (knowledge is { Count: > 0 })
+            {
+                linked = target ?? itemId;
+                if (linked is null)
+                {
+                    var open = (await connection.QueryAsync<Guid>(new CommandDefinition(
+                        "SELECT item_id FROM work_session_claims WHERE session_id = @id AND released_at IS NULL",
+                        new { id = sessionId.ToString() }, transaction, cancellationToken: ct))).Union(held).Distinct().ToList();
+                    linked = open.Count == 1 ? open[0] : null;
+                }
+
+                if (linked is { } linkedItem)
+                {
+                    var linkedRow = await ReadItemRowAsync(connection, transaction, linkedItem, ct)
+                        ?? throw WorkException.NotFound($"There is no item {linkedItem}.");
+                    if (linkedRow.ProjectId != session.ProjectId)
+                        throw WorkException.Invalid($"{linkedRow.Key} belongs to another project than the session. Nothing was changed.");
+                    linkedRepository = linkedRow.RepositoryName;
+                }
+            }
+
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_session_claims SET released_at = @now WHERE session_id = @id AND released_at IS NULL",
                 new { id = sessionId.ToString(), now }, transaction, cancellationToken: ct));
@@ -251,6 +286,13 @@ public sealed partial class MySqlWorkStore
                 new { id = sessionId.ToString(), now }, transaction, cancellationToken: ct));
             // Holds of resources end with the session (sc-27872): only here and on release or ttl, never on silence.
             var releasedHolds = await ReleaseSessionHoldsAsync(connection, transaction, sessionId, now, ct);
+            // Knowledge rows come after resources and holds in the lock order (S5).
+            if (knowledge is { Count: > 0 })
+            {
+                var project = (await ReadProjectRowAsync(connection, transaction, session.ProjectId, ct))!;
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, linked, null, linkedRepository, sessionActor, now, ct);
+            }
+
             var ended = (await ReadSessionRowAsync(connection, transaction, sessionId, ct))!;
             await CommitAsync(connection, transaction, entries, sessionActor, now, ct);
             return new EndSessionResult(ToView(ended, now), released, written, releasedHolds.Count == 0 ? null : releasedHolds);
