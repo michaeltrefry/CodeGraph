@@ -315,6 +315,37 @@ public sealed class WorkImportMappingTests
         await Should.ThrowAsync<HttpRequestException>(() => Rest(handler).DownloadFileAsync("https://10.1.2.3/file.png", 100, CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData("198.18.0.1")]
+    [InlineData("198.19.255.254")]
+    [InlineData("192.0.0.8")]
+    [InlineData("100.64.1.1")]
+    [InlineData("64:ff9b::a00:1")]
+    [InlineData("2002:a00:1::1")]
+    [InlineData("::ffff:10.0.0.1")]
+    [InlineData("fd00::1")]
+    [InlineData("fe80::1")]
+    public void Internal_and_translated_ranges_are_not_public(string address) =>
+        ShortcutRestSource.IsPublicAddress(System.Net.IPAddress.Parse(address)).ShouldBeFalse();
+
+    [Theory]
+    [InlineData("93.184.216.34")]
+    [InlineData("198.20.0.1")]
+    [InlineData("2606:4700::1111")]
+    public void Public_addresses_are_public(string address) =>
+        ShortcutRestSource.IsPublicAddress(System.Net.IPAddress.Parse(address)).ShouldBeTrue();
+
+    [Fact]
+    public async Task The_connect_callback_refuses_a_name_that_resolves_to_an_internal_address()
+    {
+        // The check is on the address the connection would use, so a name (or a rebinding DNS answer)
+        // pointing inside is refused at connect time, before any byte is sent.
+        await Should.ThrowAsync<HttpRequestException>(async () => await ShortcutRestSource.ConnectPublicAsync(new System.Net.DnsEndPoint("localhost", 443), CancellationToken.None));
+        await Should.ThrowAsync<HttpRequestException>(async () => await ShortcutRestSource.ConnectPublicAsync(new System.Net.DnsEndPoint("127.0.0.1", 443), CancellationToken.None));
+        await Should.ThrowAsync<HttpRequestException>(async () => await ShortcutRestSource.ConnectPublicAsync(new System.Net.DnsEndPoint("198.18.0.1", 443), CancellationToken.None));
+        ShortcutRestSource.CreateHandler().ConnectCallback.ShouldNotBeNull();
+    }
+
     [Fact]
     public async Task A_delta_searches_from_a_day_before_updated_since_and_keeps_the_exact_bound()
     {

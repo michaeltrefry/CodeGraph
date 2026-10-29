@@ -418,25 +418,28 @@ public sealed class ShortcutImporter(
         foreach (var file in story.Files)
         {
             var externalId = Id(file.Id);
-            // A record whose stored file went missing counts as not stored: it is downloaded again.
-            if (await imports.GetStoredAttachmentPathAsync(itemId, externalId, ct) is { } stored && files.Exists(stored))
+            var state = await imports.GetAttachmentStateAsync(itemId, externalId, ct);
+            // A record whose stored file went missing counts as not stored: it is downloaded again. A file
+            // over the size bound is linked, not downloaded, once: it is not tried again.
+            if (state is { StoragePath: { } stored } && files.Exists(stored) || state is { OverLimit: true })
                 continue;
+            var overLimit = new NewAttachmentSpec(externalId, file.Name, file.ContentType, file.Size, null, null, file.Url,
+                $"{AttachmentState.OverLimitPrefix} ({max} bytes): linked, not downloaded.", file.CreatedAt);
             if (file.Size > max)
             {
-                await imports.AddAttachmentAsync(itemId, new NewAttachmentSpec(externalId, file.Name, file.ContentType, file.Size, null, null, file.Url,
-                    $"Larger than the {max} byte bound: not downloaded.", file.CreatedAt), Actor, ct);
+                await imports.AddAttachmentAsync(itemId, overLimit, Actor, ct);
                 continue;
             }
 
             try
             {
+                // Null: the file turned out larger than the bound (by its length, or mid-stream). A failed
+                // download throws and is retried by the next delta.
                 var bytes = await source.DownloadFileAsync(file.Url, max, ct);
                 if (bytes is null)
                 {
-                    report.Attachments.Failed++;
-                    report.FailedIds.Add(ShortcutMapper.Alias(story.Id));
-                    await imports.AddAttachmentAsync(itemId, new NewAttachmentSpec(externalId, file.Name, file.ContentType, file.Size, null, null, file.Url,
-                        "The download failed or exceeded the size bound.", file.CreatedAt), Actor, ct);
+                    report.Attachments.OverLimit++;
+                    await imports.AddAttachmentAsync(itemId, overLimit, Actor, ct);
                     continue;
                 }
 

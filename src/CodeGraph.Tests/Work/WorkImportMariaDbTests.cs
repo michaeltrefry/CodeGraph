@@ -26,9 +26,9 @@ public sealed class WorkImportMariaDbTests(WorkDatabase db) : IClassFixture<Work
         public Task<IKanbanSource> KanbanAsync(CancellationToken ct) => Task.FromResult(kanban!);
     }
 
-    public static WorkImportService Service(WorkDatabase db, IShortcutSource? shortcut, IKanbanSource? kanban, string attachmentRoot)
+    public static WorkImportService Service(WorkDatabase db, IShortcutSource? shortcut, IKanbanSource? kanban, string attachmentRoot, long maxAttachmentBytes = 50L * 1024 * 1024)
     {
-        var options = Options.Create(new WorkImportOptions { AttachmentStoragePath = attachmentRoot });
+        var options = Options.Create(new WorkImportOptions { AttachmentStoragePath = attachmentRoot, MaxAttachmentBytes = maxAttachmentBytes });
         var storage = new WorkAttachmentStorage(options, Options.Create(new WikiOptions()));
         return new WorkImportService(db.Store, new ShortcutImporter(db.Store, db.Store, storage, options), new KanbanImporter(db.Store, db.Store), new Sources(shortcut, kanban));
     }

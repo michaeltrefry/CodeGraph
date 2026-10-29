@@ -34,7 +34,7 @@ public interface IShortcutSource
 
     Task<ShortcutStory?> GetStoryAsync(long storyId, CancellationToken ct);
 
-    /// <summary>The file's bytes, at most <paramref name="maxBytes"/>; null when it is larger.</summary>
+    /// <summary>The file's bytes, at most <paramref name="maxBytes"/>; null when it is larger. A failed download throws.</summary>
     Task<byte[]?> DownloadFileAsync(string url, long maxBytes, CancellationToken ct);
 
     /// <summary>What the source could not read completely (a search window over Shortcut's result cap).</summary>
@@ -128,26 +128,70 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
         return addresses.Length > 0 && addresses.All(IsPublicAddress);
     }
 
-    private static bool IsPublicAddress(IPAddress address)
+    /// <summary>Whether an address is public: not loopback, private, link-local, shared, benchmark, multicast or a translation prefix.</summary>
+    public static bool IsPublicAddress(IPAddress address)
     {
         if (address.IsIPv4MappedToIPv6)
             address = address.MapToIPv4();
         if (IPAddress.IsLoopback(address) || address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any) || address.Equals(IPAddress.IPv6None))
             return false;
-        if (address.AddressFamily == AddressFamily.InterNetworkV6)
-            return !(address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal || address.IsIPv6Multicast);
         var bytes = address.GetAddressBytes();
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            if (address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal || address.IsIPv6Multicast)
+                return false;
+            // 64:ff9b::/96 (NAT64, reaches IPv4 inside) and 2002::/16 (6to4, embeds an IPv4 address).
+            if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b && bytes[4..12].All(b => b == 0))
+                return false;
+            return !(bytes[0] == 0x20 && bytes[1] == 0x02);
+        }
+
         return bytes[0] switch
         {
             0 or 10 or 127 => false,
-            100 when bytes[1] >= 64 && bytes[1] <= 127 => false, // carrier-grade NAT
+            100 when bytes[1] >= 64 && bytes[1] <= 127 => false, // 100.64.0.0/10, carrier-grade NAT
             169 when bytes[1] == 254 => false,
             172 when bytes[1] >= 16 && bytes[1] <= 31 => false,
             192 when bytes[1] == 168 => false,
+            192 when bytes[1] == 0 && bytes[2] == 0 => false, // 192.0.0.0/24, IETF protocol assignments
+            198 when bytes[1] is 18 or 19 => false, // 198.18.0.0/15, benchmarking
             >= 224 => false,
             _ => true
         };
     }
+
+    /// <summary>
+    /// The connection of the import's HTTP client (SocketsHttpHandler.ConnectCallback): resolves the host
+    /// and connects only to a public address, checked on the address actually connected to, so a DNS
+    /// answer that changes between a check and the connection (rebinding) cannot reach an internal host.
+    /// </summary>
+    public static async ValueTask<Stream> ConnectPublicAsync(DnsEndPoint endpoint, CancellationToken ct)
+    {
+        var addresses = IPAddress.TryParse(endpoint.Host, out var literal) ? [literal] : await Dns.GetHostAddressesAsync(endpoint.Host, ct);
+        var allowed = addresses.Where(IsPublicAddress).ToList();
+        if (allowed.Count == 0)
+            throw new HttpRequestException($"Refusing to connect to {endpoint.Host}: it resolves to no public address.");
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(allowed.ToArray(), endpoint.Port, ct);
+            if (socket.RemoteEndPoint is not IPEndPoint connected || !IsPublicAddress(connected.Address))
+                throw new HttpRequestException($"Refusing the connection to {endpoint.Host}: not a public address.");
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>The primary handler of the import's Shortcut client: no automatic redirects, public addresses only.</summary>
+    public static SocketsHttpHandler CreateHandler() => new()
+    {
+        AllowAutoRedirect = false,
+        ConnectCallback = (context, ct) => ConnectPublicAsync(context.DnsEndPoint, ct)
+    };
 
     private async Task<JsonElement?> GetJsonAsync(string path, CancellationToken ct, bool allowNotFound = false)
     {
@@ -410,5 +454,7 @@ public sealed class RecordedShortcutSource : IShortcutSource
     }
 
     public Task<byte[]?> DownloadFileAsync(string url, long maxBytes, CancellationToken ct) =>
-        Task.FromResult(Files.TryGetValue(url, out var bytes) && bytes.LongLength <= maxBytes ? bytes : null);
+        Files.TryGetValue(url, out var bytes)
+            ? Task.FromResult(bytes.LongLength <= maxBytes ? bytes : null)
+            : Task.FromException<byte[]?>(new FileNotFoundException($"No recorded file for {url}."));
 }

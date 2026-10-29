@@ -28,8 +28,8 @@ public interface IWorkImportStore
     /// <summary>Adds comments keyed by their external id (a repeat changes nothing) to an item, as one fed write.</summary>
     Task<int> AddImportedCommentsAsync(Guid itemId, IReadOnlyList<ImportedComment> comments, WorkActor actor, CancellationToken ct = default);
 
-    /// <summary>The storage path of the item's stored copy of the attachment, or null when it has none.</summary>
-    Task<string?> GetStoredAttachmentPathAsync(Guid itemId, string externalId, CancellationToken ct = default);
+    /// <summary>What the item's record of the attachment says (stored path, or why it was not stored), or null when there is none.</summary>
+    Task<AttachmentState?> GetAttachmentStateAsync(Guid itemId, string externalId, CancellationToken ct = default);
 
     Task AddAttachmentAsync(Guid itemId, NewAttachmentSpec attachment, WorkActor actor, CancellationToken ct = default);
 
@@ -119,5 +119,13 @@ public sealed record ImportedItemSpec(
     IReadOnlyList<string>? HistoricalLinks = null);
 
 public sealed record NewAttachmentSpec(string ExternalId, string Filename, string ContentType, long SizeBytes, string? Sha256, string? StoragePath, string? SourceUrl, string? SkippedReason, DateTime CreatedAt);
+
+public sealed record AttachmentState(string? StoragePath, string? SkippedReason)
+{
+    /// <summary>The reason of a file over the size bound: it is linked, not downloaded, and never retried.</summary>
+    public const string OverLimitPrefix = "Over the size bound";
+
+    public bool OverLimit => SkippedReason?.StartsWith(OverLimitPrefix, StringComparison.Ordinal) == true;
+}
 
 public sealed record AttachmentRecord(Guid Id, Guid ItemId, string Filename, string ContentType, long SizeBytes, string? StoragePath);

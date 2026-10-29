@@ -281,7 +281,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                         // A repository the source no longer names is not cleared.
                         repository = Changed(s => s.Repository) && snapshot.Repository is not null ? snapshot.Repository : existing.RepositoryName,
                         acceptance = Changed(s => s.AcceptanceCriteria)
-                            ? WriteList(NormalizeCriteria(before.AcceptanceCriteria ?? [], spec.AcceptanceCriteria))
+                            ? WriteList(MergeCriteria(before.AcceptanceCriteria ?? [], base_?.AcceptanceCriteria, spec.AcceptanceCriteria))
                             : existing.AcceptanceJson,
                         imported, updatedAt = Stored(spec.UpdatedAt), id
                     }, transaction, cancellationToken: ct));
@@ -309,6 +309,44 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             await CommitAsync(connection, transaction, [change], actor, now, ct);
             return new ImportWrite(id, after.Key, after.ProjectId, before is null ? ImportOutcome.Created : ImportOutcome.Updated, warnings.Count == 0 ? null : warnings);
         }, ct);
+
+    /// <summary>
+    /// The acceptance criteria after a delta, criterion by criterion (by id) against the last imported
+    /// list: a criterion the source added or changed takes the source's text and state (keeping its
+    /// evidence while the text is the same); one the source dropped goes when CodeGraph left it as
+    /// imported; criteria only CodeGraph has, and the evidence of criteria the source did not change,
+    /// stay. Without a last list (an older record) the source's list is taken as a whole.
+    /// </summary>
+    private static List<AcceptanceCriterionView> MergeCriteria(IReadOnlyList<AcceptanceCriterionView> current, IReadOnlyList<CriterionSpec>? baseline, IReadOnlyList<CriterionSpec> source)
+    {
+        if (baseline is null || source.Any(criterion => criterion.Id is null))
+            return NormalizeCriteria(current, source);
+
+        var result = current.ToList();
+        var last = baseline.Where(criterion => criterion.Id is not null).ToDictionary(criterion => criterion.Id!, StringComparer.Ordinal);
+        foreach (var given in source)
+        {
+            var state = given.State ?? AcceptanceState.Unmet;
+            last.TryGetValue(given.Id!, out var was);
+            var changed = was is null || was.Text != given.Text || (was.State ?? AcceptanceState.Unmet) != state;
+            if (!changed)
+                continue;
+            var index = result.FindIndex(criterion => criterion.Id == given.Id);
+            if (index < 0)
+                result.Add(new AcceptanceCriterionView(given.Id!, given.Text, state));
+            else
+                result[index] = result[index] with { Text = given.Text, State = state, Evidence = result[index].Text == given.Text ? result[index].Evidence : null };
+        }
+
+        foreach (var dropped in baseline.Where(was => was.Id is not null && source.All(given => given.Id != was.Id)))
+        {
+            var index = result.FindIndex(criterion => criterion.Id == dropped.Id);
+            if (index >= 0 && result[index].Text == dropped.Text && result[index].State == (dropped.State ?? AcceptanceState.Unmet) && result[index].Evidence is null)
+                result.RemoveAt(index);
+        }
+
+        return result;
+    }
 
     private sealed class ExternalCommentRow
     {
@@ -483,7 +521,10 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
 
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_import_records SET edges_json = @edges, relations_json = @relations WHERE source = @source AND external_kind = @externalKind AND external_id = @externalId",
-                new { edges = WriteList(kept.OrderBy(blocker => blocker).ToList()), relations = Json(desired), source, externalKind, externalId }, transaction, cancellationToken: ct));
+                // A blocker skipped as a cycle is not recorded as synced: it stays pending, so the next
+                // sync tries it again (and reports it again while the cycle lasts).
+                new { edges = WriteList(kept.OrderBy(blocker => blocker).ToList()), relations = Json(desired.Where(blocker => !cycles.Contains(blocker)).ToList()), source, externalKind, externalId },
+                transaction, cancellationToken: ct));
             if (extra.Count == 0)
             {
                 await transaction.CommitAsync(ct);
@@ -523,12 +564,12 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             return written;
         }, ct);
 
-    public async Task<string?> GetStoredAttachmentPathAsync(Guid itemId, string externalId, CancellationToken ct = default)
+    public async Task<AttachmentState?> GetAttachmentStateAsync(Guid itemId, string externalId, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
-            "SELECT storage_path FROM work_item_attachments WHERE item_id = @itemId AND external_id = @externalId AND storage_path IS NOT NULL",
-            new { itemId, externalId }, cancellationToken: ct));
+        return (await connection.QueryAsync<AttachmentState>(new CommandDefinition(
+            "SELECT storage_path AS StoragePath, skipped_reason AS SkippedReason FROM work_item_attachments WHERE item_id = @itemId AND external_id = @externalId",
+            new { itemId, externalId }, cancellationToken: ct))).FirstOrDefault();
     }
 
     public Task AddAttachmentAsync(Guid itemId, NewAttachmentSpec attachment, WorkActor actor, CancellationToken ct = default) =>

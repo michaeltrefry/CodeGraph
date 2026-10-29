@@ -230,7 +230,9 @@ public static partial class ShortcutMapper
             story.Description,
             story.Labels,
             story.Tasks.Where(task => task.Description.Trim().Length > 0)
-                .Select(task => new CriterionSpec(null, Cut(task.Description.Trim(), 2000), task.Complete ? AcceptanceState.Met : AcceptanceState.Unmet, null)).ToList(),
+                // The checklist task's id names the criterion (SC10356), so a re-run merges criterion by criterion.
+                .Select(task => new CriterionSpec("SC" + task.Id.ToString(CultureInfo.InvariantCulture), Cut(task.Description.Trim(), 2000),
+                    task.Complete ? AcceptanceState.Met : AcceptanceState.Unmet, null)).ToList(),
             comments,
             Links(story),
             [Alias(story.Id)],

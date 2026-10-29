@@ -73,6 +73,14 @@ public sealed class WorkImportInteractionMariaDbTests(WorkDatabase db) : IClassF
         source.Stories[90011] = template with { Id = 90011, Name = "Blocked one" };
         source.Stories[90012] = template with { Id = 90012, Name = "Blocking one" };
         source.Stories[7931] = recorded.Stories[7931] with { TeamId = CodeGraphTeam, EpicId = 27864, StoryLinks = [] };
+        // 90013: a checklist of three open tasks, and a file whose bytes turn out over the size bound.
+        source.Stories[90013] = template with
+        {
+            Id = 90013, Name = "Checklist",
+            Tasks = [new ShortcutTask(91, "First task", false, 0), new ShortcutTask(92, "Second task", false, 1)],
+            Files = [new ShortcutFile(95, "big.bin", "application/octet-stream", 10, "https://media.app.shortcut.com/api/attachments/files/x/big.bin", null, DateTime.UtcNow)]
+        };
+        source.Files["https://media.app.shortcut.com/api/attachments/files/x/big.bin"] = new byte[2_500_000];
         foreach (var (url, bytes) in recorded.Files)
             source.Files[url] = bytes;
         return new FaultySource(source);
@@ -87,7 +95,7 @@ public sealed class WorkImportInteractionMariaDbTests(WorkDatabase db) : IClassF
         await db.CallAsync(WorkTools.CreateWork, new { new_project = new { key = Key, name = "Imported", repositories = new[] { new { repository = "codegraph", role = "owned" } } } });
         var source = Source();
         var root = Path.Combine(Path.GetTempPath(), "cg-import-gh-" + Guid.NewGuid().ToString("N")[..6]);
-        var service = WorkImportMariaDbTests.Service(db, source, null, root);
+        var service = WorkImportMariaDbTests.Service(db, source, null, root, maxAttachmentBytes: 2_000_000);
         await service.SaveSettingsAsync(ImportSources.Shortcut, new ImportSettings("GHHOLD", [new ImportTeamMapping(CodeGraphTeam, Key, "CodeGraph")]), approve: true, "owner", CancellationToken.None);
 
         // A story the source cannot read is a failure of that story, not of the run.
@@ -95,6 +103,9 @@ public sealed class WorkImportInteractionMariaDbTests(WorkDatabase db) : IClassF
         var first = await service.RunAsync(ImportSources.Shortcut, "import", null, "owner", CancellationToken.None);
         first.Status.ShouldBe(ImportRunStatuses.Completed, first.Error);
         first.Report!.Written.Failures.ShouldBe(1);
+        // A file over the bound mid-stream is linked, not downloaded, and is not a failure.
+        first.Report.Attachments.OverLimit.ShouldBe(1);
+        first.Report.Attachments.Failed.ShouldBe(0);
         first.Report.FailedIds.ShouldBe(["sc-90012"]);
         (await db.RefusedAsync(WorkTools.GetWork, new { id = "sc-90012" })).Code.ShouldBe(WorkErrorCodes.NotFound);
         // The next delta reads it again, though it did not change in Shortcut.
@@ -167,6 +178,38 @@ public sealed class WorkImportInteractionMariaDbTests(WorkDatabase db) : IClassF
         var withAc = await GetAsync("sc-90011");
         withAc.GetProperty("acceptance_criteria")[0].GetProperty("evidence").GetString().ShouldBe("test X");
         withAc.GetProperty("title").GetString().ShouldBe("Blocked one, renamed again");
+
+        // ---- Acceptance criteria merge criterion by criterion -----------------------------------
+        var checklist = await GetAsync("sc-90013");
+        var checklistKey = checklist.GetProperty("key").GetString()!;
+        var criteria = checklist.GetProperty("acceptance_criteria").EnumerateArray()
+            .Select(criterion => new { id = criterion.GetProperty("id").GetString(), text = criterion.GetProperty("text").GetString(), state = "unmet", evidence = (string?)null }).ToList();
+        criteria[0] = criteria[0] with { evidence = "Checked by the agent" };
+        criteria.Add(new { id = (string?)"AGENT1", text = (string?)"Agent criterion", state = "met", evidence = (string?)"test Y" });
+        await db.UpdateAsync(checklistKey, new { acceptance_criteria = criteria });
+        Touch(source, 90013, story => story with { Tasks = [story.Tasks[0], story.Tasks[1] with { Complete = true }] });
+        await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
+        var merged3 = (await GetAsync("sc-90013")).GetProperty("acceptance_criteria").EnumerateArray().ToList();
+        merged3.Count.ShouldBe(3);
+        merged3[0].GetProperty("evidence").GetString().ShouldBe("Checked by the agent");
+        merged3[0].GetProperty("state").GetString().ShouldBe("unmet");
+        merged3[1].GetProperty("state").GetString().ShouldBe("met");
+        merged3[2].GetProperty("text").GetString().ShouldBe("Agent criterion");
+        merged3[2].GetProperty("evidence").GetString().ShouldBe("test Y");
+        // The file over the bound is linked once and not tried again.
+        var big = (await GetAsync("sc-90013")).GetProperty("attachments").EnumerateArray().Single();
+        big.GetProperty("stored").GetBoolean().ShouldBeFalse();
+        big.GetProperty("skipped_reason").GetString().ShouldStartWith("Over the size bound");
+
+        // ---- A blocker skipped as a cycle stays pending and is reported again -----------------
+        var cycleLink = new ShortcutStoryLink(777003, 90011, 90012, "blocks");
+        Touch(source, 90012, story => story with { StoryLinks = [cycleLink] });
+        var cycle1 = await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
+        cycle1.Report!.UnmappedRelations.ShouldContain(issue => issue.From == "sc-90012" && issue.Reason == "cycle");
+        Touch(source, 90012, story => story with { Name = "Blocking one, renamed" });
+        var cycle2 = await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
+        cycle2.Report!.UnmappedRelations.ShouldContain(issue => issue.From == "sc-90012" && issue.Reason == "cycle");
+        (await GetAsync("sc-90012")).GetProperty("blocked_by").GetArrayLength().ShouldBe(0);
 
         // ---- Comment order: a source comment older than a CodeGraph comment lands after it -----
         await db.UpdateAsync(s11, new { comment = "A CodeGraph comment." });
