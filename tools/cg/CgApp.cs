@@ -9,7 +9,7 @@ namespace CodeGraph.Cg;
 
 /// <summary>
 /// The cg command line (docs/design/agent-coordination.md §9): <c>cg brief</c>, <c>cg inbox</c>,
-/// <c>cg end</c> over the REST surface of the work tools. Its contract with the hooks that call it:
+/// <c>cg end</c>, <c>cg hold renew|release</c> over the REST surface of the work tools. Its contract with the hooks that call it:
 /// it prints data, never directives; it leaves out empty sections; everything it does (git probe
 /// included) finishes within the deadline (2 s); when CodeGraph cannot be reached it prints exactly
 /// one line; and it never blocks the agent: the exit code is 0 except for a usage error (2).
@@ -27,7 +27,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
 
     public const string Usage =
         "usage: cg brief [--budget N] [--item KEY] | cg inbox | cg end [--item KEY] [--done TEXT] [--next TEXT] [--decision TEXT]... " +
-        "[--open TEXT]... [--correction TEXT]... [--branch NAME] [--commit SHA]\n" +
+        "[--open TEXT]... [--correction TEXT]... [--branch NAME] [--commit SHA] | cg hold renew HOLD_ID [--ttl SECONDS] | cg hold release HOLD_ID\n" +
         "environment: CODEGRAPH_URL (API base URL), CODEGRAPH_TOKEN (personal access token), CODEGRAPH_PROJECT, CODEGRAPH_HARNESS, " +
         "CODEGRAPH_MODEL, CODEGRAPH_INTENT, CODEGRAPH_REPOSITORY, CODEGRAPH_BRANCH, CODEGRAPH_SESSION_ID, CODEGRAPH_SESSION_FILE, " +
         "CODEGRAPH_HARNESS_SESSION (the harness's own session id, to keep one cg session per harness session; read from CLAUDE_CODE_SESSION_ID " +
@@ -104,6 +104,7 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         {
             "brief" => BriefAsync(options, lines, ct),
             "inbox" => InboxAsync(lines, ct),
+            "hold" => HoldAsync(options, lines, ct),
             _ => EndAsync(options, lines, ct)
         });
         return 0;
@@ -226,6 +227,25 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
 
         DeleteSessionFile();
         lines.AddRange(CgRender.Ended(ended));
+    }
+
+    // A hold is renewed or released by its own id and the caller's token alone: no session is needed,
+    // and a renewal is not a session heartbeat, so a shell loop around a long job can keep a hold
+    // alive for hours while the agent's session stays silent (design §5.9).
+    private async Task HoldAsync(Options options, List<string> lines, CancellationToken ct)
+    {
+        using var http = Client(lines);
+        if (http is null)
+            return;
+
+        var body = new JsonObject();
+        if (options.Ttl is { } ttl)
+            body["ttl_seconds"] = ttl;
+        var (status, answer) = await SendAsync(http, HttpMethod.Post,
+            $"api/work/holds/{Uri.EscapeDataString(options.HoldId!)}/{options.HoldAction}", body.Count == 0 ? null : body, ct);
+        if (status != 200)
+            throw ApiException.From(status, answer);
+        lines.AddRange(CgRender.Hold(options.HoldAction!, answer));
     }
 
     // ---- HTTP -----------------------------------------------------------------------------------
@@ -456,21 +476,35 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
         public List<string> Decisions { get; } = [];
         public List<string> OpenIssues { get; } = [];
         public List<string> Corrections { get; } = [];
+        public string? HoldAction { get; private set; }
+        public string? HoldId { get; private set; }
+        public int? Ttl { get; private set; }
 
         public static Options Parse(string[] args)
         {
             var command = args[0];
-            if (command is not ("brief" or "inbox" or "end"))
+            if (command is not ("brief" or "inbox" or "end" or "hold"))
                 throw new ArgumentException($"unknown command '{command}'");
 
             var options = new Options(command);
+            var first = 1;
+            if (command == "hold")
+            {
+                if (args.Length < 3 || args[1] is not ("renew" or "release") || args[2].StartsWith("--", StringComparison.Ordinal))
+                    throw new ArgumentException("cg hold needs renew|release and a hold id");
+                options.HoldAction = args[1];
+                options.HoldId = args[2];
+                first = 3;
+            }
+
             var allowed = command switch
             {
                 "brief" => new[] { "--budget", "--item" },
                 "inbox" => [],
+                "hold" => options.HoldAction == "renew" ? ["--ttl"] : [],
                 _ => ["--item", "--done", "--next", "--decision", "--open", "--correction", "--branch", "--commit"]
             };
-            for (var index = 1; index < args.Length; index++)
+            for (var index = first; index < args.Length; index++)
             {
                 var flag = args[index];
                 if (!allowed.Contains(flag))
@@ -480,6 +514,9 @@ public sealed class CgApp(IReadOnlyDictionary<string, string?> environment, Text
                 var value = args[++index];
                 switch (flag)
                 {
+                    case "--ttl":
+                        options.Ttl = int.TryParse(value, out var ttl) && ttl > 0 ? ttl : throw new ArgumentException("--ttl needs a positive number of seconds");
+                        break;
                     case "--budget":
                         options.Budget = int.TryParse(value, out var budget) && budget > 0 ? budget : throw new ArgumentException("--budget needs a positive number");
                         break;

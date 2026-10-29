@@ -70,7 +70,35 @@ public interface IWorkStore
 
     /// <summary>The project owning <paramref name="repository"/>, if exactly one does.</summary>
     Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
+
+    // ---- Resources and holds (sc-27872) -------------------------------------------------------
+
+    /// <summary>
+    /// Takes a slot of a resource, creating the resource when it is new. Granted when a slot is
+    /// free (after expired holds and dead waiters are swept and queued waiters promoted); else a
+    /// waiting entry when <see cref="AcquireSpec.Wait"/>, else not granted. A repeat by the same holder
+    /// (or key) answers its hold. Capacity accounting is serialised per resource.
+    /// </summary>
+    Task<AcquireResult> AcquireAsync(AcquireSpec spec, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>Extends a held hold to now + ttl. Refused conflict when it lapsed, was released or still waits; never regrants.</summary>
+    Task<HoldView> RenewHoldAsync(Guid holdId, int? ttlSeconds, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>Releases a hold or leaves the queue, then promotes waiters. Releasing an ended hold changes nothing.</summary>
+    Task<ReleaseResult> ReleaseHoldAsync(Guid holdId, WorkActor actor, CancellationToken ct = default);
 }
+
+public sealed record AcquireSpec(
+    Guid ProjectId,
+    string Resource,
+    int TtlSeconds,
+    string Purpose,
+    Guid? ItemId,
+    bool Wait,
+    WorkPriority Priority,
+    int? Capacity,
+    IReadOnlyList<string>? Labels,
+    string? KeyHash);
 
 public sealed record NewSessionSpec(
     Guid ProjectId,

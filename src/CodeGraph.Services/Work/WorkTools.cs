@@ -6,8 +6,8 @@ namespace CodeGraph.Services.Work;
 public sealed record WorkToolDefinition(string Name, string Title, Type ArgumentsType, string Description, bool ReadOnly, bool Idempotent);
 
 /// <summary>
-/// The work tools: the six of S1 and the three session tools of S2 (start_session, end_session,
-/// get_briefing). Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
+/// The work tools: the six of S1, the three session tools of S2 (start_session, end_session,
+/// get_briefing) and the three resource-hold tools of S8 (acquire, renew_hold, release). Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
 /// (WorkController) with the same arguments, read by <see cref="WorkJson.Parse{T}"/>.
 /// Projects are created and changed through the same tools (<c>create_work(new_project)</c>,
 /// <c>update_work</c> on a project key) rather than through tools of their own; each kind keeps a
@@ -24,6 +24,9 @@ public static class WorkTools
     public const string StartSession = "start_session";
     public const string EndSession = "end_session";
     public const string GetBriefing = "get_briefing";
+    public const string Acquire = "acquire";
+    public const string RenewHold = "renew_hold";
+    public const string Release = "release";
 
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
@@ -93,6 +96,25 @@ public static class WorkTools
         new(GetBriefing, "Get Briefing", typeof(GetBriefingRequest),
             "Fetch the session's briefing again (for example after context compaction), optionally including one item (focus) with its latest handoff. Same " +
             "sections and budget rules as start_session. Renews the session's heartbeat." + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Acquire, "Acquire Resource", typeof(AcquireRequest),
+            "Take a slot of a named resource of a project (a GPU, a runner, a staging database) for a purpose and a time: answers granted with your hold (id, expires_at), " +
+            "or held with the resource's holders, their purposes and expiry. The resource is created by its first acquire (capacity default 1, labels). A full " +
+            "resource with wait_seconds queues you: first come first served within a priority, and the answer carries your queue_position; ask again to " +
+            "keep your place and to learn when you were granted. A waiter promoted while it is not polling holds the slot until its ttl runs out or it releases. A repeat by the same holder (session, or identity without one) answers its hold. A hold has its " +
+            "own ttl_seconds (up to 24 hours) and is renewed with renew_hold, or `cg hold renew` from a shell loop; it is freed by release, end_session or " +
+            "its ttl running out, and NOT because the session went quiet: a hold whose session is silent past the idle threshold is still held and reads " +
+            "owner_unreachable (with owner_unreachable_since), never available. Holds are advisory: CodeGraph enforces nothing, an agent that ignores a hold " +
+            "fails on its own." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(RenewHold, "Renew Hold", typeof(RenewHoldRequest),
+            "Extend a hold to now plus ttl_seconds (default: its own ttl). Only the identity that made the hold may renew it; no session_id, and a renewal is not a " +
+            "session heartbeat, so a shell loop may renew a hold for hours while the session stays silent. A hold that lapsed, was released or still waits is refused " +
+            "conflict (with the hold in current): a renewal never grants a slot again; acquire again. Answers the hold." + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Release, "Release Hold", typeof(ReleaseHoldRequest),
+            "Release a hold (or leave the queue when it still waits) so the next waiter gets the slot. Only the identity that made the hold may release it. " +
+            "Releasing an ended hold changes nothing and answers it. Answers the hold and the resource as it is after." + Errors,
             ReadOnly: false, Idempotent: true)
     ];
 
