@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ErrorComponent, WorkPageBase, lines } from './work-base';
@@ -218,7 +218,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
             <section class="wrk-card" aria-labelledby="wrk-h-sp">
               <h2 id="wrk-h-sp">Save points</h2>
               <p class="wrk-sub">Decisions, failed attempts, corrections and findings are stored as the project's knowledge with this write.</p>
-              <wrk-save-points (saved)="write($event, 'Save point recorded.')" />
+              <wrk-save-points (saved)="savePoint($event)" />
             </section>
 
             <section class="wrk-card" aria-labelledby="wrk-h-com">
@@ -265,6 +265,7 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
   /** This item's own change feed entries, read from the server filtered to it. */
   readonly itemFeed = signal<WorkChange[]>([]);
   readonly key = signal('');
+  private readonly points = viewChild(SavePointsComponent);
   readonly dialog = signal<'' | 'edit'>('');
   readonly met = computed(() => (this.item()?.acceptance_criteria ?? []).filter(criterion => criterion.state === 'met').length);
   readonly timeline = computed(() => {
@@ -321,7 +322,8 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
       this.follow(item.project_key);
       // The filter reads the key now shown, not the one this stream started with.
       this.stopStream = this.live.streamMessages(item.project_key, event => {
-        if (!event.message?.item || event.message.item === this.key()) this.refresh.call();
+        // The resolved key of the item shown: the route may have named it by id or alias.
+        if (!event.message?.item || event.message.item === (this.item()?.key ?? this.key())) this.refresh.call();
       }, undefined, () => this.refresh.call());
     });
   }
@@ -376,6 +378,10 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
       return;
     }
     if (await this.write(fields, 'Item saved.')) this.dialog.set('');
+  }
+
+  async savePoint(fields: Record<string, unknown>): Promise<void> {
+    if (await this.write(fields, 'Save point recorded.')) this.points()?.clear();
   }
 
   async comment(): Promise<void> {

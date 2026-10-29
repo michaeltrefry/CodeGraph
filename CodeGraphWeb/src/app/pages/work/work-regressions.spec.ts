@@ -117,6 +117,25 @@ describe('route parameter reuse (B1)', () => {
     expect(api.get).toHaveBeenCalledWith('W-2', 'full');
   });
 
+  it('matches thread events against the resolved key when the route names the item by alias', async () => {
+    const item = fiftyItemFeature()[4];
+    const api = {
+      get: vi.fn().mockResolvedValue(item),
+      messages: vi.fn().mockResolvedValue({ items: [] }),
+      itemChanges: vi.fn().mockResolvedValue([]),
+      githubEvidence: vi.fn().mockResolvedValue([]),
+      update: vi.fn()
+    };
+    await TestBed.configureTestingModule({ imports: [WorkItemComponent], providers: providers(api, 'sc-27874') }).compileComponents();
+    const fixture = TestBed.createComponent(WorkItemComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    api.get.mockClear();
+    streams[0].onEvent({ message: { item: item.key } });
+    await new Promise(resolve => setTimeout(resolve, 450));
+    expect(api.get).toHaveBeenCalledWith('sc-27874', 'full');
+  });
+
   it('reads the item timeline from the item-filtered feed, not the project feed', async () => {
     const item = fiftyItemFeature()[1];
     const api = {
@@ -197,6 +216,19 @@ describe('item page writes (B2, should-fix 5, 6)', () => {
     expect(root.textContent).toContain('Save points');
   });
 
+  it('keeps typed save-point text when the write is refused and clears it once it succeeds', async () => {
+    const update = vi.fn().mockRejectedValueOnce(new WorkApiError(409, 'conflict', 'stale')).mockResolvedValue({});
+    const { fixture } = await render(update);
+    const component = fixture.debugElement.query(el => el.name === 'wrk-save-points').componentInstance;
+    component.decision = 'Keep me';
+    component.submit();
+    await settle(fixture);
+    expect(component.decision).toBe('Keep me');
+    component.submit();
+    await settle(fixture);
+    expect(component.decision).toBe('');
+  });
+
   it('sends order when an item is edited', async () => {
     const update = vi.fn().mockResolvedValue({});
     const { fixture, item } = await render(update);
@@ -258,6 +290,18 @@ describe('feature documents and save points (B2)', () => {
     const keys = create.mock.calls.map(call => call[0].idempotency_key);
     expect(keys[1]).toBe(keys[0]);
     expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('says so when a retried create finds the earlier attempt already made it', async () => {
+    const create = vi.fn().mockResolvedValue({ created: false });
+    const api = { get: vi.fn().mockResolvedValue(feature), items: vi.fn().mockResolvedValue([]), recentChanges: vi.fn().mockResolvedValue([]), create };
+    await TestBed.configureTestingModule({ imports: [WorkFeatureComponent], providers: providers(api, 'W-F1') }).compileComponents();
+    const fixture = TestBed.createComponent(WorkFeatureComponent);
+    fixture.detectChanges();
+    await settle(fixture);
+    await fixture.componentInstance.createItem({ title: 'A' });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.notice()).toBe("Already created by an earlier attempt; your later edits weren't applied.");
   });
 });
 

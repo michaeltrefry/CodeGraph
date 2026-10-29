@@ -54,7 +54,7 @@ type SaveKind = 'decision' | 'attempt' | 'correction' | 'finding';
   `
 })
 export class SavePointsComponent {
-  /** The update_work fields to send, such as { decisions: [...] }. */
+  /** The update_work fields to send, such as { decisions: [...] }. The page clears the form (clear) after the write succeeds. */
   readonly saved = output<Record<string, unknown>>();
   kind: SaveKind = 'decision';
   decision = '';
@@ -102,6 +102,11 @@ export class SavePointsComponent {
         this.saved.emit({ findings: [entry] });
       }
     }
+  }
+
+  /** Empties the fields; the page calls it once its update_work succeeded, so a refusal keeps what was typed. */
+  clear(): void {
     this.decision = this.why = this.alternatives = this.tried = this.whyFailed = this.what = this.correct = this.summary = this.detail = '';
+    this.autonomous = false;
   }
 }

@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ActivityComponent } from './work-activity';
@@ -196,6 +196,7 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
   readonly tab = signal<Tab>('board');
   readonly key = signal('');
   readonly editingDoc = signal('');
+  private readonly points = viewChild(SavePointsComponent);
   private readonly itemKey = new KeyHolder('ui-item');
   docTitle = '';
   docBody = '';
@@ -339,7 +340,9 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
 
   async createItem(fields: Record<string, unknown>): Promise<void> {
     const feature = this.feature()!;
-    if (await this.run(() => this.api.create({ project: feature.project_key, item: { ...fields, feature: feature.key }, idempotency_key: this.itemKey.key }), 'Item created.')) {
+    const created = await this.run(() => this.api.create({ project: feature.project_key, item: { ...fields, feature: feature.key }, idempotency_key: this.itemKey.key }), 'Item created.');
+    this.noteReplay(created);
+    if (created) {
       this.itemKey.reset();
       this.dialog.set('');
       await this.reload();
@@ -368,7 +371,10 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
   /** update_work save points (decisions, attempts, corrections, findings) on the feature. */
   async savePoint(fields: Record<string, unknown>): Promise<void> {
     const feature = this.feature()!;
-    if (await this.run(() => this.api.update(feature.key, { expected_version: feature.version, ...fields }), 'Save point recorded.')) await this.reload();
+    if (await this.run(() => this.api.update(feature.key, { expected_version: feature.version, ...fields }), 'Save point recorded.')) {
+      this.points()?.clear();
+      await this.reload();
+    }
   }
 
   /** update_work add_documents. */

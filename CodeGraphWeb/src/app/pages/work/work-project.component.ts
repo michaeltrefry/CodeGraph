@@ -222,6 +222,7 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
 
   async createProject(fields: Record<string, unknown>): Promise<void> {
     const created = await this.run(() => this.api.create({ new_project: fields, idempotency_key: this.keys.project.key }));
+    this.noteReplay(created);
     if (created?.project) {
       this.keys.project.reset();
       await this.ctx.load();
@@ -239,7 +240,9 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   async createFeature(fields: Record<string, unknown>): Promise<void> {
-    if (await this.run(() => this.api.create({ project: this.project()!.key, feature: fields, idempotency_key: this.keys.feature.key }), 'Feature created.')) {
+    const created = await this.run(() => this.api.create({ project: this.project()!.key, feature: fields, idempotency_key: this.keys.feature.key }), 'Feature created.');
+    this.noteReplay(created);
+    if (created) {
       this.keys.feature.reset();
       this.dialog.set('');
       await this.reload();
@@ -247,7 +250,9 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   async createItem(fields: Record<string, unknown>): Promise<void> {
-    if (await this.run(() => this.api.create({ project: this.project()!.key, item: fields, idempotency_key: this.keys.item.key }), 'Item created.')) {
+    const created = await this.run(() => this.api.create({ project: this.project()!.key, item: fields, idempotency_key: this.keys.item.key }), 'Item created.');
+    this.noteReplay(created);
+    if (created) {
       this.keys.item.reset();
       this.dialog.set('');
       await this.reload();
@@ -264,6 +269,7 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
       return;
     }
     const result = await this.run(() => this.api.create({ project: this.project()!.key, plan, idempotency_key: this.keys.plan.key }), 'Plan imported.');
+    this.noteReplay(result);
     if (result) {
       this.keys.plan.reset();
       this.dialog.set('');

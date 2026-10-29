@@ -114,6 +114,11 @@ export abstract class WorkPageBase {
     route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => handler(params.get('key') ?? ''));
   }
 
+  /** After a create: a retry that finds the earlier attempt's result changed nothing, and says so. */
+  protected noteReplay(result: { created?: boolean } | undefined): void {
+    if (result && result.created === false) this.notice.set("Already created by an earlier attempt; your later edits weren't applied.");
+  }
+
   /** Runs a write; a refusal is shown, not thrown. Returns undefined when it was refused. */
   async run<T>(action: () => Promise<T>, success = ''): Promise<T | undefined> {
     this.busy.set(true);
