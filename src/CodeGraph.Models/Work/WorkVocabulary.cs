@@ -57,6 +57,44 @@ public enum WorkDetail
     Full
 }
 
+/// <summary>Whether an acceptance criterion of an item is reported met (sc-27868).</summary>
+public enum AcceptanceState
+{
+    Unmet,
+    Met
+}
+
+/// <summary>A feature requirement is active until a re-plan drops it with a recorded decision.</summary>
+public enum RequirementState
+{
+    Active,
+    Dropped
+}
+
+/// <summary>
+/// The outcome of an execution attempt: active while its claim is the item's current one; then
+/// superseded (a re-plan changed or closed the item), abandoned (released, session ended, or the
+/// claim lapsed and passed on), complete or closed (the item finished).
+/// </summary>
+public enum AttemptOutcome
+{
+    Active,
+    Superseded,
+    Abandoned,
+    Complete,
+    Closed
+}
+
+/// <summary>
+/// The derived status of a feature: complete when it has items, every item is complete or closed,
+/// at least one is complete, and every active requirement is inherited by a complete item.
+/// </summary>
+public enum FeatureStatus
+{
+    Open,
+    Complete
+}
+
 /// <summary>
 /// The error vocabulary of every work tool (E1). A refused call changed nothing.
 /// </summary>
@@ -141,6 +179,24 @@ public static class WorkLimits
     public const int MaxWaitSeconds = 55;
     /// <summary>The most characters of one text a change entry stores; the object keeps the whole text.</summary>
     public const int MaxStoredChangeText = 16_384;
+
+    // Planning (sc-27868).
+    public const int MaxRequirements = 50;
+    public const int MaxRequirementLength = 2000;
+    public const int MaxDecisionLength = 2000;
+    public const int MaxAcceptanceTests = 50;
+    public const int MaxAcceptanceTestLength = 2000;
+    public const int MaxItemGoalLength = 2000;
+    /// <summary>An item holds at most 3 acceptance criteria (R6 plans 1 to 3); 0 is allowed for backward compatibility (items created before S4, imports).</summary>
+    public const int MaxAcceptanceCriteria = 3;
+    public const int MaxCriterionLength = 2000;
+    public const int MaxCriterionIdLength = 16;
+    public const int MaxEvidenceLength = 4000;
+    public const int MaxReportSummaryLength = 8000;
+    public const int MaxTouches = 50;
+    public const int MaxTouchLength = 512;
+    /// <summary>A sync_plan preview can be confirmed for this long.</summary>
+    public const int PlanPreviewSeconds = 3600;
 }
 
 /// <summary>The kinds of change-feed entry. Kinds are a contract: new ones may be added, none is renamed.</summary>
@@ -154,6 +210,13 @@ public static class WorkChangeKinds
     public const string ItemUpdated = "item_updated";
     public const string Claimed = "claimed";
     public const string Recovered = "recovered";
+}
+
+/// <summary>Kinds of the notices a work-tool response carries in <c>notices</c>.</summary>
+public static class WorkNoticeKinds
+{
+    /// <summary>A re-plan edited or closed an item the caller holds; its attempt was superseded.</summary>
+    public const string ChangedByReplan = "changed_by_replan";
 }
 
 /// <summary>

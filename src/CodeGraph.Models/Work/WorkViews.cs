@@ -50,7 +50,12 @@ public sealed record FeatureView(
     string CreatedBy,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    IReadOnlyDictionary<string, int>? ItemCounts = null)
+    IReadOnlyDictionary<string, int>? ItemCounts = null,
+    FeatureStatus Status = FeatureStatus.Open,
+    FeatureCompletionView? Completion = null,
+    IReadOnlyList<string>? Goals = null,
+    IReadOnlyList<RequirementView>? Requirements = null,
+    IReadOnlyList<string>? AcceptanceTests = null)
 {
     public string Kind => "feature";
 }
@@ -91,7 +96,22 @@ public sealed record ItemView(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     IReadOnlyList<HandoffView>? Handoffs = null,
-    int? HandoffCount = null)
+    int? HandoffCount = null,
+    // The brief (sc-27868): everything needed to start the item, in one response.
+    string? Ref = null,
+    string? Goal = null,
+    IReadOnlyList<AcceptanceCriterionView>? AcceptanceCriteria = null,
+    IReadOnlyList<string>? Inherits = null,
+    IReadOnlyList<RequirementView>? InheritedRequirements = null,
+    IReadOnlyList<string>? Touches = null,
+    bool? MergedAwaitingAcceptance = null,
+    AcceptanceReportView? AcceptanceReport = null,
+    IReadOnlyList<AttemptView>? Attempts = null,
+    int? AttemptCount = null,
+    // Filled by the messages story (S7): open questions and requests about the item.
+    IReadOnlyList<object>? OpenMessages = null,
+    // The knowledge relevant to the item (S5): linked to it, scoped to its touches, its repository or the project.
+    IReadOnlyList<KnowledgeRow>? Knowledge = null)
 {
     public string Kind => "item";
 }
@@ -126,7 +146,8 @@ public sealed record CreateWorkResult(
     FeatureView? Feature = null,
     ItemView? Item = null);
 
-public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null);
+/// <param name="Recorded">The knowledge entries the save-point fields stored with the write (S5).</param>
+public sealed record UpdateWorkResult(ProjectView? Project = null, FeatureView? Feature = null, ItemView? Item = null, IReadOnlyList<KnowledgeRow>? Recorded = null);
 
 /// <param name="Reused">true when this is the caller's existing claim or the allocation of a repeated key, not a new claim.</param>
 /// <param name="Reason">Why there is no item: <c>no_ready_work</c>.</param>

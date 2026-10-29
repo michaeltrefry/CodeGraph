@@ -6,8 +6,8 @@ namespace CodeGraph.Services.Work;
 public sealed record WorkToolDefinition(string Name, string Title, Type ArgumentsType, string Description, bool ReadOnly, bool Idempotent);
 
 /// <summary>
-/// The work tools: the six of S1 and the three session tools of S2 (start_session, end_session,
-/// get_briefing). Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
+/// The work tools: the six of S1, the three session tools of S2 (start_session, end_session,
+/// get_briefing), the three resource-hold tools of S8 (acquire, renew_hold, release) and sync_plan of S4. Each is reachable over MCP (<see cref="WorkMcpTool"/>) and REST
 /// (WorkController) with the same arguments, read by <see cref="WorkJson.Parse{T}"/>.
 /// Projects are created and changed through the same tools (<c>create_work(new_project)</c>,
 /// <c>update_work</c> on a project key) rather than through tools of their own; each kind keeps a
@@ -24,19 +24,36 @@ public static class WorkTools
     public const string StartSession = "start_session";
     public const string EndSession = "end_session";
     public const string GetBriefing = "get_briefing";
+    public const string Acquire = "acquire";
+    public const string RenewHold = "renew_hold";
+    public const string Release = "release";
+    public const string SyncPlan = "sync_plan";
+    public const string Record = "record";
+    public const string Recall = "recall";
+    public const string ImportKnowledge = "import_knowledge";
+
+    private const string SavePoints =
+        " Save points: decisions, attempts, corrections (lessons) and findings (facts, gotchas, constraints) are stored as entries of the project's knowledge " +
+        "in the same transaction as the write and echoed in recorded; recall and other sessions' briefings return them.";
 
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
         "not_found, conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
 
     private const string Sessions =
-        " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it.";
+        " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it." +
+        " When the session's live claims touch (item touches) the same area as another live session's claims, directly or through the impact radius, the response " +
+        "carries overlap_warnings naming the other session, so the two can message each other; advisory, nothing is blocked. Overlap through the impact radius " +
+        "means one item touches a dependent of what the other touches (two hops of analyze_impact, within the item's repository); an item with no repository is " +
+        "compared directly with every item and has no impact lookup. Impact lookups are time-boxed and cached, so a slow graph only means fewer warnings." +
+        " A response may carry notices for the caller, such as changed_by_replan when a re-plan edited or closed an item it holds.";
 
     public static readonly IReadOnlyList<WorkToolDefinition> All =
     [
         new(CreateWork, "Create Work", typeof(CreateWorkRequest),
             "Create work in a Project: a new_project; or, in project, one feature (with documents), one item, or a whole plan. " +
-            "A plan is all-or-nothing: features (with documents) and items with caller refs, an item naming its feature by ref and its blockers by ref in blocked_by; " +
+            "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, up to 3 acceptance_criteria (0 allowed for backward compatibility), inherits (requirements of their feature) and touches. " +
+            "A plan is all-or-nothing: features (with documents) and items with caller refs (kept, so sync_plan can re-plan by them), an item naming its feature by ref and its blockers by ref in blocked_by; " +
             "a malformed item, a duplicate ref, an unknown ref or a dependency cycle (refused cycle) creates nothing. A plan holds at most 200 items, 20 features, " +
             "20 documents, 500 dependencies and 2 MB of JSON, and needs idempotency_key. Answers the created object (with created), or for a plan the id and key " +
             "of every ref. Items get keys <KEY>-<n>, features <KEY>-F<n>, allocated in order without gaps. A repeated idempotency_key creates nothing and answers " +
@@ -44,8 +61,13 @@ public static class WorkTools
             ReadOnly: false, Idempotent: true),
         new(GetWork, "Get Work", typeof(GetWorkRequest),
             "Get one project, feature or item by key (SW, SW-F12, SW-142) or id, in full: an item with its blockers and dependents (and their status), " +
-            "derived blocked state (blocked_reason waiting, or cancelled_prerequisite when a blocker is closed), live claim, links, comments, its latest handoff and handoff_count (detail full: every handoff, newest first); a feature with " +
-            "its documents and item counts; a project with its goals, repositories and item counts. Every object carries version, the expected_version of update_work." + Errors,
+            "derived blocked state (blocked_reason waiting, or cancelled_prerequisite when a blocker is closed), live claim, links, comments, its latest handoff and handoff_count (detail full: every handoff, newest first); " +
+            "an item is also its own brief: ref, goal, acceptance_criteria (state met or unmet, evidence), inherits and inherited_requirements (as its feature states them), " +
+            "touches, attempts (execution attempts: holder, outcome active, superseded, abandoned, complete or closed, branch and PR links; the latest three and attempt_count, " +
+            "detail full: all), merged_awaiting_acceptance, acceptance_report and open_messages. A feature carries its documents, item counts, goals, requirements " +
+            "(active or dropped with the decision, covered_by: the complete items inheriting it), acceptance_tests, and the derived status: complete only when it has " +
+            "items, all are complete or closed, one at least is complete and every active requirement is covered (completion lists what is missing). " +
+            "A project carries its goals, repositories and item counts. Every object carries version, the expected_version of update_work." + Errors,
             ReadOnly: true, Idempotent: true),
         new(FindWork, "Find Work", typeof(FindWorkRequest),
             "List items (default), features or projects: one line per row (id, key, title, status, priority, blocked, claimed_by, version) unless detail is full. " +
@@ -57,10 +79,13 @@ public static class WorkTools
             "with the current object in current. Only the fields passed change; empty an optional one with clear. Each kind takes its own fields (a field of another " +
             "kind is refused invalid_argument listing the valid ones). On an item, one call can also change its status (any transition; complete or closed releases " +
             "the claim), add or remove blockers (only a complete blocker stops blocking; a closed one keeps its dependents blocked), add or remove links, add a comment, " +
-            "record a handoff, and claim, renew or release it (claims are advisory and do not stop other writes). With session_id a claim is the session's and lasts " +
+            "record a handoff, and claim, renew or release it (claims are advisory and do not stop other writes). Complete is set only here, by the agent or person " +
+            "who judges the work done, optionally with acceptance_report (summary and the state and evidence of named criteria; not validated); a merge only flags " +
+            "merged_awaiting_acceptance. A feature takes goals, requirements (an active one left out must be in drop_requirements with a decision) and " +
+            "acceptance_tests; an item takes goal, acceptance_criteria (at most 3; 0 allowed for backward compatibility), inherits (requirements of its feature) and touches. With session_id a claim is the session's and lasts " +
             "while the session is live (leave marker and ttl_seconds out); a retried claim the session already holds answers it. A session whose claim on the item " +
             "lapsed is refused claim_lost until it reclaims the unclaimed item (claim) or lets go of it (release_claim). Answers the object as it is after the write, " +
-            "with its new version." + Sessions + Errors,
+            "with its new version." + SavePoints + Sessions + Errors,
             ReadOnly: false, Idempotent: false),
         new(NextWork, "Next Work", typeof(NextWorkRequest),
             "Claim the best item available in a project for the caller. First a recoverable item (in_progress, every blocker complete, its claim lapsed or released), " +
@@ -82,18 +107,75 @@ public static class WorkTools
             "Register this agent as a session of a project (harness, model, host, repository, branch, worktree, intent) and answer the session and its briefing. " +
             "Pass the session's id as session_id to every work tool: each call is its heartbeat, and a session silent past the idle threshold (15 minutes by " +
             "default) is presumed dead and its claims lapse. The briefing is data within budget_tokens (default 1500): the project and its goals, the items " +
-            "this session holds with their latest handoff, the other live sessions of the project and what they hold, and one suggested next item (recoverable " +
-            "first); empty sections are left out and truncated names sections the budget shortened." + Errors,
+            "this session holds with their latest handoff, the other live sessions of the project and what they hold, one suggested next item (recoverable " +
+            "first), and knowledge: the active decisions, constraints, lessons and gotchas linked to its items, scoped to paths (passed here), to its repository, " +
+            "or project-wide; empty sections are left out and truncated names sections the budget shortened." + Errors,
             ReadOnly: false, Idempotent: false),
         new(EndSession, "End Session", typeof(EndSessionRequest),
             "End a session: record the handoff (done, decisions, open issues, corrections, next action, branch, commit) on item, or on the one item the session " +
             "holds, and release every claim of the session. An in-progress item it released is then recoverable by the next session, with the handoff. Answers " +
-            "the ended session, the released items and the handoff. Ending an ended session changes nothing and answers it." + Errors,
+            "the ended session, the released items and the handoff. Ending an ended session changes nothing and answers it." + SavePoints + Errors,
             ReadOnly: false, Idempotent: true),
         new(GetBriefing, "Get Briefing", typeof(GetBriefingRequest),
             "Fetch the session's briefing again (for example after context compaction), optionally including one item (focus) with its latest handoff. Same " +
-            "sections and budget rules as start_session. Renews the session's heartbeat." + Errors,
-            ReadOnly: false, Idempotent: true)
+            "sections and budget rules as start_session; paths adds the knowledge scoped to them. Renews the session's heartbeat." + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Acquire, "Acquire Resource", typeof(AcquireRequest),
+            "Take a slot of a named resource of a project (a GPU, a runner, a staging database) for a purpose and a time: answers granted with your hold (id, expires_at), " +
+            "or held with the resource's holders, their purposes and expiry. The resource is created by its first acquire (capacity default 1, labels). A full " +
+            "resource with wait_seconds queues you: first come first served within a priority, and the answer carries your queue_position; ask again to " +
+            "keep your place and to learn when you were granted. A waiter promoted while it is not polling holds the slot until its ttl runs out or it releases. A repeat by the same holder (session, or identity without one) answers its hold. A hold has its " +
+            "own ttl_seconds (up to 24 hours) and is renewed with renew_hold, or `cg hold renew` from a shell loop; it is freed by release, end_session or " +
+            "its ttl running out, and NOT because the session went quiet: a hold whose session is silent past the idle threshold is still held and reads " +
+            "owner_unreachable (with owner_unreachable_since), never available. Holds are advisory: CodeGraph enforces nothing, an agent that ignores a hold " +
+            "fails on its own." + Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(RenewHold, "Renew Hold", typeof(RenewHoldRequest),
+            "Extend a hold to now plus ttl_seconds (default: its own ttl). Only the identity that made the hold may renew it; no session_id, and a renewal is not a " +
+            "session heartbeat, so a shell loop may renew a hold for hours while the session stays silent. A hold that lapsed, was released or still waits is refused " +
+            "conflict (with the hold in current): a renewal never grants a slot again; acquire again. Answers the hold." + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Release, "Release Hold", typeof(ReleaseHoldRequest),
+            "Release a hold (or leave the queue when it still waits) so the next waiter gets the slot. Only the identity that made the hold may release it. " +
+            "Releasing an ended hold changes nothing and answers it. Answers the hold and the resource as it is after." + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(SyncPlan, "Sync Plan", typeof(SyncPlanRequest),
+            "Re-plan a feature in two steps. 1) feature + plan (the revised plan: feature title, description, goals, requirements E1..En, drop_requirements " +
+            "with decisions, acceptance_tests, and every item it should hold by ref) answers a preview and changes nothing: items added, edited (field changes), " +
+            "closed (items of the feature left out, unless complete or closed), dependency changes, requirements added/changed/dropped, pivots (edited or closed " +
+            "items that are in progress or claimed, with their holder) and warnings (items left blocked by a closed prerequisite), plus preview_token. Items " +
+            "match by ref (create_work plan refs are kept) or by item key; a field left out of an existing item is unchanged. 2) confirm with that " +
+            "preview_token applies it all-or-nothing, only while the feature, its requirements, every item it covers and their dependencies are unchanged since " +
+            "the preview; otherwise it is refused conflict and nothing changes (ask for a new preview). Confirming twice answers the first apply (repeated true). " +
+            "A pivot supersedes the item's current attempt (evidence from it moves no status), keeps an edited item's claim under a new attempt, ends a closed " +
+            "item's claim, comments on the item and gives the holder a changed_by_replan notice on its next work-tool response. A re-plan never completes an " +
+            "item, and an active requirement is never dropped silently. A plan holds at most 200 items and 500 dependencies; previews expire after an hour." +
+            Sessions + Errors,
+            ReadOnly: false, Idempotent: true),
+        new(Record, "Record Knowledge", typeof(RecordRequest),
+            "Write the project's shared knowledge when no work item is involved (with an item, use the save-point fields of update_work or end_session). " +
+            "entry: a new goal, decision, constraint, fact, gotcha, attempt, architecture note or lesson, scoped to the project and optionally to repositories, " +
+            "paths/globs and graph nodes, with confidence; supersedes replaces an active entry (it becomes superseded, linked to the new one). revise: a new " +
+            "revision of an active entry. retract: mark one wrong (kept, status retracted). verify: re-baseline it against its files. Entries are never edited " +
+            "in place; every write adds a revision. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
+            "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry. record " +
+            "(entry, supersede, revise, retract, verify) writes no changes entry: the change feed covers projects, features and items; save points stored by " +
+            "update_work on one of those appear in its entry as a knowledge change." + Sessions + Errors,
+            ReadOnly: false, Idempotent: false),
+        new(Recall, "Recall Knowledge", typeof(RecallRequest),
+            "Search the project's knowledge: by kind, repository, paths (an entry's path or glob covering one, or lying below one), graph nodes, item, " +
+            "lesson activity and source, words, status (default active) and possibly_stale. Rows are small (id, kind, summary, confidence, version, and " +
+            "possibly_stale / status / made_autonomously / item when they apply); detail full answers whole entries (at most 10 a page); id answers one entry " +
+            "(detail full adds its revisions). Pages of limit (default 20, at most 50) newest first, with next_cursor." + Sessions + Errors,
+            ReadOnly: true, Idempotent: true),
+        new(ImportKnowledge, "Import Knowledge", typeof(ImportKnowledgeRequest),
+            "Import native harness memory (such as Claude Code memory files) into the project's knowledge, in two steps. The importing agent verifies each " +
+            "candidate against the repository itself and passes the result (verified, stale, unverifiable, personal). The dry run (confirm false, the default) " +
+            "checks each candidate's scope (repositories and nodes of the project) and looks for duplicates (an active entry of the same kind with the same " +
+            "normalized summary, or an earlier candidate), answers an outcome per candidate (would_store, duplicate, out_of_scope, personal, stale, invalid) " +
+            "and a preview_token, and stores nothing. confirm true with accept (indexes) and that preview_token stores exactly the accepted candidates, all " +
+            "or none, each with its source_file; a candidate that is not would_store now refuses the call. Source files are never changed." + Sessions + Errors,
+            ReadOnly: false, Idempotent: false)
     ];
 
     public static WorkToolDefinition? Find(string name) => All.FirstOrDefault(tool => tool.Name == name);

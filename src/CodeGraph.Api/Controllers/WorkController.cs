@@ -33,9 +33,46 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
     [HttpPost("next")]
     public Task<IActionResult> Next() => RunBodyAsync(WorkTools.NextWork);
 
+    /// <summary>sync_plan: a preview (feature and plan) or its confirmation (confirm).</summary>
+    [HttpPost("plans/sync")]
+    public Task<IActionResult> SyncPlan() => RunBodyAsync(WorkTools.SyncPlan);
+
     /// <summary>start_session.</summary>
     [HttpPost("sessions")]
     public Task<IActionResult> StartSession() => RunBodyAsync(WorkTools.StartSession);
+
+    /// <summary>record (S5): a new entry, or revise / retract / verify.</summary>
+    [HttpPost("knowledge")]
+    public Task<IActionResult> Record() => RunBodyAsync(WorkTools.Record);
+
+    /// <summary>recall (S5): the filters as the body.</summary>
+    [HttpPost("knowledge/recall")]
+    public Task<IActionResult> Recall() => RunBodyAsync(WorkTools.Recall);
+
+    /// <summary>import_knowledge (S5): the dry run, or with confirm true the store of the accepted candidates.</summary>
+    [HttpPost("knowledge/import")]
+    public Task<IActionResult> ImportKnowledge() => RunBodyAsync(WorkTools.ImportKnowledge);
+
+    /// <summary>recall of one entry: the id is the path; detail and session_id may be query parameters.</summary>
+    [HttpGet("knowledge/{id}")]
+    public async Task<IActionResult> GetKnowledge(string id)
+    {
+        if (await DeniedAsync(WorkTools.Recall) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        try
+        {
+            arguments = QueryArguments(WorkTools.Recall, strings: ["session_id", "detail"], integers: [], booleans: []);
+        }
+        catch (WorkException exception)
+        {
+            return Refuse(exception);
+        }
+
+        arguments["id"] = id;
+        return await RunAsync(WorkTools.Recall, JsonSerializer.SerializeToElement(arguments));
+    }
 
     /// <summary>end_session: the body holds item and handoff (or is empty); the session id is the path.</summary>
     [HttpPost("sessions/{sessionId}/end")]
@@ -73,16 +110,33 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         JsonObject arguments;
         try
         {
-            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item"], integers: ["budget_tokens"], booleans: []);
+            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item", "paths"], integers: ["budget_tokens"], booleans: []);
         }
         catch (WorkException exception)
         {
             return Refuse(exception);
         }
 
+        // paths is a comma-separated list on the query string.
+        if (arguments["paths"] is JsonNode paths)
+            arguments["paths"] = new JsonArray(paths.GetValue<string>().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(path => (JsonNode?)path).ToArray());
+
         arguments["session_id"] = sessionId;
         return await RunAsync(WorkTools.GetBriefing, JsonSerializer.SerializeToElement(arguments));
     }
+
+    /// <summary>acquire: a hold on a resource.</summary>
+    [HttpPost("holds")]
+    public Task<IActionResult> Acquire() => RunBodyAsync(WorkTools.Acquire);
+
+    /// <summary>renew_hold: the body holds ttl_seconds (or is empty); the hold id is the path.</summary>
+    [HttpPost("holds/{holdId}/renew")]
+    public Task<IActionResult> RenewHold(string holdId) => RunWithPathIdAsync(WorkTools.RenewHold, "hold_id", holdId);
+
+    /// <summary>release: the body is empty; the hold id is the path.</summary>
+    [HttpPost("holds/{holdId}/release")]
+    public Task<IActionResult> ReleaseHold(string holdId) => RunWithPathIdAsync(WorkTools.Release, "hold_id", holdId);
 
     /// <summary>changes: project, cursor, from_start, limit, wait_seconds (and session_id) as query parameters.</summary>
     [HttpGet("changes")]
@@ -145,6 +199,31 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         var arguments = JsonObject.Create(body)!;
         arguments["id"] = id;
         return await RunAsync(WorkTools.UpdateWork, JsonSerializer.SerializeToElement(arguments));
+    }
+
+    // A tool whose id is in the path and whose other arguments (if any) are the body, which may be empty.
+    private async Task<IActionResult> RunWithPathIdAsync(string tool, string argument, string id)
+    {
+        if (await DeniedAsync(tool) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        if (Request.ContentLength == 0 || (Request.ContentLength is null && !Request.HasJsonContentType()))
+        {
+            arguments = new JsonObject();
+        }
+        else
+        {
+            var (body, refusal) = await ReadBodyAsync(tool);
+            if (refusal is not null)
+                return refusal;
+            if (body.TryGetProperty(argument, out _))
+                return Refuse(WorkException.Invalid($"Pass {argument} in the path, not in the body."));
+            arguments = JsonObject.Create(body)!;
+        }
+
+        arguments[argument] = id;
+        return await RunAsync(tool, JsonSerializer.SerializeToElement(arguments));
     }
 
     private async Task<IActionResult> RunBodyAsync(string tool)

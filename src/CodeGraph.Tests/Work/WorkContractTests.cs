@@ -110,7 +110,7 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing"]);
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge"]);
         foreach (var tool in tools)
         {
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;
@@ -315,9 +315,16 @@ public sealed class WorkContractTests
         public Task<IReadOnlyList<ChangeView>> ReadChangesAsync(Guid? projectId, long afterSequence, int limit, CancellationToken ct = default) => throw Fail();
         public Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) => throw Fail();
         public Task<WorkActor> TouchSessionAsync(Guid sessionId, WorkActor actor, CancellationToken ct = default) => throw Fail();
-        public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) => throw Fail();
         public Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default) => throw Fail();
         public Task<BriefingView> ReadBriefingAsync(Guid sessionId, Guid? focusItemId, CancellationToken ct = default) => throw Fail();
         public Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default) => throw Fail();
+        public Task<AcquireResult> AcquireAsync(AcquireSpec spec, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<HoldView> RenewHoldAsync(Guid holdId, int? ttlSeconds, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<ReleaseResult> ReleaseHoldAsync(Guid holdId, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<WorkArea>> ReadLiveWorkAreasAsync(Guid projectId, CancellationToken ct = default) => throw Fail();
+        public Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<SyncPlanApplied> ApplyPlanAsync(Guid previewId, Guid? projectId, WorkActor actor, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default) => throw Fail();
     }
 }

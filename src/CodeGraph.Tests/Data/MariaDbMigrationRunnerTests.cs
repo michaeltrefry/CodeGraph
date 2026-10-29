@@ -143,7 +143,9 @@ public class MariaDbMigrationRunnerTests
             ["059_durable_indexer_runs.sql"] = 3,
             ["063_stop_resource_intensive_reanalysis_replays.sql"] = 1,
             ["070_nodes_file_path_not_null.sql"] = 1,
-            ["076_rename_project_to_repository.sql"] = 2
+            ["076_rename_project_to_repository.sql"] = 2,
+            // sc-27869: the memory tools stop being pre-selected for new tokens (D17).
+            ["078_knowledge_store.sql"] = 1
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",
