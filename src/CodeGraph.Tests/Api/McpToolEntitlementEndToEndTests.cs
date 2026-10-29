@@ -96,6 +96,45 @@ public sealed class McpToolEntitlementEndToEndTests
         JsonNode.Parse(numeric.Body)!["id"]!.GetValue<int>().ShouldBe(31);
     }
 
+    [Theory]
+    [InlineData("list_projects", "list_repositories")]
+    [InlineData("search_projects", "search_repositories")]
+    [InlineData("project_report", "repository_report")]
+    [InlineData("get_project_health", "get_repository_health")]
+    public async Task CallToAToolRenamedAwayFromProject_IsInvalidArgumentNamingTheReplacement_BeforeTheEntitlementDenial(
+        string oldName, string newName)
+    {
+        var store = await CreateSeededStoreAsync();
+        // A selected-mode token with no grant for either name, and an all-mode token: both get the
+        // same answer, and neither gains access to the replacement.
+        await store.ReplaceTokenEntitlementsAsync(43, ["search_graph"]);
+        using var host = await StartHostAsync(store);
+
+        foreach (var tokenId in new long[] { 42, 43 })
+        {
+            var client = await McpClient.ConnectAsync(host, tokenId);
+            var response = await client.PostAsync(
+                "{\"jsonrpc\":\"2.0\",\"id\":\"r-1\",\"method\":\"tools/call\",\"params\":{\"name\":\"" + oldName + "\",\"arguments\":{}}}");
+
+            response.Status.ShouldBe(StatusCodes.Status200OK);
+            var message = JsonNode.Parse(response.Body)!.AsObject();
+            message["id"]!.GetValue<string>().ShouldBe("r-1");
+            message.ContainsKey("error").ShouldBeFalse();
+            message["result"]!["isError"]!.GetValue<bool>().ShouldBeTrue();
+            var error = JsonNode.Parse(message["result"]!["content"]![0]!["text"]!.GetValue<string>())!;
+            error["code"]!.GetValue<string>().ShouldBe("invalid_argument");
+            error["message"]!.GetValue<string>().ShouldBe(
+                $"`{oldName}` was renamed to `{newName}`; `project` now means a multi-repo project");
+
+            // The refusal grants nothing: the replacement is still its own, separately entitled tool,
+            // and this host's catalog does not carry it, so the call is not served.
+            var replacement = await client.PostAsync(
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"" + newName + "\",\"arguments\":{}}}");
+            var replacementMessage = McpClient.ParseMessage(replacement);
+            (replacementMessage["error"] is not null || replacementMessage["result"]?["isError"]?.GetValue<bool>() == true).ShouldBeTrue();
+        }
+    }
+
     // Every listed tool is callable and every unlisted probe tool is refused: list and call agree.
     private static async Task AssertListMatchesCallsAsync(McpClient client, IReadOnlyCollection<string> listed)
     {

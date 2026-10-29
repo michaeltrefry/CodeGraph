@@ -3,6 +3,10 @@
 // dotnetProject (a .NET project file inside a repository) and projectName on the project-review and
 // project-analysis nodes (the .NET project a node is about) keep their names.
 // Every statement is re-runnable: an interrupted run is not recorded as applied and resumes here.
+// The property renames run as CALL { } IN TRANSACTIONS OF 10000 ROWS so a large graph is rewritten
+// in bounded batches instead of one transaction (the migration runner executes such statements as
+// auto-commit). Each batch is committed on its own, which is safe because the WHERE clause only
+// matches rows still carrying the old property.
 
 // Drop the schema objects that are defined on the old property names.
 DROP CONSTRAINT code_node_project_qn IF EXISTS;
@@ -60,68 +64,52 @@ REMOVE n:ProjectIndexLock;
 
 // Properties.
 MATCH (n:CodeNode) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH ()-[e]->() WHERE e.project IS NOT NULL
-SET e.repository = e.project
-REMOVE e.project;
+CALL { WITH e SET e.repository = e.project REMOVE e.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:SyncState) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:FileHash) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:RepositorySummary) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:FileMetrics) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:ProjectHealthSummary) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:ProjectHealthAnalysis) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:SecurityFinding) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:RepositorySecuritySummary) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:ProjectDiagnostic) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:ProjectReviewRun) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:RepositoryIndexLock) WHERE n.project IS NOT NULL
-SET n.repository = n.project
-REMOVE n.project;
+CALL { WITH n SET n.repository = n.project REMOVE n.project } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:CrossRepoEdge) WHERE n.sourceProject IS NOT NULL
-SET n.sourceRepository = n.sourceProject
-REMOVE n.sourceProject;
+CALL { WITH n SET n.sourceRepository = n.sourceProject REMOVE n.sourceProject } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:CrossRepoEdge) WHERE n.targetProject IS NOT NULL
-SET n.targetRepository = n.targetProject
-REMOVE n.targetProject;
+CALL { WITH n SET n.targetRepository = n.targetProject REMOVE n.targetProject } IN TRANSACTIONS OF 10000 ROWS;
 
 MATCH (n:RepoCluster) WHERE n.projectName IS NOT NULL
-SET n.repositoryName = n.projectName
-REMOVE n.projectName;
+CALL { WITH n SET n.repositoryName = n.projectName REMOVE n.projectName } IN TRANSACTIONS OF 10000 ROWS;
 
 // Schema on the new names.
 CREATE CONSTRAINT code_node_repository_qn IF NOT EXISTS

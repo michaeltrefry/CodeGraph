@@ -84,5 +84,32 @@ WHERE NOT EXISTS (
 DELETE FROM mcp_personal_access_token_tool_entitlements
 WHERE tool_name IN ('list_projects', 'search_projects', 'project_report', 'get_project_health');
 
+-- The hub catalog's admin-owned state (enabled, default_selected, access_class) is keyed by tool
+-- name, so carry each old row to its new name before retiring it. Otherwise McpHubCatalogSeeder
+-- would seed the renamed tools with defaults and re-enable a tool an admin had disabled. The
+-- seeder's upsert preserves these admin-owned columns for an existing row and refreshes the
+-- system-owned ones.
+INSERT INTO mcp_hub_tools (
+    tool_name, provider_key, provider_type, display_name, description, read_only, destructive,
+    enabled, is_available, default_selected, access_class, requires_credential, input_schema,
+    created_at_utc, updated_at_utc)
+SELECT renamed.new_name, old_tool.provider_key, old_tool.provider_type, old_tool.display_name,
+       old_tool.description, old_tool.read_only, old_tool.destructive, old_tool.enabled,
+       old_tool.is_available, old_tool.default_selected, old_tool.access_class,
+       old_tool.requires_credential, old_tool.input_schema, old_tool.created_at_utc,
+       old_tool.updated_at_utc
+FROM mcp_hub_tools AS old_tool
+JOIN (
+    SELECT 'list_projects' AS old_name, 'list_repositories' AS new_name
+    UNION ALL SELECT 'search_projects', 'search_repositories'
+    UNION ALL SELECT 'project_report', 'repository_report'
+    UNION ALL SELECT 'get_project_health', 'get_repository_health'
+) AS renamed ON renamed.old_name = old_tool.tool_name
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM mcp_hub_tools AS existing
+    WHERE existing.tool_name = renamed.new_name
+);
+
 DELETE FROM mcp_hub_tools
 WHERE tool_name IN ('list_projects', 'search_projects', 'project_report', 'get_project_health');

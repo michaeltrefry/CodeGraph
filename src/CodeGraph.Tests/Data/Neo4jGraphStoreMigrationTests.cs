@@ -24,4 +24,21 @@ public class Neo4jGraphStoreMigrationTests
         statements[0].ShouldContain("CREATE CONSTRAINT first");
         statements[1].ShouldContain("CREATE FULLTEXT INDEX second");
     }
+
+    [Fact]
+    public void RepositoryRenameMigration_BatchesEveryPropertyRename()
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "../../../../CodeGraph.Api/Migrations/014_rename_project_to_repository.cypher"));
+        var statements = Neo4jGraphStore.ParseMigrationStatements(File.ReadAllText(path));
+
+        // Property renames are the MATCH ... WHERE x.old IS NOT NULL statements (label swaps have no WHERE).
+        var propertyRenames = statements
+            .Where(s => s.StartsWith("MATCH", StringComparison.Ordinal) && s.Contains("IS NOT NULL", StringComparison.Ordinal))
+            .ToList();
+
+        propertyRenames.Count.ShouldBe(16);
+        propertyRenames.ShouldAllBe(s => Neo4jGraphStore.RequiresAutoCommit(s));
+        Neo4jGraphStore.RequiresAutoCommit("CREATE INDEX x IF NOT EXISTS FOR (n:A) ON (n.b)").ShouldBeFalse();
+    }
 }

@@ -119,7 +119,7 @@ public class LmStudioAnalysisProviderTests
                       "choices": [
                         {
                           "message": {
-                            "content": "<|channel>thought\n<channel|>{\"repositorySummary\":\"Firmware\",\"confidence\":\"high\",\"nodes\":[]}"
+                            "content": "<|channel>thought\n<channel|>{\"projectSummary\":\"Firmware\",\"confidence\":\"high\",\"nodes\":[]}"
                           }
                         }
                       ]
@@ -148,7 +148,7 @@ public class LmStudioAnalysisProviderTests
             new AnalysisRequestOptions(),
             CancellationToken.None);
 
-        response.Text.ShouldContain("\"repositorySummary\":\"Firmware\"");
+        response.Text.ShouldContain("\"projectSummary\":\"Firmware\"");
         handler.RequestBodies.Count.ShouldBe(2);
 
         using var firstDoc = JsonDocument.Parse(handler.RequestBodies[0]);
@@ -166,7 +166,7 @@ public class LmStudioAnalysisProviderTests
             {
                 Content = new StringContent(
                     """
-                    {"error":"Failed to parse input at pos 0: <|channel>thought\n<channel|>{\"repositorySummary\":\"Recovered\",\"confidence\":\"high\",\"nodes\":[]}"}
+                    {"error":"Failed to parse input at pos 0: <|channel>thought\n<channel|>{\"projectSummary\":\"Recovered\",\"confidence\":\"high\",\"nodes\":[]}"}
                     """,
                     Encoding.UTF8,
                     "application/json")
@@ -191,7 +191,7 @@ public class LmStudioAnalysisProviderTests
             new AnalysisRequestOptions(),
             CancellationToken.None);
 
-        response.Text.ShouldContain("\"repositorySummary\":\"Recovered\"");
+        response.Text.ShouldContain("\"projectSummary\":\"Recovered\"");
         response.ModelUsed.ShouldBe("lmstudio-model");
         handler.RequestBodies.Count.ShouldBe(1);
     }
@@ -209,7 +209,7 @@ public class LmStudioAnalysisProviderTests
                       "choices": [
                         {
                           "message": {
-                            "content": "{\"repositorySummary\":\"ok\"}"
+                            "content": "{\"projectSummary\":\"ok\"}"
                           }
                         }
                       ]
@@ -253,7 +253,7 @@ public class LmStudioAnalysisProviderTests
                   "choices": [
                     {
                       "message": {
-                        "content": "{\"repositorySummary\":\"ok\"}"
+                        "content": "{\"projectSummary\":\"ok\"}"
                       }
                     }
                   ]
@@ -308,7 +308,7 @@ public class LmStudioAnalysisProviderTests
                       "model": "lmstudio-model",
                       "choices": [
                         {
-                          "text": "{\"repositorySummary\":\"ok\",\"confidence\":\"high\",\"nodes\":[]}"
+                          "text": "{\"projectSummary\":\"ok\",\"confidence\":\"high\",\"nodes\":[]}"
                         }
                       ]
                     }
@@ -335,7 +335,7 @@ public class LmStudioAnalysisProviderTests
             new AnalysisRequestOptions(),
             CancellationToken.None);
 
-        response.Text.ShouldContain("\"repositorySummary\":\"ok\"");
+        response.Text.ShouldContain("\"projectSummary\":\"ok\"");
     }
 
     [Fact]
@@ -352,7 +352,7 @@ public class LmStudioAnalysisProviderTests
                         {
                           "message": {
                             "content": [
-                              { "type": "text", "text": "{\"repositorySummary\":\"nested\",\"confidence\":\"medium\",\"nodes\":[]}" }
+                              { "type": "text", "text": "{\"projectSummary\":\"nested\",\"confidence\":\"medium\",\"nodes\":[]}" }
                             ]
                           }
                         }
@@ -381,7 +381,7 @@ public class LmStudioAnalysisProviderTests
             new AnalysisRequestOptions(),
             CancellationToken.None);
 
-        response.Text.ShouldContain("\"repositorySummary\":\"nested\"");
+        response.Text.ShouldContain("\"projectSummary\":\"nested\"");
     }
 
     [Fact]
@@ -452,7 +452,7 @@ public class LmStudioAnalysisProviderTests
                           "choices": [
                             {
                               "message": {
-                                "content": "{\"repositorySummary\":\"Firmware\",\"confidence\":\"high\",\"nodes\":[]}"
+                                "content": "{\"projectSummary\":\"Firmware\",\"confidence\":\"high\",\"nodes\":[]}"
                               }
                             }
                           ]
@@ -490,11 +490,11 @@ public class LmStudioAnalysisProviderTests
         results.Count.ShouldBe(1);
         results[0].Status.ShouldBe("succeeded");
         results[0].Text.ShouldNotBeNull();
-        results[0].Text!.ShouldContain("\"repositorySummary\":\"Firmware\"");
+        results[0].Text!.ShouldContain("\"projectSummary\":\"Firmware\"");
 
         storedRequest.Status.ShouldBe("succeeded");
         storedRequest.ResponseText.ShouldNotBeNull();
-        storedRequest.ResponseText!.ShouldContain("\"repositorySummary\":\"Firmware\"");
+        storedRequest.ResponseText!.ShouldContain("\"projectSummary\":\"Firmware\"");
         storedRequest.ModelUsed.ShouldBe("lmstudio-model");
     }
 

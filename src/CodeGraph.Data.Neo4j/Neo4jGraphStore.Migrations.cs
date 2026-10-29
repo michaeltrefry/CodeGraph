@@ -20,6 +20,9 @@ public partial class Neo4jGraphStore
             .ToList();
     }
 
+    internal static bool RequiresAutoCommit(string statement) =>
+        statement.Contains("IN TRANSACTIONS", StringComparison.OrdinalIgnoreCase);
+
     public async Task ApplyMigrationsAsync(string migrationsPath)
     {
         var cypherPath = string.IsNullOrWhiteSpace(migrationsPath)
@@ -80,10 +83,20 @@ public partial class Neo4jGraphStore
             {
                 try
                 {
-                    await session.ExecuteWriteAsync(async tx =>
+                    if (RequiresAutoCommit(statement))
                     {
-                        await tx.RunAsync(statement);
-                    });
+                        // CALL { } IN TRANSACTIONS batches a large rewrite into bounded commits
+                        // and is only allowed in an implicit (auto-commit) transaction.
+                        var cursor = await session.RunAsync(statement);
+                        await cursor.ConsumeAsync();
+                    }
+                    else
+                    {
+                        await session.ExecuteWriteAsync(async tx =>
+                        {
+                            await tx.RunAsync(statement);
+                        });
+                    }
                 }
                 catch (Exception ex)
                 {

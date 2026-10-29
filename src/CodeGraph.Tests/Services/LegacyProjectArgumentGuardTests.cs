@@ -48,6 +48,24 @@ public sealed class LegacyProjectArgumentGuardTests
         call.Error.GetProperty("message").GetString()!.ShouldStartWith(Pointer);
     }
 
+    [Theory]
+    [InlineData("list_projects", "list_repositories")]
+    [InlineData("search_projects", "search_repositories")]
+    [InlineData("project_report", "repository_report")]
+    [InlineData("get_project_health", "get_repository_health")]
+    public async Task A_call_to_a_renamed_tool_is_refused_invalid_argument_naming_the_replacement(string oldName, string newName)
+    {
+        using var host = await StartHostAsync();
+        var client = await Client.ConnectAsync(host);
+
+        var call = await client.CallAsync(oldName, "{}");
+
+        call.IsError.ShouldBeTrue();
+        call.Error.GetProperty("code").GetString().ShouldBe("invalid_argument");
+        call.Error.GetProperty("message").GetString().ShouldBe(
+            $"`{oldName}` was renamed to `{newName}`; `project` now means a multi-repo project");
+    }
+
     [Fact]
     public async Task The_same_calls_with_repository_work()
     {
