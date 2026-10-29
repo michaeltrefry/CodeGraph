@@ -95,7 +95,7 @@ public sealed class GitHubPushWebhookService(
         try
         {
             var repository = JsonSerializer.Deserialize<EventEnvelope>(body)?.Repository;
-            return repository is null || await FindProjectAsync(repository) is not { } project ? [] : [project.Name];
+            return repository is null || await FindRepositoryAsync(repository) is not { } indexed ? [] : [indexed.Name];
         }
         catch (JsonException)
         {
