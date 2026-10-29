@@ -201,6 +201,10 @@ public static class Startup
         // Work tracking (agent coordination S1). IWorkStore is registered with the MariaDB
         // provider only; without it the work tools answer a plain server error.
         services.AddTransient<IWorkService, WorkService>();
+        // Overlap warnings (S8): what a touched file reaches in the graph is cached for a minute
+        // across calls (one cache per process); the detector uses the impact analysis service.
+        services.AddSingleton<CodeGraph.Services.Work.OverlapImpactCache>();
+        services.AddTransient<CodeGraph.Services.Work.WorkOverlaps>();
         // Sessions (S2): the idle threshold after which a silent session's claims lapse, and the
         // default briefing budget.
         services.Configure<CodeGraph.Models.Work.WorkSessionOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkSessionOptions.Section));
