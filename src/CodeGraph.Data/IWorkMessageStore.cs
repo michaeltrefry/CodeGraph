@@ -49,7 +49,7 @@ public sealed record NewMessageSpec(
     Guid? InReplyTo,
     MessageResolution? Resolves);
 
-public sealed record PostedMessage(bool Created, MessageView Message, int Recipients, MessageView? Resolved);
+public sealed record PostedMessage(bool Created, MessageView Message, int Recipients, MessageView? Resolved, IReadOnlyList<ItemVersionRef>? ItemVersions = null);
 
 /// <param name="Recipient">A session id, or <see cref="MessageChannels.HumanRecipient"/>.</param>
 public sealed record InboxQuery(Guid ProjectId, string Recipient, long AfterSequence, bool IncludeRead, int Limit);

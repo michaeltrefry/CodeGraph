@@ -96,7 +96,7 @@ public sealed partial class WorkService
         var keyHash = request.IdempotencyKey is { } key ? HashKey(actor, key) : null;
         var posted = await Store.PostMessageAsync(
             new NewMessageSpec(project.Id, body, kind, itemId, featureId, resource, toSession, toHuman, blocking, replyTo, request.Resolves), actor, keyHash, ct);
-        return new PostResult(posted.Created, posted.Message, posted.Recipients, posted.Resolved);
+        return new PostResult(posted.Created, posted.Message, posted.Recipients, posted.Resolved, posted.ItemVersions);
     }
 
     // ---- inbox -----------------------------------------------------------------------------------

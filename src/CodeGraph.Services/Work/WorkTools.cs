@@ -106,7 +106,8 @@ public static class WorkTools
             "resolved. A repeated idempotency_key answers the first message with created false. A project or resource message reaches only the sessions live when it is posted " +
             "(later sessions do not see it); a feature message reaches the sessions holding one of its items then, and with none it is stored with zero recipients. Closing a " +
             "question takes no expected_version: it is guarded by its own state, and one already closed is refused conflict. Opening or closing a blocking question writes an " +
-            "item_updated entry (awaiting_human) to the change feed and advances the item's version." + Sessions + Errors,
+            "item_updated entry (awaiting_human) to the change feed and advances the item's version (answered in item_versions, so the next update_work passes it as expected_version); "
+            + "nothing is written when the item's awaiting_human state does not change (a second open question, a finished item)." + Sessions + Errors,
             ReadOnly: false, Idempotent: true),
         new(Inbox, "Inbox", typeof(InboxRequest),
             "Read the messages delivered to the session (or, without session_id, to the project's humans) that are not acknowledged yet, oldest first, as {items, next_cursor}. " +
@@ -116,7 +117,7 @@ public static class WorkTools
             ReadOnly: false, Idempotent: true),
         new(Ack, "Acknowledge Messages", typeof(AckRequest),
             "Mark messages read: by messages (ids), or everything delivered up to an inbox next_cursor (up_to). With resolution answered or declined (and messages) it also closes " +
-            "the named questions or requests as the caller (no expected_version: a question already closed is refused conflict). Answers how many were marked and their lines. " +
+            "the named questions or requests as the caller (no expected_version: a question already closed is refused conflict; closing a blocking question moves its item's version, answered in item_versions). Answers how many were marked and their lines. " +
             "Safe to repeat. A direct message with no item passes to the next session of the same project and repository, once per hop, for 7 days after the session it " +
             "was sent to ends." + Sessions + Errors,
             ReadOnly: false, Idempotent: true)

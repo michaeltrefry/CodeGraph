@@ -508,6 +508,41 @@ public sealed class WorkMessagesMariaDbTests(WorkDatabase db) : IClassFixture<Wo
     }
 
     [Fact]
+    public async Task The_item_version_a_blocking_question_moved_is_answered_and_nothing_moves_when_the_derived_state_does_not_change()
+    {
+        var project = await db.NewProjectAsync("BV");
+        var key = (await db.NewItemAsync(project, "Versions")).GetProperty("key").GetString()!;
+        var version = (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+
+        var first = await PostAsync(new { project, item = key, to_human = true, kind = "question", blocking = true, body = "One?" });
+        var moved = first.GetProperty("item_versions").EnumerateArray().Single();
+        (moved.GetProperty("key").GetString(), moved.GetProperty("version").GetInt64()).ShouldBe((key, version + 1));
+        // The reported version is usable as expected_version at once.
+        await db.CallAsync(WorkTools.UpdateWork, new { id = key, expected_version = version + 1, comment = "ok" });
+
+        // A second open question does not change the derived state: no bump, no entry, no item_versions.
+        var current = (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        var second = await PostAsync(new { project, item = key, to_human = true, kind = "question", blocking = true, body = "Two?" });
+        second.TryGetProperty("item_versions", out _).ShouldBeFalse();
+        (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64().ShouldBe(current);
+        // Closing one while another stays open changes nothing either; closing the last does.
+        var firstId = IdOf(first);
+        var partial = await db.CallAsync(WorkTools.Ack, new { project, messages = new[] { firstId }, resolution = "answered" }, "dana");
+        partial.TryGetProperty("item_versions", out _).ShouldBeFalse();
+        var last = await db.CallAsync(WorkTools.Ack, new { project, messages = new[] { IdOf(second) }, resolution = "answered" }, "dana");
+        last.GetProperty("item_versions").EnumerateArray().Single().GetProperty("version").GetInt64().ShouldBe(current + 1);
+
+        // A finished item is not awaiting anyone: neither opening nor closing moves it.
+        var done = (await db.NewItemAsync(project, "Done")).GetProperty("key").GetString()!;
+        await db.UpdateAsync(done, new { status = "complete" });
+        var doneVersion = (await db.CallAsync(WorkTools.GetWork, new { id = done })).GetProperty("version").GetInt64();
+        var late = await PostAsync(new { project, item = done, to_human = true, kind = "question", blocking = true, body = "Too late?" });
+        late.TryGetProperty("item_versions", out _).ShouldBeFalse();
+        await db.CallAsync(WorkTools.Ack, new { project, messages = new[] { IdOf(late) }, resolution = "declined" }, "dana");
+        (await db.CallAsync(WorkTools.GetWork, new { id = done })).GetProperty("version").GetInt64().ShouldBe(doneVersion);
+    }
+
+    [Fact]
     public async Task A_finished_item_is_not_reported_blocked_by_a_question_left_open()
     {
         var project = await db.NewProjectAsync("BC");

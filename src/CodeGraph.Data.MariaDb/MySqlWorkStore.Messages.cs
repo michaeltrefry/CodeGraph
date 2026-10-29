@@ -223,20 +223,37 @@ public sealed partial class MySqlWorkStore
     /// changed, so the item's version moves and the change feed says so. The caller holds the item's
     /// row exclusively and the messages lock.
     /// </summary>
-    private static async Task<PendingChange> AwaitingHumanChangeAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, bool opened, DateTime now, CancellationToken ct)
+    private static async Task<(PendingChange? Entry, ItemVersionRef? Version)> AwaitingHumanChangeAsync(
+        MySqlConnection connection, MySqlTransaction transaction, Guid itemId, bool opened, DateTime now, CancellationToken ct)
     {
         var before = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
         var open = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
             "SELECT COUNT(*) FROM work_messages WHERE item_id = @itemId AND blocking = 1 AND state = 'open'", new { itemId }, transaction, cancellationToken: ct));
+        // The derived state, as OpenBlockingQuestion reads it: a finished item is never awaiting the human.
+        var finished = WorkStatuses.IsFinished(WorkStatuses.Parse(before.Status));
+        var wasAwaiting = !finished && (opened ? open - 1 : open + 1) > 0;
+        var isAwaiting = !finished && open > 0;
+        if (wasAwaiting == isAwaiting)
+            return (null, null);
+
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE work_items SET version = version + 1, updated_at = @now WHERE id = @itemId", new { itemId, now }, transaction, cancellationToken: ct));
         var after = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
         var changes = new JsonArray
         {
-            Change("awaiting_human", opened ? open > 1 : open + 1 > 0, open > 0),
+            Change("awaiting_human", wasAwaiting, isAwaiting),
             Change("version", before.Version, after.Version)
         };
-        return new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes);
+        return (new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes),
+            new ItemVersionRef(after.Key, after.Version));
+    }
+
+    private static void Collect((PendingChange? Entry, ItemVersionRef? Version) change, List<PendingChange> entries, List<ItemVersionRef> versions)
+    {
+        if (change.Entry is not null)
+            entries.Add(change.Entry);
+        if (change.Version is not null)
+            versions.Add(change.Version);
     }
 
     public Task<PostedMessage> PostMessageAsync(NewMessageSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
@@ -258,6 +275,8 @@ public sealed partial class MySqlWorkStore
             await HoldItemsAsync(connection, transaction, holds, ct);
             // The first consistent read comes after the lock, so it sees every claim, post and answer committed before it.
             await messageLock.AcquireAsync(ct);
+            // The locks may have been waited for: liveness of holders and sessions is judged from here.
+            now = Now();
             if (keyHash is not null && await FindKeyAsync(connection, transaction, spec.ProjectId, MessageOperation, keyHash, ct) is { EntityId: { } existing })
             {
                 var earlier = (await ReadMessageRowAsync(connection, transaction, existing, ct))!;
@@ -382,21 +401,22 @@ public sealed partial class MySqlWorkStore
                 await InsertKeyAsync(connection, transaction, spec.ProjectId, MessageOperation, keyHash, id, null, now, ct);
 
             var entries = new List<PendingChange>();
+            var versions = new List<ItemVersionRef>();
             if (spec.Blocking && itemId is { } blocked)
-                entries.Add(await AwaitingHumanChangeAsync(connection, transaction, blocked, opened: true, now, ct));
+                Collect(await AwaitingHumanChangeAsync(connection, transaction, blocked, opened: true, now, ct), entries, versions);
 
             MessageRow? resolved = null;
             if (spec.Resolves is { } resolution)
             {
                 await ResolveAsync(connection, transaction, parent!, resolution, actor, now, ct);
                 if (parent!.Blocking && parent.ItemId is { } unblocked)
-                    entries.Add(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct));
+                    Collect(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct), entries, versions);
                 resolved = await ReadMessageRowAsync(connection, transaction, parent.Id, ct);
             }
 
             var row = (await ReadMessageRowAsync(connection, transaction, id, ct))!;
             await CommitAsync(connection, transaction, entries, actor, now, ct);
-            return new PostedMessage(true, ToView(row), recipientIds.Count, resolved is null ? null : ToView(resolved));
+            return new PostedMessage(true, ToView(row), recipientIds.Count, resolved is null ? null : ToView(resolved), versions.Count == 0 ? null : versions);
         }, ct);
 
     /// <summary>
@@ -508,8 +528,10 @@ public sealed partial class MySqlWorkStore
             await using var messageLock = new MessageLockScope(connection, transaction);
             await HoldItemsAsync(connection, transaction, holds, ct);
             await messageLock.AcquireAsync(ct);
+            now = Now();
             var acked = new List<Guid>();
             var entries = new List<PendingChange>();
+            var versions = new List<ItemVersionRef>();
 
             if (spec.Messages is { } ids)
             {
@@ -539,7 +561,7 @@ public sealed partial class MySqlWorkStore
                         {
                             await ResolveAsync(connection, transaction, message, resolution, actor, now, ct);
                             if (message.Blocking && message.ItemId is { } unblocked)
-                                entries.Add(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct));
+                                Collect(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct), entries, versions);
                             if (!acked.Contains(messageId))
                                 acked.Add(messageId);
                         }
@@ -570,7 +592,7 @@ public sealed partial class MySqlWorkStore
             }
 
             await CommitAsync(connection, transaction, entries, actor, now, ct);
-            return new AckResult(acked.Count, lines);
+            return new AckResult(acked.Count, lines, versions.Count == 0 ? null : versions);
         }, ct);
 
     private sealed class DeliveryRow

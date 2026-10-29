@@ -456,6 +456,7 @@ public sealed partial class MySqlWorkStore
             if (effective.FeatureId is { } featureId)
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
 
+            var handOver = false;
             var status = effective.Status ?? before.Status;
             var claimFields = ApplyClaim(beforeRow, effective.Claim, status, actor, now);
             // Finishing an item (by anyone) ends every session's claim on it: a session that held it
@@ -471,7 +472,7 @@ public sealed partial class MySqlWorkStore
                 if (effective.Claim is { Action: ClaimAction.Claim })
                 {
                     await OpenSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
-                    await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
+                    handOver = true;
                 }
                 else if (effective.Claim is { Action: ClaimAction.Release })
                     await CloseSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
@@ -519,6 +520,9 @@ public sealed partial class MySqlWorkStore
             foreach (var change in extra)
                 changes.Add(change!.DeepClone());
 
+            // Last, after every row this write locks: the messages lock is then taken with no row lock to follow.
+            if (handOver)
+                await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
             await CommitAsync(connection, transaction,
                 [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes)],
                 actor, now, ct);
@@ -903,10 +907,7 @@ public sealed partial class MySqlWorkStore
 
                 var recovery = recover ? await LoadRecoveryAsync(connection, transaction, before, ct) : null;
                 if (actor.SessionId is { } sessionId)
-                {
                     await OpenSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
-                    await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
-                }
 
                 if (spec.KeyHash is { } keyHash)
                     await InsertKeyAsync(connection, transaction, spec.ProjectId, NextWorkOperation, keyHash, itemId, null, now, ct);
@@ -915,6 +916,8 @@ public sealed partial class MySqlWorkStore
                 var after = await ToViewAsync(connection, transaction, afterRow, ct);
                 var changes = Diff(ClaimSnapshot(before), ClaimSnapshot(afterRow));
                 changes.Add(Change("version", before.Version, afterRow.Version));
+                // Last, after every row this write locks: the messages lock is then taken with no row lock to follow.
+                await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
                 await CommitAsync(connection, transaction,
                     [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);

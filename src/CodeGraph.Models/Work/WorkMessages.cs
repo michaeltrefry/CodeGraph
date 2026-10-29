@@ -197,11 +197,14 @@ public sealed record MessageLine(
     DeliveryState? Delivery = null,
     bool? HandedOver = null);
 
-public sealed record PostResult(bool Created, MessageView Message, int Recipients, MessageView? Resolved = null);
+/// <summary>An item whose version a post or an ack moved (a blocking question opened or closed): pass this version as expected_version.</summary>
+public sealed record ItemVersionRef(string Key, long Version);
+
+public sealed record PostResult(bool Created, MessageView Message, int Recipients, MessageView? Resolved = null, IReadOnlyList<ItemVersionRef>? ItemVersions = null);
 
 public sealed record InboxResult(IReadOnlyList<MessageView> Items, string NextCursor);
 
-public sealed record AckResult(int Acked, IReadOnlyList<MessageLine> Messages);
+public sealed record AckResult(int Acked, IReadOnlyList<MessageLine> Messages, IReadOnlyList<ItemVersionRef>? ItemVersions = null);
 
 /// <summary>The briefing's inbox: how many messages wait unacknowledged, and the first of them.</summary>
 public sealed record BriefingInbox(int Unread, IReadOnlyList<MessageLine>? Items = null);
