@@ -60,8 +60,10 @@ public interface IWorkStore : IWorkMessageStore
     /// <summary>
     /// Ends the session: writes the handoff (on <paramref name="itemId"/>, or the one item the session
     /// holds), releases every claim of the session. Ending an ended session changes nothing and answers it.
+    /// <paramref name="knowledge"/> (the save-point fields, S5) is stored in the same transaction,
+    /// linked to the handoff's item, else <paramref name="itemId"/>, else the one item the session holds.
     /// </summary>
-    Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, WorkActor actor, CancellationToken ct = default);
+    Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default);
 
     Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default);
 
@@ -219,7 +221,9 @@ public sealed record ProjectPatchSpec(
     string? Description = null,
     bool ClearDescription = false,
     IReadOnlyList<string>? Goals = null,
-    IReadOnlyList<RepositoryMemberView>? Repositories = null);
+    IReadOnlyList<RepositoryMemberView>? Repositories = null,
+    // The save-point fields (S5), project-wide unless they name repositories.
+    IReadOnlyList<KnowledgeSpec>? Knowledge = null);
 
 public sealed record DocumentSpec(string Title, string Body);
 
@@ -238,7 +242,9 @@ public sealed record FeaturePatchSpec(
     IReadOnlyList<RequirementSpec>? Requirements = null,
     IReadOnlyList<RequirementDropSpec>? DropRequirements = null,
     IReadOnlyList<string>? AcceptanceTests = null,
-    bool ClearAcceptanceTests = false);
+    bool ClearAcceptanceTests = false,
+    // The save-point fields (S5), linked to the feature.
+    IReadOnlyList<KnowledgeSpec>? Knowledge = null);
 
 public sealed record NewItemSpec(
     string Title,
@@ -295,7 +301,9 @@ public sealed record ItemPatchSpec(
     bool ClearTouches = false,
     AcceptanceReportSpec? AcceptanceReport = null,
     // Set from merge evidence (S6); not a tool argument. Never completes the item.
-    bool? MergedAwaitingAcceptance = null)
+    bool? MergedAwaitingAcceptance = null,
+    // The save-point fields (S5): knowledge entries stored in the write's transaction, linked to the item.
+    IReadOnlyList<KnowledgeSpec>? Knowledge = null)
 {
     /// <summary>Whether the patch only claims the item (a retried claim may then answer the claim it already holds).</summary>
     public bool IsClaimOnly =>
@@ -304,7 +312,7 @@ public sealed record ItemPatchSpec(
         Order is null && AddBlockedBy is not { Count: > 0 } && RemoveBlockedBy is not { Count: > 0 } && AddLinks is not { Count: > 0 } &&
         RemoveLinks is not { Count: > 0 } && Comment is null && Handoff is null &&
         Goal is null && !ClearGoal && AcceptanceCriteria is null && !ClearAcceptanceCriteria && Inherits is null && !ClearInherits &&
-        Touches is null && !ClearTouches && AcceptanceReport is null && MergedAwaitingAcceptance is null;
+        Touches is null && !ClearTouches && AcceptanceReport is null && MergedAwaitingAcceptance is null && Knowledge is not { Count: > 0 };
 
     /// <summary>The patch without its claim action.</summary>
     public bool IsEmptyBesidesClaim => (this with { Claim = new ClaimSpec(ClaimAction.Claim, "", 0) }).IsClaimOnly;

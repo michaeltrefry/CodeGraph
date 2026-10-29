@@ -28,6 +28,14 @@ public static class WorkTools
     public const string RenewHold = "renew_hold";
     public const string Release = "release";
     public const string SyncPlan = "sync_plan";
+    public const string Record = "record";
+    public const string Recall = "recall";
+    public const string ImportKnowledge = "import_knowledge";
+
+    private const string SavePoints =
+        " Save points: decisions, attempts, corrections (lessons) and findings (facts, gotchas, constraints) are stored as entries of the project's knowledge " +
+        "in the same transaction as the write and echoed in recorded; recall and other sessions' briefings return them.";
+
     public const string Post = "post";
     public const string Inbox = "inbox";
     public const string Ack = "ack";
@@ -81,7 +89,7 @@ public static class WorkTools
             "acceptance_tests; an item takes goal, acceptance_criteria (at most 3; 0 allowed for backward compatibility), inherits (requirements of its feature) and touches. With session_id a claim is the session's and lasts " +
             "while the session is live (leave marker and ttl_seconds out); a retried claim the session already holds answers it. A session whose claim on the item " +
             "lapsed is refused claim_lost until it reclaims the unclaimed item (claim) or lets go of it (release_claim). Answers the object as it is after the write, " +
-            "with its new version." + Sessions + Errors,
+            "with its new version." + SavePoints + Sessions + Errors,
             ReadOnly: false, Idempotent: false),
         new(NextWork, "Next Work", typeof(NextWorkRequest),
             "Claim the best item available in a project for the caller. First a recoverable item (in_progress, every blocker complete, its claim lapsed or released), " +
@@ -103,17 +111,18 @@ public static class WorkTools
             "Register this agent as a session of a project (harness, model, host, repository, branch, worktree, intent) and answer the session and its briefing. " +
             "Pass the session's id as session_id to every work tool: each call is its heartbeat, and a session silent past the idle threshold (15 minutes by " +
             "default) is presumed dead and its claims lapse. The briefing is data within budget_tokens (default 1500): the project and its goals, the items " +
-            "this session holds with their latest handoff, the other live sessions of the project and what they hold, and one suggested next item (recoverable " +
-            "first); empty sections are left out and truncated names sections the budget shortened." + Errors,
+            "this session holds with their latest handoff, the other live sessions of the project and what they hold, one suggested next item (recoverable " +
+            "first), and knowledge: the active decisions, constraints, lessons and gotchas linked to its items, scoped to paths (passed here), to its repository, " +
+            "or project-wide; empty sections are left out and truncated names sections the budget shortened." + Errors,
             ReadOnly: false, Idempotent: false),
         new(EndSession, "End Session", typeof(EndSessionRequest),
             "End a session: record the handoff (done, decisions, open issues, corrections, next action, branch, commit) on item, or on the one item the session " +
             "holds, and release every claim of the session. An in-progress item it released is then recoverable by the next session, with the handoff. Answers " +
-            "the ended session, the released items and the handoff. Ending an ended session changes nothing and answers it." + Errors,
+            "the ended session, the released items and the handoff. Ending an ended session changes nothing and answers it." + SavePoints + Errors,
             ReadOnly: false, Idempotent: true),
         new(GetBriefing, "Get Briefing", typeof(GetBriefingRequest),
             "Fetch the session's briefing again (for example after context compaction), optionally including one item (focus) with its latest handoff. Same " +
-            "sections and budget rules as start_session. Renews the session's heartbeat." + Errors,
+            "sections and budget rules as start_session; paths adds the knowledge scoped to them. Renews the session's heartbeat." + Errors,
             ReadOnly: false, Idempotent: true),
         new(Acquire, "Acquire Resource", typeof(AcquireRequest),
             "Take a slot of a named resource of a project (a GPU, a runner, a staging database) for a purpose and a time: answers granted with your hold (id, expires_at), " +
@@ -147,6 +156,30 @@ public static class WorkTools
             "item, and an active requirement is never dropped silently. A plan holds at most 200 items and 500 dependencies; previews expire after an hour." +
             Sessions + Errors,
             ReadOnly: false, Idempotent: true),
+        new(Record, "Record Knowledge", typeof(RecordRequest),
+            "Write the project's shared knowledge when no work item is involved (with an item, use the save-point fields of update_work or end_session). " +
+            "entry: a new goal, decision, constraint, fact, gotcha, attempt, architecture note or lesson, scoped to the project and optionally to repositories, " +
+            "paths/globs and graph nodes, with confidence; supersedes replaces an active entry (it becomes superseded, linked to the new one). revise: a new " +
+            "revision of an active entry. retract: mark one wrong (kept, status retracted). verify: re-baseline it against its files. Entries are never edited " +
+            "in place; every write adds a revision. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
+            "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry. record " +
+            "(entry, supersede, revise, retract, verify) writes no changes entry: the change feed covers projects, features and items; save points stored by " +
+            "update_work on one of those appear in its entry as a knowledge change." + Sessions + Errors,
+            ReadOnly: false, Idempotent: false),
+        new(Recall, "Recall Knowledge", typeof(RecallRequest),
+            "Search the project's knowledge: by kind, repository, paths (an entry's path or glob covering one, or lying below one), graph nodes, item, " +
+            "lesson activity and source, words, status (default active) and possibly_stale. Rows are small (id, kind, summary, confidence, version, and " +
+            "possibly_stale / status / made_autonomously / item when they apply); detail full answers whole entries (at most 10 a page); id answers one entry " +
+            "(detail full adds its revisions). Pages of limit (default 20, at most 50) newest first, with next_cursor." + Sessions + Errors,
+            ReadOnly: true, Idempotent: true),
+        new(ImportKnowledge, "Import Knowledge", typeof(ImportKnowledgeRequest),
+            "Import native harness memory (such as Claude Code memory files) into the project's knowledge, in two steps. The importing agent verifies each " +
+            "candidate against the repository itself and passes the result (verified, stale, unverifiable, personal). The dry run (confirm false, the default) " +
+            "checks each candidate's scope (repositories and nodes of the project) and looks for duplicates (an active entry of the same kind with the same " +
+            "normalized summary, or an earlier candidate), answers an outcome per candidate (would_store, duplicate, out_of_scope, personal, stale, invalid) " +
+            "and a preview_token, and stores nothing. confirm true with accept (indexes) and that preview_token stores exactly the accepted candidates, all " +
+            "or none, each with its source_file; a candidate that is not would_store now refuses the call. Source files are never changed." + Sessions + Errors,
+            ReadOnly: false, Idempotent: false),
         new(Post, "Post Message", typeof(PostRequest),
             "Post a message: on an item's thread (item; the default for a message about an item), to the project, a feature or a resource channel, directly to a session " +
             "(to_session) or to the humans (to_human). Kinds: info, question, request, blocker, announcement. A question or request stays open until someone answers or " +
