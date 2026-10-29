@@ -33,6 +33,10 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
     [HttpPost("next")]
     public Task<IActionResult> Next() => RunBodyAsync(WorkTools.NextWork);
 
+    /// <summary>sync_plan: a preview (feature and plan) or its confirmation (confirm).</summary>
+    [HttpPost("plans/sync")]
+    public Task<IActionResult> SyncPlan() => RunBodyAsync(WorkTools.SyncPlan);
+
     /// <summary>start_session.</summary>
     [HttpPost("sessions")]
     public Task<IActionResult> StartSession() => RunBodyAsync(WorkTools.StartSession);

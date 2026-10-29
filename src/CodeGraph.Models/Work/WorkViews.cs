@@ -50,7 +50,12 @@ public sealed record FeatureView(
     string CreatedBy,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    IReadOnlyDictionary<string, int>? ItemCounts = null)
+    IReadOnlyDictionary<string, int>? ItemCounts = null,
+    FeatureStatus Status = FeatureStatus.Open,
+    FeatureCompletionView? Completion = null,
+    IReadOnlyList<string>? Goals = null,
+    IReadOnlyList<RequirementView>? Requirements = null,
+    IReadOnlyList<string>? AcceptanceTests = null)
 {
     public string Kind => "feature";
 }
@@ -91,7 +96,20 @@ public sealed record ItemView(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     IReadOnlyList<HandoffView>? Handoffs = null,
-    int? HandoffCount = null)
+    int? HandoffCount = null,
+    // The brief (sc-27868): everything needed to start the item, in one response.
+    string? Ref = null,
+    string? Goal = null,
+    IReadOnlyList<AcceptanceCriterionView>? AcceptanceCriteria = null,
+    IReadOnlyList<string>? Inherits = null,
+    IReadOnlyList<RequirementView>? InheritedRequirements = null,
+    IReadOnlyList<string>? Touches = null,
+    bool? MergedAwaitingAcceptance = null,
+    AcceptanceReportView? AcceptanceReport = null,
+    IReadOnlyList<AttemptView>? Attempts = null,
+    int? AttemptCount = null,
+    // Filled by the messages story (S7): open questions and requests about the item.
+    IReadOnlyList<object>? OpenMessages = null)
 {
     public string Kind => "item";
 }

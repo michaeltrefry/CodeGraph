@@ -217,11 +217,20 @@ public sealed partial class MySqlWorkStore
                         new { id }, transaction, cancellationToken: ct));
                 }
 
+                // The session's attempt on the item (sc-27868) keeps the handoff and ends with the claim.
+                var attempt = await ActiveAttemptAsync(connection, transaction, id, ct);
+                if (attempt is not null && attempt.SessionId != sessionId.ToString())
+                    attempt = null;
                 if (id == target)
                 {
                     written = await InsertHandoffAsync(connection, transaction, id, handoff!, sessionActor, now, ct);
                     changes.Add(Change("handoff", (JsonNode?)null, JsonValue.Create(written.Id.ToString())));
+                    if (attempt is not null)
+                        await AttachHandoffAsync(connection, transaction, attempt, written.Id, handoff!.Branch, ct);
                 }
+
+                if (releases && attempt is not null)
+                    await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, "The session ended and released the claim.", now, changes, ct);
 
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET version = version + 1, updated_at = @now WHERE id = @id", new { id, now }, transaction, cancellationToken: ct));
@@ -394,8 +403,14 @@ public sealed partial class MySqlWorkStore
             last = row is null ? null : ToView(row);
         }
 
-        return new RecoveryView(previous, branches, prs, handoff, last);
+        return new RecoveryView(previous, branches, prs, handoff, last, Unmet(before));
     }
+
+    /// <summary>The acceptance criteria of an item not yet reported met, or null when there are none.</summary>
+    private static IReadOnlyList<AcceptanceCriterionView>? Unmet(ItemRow row) =>
+        ReadList<AcceptanceCriterionView>(row.AcceptanceJson).Where(criterion => criterion.State == AcceptanceState.Unmet).ToList() is { Count: > 0 } unmet
+            ? unmet
+            : null;
 
     private static async Task<(IReadOnlyList<string>? Branches, IReadOnlyList<string>? Prs)> ReadWorkLinksAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct)
     {
@@ -487,7 +502,7 @@ public sealed partial class MySqlWorkStore
         var handoff = (await ReadHandoffsAsync(connection, null, row.Id, limit: 1, ct)).FirstOrDefault();
         return new BriefingItem(
             row.Key, row.Title, WorkStatuses.Parse(row.Status), ParseName<WorkPriority>(row.Priority), row.RepositoryName,
-            recoverable ? true : null, branches, prs, handoff, previous);
+            recoverable ? true : null, branches, prs, handoff, previous, Unmet(row));
     }
 
     /// <summary>

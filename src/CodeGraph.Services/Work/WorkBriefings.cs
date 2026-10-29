@@ -90,8 +90,11 @@ public static class WorkBriefings
         })
     ];
 
-    private static BriefingItem Shorten(BriefingItem item) =>
-        item.LatestHandoff is { } handoff ? item with { LatestHandoff = Shorten(handoff) } : item;
+    private static BriefingItem Shorten(BriefingItem item) => item with
+    {
+        LatestHandoff = item.LatestHandoff is { } handoff ? Shorten(handoff) : null,
+        UnmetAcceptance = item.UnmetAcceptance?.Select(criterion => criterion with { Text = Cut(criterion.Text)!, Evidence = Cut(criterion.Evidence) }).ToList()
+    };
 
     private static HandoffView Shorten(HandoffView handoff) => handoff with
     {
