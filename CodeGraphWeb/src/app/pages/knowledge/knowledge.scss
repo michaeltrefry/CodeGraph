@@ -1,0 +1,160 @@
+// Shared by the Knowledge, Lessons and Review queue pages. Tokens only (no colours).
+
+// Accent text: --accent-ink is tuned for dark surfaces; on light ones it is mixed toward the text colour to stay readable.
+:host { display: block; --kn-accent-text: var(--accent-ink); }
+:host(.kn-stack) { display: flex; flex-direction: column; gap: 14px; }
+:host-context([data-theme="light"]) { --kn-accent-text: color-mix(in oklab, var(--accent) 60%, var(--text)); }
+
+.cg-chip.cg-chip-accent,
+.cg-btn.secondary,
+.cg-btn.secondary:hover:not(:disabled),
+a { color: var(--kn-accent-text); }
+
+.kn-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+
+  .cg-field { min-width: 150px; flex: 0 1 180px; }
+  .kn-grow { flex: 1 1 240px; }
+}
+
+.kn-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 440px);
+  gap: 16px;
+  align-items: start;
+
+  @media (max-width: 980px) { grid-template-columns: minmax(0, 1fr); }
+}
+
+.kn-list { display: flex; flex-direction: column; }
+
+.kn-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover { background: var(--surface-2); }
+  &.selected { background: var(--accent-weak); box-shadow: inset 3px 0 0 var(--accent); }
+  &:last-child { border-bottom: 0; }
+  &:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+}
+
+.kn-static { cursor: default; &:hover { background: transparent; } }
+
+.kn-summary { font-size: var(--fs-lg); color: var(--text); line-height: 1.4; }
+
+.kn-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.kn-actor { font-family: var(--font-mono); color: var(--text-2); }
+
+.kn-detail {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: sticky;
+  top: 16px;
+
+  h2 { font-size: var(--fs-h3); color: var(--text); line-height: 1.35; }
+}
+
+// Top level so the nested lesson-actions component gets them too (styles are scoped per component).
+h3 {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+p, li, dd { color: var(--text-2); font-size: var(--fs-md); margin: 0; }
+.cg-page-header p { margin-top: 4px; color: var(--muted); }
+ul { margin: 0; padding-left: 18px; }
+section { display: flex; flex-direction: column; gap: 8px; }
+
+.kn-defs {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: var(--fs-md);
+
+  dt { color: var(--muted); font-size: var(--fs-sm); }
+  dd { overflow-wrap: anywhere; }
+}
+
+.kn-chain {
+  list-style: none;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  li {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 6px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  li.current { border-color: var(--accent-dim); background: var(--accent-weak); }
+  button { all: unset; cursor: pointer; color: var(--kn-accent-text); &:hover { text-decoration: underline; } }
+}
+
+.kn-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.kn-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+
+  .cg-input, .cg-select { background: var(--surface); }
+  textarea.cg-input { min-height: 72px; resize: vertical; font-family: inherit; }
+}
+
+.kn-challenge {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--sem-amber) 30%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--warn-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  p { color: var(--text); }
+}
+
+.kn-banner { margin: 0; }
+
+.kn-empty { padding: 32px 16px; text-align: center; color: var(--muted); font-size: var(--fs-md); }
+
+.kn-more { display: flex; justify-content: center; padding: 12px; }
+
+.kn-group-title { padding: 10px 16px; background: var(--surface-2); border-bottom: 1px solid var(--hairline); }
+
+.kn-numbers { font-family: var(--font-mono); color: var(--text-2); }

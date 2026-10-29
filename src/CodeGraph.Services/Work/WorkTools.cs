@@ -244,12 +244,13 @@ public static class WorkTools
             "alone is not working: a candidate for a local fix) and while it was not (its applies-when is probably wrong); CodeGraph takes no action on either. " +
             "unaddressed: rules not addressed_by a local fix, grouped by activity. unmatched: rules no briefing served for since_days. unlearned_reviews: GitHub " +
             "reviews and review comments on the project's items that no lesson names as its source.ref (their URL or id), newest first. Filters activity and source; " +
-            "pages of limit with next_cursor." + Sessions + Errors,
+            "pages of limit with next_cursor. Each lesson row carries its author." + Sessions + Errors,
             ReadOnly: true, Idempotent: true),
         new(ReviewQueue, "Review Queue", typeof(ReviewQueueRequest),
             "Read the project's review queue: open challenges of rules (one item per rule), lessons proposed for rule status, contradicting lessons (one item per " +
             "pair) and decisions agents made autonomously not yet acknowledged (record acknowledge), ranked by priority, then recurrence, then age. Informational: " +
-            "nothing in it blocks work, and every item can be settled by anyone (promote, challenge resolve, record retract/supersede/acknowledge)." + Sessions + Errors,
+            "nothing in it blocks work, and every item can be settled by anyone (promote, challenge resolve, record retract/supersede/acknowledge). Each item carries the author " +
+            "of its entry (and other_author, the other lesson's, for a contradiction)." + Sessions + Errors,
             ReadOnly: true, Idempotent: true)
     ];
 

@@ -624,7 +624,9 @@ public sealed record KnowledgeView(
     IReadOnlyList<KnowledgeFileView>? StaleFiles = null,
     string? SourceFile = null,
     IReadOnlyList<KnowledgeRevisionView>? Revisions = null,
-    LessonView? Lesson = null)
+    LessonView? Lesson = null,
+    // When an autonomous decision was acknowledged (record acknowledge); it is then out of the review queue.
+    DateTime? ReviewedAt = null)
 {
     public string Entity => "knowledge";
 }

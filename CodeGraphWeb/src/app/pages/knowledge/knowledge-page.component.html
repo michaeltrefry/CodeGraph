@@ -1,0 +1,230 @@
+<section class="cg-page">
+  <header class="cg-page-header">
+    <div>
+      <h1>Knowledge</h1>
+      <p>Decisions, facts, constraints and attempts the project's agents and people recorded. Stale entries are flagged when the files behind them change.</p>
+    </div>
+    <div class="cg-page-header-actions">
+      <label class="cg-field">
+        <span class="cg-field-label">Project</span>
+        <select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)">
+          @for (p of project.projects(); track p.key) {
+            <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
+          }
+        </select>
+      </label>
+    </div>
+  </header>
+
+  @if (project.error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p>
+  } @else if (!project.selected()) {
+    <p class="kn-empty">No projects yet. Agents create one with create_work.</p>
+  } @else {
+    <form class="kn-toolbar" (ngSubmit)="search()">
+      <label class="cg-field kn-grow">
+        <span class="cg-field-label">Search</span>
+        <input class="cg-input" name="text" [(ngModel)]="text" placeholder="Words in the summary or body" />
+      </label>
+      <label class="cg-field">
+        <span class="cg-field-label">Kind</span>
+        <select class="cg-select" name="kind" [(ngModel)]="kind" (ngModelChange)="search()">
+          <option value="">All kinds</option>
+          @for (k of kinds; track k) {
+            <option [value]="k">{{ k }}</option>
+          }
+        </select>
+      </label>
+      <label class="cg-field">
+        <span class="cg-field-label">Status</span>
+        <select class="cg-select" name="status" [(ngModel)]="status" (ngModelChange)="search()">
+          <option value="active">Active</option>
+          <option value="superseded">Superseded</option>
+          <option value="retracted">Retracted</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label class="cg-field">
+        <span class="cg-field-label">Freshness</span>
+        <select class="cg-select" name="stale" [(ngModel)]="stale" (ngModelChange)="search()">
+          <option value="any">Any</option>
+          <option value="stale">Possibly stale</option>
+          <option value="fresh">Not stale</option>
+        </select>
+      </label>
+      <label class="cg-field">
+        <span class="cg-field-label">Repository</span>
+        <input class="cg-input" name="repository" [(ngModel)]="repository" placeholder="Any" />
+      </label>
+      <button class="cg-btn primary" type="submit">Search</button>
+    </form>
+
+    @if (error()) {
+      <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p>
+    }
+    @if (notice()) {
+      <p class="adm-banner ok kn-banner" role="status">{{ notice() }}</p>
+    }
+
+    <div class="kn-layout">
+      <div class="cg-card kn-list" aria-label="Knowledge entries">
+        @for (entry of items(); track entry.id) {
+          <button type="button" class="kn-row" [class.selected]="selected()?.id === entry.id" (click)="select(entry.id)">
+            <span class="kn-summary">{{ entry.summary }}</span>
+            <span class="kn-meta">
+              <span class="cg-chip cg-chip-accent">{{ entry.kind }}</span>
+              @if (entry.status !== 'active') {
+                <span [class]="'cg-chip ' + statusClass(entry.status)">{{ entry.status }}</span>
+              }
+              @if (entry.possibly_stale) {
+                <span class="cg-chip cg-chip-warn cg-chip-dot">possibly stale</span>
+              }
+              @if (entry.made_autonomously) {
+                <span class="cg-chip">autonomous</span>
+              }
+              @if (entry.supersedes || entry.superseded_by) {
+                <span class="cg-chip">in a chain</span>
+              }
+              <span>{{ entry.confidence }} confidence</span>
+              <span>·</span>
+              <span class="kn-actor" [title]="actorTitle(entry.author)">{{ actorLabel(entry.author) }}</span>
+              <span>· {{ entry.created_at | date: 'medium' }}</span>
+              @if (entry.item) {
+                <span>· {{ entry.item.key }}</span>
+              }
+            </span>
+          </button>
+        } @empty {
+          <p class="kn-empty">{{ loading() ? 'Loading…' : 'No entries match.' }}</p>
+        }
+        @if (nextCursor()) {
+          <div class="kn-more"><button class="cg-btn" type="button" (click)="search(true)" [disabled]="loading()">Load more</button></div>
+        }
+      </div>
+
+      <aside class="cg-card kn-detail" aria-label="Entry detail">
+        @if (selected(); as entry) {
+          <div class="kn-meta">
+            <span class="cg-chip cg-chip-accent">{{ entry.kind }}</span>
+            <span [class]="'cg-chip ' + statusClass(entry.status)">{{ entry.status }}</span>
+            @if (entry.possibly_stale) {
+              <span class="cg-chip cg-chip-warn cg-chip-dot">possibly stale</span>
+            }
+            <span>revision {{ entry.revision }} · version {{ entry.version }}</span>
+          </div>
+          <h2>{{ entry.summary }}</h2>
+          <div class="kn-meta">
+            <span class="kn-actor" [title]="actorTitle(entry.author)">{{ actorLabel(entry.author) }}</span>
+            <span>· {{ entry.created_at | date: 'medium' }}</span>
+          </div>
+          @if (entry.body) {
+            <p>{{ entry.body }}</p>
+          }
+          @if (entry.status_reason) {
+            <p><strong>Why {{ entry.status }}:</strong> {{ entry.status_reason }}</p>
+          }
+
+          <dl class="kn-defs">
+            @if (entry.details?.why) { <dt>Why</dt><dd>{{ entry.details!.why }}</dd> }
+            @if (entry.details?.context) { <dt>Context</dt><dd>{{ entry.details!.context }}</dd> }
+            @if (entry.details?.consequences) { <dt>Consequences</dt><dd>{{ entry.details!.consequences }}</dd> }
+            @if (entry.details?.alternatives?.length) { <dt>Alternatives</dt><dd>{{ entry.details!.alternatives!.join('; ') }}</dd> }
+            @if (entry.details?.why_failed) { <dt>Why it failed</dt><dd>{{ entry.details!.why_failed }}</dd> }
+            @if (entry.details?.what) { <dt>What happened</dt><dd>{{ entry.details!.what }}</dd> }
+            <dt>Confidence</dt><dd>{{ entry.confidence }}</dd>
+            @if (entry.repositories?.length) { <dt>Repositories</dt><dd>{{ entry.repositories!.join(', ') }}</dd> }
+            @if (entry.paths?.length) { <dt>Paths</dt><dd class="cg-mono">{{ entry.paths!.join(', ') }}</dd> }
+            @if (entry.item) { <dt>Item</dt><dd>{{ entry.item.key }} · {{ entry.item.title }}</dd> }
+            <dt>Verified</dt><dd>{{ entry.verified_at | date: 'medium' }}@if (entry.verified_commit) { · <span class="cg-mono">{{ entry.verified_commit }}</span> }</dd>
+            @if (entry.stale_files?.length) {
+              <dt>Changed files</dt>
+              <dd class="cg-mono">@for (f of entry.stale_files!; track f.path) { {{ f.repository }}:{{ f.path }} }</dd>
+            }
+          </dl>
+
+          @if (chain().length) {
+            <section>
+              <h3>Supersession chain</h3>
+              <ol class="kn-chain">
+                @for (link of chain(); track link.id) {
+                  <li [class.current]="link.id === entry.id">
+                    <span [class]="'cg-chip ' + statusClass(link.status)">{{ link.status }}</span>
+                    @if (link.id === entry.id) {
+                      <span>{{ link.summary }}</span>
+                    } @else {
+                      <button type="button" (click)="select(link.id)">{{ link.summary }}</button>
+                    }
+                    <span class="kn-actor cg-xsmall" [title]="actorTitle(link.author)">{{ actorLabel(link.author) }}</span>
+                  </li>
+                }
+              </ol>
+            </section>
+          }
+
+          @if (entry.status === 'active') {
+            <div class="kn-actions">
+              <button class="cg-btn" type="button" (click)="verify()" [disabled]="busy()">Verify</button>
+              <button class="cg-btn" type="button" (click)="openForm('revise')" [disabled]="busy()">Revise</button>
+              @if (entry.kind !== 'lesson') {
+                <button class="cg-btn" type="button" (click)="openForm('supersede')" [disabled]="busy()">Supersede</button>
+              }
+              @if (entry.kind === 'decision' && entry.made_autonomously && !entry.reviewed_at) {
+                <button class="cg-btn secondary" type="button" (click)="acknowledge()" [disabled]="busy()">Acknowledge</button>
+              }
+              <button class="cg-btn danger" type="button" (click)="openForm('retract')" [disabled]="busy()">Retract</button>
+            </div>
+          }
+
+          @switch (mode()) {
+            @case ('retract') {
+              <form class="kn-form" (ngSubmit)="retract()">
+                <label class="cg-field"><span class="cg-field-label">Why is it wrong?</span>
+                  <textarea class="cg-input" name="reason" [(ngModel)]="reason" required></textarea></label>
+                <div class="kn-actions"><button class="cg-btn danger" type="submit" [disabled]="busy()">Retract</button></div>
+              </form>
+            }
+            @case ('revise') {
+              <form class="kn-form" (ngSubmit)="revise()">
+                <label class="cg-field"><span class="cg-field-label">Summary</span>
+                  <input class="cg-input" name="summary" [(ngModel)]="reviseSummary" maxlength="500" /></label>
+                <label class="cg-field"><span class="cg-field-label">Body</span>
+                  <textarea class="cg-input" name="body" [(ngModel)]="reviseBody"></textarea></label>
+                <label class="cg-field"><span class="cg-field-label">Confidence</span>
+                  <select class="cg-select" name="confidence" [(ngModel)]="reviseConfidence">
+                    <option value="high">high</option><option value="medium">medium</option><option value="low">low</option>
+                  </select></label>
+                <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Save revision</button></div>
+              </form>
+            }
+            @case ('supersede') {
+              <form class="kn-form" (ngSubmit)="supersede()">
+                <label class="cg-field"><span class="cg-field-label">New {{ entry.kind }}</span>
+                  <input class="cg-input" name="newSummary" [(ngModel)]="newSummary" maxlength="500" required /></label>
+                <label class="cg-field"><span class="cg-field-label">Body</span>
+                  <textarea class="cg-input" name="newBody" [(ngModel)]="newBody"></textarea></label>
+                @if (entry.kind === 'attempt') {
+                  <label class="cg-field"><span class="cg-field-label">Why it failed</span>
+                    <input class="cg-input" name="newWhyFailed" [(ngModel)]="newWhyFailed" required /></label>
+                }
+                <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Record and supersede</button></div>
+              </form>
+            }
+          }
+
+          @if (entry.revisions?.length) {
+            <section>
+              <h3>Revisions</h3>
+              <ul>
+                @for (r of entry.revisions!; track r.revision) {
+                  <li>{{ r.revision }} · {{ words(r.action) }} · <span class="kn-actor" [title]="actorTitle(r.author)">{{ actorLabel(r.author) }}</span> · {{ r.created_at | date: 'medium' }}</li>
+                }
+              </ul>
+            </section>
+          }
+        } @else {
+          <p class="kn-empty">Select an entry to see its detail, revisions and supersession chain.</p>
+        }
+      </aside>
+    </div>
+  }
+</section>

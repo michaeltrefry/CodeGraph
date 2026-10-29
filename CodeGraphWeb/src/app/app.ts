@@ -47,7 +47,10 @@ const SEGMENT_LABELS: Record<string, string> = {
   reports: 'Reports',
   logs: 'Logs',
   'assistant-debug': 'Assistant debug',
-  'access-tokens': 'Access tokens'
+  'access-tokens': 'Access tokens',
+  knowledge: 'Knowledge',
+  lessons: 'Lessons',
+  'review-queue': 'Review queue'
 };
 
 @Component({
