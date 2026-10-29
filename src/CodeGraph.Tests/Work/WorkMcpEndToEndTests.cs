@@ -125,6 +125,31 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
         lost.Result.GetProperty("current").GetProperty("claim").GetProperty("session_id").GetString().ShouldBe(codexSession);
     }
 
+    [Fact]
+    public async Task A_hold_is_acquired_renewed_and_released_over_mcp_and_a_misspelt_argument_is_a_tool_error()
+    {
+        using var host = await StartHostAsync();
+        var agent = await Client.ConnectAsync(host, "claude-agent");
+        var key = "MH" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await agent.CallAsync("create_work", new { new_project = new { key, name = "Holds over MCP" } });
+
+        var acquired = (await agent.CallAsync("acquire", new { project = key, resource = "gpu:mcp", purpose = "mcp run", ttl_seconds = 600 })).Result;
+        acquired.GetProperty("outcome").GetString().ShouldBe("granted");
+        var holdId = acquired.GetProperty("hold").GetProperty("id").GetString()!;
+
+        var renewed = (await agent.CallAsync("renew_hold", new { hold_id = holdId, ttl_seconds = 1200 })).Result;
+        (renewed.GetProperty("state").GetString(), renewed.GetProperty("ttl_seconds").GetInt32()).ShouldBe(("held", 1200));
+
+        var misspelt = await agent.CallAsync("renew_hold", new { hold_id = holdId, ttl_secs = 5 });
+        misspelt.IsError.ShouldBeTrue();
+        misspelt.Result.GetProperty("code").GetString().ShouldBe("invalid_argument");
+        misspelt.Result.GetProperty("message").GetString()!.ShouldContain("ttl_secs");
+
+        var released = (await agent.CallAsync("release", new { hold_id = holdId })).Result;
+        released.GetProperty("hold").GetProperty("state").GetString().ShouldBe("released");
+        released.GetProperty("resource").GetProperty("available").GetBoolean().ShouldBeTrue();
+    }
+
     [Theory]
     [InlineData("""{"id":"X-1","expected_versoin":1,"title":"t"}""", "expected_versoin")]
     [InlineData("""{"id":"X-1","expected_version":"1","title":"t"}""", "expected_version")]

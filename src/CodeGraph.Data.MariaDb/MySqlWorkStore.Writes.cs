@@ -56,7 +56,7 @@ public sealed partial class MySqlWorkStore
             return new WorkCreated<ProjectView>(true, view);
         }, ct);
 
-    public Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
+    private Task<ProjectView> UpdateProjectCoreAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
@@ -101,8 +101,16 @@ public sealed partial class MySqlWorkStore
             var after = (await LoadProjectViewAsync(connection, transaction, projectId, withCounts: false, ct))!;
             var beforeSnapshot = Snapshot(before);
             beforeSnapshot["version"] = expectedVersion;
+            var projectChanges = Diff(beforeSnapshot, Snapshot(after));
+            // The save-point fields (S5): in this transaction, project-wide unless they name repositories.
+            if (patch.Knowledge is { Count: > 0 } knowledge)
+            {
+                await InsertKnowledgeAsync(connection, transaction, (await ReadProjectRowAsync(connection, transaction, projectId, ct))!, knowledge, null, null, null, actor, now, ct);
+                projectChanges.Add(Change("knowledge", null, knowledge.Select(entry => entry.Id.ToString()).ToList()));
+            }
+
             await CommitAsync(connection, transaction,
-                [new PendingChange(projectId, after.Key, WorkEntityKind.Project, projectId, after.Key, WorkChangeKinds.ProjectUpdated, Diff(beforeSnapshot, Snapshot(after)))],
+                [new PendingChange(projectId, after.Key, WorkEntityKind.Project, projectId, after.Key, WorkChangeKinds.ProjectUpdated, projectChanges)],
                 actor, now, ct);
             return after;
         }, ct);
@@ -193,10 +201,15 @@ public sealed partial class MySqlWorkStore
     private static async Task<Guid> InsertFeatureAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, int number, NewFeatureSpec spec, WorkActor actor, DateTime now, CancellationToken ct)
     {
         var id = Guid.NewGuid();
+        var requirements = MergeRequirements([], spec.Plan?.Requirements, null, WorkKeys.Feature(project.ProjectKey, number));
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO work_features (id, project_id, number, title, description, version, created_by, created_by_kind, created_session_id, created_at, updated_at) " +
-            "VALUES (@id, @projectId, @number, @Title, @Description, 1, @actorName, @actorKind, @actorSession, @now, @now)",
-            new { id, projectId = project.Id, number, spec.Title, spec.Description, actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now },
+            "INSERT INTO work_features (id, project_id, number, title, description, goals_json, requirements_json, acceptance_tests_json, version, created_by, created_by_kind, created_session_id, created_at, updated_at) " +
+            "VALUES (@id, @projectId, @number, @Title, @Description, @goals, @requirements, @tests, 1, @actorName, @actorKind, @actorSession, @now, @now)",
+            new
+            {
+                id, projectId = project.Id, number, spec.Title, spec.Description, goals = WriteList(spec.Plan?.Goals), requirements = WriteList(requirements),
+                tests = WriteList(spec.Plan?.AcceptanceTests), actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now
+            },
             transaction, cancellationToken: ct));
         await InsertDocumentsAsync(connection, transaction, id, 0, spec.Documents, actor, now, ct);
         return id;
@@ -219,6 +232,9 @@ public sealed partial class MySqlWorkStore
     {
         ["title"] = feature.Title,
         ["description"] = feature.Description,
+        ["goals"] = feature.Goals,
+        ["requirements"] = feature.Requirements?.Select(requirement => requirement with { CoveredBy = null }).ToList(),
+        ["acceptance_tests"] = feature.AcceptanceTests,
         ["version"] = feature.Version
     };
 
@@ -232,18 +248,34 @@ public sealed partial class MySqlWorkStore
         return changes;
     }
 
-    public Task<FeatureView> UpdateFeatureAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
+    private Task<FeatureView> UpdateFeatureCoreAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            // Save points (S5) reference the project: hold its row before the feature's (project, then knowledge).
+            if (patch.Knowledge is { Count: > 0 } &&
+                await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+                    "SELECT project_id FROM work_features WHERE id = @featureId", new { featureId }, transaction, cancellationToken: ct)) is { } featureProject)
+                await HoldProjectAsync(connection, transaction, featureProject, ct);
             await AdvanceAsync(connection, transaction, "work_features", featureId, expectedVersion, now,
                 () => LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct), "Feature", ct);
 
             var before = (await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct))!;
+            var storedRequirements = (before.Requirements ?? []).Select(requirement => requirement with { CoveredBy = null }).ToList();
+            var requirements = MergeRequirements(storedRequirements, patch.Requirements, patch.DropRequirements, before.Key);
             await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE work_features SET title = @title, description = @description WHERE id = @featureId",
-                new { title = patch.Title ?? before.Title, description = patch.ClearDescription ? null : patch.Description ?? before.Description, featureId },
+                "UPDATE work_features SET title = @title, description = @description, goals_json = @goals, requirements_json = @requirements, " +
+                "acceptance_tests_json = @tests WHERE id = @featureId",
+                new
+                {
+                    title = patch.Title ?? before.Title,
+                    description = patch.ClearDescription ? null : patch.Description ?? before.Description,
+                    goals = patch.ClearGoals ? null : WriteList(patch.Goals ?? before.Goals),
+                    requirements = WriteList(requirements),
+                    tests = patch.ClearAcceptanceTests ? null : WriteList(patch.AcceptanceTests ?? before.AcceptanceTests),
+                    featureId
+                },
                 transaction, cancellationToken: ct));
 
             var changed = new List<(DocumentView Before, DocumentView After)>();
@@ -265,9 +297,17 @@ public sealed partial class MySqlWorkStore
             var beforeSnapshot = Snapshot(before);
             beforeSnapshot["version"] = expectedVersion;
             var added = after.Documents.Where(document => before.Documents.All(existing => existing.Id != document.Id)).ToList();
+            var featureChanges = WithDocuments(Diff(beforeSnapshot, Snapshot(after)), added, changed);
+            // The save-point fields (S5): in this transaction, linked to the feature.
+            if (patch.Knowledge is { Count: > 0 } knowledge)
+            {
+                var project = (await ReadProjectRowAsync(connection, transaction, after.ProjectId, ct))!;
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, null, featureId, null, actor, now, ct);
+                featureChanges.Add(Change("knowledge", null, knowledge.Select(entry => entry.Id.ToString()).ToList()));
+            }
+
             await CommitAsync(connection, transaction,
-                [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated,
-                    WithDocuments(Diff(beforeSnapshot, Snapshot(after)), added, changed))],
+                [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated, featureChanges)],
                 actor, now, ct);
             return after;
         }, ct);
@@ -293,11 +333,14 @@ public sealed partial class MySqlWorkStore
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
             if (spec.BlockedBy.Count > 0)
                 await RequireItemsOfProjectAsync(connection, transaction, project, spec.BlockedBy, ct);
+            var plan = spec.Plan ?? new ItemPlanFields();
+            if (plan.Inherits is { Count: > 0 } inherits)
+                await RequireInheritsAsync(connection, transaction, spec.FeatureId, inherits, "item.inherits", ct);
 
             // A new item blocks nothing yet, so its blockers cannot close a cycle: no dependency lock.
             var id = Guid.NewGuid();
             await InsertItemAsync(connection, transaction, project.Id, id, project.NextItemNumber, spec.Title, spec.Type, spec.Status, spec.Priority,
-                spec.Description, spec.Labels, itemRepository, spec.FeatureId, spec.Order, actor, now, ct);
+                spec.Description, spec.Labels, itemRepository, spec.FeatureId, spec.Order, actor, now, ct, plan);
             await InsertEdgesAsync(connection, transaction, spec.BlockedBy.Distinct().Select(blocker => (id, blocker)), now, ct);
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_projects SET next_item_number = next_item_number + 1 WHERE id = @projectId", new { projectId }, transaction, cancellationToken: ct));
@@ -311,15 +354,21 @@ public sealed partial class MySqlWorkStore
 
     private static Task InsertItemAsync(
         MySqlConnection connection, MySqlTransaction transaction, Guid projectId, Guid id, int number, string title, WorkItemType type, WorkStatus status,
-        WorkPriority priority, string? description, IReadOnlyList<string> labels, string? repository, Guid? featureId, int order, WorkActor actor, DateTime now, CancellationToken ct) =>
+        WorkPriority priority, string? description, IReadOnlyList<string> labels, string? repository, Guid? featureId, int order, WorkActor actor, DateTime now, CancellationToken ct,
+        ItemPlanFields? plan = null) =>
         connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO work_items (id, project_id, number, feature_id, item_type, title, description, status, priority, sort_order, labels, repository_name, " +
+            "plan_ref, goal, acceptance_json, inherits_json, touches_json, " +
             "version, created_by, created_by_kind, created_session_id, created_at, updated_at) " +
-            "VALUES (@id, @projectId, @number, @featureId, @type, @title, @description, @status, @priority, @order, @labels, @repository, 1, @actorName, @actorKind, @actorSession, @now, @now)",
+            "VALUES (@id, @projectId, @number, @featureId, @type, @title, @description, @status, @priority, @order, @labels, @repository, " +
+            "@planRef, @goal, @acceptance, @inherits, @touches, 1, @actorName, @actorKind, @actorSession, @now, @now)",
             new
             {
                 id, projectId, number, featureId, type = JsonName(type), title, description, status = WorkStatuses.Name(status), priority = JsonName(priority),
-                order, labels = JoinLabels(labels), repository, actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now
+                order, labels = JoinLabels(labels), repository,
+                planRef = featureId is null ? null : plan?.Ref, goal = plan?.Goal,
+                acceptance = WriteList(NormalizeCriteria([], plan?.AcceptanceCriteria ?? [])), inherits = WriteList(plan?.Inherits), touches = WriteList(plan?.Touches),
+                actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now
             },
             transaction, cancellationToken: ct));
 
@@ -354,6 +403,13 @@ public sealed partial class MySqlWorkStore
         ["labels"] = item.Labels.Count == 0 ? null : item.Labels,
         ["repository"] = item.Repository,
         ["feature"] = item.Feature?.Key,
+        ["ref"] = item.Ref,
+        ["goal"] = item.Goal,
+        ["acceptance_criteria"] = item.AcceptanceCriteria,
+        ["inherits"] = item.Inherits,
+        ["touches"] = item.Touches,
+        ["merged_awaiting_acceptance"] = item.MergedAwaitingAcceptance,
+        ["acceptance_report"] = item.AcceptanceReport,
         ["version"] = item.Version
     };
 
@@ -364,7 +420,7 @@ public sealed partial class MySqlWorkStore
         ["claim_expires_at"] = row.ClaimExpiresAt is { } expires ? Utc(expires) : null
     };
 
-    public async Task<ItemView> UpdateItemAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
+    private async Task<ItemView> UpdateItemCoreAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
     {
         // A project id never changes, so it can be read before the write's transaction starts.
         Guid projectId;
@@ -383,10 +439,13 @@ public sealed partial class MySqlWorkStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            // Taken only when a session claims the item (handover of its open messages), after the row locks below.
+            await using var messageLock = new MessageLockScope(connection, transaction);
 
-            // An update that names a repository reads the project's membership, so it holds the
-            // project's row first, like the project update that may drop that repository.
-            if (patch.Repository is not null)
+            // An update that names a repository, or stores save points (S5: their scope reads the
+            // membership and their rows reference the project), holds the project's row first, like
+            // the project update that may drop that repository: project, then items, then knowledge.
+            if (patch.Repository is not null || patch.Knowledge is { Count: > 0 })
                 await HoldProjectAsync(connection, transaction, projectId, ct);
 
             // The rows of the item and of the blockers it adds, held in key order before anything is
@@ -402,6 +461,7 @@ public sealed partial class MySqlWorkStore
             // holder now, unless it reclaims the unclaimed item or lets go of it. A session that still
             // holds its claim is never refused: its heartbeat renewed the claim before this call.
             var effective = patch;
+            var abandonLapsed = false;
             var current = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
             if (actor.SessionId is { } sessionId && await HasOpenSessionClaimAsync(connection, transaction, sessionId, itemId, ct))
             {
@@ -418,7 +478,10 @@ public sealed partial class MySqlWorkStore
                         // Letting go of a claim that is no longer the session's: the item's claim is
                         // someone else's (or none) and stays as it is.
                         await CloseSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
-                        if (effective.IsEmptyBesidesClaim)
+                        // The session's attempt, still active because nobody claimed the item since
+                        // its claim lapsed, ends with this release: an item write, versioned and fed.
+                        abandonLapsed = (await ActiveAttemptAsync(connection, transaction, itemId, ct))?.SessionId == sessionId;
+                        if (effective.IsEmptyBesidesClaim && !abandonLapsed)
                         {
                             var unchanged = await ToViewAsync(connection, transaction, current, ct);
                             await transaction.CommitAsync(ct);
@@ -454,8 +517,33 @@ public sealed partial class MySqlWorkStore
             if (effective.FeatureId is { } featureId)
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
 
+            var handOver = false;
             var status = effective.Status ?? before.Status;
             var claimFields = ApplyClaim(beforeRow, effective.Claim, status, actor, now);
+
+            // Planning fields (sc-27868). A ref names the item in its feature's plan, so it goes with
+            // a move to another feature; inherits must name requirements of the feature it ends in.
+            var finalFeature = effective.ClearFeature ? null : effective.FeatureId ?? beforeRow.FeatureId;
+            var featureChanged = finalFeature != beforeRow.FeatureId;
+            var storedCriteria = ReadList<AcceptanceCriterionView>(beforeRow.AcceptanceJson);
+            var criteria = effective.ClearAcceptanceCriteria ? []
+                : effective.AcceptanceCriteria is { } givenCriteria ? NormalizeCriteria(storedCriteria, givenCriteria)
+                : storedCriteria;
+            var inherits = effective.ClearInherits ? [] : effective.Inherits ?? ReadList<string>(beforeRow.InheritsJson);
+            if (inherits.Count > 0 && (effective.Inherits is not null || featureChanged))
+                await RequireInheritsAsync(connection, transaction, finalFeature, inherits, effective.Inherits is not null ? "inherits" : "feature (the item's inherits)", ct);
+            var reportJson = beforeRow.AcceptanceReportJson;
+            if (effective.AcceptanceReport is { } report)
+            {
+                if (status != WorkStatus.Complete)
+                    throw WorkException.Invalid($"acceptance_report goes with marking {before.Key} complete (status complete), or on a complete item; it is {WorkStatuses.Name(status)}. Nothing was changed.");
+                criteria = ApplyReport(criteria, report, before.Key);
+                reportJson = JsonSerializer.Serialize(
+                    new AcceptanceReportView(actor.Name, now, report.Summary, report.Criteria.Count == 0 ? null : report.Criteria, actor.SessionId), WorkJson.Options);
+            }
+
+            // Merge evidence only flags an item; completing it (the agent's call) clears the flag.
+            var merged = status == WorkStatus.Complete ? false : effective.MergedAwaitingAcceptance ?? beforeRow.MergedAwaitingAcceptance;
             // Finishing an item (by anyone) ends every session's claim on it: a session that held it
             // and writes later is not told claim_lost for a claim that was never taken from it (E1).
             if (WorkStatuses.IsFinished(status))
@@ -467,7 +555,10 @@ public sealed partial class MySqlWorkStore
             else if (actor.SessionId is { } claimingSession)
             {
                 if (effective.Claim is { Action: ClaimAction.Claim })
+                {
                     await OpenSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
+                    handOver = true;
+                }
                 else if (effective.Claim is { Action: ClaimAction.Release })
                     await CloseSessionClaimAsync(connection, transaction, claimingSession, itemId, now, ct);
             }
@@ -475,7 +566,9 @@ public sealed partial class MySqlWorkStore
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_items SET title = @title, description = @description, item_type = @type, status = @status, priority = @priority, " +
                 "sort_order = @order, labels = @labels, repository_name = @repository, feature_id = @featureId, " +
-                "claim_holder = @ClaimHolder, claim_marker = @ClaimMarker, claim_session_id = @ClaimSessionId, claimed_at = @ClaimedAt, claim_expires_at = @ClaimExpiresAt " +
+                "claim_holder = @ClaimHolder, claim_marker = @ClaimMarker, claim_session_id = @ClaimSessionId, claimed_at = @ClaimedAt, claim_expires_at = @ClaimExpiresAt, " +
+                "plan_ref = @planRef, goal = @goal, acceptance_json = @acceptance, inherits_json = @inherits, touches_json = @touches, " +
+                "acceptance_report_json = @reportJson, merged_awaiting_acceptance = @merged " +
                 "WHERE id = @itemId",
                 new
                 {
@@ -489,19 +582,54 @@ public sealed partial class MySqlWorkStore
                     repository = effective.ClearRepository ? null : patchedRepository ?? before.Repository,
                     featureId = effective.ClearFeature ? null : effective.FeatureId ?? beforeRow.FeatureId,
                     claimFields.ClaimHolder, claimFields.ClaimMarker, claimFields.ClaimSessionId, claimFields.ClaimedAt, claimFields.ClaimExpiresAt,
+                    planRef = featureChanged ? null : beforeRow.PlanRef,
+                    goal = effective.ClearGoal ? null : effective.Goal ?? beforeRow.Goal,
+                    acceptance = WriteList(criteria),
+                    inherits = WriteList(inherits),
+                    touches = effective.ClearTouches ? null : effective.Touches is { } touches ? WriteList(touches) : beforeRow.TouchesJson,
+                    reportJson,
+                    merged,
                     itemId
                 },
                 transaction, cancellationToken: ct));
 
+            // The execution attempt (sc-27868): a claim starts one (or continues the holder's own),
+            // links and handoffs made now belong to it, and finishing or releasing ends it.
+            var attempt = effective.Claim is { Action: ClaimAction.Claim } taken
+                ? await BeginAttemptAsync(connection, transaction, beforeRow, actor, taken.Marker, now, extra, ct)
+                : await ActiveAttemptAsync(connection, transaction, itemId, ct);
+
             await AddDependenciesAsync(connection, transaction, project, itemId, effective.AddBlockedBy ?? [], before, extra, now, ct);
             await RemoveDependenciesAsync(connection, transaction, itemId, effective.RemoveBlockedBy ?? [], before, extra, ct);
-            await WriteLinksAsync(connection, transaction, itemId, effective.AddLinks ?? [], effective.RemoveLinks ?? [], actor, extra, now, ct);
+            await WriteLinksAsync(connection, transaction, itemId, effective.AddLinks ?? [], effective.RemoveLinks ?? [], actor, extra, now, ct, attempt?.Id);
             if (effective.Comment is { } comment)
                 await AddCommentAsync(connection, transaction, itemId, comment, actor, extra, now, ct);
             if (effective.Handoff is { } handoff)
             {
                 var written = await InsertHandoffAsync(connection, transaction, itemId, handoff, actor, now, ct);
                 extra.Add(Change("handoff", null, written.Id.ToString()));
+                if (attempt is not null)
+                    await AttachHandoffAsync(connection, transaction, attempt, written.Id, handoff.Branch, ct);
+            }
+
+            if (attempt is not null)
+            {
+                if (WorkStatuses.IsFinished(status))
+                    await EndAttemptAsync(connection, transaction, attempt, status == WorkStatus.Complete ? AttemptOutcome.Complete : AttemptOutcome.Closed,
+                        $"{before.Key} was marked {WorkStatuses.Name(status)} by {actor.Name}.", now, extra, ct);
+                else if (effective.Claim is { Action: ClaimAction.Release })
+                    await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, $"The claim was released by {actor.Name}.", now, extra, ct);
+                else if (abandonLapsed && attempt.SessionId == actor.SessionId)
+                    await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, "The session's claim lapsed and the session let go of the item.", now, extra, ct);
+            }
+
+            // The save-point fields (S5): in this transaction, linked to the item, scoped by default
+            // to the repository the item has after this write.
+            if (effective.Knowledge is { Count: > 0 } knowledge)
+            {
+                await InsertKnowledgeAsync(connection, transaction, project, knowledge, itemId, null,
+                    effective.ClearRepository ? null : patchedRepository ?? before.Repository, actor, now, ct);
+                extra.Add(Change("knowledge", null, knowledge.Select(entry => entry.Id.ToString()).ToList()));
             }
 
             var afterRow = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
@@ -514,6 +642,9 @@ public sealed partial class MySqlWorkStore
             foreach (var change in extra)
                 changes.Add(change!.DeepClone());
 
+            // Last, after every row this write locks: the messages lock is then taken with no row lock to follow.
+            if (handOver)
+                await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
             await CommitAsync(connection, transaction,
                 [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, changes)],
                 actor, now, ct);
@@ -637,7 +768,8 @@ public sealed partial class MySqlWorkStore
         return WorkKeys.Item(row.ProjectKey, row.Number);
     }
 
-    private static async Task WriteLinksAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, IReadOnlyList<LinkSpec> add, IReadOnlyList<LinkSpec> remove, WorkActor actor, JsonArray extra, DateTime now, CancellationToken ct)
+    private static async Task WriteLinksAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, IReadOnlyList<LinkSpec> add, IReadOnlyList<LinkSpec> remove, WorkActor actor, JsonArray extra, DateTime now, CancellationToken ct,
+        Guid? attemptId = null)
     {
         // The item's row is held, so the link writes of one item run one at a time and two
         // identical adds never meet on the unique key.
@@ -667,9 +799,9 @@ public sealed partial class MySqlWorkStore
 
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now)",
-                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now }, transaction, cancellationToken: ct));
-            extra.Add(Change("link", null, new { id, kind, url = link.Url }));
+                "INSERT INTO work_item_links (id, item_id, kind, url, url_hash, created_by, created_at, attempt_id) VALUES (@id, @itemId, @kind, @Url, @urlHash, @createdBy, @now, @attemptId)",
+                new { id, itemId, kind, link.Url, urlHash, createdBy = actor.Name, now, attemptId }, transaction, cancellationToken: ct));
+            extra.Add(Change("link", null, attemptId is null ? new { id, kind, url = link.Url } : new { id, kind, url = link.Url, attempt = attemptId }));
         }
     }
 
@@ -737,7 +869,7 @@ public sealed partial class MySqlWorkStore
                 // return them in the order of the plan.
                 await InsertItemAsync(connection, transaction, project.Id, itemIds[index], number, item.Title, item.Type, item.Status, item.Priority,
                     item.Description, item.Labels, item.Repository is { } itemRepository ? owned[itemRepository] : null, item.FeatureIndex is { } featureIndex ? featureIds[featureIndex] : null,
-                    item.Order, actor, now.AddTicks(index * 10), ct);
+                    item.Order, actor, now.AddTicks(index * 10), ct, (item.Plan ?? new ItemPlanFields()) with { Ref = item.Ref });
                 items[item.Ref] = new CreatedRef(itemIds[index], WorkKeys.Item(project.ProjectKey, number));
             }
 
@@ -875,6 +1007,7 @@ public sealed partial class MySqlWorkStore
             {
                 var now = Now();
                 await using var transaction = await connection.BeginTransactionAsync(ct);
+                await using var messageLock = new MessageLockScope(connection, transaction);
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET version = version WHERE id = @itemId", new { itemId }, transaction, cancellationToken: ct));
                 var before = (await ReadItemRowAsync(connection, transaction, itemId, ct))!;
@@ -882,7 +1015,7 @@ public sealed partial class MySqlWorkStore
                     "SELECT COUNT(*) FROM work_item_dependencies d JOIN work_items b ON b.id = d.blocker_item_id " +
                     "WHERE d.blocked_item_id = @itemId AND b.status <> 'complete' LOCK IN SHARE MODE",
                     new { itemId }, transaction, cancellationToken: ct));
-                if (unfinished > 0)
+                if (unfinished > 0 || await HasOpenBlockingQuestionAsync(connection, transaction, itemId, ct))
                     return null;
 
                 var status = recover ? "in_progress" : "ready";
@@ -898,6 +1031,8 @@ public sealed partial class MySqlWorkStore
                 var recovery = recover ? await LoadRecoveryAsync(connection, transaction, before, ct) : null;
                 if (actor.SessionId is { } sessionId)
                     await OpenSessionClaimAsync(connection, transaction, sessionId, itemId, now, ct);
+                var attemptChanges = new JsonArray();
+                await BeginAttemptAsync(connection, transaction, before, actor, spec.Marker, now, attemptChanges, ct);
                 if (spec.KeyHash is { } keyHash)
                     await InsertKeyAsync(connection, transaction, spec.ProjectId, NextWorkOperation, keyHash, itemId, null, now, ct);
 
@@ -905,10 +1040,14 @@ public sealed partial class MySqlWorkStore
                 var after = await ToViewAsync(connection, transaction, afterRow, ct);
                 var changes = Diff(ClaimSnapshot(before), ClaimSnapshot(afterRow));
                 changes.Add(Change("version", before.Version, afterRow.Version));
+                foreach (var change in attemptChanges)
+                    changes.Add(change!.DeepClone());
+                // Last, after every row this write locks: the messages lock is then taken with no row lock to follow.
+                await HandOverOpenMessagesAsync(connection, transaction, messageLock, itemId, actor, now, ct);
                 await CommitAsync(connection, transaction,
                     [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);
-                return new NextWorkResult(after, Reused: false, Recovery: recovery);
+                return new NextWorkResult(after with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) }, Reused: false, Recovery: recovery);
             }
             catch (MySqlException exception) when (exception.Number == MySqlDeadlock && attempt < DeadlockAttempts)
             {

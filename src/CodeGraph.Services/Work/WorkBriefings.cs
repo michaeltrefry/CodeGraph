@@ -8,8 +8,9 @@ namespace CodeGraph.Services.Work;
 /// Fits a briefing into its token budget (E4). Tokens are estimated as UTF-8 bytes of the wire JSON
 /// divided by three, which over-counts typical English and JSON, so a briefing within its estimate
 /// stays within the budget. Long handoff texts are always cut; when the briefing is still over
-/// budget, sections are shortened from the lowest rank up (the suggestion, other sessions, goals,
-/// the focus item, then my own work beyond the first item) and named in <c>truncated</c>.
+/// budget, sections are shortened from the lowest rank up (the suggestion, other sessions, busy resources, goals,
+/// the focus item, the inbox lines down to its count, then my own work beyond the first item, then my holds)
+/// and named in <c>truncated</c>.
 /// Empty sections are left out.
 /// </summary>
 public static class WorkBriefings
@@ -27,6 +28,7 @@ public static class WorkBriefings
             MyWork = briefing.MyWork?.Select(Shorten).ToList(),
             Focus = briefing.Focus is { } focus ? Shorten(focus) : null,
             SuggestedNext = briefing.SuggestedNext is { } next ? Shorten(next) : null,
+            Knowledge = briefing.Knowledge?.Select(row => row with { Summary = CutTo(row.Summary, KnowledgeLimits.BriefingSummaryLength)! }).ToList(),
             Truncated = null
         };
 
@@ -68,6 +70,19 @@ public static class WorkBriefings
             { Count: 1 } => view with { OtherSessions = null },
             var others => view with { OtherSessions = others.Take(others.Count - 1).ToList() }
         }),
+        new("resources", view => view.Resources switch
+        {
+            null => null,
+            { Count: 1 } => view with { Resources = null },
+            var resources => view with { Resources = resources.Take(resources.Count - 1).ToList() }
+        }),
+        // Knowledge rows are ranked (item, path, repository, project): the last goes first.
+        new("knowledge", view => view.Knowledge switch
+        {
+            null => null,
+            { Count: 1 } => view with { Knowledge = null },
+            var rows => view with { Knowledge = rows.Take(rows.Count - 1).ToList() }
+        }),
         new("project", view => view.Project.Goals switch
         {
             null => null,
@@ -80,6 +95,12 @@ public static class WorkBriefings
             { LatestHandoff: not null } focus => view with { Focus = focus with { LatestHandoff = null } },
             _ => view with { Focus = null }
         }),
+        new("inbox", view => view.Inbox switch
+        {
+            { Items: { Count: > 1 } items } inbox => view with { Inbox = inbox with { Items = items.Take(items.Count - 1).ToList() } },
+            { Items: not null } inbox => view with { Inbox = inbox with { Items = null } },
+            _ => null
+        }),
         new("my_work", view =>
         {
             if (view.MyWork is not { Count: > 0 } mine)
@@ -87,11 +108,26 @@ public static class WorkBriefings
             if (mine.Count > 1)
                 return view with { MyWork = mine.Take(mine.Count - 1).ToList() };
             return mine[0].LatestHandoff is not null ? view with { MyWork = [mine[0] with { LatestHandoff = null }] } : view with { MyWork = null };
+        }),
+        new("overlap_warnings", view => view.OverlapWarnings switch
+        {
+            null => null,
+            { Count: 1 } => view with { OverlapWarnings = null },
+            var warnings => view with { OverlapWarnings = warnings.Take(warnings.Count - 1).ToList() }
+        }),
+        new("my_holds", view => view.MyHolds switch
+        {
+            null => null,
+            { Count: 1 } => view with { MyHolds = null },
+            var holds => view with { MyHolds = holds.Take(holds.Count - 1).ToList() }
         })
     ];
 
-    private static BriefingItem Shorten(BriefingItem item) =>
-        item.LatestHandoff is { } handoff ? item with { LatestHandoff = Shorten(handoff) } : item;
+    private static BriefingItem Shorten(BriefingItem item) => item with
+    {
+        LatestHandoff = item.LatestHandoff is { } handoff ? Shorten(handoff) : null,
+        UnmetAcceptance = item.UnmetAcceptance?.Select(criterion => criterion with { Text = Cut(criterion.Text)!, Evidence = Cut(criterion.Evidence) }).ToList()
+    };
 
     private static HandoffView Shorten(HandoffView handoff) => handoff with
     {
@@ -105,8 +141,10 @@ public static class WorkBriefings
     private static IReadOnlyList<string>? CutList(IReadOnlyList<string>? values) =>
         values?.Take(MaxHandoffListEntries).Select(value => Cut(value)!).ToList();
 
-    private static string? Cut(string? text) =>
-        text is null || text.Length <= WorkSessionLimits.BriefingTextLength
+    private static string? Cut(string? text) => CutTo(text, WorkSessionLimits.BriefingTextLength);
+
+    private static string? CutTo(string? text, int length) =>
+        text is null || text.Length <= length
             ? text
-            : text[..(WorkSessionLimits.BriefingTextLength - 1)] + "…";
+            : text[..(length - 1)] + "…";
 }
