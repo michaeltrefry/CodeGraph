@@ -44,7 +44,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         "e.item_id, wi.number AS item_number, wi.title AS item_title, e.feature_id, wf.number AS feature_number, wf.title AS feature_title, " +
         "e.supersedes_id, e.superseded_by_id, e.status_reason, e.source_file, e.verified_commit, e.verified_at, e.revision, e.version, " +
         "e.author, e.author_kind, e.author_session_id, e.author_harness, e.author_model, e.author_host, e.created_at, e.updated_at, " +
-        "e.rule_state, e.rule_reason, e.rule_since, e.rejected_reason, e.recurrence, e.priority, " +
+        "e.rule_state, e.rule_reason, e.rule_since, e.rejected_reason, e.recurrence, e.priority, e.reviewed_at, " +
         StaleCondition + " AS stale";
 
     private const string KnowledgeFrom =
@@ -94,6 +94,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         public string? RejectedReason { get; init; }
         public int? Recurrence { get; init; }
         public string? Priority { get; init; }
+
+        // An autonomous decision acknowledged from the review queue (S9).
+        public DateTime? ReviewedAt { get; init; }
 
         public bool IsRule => RuleState == "rule";
 
@@ -634,6 +637,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             Body: row.Body,
             Details: row.DetailsJson is { } json ? JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) : null,
             MadeAutonomously: row.MadeAutonomously,
+            ReviewedAt: row.ReviewedAt is { } reviewedAt ? Utc(reviewedAt) : null,
             Repositories: repositories.Count == 0 ? null : repositories,
             Paths: paths.Count == 0 ? null : paths,
             Nodes: nodes.Count == 0 ? null : nodes,
@@ -650,6 +654,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             Revisions: revisions,
             Lesson: row.Kind == "lesson" ? await LoadLessonViewAsync(connection, transaction, row, withEvents: withRevisions, ct) : null);
     }
+
+    private static WorkActor AuthorOf(KnowledgeEntryRow row) =>
+        new(row.Author, row.AuthorKind, row.AuthorSessionId, row.AuthorHarness, row.AuthorModel, row.AuthorHost);
 
     private static KnowledgeRow ToRow(KnowledgeEntryRow row, string? match = null)
     {

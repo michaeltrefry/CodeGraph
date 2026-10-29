@@ -52,6 +52,18 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/memory/memory-page.component').then(m => m.MemoryPageComponent)
       },
       {
+        path: 'knowledge',
+        loadComponent: () => import('./pages/knowledge/knowledge-page.component').then(m => m.KnowledgePageComponent)
+      },
+      {
+        path: 'lessons',
+        loadComponent: () => import('./pages/knowledge/lessons-page.component').then(m => m.LessonsPageComponent)
+      },
+      {
+        path: 'review-queue',
+        loadComponent: () => import('./pages/knowledge/review-queue-page.component').then(m => m.ReviewQueuePageComponent)
+      },
+      {
         path: 'clusters',
         loadComponent: () => import('./pages/clusters/clusters-page.component').then(m => m.ClustersPageComponent)
       },

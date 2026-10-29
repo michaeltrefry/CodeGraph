@@ -393,7 +393,9 @@ public sealed record LessonRow(
     DateTime? LastServedAt = null,
     bool? Contradicted = null,
     int? OpenChallenges = null,
-    IReadOnlyList<AddressedByView>? AddressedBy = null);
+    IReadOnlyList<AddressedByView>? AddressedBy = null,
+    // Who recorded the lesson (E3), for the human review views.
+    WorkActor? Author = null);
 
 public sealed record LessonGroup(LessonActivity Activity, IReadOnlyList<LessonRow> Lessons);
 
@@ -421,7 +423,10 @@ public sealed record ReviewItem(
     DateTime Since,
     KnowledgeRow? Other = null,
     IReadOnlyList<ChallengeView>? Challenges = null,
-    int? MoreChallenges = null);
+    int? MoreChallenges = null,
+    // Who recorded the entry, and the other entry of a contradiction (E3).
+    WorkActor? Author = null,
+    WorkActor? OtherAuthor = null);
 
 public sealed record ReviewQueueResult(IReadOnlyList<ReviewItem> Items, string? NextCursor = null);
 

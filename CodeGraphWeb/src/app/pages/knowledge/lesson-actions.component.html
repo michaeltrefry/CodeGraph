@@ -1,0 +1,185 @@
+@let e = entry();
+@let l = e.lesson;
+@if (error()) {
+  <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p>
+}
+@if (notice()) {
+  <p class="adm-banner ok kn-banner" role="status">{{ notice() }}</p>
+}
+
+@if (l) {
+  <dl class="kn-defs">
+    <dt>Tier</dt>
+    <dd>{{ l.state === 'candidate' ? 'task-scoped' : l.state }}@if (l.rule_reason) { · from {{ words(l.rule_reason) }} }@if (l.rule_since) { · since {{ l.rule_since | date: 'mediumDate' }} }</dd>
+    <dt>Priority</dt><dd>{{ l.priority }}</dd>
+    <dt>Recurrence</dt>
+    <dd class="kn-numbers">{{ l.recurrence.events }} events · {{ l.recurrence.while_served }} while served · {{ l.recurrence.while_not_served }} while not served · {{ l.recurrence.before_rule }} before rule</dd>
+    @if (e.details?.applies_when?.activity?.length) { <dt>Applies when</dt><dd>{{ e.details!.applies_when!.activity!.map(words).join(', ') }}</dd> }
+    @if (e.details?.source) { <dt>Source</dt><dd>{{ words(e.details!.source!.kind) }}@if (e.details!.source!.ref) { · <span class="cg-mono">{{ e.details!.source!.ref }}</span> }</dd> }
+    <dt>Served</dt><dd>{{ l.served_sessions ?? 0 }} sessions@if (l.last_served_at) { · last {{ l.last_served_at | date: 'medium' }} }</dd>
+    @if (l.rejected_reason) { <dt>Rejected</dt><dd>{{ l.rejected_reason }}</dd> }
+  </dl>
+
+  @if (l.contradicts?.length) {
+    <section>
+      <h3>Contradicts</h3>
+      <ul>
+        @for (c of l.contradicts!; track c.id) {
+          <li>{{ c.summary }} <span class="cg-faint cg-mono cg-xsmall">{{ c.id }}</span></li>
+        }
+      </ul>
+    </section>
+  }
+
+  @if (l.challenges?.length) {
+    <section>
+      <h3>Challenges</h3>
+      @for (c of l.challenges!; track c.id) {
+        <div class="kn-challenge">
+          <div class="kn-meta">
+            <span [class]="'cg-chip ' + (c.status === 'open' ? 'cg-chip-warn' : '')">{{ c.status }}</span>
+            <span class="kn-actor" [title]="actorTitle(c.author)">{{ actorLabel(c.author) }}</span>
+            <span>· {{ c.created_at | date: 'medium' }}</span>
+          </div>
+          <p>{{ c.reason }}</p>
+          <ul>
+            @for (ev of c.evidence; track $index) {
+              <li>{{ words(ev.kind) }}: {{ ev.summary }}@if (ev.ref) { · <span class="cg-mono">{{ ev.ref }}</span> }</li>
+            }
+          </ul>
+          @if (c.resolution_reason) {
+            <p class="cg-small">{{ c.resolution_reason }} · <span class="kn-actor" [title]="actorTitle(c.resolved_by)">{{ actorLabel(c.resolved_by) }}</span></p>
+          }
+          @if (c.status === 'open' && e.status === 'active') {
+            <div class="kn-actions">
+              <button class="cg-btn" type="button" (click)="openResolve(c, 'uphold')">Uphold</button>
+              <button class="cg-btn" type="button" (click)="openResolve(c, 'amend')">Amend</button>
+              <button class="cg-btn danger" type="button" (click)="openResolve(c, 'retract')">Retract rule</button>
+            </div>
+          }
+          @if (resolving() === c.id) {
+            <form class="kn-form" (ngSubmit)="resolve()">
+              @if (outcome === 'amend') {
+                <label class="cg-field"><span class="cg-field-label">Amended rule</span>
+                  <input class="cg-input" name="amendSummary" [(ngModel)]="amendSummary" maxlength="500" /></label>
+              }
+              <label class="cg-field"><span class="cg-field-label">Reason ({{ outcome }})</span>
+                <textarea class="cg-input" name="reason" [(ngModel)]="reason"></textarea></label>
+              <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Resolve: {{ outcome }}</button></div>
+            </form>
+          }
+        </div>
+      }
+    </section>
+  }
+
+  @if (l.addressed_by?.length) {
+    <section>
+      <h3>Addressed locally by</h3>
+      <ul>
+        @for (a of l.addressed_by!; track a.kind + a.name) {
+          <li>{{ a.kind }} {{ a.name }}@if (a.harness) { ({{ a.harness }}) }@if (a.ref) { @ <span class="cg-mono">{{ a.ref }}</span> } · <span class="kn-actor" [title]="actorTitle(a.author)">{{ actorLabel(a.author) }}</span></li>
+        }
+      </ul>
+    </section>
+  }
+
+  @if (l.events?.length) {
+    <section>
+      <h3>Correction events</h3>
+      <ul>
+        @for (ev of l.events!; track ev.correction_id) {
+          <li>{{ ev.summary }} · {{ words(ev.source) || 'unknown source' }}@if (ev.served === true) { · served } @else if (ev.served === false) { · not served }@if (!ev.counted) { · repeat } · <span class="kn-actor" [title]="actorTitle(ev.author)">{{ actorLabel(ev.author) }}</span> · {{ ev.created_at | date: 'short' }}</li>
+        }
+      </ul>
+    </section>
+  }
+}
+
+@if (e.status === 'active') {
+  <div class="kn-actions">
+    @if (l?.state === 'candidate') {
+      <button class="cg-btn" type="button" (click)="propose()" [disabled]="busy()">Propose as rule</button>
+    }
+    @if (l?.state !== 'rule') {
+      <button class="cg-btn secondary" type="button" (click)="approve()" [disabled]="busy()">Approve as rule</button>
+    }
+    @if (l?.state !== 'rejected') {
+      <button class="cg-btn" type="button" (click)="open('reject')" [disabled]="busy()">Reject…</button>
+    }
+    <button class="cg-btn" type="button" (click)="open('edit')" [disabled]="busy()">Edit</button>
+    @if (l?.state === 'rule') {
+      <button class="cg-btn" type="button" (click)="open('challenge')" [disabled]="busy()">Challenge…</button>
+    }
+    <button class="cg-btn" type="button" (click)="open('addressed_by')" [disabled]="busy()">Addressed by…</button>
+    <button class="cg-btn" type="button" (click)="open('relate')" [disabled]="busy()">Relate…</button>
+    <button class="cg-btn danger" type="button" (click)="open('retract')" [disabled]="busy()">Retract…</button>
+  </div>
+}
+
+@switch (form()) {
+  @case ('reject') {
+    <form class="kn-form" (ngSubmit)="reject()">
+      <label class="cg-field"><span class="cg-field-label">Why not a rule?</span>
+        <textarea class="cg-input" name="reason" [(ngModel)]="reason"></textarea></label>
+      <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Reject</button></div>
+    </form>
+  }
+  @case ('retract') {
+    <form class="kn-form" (ngSubmit)="retract()">
+      <label class="cg-field"><span class="cg-field-label">Why is it wrong?</span>
+        <textarea class="cg-input" name="reason" [(ngModel)]="reason"></textarea></label>
+      <div class="kn-actions"><button class="cg-btn danger" type="submit" [disabled]="busy()">Retract</button></div>
+    </form>
+  }
+  @case ('edit') {
+    <form class="kn-form" (ngSubmit)="edit()">
+      <label class="cg-field"><span class="cg-field-label">Correct behavior</span>
+        <input class="cg-input" name="editSummary" [(ngModel)]="editSummary" maxlength="500" /></label>
+      <fieldset class="kn-actions" aria-label="Applies when">
+        @for (a of activities; track a) {
+          <label class="adm-checkbox"><input type="checkbox" [checked]="editActivity.has(a)" (change)="toggleActivity(a, $any($event.target).checked)" /> {{ words(a) }}</label>
+        }
+      </fieldset>
+      <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Save revision</button></div>
+    </form>
+  }
+  @case ('challenge') {
+    <form class="kn-form" (ngSubmit)="openChallenge()">
+      <label class="cg-field"><span class="cg-field-label">Why is the rule wrong?</span>
+        <textarea class="cg-input" name="reason" [(ngModel)]="reason"></textarea></label>
+      <label class="cg-field"><span class="cg-field-label">Evidence</span>
+        <select class="cg-select" name="evidenceKind" [(ngModel)]="evidenceKind">
+          @for (k of evidenceKinds; track k) { <option [value]="k">{{ words(k) }}</option> }
+        </select></label>
+      <input class="cg-input" name="evidenceSummary" [(ngModel)]="evidenceSummary" placeholder="What it shows" aria-label="Evidence summary" />
+      <input class="cg-input" name="evidenceRef" [(ngModel)]="evidenceRef" placeholder="Link, path, commit or run id (optional)" aria-label="Evidence reference" />
+      <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Open challenge</button></div>
+    </form>
+  }
+  @case ('addressed_by') {
+    <form class="kn-form" (ngSubmit)="addressedBy()">
+      <label class="cg-field"><span class="cg-field-label">Fixed locally by</span>
+        <select class="cg-select" name="addressedKind" [(ngModel)]="addressedKind">
+          @for (k of addressedKinds; track k) { <option [value]="k">{{ k }}</option> }
+        </select></label>
+      <input class="cg-input" name="addressedName" [(ngModel)]="addressedName" placeholder="Name" aria-label="Name" />
+      <input class="cg-input" name="addressedRef" [(ngModel)]="addressedRef" placeholder="Commit, path or URL (optional)" aria-label="Reference" />
+      @if (addressedKind === 'instruction' || addressedKind === 'hook') {
+        <input class="cg-input" name="addressedHarness" [(ngModel)]="addressedHarness" placeholder="Harness, such as claude-code" aria-label="Harness" />
+      }
+      <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Mark addressed</button></div>
+    </form>
+  }
+  @case ('relate') {
+    <form class="kn-form" (ngSubmit)="relate()">
+      <label class="cg-field"><span class="cg-field-label">Relation</span>
+        <select class="cg-select" name="relation" [(ngModel)]="relation">
+          <option value="contradicts">contradicts</option>
+          <option value="same_as">same as (merge into it)</option>
+        </select></label>
+      <input class="cg-input cg-mono" name="relateTo" [(ngModel)]="relateTo" placeholder="Id of the other lesson" aria-label="Other lesson id" />
+      <div class="kn-actions"><button class="cg-btn primary" type="submit" [disabled]="busy()">Relate</button></div>
+    </form>
+  }
+}
