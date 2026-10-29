@@ -73,6 +73,9 @@ public sealed class StartSessionRequest
     [Description(SavePointText.BriefingPaths)]
     public List<string>? Paths { get; init; }
 
+    [Description(SavePointText.BriefingActivity)]
+    public List<LessonActivity>? Activity { get; init; }
+
     [Description("Caller-chosen key: a repeat by the same identity answers the session the first call started, with created false.")]
     public string? IdempotencyKey { get; init; }
 }
@@ -117,6 +120,9 @@ public sealed class GetBriefingRequest : ISessionArguments
 
     [Description(SavePointText.BriefingPaths)]
     public List<string>? Paths { get; init; }
+
+    [Description(SavePointText.BriefingActivity)]
+    public List<LessonActivity>? Activity { get; init; }
 }
 
 public sealed class HandoffInput
@@ -158,7 +164,8 @@ public sealed record SessionView(
     bool Live,
     DateTime StartedAt,
     DateTime LastSeenAt,
-    DateTime? EndedAt = null)
+    DateTime? EndedAt = null,
+    IReadOnlyList<LessonActivity>? Activity = null)
 {
     public string Kind => "session";
 }
@@ -187,7 +194,8 @@ public sealed record EndSessionResult(
     IReadOnlyList<WorkRow> Released,
     HandoffView? Handoff = null,
     IReadOnlyList<HoldView>? ReleasedHolds = null,
-    IReadOnlyList<KnowledgeRow>? Recorded = null);
+    IReadOnlyList<KnowledgeRow>? Recorded = null,
+    IReadOnlyList<SimilarLessons>? Similar = null);
 
 /// <summary>
 /// What the next holder of an item needs to continue it (§5.9): the previous holder, the branch and
@@ -221,7 +229,9 @@ public sealed record BriefingView(
     IReadOnlyList<string>? Truncated = null,
     IReadOnlyList<HoldView>? MyHolds = null,
     IReadOnlyList<ResourceView>? Resources = null,
-    IReadOnlyList<KnowledgeRow>? Knowledge = null);
+    IReadOnlyList<KnowledgeRow>? Knowledge = null,
+    IReadOnlyList<BriefingRule>? Rules = null,
+    IReadOnlyList<LessonActivity>? RuleActivities = null);
 
 public sealed record BriefingProject(string Key, string Name, IReadOnlyList<string>? Goals = null);
 

@@ -53,6 +53,38 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
     [HttpPost("knowledge/import")]
     public Task<IActionResult> ImportKnowledge() => RunBodyAsync(WorkTools.ImportKnowledge);
 
+    /// <summary>promote (S9): the lesson id is the path; the body holds expected_version, action, reason, addressed_by.</summary>
+    [HttpPost("knowledge/{id}/promote")]
+    public Task<IActionResult> Promote(string id) => RunWithPathIdAsync(WorkTools.Promote, "id", id);
+
+    /// <summary>challenge (S9): open or resolve, as the body.</summary>
+    [HttpPost("knowledge/challenges")]
+    public Task<IActionResult> Challenge() => RunBodyAsync(WorkTools.Challenge);
+
+    /// <summary>lessons (S9): the view and its filters as the body.</summary>
+    [HttpPost("knowledge/lessons")]
+    public Task<IActionResult> Lessons() => RunBodyAsync(WorkTools.Lessons);
+
+    /// <summary>review_queue (S9): project, limit, cursor and session_id as query parameters.</summary>
+    [HttpGet("knowledge/review-queue")]
+    public async Task<IActionResult> ReviewQueue()
+    {
+        if (await DeniedAsync(WorkTools.ReviewQueue) is { } denied)
+            return denied;
+
+        JsonObject arguments;
+        try
+        {
+            arguments = QueryArguments(WorkTools.ReviewQueue, strings: ["project", "cursor", "session_id"], integers: ["limit"], booleans: []);
+        }
+        catch (WorkException exception)
+        {
+            return Refuse(exception);
+        }
+
+        return await RunAsync(WorkTools.ReviewQueue, JsonSerializer.SerializeToElement(arguments));
+    }
+
     /// <summary>recall of one entry: the id is the path; detail and session_id may be query parameters.</summary>
     [HttpGet("knowledge/{id}")]
     public async Task<IActionResult> GetKnowledge(string id)
@@ -110,17 +142,20 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
         JsonObject arguments;
         try
         {
-            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item", "paths"], integers: ["budget_tokens"], booleans: []);
+            arguments = QueryArguments(WorkTools.GetBriefing, strings: ["item", "paths", "activity"], integers: ["budget_tokens"], booleans: []);
         }
         catch (WorkException exception)
         {
             return Refuse(exception);
         }
 
-        // paths is a comma-separated list on the query string.
-        if (arguments["paths"] is JsonNode paths)
-            arguments["paths"] = new JsonArray(paths.GetValue<string>().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(path => (JsonNode?)path).ToArray());
+        // paths and activity are comma-separated lists on the query string.
+        foreach (var list in new[] { "paths", "activity" })
+        {
+            if (arguments[list] is JsonNode values)
+                arguments[list] = new JsonArray(values.GetValue<string>().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(value => (JsonNode?)value).ToArray());
+        }
 
         arguments["session_id"] = sessionId;
         return await RunAsync(WorkTools.GetBriefing, JsonSerializer.SerializeToElement(arguments));

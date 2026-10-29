@@ -47,7 +47,63 @@ public interface IKnowledgeStore
     /// </summary>
     Task<ImportKnowledgeResult> ImportKnowledgeAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
         IReadOnlyList<int>? accept, string? keyHash, WorkActor actor, CancellationToken ct = default);
+
+    // ---- Lessons, rules and challenges (S9) -------------------------------------------------------
+
+    /// <summary>The active lessons of the project lexically similar to each of <paramref name="entryIds"/> (candidates only; nothing is decided).</summary>
+    Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// The rules to serve in a briefing: active, not addressed locally, with an applies-when activity
+    /// among the context's and a location (repositories, paths, harness) that matches; with their
+    /// contradictions and open challenges. Ranked by priority, then recurrence, then the newest.
+    /// </summary>
+    Task<IReadOnlyList<BriefingRule>> ReadRulesAsync(RuleContext context, CancellationToken ct = default);
+
+    /// <summary>The activities the project's servable rules apply to.</summary>
+    Task<IReadOnlyList<LessonActivity>> ReadRuleActivitiesAsync(Guid projectId, CancellationToken ct = default);
+
+    /// <summary>The served-rule log: the session's briefing served these rules now.</summary>
+    Task LogServedRulesAsync(Guid sessionId, Guid projectId, IReadOnlyList<Guid> ruleIds, CancellationToken ct = default);
+
+    /// <summary>The activities a session declared (the rule filter of its briefings).</summary>
+    Task SetSessionActivityAsync(Guid sessionId, IReadOnlyList<LessonActivity> activity, CancellationToken ct = default);
+
+    /// <summary>record relate: merge a lesson into another (same_as) or link the two as contradicting.</summary>
+    Task<KnowledgeView> RelateLessonAsync(Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>record acknowledge: an autonomous decision was reviewed (it leaves the review queue).</summary>
+    Task<KnowledgeView> AcknowledgeKnowledgeAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default);
+
+    Task<PromoteResult> PromoteLessonAsync(Guid entryId, long expectedVersion, PromoteAction action, string? reason, AddressedBySpec? addressedBy, WorkActor actor, CancellationToken ct = default);
+
+    Task<ChallengeResult> OpenChallengeAsync(Guid entryId, string reason, IReadOnlyList<EvidenceView> evidence, string? keyHash, WorkActor actor, CancellationToken ct = default);
+
+    /// <summary>Resolves an open challenge; <paramref name="amended"/> (outcome amend) is the rule's new content.</summary>
+    Task<ChallengeResult> ResolveChallengeAsync(Guid challengeId, long expectedVersion, ChallengeOutcome outcome, string reason, KnowledgeSpec? amended, WorkActor actor, CancellationToken ct = default);
+
+    Task<ChallengeView?> GetChallengeAsync(Guid challengeId, CancellationToken ct = default);
+
+    Task<LessonsPage> ReadLessonsAsync(LessonsSpec spec, CancellationToken ct = default);
+
+    Task<ReviewQueuePage> ReadReviewQueueAsync(Guid projectId, int offset, int limit, CancellationToken ct = default);
 }
+
+public sealed record RuleContext(
+    Guid ProjectId,
+    IReadOnlyList<LessonActivity> Activities,
+    string? Repository,
+    IReadOnlyList<string> Paths,
+    string? Harness,
+    int Limit);
+
+public sealed record AddressedBySpec(AddressedByKind Kind, string Name, string? Ref);
+
+public sealed record LessonsSpec(Guid ProjectId, LessonsView View, LessonActivity? Activity, CorrectionSourceKind? Source, int SinceDays, int Offset, int Limit);
+
+public sealed record LessonsPage(IReadOnlyList<LessonRow> Items, bool More);
+
+public sealed record ReviewQueuePage(IReadOnlyList<ReviewItem> Items, bool More);
 
 /// <summary>
 /// A knowledge entry as the store writes it. <see cref="Repositories"/> null takes the default (the
@@ -69,7 +125,10 @@ public sealed record KnowledgeSpec(
     Guid? ItemId = null,
     Guid? FeatureId = null,
     string? SourceFile = null,
-    SupersedeSpec? Supersedes = null)
+    SupersedeSpec? Supersedes = null,
+    // Lessons (S9): the recording agent's decision about an existing lesson.
+    Guid? SameAs = null,
+    Guid? Contradicts = null)
 {
     public Guid Id { get; init; } = Guid.NewGuid();
 }
@@ -92,7 +151,8 @@ public sealed record RecallSpec(
     bool? PossiblyStale,
     WorkDetail Detail,
     int Limit,
-    KnowledgeCursor? After);
+    KnowledgeCursor? After,
+    IReadOnlyList<LessonRuleState>? RuleStates = null);
 
 public sealed record RecallPage(IReadOnlyList<object> Items, KnowledgeCursor? Next);
 
@@ -106,7 +166,10 @@ public sealed record KnowledgeContext(
     IReadOnlyList<string> Paths,
     IReadOnlyList<Guid> ItemIds,
     IReadOnlyList<KnowledgeKind> Kinds,
-    int Limit);
+    int Limit,
+    // A briefing serves rules in a section of their own: its knowledge section then takes lessons
+    // only by item (task-scoped). An item brief takes a lesson beyond its item only when it is a rule.
+    bool RulesServedApart = false);
 
 /// <summary>A candidate of an import: its spec, or (when its shape is invalid) the reason.</summary>
 public sealed record ImportCandidateSpec(int Index, KnowledgeSpec? Spec, ImportVerification Verification, string? InvalidMessage = null);

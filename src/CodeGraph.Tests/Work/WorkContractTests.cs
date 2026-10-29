@@ -110,7 +110,7 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge"]);
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge", "promote", "challenge", "lessons", "review_queue"]);
         foreach (var tool in tools)
         {
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;

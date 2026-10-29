@@ -79,6 +79,10 @@ public sealed partial class WorkService(
             WorkTools.Record => WorkJson.Parse<RecordRequest>(arguments, tool),
             WorkTools.Recall => WorkJson.Parse<RecallRequest>(arguments, tool),
             WorkTools.ImportKnowledge => WorkJson.Parse<ImportKnowledgeRequest>(arguments, tool),
+            WorkTools.Promote => WorkJson.Parse<PromoteRequest>(arguments, tool),
+            WorkTools.Challenge => WorkJson.Parse<ChallengeRequest>(arguments, tool),
+            WorkTools.Lessons => WorkJson.Parse<LessonsRequest>(arguments, tool),
+            WorkTools.ReviewQueue => WorkJson.Parse<ReviewQueueRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -145,6 +149,10 @@ public sealed partial class WorkService(
             RecordRequest record => await RecordAsync(record, actor, session, ct),
             RecallRequest recall => await RecallAsync(recall, session, ct),
             ImportKnowledgeRequest import => await ImportKnowledgeAsync(import, actor, session, ct),
+            PromoteRequest promote => await PromoteAsync(promote, actor, session, ct),
+            ChallengeRequest challenge => await ChallengeAsync(challenge, actor, session, ct),
+            LessonsRequest lessons => await LessonsAsync(lessons, session, ct),
+            ReviewQueueRequest review => await ReviewQueueAsync(review, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
         return (result, actor);
@@ -185,7 +193,8 @@ public sealed partial class WorkService(
             repository,
             Optional(request.Branch, "branch", WorkSessionLimits.MaxBranchLength),
             Optional(request.Worktree, "worktree", WorkSessionLimits.MaxWorktreeLength),
-            Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength));
+            Optional(request.Intent, "intent", WorkSessionLimits.MaxIntentLength),
+            request.Activity is { Count: > 0 } activity ? activity.Distinct().ToList() : null);
         var created = await Store.StartSessionAsync(spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
         var briefing = await BriefingAsync(Guid.Parse(created.Value.Id), null, briefingPaths, budget, ct);
         return new StartSessionResult(created.Created, created.Value, briefing);
@@ -209,7 +218,8 @@ public sealed partial class WorkService(
 
         var handoff = request.Handoff is { } input ? ReadHandoff(input, "handoff") : null;
         var ended = await Store.EndSessionAsync(sessionId, itemId, handoff, knowledge, actor, ct);
-        return ended with { Recorded = ended.Recorded ?? await RecordedAsync(knowledge, ct) };
+        var recorded = ended.Recorded ?? await RecordedAsync(knowledge, ct);
+        return ended with { Recorded = recorded, Similar = await SimilarAsync(session.ProjectId, recorded, ct) };
     }
 
     private async Task<object> GetBriefingAsync(GetBriefingRequest request, WorkActor actor, CancellationToken ct)
@@ -217,6 +227,9 @@ public sealed partial class WorkService(
         var sessionId = SessionIdOf(request.SessionId);
         var budget = Budget(request.BudgetTokens);
         var paths = ReadPaths(request.Paths, "paths");
+        // A new activity replaces the session's: it is what the session does now.
+        if (request.Activity is { Count: > 0 } activity)
+            await Knowledge.SetSessionActivityAsync(sessionId, activity.Distinct().ToList(), ct);
         Guid? focus = null;
         if (request.Item is { } item)
         {
@@ -231,7 +244,15 @@ public sealed partial class WorkService(
     private async Task<BriefingView> BriefingAsync(Guid sessionId, Guid? focus, IReadOnlyList<string> paths, int budget, CancellationToken ct)
     {
         var briefing = await Store.ReadBriefingAsync(sessionId, focus, ct);
-        return WorkBriefings.Fit(briefing with { Knowledge = await BriefingKnowledgeAsync(sessionId, briefing, paths, ct) }, budget);
+        briefing = briefing with { Knowledge = await BriefingKnowledgeAsync(sessionId, briefing, paths, ct) };
+        var session = await Store.GetSessionAsync(sessionId, ct);
+        if (session is not null)
+            briefing = await WithRulesAsync(briefing, session, paths, ct);
+        var fitted = WorkBriefings.Fit(briefing, budget);
+        // The served-rule log (R26): the rules this briefing actually carries, after the budget.
+        if (session is not null && fitted.Rules is { Count: > 0 } served)
+            await Knowledge.LogServedRulesAsync(sessionId, session.ProjectId, served.Select(rule => rule.Id).ToList(), ct);
+        return fitted;
     }
 
     private int Budget(int? requested)
@@ -614,7 +635,8 @@ public sealed partial class WorkService(
                 break;
         }
 
-        return result with { Recorded = await RecordedAsync(knowledge, ct) };
+        var recorded = await RecordedAsync(knowledge, ct);
+        return result with { Recorded = recorded, Similar = await SimilarAsync(target.ProjectId, recorded, ct) };
     }
 
     private static DocumentPatchSpec ReadDocumentPatch(DocumentPatchInput input, string where)

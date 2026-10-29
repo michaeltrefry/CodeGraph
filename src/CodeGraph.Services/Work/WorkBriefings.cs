@@ -28,6 +28,16 @@ public static class WorkBriefings
             Focus = briefing.Focus is { } focus ? Shorten(focus) : null,
             SuggestedNext = briefing.SuggestedNext is { } next ? Shorten(next) : null,
             Knowledge = briefing.Knowledge?.Select(row => row with { Summary = CutTo(row.Summary, KnowledgeLimits.BriefingSummaryLength)! }).ToList(),
+            Rules = briefing.Rules?.Select(rule => rule with
+            {
+                Summary = CutTo(rule.Summary, KnowledgeLimits.BriefingSummaryLength)!,
+                Contradicts = rule.Contradicts?.Select(link => link with { Summary = CutTo(link.Summary, KnowledgeLimits.BriefingSummaryLength)! }).ToList(),
+                Challenges = rule.Challenges?.Select(challenge => challenge with
+                {
+                    Reason = CutTo(challenge.Reason, KnowledgeLimits.BriefingSummaryLength)!,
+                    Evidence = challenge.Evidence.Take(MaxHandoffListEntries).Select(evidence => CutTo(evidence, KnowledgeLimits.BriefingSummaryLength)!).ToList()
+                }).ToList()
+            }).ToList(),
             Truncated = null
         };
 
@@ -81,6 +91,14 @@ public static class WorkBriefings
             null => null,
             { Count: 1 } => view with { Knowledge = null },
             var rows => view with { Knowledge = rows.Take(rows.Count - 1).ToList() }
+        }),
+        // Rules are ranked (priority, recurrence): the last goes first. A cut rule still shows in
+        // its contradicting partner's contradicts, so a conflict never disappears from view.
+        new("rules", view => view.Rules switch
+        {
+            null => null,
+            { Count: 1 } => view with { Rules = null },
+            var rules => view with { Rules = rules.Take(rules.Count - 1).ToList() }
         }),
         new("project", view => view.Project.Goals switch
         {

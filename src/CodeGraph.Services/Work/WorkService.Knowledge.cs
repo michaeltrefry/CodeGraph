@@ -60,13 +60,14 @@ public sealed partial class WorkService
         {
             var where = $"corrections[{index}]";
             var appliesWhen = ReadAppliesWhen(correction.AppliesWhen, $"{where}.applies_when");
+            var (sameAs, contradicts) = ReadLessonDecision(correction.SameAs, correction.Contradicts, where);
             specs.Add(new KnowledgeSpec(
                 KnowledgeKind.Lesson, Summary(correction.CorrectBehavior, $"{where}.correct_behavior"), null, correction.Confidence ?? KnowledgeConfidence.High, null,
                 new KnowledgeDetails(
                     What: RequiredField(correction.What, $"{where}.what"),
                     AppliesWhen: appliesWhen,
                     Source: ReadSource(correction.Source, $"{where}.source")),
-                appliesWhen?.Repositories, appliesWhen?.Paths ?? [], [], null, linkedItem));
+                appliesWhen?.Repositories, appliesWhen?.Paths ?? [], [], null, linkedItem, SameAs: sameAs, Contradicts: contradicts));
         }
 
         foreach (var (finding, index) in Indexed(findings, "findings"))
@@ -116,7 +117,7 @@ public sealed partial class WorkService
         }
 
         var rows = await Knowledge.ReadRelevantKnowledgeAsync(
-            new KnowledgeContext(session.ProjectId, session.Repository, paths, items, BriefingKinds, KnowledgeLimits.MaxBriefingEntries), ct);
+            new KnowledgeContext(session.ProjectId, session.Repository, paths, items, BriefingKinds, KnowledgeLimits.MaxBriefingEntries, RulesServedApart: true), ct);
         return rows.Count == 0 ? null : rows;
     }
 
@@ -147,26 +148,43 @@ public sealed partial class WorkService
         var chosen = new[]
         {
             ("entry", request.Entry is not null), ("revise", request.Revise is not null),
-            ("retract", request.Retract is not null), ("verify", request.Verify is not null)
+            ("retract", request.Retract is not null), ("verify", request.Verify is not null),
+            ("relate", request.Relate is not null), ("acknowledge", request.Acknowledge is not null)
         }.Where(entry => entry.Item2).Select(entry => entry.Item1).ToList();
         if (chosen.Count != 1)
-            throw WorkException.Invalid($"record takes exactly one of entry, revise, retract, verify; this call passes {(chosen.Count == 0 ? "none" : string.Join(" and ", chosen))}. Nothing was changed.");
+            throw WorkException.Invalid($"record takes exactly one of entry, revise, retract, verify, relate, acknowledge; this call passes {(chosen.Count == 0 ? "none" : string.Join(" and ", chosen))}. Nothing was changed.");
         if (request.IdempotencyKey is not null && request.Entry is null)
-            throw WorkException.Invalid("idempotency_key goes with entry (a new entry); revise, retract and verify are guarded by expected_version. Nothing was changed.");
+            throw WorkException.Invalid("idempotency_key goes with entry (a new entry); revise, retract, verify, relate and acknowledge are guarded by expected_version. Nothing was changed.");
 
         if (request.Entry is { } entry)
         {
             var project = await KnowledgeProjectAsync(request.Project, session, ct);
             var spec = await ReadEntryAsync(entry, project, "entry", allowLinks: true, ct);
-            return await Knowledge.RecordKnowledgeAsync(project.Id, spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
+            var recorded = await Knowledge.RecordKnowledgeAsync(project.Id, spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
+            return recorded.Entry.Kind == KnowledgeKind.Lesson
+                ? recorded with { Similar = await SimilarAsync(project.Id, [ToRow(recorded.Entry)], ct) }
+                : recorded;
         }
 
         var (id, expectedVersion) = request.Revise is { } revise ? (revise.Id, revise.ExpectedVersion)
             : request.Retract is { } retract ? (retract.Id, retract.ExpectedVersion)
+            : request.Relate is { } relate ? (relate.Id, relate.ExpectedVersion)
+            : request.Acknowledge is { } acknowledge ? (acknowledge.Id, acknowledge.ExpectedVersion)
             : (request.Verify!.Id, request.Verify.ExpectedVersion);
         var where = chosen[0];
         var current = await RequireEntryAsync(id, $"{where}.id", request.Project, session, ct);
 
+        if (request.Relate is { } relation)
+        {
+            var (sameAs, contradicts) = ReadLessonDecision(relation.SameAs, relation.Contradicts, "relate");
+            if (sameAs is null && contradicts is null)
+                throw WorkException.Invalid("relate needs same_as or contradicts. Nothing was changed.");
+            var related = await Knowledge.RelateLessonAsync(current.Id, expectedVersion, sameAs, contradicts, actor, ct);
+            return new RecordResult(false, related, Merged: sameAs is not null ? true : null);
+        }
+
+        if (request.Acknowledge is not null)
+            return new RecordResult(false, await Knowledge.AcknowledgeKnowledgeAsync(current.Id, expectedVersion, actor, ct));
         if (request.Revise is { } revision)
             return new RecordResult(false, await Knowledge.ReviseKnowledgeAsync(current.Id, expectedVersion, ReadRevision(current, revision), actor, ct));
         if (request.Retract is { } retraction)
@@ -203,10 +221,10 @@ public sealed partial class WorkService
     {
         [KnowledgeKind.Decision] = ["why", "alternatives", "context", "consequences", "made_autonomously"],
         [KnowledgeKind.Attempt] = ["why_failed"],
-        [KnowledgeKind.Lesson] = ["what", "applies_when", "source"]
+        [KnowledgeKind.Lesson] = ["what", "applies_when", "source", "same_as", "contradicts"]
     };
 
-    private static readonly string[] AllKindFields = ["why", "alternatives", "context", "consequences", "made_autonomously", "why_failed", "what", "applies_when", "source"];
+    private static readonly string[] AllKindFields = ["why", "alternatives", "context", "consequences", "made_autonomously", "why_failed", "what", "applies_when", "source", "same_as", "contradicts"];
 
     private static void RefuseForeignKindFields(KnowledgeKind kind, IEnumerable<string> passed, string where)
     {
@@ -241,6 +259,9 @@ public sealed partial class WorkService
         }
 
         Guid? itemId = input.Item is { } item ? (await RequireOfProjectAsync(item, WorkEntityKind.Item, project, $"{where}.item", ct)).Id : null;
+        var decision = ReadLessonDecision(input.SameAs, input.Contradicts, where);
+        if (input.Supersedes is not null && (decision.SameAs is not null || decision.Contradicts is not null))
+            throw WorkException.Invalid($"{where}: supersedes replaces an entry; same_as and contradicts relate a new lesson to an existing one. Pass one of them. Nothing was changed.");
         SupersedeSpec? supersedes = null;
         if (input.Supersedes is { } replaced)
         {
@@ -261,7 +282,8 @@ public sealed partial class WorkService
                 What: Field(input.What, $"{where}.what"),
                 AppliesWhen: appliesWhen,
                 Source: input.Source is { } source ? ReadSource(source, $"{where}.source") : null)),
-            repositories, paths, nodes, commit, itemId, Supersedes: supersedes);
+            repositories, paths, nodes, commit, itemId, Supersedes: supersedes,
+            SameAs: decision.SameAs, Contradicts: decision.Contradicts);
     }
 
     private static readonly string[] RevisionClearable = ["body", "why", "alternatives", "context", "consequences", "what", "applies_when", "repositories", "paths", "nodes"];
@@ -356,7 +378,8 @@ public sealed partial class WorkService
             request.PossiblyStale,
             detail,
             limit,
-            request.Cursor is { } cursor ? DecodeRecallCursor(cursor) : null), ct);
+            request.Cursor is { } cursor ? DecodeRecallCursor(cursor) : null,
+            request.RuleState is { Count: > 0 } ruleStates ? ruleStates : null), ct);
 
         return new RecallResult(page.Items, page.Next is { } next
             ? EncodeCursor(RecallCursorKind, $"{next.CreatedAt.Ticks.ToString(CultureInfo.InvariantCulture)}.{next.Id}")

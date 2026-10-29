@@ -203,6 +203,8 @@ public static class Startup
         // Sessions (S2): the idle threshold after which a silent session's claims lapse, and the
         // default briefing budget.
         services.Configure<CodeGraph.Models.Work.WorkSessionOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkSessionOptions.Section));
+        // Lessons (S9): the recurrence after which a lesson becomes a rule (default 2 distinct events).
+        services.Configure<CodeGraph.Models.Work.WorkLessonOptions>(configuration.GetSection(CodeGraph.Models.Work.WorkLessonOptions.Section));
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<McpPersonalAccessTokenService>();

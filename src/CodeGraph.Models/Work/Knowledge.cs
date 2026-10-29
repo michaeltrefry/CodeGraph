@@ -207,6 +207,12 @@ public sealed class CorrectionInput
     public required CorrectionSourceInput Source { get; init; }
 
     public KnowledgeConfidence? Confidence { get; init; }
+
+    [Description(LessonText.SameAs)]
+    public string? SameAs { get; init; }
+
+    [Description(LessonText.Contradicts)]
+    public string? Contradicts { get; init; }
 }
 
 public sealed class FindingInput
@@ -245,7 +251,7 @@ public sealed class RecordRequest : ISessionArguments
     [Description("Key or id of the Project. May be left out with session_id (the session's project), and with revise, retract, verify.")]
     public string? Project { get; init; }
 
-    [Description("A new entry. Pass exactly one of entry, revise, retract, verify.")]
+    [Description("A new entry. Pass exactly one of entry, revise, retract, verify, relate, acknowledge.")]
     public KnowledgeEntryInput? Entry { get; init; }
 
     [Description("A new revision of an active entry: the fields passed replace the stored ones; the entry is re-verified against its files.")]
@@ -256,6 +262,12 @@ public sealed class RecordRequest : ISessionArguments
 
     [Description("Re-verify an active entry: its files' current indexed content becomes the baseline, clearing possibly_stale.")]
     public KnowledgeVerifyInput? Verify { get; init; }
+
+    [Description("Lessons: decide about a stored lesson after seeing its similar lessons: same_as (merge it into that lesson) or contradicts (keep both, linked and flagged).")]
+    public KnowledgeRelateInput? Relate { get; init; }
+
+    [Description("Review queue: an autonomous decision was reviewed and stands; it leaves the review queue.")]
+    public KnowledgeAcknowledgeInput? Acknowledge { get; init; }
 
     [Description("With entry: caller-chosen key, 1 to 128 printable ASCII characters. A repeat by the same identity in the project stores nothing and answers the first entry, with created false.")]
     public string? IdempotencyKey { get; init; }
@@ -316,6 +328,12 @@ public sealed class KnowledgeEntryInput
 
     [Description("Lesson: where the correction came from.")]
     public CorrectionSourceInput? Source { get; init; }
+
+    [Description("Lesson: " + LessonText.SameAs)]
+    public string? SameAs { get; init; }
+
+    [Description("Lesson: " + LessonText.Contradicts)]
+    public string? Contradicts { get; init; }
 
     [Description("An active entry of the project this one replaces: it becomes superseded, linked to this one.")]
     public SupersedeInput? Supersedes { get; init; }
@@ -432,6 +450,9 @@ public sealed class RecallRequest : ISessionArguments
     [Description("Only lessons from this correction source.")]
     public CorrectionSourceKind? Source { get; init; }
 
+    [Description("Only lessons in these rule states: candidate (task-scoped), proposed, rule, rejected.")]
+    public List<LessonRuleState>? RuleState { get; init; }
+
     [Description("Words that must all appear in the summary or body (ignoring case).")]
     public string? Text { get; init; }
 
@@ -501,6 +522,15 @@ internal static class SavePointText
     public const string Corrections = "Save point: corrections received (from a human, a reviewer or another agent), each stored as a lesson entry: {what, correct_behavior, applies_when, source}. At most 20.";
     public const string Findings = "Save point: facts, gotchas and constraints the next agent would otherwise rediscover, each stored as an entry of that kind: {kind, summary, body, confidence, repositories, paths, nodes, commit}. At most 20.";
     public const string BriefingPaths = "Paths the session works on, relative to the repository root: the briefing's knowledge section adds the decisions and rules scoped to them.";
+    public const string BriefingActivity =
+        "What the session is doing: planning, slicing, implementing, testing, reviewing, merging, releasing, tracker_updates, coordinating. The briefing's rules section serves " +
+        "the rules whose applies-when names one of these activities (and whose location, if any, matches). Kept on the session until a get_briefing passes another.";
+}
+
+internal static class LessonText
+{
+    public const string SameAs = "Id of an existing lesson this correction says the same as (from similar or a briefing's rules): it is merged into that lesson as a recurrence with its evidence; no new lesson is stored.";
+    public const string Contradicts = "Id of an existing lesson this one contradicts: both are kept, linked, served together with the conflict shown, and flagged in the review queue.";
 }
 
 internal static class KnowledgeText
@@ -555,7 +585,10 @@ public sealed record KnowledgeRow(
     bool? PossiblyStale = null,
     bool? MadeAutonomously = null,
     string? Item = null,
-    string? Match = null);
+    string? Match = null,
+    bool? Rule = null,
+    int? Recurrence = null,
+    bool? Merged = null);
 
 public sealed record KnowledgeView(
     Guid Id,
@@ -587,12 +620,15 @@ public sealed record KnowledgeView(
     IReadOnlyList<KnowledgeFileView>? VerifiedFiles = null,
     IReadOnlyList<KnowledgeFileView>? StaleFiles = null,
     string? SourceFile = null,
-    IReadOnlyList<KnowledgeRevisionView>? Revisions = null)
+    IReadOnlyList<KnowledgeRevisionView>? Revisions = null,
+    LessonView? Lesson = null)
 {
     public string Entity => "knowledge";
 }
 
-public sealed record RecordResult(bool Created, KnowledgeView Entry, KnowledgeRow? Superseded = null);
+/// <param name="Merged">true when the lesson was merged into an existing one (same_as, or an exact normalized match): Entry is that lesson.</param>
+/// <param name="Similar">Lessons similar to the one recorded: candidates for same_as or contradicts (record relate).</param>
+public sealed record RecordResult(bool Created, KnowledgeView Entry, KnowledgeRow? Superseded = null, bool? Merged = null, IReadOnlyList<SimilarLessons>? Similar = null);
 
 public sealed record RecallResult(IReadOnlyList<object> Items, string? NextCursor = null);
 
