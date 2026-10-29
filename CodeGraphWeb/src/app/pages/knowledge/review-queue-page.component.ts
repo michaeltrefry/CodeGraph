@@ -101,7 +101,24 @@ export class ReviewQueuePageComponent implements OnInit {
     if (item.kind === 'proposed_rule') {
       await this.run(() => firstValueFrom(this.api.promote(item.entry.id, { expected_version: item.entry.version, action: 'approve' })), 'Approved: it is a rule now.');
     } else if (item.kind === 'autonomous_decision') {
-      await this.run(() => firstValueFrom(this.api.record({ acknowledge: { id: item.entry.id, expected_version: item.entry.version } })), 'Acknowledged: the decision stands.');
+      await this.run(() => this.acknowledge(item.entry.id, item.entry.version), 'Acknowledged: the decision stands.');
+    }
+  }
+
+  /** Contradiction: the two lessons say the same; the first is folded into the second (record relate same_as). */
+  async sameAs(item: ReviewItem): Promise<void> {
+    const other = item.other;
+    if (!other) return;
+    await this.run(() => firstValueFrom(this.api.record({ relate: { id: item.entry.id, expected_version: item.entry.version, same_as: other.id } })),
+      'Merged the first lesson into the second.');
+  }
+
+  // record acknowledge; a decision that turns out to be acknowledged already (a retry whose first answer was lost) counts as done.
+  private async acknowledge(id: string, version: number): Promise<void> {
+    try {
+      await firstValueFrom(this.api.record({ acknowledge: { id, expected_version: version } }));
+    } catch (error) {
+      if (!/already acknowledged/i.test(workError(error).message)) throw error;
     }
   }
 
@@ -137,15 +154,41 @@ export class ReviewQueuePageComponent implements OnInit {
       await this.run(() => firstValueFrom(this.api.record({ retract: { id: target.id, expected_version: target.version, reason } })), 'Retracted.');
     } else if (form.action === 'amend') {
       if (!summary || summary === target.summary) return this.need('Change the text to amend it.');
-      await this.run(async () => {
-        const revised = await firstValueFrom(this.api.record({ revise: { id: target.id, expected_version: target.version, summary } }));
-        // A person amending an autonomous decision has reviewed it: it is acknowledged at the new version.
-        if (item.kind === 'autonomous_decision') {
-          await firstValueFrom(this.api.record({ acknowledge: { id: target.id, expected_version: revised.entry.version } }));
-        }
-        return revised;
-      }, item.kind === 'autonomous_decision' ? 'Amended and acknowledged.' : 'Amended.');
+      await this.amend(item, target, summary);
     }
+  }
+
+  // Revise; for an autonomous decision then acknowledge at the new version (a person amending it has
+  // reviewed it). Two writes: when only the first lands the banner says so, and the queue is read
+  // again after any outcome past the revision.
+  private async amend(item: ReviewItem, target: KnowledgeRow, summary: string): Promise<void> {
+    this.busy.set(true);
+    this.error.set(null);
+    this.notice.set(null);
+    let version: number;
+    try {
+      version = (await firstValueFrom(this.api.record({ revise: { id: target.id, expected_version: target.version, summary } }))).entry.version;
+    } catch (error) {
+      this.error.set(errorText(error));
+      this.busy.set(false);
+      if (workError(error).code === 'conflict') await this.load();
+      return;
+    }
+
+    this.form.set(null);
+    this.reason = '';
+    if (item.kind !== 'autonomous_decision') {
+      this.notice.set('Amended.');
+    } else {
+      try {
+        await this.acknowledge(target.id, version);
+        this.notice.set('Amended and acknowledged.');
+      } catch (error) {
+        this.error.set(`Revised, not acknowledged: ${workError(error).message} Approve it to acknowledge the revised decision.`);
+      }
+    }
+    this.busy.set(false);
+    await this.load();
   }
 
   challengesOf(item: ReviewItem): Challenge[] {

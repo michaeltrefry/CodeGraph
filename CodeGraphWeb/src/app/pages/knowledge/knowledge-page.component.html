@@ -168,7 +168,7 @@
               @if (entry.kind !== 'lesson') {
                 <button class="cg-btn" type="button" (click)="openForm('supersede')" [disabled]="busy()">Supersede</button>
               }
-              @if (entry.kind === 'decision' && entry.made_autonomously) {
+              @if (entry.kind === 'decision' && entry.made_autonomously && !entry.reviewed_at) {
                 <button class="cg-btn secondary" type="button" (click)="acknowledge()" [disabled]="busy()">Acknowledge</button>
               }
               <button class="cg-btn danger" type="button" (click)="openForm('retract')" [disabled]="busy()">Retract</button>

@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { Component, inject, input, output, signal } from '@angular/core';
+import { Component, OnChanges, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { KnowledgeApiService } from './knowledge-api.service';
@@ -30,7 +30,7 @@ type LessonForm = 'edit' | 'retract' | 'reject' | 'addressed_by' | 'challenge' |
   styleUrl: './knowledge.scss',
   host: { class: 'kn-stack' }
 })
-export class LessonActionsComponent {
+export class LessonActionsComponent implements OnChanges {
   private readonly api = inject(KnowledgeApiService);
 
   readonly entry = input.required<KnowledgeEntry>();
@@ -65,6 +65,38 @@ export class LessonActionsComponent {
   outcome: ChallengeOutcome = 'uphold';
   amendSummary = '';
   readonly challengeKey = new IdempotencyKey();
+
+  // The lesson the forms and the challenge key belong to.
+  private shownId: string | null = null;
+
+  /** Another lesson selected: its forms, banners and challenge key start fresh, so nothing typed for (or keyed to) the last one reaches it. */
+  ngOnChanges(): void {
+    const id = this.entry().id;
+    if (this.shownId !== null && this.shownId !== id) this.reset();
+    this.shownId = id;
+  }
+
+  private reset(): void {
+    this.form.set(null);
+    this.resolving.set(null);
+    this.error.set(null);
+    this.notice.set(null);
+    this.reason = '';
+    this.editSummary = '';
+    this.editActivity = new Set();
+    this.addressedKind = 'skill';
+    this.addressedName = '';
+    this.addressedRef = '';
+    this.addressedHarness = '';
+    this.evidenceKind = 'counter_example';
+    this.evidenceSummary = '';
+    this.evidenceRef = '';
+    this.relateTo = '';
+    this.relation = 'contradicts';
+    this.outcome = 'uphold';
+    this.amendSummary = '';
+    this.challengeKey.reset();
+  }
 
   open(form: LessonForm): void {
     this.form.set(this.form() === form ? null : form);
@@ -220,6 +252,9 @@ export class LessonActionsComponent {
       this.resolving.set(null);
       this.reason = '';
       this.notice.set(done);
+      // The lesson this write answered (a same_as merge answers the other one) keeps the banner.
+      if (entry.id !== this.shownId) this.challengeKey.reset();
+      this.shownId = entry.id;
       this.changed.emit(entry);
       return true;
     } catch (error) {

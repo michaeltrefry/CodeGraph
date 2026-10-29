@@ -1,9 +1,10 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeApiService } from './knowledge-api.service';
-import { LessonsPageComponent } from './lessons-page.component';
+import { LessonsPageComponent, mergeGroups } from './lessons-page.component';
 import { AGENT, lessonRow, rule } from './knowledge-fixtures';
+import { LessonsFilters, LessonsResult } from './knowledge.models';
 
 describe('LessonsPageComponent', () => {
   let api: { [K in 'listProjects' | 'recall' | 'getEntry' | 'record' | 'lessons' | 'promote' | 'challenge']: ReturnType<typeof vi.fn> };
@@ -97,5 +98,41 @@ describe('LessonsPageComponent', () => {
     await page.changed(rule({ status: 'retracted' }));
     expect(page.selected()?.status).toBe('retracted');
     expect(api.lessons).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops the answer of a tab left before it arrived', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    const slow = new Subject<LessonsResult>();
+    api.lessons.mockImplementationOnce(() => slow);
+
+    const left = page.show('recurrence');
+    await page.show('unmatched');
+    slow.next({ view: 'recurrence', items: [lessonRow({ id: 'stale', summary: 'From the tab left' })] });
+    slow.complete();
+    await left;
+
+    expect(page.tab()).toBe('unmatched');
+    expect(page.rows().map(row => row.id)).toEqual(['r-1']);
+  });
+
+  it('reads the next page of a tab with its own cursor and the filters of its first page', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    api.lessons.mockImplementation((filters: LessonsFilters) => of({ view: filters.view, items: [lessonRow()], next_cursor: `${filters.view}-2` }));
+    await page.show('recurrence');
+    await page.show('unmatched');
+    await page.show('recurrence');
+
+    page.activity = 'testing';
+    await page.load(true);
+    expect(api.lessons).toHaveBeenLastCalledWith({ project: 'CG', view: 'recurrence', limit: 20, cursor: 'recurrence-2' });
+  });
+
+  it('merges grouped pages by activity', () => {
+    const merged = mergeGroups(
+      [{ activity: 'merging', lessons: [lessonRow({ id: 'a' })] }],
+      [{ activity: 'merging', lessons: [lessonRow({ id: 'a' }), lessonRow({ id: 'b' })] }, { activity: 'testing', lessons: [lessonRow({ id: 'c' })] }]);
+    expect(merged.map(group => [group.activity, group.lessons.map(lesson => lesson.id)])).toEqual([['merging', ['a', 'b']], ['testing', ['c']]]);
   });
 });

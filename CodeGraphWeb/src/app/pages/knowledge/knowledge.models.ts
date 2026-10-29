@@ -204,6 +204,7 @@ export interface KnowledgeEntry {
   source_file?: string;
   revisions?: KnowledgeRevision[];
   lesson?: LessonState;
+  reviewed_at?: string;
 }
 
 export interface RecallResult<T> {
@@ -329,6 +330,7 @@ export interface RevisionBody {
   body?: string;
   confidence?: KnowledgeConfidence;
   applies_when?: AppliesWhen;
+  clear?: string[];
 }
 
 export interface RecordBody {

@@ -142,4 +142,38 @@ describe('LessonActionsComponent', () => {
     expect(actions.error()).toContain('reloaded');
     expect(emitted.at(-1)?.version).toBe(9);
   });
+
+  it('starts fresh on another lesson: no form, banner or challenge key carries over', async () => {
+    const fixture = await create(rule({ id: 'a', summary: 'Lesson A' }));
+    const actions = fixture.componentInstance;
+    actions.open('edit');
+    actions.editSummary = 'Text typed for A';
+    actions.open('challenge');
+    actions.reason = 'Typed for A';
+    const keyForA = actions.challengeKey.value;
+    actions.notice.set('Saved for A');
+
+    fixture.componentRef.setInput('entry', rule({ id: 'b', summary: 'Lesson B' }));
+    fixture.detectChanges();
+
+    expect(actions.form()).toBeNull();
+    expect(actions.notice()).toBeNull();
+    expect(actions.reason).toBe('');
+    expect(actions.challengeKey.value).not.toBe(keyForA);
+
+    actions.open('edit');
+    expect(actions.editSummary).toBe('Lesson B');
+    actions.editSummary = 'Lesson B, revised';
+    await actions.edit();
+    expect(api.record).toHaveBeenLastCalledWith({ revise: { id: 'b', expected_version: 5, summary: 'Lesson B, revised' } });
+  });
+
+  it('keeps the challenge key while the same lesson is answered back', async () => {
+    const fixture = await create();
+    const actions = fixture.componentInstance;
+    const key = actions.challengeKey.value;
+    fixture.componentRef.setInput('entry', rule({ version: 6 }));
+    fixture.detectChanges();
+    expect(actions.challengeKey.value).toBe(key);
+  });
 });

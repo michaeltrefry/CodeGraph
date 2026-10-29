@@ -98,6 +98,8 @@
               <button class="cg-btn" type="button" (click)="open(item, 'retract', { side: 'entry' })" [disabled]="busy()">Retract the first…</button>
               <button class="cg-btn" type="button" (click)="open(item, 'retract', { side: 'other' })" [disabled]="busy()">Retract the second…</button>
               <button class="cg-btn" type="button" (click)="open(item, 'amend', { side: 'entry' })" [disabled]="busy()">Amend the first…</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'amend', { side: 'other' })" [disabled]="busy()">Amend the second…</button>
+              <button class="cg-btn" type="button" (click)="sameAs(item)" [disabled]="busy()">Same lesson: merge the first into the second</button>
             </div>
           }
         }

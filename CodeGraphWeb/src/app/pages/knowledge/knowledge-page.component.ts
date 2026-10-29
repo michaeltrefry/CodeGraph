@@ -58,6 +58,10 @@ export class KnowledgePageComponent implements OnInit {
   newWhyFailed = '';
   readonly supersedeKey = new IdempotencyKey();
 
+  private pageFilters: RecallFilters | null = null;
+  private searchSequence = 0;
+  private selectSequence = 0;
+
   async ngOnInit(): Promise<void> {
     if (await this.project.load()) await this.search();
   }
@@ -80,39 +84,57 @@ export class KnowledgePageComponent implements OnInit {
     return filters;
   }
 
-  async search(more = false): Promise<void> {
+  /**
+   * The first page with the current filters, or (more) the next page with the filters that page was
+   * read with: the cursor belongs to them, so a filter edited since does not leak into it. A
+   * response that is no longer the latest request's is dropped.
+   */
+  async search(more = false, rethrow = false): Promise<void> {
     if (!this.project.selected()) return;
+    const cursor = this.nextCursor();
+    if (more && (!cursor || !this.pageFilters)) return;
+    const filters = more ? { ...this.pageFilters!, cursor: cursor! } : this.filters();
+    const sequence = ++this.searchSequence;
     this.loading.set(true);
     this.error.set(null);
     try {
-      const page = await firstValueFrom(this.api.recall<KnowledgeEntry>(this.filters(more ? this.nextCursor() ?? undefined : undefined)));
+      const page = await firstValueFrom(this.api.recall<KnowledgeEntry>(filters));
+      if (sequence !== this.searchSequence) return;
+      if (!more) this.pageFilters = filters;
       this.items.set(more ? [...this.items(), ...page.items] : page.items);
       this.nextCursor.set(page.next_cursor ?? null);
     } catch (error) {
-      this.error.set(errorText(error));
+      if (rethrow) throw error;
+      if (sequence === this.searchSequence) this.error.set(errorText(error));
     } finally {
-      this.loading.set(false);
+      if (sequence === this.searchSequence) this.loading.set(false);
     }
   }
 
   async select(id: string): Promise<void> {
+    const sequence = ++this.selectSequence;
     this.mode.set(null);
     this.notice.set(null);
     try {
       const entry = await firstValueFrom(this.api.getEntry(id));
+      if (sequence !== this.selectSequence) return;
       this.show(entry);
-      await this.loadChain(entry);
+      await this.refreshChain(entry, sequence);
     } catch (error) {
-      this.error.set(errorText(error));
+      if (sequence === this.selectSequence) this.error.set(errorText(error));
     }
   }
 
+  // The chain of the entry, or none when it cannot be read (never the chain of the previous entry).
+  private async refreshChain(entry: KnowledgeEntry, sequence: number): Promise<void> {
+    this.chain.set([]);
+    const chain = await this.loadChain(entry);
+    if (sequence === this.selectSequence) this.chain.set(chain);
+  }
+
   /** The supersession chain through the entry, oldest first: supersedes backwards, superseded_by forwards. */
-  async loadChain(entry: KnowledgeEntry): Promise<void> {
-    if (!entry.supersedes && !entry.superseded_by) {
-      this.chain.set([]);
-      return;
-    }
+  async loadChain(entry: KnowledgeEntry): Promise<KnowledgeEntry[]> {
+    if (!entry.supersedes && !entry.superseded_by) return [];
     const older: KnowledgeEntry[] = [];
     const newer: KnowledgeEntry[] = [];
     const seen = new Set([entry.id]);
@@ -130,7 +152,7 @@ export class KnowledgePageComponent implements OnInit {
       newer.push(next);
       forward = next.superseded_by;
     }
-    this.chain.set([...older, entry, ...newer]);
+    return [...older, entry, ...newer];
   }
 
   openForm(mode: FormMode): void {
@@ -175,12 +197,15 @@ export class KnowledgePageComponent implements OnInit {
   async revise(): Promise<void> {
     const entry = this.selected();
     if (!entry) return;
-    const revise: { id: string; expected_version: number; summary?: string; body?: string; confidence?: KnowledgeConfidence } = {
+    const revise: { id: string; expected_version: number; summary?: string; body?: string; confidence?: KnowledgeConfidence; clear?: string[] } = {
       id: entry.id,
       expected_version: entry.version
     };
     if (this.reviseSummary.trim() && this.reviseSummary.trim() !== entry.summary) revise.summary = this.reviseSummary.trim();
-    if (this.reviseBody !== (entry.body ?? '') && this.reviseBody.trim()) revise.body = this.reviseBody;
+    if (this.reviseBody !== (entry.body ?? '')) {
+      if (this.reviseBody.trim()) revise.body = this.reviseBody;
+      else revise.clear = ['body'];
+    }
     if (this.reviseConfidence !== entry.confidence) revise.confidence = this.reviseConfidence;
     if (Object.keys(revise).length === 2) {
       this.error.set('Nothing changed.');
@@ -215,22 +240,30 @@ export class KnowledgePageComponent implements OnInit {
     this.busy.set(true);
     this.error.set(null);
     this.notice.set(null);
+    let result: { entry: KnowledgeEntry };
     try {
-      const result = await call();
-      this.mode.set(null);
-      this.notice.set(done);
-      this.show(result.entry);
-      await this.loadChain(result.entry);
-      await this.search();
-      return true;
+      result = await call();
     } catch (error) {
       this.error.set(errorText(error));
       const current = this.selected();
       if (workError(error).code === 'conflict' && current) await this.reload(current.id);
+      this.busy.set(false);
       return false;
+    }
+
+    // The write is stored; a failure to read back after it is not a failed write.
+    this.mode.set(null);
+    this.notice.set(done);
+    this.show(result.entry);
+    try {
+      await this.refreshChain(result.entry, ++this.selectSequence);
+      await this.search(false, true);
+    } catch (error) {
+      this.error.set(`Saved, but reloading failed: ${errorText(error)}`);
     } finally {
       this.busy.set(false);
     }
+    return true;
   }
 
   private async reload(id: string): Promise<void> {
@@ -241,7 +274,16 @@ export class KnowledgePageComponent implements OnInit {
     }
   }
 
+  // A different entry gets a fresh supersede key and empty forms: a key never replays another entry's write.
   private show(entry: KnowledgeEntry): void {
+    if (this.selected()?.id !== entry.id) {
+      this.supersedeKey.reset();
+      this.mode.set(null);
+      this.reason = '';
+      this.newSummary = '';
+      this.newBody = '';
+      this.newWhyFailed = '';
+    }
     this.selected.set(entry);
   }
 

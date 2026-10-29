@@ -223,6 +223,11 @@ public sealed class KnowledgeUiRestMariaDbTests(WorkDatabase db) : IClassFixture
             acknowledge = new { id = decisionEntry.GetProperty("id").GetString(), expected_version = decisionEntry.GetProperty("version").GetInt64() }
         })).Status.ShouldBe(200);
 
+        // The acknowledged decision says so (the Knowledge page hides Acknowledge on it).
+        var (_, acknowledged) = await Call(HttpMethod.Get, $"/api/work/knowledge/{decisionEntry.GetProperty("id").GetString()}");
+        acknowledged.GetProperty("items")[0].TryGetProperty("reviewed_at", out _).ShouldBeTrue();
+        decisionEntry.TryGetProperty("reviewed_at", out _).ShouldBeFalse();
+
         var (_, settled) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&limit=50");
         settled.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("kind").GetString()).Order()
             .ShouldBe(new[] { "challenge", "contradiction" }.Order());

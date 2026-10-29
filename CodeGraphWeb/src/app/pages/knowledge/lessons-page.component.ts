@@ -74,6 +74,11 @@ export class LessonsPageComponent implements OnInit {
   readonly error = signal<string | null>(null);
   readonly selected = signal<KnowledgeEntry | null>(null);
 
+  // Per tab: the cursor of its next page and the filters its first page was read with.
+  private readonly pages = new Map<LessonsTab, { cursor: string; filters: LessonsFilters | RecallFilters }>();
+  private loadSequence = 0;
+  private selectSequence = 0;
+
   async ngOnInit(): Promise<void> {
     if (await this.project.load()) await this.load();
   }
@@ -86,6 +91,7 @@ export class LessonsPageComponent implements OnInit {
 
   async show(tab: LessonsTab): Promise<void> {
     this.tab.set(tab);
+    this.nextCursor.set(this.pages.get(tab)?.cursor ?? null);
     await this.load();
   }
 
@@ -93,7 +99,7 @@ export class LessonsPageComponent implements OnInit {
     return this.tabs.find(tab => tab.id === this.tab())?.hint ?? '';
   }
 
-  lessonsFilters(cursor?: string): LessonsFilters {
+  lessonsFilters(): LessonsFilters {
     const view = this.tab() as LessonsView;
     const filters: LessonsFilters = { project: this.project.selected()!, view, limit: PAGE_SIZE };
     if (view !== 'unlearned_reviews') {
@@ -101,49 +107,66 @@ export class LessonsPageComponent implements OnInit {
       if (this.source) filters.source = this.source;
     }
     if (view === 'unmatched') filters.since_days = this.sinceDays;
-    if (cursor) filters.cursor = cursor;
     return filters;
   }
 
-  recallFilters(cursor?: string): RecallFilters {
+  recallFilters(): RecallFilters {
     const filters: RecallFilters = { project: this.project.selected()!, kind: ['lesson'], detail: 'full', limit: FULL_PAGE_SIZE };
     if (this.activity) filters.activity = this.activity;
     if (this.source) filters.source = this.source;
     if (this.tier) filters.rule_state = [this.tier];
     if (this.text.trim()) filters.text = this.text.trim();
-    if (cursor) filters.cursor = cursor;
     return filters;
   }
 
+  /**
+   * The first page of the shown tab with the current filters, or (more) its next page with the
+   * filters its first page was read with. Each tab keeps its own cursor; a response that is no
+   * longer the latest request's (another tab, another filter) is dropped.
+   */
   async load(more = false): Promise<void> {
     if (!this.project.selected()) return;
-    const cursor = more ? this.nextCursor() ?? undefined : undefined;
+    const tab = this.tab();
+    const kept = this.pages.get(tab);
+    if (more && !kept) return;
+    const sequence = ++this.loadSequence;
     this.loading.set(true);
     this.error.set(null);
     try {
-      if (this.tab() === 'all') {
-        const page = await firstValueFrom(this.api.recall<KnowledgeEntry>(this.recallFilters(cursor)));
+      let next: string | undefined;
+      let first: LessonsFilters | RecallFilters;
+      if (tab === 'all') {
+        first = more ? kept!.filters : this.recallFilters();
+        const page = await firstValueFrom(this.api.recall<KnowledgeEntry>({ ...(first as RecallFilters), ...(more ? { cursor: kept!.cursor } : {}) }));
+        if (sequence !== this.loadSequence) return;
         this.lessons.set(more ? [...this.lessons(), ...page.items] : page.items);
-        this.nextCursor.set(page.next_cursor ?? null);
+        next = page.next_cursor;
       } else {
-        const page = await firstValueFrom(this.api.lessons(this.lessonsFilters(cursor)));
+        first = more ? kept!.filters : this.lessonsFilters();
+        const page = await firstValueFrom(this.api.lessons({ ...(first as LessonsFilters), ...(more ? { cursor: kept!.cursor } : {}) }));
+        if (sequence !== this.loadSequence) return;
         this.rows.set(more ? [...this.rows(), ...(page.items ?? [])] : page.items ?? []);
-        this.groups.set(more ? [...this.groups(), ...(page.groups ?? [])] : page.groups ?? []);
+        this.groups.set(more ? mergeGroups(this.groups(), page.groups ?? []) : page.groups ?? []);
         this.reviews.set(more ? [...this.reviews(), ...(page.reviews ?? [])] : page.reviews ?? []);
-        this.nextCursor.set(page.next_cursor ?? null);
+        next = page.next_cursor;
       }
+      if (next) this.pages.set(tab, { cursor: next, filters: first });
+      else this.pages.delete(tab);
+      this.nextCursor.set(next ?? null);
     } catch (error) {
-      this.error.set(errorText(error));
+      if (sequence === this.loadSequence) this.error.set(errorText(error));
     } finally {
-      this.loading.set(false);
+      if (sequence === this.loadSequence) this.loading.set(false);
     }
   }
 
   async select(id: string): Promise<void> {
+    const sequence = ++this.selectSequence;
     try {
-      this.selected.set(await firstValueFrom(this.api.getEntry(id)));
+      const entry = await firstValueFrom(this.api.getEntry(id));
+      if (sequence === this.selectSequence) this.selected.set(entry);
     } catch (error) {
-      this.error.set(errorText(error));
+      if (sequence === this.selectSequence) this.error.set(errorText(error));
     }
   }
 
@@ -159,4 +182,20 @@ export class LessonsPageComponent implements OnInit {
   tierClass(state: LessonRuleState): string {
     return state === 'rule' ? 'cg-chip-accent' : state === 'proposed' ? 'cg-chip-warn' : state === 'rejected' ? 'cg-chip-err' : '';
   }
+}
+
+/** A next page of grouped rules merged into the groups read so far: one group per activity, no lesson twice. */
+export function mergeGroups(existing: LessonGroup[], incoming: LessonGroup[]): LessonGroup[] {
+  const merged = existing.map(group => ({ ...group, lessons: [...group.lessons] }));
+  for (const group of incoming) {
+    const same = merged.find(candidate => candidate.activity === group.activity);
+    if (!same) {
+      merged.push({ ...group, lessons: [...group.lessons] });
+      continue;
+    }
+    for (const lesson of group.lessons) {
+      if (!same.lessons.some(known => known.id === lesson.id)) same.lessons.push(lesson);
+    }
+  }
+  return merged;
 }

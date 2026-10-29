@@ -123,4 +123,47 @@ describe('ReviewQueuePageComponent', () => {
     expect(fixture.componentInstance.error()).toContain('reloaded');
     expect(api.reviewQueue).toHaveBeenCalledTimes(2);
   });
+
+  it('says revised, not acknowledged, when only the first write of an amend lands, and reloads the queue', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    api.record
+      .mockReturnValueOnce(of({ created: false, entry: entry({ id: 'd-1', version: 3 }) }))
+      .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 503, error: { code: 'busy', message: 'The store is busy.' } })));
+    page.open(decision, 'amend');
+    page.amendSummary = 'Use SSE with a fallback';
+
+    await page.submit(decision);
+
+    expect(page.error()).toBe('Revised, not acknowledged: The store is busy. Approve it to acknowledge the revised decision.');
+    expect(page.notice()).toBeNull();
+    expect(page.form()).toBeNull();
+    expect(api.reviewQueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts an acknowledge refused as already acknowledged as done', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    api.record.mockReturnValueOnce(throwError(() => new HttpErrorResponse({
+      status: 400, error: { code: 'invalid_argument', message: 'Decision d-1 was already acknowledged. Nothing was changed.' }
+    })));
+
+    await page.approve(decision);
+
+    expect(page.error()).toBeNull();
+    expect(page.notice()).toBe('Acknowledged: the decision stands.');
+  });
+
+  it('amends the second lesson of a contradiction and folds the first into the second', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    page.open(contradiction, 'amend', { side: 'other' });
+    expect(page.amendSummary).toBe('Push hotfixes to main');
+    page.amendSummary = 'Push hotfixes through a release branch';
+    await page.submit(contradiction);
+    expect(api.record).toHaveBeenLastCalledWith({ revise: { id: 'l-2', expected_version: 1, summary: 'Push hotfixes through a release branch' } });
+
+    await page.sameAs(contradiction);
+    expect(api.record).toHaveBeenLastCalledWith({ relate: { id: 'r-1', expected_version: 5, same_as: 'l-2' } });
+  });
 });

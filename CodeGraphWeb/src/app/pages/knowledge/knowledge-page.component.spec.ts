@@ -1,6 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeApiService } from './knowledge-api.service';
 import { KnowledgePageComponent } from './knowledge-page.component';
@@ -138,5 +138,101 @@ describe('KnowledgePageComponent', () => {
     expect(page.error()).toContain('reloaded');
     expect(api.getEntry).toHaveBeenCalledWith('e-1');
     expect(page.selected()?.author).toEqual(AGENT);
+  });
+
+  it('gives another entry a fresh supersede key and empty forms', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    await page.select('e-1');
+    page.openForm('supersede');
+    page.newSummary = 'Typed for e-1';
+    const key = page.supersedeKey.value;
+
+    await page.select('e-0');
+
+    expect(page.supersedeKey.value).not.toBe(key);
+    expect(page.mode()).toBeNull();
+    expect(page.newSummary).toBe('');
+  });
+
+  it('drops a selection answered after a newer one', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    const slow = new Subject<KnowledgeEntry>();
+    const unchained = entry({ id: 'e-1' });
+    api.getEntry.mockImplementation((id: string) => id === 'e-0' ? slow : of(unchained));
+
+    const first = page.select('e-0');
+    await page.select('e-1');
+    slow.next(older);
+    slow.complete();
+    await first;
+
+    expect(page.selected()?.id).toBe('e-1');
+  });
+
+  it('reads the next page with the filters of the first page', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    page.text = 'edited after the first page';
+    await page.search(true);
+    expect(api.recall).toHaveBeenLastCalledWith({ project: 'CG', detail: 'full', limit: 10, status: ['active'], cursor: 'more' });
+  });
+
+  it('clears the body through clear when it is emptied', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    api.getEntry.mockReturnValueOnce(of({ ...current, body: 'Old body' }));
+    await page.select('e-1');
+    page.openForm('revise');
+    page.reviseBody = '';
+    await page.revise();
+    expect(api.record).toHaveBeenLastCalledWith({ revise: { id: 'e-1', expected_version: 3, clear: ['body'] } });
+  });
+
+  it('keeps a failed reload after a stored write apart from a failed write, and still resets the key', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    await page.select('e-1');
+    page.openForm('supersede');
+    page.newSummary = 'Use WebSockets';
+    const key = page.supersedeKey.value;
+    api.recall.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 503, error: { detail: 'down' } })));
+
+    await page.supersede();
+
+    expect(page.notice()).toBe('Superseded by the new entry.');
+    expect(page.error()).toBe('Saved, but reloading failed: down');
+    expect(page.supersedeKey.value).not.toBe(key);
+  });
+
+  it('shows no chain of the previous entry when the new chain cannot be read', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    await page.select('e-1');
+    expect(page.chain().length).toBe(2);
+    api.getEntry.mockImplementation((id: string) => id === 'e-9'
+      ? of(entry({ id: 'e-9', supersedes: 'gone' }))
+      : throwError(() => new HttpErrorResponse({ status: 404, error: { code: 'not_found', message: 'No such entry.' } })));
+
+    await page.select('e-9');
+
+    expect(page.selected()?.id).toBe('e-9');
+    expect(page.chain()).toEqual([]);
+    expect(page.error()).toBe('No such entry.');
+  });
+
+  it('offers Acknowledge only on an autonomous decision not reviewed yet', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    const buttons = () => [...fixture.nativeElement.querySelectorAll('button')].map((b: HTMLButtonElement) => b.textContent?.trim());
+    await page.select('e-1');
+    fixture.detectChanges();
+    expect(buttons()).toContain('Acknowledge');
+
+    api.getEntry.mockReturnValueOnce(of({ ...current, reviewed_at: '2026-10-29T10:00:00Z' }));
+    await page.select('e-1');
+    fixture.detectChanges();
+    expect(buttons()).not.toContain('Acknowledge');
   });
 });
