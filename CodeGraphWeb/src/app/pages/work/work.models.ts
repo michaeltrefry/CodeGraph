@@ -329,5 +329,7 @@ export interface GitHubEvidence {
   body?: string;
   attempt_id?: string;
   superseded: boolean;
+  /** The head SHA of a push, the merge commit of a merge, the id of a review or comment. */
+  external_id?: string;
   created_at: string;
 }

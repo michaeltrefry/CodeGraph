@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTimeline, changeLines, evidenceTitle } from './work-format';
+import { buildTimeline, changeLines, evidenceTitle, pushCommits } from './work-format';
 import { fixtureItem } from './work-fixtures';
 import { timeAgo } from './work-shared';
 import { MessageView, WorkChange, actorLabel } from './work.models';
@@ -75,6 +75,16 @@ describe('buildTimeline with GitHub evidence', () => {
     expect(timeline[1].detail).toBe('Needs a test');
     expect(timeline[1].url).toContain('/pull/9');
     expect(timeline[0].detail).toContain('superseded attempt');
+  });
+
+  it('shows a push as its commits: short SHA, message and pusher', () => {
+    const push = { id: 'p1', kind: 'push', repository: 'codegraph', url: 'https://github.com/o/r/commit/1111111aaaa', author: 'claude-agent', source: 'human', priority: 'normal', superseded: false, created_at: '2026-01-02T12:00:00Z', external_id: '1111111aaaa2222222222222222222222222222', body: '0000000abcdef Add the table\n1111111aaaa2222222222222222222222222222 Record evidence' };
+    expect(pushCommits(push)).toEqual([{ sha: '0000000', message: 'Add the table' }, { sha: '1111111', message: 'Record evidence' }]);
+    const entry = buildTimeline(item, [], [], [push])[0];
+    expect(entry.title).toBe('Pushed 2 commits (head 1111111)');
+    expect(entry.detail).toBe('0000000 Add the table\n1111111 Record evidence');
+    expect(entry.actor).toMatchObject({ name: 'claude-agent', kind: 'system' });
+    expect(evidenceTitle({ ...evidence[1], external_id: 'abcdef0123456789' })).toBe('Pull request merged #9 (codegraph) as abcdef0');
   });
 
   it('names evidence kinds and marks bots', () => {

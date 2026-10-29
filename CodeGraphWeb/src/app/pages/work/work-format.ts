@@ -99,6 +99,18 @@ export function buildTimeline(item: ItemView, changes: readonly WorkChange[], me
   }
 
   for (const entry of evidence) {
+    if (entry.kind === 'push') {
+      const commits = pushCommits(entry);
+      add({
+        at: entry.created_at,
+        kind: 'github',
+        actor: { name: entry.author, kind: 'system' },
+        title: `Pushed ${commits.length || 1} commit${commits.length === 1 || commits.length === 0 ? '' : 's'}${entry.external_id ? ` (head ${shortSha(entry.external_id)})` : ''}`,
+        detail: commits.map(commit => `${commit.sha} ${commit.message}`.trimEnd()).join('\n') || undefined,
+        url: entry.url
+      });
+      continue;
+    }
     add({
       at: entry.created_at,
       kind: 'github',
@@ -123,6 +135,22 @@ export function buildTimeline(item: ItemView, changes: readonly WorkChange[], me
   return entries.sort((a, b) => b.sort - a.sort);
 }
 
+export const shortSha = (sha: string): string => sha.slice(0, 7);
+
+export interface PushCommit { sha: string; message: string }
+
+/** The commits of a push row: its body holds one "sha message" per line, newest last. */
+export function pushCommits(entry: GitHubEvidence): PushCommit[] {
+  return (entry.body ?? '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const space = line.indexOf(' ');
+      return { sha: shortSha(space < 0 ? line : line.slice(0, space)), message: space < 0 ? '' : line.slice(space + 1).trim() };
+    });
+}
+
 const EVIDENCE_LABELS: Record<string, string> = {
   push: 'Pushed commits',
   pr_open: 'Pull request opened',
@@ -142,5 +170,6 @@ export function evidenceTitle(entry: GitHubEvidence): string {
   const repository = entry.repository ? ` (${entry.repository})` : '';
   const verdict = entry.review_state ? `: ${entry.review_state.replace(/_/g, ' ')}` : '';
   const bot = entry.source === 'bot' ? ' [bot]' : '';
-  return `${label}${pull}${repository}${verdict}${bot}`;
+  const sha = entry.kind === 'merge' && entry.external_id ? ` as ${shortSha(entry.external_id)}` : '';
+  return `${label}${pull}${repository}${sha}${verdict}${bot}`;
 }

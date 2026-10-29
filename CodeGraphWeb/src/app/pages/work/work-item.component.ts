@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ErrorComponent, WorkPageBase, lines } from './work-base';
 import { DialogComponent, ItemFormComponent } from './work-forms';
-import { buildTimeline } from './work-format';
+import { buildTimeline, pushCommits, shortSha } from './work-format';
 import { withDebounce } from './work-live.service';
 import { MessageComposerComponent, MessageListComponent } from './work-messages-ui';
 import { ActorComponent, AgoPipe, StatusComponent } from './work-shared';
@@ -125,7 +125,12 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
                     @if (e.superseded) { <span class="wrk-chip">superseded attempt</span> }
                     @if (e.url) { <a class="wrk-grow wrk-clip" [href]="e.url" target="_blank" rel="noopener noreferrer">{{ e.repository }}@if (e.pull_request) { #{{ e.pull_request }} }</a> }
                     <span class="wrk-sub">{{ e.created_at | ago }}</span></div>
-                    @if (e.body) { <div class="wrk-pre wrk-sub">{{ e.body }}</div> }</li>
+                    @if (e.kind === 'push') {
+                      <ul class="wrk-commits" data-testid="commits">
+                        @for (c of commitsOf(e); track $index) { <li><code>{{ c.sha }}</code> {{ c.message }}</li> }
+                      </ul>
+                    } @else if (e.body) { <div class="wrk-pre wrk-sub">{{ e.body }}</div> }
+                    @if (e.kind === 'merge' && e.external_id) { <div class="wrk-sub">merge commit <code>{{ short(e.external_id) }}</code></div> }</li>
                 }
               </ul>
             </section>
@@ -249,6 +254,8 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
     const item = this.item();
     return item ? buildTimeline(item, this.feed(), this.messages(), this.evidence()) : [];
   });
+  readonly commitsOf = pushCommits;
+  readonly short = shortSha;
   commentText = '';
   blocker = '';
   linkKind: WorkLink['kind'] = 'pr';

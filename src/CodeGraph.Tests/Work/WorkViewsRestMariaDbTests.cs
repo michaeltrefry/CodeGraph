@@ -99,6 +99,10 @@ public sealed class WorkViewsRestMariaDbTests(WorkDatabase db) : IClassFixture<W
         await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.Review, ["codegraph"], [key], "reviewer",
             PullRequestUrl: url, PullRequestNumber: 7, Url: url, ReviewState: "changes_requested", Body: "Needs a test"));
 
+        await db.Store.RecordGitHubEvidenceAsync(new GitHubEvidenceSpec(Guid.NewGuid().ToString(), GitHubEvidenceKind.Push, ["codegraph"], ["claude/x"], "pusher",
+            Branch: "claude/x", BranchUrl: "https://github.com/o/r/tree/claude/x", Url: "https://github.com/o/r/commit/abcdef1234567", ExternalId: "abcdef1234567",
+            Body: "abcdef1234567 Add the thing"));
+
         var (status, body) = await Get($"/api/work/projects/{project}/items/{key}/github-evidence");
         status.ShouldBe(200);
         var items = body.GetProperty("items");
@@ -107,6 +111,10 @@ public sealed class WorkViewsRestMariaDbTests(WorkDatabase db) : IClassFixture<W
         review.GetProperty("author").GetString().ShouldEndWith("reviewer");
         review.GetProperty("review_state").GetString().ShouldBe("changes_requested");
         review.GetProperty("pull_request").GetInt32().ShouldBe(7);
+
+        var push = items.EnumerateArray().Single(entry => entry.GetProperty("kind").GetString() == "push");
+        push.GetProperty("external_id").GetString().ShouldBe("abcdef1234567");
+        push.GetProperty("body").GetString().ShouldBe("abcdef1234567 Add the thing");
 
         (await Get($"/api/work/projects/{project}/items/{key}/github-evidence?bogus=1")).Status.ShouldBe(400);
         (await Get($"/api/work/projects/{project}/items/NOPE-9/github-evidence")).Status.ShouldBe(404);

@@ -151,6 +151,8 @@ textarea.wrk-input { width: 100%; resize: vertical; font-family: inherit; }
 .wrk-msg[data-kind="blocker"], .wrk-msg[data-blocking="true"] { border-color: color-mix(in oklab, var(--sem-amber) 55%, var(--border)); }
 .wrk-msg[data-reply="true"] { margin-left: 18px; background: var(--surface-2); }
 
+.wrk-commits { margin: 4px 0 0; padding-left: 18px; font-size: var(--fs-sm); }
+.wrk-commits code { font-family: var(--font-mono); color: var(--muted); }
 .wrk-diff { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-2); }
 .wrk-diff del { color: var(--sem-red); text-decoration: line-through; }
 .wrk-diff del { margin: 0 4px; }

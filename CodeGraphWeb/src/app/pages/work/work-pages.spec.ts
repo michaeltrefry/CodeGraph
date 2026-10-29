@@ -172,7 +172,7 @@ describe('WorkItemComponent', () => {
     item.acceptance_criteria = [{ id: 'A1', text: 'Shows blocked items', state: 'unmet' }];
     const thread: MessageView = { id: 'm', project_key: 'W', channel: 'item', kind: 'question', from: { name: 'michael', kind: 'session', session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac' }, body: 'Which branch?', created_at: '2026-01-02T11:00:00Z', state: 'open', item: item.key };
     const entries: WorkChange[] = [{ sequence: 1, project_id: 'p', project_key: 'W', entity: 'item', entity_id: item.id, entity_key: item.key, kind: 'item_updated', actor: { name: 'michael', kind: 'session', session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac' }, changes: [{ field: 'status', old: 'ready', new: 'in_progress' }], created_at: '2026-01-02T09:00:00Z' }];
-    const api = { get: vi.fn().mockResolvedValue(item), messages: vi.fn().mockResolvedValue({ items: [thread] }), githubEvidence: vi.fn().mockResolvedValue([{ id: 'e1', kind: 'review', repository: 'codegraph', pull_request: 9, url: 'https://github.com/o/r/pull/9', author: 'github:reviewer', source: 'human', priority: 'normal', review_state: 'approved', superseded: false, created_at: '2026-01-02T13:00:00Z' }]), update: vi.fn() };
+    const api = { get: vi.fn().mockResolvedValue(item), messages: vi.fn().mockResolvedValue({ items: [thread] }), githubEvidence: vi.fn().mockResolvedValue([{ id: 'e0', kind: 'push', repository: 'codegraph', url: 'https://github.com/o/r/commit/abcdef1234', author: 'claude-agent', source: 'human', priority: 'normal', superseded: false, external_id: 'abcdef1234567', body: 'abcdef1234567 Add the board', created_at: '2026-01-02T12:00:00Z' }, { id: 'e1', kind: 'review', repository: 'codegraph', pull_request: 9, url: 'https://github.com/o/r/pull/9', author: 'github:reviewer', source: 'human', priority: 'normal', review_state: 'approved', superseded: false, created_at: '2026-01-02T13:00:00Z' }]), update: vi.fn() };
     await TestBed.configureTestingModule({ imports: [WorkItemComponent], providers: provideWork(api, item.key, entries) }).compileComponents();
     const fixture = TestBed.createComponent(WorkItemComponent);
     await settle(fixture);
@@ -185,6 +185,9 @@ describe('WorkItemComponent', () => {
     expect(root.querySelector('[data-testid="evidence"]')?.textContent).toContain('github:reviewer');
     expect(root.querySelector('[data-testid="evidence"]')?.textContent).toContain('approved');
     expect(timeline.textContent).toContain('Review #9 (codegraph): approved');
+    expect(root.querySelector('[data-testid="commits"]')?.textContent).toContain('abcdef1 Add the board');
+    expect(root.querySelector('[data-testid="evidence"]')?.textContent).toContain('claude-agent');
+    expect(timeline.textContent).toContain('Pushed 1 commit (head abcdef1)');
     expect(api.get).toHaveBeenCalledWith(item.key, 'full');
   });
 
