@@ -59,6 +59,7 @@ public sealed partial class MySqlWorkStore
         public string? Body { get; init; }
         public Guid? AttemptId { get; init; }
         public bool Superseded { get; init; }
+        public string? ExternalId { get; init; }
         public DateTime CreatedAt { get; init; }
     }
 
@@ -239,9 +240,10 @@ public sealed partial class MySqlWorkStore
                 }
             }
 
-            // Evidence rows: merge, close, reviews and comments.
+            // Evidence rows: pushes (head SHA and commits), merge, close, reviews and comments.
             var evidenceKind = spec.Kind switch
             {
+                GitHubEvidenceKind.Push => "push",
                 GitHubEvidenceKind.PullRequestMerged => "merge",
                 GitHubEvidenceKind.PullRequestClosed => "pr_closed",
                 GitHubEvidenceKind.Review => "review",
@@ -392,12 +394,12 @@ public sealed partial class MySqlWorkStore
     {
         await using var connection = await OpenAsync(ct);
         var rows = await connection.QueryAsync<EvidenceViewRow>(new CommandDefinition(
-            "SELECT id, kind, repository, pr_number, url, author_login, source, priority, review_state, location, body, attempt_id, superseded, created_at " +
+            "SELECT id, kind, repository, pr_number, url, author_login, source, priority, review_state, location, body, attempt_id, superseded, external_id, created_at " +
             "FROM work_github_evidence WHERE item_id = @itemId ORDER BY created_at DESC, id LIMIT @limit",
             new { itemId, limit = Math.Clamp(limit, 1, 500) }, cancellationToken: ct));
         return rows.Select(row => new GitHubEvidenceView(
             row.Id, row.Kind, row.Repository, row.PrNumber, row.Url, row.AuthorLogin, row.Source, row.Priority, row.ReviewState,
-            row.Location, row.Body, row.AttemptId, row.Superseded, Utc(row.CreatedAt))).ToList();
+            row.Location, row.Body, row.AttemptId, row.Superseded, Utc(row.CreatedAt), row.ExternalId)).ToList();
     }
 
 

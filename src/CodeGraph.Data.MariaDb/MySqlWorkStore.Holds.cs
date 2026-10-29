@@ -152,6 +152,16 @@ public sealed partial class MySqlWorkStore
         return views;
     }
 
+    public async Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var resources = (await connection.QueryAsync<ResourceRow>(new CommandDefinition(
+            "SELECT r.id, r.project_id, p.project_key, r.name, r.capacity, r.labels_json FROM work_resources r JOIN work_projects p ON p.id = r.project_id " +
+            "WHERE r.project_id = @projectId AND (@afterName IS NULL OR r.name > @afterName) ORDER BY r.name LIMIT @limit",
+            new { projectId, afterName, limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize + 1) }, cancellationToken: ct))).ToList();
+        return await BuildResourceViewsAsync(connection, null, resources, Now(), ct);
+    }
+
     // ---- Sweep -------------------------------------------------------------------------------------
 
     /// <summary>
