@@ -63,6 +63,11 @@ public sealed class WorkMcpTool : McpServerTool
         {
             return ToError(exception);
         }
+        catch (WorkStoreUnavailableException exception)
+        {
+            // Not in the error vocabulary: a plain tool error with no structured code.
+            return new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = exception.Message }] };
+        }
     }
 
     public static CallToolResult ToError(WorkException exception)

@@ -22,6 +22,9 @@ public static class WorkJson
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
         {
+            // Names are compared exactly and a name passed twice is refused, never last-wins.
+            PropertyNameCaseInsensitive = false,
+            AllowDuplicateProperties = false,
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
             RespectNullableAnnotations = true,
@@ -29,7 +32,7 @@ public static class WorkJson
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             NumberHandling = JsonNumberHandling.Strict,
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower, allowIntegerValues: false) },
+            Converters = { new StrictEnumConverterFactory() },
             TypeInfoResolver = new DefaultJsonTypeInfoResolver()
         };
         options.MakeReadOnly(populateMissingResolver: true);
@@ -42,6 +45,44 @@ public static class WorkJson
 
     public static string Names<TEnum>() where TEnum : struct, Enum =>
         string.Join(", ", Enum.GetValues<TEnum>().Select(Name));
+
+    /// <summary>
+    /// Reads a request body as a JSON object for <paramref name="tool"/>: empty, malformed, not an
+    /// object, or repeating a member name at any level is <c>invalid_argument</c>, never a framework error.
+    /// </summary>
+    public static JsonElement ReadObject(ReadOnlyMemory<byte> body, string tool)
+    {
+        if (body.Span.IsEmpty || IsBlank(body.Span))
+            throw Invalid($"The body of {tool} is empty. Send the arguments as a JSON object.");
+
+        try
+        {
+            using var document = JsonDocument.Parse(body, new JsonDocumentOptions { AllowDuplicateProperties = false });
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                throw Invalid($"The body of {tool} must be a JSON object.");
+            return document.RootElement.Clone();
+        }
+        catch (JsonException exception)
+        {
+            var duplicate = exception.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase);
+            throw Invalid(duplicate
+                ? $"The body of {tool} names a member twice ({exception.Message}). Nothing was changed."
+                : $"The body of {tool} is not valid JSON ({exception.Message}). Nothing was changed.");
+        }
+
+        static WorkException Invalid(string message) => WorkException.Invalid(message);
+    }
+
+    private static bool IsBlank(ReadOnlySpan<byte> span)
+    {
+        foreach (var value in span)
+        {
+            if (value is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+                return false;
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// Reads the arguments of <paramref name="tool"/> as <typeparamref name="T"/>, or throws
@@ -72,6 +113,9 @@ public static class WorkJson
         var path = exception.Path ?? "$";
         var message = exception.Message;
         var (owner, leaf) = Resolve(root, path);
+
+        if (message.Contains("duplicate", StringComparison.OrdinalIgnoreCase))
+            return $"{tool} names an argument twice ('{Display(path)}'). Nothing was changed.";
 
         const string unmapped = "could not be mapped to any .NET member";
         if (message.Contains(unmapped, StringComparison.Ordinal))
@@ -190,8 +234,9 @@ public static class WorkJson
             return null;
 
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
-        if (type.IsEnum)
-            return $"one of {string.Join(", ", Enum.GetNames(type).Select(JsonNamingPolicy.SnakeCaseLower.ConvertName))}";
+        var elementType = ElementType(type);
+        if ((elementType ?? type).IsEnum)
+            return $"{(elementType is null ? string.Empty : "a list of values, each ")}one of {string.Join(", ", Enum.GetNames(elementType ?? type).Select(JsonNamingPolicy.SnakeCaseLower.ConvertName))}";
         if (type == typeof(string))
             return "a string";
         if (type == typeof(bool))
@@ -215,6 +260,23 @@ public static class WorkJson
             TreatNullObliviousAsNonNullable = true,
             TransformSchemaNode = (context, node) =>
             {
+                var enumType = Nullable.GetUnderlyingType(context.TypeInfo.Type) ?? context.TypeInfo.Type;
+                if (enumType.IsEnum)
+                {
+                    // The strict converter hides the values from the exporter: state them here.
+                    var nullable = Nullable.GetUnderlyingType(context.TypeInfo.Type) is not null;
+                    var names = new JsonArray();
+                    foreach (var name in Enum.GetNames(enumType))
+                        names.Add(JsonNamingPolicy.SnakeCaseLower.ConvertName(name));
+                    if (nullable)
+                        names.Add(null);
+                    node = new JsonObject
+                    {
+                        ["type"] = nullable ? new JsonArray("string", "null") : "string",
+                        ["enum"] = names
+                    };
+                }
+
                 var description = context.PropertyInfo?.AttributeProvider?
                     .GetCustomAttributes(typeof(DescriptionAttribute), inherit: true)
                     .OfType<DescriptionAttribute>()
@@ -228,4 +290,40 @@ public static class WorkJson
         var node = Options.GetJsonSchemaAsNode(type, exporterOptions);
         return JsonSerializer.SerializeToElement(node);
     }
+}
+
+/// <summary>
+/// Enums on the wire are exactly their snake_case names (<c>in_progress</c>): no PascalCase, no
+/// number, no comma-combined flags, no other spelling. Anything else is refused, naming the valid
+/// values (the caller turns the refusal into <c>invalid_argument</c>).
+/// </summary>
+internal sealed class StrictEnumConverterFactory : JsonConverterFactory
+{
+    public override bool CanConvert(Type typeToConvert) => typeToConvert.IsEnum;
+
+    public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options) =>
+        (JsonConverter)Activator.CreateInstance(typeof(StrictEnumConverter<>).MakeGenericType(typeToConvert))!;
+}
+
+internal sealed class StrictEnumConverter<TEnum> : JsonConverter<TEnum> where TEnum : struct, Enum
+{
+    private static readonly Dictionary<string, TEnum> ByName =
+        Enum.GetValues<TEnum>().ToDictionary(WorkJson.Name, value => value, StringComparer.Ordinal);
+
+    public override TEnum Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String && ByName.TryGetValue(reader.GetString()!, out var value))
+            return value;
+
+        throw new JsonException($"Not one of {string.Join(", ", ByName.Keys)}.");
+    }
+
+    public override void Write(Utf8JsonWriter writer, TEnum value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(WorkJson.Name(value));
+
+    public override TEnum ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        ByName.TryGetValue(reader.GetString()!, out var value) ? value : throw new JsonException($"Not one of {string.Join(", ", ByName.Keys)}.");
+
+    public override void WriteAsPropertyName(Utf8JsonWriter writer, TEnum value, JsonSerializerOptions options) =>
+        writer.WritePropertyName(WorkJson.Name(value));
 }

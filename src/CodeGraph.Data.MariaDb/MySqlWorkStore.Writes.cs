@@ -37,7 +37,7 @@ public sealed partial class MySqlWorkStore
             if (taken is not null)
                 throw new WorkException(WorkErrorCodes.Conflict, $"Project key '{spec.Key}' is taken by another project. Nothing was created.");
 
-            await ValidateRepositoriesAsync(connection, transaction, null, spec.Repositories, ct);
+            var repositories = await ValidateRepositoriesAsync(connection, transaction, null, spec.Repositories, ct);
 
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
@@ -45,7 +45,7 @@ public sealed partial class MySqlWorkStore
                 "VALUES (@id, @Key, @Name, @Description, @goals, 1, @actorName, @actorKind, @actorSession, @now, @now)",
                 new { id, spec.Key, spec.Name, spec.Description, goals = JsonSerializer.Serialize(spec.Goals), actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now },
                 transaction, cancellationToken: ct));
-            await WriteRepositoriesAsync(connection, transaction, id, spec.Repositories, ct);
+            await WriteRepositoriesAsync(connection, transaction, id, repositories, ct);
             if (keyHash is not null)
                 await InsertKeyAsync(connection, transaction, GlobalScope, ProjectOperation, keyHash, id, null, now, ct);
 
@@ -75,9 +75,9 @@ public sealed partial class MySqlWorkStore
                 "UPDATE work_projects SET name = @name, description = @description, goals_json = @goals WHERE id = @projectId",
                 new { name, description, goals = JsonSerializer.Serialize(goals), projectId }, transaction, cancellationToken: ct));
 
-            if (patch.Repositories is { } repositories)
+            if (patch.Repositories is { } requested)
             {
-                await ValidateRepositoriesAsync(connection, transaction, projectId, repositories, ct);
+                var repositories = await ValidateRepositoriesAsync(connection, transaction, projectId, requested, ct);
                 var keptOwned = repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToHashSet(StringComparer.Ordinal);
                 var dropped = before.Repositories
                     .Where(member => member.Role == RepositoryRole.Owned && !keptOwned.Contains(member.Repository))
@@ -117,22 +117,30 @@ public sealed partial class MySqlWorkStore
         ["version"] = project.Version
     };
 
-    // Every repository is one CodeGraph indexes, and an owned one is owned by no other project.
-    private static async Task ValidateRepositoriesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid? projectId, IReadOnlyList<RepositoryMemberView> repositories, CancellationToken ct)
+    // Every repository is one CodeGraph indexes, and an owned one is owned by no other project. A
+    // name is matched without regard to case and stored as CodeGraph spells it (repositories.name);
+    // the members come back with that canonical spelling.
+    private static async Task<IReadOnlyList<RepositoryMemberView>> ValidateRepositoriesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid? projectId, IReadOnlyList<RepositoryMemberView> repositories, CancellationToken ct)
     {
         if (repositories.Count == 0)
-            return;
+            return repositories;
 
         var names = repositories.Select(member => member.Repository).ToArray();
         var known = (await connection.QueryAsync<string>(new CommandDefinition(
-            "SELECT name FROM repositories WHERE name IN @names", new { names }, transaction, cancellationToken: ct))).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var unknown = names.Where(name => !known.Contains(name)).ToList();
+            "SELECT name FROM repositories WHERE name IN @names", new { names }, transaction, cancellationToken: ct)))
+            .GroupBy(name => name, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var unknown = names.Where(name => !known.ContainsKey(name)).ToList();
         if (unknown.Count > 0)
             throw WorkException.Invalid($"CodeGraph indexes no repository named {string.Join(", ", unknown.Select(name => $"'{name}'"))}. Nothing was changed.");
 
+        repositories = repositories.Select(member => member with { Repository = known[member.Repository] }).ToList();
+        var twice = repositories.GroupBy(member => member.Repository, StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1).Select(group => group.Key).ToList();
+        if (twice.Count > 0)
+            throw WorkException.Invalid($"A repository is listed once: {string.Join(", ", twice)} appears more than once. Nothing was changed.");
+
         var owned = repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToArray();
         if (owned.Length == 0)
-            return;
+            return repositories;
 
         var elsewhere = (await connection.QueryAsync<(string RepositoryName, string ProjectKey)>(new CommandDefinition(
             "SELECT r.repository_name, p.project_key FROM work_project_repositories r JOIN work_projects p ON p.id = r.project_id " +
@@ -141,6 +149,7 @@ public sealed partial class MySqlWorkStore
         if (elsewhere.Count > 0)
             throw new WorkException(WorkErrorCodes.Conflict,
                 $"A repository is owned by at most one project: {string.Join(", ", elsewhere.Select(hit => $"{hit.RepositoryName} is owned by {hit.ProjectKey}"))}. Make it a dependency here, or change the other project first. Nothing was changed.");
+        return repositories;
     }
 
     private static async Task WriteRepositoriesAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, IReadOnlyList<RepositoryMemberView> repositories, CancellationToken ct)
@@ -277,8 +286,9 @@ public sealed partial class MySqlWorkStore
             if (keyHash is not null && await FindKeyAsync(connection, transaction, projectId, ItemOperation, keyHash, ct) is { EntityId: { } existing })
                 return new WorkCreated<ItemView>(false, (await LoadItemViewAsync(connection, transaction, existing, ct))!);
 
-            if (spec.Repository is { } repository)
-                await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct);
+            var itemRepository = spec.Repository is { } repository
+                ? await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct)
+                : null;
             if (spec.FeatureId is { } featureId)
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
             if (spec.BlockedBy.Count > 0)
@@ -287,7 +297,7 @@ public sealed partial class MySqlWorkStore
             // A new item blocks nothing yet, so its blockers cannot close a cycle: no dependency lock.
             var id = Guid.NewGuid();
             await InsertItemAsync(connection, transaction, project.Id, id, project.NextItemNumber, spec.Title, spec.Type, spec.Status, spec.Priority,
-                spec.Description, spec.Labels, spec.Repository, spec.FeatureId, spec.Order, actor, now, ct);
+                spec.Description, spec.Labels, itemRepository, spec.FeatureId, spec.Order, actor, now, ct);
             await InsertEdgesAsync(connection, transaction, spec.BlockedBy.Distinct().Select(blocker => (id, blocker)), now, ct);
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_projects SET next_item_number = next_item_number + 1 WHERE id = @projectId", new { projectId }, transaction, cancellationToken: ct));
@@ -396,8 +406,9 @@ public sealed partial class MySqlWorkStore
             var project = (await ReadProjectRowAsync(connection, transaction, projectId, ct))!;
             var extra = new JsonArray();
 
-            if (patch.Repository is { } repository)
-                await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct);
+            var patchedRepository = patch.Repository is { } repository
+                ? await RequireOwnedRepositoryAsync(connection, transaction, project, repository, ct)
+                : null;
             if (patch.FeatureId is { } featureId)
                 await RequireFeatureAsync(connection, transaction, project, featureId, ct);
 
@@ -418,7 +429,7 @@ public sealed partial class MySqlWorkStore
                     priority = JsonName(patch.Priority ?? before.Priority),
                     order = patch.Order ?? before.Order,
                     labels = patch.ClearLabels ? null : patch.Labels is { } labels ? JoinLabels(labels) : beforeRow.Labels,
-                    repository = patch.ClearRepository ? null : patch.Repository ?? before.Repository,
+                    repository = patch.ClearRepository ? null : patchedRepository ?? before.Repository,
                     featureId = patch.ClearFeature ? null : patch.FeatureId ?? beforeRow.FeatureId,
                     claimFields.ClaimHolder, claimFields.ClaimMarker, claimFields.ClaimSessionId, claimFields.ClaimedAt, claimFields.ClaimExpiresAt,
                     itemId
@@ -634,10 +645,10 @@ public sealed partial class MySqlWorkStore
 
             var owned = (await connection.QueryAsync<string>(new CommandDefinition(
                 "SELECT repository_name FROM work_project_repositories WHERE project_id = @projectId AND role = 'owned'",
-                new { projectId }, transaction, cancellationToken: ct))).ToHashSet(StringComparer.Ordinal);
+                new { projectId }, transaction, cancellationToken: ct))).ToDictionary(name => name, name => name, StringComparer.OrdinalIgnoreCase);
             foreach (var item in plan.Items)
             {
-                if (item.Repository is { } repository && !owned.Contains(repository))
+                if (item.Repository is { } repository && !owned.ContainsKey(repository))
                     throw WorkException.Invalid($"Item '{item.Ref}': '{repository}' is not an owned repository of {project.ProjectKey}. Nothing was created.");
             }
 
@@ -660,7 +671,7 @@ public sealed partial class MySqlWorkStore
                 // Each item a microsecond after the one before it, so lists ordered by creation
                 // return them in the order of the plan.
                 await InsertItemAsync(connection, transaction, project.Id, itemIds[index], number, item.Title, item.Type, item.Status, item.Priority,
-                    item.Description, item.Labels, item.Repository, item.FeatureIndex is { } featureIndex ? featureIds[featureIndex] : null,
+                    item.Description, item.Labels, item.Repository is { } itemRepository ? owned[itemRepository] : null, item.FeatureIndex is { } featureIndex ? featureIds[featureIndex] : null,
                     item.Order, actor, now.AddTicks(index * 10), ct);
                 items[item.Ref] = new CreatedRef(itemIds[index], WorkKeys.Item(project.ProjectKey, number));
             }
@@ -870,14 +881,13 @@ public sealed partial class MySqlWorkStore
         where T : class =>
         await AdvanceAsync(connection, transaction, table, id, expectedVersion, now, async () => (object?)await current(), noun, ct);
 
-    private static async Task RequireOwnedRepositoryAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, string repository, CancellationToken ct)
-    {
-        var owned = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
-            "SELECT COUNT(*) FROM work_project_repositories WHERE project_id = @projectId AND repository_name = @repository AND role = 'owned'",
-            new { projectId = project.Id, repository }, transaction, cancellationToken: ct));
-        if (owned == 0)
-            throw WorkException.Invalid($"'{repository}' is not an owned repository of {project.ProjectKey}: an item's repository must be one. Nothing was changed.");
-    }
+    // The owned repository of the project that <paramref name="repository"/> names (without regard
+    // to case), in the spelling the project stores.
+    private static async Task<string> RequireOwnedRepositoryAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, string repository, CancellationToken ct) =>
+        await connection.ExecuteScalarAsync<string?>(new CommandDefinition(
+            "SELECT repository_name FROM work_project_repositories WHERE project_id = @projectId AND repository_name = @repository AND role = 'owned' LIMIT 1",
+            new { projectId = project.Id, repository }, transaction, cancellationToken: ct))
+        ?? throw WorkException.Invalid($"'{repository}' is not an owned repository of {project.ProjectKey}: an item's repository must be one. Nothing was changed.");
 
     private static async Task RequireFeatureAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, Guid featureId, CancellationToken ct)
     {

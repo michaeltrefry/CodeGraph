@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeGraph.Api.Auth;
+using CodeGraph.Api.Middleware;
+using CodeGraph.Data;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Work;
 using Microsoft.AspNetCore.Authorization;
@@ -17,24 +19,27 @@ namespace CodeGraph.Api.Controllers;
 [ApiController]
 [Authorize(AuthenticationSchemes = CodeGraphAuthenticationDefaults.Scheme + "," + McpPatAuthenticationDefaults.Scheme)]
 [Route("api/work")]
-public sealed class WorkController(IWorkService work) : ControllerBase
+public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<WorkController> logger) : ControllerBase
 {
     /// <summary>create_work.</summary>
     [HttpPost]
-    public Task<IActionResult> Create([FromBody] JsonElement body) => RunAsync(WorkTools.CreateWork, body);
+    public Task<IActionResult> Create() => RunBodyAsync(WorkTools.CreateWork);
 
     /// <summary>find_work.</summary>
     [HttpPost("find")]
-    public Task<IActionResult> Find([FromBody] JsonElement body) => RunAsync(WorkTools.FindWork, body);
+    public Task<IActionResult> Find() => RunBodyAsync(WorkTools.FindWork);
 
     /// <summary>next_work.</summary>
     [HttpPost("next")]
-    public Task<IActionResult> Next([FromBody] JsonElement body) => RunAsync(WorkTools.NextWork, body);
+    public Task<IActionResult> Next() => RunBodyAsync(WorkTools.NextWork);
 
     /// <summary>changes: project, cursor, from_start, limit, wait_seconds as query parameters.</summary>
     [HttpGet("changes")]
     public async Task<IActionResult> Changes()
     {
+        if (await DeniedAsync(WorkTools.Changes) is { } denied)
+            return denied;
+
         JsonObject arguments;
         try
         {
@@ -55,6 +60,8 @@ public sealed class WorkController(IWorkService work) : ControllerBase
     [HttpGet("{id}")]
     public async Task<IActionResult> Get(string id)
     {
+        if (await DeniedAsync(WorkTools.GetWork) is { } denied)
+            return denied;
         if (Request.Query.Count > 0)
             return Refuse(WorkException.Invalid($"get_work takes no query parameters ({string.Join(", ", Request.Query.Keys)}). Its only argument is the id in the path."));
         return await RunAsync(WorkTools.GetWork, JsonSerializer.SerializeToElement(new JsonObject { ["id"] = id }));
@@ -62,15 +69,72 @@ public sealed class WorkController(IWorkService work) : ControllerBase
 
     /// <summary>update_work: the body holds every argument but id, which is the path.</summary>
     [HttpPatch("{id}")]
-    public async Task<IActionResult> Update(string id, [FromBody] JsonElement body)
+    public async Task<IActionResult> Update(string id)
     {
-        if (body.ValueKind != JsonValueKind.Object)
-            return Refuse(WorkException.Invalid("The body of update_work must be a JSON object."));
-        var arguments = JsonObject.Create(body)!;
-        if (arguments.ContainsKey("id"))
+        if (await DeniedAsync(WorkTools.UpdateWork) is { } denied)
+            return denied;
+
+        var (body, refusal) = await ReadBodyAsync(WorkTools.UpdateWork);
+        if (refusal is not null)
+            return refusal;
+
+        if (body.TryGetProperty("id", out _))
             return Refuse(WorkException.Invalid("Pass the id in the path, not in the body."));
+        var arguments = JsonObject.Create(body)!;
         arguments["id"] = id;
         return await RunAsync(WorkTools.UpdateWork, JsonSerializer.SerializeToElement(arguments));
+    }
+
+    private async Task<IActionResult> RunBodyAsync(string tool)
+    {
+        if (await DeniedAsync(tool) is { } denied)
+            return denied;
+
+        var (body, refusal) = await ReadBodyAsync(tool);
+        return refusal ?? await RunAsync(tool, body);
+    }
+
+    // The request body as the tool's arguments. Read here, not bound, so that an empty or malformed
+    // body, a repeated member or a wrong content type is invalid_argument in the {code, message}
+    // envelope rather than a framework problem response.
+    private async Task<(JsonElement Body, IActionResult? Refusal)> ReadBodyAsync(string tool)
+    {
+        if (!Request.HasJsonContentType())
+            return (default, Refuse(WorkException.Invalid($"The body of {tool} must be sent as application/json."), StatusCodes.Status415UnsupportedMediaType));
+
+        try
+        {
+            using var buffer = new MemoryStream();
+            await Request.Body.CopyToAsync(buffer, HttpContext.RequestAborted);
+            return (WorkJson.ReadObject(buffer.ToArray(), tool), null);
+        }
+        catch (WorkException exception)
+        {
+            return (default, Refuse(exception));
+        }
+    }
+
+    // A call with a personal access token is subject to the hub's access predicate for the tool the
+    // route runs, exactly as the same call over /mcp is (tool enabled and available, provider
+    // enabled, the token entitled to it). A person signed in through the web app is not.
+    private async Task<IActionResult?> DeniedAsync(string tool)
+    {
+        var identity = User.Identities.FirstOrDefault(candidate =>
+            candidate.IsAuthenticated && candidate.AuthenticationType == McpPatAuthenticationDefaults.Scheme);
+        if (identity is null)
+            return null;
+
+        long? tokenId = long.TryParse(identity.FindFirst("mcp_pat_token_id")?.Value, out var parsed) ? parsed : null;
+        var denial = await McpToolAccess.EvaluateAsync(
+            hub, tool, tokenId, requiresPersonalAccessToken: true, logger, HttpContext.RequestAborted);
+        return denial is null
+            ? null
+            : new ContentResult
+            {
+                Content = JsonSerializer.Serialize(new { code = denial.Code, message = denial.Message }, WorkJson.Options),
+                ContentType = "application/json",
+                StatusCode = StatusCodes.Status403Forbidden
+            };
     }
 
     private async Task<IActionResult> RunAsync(string tool, JsonElement arguments)
@@ -89,6 +153,11 @@ public sealed class WorkController(IWorkService work) : ControllerBase
         {
             return Refuse(exception);
         }
+        catch (WorkStoreUnavailableException exception)
+        {
+            // Not a work error: no code of the vocabulary, a plain problem response.
+            return Problem(detail: exception.Message, statusCode: StatusCodes.Status503ServiceUnavailable, title: "Work tracking is unavailable");
+        }
     }
 
     public static int StatusFor(string code) => code switch
@@ -96,15 +165,15 @@ public sealed class WorkController(IWorkService work) : ControllerBase
         WorkErrorCodes.InvalidArgument => StatusCodes.Status400BadRequest,
         WorkErrorCodes.NotFound => StatusCodes.Status404NotFound,
         WorkErrorCodes.Conflict or WorkErrorCodes.AlreadyClaimed or WorkErrorCodes.Cycle or WorkErrorCodes.ClaimLost => StatusCodes.Status409Conflict,
-        WorkErrorCodes.Busy or WorkErrorCodes.Unavailable => StatusCodes.Status503ServiceUnavailable,
+        WorkErrorCodes.Busy => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status500InternalServerError
     };
 
-    private static ContentResult Refuse(WorkException exception) => new()
+    private static ContentResult Refuse(WorkException exception, int? status = null) => new()
     {
         Content = JsonSerializer.Serialize(new WorkError(exception.Code, exception.Message, exception.Current), WorkJson.Options),
         ContentType = "application/json",
-        StatusCode = StatusFor(exception.Code)
+        StatusCode = status ?? StatusFor(exception.Code)
     };
 
     // The query as tool arguments: an unknown parameter is refused like an unknown argument, and a

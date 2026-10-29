@@ -72,7 +72,7 @@ public sealed class McpToolEntitlementMiddleware(
 
         using var scope = scopeFactory.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IMcpHubStore>();
-        var catalog = await LoadCatalogAsync(store, context.RequestAborted);
+        var catalog = await McpToolAccess.LoadCatalogAsync(store, context.RequestAborted);
         catalog.Tools.TryGetValue(toolName, out var tool);
         var denial = await EvaluateAccessAsync(store, catalog, toolName, tool, ResolveTokenId(context), context.RequestAborted);
         if (denial is not null)
@@ -84,63 +84,14 @@ public sealed class McpToolEntitlementMiddleware(
         await DispatchAsync(context, tool!, request);
     }
 
-    /// <summary>
-    /// The single access predicate shared by tools/call and tools/list: a tool is listed exactly
-    /// when a call to it would be dispatched. Returns null when access is granted, otherwise the
-    /// machine-readable denial.
-    /// </summary>
-    private async Task<McpToolDenial?> EvaluateAccessAsync(
+    private Task<McpToolDenial?> EvaluateAccessAsync(
         IMcpHubStore store,
         McpCatalogSnapshot catalog,
         string toolName,
         McpHubToolEntity? tool,
         long? tokenId,
-        CancellationToken ct)
-    {
-        if (tool is null)
-            return new("tool_not_cataloged", $"MCP tool '{toolName}' is not in the hub catalog.");
-
-        if (!tool.Enabled)
-            return new("tool_disabled", $"MCP tool '{toolName}' is disabled.");
-
-        if (!tool.IsAvailable)
-            return new("tool_unavailable", $"MCP tool '{toolName}' is not available in this deployment.");
-
-        if (catalog.Providers.TryGetValue(tool.ProviderKey, out var provider) && !provider.Enabled)
-            return new("provider_disabled", $"MCP provider '{tool.ProviderKey}' is disabled.");
-
-        if (tokenId is null)
-        {
-            return requiresPersonalAccessToken
-                ? new("token_required", "This MCP request did not carry a personal access token, so tool entitlement could not be verified.")
-                : null;
-        }
-
-        try
-        {
-            if (await store.IsTokenEntitledAsync(tokenId.Value, tool.ToolName, ct))
-                return null;
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            logger.LogWarning(ex, "Failed to check MCP entitlement for token {TokenId} and tool {ToolName}", tokenId, toolName);
-        }
-
-        return new("tool_not_entitled", $"This MCP token is not entitled to call '{toolName}'.");
-    }
-
-    private static async Task<McpCatalogSnapshot> LoadCatalogAsync(IMcpHubStore store, CancellationToken ct)
-    {
-        var providers = new Dictionary<string, McpHubProviderEntity>(StringComparer.OrdinalIgnoreCase);
-        foreach (var provider in await store.ListProvidersAsync(ct))
-            providers.TryAdd(provider.ProviderKey, provider);
-
-        var tools = new Dictionary<string, McpHubToolEntity>(StringComparer.OrdinalIgnoreCase);
-        foreach (var tool in await store.ListToolsAsync(ct))
-            tools.TryAdd(tool.ToolName, tool);
-
-        return new(providers, tools);
-    }
+        CancellationToken ct) =>
+        McpToolAccess.EvaluateAsync(store, catalog, toolName, tool, tokenId, requiresPersonalAccessToken, logger, ct);
 
     // Hands an entitled tools/call to its server. Native and first-party-provider tools are
     // [McpServerTool] methods served by the MCP SDK, so the request continues down the pipeline.
@@ -318,7 +269,7 @@ public sealed class McpToolEntitlementMiddleware(
         long? tokenId,
         CancellationToken ct)
     {
-        var catalog = await LoadCatalogAsync(store, ct);
+        var catalog = await McpToolAccess.LoadCatalogAsync(store, ct);
         var visible = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var shimTools = new List<McpHubToolEntity>();
         foreach (var tool in catalog.Tools.Values)
@@ -464,12 +415,6 @@ public sealed class McpToolEntitlementMiddleware(
             return new(null, null);
         }
     }
-
-    private sealed record McpToolDenial(string Code, string Message);
-
-    private sealed record McpCatalogSnapshot(
-        IReadOnlyDictionary<string, McpHubProviderEntity> Providers,
-        IReadOnlyDictionary<string, McpHubToolEntity> Tools);
 
     private sealed record McpRequest(
         string? Method,

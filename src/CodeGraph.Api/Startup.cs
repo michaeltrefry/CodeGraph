@@ -198,7 +198,7 @@ public static class Startup
         services.AddTransient<IWikiService, WikiService>();
         services.AddTransient<IWikiSectionSeedService, WikiSectionSeedService>();
         // Work tracking (agent coordination S1). IWorkStore is registered with the MariaDB
-        // provider only; without it the work tools answer "unavailable".
+        // provider only; without it the work tools answer a plain server error.
         services.AddTransient<IWorkService, WorkService>();
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();

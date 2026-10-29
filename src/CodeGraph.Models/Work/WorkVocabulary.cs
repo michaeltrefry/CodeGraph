@@ -71,9 +71,15 @@ public static class WorkErrorCodes
     public const string Busy = "busy";
     /// <summary>Reserved for S2: a write by a session whose claim lapsed and passed to someone else.</summary>
     public const string ClaimLost = "claim_lost";
-    /// <summary>Work tracking needs the MariaDB storage provider.</summary>
-    public const string Unavailable = "unavailable";
 }
+
+/// <summary>
+/// Work tracking needs the MariaDB storage provider and this deployment runs without it. Not a
+/// work error: it is outside the closed vocabulary of <see cref="WorkErrorCodes"/>, so it carries no
+/// code and surfaces as a plain server error (MCP isError without structured content, REST 503).
+/// </summary>
+public sealed class WorkStoreUnavailableException()
+    : InvalidOperationException("Work tracking needs the MariaDB storage provider; this deployment runs without it.");
 
 /// <summary>A refused work call. <see cref="Code"/> is one of <see cref="WorkErrorCodes"/>.</summary>
 public sealed class WorkException(string code, string message, object? current = null) : Exception(message)

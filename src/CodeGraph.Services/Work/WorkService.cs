@@ -32,7 +32,7 @@ public sealed class WorkService(IWorkStore? store = null, TimeProvider? timeProv
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
     private IWorkStore Store => store
-        ?? throw new WorkException(WorkErrorCodes.Unavailable, "Work tracking needs the MariaDB storage provider; this deployment runs without it.");
+        ?? throw new WorkStoreUnavailableException();
 
     /// <summary>The identity a write is attributed to (E3): the authenticated user, or <c>anonymous</c>.</summary>
     public static WorkActor ActorFor(ClaimsPrincipal? user)

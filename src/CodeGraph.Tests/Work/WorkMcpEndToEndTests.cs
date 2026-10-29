@@ -89,6 +89,9 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
     [Theory]
     [InlineData("""{"id":"X-1","expected_versoin":1,"title":"t"}""", "expected_versoin")]
     [InlineData("""{"id":"X-1","expected_version":"1","title":"t"}""", "expected_version")]
+    [InlineData("""{"id":"X-1","expected_version":1,"status":"ready, in_progress"}""", "status")]
+    [InlineData("""{"id":"X-1","expected_version":1,"status":"InProgress"}""", "status")]
+    [InlineData("""{"id":"X-1","Expected_Version":1,"title":"t"}""", "Expected_Version")]
     [InlineData("""{"id":"X-1","expected_version":1,"add_links":[{"kind":"pr","link":"https://x"}]}""", "link")]
     public async Task A_misspelt_or_mistyped_argument_is_an_invalid_argument_tool_error(string arguments, string named)
     {
@@ -102,7 +105,19 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
         call.Result.GetProperty("message").GetString()!.ShouldContain(named);
     }
 
-    private Task<IHost> StartHostAsync() =>
+    [Fact]
+    public async Task Without_the_work_store_a_call_is_a_plain_tool_error_with_no_structured_code()
+    {
+        using var host = await StartHostAsync(new WorkService());
+        var agent = await Client.ConnectAsync(host, "claude-agent");
+
+        var call = await agent.CallRawAsync("get_work", """{"id":"SW-1"}""");
+
+        call.IsError.ShouldBeTrue();
+        call.Result.ValueKind.ShouldBe(JsonValueKind.Null);
+    }
+
+    private Task<IHost> StartHostAsync(IWorkService? service = null) =>
         new HostBuilder()
             .ConfigureWebHost(webHost => webHost
                 .UseTestServer()
@@ -117,7 +132,7 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
                     });
                     services.Configure<McpOptions>(options => options.RequirePersonalAccessToken = true);
                     services.Configure<AuthOptions>(_ => { });
-                    services.AddSingleton<IWorkService>(db.Service);
+                    services.AddSingleton<IWorkService>(service ?? db.Service);
                     services.AddMcpServer()
                         .WithHttpTransport()
                         .WithTools(WorkMcpTool.CreateAll());
