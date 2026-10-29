@@ -124,7 +124,18 @@ public class MariaDbMigrationRunner(
             """,
             new { ScriptName = scriptName, StatementOrdinal = statementOrdinal });
 
-        if (previous is not null && !string.Equals(previous.StatementChecksum, checksum, StringComparison.OrdinalIgnoreCase))
+        var changed = previous is not null && !string.Equals(previous.StatementChecksum, checksum, StringComparison.OrdinalIgnoreCase);
+        // A statement the server rejected left nothing behind (InnoDB rolls the statement back and DDL is
+        // atomic), so a corrected statement may replace it: that is how a migration that failed on a
+        // server version is repaired. A started or completed statement may have taken effect, so it may not.
+        if (changed && string.Equals(previous!.Status, StatementStatusFailed, StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogWarning(
+                "MariaDB migration {Script} statement {StatementOrdinal} failed earlier and has since changed; running the corrected statement",
+                scriptName,
+                statementOrdinal);
+        }
+        else if (changed)
         {
             throw new InvalidOperationException(
                 $"MariaDB migration {scriptName} statement {statementOrdinal} changed after execution began. " +
@@ -171,6 +182,7 @@ public class MariaDbMigrationRunner(
                 NULL,
                 NULL)
             ON DUPLICATE KEY UPDATE
+                statement_checksum = VALUES(statement_checksum),
                 status = VALUES(status),
                 attempt_count = attempt_count + 1,
                 last_started_at = VALUES(last_started_at),

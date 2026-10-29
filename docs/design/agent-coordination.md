@@ -123,7 +123,7 @@ What the agent has to remember by itself: call `start_session` (if no hook), `ne
 | Entity | Purpose | Fields |
 |---|---|---|
 | **Feature** (replaces epic) | A goal-sized body of work in a project, possibly spanning repos | goals · numbered requirements (`E1..En`) · acceptance tests · documents · status derived from items |
-| **Item** — type `story` / `task` / `bug` | One executable slice, normally in one owned repository (optional for non-code work such as research spikes, and for imported items whose repository can't be inferred) | title · goal · 1–3 acceptance criteria · `inherits: [E2, E5]` · `touches` (expected paths/symbols) · `blocked_by` · priority · labels |
+| **Item** — type `story` / `task` / `bug` | One executable slice, normally in one owned repository (optional for non-code work such as research spikes, and for imported items whose repository can't be inferred) | title · goal · 1–10 acceptance criteria · `inherits: [E2, E5]` · `touches` (expected paths/symbols) · `blocked_by` · priority · labels |
 | **Handoff** | Structured state of an item when a session stops | done · decisions (links to `decision` entries) · open issues · corrections · next action · branch/commit |
 | **Attempt** | A failed or abandoned approach | what was tried · why it failed · commit/branch · related paths |
 | **Comment** | Free-form discussion on an item or feature | author (session or human) · body · thread |
@@ -520,7 +520,7 @@ Import from Claude Code `~/.claude/projects/*/memory/*.md` and Codex equivalents
 - R5. A `cg` CLI (`brief`, `inbox`, `end`) over REST for local hooks and shell agents; it times out within 2 s and prints one line if CodeGraph is unreachable.
 
 **Work**
-- R6. Features hold numbered requirements and acceptance tests and may span repositories; items belong to one owned repository and hold 1–3 AC, `inherits`, `touches`, `blocked_by`.
+- R6. Features hold numbered requirements and acceptance tests and may span repositories; items belong to one owned repository and hold 1–10 AC, `inherits`, `touches`, `blocked_by`.
 - R7. `create_work` imports a full plan in one idempotent, all-or-nothing, cycle-checked call. `sync_plan` diffs a revised plan by `ref`, previews, and applies on the caller's confirmation; it may edit or close in-progress items and notifies their holders.
 - R8. `next_work` atomically selects and claims the best recoverable or Ready, unblocked, unclaimed item; returns the session's existing claim unless `another: true`; takes an `idempotency_key`. `get_work` returns the self-contained brief of §5.2.
 - R8a. Recovery per §5.9: lapsed In Progress items are recoverable with branch, PRs, latest handoff and unmet AC; a returning session whose claim lapsed gets `claim_lost` naming the new holder.

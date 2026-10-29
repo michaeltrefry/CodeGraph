@@ -537,12 +537,12 @@ public sealed partial class MySqlWorkStore
     // lookup then falls back to the lexical score; a write never fails for similarity.
     private async Task<Dictionary<Guid, float[]>?> LessonVectorsAsync(MySqlConnection connection, IReadOnlyList<PoolLesson> lessons, LessonEmbedder embedder, CancellationToken ct)
     {
-        var stored = (await connection.QueryAsync<(Guid EntryId, string SummaryHash, byte[] Vector)>(new CommandDefinition(
-            "SELECT entry_id, summary_hash, vector FROM lesson_embeddings WHERE model = @model AND entry_id IN @ids",
+        var stored = (await connection.QueryAsync<(Guid EntryId, string SummaryHash, byte[] Embedding)>(new CommandDefinition(
+            "SELECT entry_id, summary_hash, embedding FROM lesson_embeddings WHERE model = @model AND entry_id IN @ids",
             new { model = embedder.Model, ids = lessons.Select(lesson => lesson.Id.ToString()).ToArray() }, cancellationToken: ct))).ToList();
         var hashes = lessons.ToDictionary(lesson => lesson.Id, lesson => lesson.SummaryHash);
         var vectors = stored.Where(row => hashes.TryGetValue(row.EntryId, out var hash) && hash == row.SummaryHash)
-            .Select(row => (row.EntryId, Vector: ToFloats(row.Vector)))
+            .Select(row => (row.EntryId, Vector: ToFloats(row.Embedding)))
             .Where(row => Usable(row.Vector))
             .ToDictionary(row => row.EntryId, row => row.Vector);
         var missing = lessons.Where(lesson => !vectors.ContainsKey(lesson.Id)).Take(LessonLimits.MaxEmbedPerCall).ToList();
@@ -569,10 +569,10 @@ public sealed partial class MySqlWorkStore
             return vectors;
         var now = Now();
         await connection.ExecuteAsync(new CommandDefinition(
-            "REPLACE INTO lesson_embeddings (entry_id, model, summary_hash, dimensions, vector, created_at) VALUES (@entryId, @model, @hash, @dimensions, @vector, @now)",
+            "REPLACE INTO lesson_embeddings (entry_id, model, summary_hash, dimensions, embedding, created_at) VALUES (@entryId, @model, @hash, @dimensions, @embedding, @now)",
             usable.Select(pair => new
             {
-                entryId = pair.lesson.Id, model = embedder.Model, hash = pair.lesson.SummaryHash, dimensions = pair.vector.Length, vector = ToBytes(pair.vector), now
+                entryId = pair.lesson.Id, model = embedder.Model, hash = pair.lesson.SummaryHash, dimensions = pair.vector.Length, embedding = ToBytes(pair.vector), now
             }), cancellationToken: ct));
         foreach (var (lesson, vector) in usable)
             vectors[lesson.Id] = vector;

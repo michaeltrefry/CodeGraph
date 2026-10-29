@@ -352,6 +352,47 @@ public class MariaDbMigrationRunnerTests
     }
 
     [Fact]
+    public async Task ApplyMigrationsAsync_RunsACorrectedStatementThatFailedButRefusesAChangedCompletedOne()
+    {
+        var connectionString = MariaDbTestEnvironment.RequireConnectionString();
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        var databaseName = $"cg_mig_corrected_{Guid.NewGuid():N}";
+        builder.Database = databaseName;
+        var migrationsPath = CreateMigrationDirectory(
+            "001_corrected.sql",
+            "CREATE TABLE corrected_first (id INT NOT NULL PRIMARY KEY);\nCREATE TABLE corrected_probe (id INT NOT NULL PRIMARY KEY, payload NOT_A_TYPE NOT NULL);");
+        var script = Path.Combine(migrationsPath, "001_corrected.sql");
+
+        try
+        {
+            var runner = CreateRunner(builder.ConnectionString, migrationsPath);
+            await Should.ThrowAsync<MySqlException>(runner.ApplyConfiguredMigrationsAsync());
+
+            await File.WriteAllTextAsync(script,
+                "CREATE TABLE corrected_first (id INT NOT NULL PRIMARY KEY);\nCREATE TABLE corrected_probe (id INT NOT NULL PRIMARY KEY, payload LONGBLOB NOT NULL);");
+            await runner.ApplyConfiguredMigrationsAsync();
+
+            await using var conn = new MySqlConnection(builder.ConnectionString);
+            (await conn.ExecuteScalarAsync<long>(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'corrected_probe' AND column_name = 'payload'")).ShouldBe(1);
+            (await conn.ExecuteScalarAsync<string>(
+                "SELECT status FROM migration_statement_history WHERE script_name = '001_corrected.sql' AND statement_ordinal = 2")).ShouldBe("completed");
+
+            // A statement that completed may have taken effect, so changing it still stops the runner.
+            await conn.ExecuteAsync("DELETE FROM migration_history WHERE script_name = '001_corrected.sql'");
+            await File.WriteAllTextAsync(script,
+                "CREATE TABLE corrected_first (id BIGINT NOT NULL PRIMARY KEY);\nCREATE TABLE corrected_probe (id INT NOT NULL PRIMARY KEY, payload LONGBLOB NOT NULL);");
+            (await Should.ThrowAsync<InvalidOperationException>(runner.ApplyConfiguredMigrationsAsync()))
+                .Message.ShouldContain("changed after execution began");
+        }
+        finally
+        {
+            Directory.Delete(migrationsPath, recursive: true);
+            await DropDatabaseAsync(builder.ConnectionString, databaseName);
+        }
+    }
+
+    [Fact]
     public async Task ApplyMigrationsAsync_ReplaysTemporaryTableDependencyChainAfterReconnect()
     {
         var connectionString = MariaDbTestEnvironment.RequireConnectionString();
