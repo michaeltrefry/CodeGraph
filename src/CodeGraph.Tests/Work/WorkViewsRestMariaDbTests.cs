@@ -74,6 +74,21 @@ public sealed class WorkViewsRestMariaDbTests(WorkDatabase db) : IClassFixture<W
     }
 
     [Fact]
+    public async Task Get_work_takes_detail_over_rest_like_the_tool()
+    {
+        var project = await db.NewProjectAsync("VD");
+        var item = (await db.NewItemAsync(project, "Detailed")).GetProperty("key").GetString()!;
+
+        var (full, body) = await Get($"/api/work/{item}?detail=full");
+        full.ShouldBe(200);
+        body.GetProperty("key").GetString().ShouldBe(item);
+
+        var (bad, refusal) = await Get($"/api/work/{item}?detail=everything");
+        bad.ShouldBe(400);
+        refusal.GetProperty("code").GetString().ShouldBe("invalid_argument");
+    }
+
+    [Fact]
     public async Task The_listings_are_strict_and_for_signed_in_people_only()
     {
         var project = await db.NewProjectAsync("VX");
