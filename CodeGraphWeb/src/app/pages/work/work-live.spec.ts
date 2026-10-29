@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ProjectWatch, parseSse, withDebounce } from './work-live.service';
+import { TestBed } from '@angular/core/testing';
+import { AuthService } from '../../core/auth.service';
+import { ProjectWatch, WorkLiveService, parseSse, withDebounce } from './work-live.service';
 import { WorkApiService } from './work-api.service';
 import { WorkChange } from './work.models';
 
@@ -30,10 +32,12 @@ describe('parseSse', () => {
 });
 
 describe('ProjectWatch', () => {
-  it('reads the history, then follows new entries and tells listeners', async () => {
+  const idle = async () => undefined;
+
+  it('starts at the head of the feed (no history read), tells listeners once, then on each batch of entries', async () => {
     const calls: unknown[] = [];
     const pages = [
-      { items: [change(1), change(2)], next_cursor: 'c2' },
+      { items: [], next_cursor: 'head' },
       { items: [change(3)], next_cursor: 'c3' }
     ];
     let watch!: ProjectWatch;
@@ -46,15 +50,15 @@ describe('ProjectWatch', () => {
         return { items: [], next_cursor: 'c3' };
       })
     } as unknown as WorkApiService;
-    watch = new ProjectWatch(api, 'W', async () => undefined);
+    watch = new ProjectWatch(api, 'W', idle);
     const heard = vi.fn();
     watch.onChange(heard);
 
-    await vi.waitFor(() => expect(watch.entries()).toHaveLength(3));
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledTimes(2));
     expect(watch.loading()).toBe(false);
-    expect(calls[0]).toMatchObject({ fromStart: true, waitSeconds: 0 });
-    expect(calls[1]).toMatchObject({ cursor: 'c2', waitSeconds: 25 });
-    expect(heard).toHaveBeenCalledTimes(1);
+    expect(calls[0]).toMatchObject({ cursor: undefined, waitSeconds: 0 });
+    expect(calls[0]).not.toHaveProperty('fromStart');
+    expect(calls[1]).toMatchObject({ cursor: 'head', waitSeconds: 25 });
     watch.stop();
   });
 
@@ -69,8 +73,78 @@ describe('ProjectWatch', () => {
         return { items: [], next_cursor: 'c' };
       })
     } as unknown as WorkApiService;
-    watch = new ProjectWatch(api, 'W', async () => undefined);
+    watch = new ProjectWatch(api, 'W', idle);
     await vi.waitFor(() => expect(attempts).toBe(2));
+  });
+
+  it('starts again at the head when the cursor is ahead of a restored feed, instead of looping on the refusal', async () => {
+    const cursors: (string | undefined)[] = [];
+    let watch!: ProjectWatch;
+    const api = {
+      changes: vi.fn(async (_project: string, options: { cursor?: string }) => {
+        cursors.push(options.cursor);
+        if (cursors.length === 1) return { items: [], next_cursor: 'far' };
+        if (cursors.length === 2) throw new Error('cursor is ahead of the newest entry of the feed (the database was restored to an earlier state). Start again without cursor.');
+        watch.stop();
+        return { items: [], next_cursor: 'head' };
+      })
+    } as unknown as WorkApiService;
+    const pause = vi.fn(idle);
+    watch = new ProjectWatch(api, 'W', pause);
+    const heard = vi.fn();
+    watch.onChange(heard);
+    await vi.waitFor(() => expect(cursors).toHaveLength(3));
+    expect(cursors).toEqual([undefined, 'far', undefined]);
+    expect(pause).not.toHaveBeenCalled();
+  });
+});
+
+describe('WorkLiveService.acquire', () => {
+  it('shares one watch per project and stops it a little after the last page lets go', async () => {
+    vi.useFakeTimers();
+    const api = { changes: vi.fn(() => new Promise(() => undefined)) };
+    TestBed.configureTestingModule({ providers: [{ provide: WorkApiService, useValue: api }, { provide: AuthService, useValue: {} }] });
+    const service = TestBed.inject(WorkLiveService);
+    const first = service.acquire('W');
+    const second = service.acquire('W');
+    expect(second.watch).toBe(first.watch);
+    expect(api.changes).toHaveBeenCalledTimes(1);
+    first.release();
+    second.release();
+    const again = service.acquire('W');
+    expect(again.watch).toBe(first.watch);
+    again.release();
+    vi.advanceTimersByTime(6000);
+    expect(service.acquire('W').watch).not.toBe(first.watch);
+    vi.useRealTimers();
+  });
+});
+
+describe('WorkLiveService.streamMessages', () => {
+  it('resumes with Last-Event-ID and tells the page to reload once on every reconnect', async () => {
+    const headers: Record<string, string>[] = [];
+    const frame = 'id: 5\nevent: message\ndata: {"sequence":5,"message_id":"m"}\n\n';
+    const body = () => {
+      let sent = false;
+      return { getReader: () => ({ read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: new TextEncoder().encode(frame) })) }) };
+    };
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      headers.push(init.headers);
+      return { ok: true, body: body() };
+    }));
+    TestBed.configureTestingModule({ providers: [{ provide: WorkApiService, useValue: {} }, { provide: AuthService, useValue: { getValidAccessToken: async () => 'tok' } }] });
+    const service = TestBed.inject(WorkLiveService);
+    const events: unknown[] = [];
+    const reconnected = vi.fn();
+    const stop = service.streamMessages('W', event => events.push(event), undefined, reconnected);
+    await vi.waitFor(() => expect(headers).toHaveLength(2), { timeout: 4000 });
+    stop();
+    vi.unstubAllGlobals();
+    expect(headers[0]['Authorization']).toBe('Bearer tok');
+    expect(headers[0]['Last-Event-ID']).toBeUndefined();
+    expect(headers[1]['Last-Event-ID']).toBe('5');
+    expect(events).toHaveLength(2);
+    expect(reconnected).toHaveBeenCalledTimes(1);
   });
 });
 

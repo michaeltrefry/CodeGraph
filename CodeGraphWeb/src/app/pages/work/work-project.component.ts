@@ -2,7 +2,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ActivityComponent } from './work-activity';
-import { ErrorComponent, WorkContext, WorkPageBase, idempotencyKey } from './work-base';
+import { ErrorComponent, KeyHolder, WorkContext, WorkPageBase } from './work-base';
 import { DialogComponent, FeatureFormComponent, ItemFormComponent, ProjectFormComponent } from './work-forms';
 import { KnowledgeComponent } from './work-knowledge-ui';
 import { MessageListComponent } from './work-messages-ui';
@@ -137,6 +137,8 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   readonly features = signal<FeatureView[]>([]);
   readonly questions = signal<MessageView[]>([]);
   readonly creating = signal(false);
+  readonly key = signal('');
+  private readonly keys = { project: new KeyHolder('ui-project'), feature: new KeyHolder('ui-feature'), item: new KeyHolder('ui-item'), plan: new KeyHolder('ui-plan') };
   readonly dialog = signal<'' | 'edit' | 'feature' | 'item' | 'plan'>('');
   readonly planError = signal('');
   planJson = '';
@@ -148,11 +150,22 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   ngOnInit(): void {
-    const key = this.route.snapshot.paramMap.get('key') ?? '';
-    if (key === 'new') {
-      this.creating.set(true);
-      return;
-    }
+    this.onKey(this.route, key => this.open(key));
+  }
+
+  /** Shows the project of the route (the component is reused when only the key changes) with a clean slate. */
+  private open(key: string): void {
+    this.unfollow();
+    this.key.set(key);
+    this.project.set(null);
+    this.features.set([]);
+    this.questions.set([]);
+    this.feed.set([]);
+    this.dialog.set('');
+    this.error.set(null);
+    this.notice.set('');
+    this.creating.set(key === 'new');
+    if (key === 'new' || !key) return;
     this.follow(key);
     void this.reload();
   }
@@ -166,14 +179,16 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   protected async reload(): Promise<void> {
-    const key = this.route.snapshot.paramMap.get('key') ?? '';
+    const key = this.key();
     if (!key || key === 'new') return;
     try {
       const [project, features, questions] = await Promise.all([
         this.api.get<ProjectView>(key),
         this.api.features(key),
-        this.api.messages(key, { open: true, limit: 20 })
-      ]);
+        this.api.messages(key, { open: true, limit: 20 }),
+        this.loadRecent(key, 20)
+      ]).then(([p, f, q]) => [p, f, q] as const);
+      if (key !== this.key()) return;
       this.project.set(project);
       this.features.set(features);
       this.questions.set(questions.items);
@@ -206,8 +221,9 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   async createProject(fields: Record<string, unknown>): Promise<void> {
-    const created = await this.run(() => this.api.create({ new_project: fields }));
+    const created = await this.run(() => this.api.create({ new_project: fields, idempotency_key: this.keys.project.key }));
     if (created?.project) {
+      this.keys.project.reset();
       await this.ctx.load();
       this.ctx.select(created.project.key);
       await this.router.navigate(['/work/projects', created.project.key]);
@@ -223,14 +239,16 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   async createFeature(fields: Record<string, unknown>): Promise<void> {
-    if (await this.run(() => this.api.create({ project: this.project()!.key, feature: fields }), 'Feature created.')) {
+    if (await this.run(() => this.api.create({ project: this.project()!.key, feature: fields, idempotency_key: this.keys.feature.key }), 'Feature created.')) {
+      this.keys.feature.reset();
       this.dialog.set('');
       await this.reload();
     }
   }
 
   async createItem(fields: Record<string, unknown>): Promise<void> {
-    if (await this.run(() => this.api.create({ project: this.project()!.key, item: fields }), 'Item created.')) {
+    if (await this.run(() => this.api.create({ project: this.project()!.key, item: fields, idempotency_key: this.keys.item.key }), 'Item created.')) {
+      this.keys.item.reset();
       this.dialog.set('');
       await this.reload();
     }
@@ -245,8 +263,9 @@ export class WorkProjectComponent extends WorkPageBase implements OnInit, OnDest
       this.planError.set(`That is not valid JSON: ${error instanceof Error ? error.message : error}`);
       return;
     }
-    const result = await this.run(() => this.api.create({ project: this.project()!.key, plan, idempotency_key: idempotencyKey('ui-plan') }), 'Plan imported.');
+    const result = await this.run(() => this.api.create({ project: this.project()!.key, plan, idempotency_key: this.keys.plan.key }), 'Plan imported.');
     if (result) {
+      this.keys.plan.reset();
       this.dialog.set('');
       this.planJson = '';
       await this.reload();

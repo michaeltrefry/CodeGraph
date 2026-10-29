@@ -56,7 +56,7 @@ export interface FeatureView {
   project_key: string;
   title: string;
   description?: string;
-  documents: { id: string; title: string; body: string; position: number }[];
+  documents: { id: string; title: string; body: string; position: number; created_at?: string; updated_at?: string }[];
   version: number;
   created_by: string;
   created_at: string;
@@ -122,6 +122,27 @@ export interface MessageLine {
   state?: 'open' | 'answered' | 'declined';
   blocking?: boolean;
 }
+
+/** A knowledge entry as recall answers it: a row, or with detail full the whole entry with its author (E3). */
+export interface KnowledgeEntry extends KnowledgeRow {
+  author?: WorkActor;
+  body?: string;
+  revision?: number;
+  created_at?: string;
+  updated_at?: string;
+  details?: { why?: string; why_failed?: string; what?: string };
+  revisions?: { revision?: number; author?: WorkActor; created_at?: string; summary?: string }[];
+}
+
+export interface KnowledgeImportCandidate {
+  index: number;
+  outcome: string;
+  message?: string;
+  duplicate_of?: KnowledgeRow;
+  entry?: KnowledgeRow;
+}
+
+export interface KnowledgeImportResult { stored: boolean; preview_token: string; candidates: KnowledgeImportCandidate[] }
 
 export interface KnowledgeRow {
   id: string;

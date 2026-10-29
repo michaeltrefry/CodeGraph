@@ -135,9 +135,10 @@ export class WorkNowComponent extends WorkPageBase implements OnInit, OnDestroy 
     this.resources.set([]);
     this.blockedOnYou.set([]);
     this.claimed.set([]);
+    this.feed.set([]);
     if (!key) return;
     this.follow(key);
-    this.stopStream = this.live.streamMessages(key, () => this.refresh.call());
+    this.stopStream = this.live.streamMessages(key, () => this.refresh.call(), undefined, () => this.refresh.call());
     void this.reload();
   }
 
@@ -150,7 +151,8 @@ export class WorkNowComponent extends WorkPageBase implements OnInit, OnDestroy 
         this.api.sessions(key),
         this.api.resources(key),
         this.api.messages(key, { open: true, toHuman: true, limit: 50 }),
-        this.api.items(key, { claimed: true, status: ['ready', 'in_progress', 'in_review', 'backlog'] })
+        this.api.items(key, { claimed: true, status: ['ready', 'in_progress', 'in_review', 'backlog'] }),
+        this.loadRecent(key, 40)
       ]);
       if (key !== this.ctx.selected()) return;
       this.sessions.set(sessions);

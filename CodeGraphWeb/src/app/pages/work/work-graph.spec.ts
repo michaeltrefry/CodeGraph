@@ -36,7 +36,10 @@ describe('buildWorkGraph for a 50-item feature', () => {
   it('groups what can run side by side into waves and leaves stuck items out', () => {
     const [now, ...later] = graph.parallelSets;
     expect(now.wave).toBe(0);
-    expect(now.keys).toEqual(expect.arrayContaining(['W-2', 'W-3', 'W-9', 'W-33']));
+    expect(now.keys).toEqual(expect.arrayContaining(['W-2', 'W-3', 'W-9']));
+    // Waiting on a person is not something that can run now.
+    expect(now.keys).not.toContain('W-33');
+    expect(graph.parallelSets.flatMap(set => set.keys)).not.toContain('W-33');
     expect(now.keys).not.toContain('W-1');
     expect(graph.parallelSets[1].keys).toEqual(Array.from({ length: 8 }, (_, i) => `W-${10 + i}`));
     expect(later.at(-1)?.keys).toEqual(['W-29']);
@@ -69,6 +72,55 @@ describe('buildWorkGraph for a 50-item feature', () => {
     expect(progress.blocked.find(entry => entry.key === 'W-31')?.detail).toContain('closed: W-30');
     expect(progress.blocked.find(entry => entry.key === 'W-33')?.reason).toBe('awaiting_human');
     expect(progress.blocked.find(entry => entry.key === 'W-10')?.detail).toBe('Waiting for W-2.');
+  });
+});
+
+describe('buildWorkGraph blockers outside the feature, cancelled prerequisites and ties', () => {
+  const make = (number: number, spec: Parameters<typeof fixtureItem>[1], all: Map<number, ReturnType<typeof fixtureItem>>) => {
+    all.set(number, fixtureItem(number, spec, all));
+    return all.get(number)!;
+  };
+  const outside = (status: 'ready' | 'closed' | 'in_progress') => ({ id: 'x', key: 'OTHER-1', title: 'Another feature', status });
+
+  it('counts a closed blocker of another feature as stuck, and an unfinished one as blocked and not ready', () => {
+    const all = new Map();
+    const stuck = make(1, {}, all);
+    stuck.blocked_by = [outside('closed')];
+    stuck.blocked = true;
+    stuck.blocked_reason = 'cancelled_prerequisite';
+    const waiting = make(2, {}, all);
+    waiting.blocked_by = [outside('in_progress')];
+    waiting.blocked = true;
+    waiting.blocked_reason = 'waiting';
+    const behind = make(3, { blockedBy: [2] }, all);
+    const graph = buildWorkGraph([stuck, waiting, behind]);
+    const node = (key: string) => graph.nodes.find(candidate => candidate.key === key)!;
+    expect(node('W-1').stuck).toBe(true);
+    expect(node('W-2').ready).toBe(false);
+    expect(node('W-2').wave).toBe(1);
+    expect(node('W-3').wave).toBe(2);
+    expect(graph.parallelSets.find(set => set.wave === 0)).toBeUndefined();
+    expect(graph.parallelSets.flatMap(set => set.keys)).toEqual(['W-2', 'W-3']);
+  });
+
+  it('treats blocked_reason cancelled_prerequisite as stuck, with what waits behind it', () => {
+    const all = new Map();
+    const cancelled = make(1, {}, all);
+    cancelled.blocked = true;
+    cancelled.blocked_reason = 'cancelled_prerequisite';
+    const behind = make(2, { blockedBy: [1] }, all);
+    const graph = buildWorkGraph([cancelled, behind]);
+    expect(graph.nodes.map(node => node.stuck)).toEqual([true, true]);
+    expect(graph.criticalPath).toEqual([]);
+  });
+
+  it('breaks ties by key number, not text (W-9 before W-10)', () => {
+    const all = new Map();
+    const nine = make(9, {}, all);
+    const ten = make(10, {}, all);
+    const end = make(11, { blockedBy: [9, 10] }, all);
+    const graph = buildWorkGraph([ten, end, nine]);
+    expect(graph.criticalPath).toEqual(['W-9', 'W-11']);
   });
 });
 

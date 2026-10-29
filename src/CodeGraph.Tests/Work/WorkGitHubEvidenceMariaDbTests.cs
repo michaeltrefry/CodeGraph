@@ -134,6 +134,27 @@ public sealed class WorkGitHubEvidenceMariaDbTests(WorkDatabase db) : IClassFixt
     }
 
     [Fact]
+    public async Task A_new_push_is_fed_like_a_review_without_bumping_the_version_and_a_repeat_changes_nothing()
+    {
+        var (project, key, id) = await NewReadyItemAsync();
+        var pull = NewPullRequest();
+        await SendAsync("push", "push", key, pull);
+        var version = (await GetAsync(key)).GetProperty("version").GetInt64();
+        var entries = (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key);
+        string Newer(string text) => text.Replace("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
+
+        var second = await SendAsync("push", "push", key, pull, edit: Newer);
+        second.Items.Single().Result.ShouldBe("applied");
+        (await GetAsync(key)).GetProperty("version").GetInt64().ShouldBe(version);
+        (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key).ShouldBe(entries + 1);
+        (await db.Store.ListGitHubEvidenceAsync(id, 10)).Count(entry => entry.Kind == "push").ShouldBe(2);
+
+        var repeat = await SendAsync("push", "push", key, pull, edit: Newer);
+        repeat.Items.Single().Result.ShouldBe("unchanged");
+        (await db.AllChangesAsync(project)).Count(entry => entry.GetProperty("entity_key").GetString() == key).ShouldBe(entries + 1);
+    }
+
+    [Fact]
     public async Task A_redelivery_changes_nothing_and_adds_no_second_feed_entry()
     {
         var (project, key, _) = await NewReadyItemAsync();

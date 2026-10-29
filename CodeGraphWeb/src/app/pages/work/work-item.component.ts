@@ -6,14 +6,15 @@ import { DialogComponent, ItemFormComponent } from './work-forms';
 import { buildTimeline, pushCommits, shortSha } from './work-format';
 import { withDebounce } from './work-live.service';
 import { MessageComposerComponent, MessageListComponent } from './work-messages-ui';
+import { SavePointsComponent } from './work-savepoints';
 import { ActorComponent, AgoPipe, StatusComponent } from './work-shared';
-import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, WorkLink, WorkStatus } from './work.models';
+import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, WorkChange, WorkLink, WorkStatus } from './work.models';
 
 /** Item detail: the brief, acceptance, timeline, commits and PRs, messages, handoffs, attempts, and every write an agent can make. */
 @Component({
   selector: 'app-work-item',
   standalone: true,
-  imports: [FormsModule, RouterLink, ActorComponent, AgoPipe, StatusComponent, ErrorComponent, DialogComponent, ItemFormComponent, MessageListComponent, MessageComposerComponent],
+  imports: [FormsModule, RouterLink, ActorComponent, AgoPipe, StatusComponent, ErrorComponent, DialogComponent, ItemFormComponent, MessageListComponent, MessageComposerComponent, SavePointsComponent],
   template: `
     <div class="wrk-page">
       @if (item(); as it) {
@@ -192,7 +193,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
               <h2 id="wrk-h-work">Work</h2>
               <div class="wrk-form">
                 <label>Status
-                  <select class="wrk-input" [ngModel]="it.status" (ngModelChange)="setStatus($event)" aria-label="Status">@for (s of statuses; track s) { <option [value]="s">{{ s.replace('_', ' ') }}</option> }</select>
+                  <select class="wrk-input" (change)="setStatus($any($event.target).value, $any($event.target))" aria-label="Status">@for (s of statuses; track s) { <option [value]="s" [selected]="s === it.status">{{ s.replace('_', ' ') }}</option> }</select>
                 </label>
                 @if (it.claim; as claim) {
                   <div>Claimed by <wrk-actor [actor]="{ name: claim.holder, session_id: claim.session_id, kind: claim.session_id ? 'session' : 'user' }" />, marker {{ claim.marker }}, expires {{ claim.expires_at | ago }}.</div>
@@ -205,6 +206,12 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
                   <div class="wrk-row"><button type="button" class="wrk-btn" [disabled]="busy()" (click)="write({ claim: { marker: 'ui' } }, 'Claimed.')">Claim</button></div>
                 }
               </div>
+            </section>
+
+            <section class="wrk-card" aria-labelledby="wrk-h-sp">
+              <h2 id="wrk-h-sp">Save points</h2>
+              <p class="wrk-sub">Decisions, failed attempts, corrections and findings are stored as the project's knowledge with this write.</p>
+              <wrk-save-points (saved)="write($event, 'Save point recorded.')" />
             </section>
 
             <section class="wrk-card" aria-labelledby="wrk-h-com">
@@ -248,11 +255,14 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
   readonly item = signal<ItemView | null>(null);
   readonly messages = signal<MessageView[]>([]);
   readonly evidence = signal<GitHubEvidence[]>([]);
+  /** This item's own change feed entries, read from the server filtered to it. */
+  readonly itemFeed = signal<WorkChange[]>([]);
+  readonly key = signal('');
   readonly dialog = signal<'' | 'edit'>('');
   readonly met = computed(() => (this.item()?.acceptance_criteria ?? []).filter(criterion => criterion.state === 'met').length);
   readonly timeline = computed(() => {
     const item = this.item();
-    return item ? buildTimeline(item, this.feed(), this.messages(), this.evidence()) : [];
+    return item ? buildTimeline(item, this.itemFeed(), this.messages(), this.evidence()) : [];
   });
   readonly commitsOf = pushCommits;
   readonly short = shortSha;
@@ -276,13 +286,36 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
   }
 
   ngOnInit(): void {
+    this.onKey(this.route, key => this.open(key));
+  }
+
+  /**
+   * Shows the item of the route. The router reuses this component when only the key changes (a link
+   * to a blocker or a dependent), so the page, its live feed and its message filter start over.
+   */
+  private open(key: string): void {
+    this.unfollow();
+    this.stopStream?.();
+    this.stopStream = undefined;
+    this.key.set(key);
+    this.item.set(null);
+    this.messages.set([]);
+    this.evidence.set([]);
+    this.itemFeed.set([]);
+    this.dialog.set('');
+    this.error.set(null);
+    this.notice.set('');
+    this.commentText = this.blocker = this.linkUrl = this.reportSummary = '';
+    this.reportStates = {};
+    this.reportEvidence = {};
     void this.reload().then(() => {
       const item = this.item();
-      if (!item) return;
+      if (!item || key !== this.key()) return;
       this.follow(item.project_key);
+      // The filter reads the key now shown, not the one this stream started with.
       this.stopStream = this.live.streamMessages(item.project_key, event => {
-        if (!event.message?.item || event.message.item === item.key) this.refresh.call();
-      });
+        if (!event.message?.item || event.message.item === this.key()) this.refresh.call();
+      }, undefined, () => this.refresh.call());
     });
   }
 
@@ -293,14 +326,20 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
   }
 
   protected async reload(): Promise<void> {
-    const key = this.route.snapshot.paramMap.get('key') ?? '';
+    const key = this.key();
+    if (!key) return;
     try {
       const item = await this.api.get<ItemView>(key, 'full');
-      const messages = await this.api.messages(item.project_key, { item: item.key, limit: 100 });
-      const evidence = await this.api.githubEvidence(item.project_key, item.key);
+      const [messages, evidence, changes] = await Promise.all([
+        this.api.messages(item.project_key, { item: item.key, limit: 100 }),
+        this.api.githubEvidence(item.project_key, item.key),
+        this.api.itemChanges(item.project_key, item.key)
+      ]);
+      if (key !== this.key()) return;
       this.item.set(item);
       this.messages.set(messages.items);
       this.evidence.set(evidence);
+      this.itemFeed.set(changes);
       for (const criterion of item.acceptance_criteria ?? []) this.reportStates[criterion.id] ??= criterion.state;
     } catch (error) {
       this.error.set(error instanceof WorkApiError ? error : new WorkApiError(0, 'error', String(error)));
@@ -315,8 +354,13 @@ export class WorkItemComponent extends WorkPageBase implements OnInit, OnDestroy
     return !!result;
   }
 
-  setStatus(status: WorkStatus): Promise<boolean> {
-    return this.write({ status }, `Moved to ${status.replace('_', ' ')}.`);
+  async setStatus(status: WorkStatus, select?: HTMLSelectElement): Promise<boolean> {
+    const item = this.item()!;
+    if (status === item.status) return true;
+    const done = await this.write({ status }, `Moved to ${status.replace('_', ' ')}.`);
+    // A refused move leaves the select showing the item's real status, not the one that was tried.
+    if (!done && select) select.value = item.status;
+    return done;
   }
 
   async save(fields: Record<string, unknown>): Promise<void> {

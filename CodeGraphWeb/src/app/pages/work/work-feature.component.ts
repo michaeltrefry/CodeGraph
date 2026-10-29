@@ -2,20 +2,21 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ActivityComponent } from './work-activity';
-import { ErrorComponent, WorkPageBase } from './work-base';
+import { ErrorComponent, KeyHolder, WorkPageBase } from './work-base';
 import { DependencyGraphComponent } from './work-dependency-graph.component';
 import { DialogComponent, FeatureFormComponent, ItemFormComponent } from './work-forms';
 import { featureProgress } from './work-graph';
+import { SavePointsComponent } from './work-savepoints';
 import { ActorComponent, AgoPipe, StatusComponent } from './work-shared';
 import { FeatureView, ItemView, PlanPreview, WORK_STATUSES, WorkApiError, WorkStatus } from './work.models';
 
-type Tab = 'board' | 'graph' | 'progress' | 'plan';
+type Tab = 'board' | 'graph' | 'progress' | 'docs' | 'plan';
 
 /** Feature: board with drag to move, dependency graph, progress, and re-planning (sync_plan). */
 @Component({
   selector: 'app-work-feature',
   standalone: true,
-  imports: [FormsModule, RouterLink, ActorComponent, AgoPipe, StatusComponent, ErrorComponent, DependencyGraphComponent, DialogComponent, FeatureFormComponent, ItemFormComponent, ActivityComponent],
+  imports: [FormsModule, RouterLink, ActorComponent, AgoPipe, StatusComponent, ErrorComponent, DependencyGraphComponent, DialogComponent, FeatureFormComponent, ItemFormComponent, ActivityComponent, SavePointsComponent],
   template: `
     <div class="wrk-page">
       @if (feature(); as f) {
@@ -65,8 +66,8 @@ type Tab = 'board' | 'graph' | 'progress' | 'plan';
                         <div>{{ item.title }}</div>
                         @if (item.claim) { <div class="wrk-sub">claimed by <wrk-actor [actor]="{ name: item.claim.holder, session_id: item.claim.session_id }" /></div> }
                         <label class="wrk-sr" [attr.for]="'move-' + item.key">Move {{ item.key }} to</label>
-                        <select class="wrk-input" [id]="'move-' + item.key" [ngModel]="item.status" (ngModelChange)="move(item, $event)" style="font-size:11px;padding:2px 4px">
-                          @for (s of statuses; track s) { <option [value]="s">{{ s.replace('_', ' ') }}</option> }
+                        <select class="wrk-input" [id]="'move-' + item.key" [value]="item.status" (change)="move(item, $any($event.target).value, $any($event.target))" style="font-size:11px;padding:2px 4px">
+                          @for (s of statuses; track s) { <option [value]="s" [selected]="s === item.status">{{ s.replace('_', ' ') }}</option> }
                         </select>
                       </article>
                     }
@@ -110,6 +111,39 @@ type Tab = 'board' | 'graph' | 'progress' | 'plan';
               </section>
               <section class="wrk-card" aria-labelledby="wrk-h-fa"><h2 id="wrk-h-fa">Recent activity</h2><wrk-activity [entries]="featureFeed()" [limit]="15" /></section>
             </div>
+          }
+          @case ('docs') {
+            <section class="wrk-card" aria-labelledby="wrk-h-docs">
+              <h2 id="wrk-h-docs">Documents <span class="wrk-count">{{ f.documents.length }}</span></h2>
+              @if (f.documents.length === 0) { <div class="wrk-empty">No documents.</div> }
+              @for (doc of f.documents; track doc.id) {
+                <article class="wrk-msg" style="margin-bottom:8px" data-testid="document">
+                  @if (editingDoc() === doc.id) {
+                    <div class="wrk-form">
+                      <input class="wrk-input" aria-label="Document title" [(ngModel)]="docTitle" />
+                      <textarea class="wrk-input" rows="8" aria-label="Document body" [(ngModel)]="docBody"></textarea>
+                      <div class="wrk-row"><button type="button" class="wrk-btn wrk-btn-primary" [disabled]="busy() || !docTitle.trim()" (click)="saveDocument(doc.id)">Save document</button>
+                        <button type="button" class="wrk-btn wrk-btn-quiet" (click)="editingDoc.set('')">Cancel</button></div>
+                    </div>
+                  } @else {
+                    <div class="wrk-row"><strong class="wrk-grow">{{ doc.title }}</strong><button type="button" class="wrk-btn" (click)="editDocument(doc)">Edit</button></div>
+                    <div class="wrk-pre">{{ doc.body }}</div>
+                  }
+                </article>
+              }
+              <details class="wrk-acquire" style="margin-top:10px">
+                <summary>Add a document</summary>
+                <form class="wrk-form" (ngSubmit)="addDocument()">
+                  <label>Title <input class="wrk-input" name="ntitle" [(ngModel)]="newDocTitle" /></label>
+                  <label>Body <textarea class="wrk-input" name="nbody" rows="6" [(ngModel)]="newDocBody"></textarea></label>
+                  <div class="wrk-row"><button type="submit" class="wrk-btn wrk-btn-primary" [disabled]="busy() || !newDocTitle.trim() || !newDocBody.trim()">Add document</button></div>
+                </form>
+              </details>
+            </section>
+            <section class="wrk-card" style="margin-top:14px" aria-labelledby="wrk-h-fsp">
+              <h2 id="wrk-h-fsp">Save points</h2>
+              <wrk-save-points (saved)="savePoint($event)" />
+            </section>
           }
           @case ('plan') {
             <section class="wrk-card" aria-labelledby="wrk-h-plan">
@@ -156,9 +190,17 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
     { id: 'board', label: 'Board' },
     { id: 'graph', label: 'Dependency graph' },
     { id: 'progress', label: 'Progress' },
+    { id: 'docs', label: 'Documents' },
     { id: 'plan', label: 'Re-plan' }
   ];
   readonly tab = signal<Tab>('board');
+  readonly key = signal('');
+  readonly editingDoc = signal('');
+  private readonly itemKey = new KeyHolder('ui-item');
+  docTitle = '';
+  docBody = '';
+  newDocTitle = '';
+  newDocBody = '';
   readonly feature = signal<FeatureView | null>(null);
   readonly items = signal<ItemView[]>([]);
   readonly over = signal('');
@@ -196,9 +238,25 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   ngOnInit(): void {
+    this.onKey(this.route, key => this.open(key));
+  }
+
+  /** Shows the feature of the route with a clean slate (the component is reused when only the key changes). */
+  private open(key: string): void {
+    this.unfollow();
+    this.key.set(key);
+    this.feature.set(null);
+    this.items.set([]);
+    this.feed.set([]);
+    this.previewed.set(null);
+    this.planJson = '';
+    this.dialog.set('');
+    this.editingDoc.set('');
+    this.error.set(null);
+    this.notice.set('');
     void this.reload().then(() => {
       const project = this.feature()?.project_key;
-      if (project) this.follow(project);
+      if (project && key === this.key()) this.follow(project);
     });
   }
 
@@ -220,10 +278,12 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   protected async reload(): Promise<void> {
-    const key = this.route.snapshot.paramMap.get('key') ?? '';
+    const key = this.key();
+    if (!key) return;
     try {
       const feature = await this.api.get<FeatureView>(key);
-      const items = await this.api.items(feature.project_key, { feature: feature.key });
+      const [items] = await Promise.all([this.api.items(feature.project_key, { feature: feature.key }), this.loadRecent(feature.project_key, 60)]);
+      if (key !== this.key()) return;
       this.feature.set(feature);
       this.items.set(items);
     } catch (error) {
@@ -256,11 +316,13 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
   }
 
   /** update_work with expected_version: a conflict is shown with the current state, and the board reloads. */
-  async move(item: ItemView, status: WorkStatus): Promise<void> {
+  async move(item: ItemView, status: WorkStatus, select?: HTMLSelectElement): Promise<void> {
     if (item.status === status) return;
     this.moving.set(item.key);
     const result = await this.run(() => this.api.update(item.key, { expected_version: item.version, status }), `${item.key} moved to ${status.replace('_', ' ')}.`);
     this.moving.set('');
+    // A refused move leaves the select showing the item's real status, not the one that was tried.
+    if (!result && select) select.value = item.status;
     if (result?.item) this.items.update(items => items.map(candidate => (candidate.key === item.key ? result.item! : candidate)));
     else await this.reload();
   }
@@ -277,8 +339,43 @@ export class WorkFeatureComponent extends WorkPageBase implements OnInit, OnDest
 
   async createItem(fields: Record<string, unknown>): Promise<void> {
     const feature = this.feature()!;
-    if (await this.run(() => this.api.create({ project: feature.project_key, item: { ...fields, feature: feature.key } }), 'Item created.')) {
+    if (await this.run(() => this.api.create({ project: feature.project_key, item: { ...fields, feature: feature.key }, idempotency_key: this.itemKey.key }), 'Item created.')) {
+      this.itemKey.reset();
       this.dialog.set('');
+      await this.reload();
+    }
+  }
+
+  editDocument(doc: { id: string; title: string; body: string }): void {
+    this.docTitle = doc.title;
+    this.docBody = doc.body;
+    this.editingDoc.set(doc.id);
+  }
+
+  /** update_work update_documents: only what changed. */
+  async saveDocument(id: string): Promise<void> {
+    const feature = this.feature()!;
+    const before = feature.documents.find(doc => doc.id === id);
+    const patch: Record<string, unknown> = { id };
+    if (before?.title !== this.docTitle.trim()) patch['title'] = this.docTitle.trim();
+    if (before?.body !== this.docBody) patch['body'] = this.docBody;
+    if (await this.run(() => this.api.update(feature.key, { expected_version: feature.version, update_documents: [patch] }), 'Document saved.')) {
+      this.editingDoc.set('');
+      await this.reload();
+    }
+  }
+
+  /** update_work save points (decisions, attempts, corrections, findings) on the feature. */
+  async savePoint(fields: Record<string, unknown>): Promise<void> {
+    const feature = this.feature()!;
+    if (await this.run(() => this.api.update(feature.key, { expected_version: feature.version, ...fields }), 'Save point recorded.')) await this.reload();
+  }
+
+  /** update_work add_documents. */
+  async addDocument(): Promise<void> {
+    const feature = this.feature()!;
+    if (await this.run(() => this.api.update(feature.key, { expected_version: feature.version, add_documents: [{ title: this.newDocTitle.trim(), body: this.newDocBody }] }), 'Document added.')) {
+      this.newDocTitle = this.newDocBody = '';
       await this.reload();
     }
   }

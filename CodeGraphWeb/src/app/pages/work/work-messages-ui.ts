@@ -1,7 +1,7 @@
 import { Component, computed, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { ErrorComponent, WorkPageBase, idempotencyKey } from './work-base';
+import { ErrorComponent, KeyHolder, WorkPageBase } from './work-base';
 import { ActorComponent, AgoPipe } from './work-shared';
 import { MESSAGE_KINDS, MessageKind, MessageView } from './work.models';
 
@@ -70,6 +70,7 @@ export class MessageListComponent extends WorkPageBase {
   readonly changed = output<void>();
   readonly replying = signal<{ message: MessageView; mode: 'answered' | 'declined' | 'reply' } | null>(null);
   reply = '';
+  private readonly replyKey = new KeyHolder('ui-reply');
 
   constructor() {
     super();
@@ -90,12 +91,13 @@ export class MessageListComponent extends WorkPageBase {
 
   open(message: MessageView, mode: 'answered' | 'declined' | 'reply'): void {
     this.reply = '';
+    this.replyKey.reset();
     this.replying.set({ message, mode });
   }
 
   async send(message: MessageView): Promise<void> {
     const mode = this.replying()?.mode ?? 'reply';
-    const body: Record<string, unknown> = { project: this.project(), body: this.reply.trim(), in_reply_to: message.id, idempotency_key: idempotencyKey('ui-reply') };
+    const body: Record<string, unknown> = { project: this.project(), body: this.reply.trim(), in_reply_to: message.id, idempotency_key: this.replyKey.key };
     if (message.item) body['item'] = message.item;
     else if (message.feature) body['feature'] = message.feature;
     else if (message.resource) body['resource'] = message.resource;
@@ -104,6 +106,7 @@ export class MessageListComponent extends WorkPageBase {
     if (mode !== 'reply') body['resolves'] = mode;
     const done = await this.run(() => this.api.post(body));
     if (done) {
+      this.replyKey.reset();
       this.replying.set(null);
       this.changed.emit();
     }
@@ -174,6 +177,7 @@ export class MessageComposerComponent extends WorkPageBase {
   target = '';
   body = '';
   blocking = false;
+  private readonly postKey = new KeyHolder('ui-post');
 
   constructor() {
     super();
@@ -188,7 +192,7 @@ export class MessageComposerComponent extends WorkPageBase {
   }
 
   async send(): Promise<void> {
-    const request: Record<string, unknown> = { project: this.project(), body: this.body.trim(), kind: this.kind, idempotency_key: idempotencyKey('ui-post') };
+    const request: Record<string, unknown> = { project: this.project(), body: this.body.trim(), kind: this.kind, idempotency_key: this.postKey.key };
     const target = this.target.trim();
     if (this.item()) request['item'] = this.item();
     if (this.channel === 'item' && !this.item()) request['item'] = target;
@@ -201,6 +205,7 @@ export class MessageComposerComponent extends WorkPageBase {
     }
     const done = await this.run(() => this.api.post(request), 'Posted.');
     if (done) {
+      this.postKey.reset();
       this.body = '';
       this.posted.emit();
     }

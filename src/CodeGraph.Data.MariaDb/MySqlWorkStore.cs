@@ -890,6 +890,28 @@ public sealed partial class MySqlWorkStore(
         return rows.Select(ToView).ToList();
     }
 
+    public async Task<IReadOnlyList<ChangeView>> ReadRecentChangesAsync(Guid projectId, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
+            "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
+            "COALESCE(s.harness, c.actor_harness) AS harness, COALESCE(s.model, c.actor_model) AS model, COALESCE(s.host, c.actor_host) AS host, c.changes, c.created_at " +
+            "FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id WHERE c.project_id = @projectId ORDER BY c.sequence DESC LIMIT @limit",
+            new { projectId, limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize) }, cancellationToken: ct));
+        return rows.Select(ToView).Reverse().ToList();
+    }
+
+    public async Task<IReadOnlyList<ChangeView>> ReadEntityChangesAsync(Guid entityId, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
+            "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
+            "COALESCE(s.harness, c.actor_harness) AS harness, COALESCE(s.model, c.actor_model) AS model, COALESCE(s.host, c.actor_host) AS host, c.changes, c.created_at " +
+            "FROM work_changes c LEFT JOIN work_sessions s ON s.id = c.actor_session_id WHERE c.entity_id = @entityId ORDER BY c.sequence DESC LIMIT @limit",
+            new { entityId, limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize) }, cancellationToken: ct));
+        return rows.Select(ToView).Reverse().ToList();
+    }
+
     private static ChangeView ToView(ChangeRow row)
     {
         using var changes = JsonDocument.Parse(row.Changes);

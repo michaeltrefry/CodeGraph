@@ -1,7 +1,9 @@
 import { Component, DestroyRef, Injectable, computed, inject, input, output, signal } from '@angular/core';
 import { WorkApiService } from './work-api.service';
-import { ProjectWatch, WorkLiveService, withDebounce } from './work-live.service';
-import { ProjectView, WorkApiError } from './work.models';
+import { ProjectWatch, WatchLease, WorkLiveService, withDebounce } from './work-live.service';
+import { ActivatedRoute } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ProjectView, WorkApiError, WorkChange } from './work.models';
 
 const PROJECT_KEY = 'codegraph.work.project';
 
@@ -68,10 +70,11 @@ export abstract class WorkPageBase {
   readonly busy = signal(false);
   /** The change feed being followed, if any (a signal so templates and computeds can read it). */
   readonly watched = signal<ProjectWatch | undefined>(undefined);
-  /** Every change of the followed project read so far, oldest first. */
-  readonly feed = computed(() => this.watched()?.entries() ?? []);
+  /** The newest writes of the followed project, oldest first, read with loadRecent. */
+  readonly feed = signal<WorkChange[]>([]);
   readonly feedError = computed(() => this.watched()?.error() ?? '');
   private unsubscribe?: () => void;
+  private lease?: WatchLease;
   private reloader = withDebounce(() => void this.reload());
 
   protected constructor() {
@@ -83,7 +86,8 @@ export abstract class WorkPageBase {
   /** Reloads (debounced) whenever the project's change feed has news. */
   protected follow(project: string): ProjectWatch {
     this.unfollow();
-    const watch = this.live.watch(project);
+    this.lease = this.live.acquire(project);
+    const watch = this.lease.watch;
     this.watched.set(watch);
     this.unsubscribe = watch.onChange(() => this.reloader.call());
     return watch;
@@ -91,9 +95,23 @@ export abstract class WorkPageBase {
 
   protected unfollow(): void {
     this.unsubscribe?.();
-    this.watched()?.stop();
+    this.lease?.release();
+    this.lease = undefined;
     this.watched.set(undefined);
     this.reloader.cancel();
+  }
+
+  /** Reads the project's newest writes into feed (a targeted read, not the whole history). */
+  protected async loadRecent(project: string, limit = 40): Promise<void> {
+    this.feed.set(await this.api.recentChanges(project, limit));
+  }
+
+  /**
+   * Runs handler for the route's key now and whenever it changes (the router reuses a component
+   * when only the parameter differs: an item link from an item page, a created project's page).
+   */
+  protected onKey(route: ActivatedRoute, handler: (key: string) => void): void {
+    route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => handler(params.get('key') ?? ''));
   }
 
   /** Runs a write; a refusal is shown, not thrown. Returns undefined when it was refused. */
@@ -111,6 +129,24 @@ export abstract class WorkPageBase {
     } finally {
       this.busy.set(false);
     }
+  }
+}
+
+/**
+ * One idempotency key per attempt at a create: kept while the form stays open and is retried (a
+ * retry after a lost response repeats the key and creates nothing twice), dropped once it succeeded.
+ */
+export class KeyHolder {
+  private current?: string;
+
+  constructor(private readonly prefix: string) {}
+
+  get key(): string {
+    return (this.current ??= idempotencyKey(this.prefix));
+  }
+
+  reset(): void {
+    this.current = undefined;
   }
 }
 

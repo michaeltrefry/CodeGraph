@@ -25,7 +25,7 @@ type Channel = '' | 'project' | 'feature' | 'item' | 'resource' | 'session' | 'h
         <span class="wrk-grow"></span>
         <a class="wrk-btn" routerLink="/work">Now</a>
       </div>
-      <wrk-error [error]="error()" (reload)="reload()" />
+      <wrk-error [error]="error()" (reload)="load(true)" />
 
       @if (ctx.selected()) {
         <div class="wrk-grid-2">
@@ -36,22 +36,22 @@ type Channel = '' | 'project' | 'feature' | 'item' | 'resource' | 'session' | 'h
               }
             </div>
             <div class="wrk-filters">
-              <label><input type="checkbox" [ngModel]="openOnly()" (ngModelChange)="openOnly.set($event); reload()" /> open questions and requests only</label>
+              <label><input type="checkbox" [ngModel]="openOnly()" (ngModelChange)="openOnly.set($event); load(true)" /> open questions and requests only</label>
               @if (channel() === 'item' || channel() === 'feature' || channel() === 'resource') {
-                <input class="wrk-input" [attr.aria-label]="channel() + ' filter'" [placeholder]="channel() === 'item' ? 'Item key, e.g. SW-12' : channel() === 'feature' ? 'Feature key, e.g. SW-F2' : 'Resource name'" [(ngModel)]="subject" (change)="reload()" />
+                <input class="wrk-input" [attr.aria-label]="channel() + ' filter'" [placeholder]="channel() === 'item' ? 'Item key, e.g. SW-12' : channel() === 'feature' ? 'Feature key, e.g. SW-F2' : 'Resource name'" [(ngModel)]="subject" (change)="load(true)" />
               }
             </div>
-            <wrk-message-list [messages]="messages()" [project]="ctx.selected()" [acknowledgeable]="channel() === 'human'" empty="No messages in this channel." (changed)="reload()" />
+            <wrk-message-list [messages]="messages()" [project]="ctx.selected()" [acknowledgeable]="channel() === 'human'" empty="No messages in this channel." (changed)="load(true)" />
             @if (more()) { <div class="wrk-row" style="margin-top:8px"><button type="button" class="wrk-btn" (click)="loadMore()">Older messages</button></div> }
           </div>
           <div>
             <section class="wrk-card" aria-labelledby="wrk-h-post">
               <h2 id="wrk-h-post">Post</h2>
-              <wrk-message-composer [project]="ctx.selected()" (posted)="reload()" />
+              <wrk-message-composer [project]="ctx.selected()" (posted)="load(true)" />
             </section>
             <section class="wrk-card" style="margin-top:14px" aria-labelledby="wrk-h-inbox">
               <h2 id="wrk-h-inbox">Human inbox <span class="wrk-count">{{ inbox().length }} unread</span></h2>
-              <wrk-message-list [messages]="inbox()" [project]="ctx.selected()" [acknowledgeable]="true" empty="Nothing unread." (changed)="reload()" />
+              <wrk-message-list [messages]="inbox()" [project]="ctx.selected()" [acknowledgeable]="true" empty="Nothing unread." (changed)="load(true)" />
             </section>
           </div>
         </div>
@@ -100,7 +100,7 @@ export class WorkMessagesComponent extends WorkPageBase implements OnInit, OnDes
   setChannel(channel: Channel): void {
     this.channel.set(channel);
     this.subject = '';
-    void this.reload();
+    void this.load(true);
   }
 
   private switchTo(key: string): void {
@@ -109,8 +109,8 @@ export class WorkMessagesComponent extends WorkPageBase implements OnInit, OnDes
     this.inbox.set([]);
     this.more.set('');
     if (!key) return;
-    this.stopStream = this.live.streamMessages(key, () => this.refresh.call(), state => this.connected.set(state));
-    void this.reload();
+    this.stopStream = this.live.streamMessages(key, () => this.refresh.call(), state => this.connected.set(state), () => this.refresh.call());
+    void this.load(true);
   }
 
   private query(before?: string) {
@@ -127,7 +127,15 @@ export class WorkMessagesComponent extends WorkPageBase implements OnInit, OnDes
     };
   }
 
-  protected async reload(): Promise<void> {
+  protected reload(): Promise<void> {
+    return this.load(false);
+  }
+
+  /**
+   * Reads the first page and the inbox. A refresh from the stream merges what is new at the head of
+   * the pages already loaded; an action, a filter or a channel change starts the list over.
+   */
+  async load(reset: boolean): Promise<void> {
     const key = this.ctx.selected();
     if (!key) return;
     this.error.set(null);
@@ -136,8 +144,13 @@ export class WorkMessagesComponent extends WorkPageBase implements OnInit, OnDes
       return { page, inbox };
     });
     if (result && key === this.ctx.selected()) {
-      this.messages.set(result.page.items);
-      this.more.set(result.page.next_before ?? '');
+      if (reset || this.messages().length === 0) {
+        this.messages.set(result.page.items);
+        this.more.set(result.page.next_before ?? '');
+      } else {
+        const fresh = new Set(result.page.items.map(message => message.id));
+        this.messages.update(current => [...result.page.items, ...current.filter(message => !fresh.has(message.id))]);
+      }
       this.inbox.set(result.inbox.items);
     }
   }

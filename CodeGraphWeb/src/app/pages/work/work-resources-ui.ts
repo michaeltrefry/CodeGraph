@@ -1,7 +1,7 @@
 import { Component, input, output } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
-import { ErrorComponent, WorkPageBase, idempotencyKey } from './work-base';
+import { ErrorComponent, KeyHolder, WorkPageBase } from './work-base';
 import { ActorComponent, AgoPipe } from './work-shared';
 import { HoldView, ResourceView, WORK_PRIORITIES, WorkPriority } from './work.models';
 
@@ -87,6 +87,7 @@ export class ResourcesComponent extends WorkPageBase {
   capacity = 1;
   priority: WorkPriority = 'medium';
   item = '';
+  private readonly acquireKey = new KeyHolder('ui-acquire');
 
   constructor() {
     super();
@@ -103,13 +104,14 @@ export class ResourcesComponent extends WorkPageBase {
       purpose: this.purpose.trim(),
       ttl_seconds: this.ttl,
       priority: this.priority,
-      idempotency_key: idempotencyKey('ui-acquire')
+      idempotency_key: this.acquireKey.key
     };
     if (this.wait > 0) body['wait_seconds'] = this.wait;
     if (this.capacity > 1) body['capacity'] = this.capacity;
     if (this.item.trim()) body['item'] = this.item.trim();
     const result = await this.run(() => this.api.acquire(body));
     if (result) {
+      this.acquireKey.reset();
       this.notice.set(result.outcome === 'granted' ? `Granted ${result.resource.name}.` : `${result.resource.name} is held; you are queued.`);
       this.changed.emit();
     }

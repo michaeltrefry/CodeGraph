@@ -124,6 +124,60 @@ public sealed class WorkViewsRestMariaDbTests(WorkDatabase db) : IClassFixture<W
     }
 
     [Fact]
+    public async Task Resources_are_paged_and_an_items_changes_are_read_on_their_own()
+    {
+        var project = await db.NewProjectAsync("VP");
+        foreach (var name in new[] { "a-gpu", "b-gpu", "c-gpu" })
+            await db.CallAsync(WorkTools.Acquire, new { project, resource = name, purpose = "p", ttl_seconds = 60 }, "michael");
+
+        var (_, first) = await Get($"/api/work/projects/{project}/resources?limit=2");
+        first.GetProperty("items").GetArrayLength().ShouldBe(2);
+        var next = first.GetProperty("next_after").GetString()!;
+        next.ShouldBe("b-gpu");
+        var (_, second) = await Get($"/api/work/projects/{project}/resources?limit=2&after={next}");
+        second.GetProperty("items").GetArrayLength().ShouldBe(1);
+        second.TryGetProperty("next_after", out _).ShouldBeFalse();
+
+        var item = (await db.NewItemAsync(project, "Moves")).GetProperty("key").GetString()!;
+        var other = (await db.NewItemAsync(project, "Other")).GetProperty("key").GetString()!;
+        var version = (await db.CallAsync(WorkTools.GetWork, new { id = item })).GetProperty("version").GetInt64();
+        await db.UpdateAsync(item, new { expected_version = version, status = "in_progress" }, "michael");
+        await db.UpdateAsync(other, new { expected_version = 1, status = "in_progress" }, "michael");
+
+        var (status, feed) = await Get($"/api/work/projects/{project}/items/{item}/changes");
+        status.ShouldBe(200);
+        var entries = feed.GetProperty("items").EnumerateArray().ToList();
+        entries.Select(entry => entry.GetProperty("entity_key").GetString()).Distinct().ShouldBe([item]);
+        entries.Select(entry => entry.GetProperty("kind").GetString()).ShouldBe(["item_created", "item_updated"]);
+        var (_, recent) = await Get($"/api/work/projects/{project}/recent-changes?limit=2");
+        recent.GetProperty("items").EnumerateArray().Select(entry => entry.GetProperty("entity_key").GetString()).ShouldBe([item, other]);
+        var (_, newest) = await Get($"/api/work/projects/{project}/items/{item}/changes?limit=1");
+        newest.GetProperty("items").EnumerateArray().Single().GetProperty("kind").GetString().ShouldBe("item_updated");
+    }
+
+    [Theory]
+    [InlineData("messages?limit=0")]
+    [InlineData("messages?limit=201")]
+    [InlineData("messages?limit=")]
+    [InlineData("messages?limit=abc")]
+    [InlineData("messages?open=maybe")]
+    [InlineData("messages?open=")]
+    [InlineData("sessions?limit=-1")]
+    [InlineData("sessions?live_only=nope")]
+    [InlineData("resources?limit=500")]
+    [InlineData("resources?after=")]
+    public async Task Bad_query_values_are_refused_in_the_work_error_envelope_not_clamped(string route)
+    {
+        var project = await db.NewProjectAsync("VQ");
+        var (status, body) = await Get($"/api/work/projects/{project}/{route}");
+        status.ShouldBe(400);
+        body.GetProperty("code").GetString().ShouldBe("invalid_argument");
+        body.GetProperty("message").GetString().ShouldNotBeNullOrWhiteSpace();
+        if (route.Contains("limit=0") || route.Contains("limit=201") || route.Contains("limit=500") || route.Contains("limit=-1"))
+            body.GetProperty("message").GetString()!.ShouldStartWith("limit must be 1 to");
+    }
+
+    [Fact]
     public async Task The_listings_are_strict_and_for_signed_in_people_only()
     {
         var project = await db.NewProjectAsync("VX");

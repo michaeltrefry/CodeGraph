@@ -76,12 +76,20 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
   };
 
   const layerOf = memo<number>((item, recurse) => blockersOf(item).reduce((deepest, blocker) => Math.max(deepest, recurse(blocker) + 1), 0), 0);
+  // A blocker outside the feature (another feature's item) is known only by the status the item lists for it.
+  const outsideUnfinished = (item: ItemView): boolean => item.blocked_by.some(dependency => !byKey.has(dependency.key) && !isFinished(dependency.status));
   const waveOf = memo<number>((item, recurse) => {
     const unfinished = blockersOf(item).filter(blocker => !isFinished(blocker.status));
-    return unfinished.length === 0 ? 0 : Math.max(...unfinished.map(recurse)) + 1;
+    const inside = unfinished.length === 0 ? 0 : Math.max(...unfinished.map(recurse)) + 1;
+    return Math.max(inside, outsideUnfinished(item) ? 1 : 0);
   }, 0);
+  // Stuck: nothing will free the item until the plan changes: a blocker (in this feature or not) is
+  // closed, the server says a prerequisite was cancelled, or a blocker is itself stuck.
   const stuckOf = memo<boolean>(
-    (item, recurse) => blockersOf(item).some(blocker => blocker.status === 'closed' || (!isFinished(blocker.status) && recurse(blocker))),
+    (item, recurse) =>
+      item.blocked_reason === 'cancelled_prerequisite' ||
+      item.blocked_by.some(dependency => dependency.status === 'closed') ||
+      blockersOf(item).some(blocker => blocker.status === 'closed' || (!isFinished(blocker.status) && recurse(blocker))),
     false
   );
   // The longest chain of unfinished, not stuck items ending at an item (its length and predecessor).
@@ -90,7 +98,7 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
     for (const blocker of blockersOf(item)) {
       if (isFinished(blocker.status) || stuckOf(blocker)) continue;
       const candidate = recurse(blocker).length + 1;
-      if (candidate > best.length || (candidate === best.length && best.previous !== undefined && blocker.key < best.previous)) {
+      if (candidate > best.length || (candidate === best.length && best.previous !== undefined && compareKeys(blocker.key, best.previous) < 0)) {
         best = { length: candidate, previous: blocker.key };
       }
     }
@@ -101,7 +109,7 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
   let tail: ItemView | undefined;
   for (const item of candidates) {
     const length = chainOf(item).length;
-    if (!tail || length > chainOf(tail).length || (length === chainOf(tail).length && item.key < tail.key)) tail = item;
+    if (!tail || length > chainOf(tail).length || (length === chainOf(tail).length && compareKeys(item.key, tail.key) < 0)) tail = item;
   }
   const criticalPath: string[] = [];
   // A cycle (refused by the server) must not loop here: each key is visited once.
@@ -109,7 +117,7 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
   const critical = new Set(criticalPath);
 
   const nodes: GraphNode[] = items.map(item => {
-    const unfinishedBlockers = blockersOf(item).filter(blocker => !isFinished(blocker.status));
+    const unfinishedBlockers = item.blocked_by.filter(dependency => !isFinished(dependency.status));
     const stuck = stuckOf(item) && !isFinished(item.status);
     return {
       key: item.key,
@@ -169,7 +177,8 @@ export function buildWorkGraph(items: readonly ItemView[]): WorkGraph {
 
   const waves = new Map<number, string[]>();
   for (const node of nodes) {
-    if (node.finished || node.stuck) continue;
+    // Not runnable, so not in a set: finished, stuck, waiting on a person, or (in the first wave) not ready.
+    if (node.finished || node.stuck || node.awaitingHuman || (node.wave === 0 && !node.ready)) continue;
     waves.set(node.wave, [...(waves.get(node.wave) ?? []), node.key]);
   }
   const parallelSets = [...waves.entries()]

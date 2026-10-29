@@ -7,6 +7,8 @@ import {
   FeatureView,
   FindResult,
   GitHubEvidence,
+  KnowledgeEntry,
+  KnowledgeImportResult,
   HoldView,
   ItemView,
   MessageView,
@@ -14,6 +16,7 @@ import {
   ProjectView,
   ResourceView,
   SessionView,
+  WorkChange,
   WorkApiError,
   WorkErrorBody
 } from './work.models';
@@ -107,8 +110,27 @@ export class WorkApiService {
     return (await this.request<{ items: SessionView[] }>('GET', `/projects/${encodeURIComponent(project)}/sessions`, undefined, { live_only: liveOnly })).items;
   }
 
+  /** Every resource of the project: the route is paged by name, so this follows next_after. */
   async resources(project: string): Promise<ResourceView[]> {
-    return (await this.request<{ items: ResourceView[] }>('GET', `/projects/${encodeURIComponent(project)}/resources`)).items;
+    const all: ResourceView[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < 50; page++) {
+      const result = await this.request<{ items: ResourceView[]; next_after?: string }>('GET', `/projects/${encodeURIComponent(project)}/resources`, undefined, { limit: 200, after });
+      all.push(...result.items);
+      after = result.next_after;
+      if (!after) break;
+    }
+    return all;
+  }
+
+  /** The newest writes of the project, oldest first. */
+  async recentChanges(project: string, limit = 40): Promise<WorkChange[]> {
+    return (await this.request<{ items: WorkChange[] }>('GET', `/projects/${encodeURIComponent(project)}/recent-changes`, undefined, { limit })).items;
+  }
+
+  /** The newest change feed entries of one item, oldest first (the item timeline). */
+  async itemChanges(project: string, item: string, limit = 200): Promise<WorkChange[]> {
+    return (await this.request<{ items: WorkChange[] }>('GET', `/projects/${encodeURIComponent(project)}/items/${encodeURIComponent(item)}/changes`, undefined, { limit })).items;
   }
 
   messages(project: string, filters: { channel?: string; item?: string; feature?: string; resource?: string; open?: boolean; toHuman?: boolean; before?: string; limit?: number } = {}):
@@ -181,7 +203,11 @@ export class WorkApiService {
     return this.request('POST', '/knowledge', body);
   }
 
-  recall(body: Record<string, unknown>): Promise<{ items: import('./work.models').KnowledgeRow[]; next_cursor?: string }> {
+  recall(body: Record<string, unknown>): Promise<{ items: KnowledgeEntry[]; next_cursor?: string }> {
     return this.request('POST', '/knowledge/recall', body);
+  }
+
+  importKnowledge(body: Record<string, unknown>): Promise<KnowledgeImportResult> {
+    return this.request('POST', '/knowledge/import', body);
   }
 }

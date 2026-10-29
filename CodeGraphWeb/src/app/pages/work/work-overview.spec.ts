@@ -1,4 +1,5 @@
 import { signal } from '@angular/core';
+import { of } from 'rxjs';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { describe, expect, it, vi } from 'vitest';
@@ -21,7 +22,7 @@ const resource: ResourceView = { id: 'r', project: 'W', name: 'gpu-0', capacity:
 const question: MessageView = { id: 'q', project_key: 'W', channel: 'item', kind: 'question', from: { name: 'michael', kind: 'session', session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac-studio' }, body: 'Which key should I use?', created_at: '2026-01-02T00:02:00Z', state: 'open', blocking: true, to_human: true, item: 'W-3' };
 const change: WorkChange = { sequence: 9, project_id: 'p', project_key: 'W', entity: 'item', entity_id: 'i', entity_key: 'W-3', kind: 'item_updated', actor: { name: 'michael', kind: 'session', session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac-studio' }, changes: [{ field: 'status', old: 'ready', new: 'in_progress' }], created_at: '2026-01-02T00:03:00Z' };
 
-const fakeWatch = () => ({ entries: signal([change]), loading: signal(false), error: signal(''), onChange: () => () => undefined, stop: () => undefined });
+const fakeWatch = () => ({ loading: signal(false), error: signal(''), onChange: () => () => undefined, stop: () => undefined });
 
 async function settle(fixture: { detectChanges(): void }): Promise<void> {
   for (let round = 0; round < 4; round++) {
@@ -34,8 +35,8 @@ function providers(api: object, key = '') {
   return [
     provideRouter([]),
     { provide: WorkApiService, useValue: api },
-    { provide: WorkLiveService, useValue: { watch: fakeWatch, streamMessages: vi.fn(() => () => undefined) } },
-    { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ key }) } } }
+    { provide: WorkLiveService, useValue: { acquire: () => ({ watch: fakeWatch(), release: () => undefined }), streamMessages: vi.fn(() => () => undefined) } },
+    { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ key }) }, paramMap: of(convertToParamMap({ key })) } }
   ];
 }
 
@@ -48,7 +49,8 @@ describe('WorkNowComponent', () => {
       sessions: vi.fn().mockResolvedValue([session]),
       resources: vi.fn().mockResolvedValue([resource]),
       messages: vi.fn().mockResolvedValue({ items: [question] }),
-      items: vi.fn().mockResolvedValue([held])
+      items: vi.fn().mockResolvedValue([held]),
+      recentChanges: vi.fn().mockResolvedValue([change])
     };
     await TestBed.configureTestingModule({ imports: [WorkNowComponent], providers: providers(api) }).compileComponents();
     const fixture = TestBed.createComponent(WorkNowComponent);
@@ -81,6 +83,7 @@ describe('WorkProjectComponent', () => {
       get: vi.fn().mockResolvedValue(project),
       features: vi.fn().mockResolvedValue([feature]),
       messages: vi.fn().mockResolvedValue({ items: [] }),
+      recentChanges: vi.fn().mockResolvedValue([change]),
       recall: vi.fn().mockResolvedValue({ items: [{ id: 'k', kind: 'decision', summary: 'Use long-poll', confidence: 'high', version: 1 }] })
     };
     await TestBed.configureTestingModule({ imports: [WorkProjectComponent], providers: providers(api, 'W') }).compileComponents();

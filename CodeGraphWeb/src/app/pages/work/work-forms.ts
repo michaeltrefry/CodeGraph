@@ -51,6 +51,7 @@ export class DialogComponent {
         <label>Repository <input class="wrk-input" name="repository" [(ngModel)]="repository" /></label>
         <label>Feature <input class="wrk-input" name="feature" [(ngModel)]="feature" placeholder="SW-F2" /></label>
         <label>Labels (comma separated) <input class="wrk-input" name="labels" [(ngModel)]="labels" /></label>
+        <label style="flex:0 0 90px">Order <input class="wrk-input" type="number" name="order" min="0" [(ngModel)]="order" /></label>
       </div>
       <label>Goal <textarea class="wrk-input" name="goal" rows="2" [(ngModel)]="goal"></textarea></label>
       <label>Acceptance criteria (one per line, at most 3) <textarea class="wrk-input" name="criteria" rows="3" [(ngModel)]="criteria"></textarea></label>
@@ -87,6 +88,7 @@ export class ItemFormComponent implements OnInit {
   criteria = '';
   inherits = '';
   blockedBy = '';
+  order: number | null = null;
   touches = '';
   description = '';
 
@@ -106,6 +108,7 @@ export class ItemFormComponent implements OnInit {
     this.inherits = (item.inherits ?? []).join(', ');
     this.touches = (item.touches ?? []).join('\n');
     this.description = item.description ?? '';
+    this.order = item.order;
   }
 
   submit(): void {
@@ -124,7 +127,8 @@ export class ItemFormComponent implements OnInit {
       acceptance_criteria: criteria,
       inherits: csv(this.inherits),
       touches: lines(this.touches),
-      description: this.description.trim() || undefined
+      description: this.description.trim() || undefined,
+      order: this.order === null || this.order === undefined || (this.order as unknown) === '' ? undefined : Number(this.order)
     };
     if (!item) {
       all['blocked_by'] = csv(this.blockedBy);
@@ -135,7 +139,7 @@ export class ItemFormComponent implements OnInit {
     const before: Record<string, unknown> = {
       title: item.title, type: item.type, priority: item.priority, status: item.status, repository: item.repository, feature: item.feature?.key,
       labels: item.labels, goal: item.goal, acceptance_criteria: existing.map(criterion => ({ id: criterion.id, text: criterion.text })),
-      inherits: item.inherits ?? [], touches: item.touches ?? [], description: item.description
+      inherits: item.inherits ?? [], touches: item.touches ?? [], description: item.description, order: item.order
     };
     const changed: Record<string, unknown> = {};
     for (const [name, value] of Object.entries(all)) {
