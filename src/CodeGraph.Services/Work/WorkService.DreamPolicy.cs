@@ -11,6 +11,8 @@ public sealed partial class WorkService
         if(arguments.TryGetProperty("session_id",out _)) DreamPolicy.Refuse(actor,"use a different session");
         if(tool==WorkTools.Record)
         {
+            if(arguments.TryGetProperty("entry",out var input)&&(!input.TryGetProperty("confidence",out var confidence)||confidence.ValueKind==JsonValueKind.Null))
+                throw new WorkException(WorkErrorCodes.Forbidden,"Dreamer record requires explicit confidence.");
             var request=WorkJson.Parse<RecordRequest>(arguments,tool);
             if(request.Retract is not null||request.Acknowledge is not null||request.Unmerge is not null) DreamPolicy.Refuse(actor,"retract, acknowledge or unmerge knowledge");
             return await RecordAsync(request,actor,null,ct);
