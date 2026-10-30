@@ -19,7 +19,10 @@ export class DreamingApiService {
   revert(project: string, id: string): Observable<DreamRevertResult> { return this.http.post<DreamRevertResult>(`${this.base(project)}/runs/${encodeURIComponent(id)}/revert`, {}); }
   effects(project: string, id: string): Observable<DreamEffects> { return this.http.get<DreamEffects>(`${this.base(project)}/runs/${encodeURIComponent(id)}/effects`); }
   settings(project: string): Observable<DreamSettings> { return this.http.get<DreamSettings>(`${this.base(project)}/settings`); }
-  saveSettings(project: string, settings: DreamSettings): Observable<DreamSettings> { return this.http.put<DreamSettings>(`${this.base(project)}/settings`, settings); }
+  saveSettings(project: string, settings: DreamSettings): Observable<DreamSettings> {
+    const { version, ...fields } = settings;
+    return this.http.put<DreamSettings>(`${this.base(project)}/settings`, { settings: fields, expected_version: version });
+  }
   instructions(project: string): Observable<DreamInstructionSet> { return this.http.get<DreamInstructionSet>(`${this.base(project)}/instructions`); }
   saveInstructions(project: string, scope: 'base' | 'project', content: string, expected_revision: number): Observable<DreamInstructionSet> {
     return this.http.put<DreamInstructionSet>(`${this.base(project)}/instructions`, { scope, content, expected_revision });

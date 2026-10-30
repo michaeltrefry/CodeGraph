@@ -9,7 +9,7 @@ import { DreamingApiService } from './dreaming-api.service';
 import { DreamingPageComponent } from './dreaming-page.component';
 import { DreamEffects, DreamInstructionSet, DreamRun, DreamSettings } from './dreaming.models';
 
-const settings: DreamSettings = { enabled: true, default_provider: 'anthropic', default_model: 'test-model', max_turns: 12, max_tokens_per_run: 24000, minimum_interval_minutes: 60, schedule: '0 0 2 * * *', input_cost_per_million: 3, output_cost_per_million: 15 };
+const settings: DreamSettings = { version: 'v1:1:13:1', enabled: true, default_provider: 'anthropic', default_model: 'test-model', max_turns: 12, max_tokens_per_run: 24000, minimum_interval_minutes: 60, schedule: '0 0 2 * * *', input_cost_per_million: 3, output_cost_per_million: 15 };
 const instructions: DreamInstructionSet = {
   base: { slug: 'dreaming-base', content: 'Read evidence first', revision: 2, history: [{ revision: 1, content: 'Original base', edited_by: 'michael', created_at: '2026-10-29T12:00:00Z' }] },
   project: { slug: 'dreaming-project-one', content: '', revision: 0, history: [] }
@@ -82,6 +82,50 @@ describe('DreamingPageComponent', () => {
     page.settings = { ...settings, enabled: false, default_provider: 'openai', default_model: 'other', max_turns: 4, max_tokens_per_run: 8000, minimum_interval_minutes: 120, schedule: '0 0 3 * * *', input_cost_per_million: 2, output_cost_per_million: 8 };
     const edited = { ...page.settings }; await page.saveSettings(); expect(api['saveSettings']).toHaveBeenCalledWith('ONE', edited);
     page.settings!.max_turns = 1.5; await page.saveSettings(); expect(api['saveSettings']).toHaveBeenCalledTimes(1); expect(page.error()).toContain('whole-number');
+  });
+
+  it('preserves a stale client budget edit and refuses to overwrite another client disabling Dreaming', async () => {
+    let persisted = { ...settings };
+    api['settings'].mockImplementation(() => of({ ...persisted }));
+    api['saveSettings'].mockImplementation((_project: string, submitted: DreamSettings) => {
+      if (submitted.version !== persisted.version) return throwError(() => new HttpErrorResponse({ status: 409, error: { code: 'conflict', message: 'Settings or the schedule changed.' } }));
+      persisted = { ...submitted, version: 'v1:2:13:2' };
+      return of({ ...persisted });
+    });
+    const first = await create();
+    const second = TestBed.createComponent(DreamingPageComponent);
+    second.detectChanges(); await second.whenStable();
+    params.next(convertToParamMap({ key: 'ONE' })); await second.whenStable();
+    const clientA = first.componentInstance;
+    const clientB = second.componentInstance;
+    expect(clientA.settings?.version).toBe(settings.version);
+    expect(clientB.settings?.version).toBe(settings.version);
+
+    clientA.settings!.enabled = false;
+    await clientA.saveSettings();
+    expect(persisted.enabled).toBe(false);
+    expect(clientA.settings?.version).toBe('v1:2:13:2');
+
+    clientB.tab.set('settings');
+    clientB.settings!.max_tokens_per_run = 48000;
+    const draft = { ...clientB.settings! };
+    const reads = api['settings'].mock.calls.length;
+    await clientB.saveSettings(); second.detectChanges();
+    expect(api['saveSettings']).toHaveBeenLastCalledWith('ONE', draft);
+    expect(persisted.enabled).toBe(false);
+    expect(persisted.max_tokens_per_run).toBe(settings.max_tokens_per_run);
+    expect(clientB.settings).toEqual(draft);
+    expect(api['settings']).toHaveBeenCalledTimes(reads);
+    expect(clientB.settingsConflict()).toBe(true);
+    expect(second.nativeElement.textContent).toContain('Your unsaved edits are preserved');
+    expect((second.nativeElement.querySelector('button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
+    await clientB.saveSettings();
+    expect(api['saveSettings']).toHaveBeenCalledTimes(2);
+
+    await clientB.reload();
+    expect(clientB.settingsConflict()).toBe(false);
+    expect(clientB.settings?.version).toBe('v1:2:13:2');
+    expect(clientB.settings?.enabled).toBe(false);
   });
 
   it('edits base and optional project wiki instructions with their versions, showing full revision history', async () => {

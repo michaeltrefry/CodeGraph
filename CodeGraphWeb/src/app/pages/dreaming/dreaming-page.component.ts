@@ -34,6 +34,7 @@ export class DreamingPageComponent implements OnInit {
   readonly error = signal('');
   readonly notice = signal('');
   readonly confirmRevert = signal(false);
+  readonly settingsConflict = signal(false);
   readonly counts = computed(() => this.actionCounts(this.selected()));
   settings: DreamSettings | null = null;
   baseContent = '';
@@ -64,6 +65,7 @@ export class DreamingPageComponent implements OnInit {
     this.runs.set([]);
     this.instructions.set(null);
     this.settings = null;
+    this.settingsConflict.set(false);
     this.baseContent = this.projectContent = '';
     this.hasMore.set(false);
     this.notice.set('');
@@ -84,6 +86,7 @@ export class DreamingPageComponent implements OnInit {
       this.runs.set(runs);
       this.hasMore.set(runs.length === this.pageSize);
       this.settings = { ...settings };
+      this.settingsConflict.set(false);
       this.setInstructions(instructions);
     } catch (error) {
       if (generation === this.generation) this.error.set(workError(error).message);
@@ -162,7 +165,7 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async saveSettings(): Promise<void> {
-    if (!this.settings) return;
+    if (!this.settings || this.settingsConflict()) return;
     const key = this.project.selected()!;
     const settings = { ...this.settings };
     if (!settings.default_provider.trim() || !settings.default_model.trim() || !settings.schedule.trim() ||
@@ -174,8 +177,16 @@ export class DreamingPageComponent implements OnInit {
       return;
     }
     await this.write(async () => {
-      const saved = await firstValueFrom(this.api.saveSettings(key, settings));
-      if (key === this.project.selected()) { this.settings = { ...saved }; this.notice.set('Dreaming settings saved.'); }
+      try {
+        const saved = await firstValueFrom(this.api.saveSettings(key, settings));
+        if (key === this.project.selected()) { this.settings = { ...saved }; this.notice.set('Dreaming settings saved.'); }
+      } catch (error) {
+        if (workError(error).code === 'conflict' && key === this.project.selected()) {
+          this.settingsConflict.set(true);
+          throw new Error('Settings changed since you read them. Your unsaved edits are preserved and nothing was saved. Copy any edits you want to keep, then refresh and review the current settings before saving.');
+        }
+        throw error;
+      }
     });
   }
 

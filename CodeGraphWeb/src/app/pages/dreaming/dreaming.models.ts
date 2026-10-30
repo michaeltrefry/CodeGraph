@@ -1,6 +1,8 @@
 import { WorkActor } from '../knowledge/knowledge.models';
 
 export interface DreamSettings {
+  /** Opaque concurrency token for settings and the authoritative job schedule, returned by GET. */
+  version: string;
   enabled: boolean;
   default_provider: string;
   default_model: string;

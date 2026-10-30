@@ -21,7 +21,29 @@ describe('DreamingApiService', () => {
     await firstValueFrom(api.effects('ONE/TWO', 'run/one')); expect(http.get).toHaveBeenLastCalledWith(`${base}/runs/run%2Fone/effects`);
     await firstValueFrom(api.instructions('ONE/TWO')); expect(http.get).toHaveBeenLastCalledWith(`${base}/instructions`);
     await firstValueFrom(api.saveInstructions('ONE/TWO', 'project', '', 0)); expect(http.put).toHaveBeenLastCalledWith(`${base}/instructions`, { scope: 'project', content: '', expected_revision: 0 });
-    const settings = { enabled: false } as DreamSettings;
-    await firstValueFrom(api.saveSettings('ONE/TWO', settings)); expect(http.put).toHaveBeenLastCalledWith(`${base}/settings`, settings);
+    const settings = { enabled: false, version: 'v1:8:13:5' } as DreamSettings;
+    await firstValueFrom(api.saveSettings('ONE/TWO', settings));
+    expect(http.put).toHaveBeenLastCalledWith(`${base}/settings`, { settings: { enabled: false }, expected_version: 'v1:8:13:5' });
   });
+
+  it('preserves the opaque GET token on writes, including schedule revisions, and returns the new token', async () => {
+    const current = {
+      version: 'v1:8:13:5', enabled: true, default_provider: 'anthropic', default_model: 'test-model',
+      max_turns: 12, max_tokens_per_run: 24000, minimum_interval_minutes: 60, schedule: '0 2 * * *',
+      input_cost_per_million: 3, output_cost_per_million: 15
+    } satisfies DreamSettings;
+    const saved = { ...current, version: 'v1:9:13:6', enabled: false };
+    const http = { get: vi.fn().mockReturnValue(of(current)), put: vi.fn().mockReturnValue(of(saved)) };
+    const injector = Injector.create({ providers: [{ provide: HttpClient, useValue: http }] });
+    const api = runInInjectionContext(injector, () => new DreamingApiService());
+    const read = await firstValueFrom(api.settings('ONE'));
+    const result = await firstValueFrom(api.saveSettings('ONE', { ...read, enabled: false }));
+    const { version, ...fields } = current;
+    expect(http.put).toHaveBeenCalledWith(`${environment.apiUrl}/work/dreaming/ONE/settings`, {
+      settings: { ...fields, enabled: false }, expected_version: version
+    });
+    expect(result.version).toBe('v1:9:13:6');
+    expect(read.version).toBe('v1:8:13:5');
+  });
+
 });
