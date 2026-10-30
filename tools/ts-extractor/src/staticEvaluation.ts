@@ -181,9 +181,6 @@ export class StaticEvaluator {
     const declarations=node.getSymbol()?.getDeclarations().filter(d => this.admitted(d)) ?? [];
     return declarations.length === 1 && this.urlExpression(declarations[0], seen);
   }
-  private assignmentTargets(node: Node): Node[] {
-    return Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node) ? [node, ...this.assignmentTargets(node.getExpression())] : [node];
-  }
   private isBinding(node: Node): boolean {
     return Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node) || Node.isParameterDeclaration(node) || Node.isBindingElement(node);
   }
@@ -203,7 +200,7 @@ export class StaticEvaluator {
    * and explicit import resolution keep unrelated names and modules independent. */
   private indexWrites(): void {
     if (this.memberWrites) return;
-    const writes: Array<{ target: Node; member: boolean }> = [];
+    const writes: Array<{ target: Node; member: boolean; objectTarget?: true }> = [];
     const aliases: Node[] = [];
     for (const file of this.model.files) {
       for (const imp of file.getImportDeclarations()) {
@@ -220,7 +217,7 @@ export class StaticEvaluator {
         if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) writes.push({target:node.getLeft(),member:!Node.isIdentifier(node.getLeft())});
         else if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) && [SyntaxKind.PlusPlusToken,SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) writes.push({target:node.getOperand(),member:!Node.isIdentifier(node.getOperand())});
         else if (Node.isDeleteExpression(node)) writes.push({target:node.getExpression(),member:!Node.isIdentifier(node.getExpression())});
-        else if (Node.isCallExpression(node) && node.getExpression().getText()==='Object.assign' && node.getArguments()[0]) writes.push({target:node.getArguments()[0],member:true});
+        else if (Node.isCallExpression(node) && node.getExpression().getText()==='Object.assign' && node.getArguments()[0]) writes.push({target:node.getArguments()[0],member:true,objectTarget:true});
       });
     }
     const identities = new Map<Node, Node>();
@@ -340,12 +337,12 @@ export class StaticEvaluator {
       seen.add(source);
       for (const child of contained(source)) record(child,name,true,seen);
     };
-    for (const {target,member} of writes) {
+    for (const {target,member,objectTarget} of writes) {
       // Rebinding changes the binding; an exact member write changes its receiver's
       // property. Ordinary ancestors and captured child values are not mutated.
       if (!member) { this.writtenBindings.add(this.aliasKey(target)); continue; }
       let receiver=target, name: string | undefined;
-      if (Node.isPropertyAccessExpression(target) || Node.isElementAccessExpression(target)) {
+      if (!objectTarget && (Node.isPropertyAccessExpression(target) || Node.isElementAccessExpression(target))) {
         receiver=target.getExpression();
         const argument=Node.isElementAccessExpression(target) ? target.getArgumentExpression() : undefined;
         name=Node.isPropertyAccessExpression(target) ? target.getName() : argument && (Node.isStringLiteral(argument) || Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;

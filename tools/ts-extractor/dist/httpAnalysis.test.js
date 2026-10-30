@@ -468,3 +468,16 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
     assert_1.strict.deepEqual(routes(result, 'Demo:bound-siblings.ts#caller'), ['route:*:GET:/api/third', 'route:*:POST:/api/items', 'route:*:POST:/api/second']);
     assert_1.strict.deepEqual(routes(result, 'Demo:bound-siblings.ts#addedMethod'), []);
 });
+(0, node_test_1.test)('Object.assign mutates the whole selected object argument rather than its parent member slot', () => {
+    const result = fixture({ 'assign-targets.ts': `
+    export function direct(){const options={method:'GET'};Object.assign(options,{method:'DELETE'});return fetch('/api',options);}
+    export function nested(){const options={method:'GET'};const holder={options};Object.assign(holder.options,{method:'DELETE'});return fetch('/api',options);}
+    export function computed(){const options={method:'GET'};const holder={options};Object.assign(holder['options'],{method:'DELETE'});return fetch('/api',options);}
+    function bound(options){const holder={nested:{options}};Object.assign(holder.nested.options,{method:'DELETE'});return fetch('/api',options);}
+    export function caller(){return bound({method:'GET'});}
+    export function sibling(){const url='/api/items';const options={url,method:'POST',headers:{}};Object.assign(options.headers,{Authorization:'token'});return fetch(url,{method:options.method});}
+  ` });
+    for (const name of ['direct', 'nested', 'computed', 'caller'])
+        assert_1.strict.deepEqual(routes(result, `Demo:assign-targets.ts#${name}`), []);
+    assert_1.strict.deepEqual(routes(result, 'Demo:assign-targets.ts#sibling'), ['route:*:POST:/api/items']);
+});

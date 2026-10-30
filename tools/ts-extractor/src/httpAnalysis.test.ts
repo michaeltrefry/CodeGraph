@@ -508,3 +508,17 @@ test('nested literal and bound-object reads mask changed fields while retaining 
   assert.deepEqual(routes(result,'Demo:bound-siblings.ts#caller'),['route:*:GET:/api/third','route:*:POST:/api/items','route:*:POST:/api/second']);
   assert.deepEqual(routes(result,'Demo:bound-siblings.ts#addedMethod'),[]);
 });
+
+
+test('Object.assign mutates the whole selected object argument rather than its parent member slot', () => {
+  const result=fixture({'assign-targets.ts':`
+    export function direct(){const options={method:'GET'};Object.assign(options,{method:'DELETE'});return fetch('/api',options);}
+    export function nested(){const options={method:'GET'};const holder={options};Object.assign(holder.options,{method:'DELETE'});return fetch('/api',options);}
+    export function computed(){const options={method:'GET'};const holder={options};Object.assign(holder['options'],{method:'DELETE'});return fetch('/api',options);}
+    function bound(options){const holder={nested:{options}};Object.assign(holder.nested.options,{method:'DELETE'});return fetch('/api',options);}
+    export function caller(){return bound({method:'GET'});}
+    export function sibling(){const url='/api/items';const options={url,method:'POST',headers:{}};Object.assign(options.headers,{Authorization:'token'});return fetch(url,{method:options.method});}
+  `});
+  for(const name of ['direct','nested','computed','caller'])assert.deepEqual(routes(result,`Demo:assign-targets.ts#${name}`),[]);
+  assert.deepEqual(routes(result,'Demo:assign-targets.ts#sibling'),['route:*:POST:/api/items']);
+});

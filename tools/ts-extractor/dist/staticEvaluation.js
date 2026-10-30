@@ -252,9 +252,6 @@ class StaticEvaluator {
         const declarations = node.getSymbol()?.getDeclarations().filter(d => this.admitted(d)) ?? [];
         return declarations.length === 1 && this.urlExpression(declarations[0], seen);
     }
-    assignmentTargets(node) {
-        return ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node) ? [node, ...this.assignmentTargets(node.getExpression())] : [node];
-    }
     isBinding(node) {
         return ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node) || ts_morph_1.Node.isParameterDeclaration(node) || ts_morph_1.Node.isBindingElement(node);
     }
@@ -312,7 +309,7 @@ class StaticEvaluator {
                 else if (ts_morph_1.Node.isDeleteExpression(node))
                     writes.push({ target: node.getExpression(), member: !ts_morph_1.Node.isIdentifier(node.getExpression()) });
                 else if (ts_morph_1.Node.isCallExpression(node) && node.getExpression().getText() === 'Object.assign' && node.getArguments()[0])
-                    writes.push({ target: node.getArguments()[0], member: true });
+                    writes.push({ target: node.getArguments()[0], member: true, objectTarget: true });
             });
         }
         const identities = new Map();
@@ -505,7 +502,7 @@ class StaticEvaluator {
             for (const child of contained(source))
                 record(child, name, true, seen);
         };
-        for (const { target, member } of writes) {
+        for (const { target, member, objectTarget } of writes) {
             // Rebinding changes the binding; an exact member write changes its receiver's
             // property. Ordinary ancestors and captured child values are not mutated.
             if (!member) {
@@ -513,7 +510,7 @@ class StaticEvaluator {
                 continue;
             }
             let receiver = target, name;
-            if (ts_morph_1.Node.isPropertyAccessExpression(target) || ts_morph_1.Node.isElementAccessExpression(target)) {
+            if (!objectTarget && (ts_morph_1.Node.isPropertyAccessExpression(target) || ts_morph_1.Node.isElementAccessExpression(target))) {
                 receiver = target.getExpression();
                 const argument = ts_morph_1.Node.isElementAccessExpression(target) ? target.getArgumentExpression() : undefined;
                 name = ts_morph_1.Node.isPropertyAccessExpression(target) ? target.getName() : argument && (ts_morph_1.Node.isStringLiteral(argument) || ts_morph_1.Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;
