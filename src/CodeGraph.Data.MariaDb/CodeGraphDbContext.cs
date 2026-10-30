@@ -254,6 +254,8 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<AnalysisBatchEntity>(e =>
         {
             e.ToTable("analysis_batches");
+            e.Property(b => b.Error).HasColumnName("error");
+            e.Property(b => b.DismissedAt).HasColumnName("dismissed_at");
             e.HasKey(b => b.Id);
             e.Property(b => b.Id).HasColumnName("id");
             e.Property(b => b.Repo).HasColumnName("repo");
@@ -695,6 +697,9 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<JobScheduleEntity>(e =>
         {
             e.ToTable("job_schedules");
+            e.Property(s => s.FailureAtUtc).HasColumnName("failure_at_utc");
+            e.Property(s => s.FailureError).HasColumnName("failure_error");
+            e.Property(s => s.FailureDismissedAt).HasColumnName("failure_dismissed_at");
             e.HasKey(s => s.Id);
             e.Property(s => s.Id).HasColumnName("id");
             e.Property(s => s.Name).HasColumnName("name");
@@ -1000,6 +1005,9 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
         modelBuilder.Entity<IndexerRunEntity>(e =>
         {
             e.ToTable("indexer_runs");
+            e.Property(r => r.DismissedAt).HasColumnName("dismissed_at");
+            e.Property(r => r.FailureResolvedAt).HasColumnName("failure_resolved_at");
+            e.Property(r => r.QueueWorkIdentity).HasColumnName("queue_work_identity").HasMaxLength(64);
             e.HasKey(r => r.Id);
             e.Property(r => r.Id).HasColumnName("id");
             e.Property(r => r.Operation).HasColumnName("operation");

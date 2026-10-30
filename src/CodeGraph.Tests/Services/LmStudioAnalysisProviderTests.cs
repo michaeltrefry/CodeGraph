@@ -588,7 +588,69 @@ public class LmStudioAnalysisProviderTests
         rootRequest.AttemptCount.ShouldBe(0);
     }
 
-    private static async Task<long> SeedPendingLmStudioBatchAsync(InMemoryGraphStore store, string providerBatchId, string customId)
+    [Fact]
+    public async Task ExhaustedBatchFailure_PreservesProviderReason_AndDoesNotCountAsSuccess()
+    {
+        var store = new InMemoryGraphStore();
+        const string batchId = "local_failed";
+        await SeedPendingLmStudioBatchAsync(store, batchId, "req_failed");
+        var provider = new LmStudioAnalysisProvider(
+            new StubHttpClientFactory(new HttpClient(new ThrowingHandler(new TaskCanceledException("provider timed out")))),
+            store,
+            Options.Create(new AnalysisOptions
+            {
+                LmStudio = new LmStudioAnalysisProviderOptions { Model = "stub", DirectFallbackMaxAttempts = 1 }
+            }),
+            NullLogger<LmStudioAnalysisProvider>.Instance);
+
+        await provider.GetBatchStatusAsync(batchId);
+        await provider.WaitForBatchRunnerAsync(batchId);
+        (await provider.GetBatchStatusAsync(batchId)).IsCompleted.ShouldBeTrue();
+        var result = (await provider.GetBatchResultsAsync(batchId)).Single();
+        result.Status.ShouldBe("errored");
+        result.Error!.ShouldContain("provider timed out");
+        (await store.GetBatchByProviderBatchIdAsync(batchId))!.CompletedCount.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task FailedParent_IsNotRestartedByProviderPoll()
+    {
+        var store = new InMemoryGraphStore();
+        const string batchId = "local_failed_parent";
+        var id = await SeedPendingLmStudioBatchAsync(store, batchId, "req_pending");
+        await store.UpdateBatchStatusAsync(id, "failed", 0, DateTime.UtcNow, "original failure");
+        var provider = new LmStudioAnalysisProvider(new StubHttpClientFactory(), store,
+            Options.Create(new AnalysisOptions()), NullLogger<LmStudioAnalysisProvider>.Instance);
+
+        var status = await provider.GetBatchStatusAsync(batchId);
+        status.IsFailed.ShouldBeTrue();
+        status.Error.ShouldBe("original failure");
+        (await store.GetBatchRequestsAsync(id)).Single().AttemptCount.ShouldBe(0);
+    }
+
+    [Theory]
+    [InlineData("pending")]
+    [InlineData("succeeded")]
+    public async Task PartialSubmission_DoesNotRunOrCompleteUntilAllRequestsExist(string requestStatus)
+    {
+        var store = new InMemoryGraphStore();
+        const string batchId = "local_partial_submission";
+        var id = await SeedPendingLmStudioBatchAsync(store, batchId, "req_first", expectedRequestCount: 2);
+        await store.UpdateBatchRequestStateAsync(id, "req_first", requestStatus, 0, null, null, null);
+        var provider = new LmStudioAnalysisProvider(new StubHttpClientFactory(), store,
+            Options.Create(new AnalysisOptions()), NullLogger<LmStudioAnalysisProvider>.Instance);
+
+        var status = await provider.GetBatchStatusAsync(batchId);
+        await provider.WaitForBatchRunnerAsync(batchId);
+
+        status.IsCompleted.ShouldBeFalse();
+        status.ProcessingStatus.ShouldBe("submitted");
+        (await store.GetBatchRequestsAsync(id)).Single().AttemptCount.ShouldBe(0);
+        (await store.GetBatchByProviderBatchIdAsync(batchId))!.Status.ShouldBe("submitted");
+    }
+
+    private static async Task<long> SeedPendingLmStudioBatchAsync(InMemoryGraphStore store, string providerBatchId, string customId,
+        int expectedRequestCount = 1)
     {
         var batchId = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
         {
@@ -597,7 +659,7 @@ public class LmStudioAnalysisProviderTests
             ProviderName = "lmstudio",
             ExecutionMode = "native_batch",
             Status = "submitted",
-            RequestCount = 1,
+            RequestCount = expectedRequestCount,
             SubmittedAt = DateTime.UtcNow
         });
 

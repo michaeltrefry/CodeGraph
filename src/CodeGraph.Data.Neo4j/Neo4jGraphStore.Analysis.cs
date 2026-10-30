@@ -277,6 +277,7 @@ public partial class Neo4jGraphStore
 
     public async Task<long> CreateAnalysisBatchAsync(AnalysisBatchEntity batch)
     {
+        batch.Error = AnalysisBatchErrorDetails.Limit(batch.Error);
         await using var session = sessionFactory.GetSession();
         return await session.ExecuteWriteAsync(async tx =>
         {
@@ -296,7 +297,8 @@ public partial class Neo4jGraphStore
                     requestCount: $requestCount,
                     completedCount: $completedCount,
                     submittedAt: $submittedAt,
-                    completedAt: $completedAt
+                    completedAt: $completedAt,
+                    error: $error
                 })
                 RETURN b.appId AS id
                 """,
@@ -311,7 +313,8 @@ public partial class Neo4jGraphStore
                     requestCount = batch.RequestCount,
                     completedCount = batch.CompletedCount,
                     submittedAt = batch.SubmittedAt,
-                    completedAt = (object?)batch.CompletedAt
+                    completedAt = (object?)batch.CompletedAt,
+                    error = batch.Error
                 });
             await cursor.FetchAsync();
             var id = cursor.Current["id"].As<long>();
@@ -411,18 +414,21 @@ public partial class Neo4jGraphStore
         });
     }
 
-    public async Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt)
+    public async Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt, string? error = null)
     {
+        error = AnalysisBatchErrorDetails.Limit(error);
         await using var session = sessionFactory.GetSession();
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync("""
                 MATCH (b:AnalysisBatch {appId: $batchId})
+                WHERE NOT b.status IN ['failed', 'completed']
                 SET b.status = $status,
                     b.completedCount = $completedCount,
-                    b.completedAt = $completedAt
+                    b.completedAt = $completedAt,
+                    b.error = $error
                 """,
-                new { batchId, status, completedCount, completedAt = (object?)completedAt });
+                new { batchId, status, completedCount, completedAt = (object?)completedAt, error });
         });
     }
 
@@ -588,5 +594,6 @@ public partial class Neo4jGraphStore
         node["requestCount"].As<int>(),
         node["completedCount"].As<int>(),
         GetDateTimeOrNull(node, "submittedAt") ?? DateTime.MinValue,
-        GetDateTimeOrNull(node, "completedAt"));
+        GetDateTimeOrNull(node, "completedAt"),
+        GetStringOrNull(node, "error"));
 }

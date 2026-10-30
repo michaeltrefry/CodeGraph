@@ -63,13 +63,14 @@ public class OpenAiAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("OpenAI chat completion failed {Status}: {Body}",
                 (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var completion = await response.Content.ReadFromJsonAsync<OpenAiChatCompletionResponse>(SnakeOpts, ct)
             ?? throw new InvalidOperationException("OpenAI returned null chat completion response");
         var text = completion.Choices
-            .Select(choice => choice.Message?.Content)
+            .Select(choice => choice?.Message?.Content)
             .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
         if (string.IsNullOrWhiteSpace(text))
             throw new InvalidOperationException("OpenAI returned an empty chat completion response");
@@ -107,7 +108,8 @@ public class OpenAiAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("OpenAI batch creation failed {Status}: {Body}",
                 (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var created = await response.Content.ReadFromJsonAsync<OpenAiBatchResponse>(SnakeOpts, ct)
@@ -130,7 +132,8 @@ public class OpenAiAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("OpenAI batch status lookup failed for {BatchId}: {Status} {Body}",
                 batchId, (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var status = await response.Content.ReadFromJsonAsync<OpenAiBatchResponse>(SnakeOpts, ct)
@@ -139,7 +142,8 @@ public class OpenAiAnalysisProvider(
         return new AnalysisBatchStatusResult(
             status.Id,
             status.Status,
-            string.Equals(status.Status, "completed", StringComparison.OrdinalIgnoreCase));
+            string.Equals(status.Status, "completed", StringComparison.OrdinalIgnoreCase),
+            status.Errors?.ToString());
     }
 
     public async Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
@@ -159,51 +163,65 @@ public class OpenAiAnalysisProvider(
             var errorBody = await batchResponse.Content.ReadAsStringAsync(ct);
             logger.LogError("OpenAI batch lookup failed for {BatchId}: {Status} {Body}",
                 batchId, (int)batchResponse.StatusCode, errorBody);
-            batchResponse.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)batchResponse.StatusCode}: {errorBody}",
+                null, batchResponse.StatusCode);
         }
 
         var batch = await batchResponse.Content.ReadFromJsonAsync<OpenAiBatchResponse>(SnakeOpts, ct)
             ?? throw new InvalidOperationException("OpenAI returned null batch lookup response");
-        if (string.IsNullOrWhiteSpace(batch.OutputFileId))
-            return [];
-
-        using var fileResponse = await http.SendAsync(CreateRequest(
-            HttpMethod.Get,
-            BuildUrl(providerConfig, $"{options.OpenAi.FilesPath.TrimEnd('/')}/{batch.OutputFileId}/content"),
-            providerConfig), ct);
-
-        if (!fileResponse.IsSuccessStatusCode)
-        {
-            var errorBody = await fileResponse.Content.ReadAsStringAsync(ct);
-            logger.LogError("OpenAI batch output download failed for {BatchId}: {Status} {Body}",
-                batchId, (int)fileResponse.StatusCode, errorBody);
-            fileResponse.EnsureSuccessStatusCode();
-        }
-
         var results = new List<AnalysisBatchItemResult>();
-        await using var stream = await fileResponse.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
-
-        while (!reader.EndOfStream)
+        // Error lines are stored separately from successful responses by the hosted batch API.
+        foreach (var fileId in new[] { batch.OutputFileId, batch.ErrorFileId }
+                     .Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal))
         {
-            var line = await reader.ReadLineAsync(ct);
-            if (string.IsNullOrWhiteSpace(line))
+            using var fileResponse = await http.SendAsync(CreateRequest(
+                HttpMethod.Get,
+                BuildUrl(providerConfig, $"{options.OpenAi.FilesPath.TrimEnd('/')}/{fileId}/content"),
+                providerConfig), ct);
+            if (!fileResponse.IsSuccessStatusCode)
+            {
+                results.Add(new AnalysisBatchItemResult("", "errored", null, null,
+                    $"Provider result download returned HTTP {(int)fileResponse.StatusCode}: {await fileResponse.Content.ReadAsStringAsync(ct)}"));
                 continue;
-
-            var item = JsonSerializer.Deserialize<OpenAiBatchOutputLine>(line, SnakeOpts);
-            if (item is null)
-                continue;
-
-            var status = item.Error is null &&
-                item.Response?.StatusCode is >= 200 and < 300
-                ? "succeeded"
-                : "errored";
-            var text = item.Response?.Body?.Choices
-                ?.Select(choice => choice.Message?.Content)
-                .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
-            var model = item.Response?.Body?.Model;
-
-            results.Add(new AnalysisBatchItemResult(item.CustomId, status, text, model));
+            }
+            await using var stream = await fileResponse.Content.ReadAsStreamAsync(ct);
+            using var reader = new StreamReader(stream);
+            while (true)
+            {
+                var line = await reader.ReadLineAsync(ct);
+                if (line is null) break;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                OpenAiBatchOutputLine? item;
+                try
+                {
+                    item = JsonSerializer.Deserialize<OpenAiBatchOutputLine>(line, SnakeOpts);
+                }
+                catch (JsonException ex)
+                {
+                    results.Add(new AnalysisBatchItemResult("", "errored", null, null, $"Malformed provider result: {ex.Message}"));
+                    continue;
+                }
+                if (item is null)
+                {
+                    results.Add(new AnalysisBatchItemResult("", "errored", null, null, "Null provider result."));
+                    continue;
+                }
+                var error = item.Error?.ToString() ?? item.Response?.Body?.Error?.ToString();
+                var choices = item.Response?.Body?.Choices;
+                var text = choices?.Select(choice => choice?.Message?.Content)
+                    .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
+                if (error is null && item.Response?.StatusCode is >= 200 and < 300)
+                {
+                    if (choices is null || choices.Count == 0 || choices.Any(choice => choice is null || choice.Message is null))
+                        error = "Malformed provider result: response choices are missing or contain a null choice/message.";
+                    else if (string.IsNullOrWhiteSpace(text))
+                        error = "Malformed provider result: response choices contain no non-empty text.";
+                }
+                var succeeded = error is null && item.Response?.StatusCode is >= 200 and < 300;
+                results.Add(new AnalysisBatchItemResult(item.CustomId, succeeded ? "succeeded" : "errored",
+                    text, item.Response?.Body?.Model,
+                    succeeded ? null : error ?? $"Provider returned HTTP {item.Response?.StatusCode}."));
+            }
         }
 
         return results;
@@ -229,7 +247,8 @@ public class OpenAiAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("OpenAI batch file upload failed {Status}: {Body}",
                 (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var uploaded = await response.Content.ReadFromJsonAsync<OpenAiFileResponse>(SnakeOpts, ct)
@@ -336,6 +355,7 @@ public class OpenAiAnalysisProvider(
 
     private sealed class OpenAiChatCompletionResponse
     {
+        public JsonElement? Error { get; set; }
         public string Model { get; set; } = "";
         public List<OpenAiChoice> Choices { get; set; } = [];
     }
@@ -362,6 +382,8 @@ public class OpenAiAnalysisProvider(
         public string Id { get; set; } = "";
         public string Status { get; set; } = "";
         public string? OutputFileId { get; set; }
+        public string? ErrorFileId { get; set; }
+        public JsonElement? Errors { get; set; }
     }
 
     private sealed class OpenAiFileResponse
@@ -380,13 +402,8 @@ public class OpenAiAnalysisProvider(
     private sealed class OpenAiBatchOutputLine
     {
         public string CustomId { get; set; } = "";
-        public OpenAiBatchOutputError? Error { get; set; }
+        public JsonElement? Error { get; set; }
         public OpenAiBatchOutputResponse? Response { get; set; }
-    }
-
-    private sealed class OpenAiBatchOutputError
-    {
-        public string? Message { get; set; }
     }
 
     private sealed class OpenAiBatchOutputResponse

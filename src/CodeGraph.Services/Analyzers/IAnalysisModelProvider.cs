@@ -69,10 +69,16 @@ public sealed record AnalysisBatchSubmissionResult(
 public sealed record AnalysisBatchStatusResult(
     string BatchId,
     string ProcessingStatus,
-    bool IsCompleted);
+    bool IsCompleted,
+    string? Error = null)
+{
+    public bool IsFailed => ProcessingStatus.ToLowerInvariant() is
+        "failed" or "errored" or "canceled" or "cancelled" or "expired";
+}
 
 public sealed record AnalysisBatchItemResult(
     string CustomId,
     string Status,
     string? Text,
-    string? ModelUsed);
+    string? ModelUsed,
+    string? Error = null);

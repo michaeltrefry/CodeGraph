@@ -25,7 +25,7 @@ The working inventory is tracked in [plans/standalone-rebase-inventory.md](/User
 - Computes repository health, hotspot metrics, security findings, .NET support posture, and repository vitality trends
 - Runs project-level and repository-level AI code reviews with persisted findings and SSE streaming updates
 - Stores claim-centric personal memory in MariaDB, including evidence, conflicts, bounded subgraphs, and frontier expansion
-- Serves a web UI for repositories, graph views, reviews, impact analysis, wiki pages, schedules, and a dedicated memory browser
+- Serves a web UI for repositories, graph views, reviews, impact analysis, wiki pages, schedules, an Admin Operations job queue, and a dedicated memory browser
 - Exposes graph and memory capabilities over MCP for assistants and other compatible clients
 
 ## Solution Structure
@@ -466,6 +466,8 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 | `POST/GET /api/ask/runs...` | Persisted Ask runs, SSE replay, cancellation, and debug exchange inspection |
 | `GET/POST/DELETE /api/user/mcp-tokens...` | User MCP personal access token list/create/revoke |
 | `GET/POST/DELETE /api/admin/admins...` | Standalone admin-user management backed by MariaDB |
+| `GET /api/admin/jobs/queue` | Running, queued, and unresolved failed indexer, analysis, and scheduled work |
+| `POST /api/admin/jobs/queue/{kind}/{id}/dismiss` | Dismiss a failed queue entry |
 | `GET/PUT/DELETE /api/admin/prompts...` | Admin prompt catalog and prompt override management for analysis, review, and Ask assistant system prompts |
 | `GET /api/admin/reports...` | Assistant, MCP, review, and repository-analysis usage reports |
 | `GET/POST/PUT/DELETE /api/database-sources...` | Database source configuration with masked connection strings |
@@ -573,3 +575,5 @@ dotnet test --filter "FullyQualifiedName~TestMethodName"
 ```
 
 Tests use xUnit and Shouldly, with extensive in-memory fakes for graph, metrics, reviews, jobs, and memory flows.
+
+Admin Operations polls the job queue every five seconds. Failures persist until dismissed or a later successful matching operation resolves them. Scheduled retries preserve the prior error. The seeded `IndexerRunRetention` schedule runs Sundays at 04:00 UTC, pruning resolved indexer history older than 30 days in bounded batches; active runs and unresolved failures are retained. Its positive `retentionDays` argument is configurable under Admin Schedules. Deleting old runs also releases their durable submission keys after the retention window.

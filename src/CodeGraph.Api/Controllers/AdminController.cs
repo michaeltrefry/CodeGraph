@@ -15,6 +15,16 @@ public class AdminController(
     IAdminStore adminStore,
     IAgentPromptService agentPromptService) : ControllerBase
 {
+    [HttpGet("jobs/queue")]
+    public async Task<ActionResult<JobQueueResponse>> GetJobQueue(
+        [FromServices] IIndexerRunStore runs, CancellationToken ct)
+        => Ok(await runs.GetJobQueueAsync(500, ct));
+
+    [HttpPost("jobs/queue/{kind}/{id:long}/dismiss")]
+    public async Task<ActionResult> DismissJob(
+        string kind, long id, [FromServices] IIndexerRunStore runs, CancellationToken ct)
+        => await runs.DismissJobAsync(kind, id, ct) ? NoContent() : NotFound();
+
     [HttpGet("admins")]
     public async Task<ActionResult<IReadOnlyList<AdminUserResponse>>> ListAdmins()
     {

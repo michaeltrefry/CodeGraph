@@ -1527,3 +1527,27 @@ export const CONFIDENCE_COLORS: Record<string, string> = {
   medium: '#f59e0b',
   low: '#ef4444'
 };
+
+export interface JobQueueEntry {
+  kind: string;
+  id: number;
+  operation: string;
+  target: string | null;
+  status: string;
+  requestedByUsername: string | null;
+  message: string | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  nextAttemptAt: string | null;
+  attemptCount: number;
+  cancelable: boolean;
+}
+
+export interface JobQueueResponse {
+  items: JobQueueEntry[];
+  running: number;
+  queued: number;
+  failed: number;
+  generatedAt: string;
+}

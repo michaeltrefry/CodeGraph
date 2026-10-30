@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using CodeGraph.Jobs.Jobs;
+using CodeGraph.Services.Indexer;
 
 namespace CodeGraph.Jobs;
 
@@ -17,6 +18,8 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
         services.AddTransient<IngestConventionEmbeddingsJob>();
         services.AddTransient<PruneWorkSessionsJob>();
         services.AddTransient<PruneWorkMessagesJob>();
+        services.AddTransient<IIndexerRunRetentionService, IndexerRunRetentionService>();
+        services.AddTransient<IndexerRunRetentionJob>();
         // Needs IWorkImportRunner (AddCodeGraphWorkImports) where it runs.
         services.AddTransient<WorkImportJob>();
         services.AddTransient<IJobCommandDispatcher, JobCommandDispatcher>();

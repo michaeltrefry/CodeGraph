@@ -4,7 +4,7 @@ using MySqlConnector;
 
 namespace CodeGraph.Data.MariaDb;
 
-public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
+public partial class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
 {
     public async Task<long> CreateIndexerRunAsync(IndexerRunEntity run, CancellationToken ct = default)
         => (await CreateOrGetIndexerRunAsync(run, ct)).RunId;
@@ -18,6 +18,9 @@ public class MySqlIndexerRunStore(CodeGraphDbContext db) : IIndexerRunStore
             run.CreatedAt = DateTime.UtcNow;
         }
 
+        run.QueueWorkIdentity = run.Operation is "process_repositories" or "branch_overlay"
+            ? await GetQueueWorkIdentityAsync(run, ct) ?? ""
+            : null;
         db.IndexerRuns.Add(run);
         try
         {
