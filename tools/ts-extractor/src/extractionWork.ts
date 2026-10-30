@@ -1,4 +1,6 @@
-export const DEFAULT_EXTRACTION_WORK_LIMIT = 20_000_000;
+// The selected indexed frontends peak near 98.1M charged work after indexing/caching.
+// Keep roughly twofold measured headroom while retaining one finite run-wide allowance.
+export const DEFAULT_EXTRACTION_WORK_LIMIT = 200_000_000;
 export interface ExtractionWorkControl {
   maxWork?: number;
   /** Synchronous polling. A timer/AbortSignal cannot preempt CPU while this stack runs. */
