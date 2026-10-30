@@ -129,7 +129,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             ["dream_promote"]="Propose rule status only. Input:id,expected_version,evidence,prevalence.",
             ["dream_record"]="Record a fact,gotcha,constraint,attempt or agent-source lesson with explicit confidence. Input:entry,evidence,prevalence.",
             ["dream_challenge"]="Open a challenge with evidence; never resolve it. Input:id,reason,evidence,prevalence.",
-            ["dream_propose"]="Propose retract, supersede, merge, skill_draft, hook_draft or test_draft with typed evidence kind/id, target and expected_version. Supersede requires replacement; merge requires other and other_expected_version; drafts require draft text. Server supplies project and run id. Never applies or accepts a proposal."
+            ["dream_propose"]="Propose retract, supersede, merge, skill_draft, hook_draft or test_draft with typed evidence kind/id (not reference/summary), target and expected_version. Supersede requires replacement; merge requires other and other_expected_version; drafts require draft text. Server supplies project and run id. Never applies or accepts a proposal."
         };
         JsonElement Shape(Type type,string[]? keep=null,bool write=false)
         {
@@ -141,8 +141,8 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             if(required is not null)for(var i=required.Count-1;i>=0;i--)if(remove.Contains(required[i]!.GetValue<string>()))required.RemoveAt(i);
             if(write)
             {
-                var envelope=System.Text.Json.Nodes.JsonNode.Parse(WorkJson.SchemaOf(typeof(DreamEvidenceEnvelope)).GetRawText())!.AsObject();
-                properties["evidence"]=envelope["properties"]!["evidence"]!.DeepClone();properties["prevalence"]=envelope["properties"]!["prevalence"]!.DeepClone();
+                properties["evidence"]=DreamModelContract.EvidenceSchema();
+                properties["prevalence"]=DreamModelContract.TextSchema("Observed counts, distinct sessions/items and time range; state unavailable counts explicitly.",1000);
                 required??=new System.Text.Json.Nodes.JsonArray();required.Add("evidence");required.Add("prevalence");root["required"]=required;
             }
             return JsonSerializer.SerializeToElement(root);
@@ -150,8 +150,8 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
         var schemas=new Dictionary<string,JsonElement>
         {
             ["dream_read"]=Shape(typeof(RecallRequest)),["dream_lessons"]=Shape(typeof(LessonsRequest)),["dream_review_queue"]=Shape(typeof(ReviewQueueRequest)),
-            ["dream_similar"]=Shape(typeof(DreamPageInput)),["dream_work_trail"]=Shape(typeof(DreamPageInput)),
-            ["dream_search_graph"]=Shape(typeof(DreamSearchInput)),["dream_read_source"]=Shape(typeof(DreamSourceInput)),
+            ["dream_similar"]=Shape(typeof(DreamPageInput),["offset","limit","cursor"]),["dream_work_trail"]=Shape(typeof(DreamPageInput)),
+            ["dream_search_graph"]=Shape(typeof(DreamModelContract.SearchInput)),["dream_read_source"]=Shape(typeof(DreamModelContract.SourceInput)),
             ["dream_verify"]=Shape(typeof(KnowledgeVerifyInput),write:true),
             ["dream_revise"]=Shape(typeof(KnowledgeRevisionInput),["id","expected_version","applies_when"],true),
             ["dream_relate"]=Shape(typeof(KnowledgeRelateInput),write:true),
@@ -168,12 +168,9 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             if (tool == "dream_read") schema["properties"]!["detail"]!["description"] = "summary (default for lists) or full. Single id reads default to full and include events and revision metadata. Full snapshots are byte-paged without truncation.";
             schemas[tool] = JsonSerializer.SerializeToElement(schema);
         }
-        return definitions.Select(d=>new DreamToolDefinition(d.Key,d.Value,schemas[d.Key])).ToList();
+        return definitions.Select(d=>new DreamToolDefinition(d.Key,d.Value,DreamModelContract.Complete(d.Key,schemas[d.Key]))).ToList();
     }
-    private sealed record DreamEvidenceEnvelope(IReadOnlyList<DreamEvidence> Evidence,string Prevalence);
     private sealed record DreamPageInput(int Offset=0,int Limit=20,DateTime? Since=null,string? Cursor=null);
-    private sealed record DreamSearchInput(string Repository,string NamePattern="%",string? Label=null,int Limit=20);
-    private sealed record DreamSourceInput(string? Repository=null,string? Path=null,long? NodeId=null);
     private sealed record DreamChallengeInput(string Id,string Reason);
 }
 

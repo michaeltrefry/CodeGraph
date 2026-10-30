@@ -155,7 +155,9 @@ public class MariaDbMigrationRunnerTests
             // sc-27970: replace only the untouched bootstrap dreaming instructions.
             ["105_dreaming_instructions.sql"] = 1,
             // sc-27971: recover complete merge-journal attribution from the exact merged revision.
-            ["107_lesson_merge_attribution.sql"] = 1
+            ["107_lesson_merge_attribution.sql"] = 1,
+            // sc-27970: upgrade only the byte-exact untouched canonical dreaming instruction seed.
+            ["108_dreaming_tool_contract_instructions.sql"] = 1
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",

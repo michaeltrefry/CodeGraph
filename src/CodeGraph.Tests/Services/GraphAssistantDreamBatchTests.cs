@@ -53,6 +53,44 @@ public sealed class GraphAssistantDreamBatchTests
         result.ToolCalls.Single().Arguments.GetProperty("evidence").GetString().ShouldBe("ok");
     }
 
+    [Theory]
+    [InlineData("openai")]
+    [InlineData("anthropic")]
+    public async Task Actual_dream_contract_reaches_the_provider_with_all_nested_fields_and_required_types(string provider)
+    {
+        var reply = provider == "openai"
+            ? """{"choices":[{"message":{"role":"assistant","content":"done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"""
+            : """{"content":[{"type":"text","text":"done"}],"usage":{"input_tokens":1,"output_tokens":1}}""";
+        var handler = new CaptureHandler(reply);
+        var assistant = new GraphAssistant(null!,new HttpFactory(handler),null!,null!,null!,Options.Create(new RepositorySourceOptions()),
+            Options.Create(new AnalysisOptions()),null!,null!,NullLogger<GraphAssistant>.Instance);
+        await assistant.CompleteAsync(new(provider,"scripted","instructions",[new("user","data")],DreamingService.Tools,100));
+        using var body = JsonDocument.Parse(handler.Body!);
+        var tools = body.RootElement.GetProperty("tools").EnumerateArray().ToArray();
+        tools.Length.ShouldBe(DreamingService.Tools.Count);
+        foreach (var definition in DreamingService.Tools)
+        {
+            var tool = tools.Single(value => (provider == "openai" ? value.GetProperty("function") : value).GetProperty("name").GetString() == definition.Name);
+            var actual = provider == "openai" ? tool.GetProperty("function").GetProperty("parameters") : tool.GetProperty("input_schema");
+            // Compare the complete nested structure, including required lists, enums and refs.
+            System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(actual.GetRawText()),
+                System.Text.Json.Nodes.JsonNode.Parse(definition.Parameters.GetRawText())).ShouldBeTrue(definition.Name);
+            if (definition.Name == "dream_verify")
+            {
+                var evidence = actual.GetProperty("properties").GetProperty("evidence").GetProperty("items");
+                evidence.GetProperty("required").GetArrayLength().ShouldBe(3);
+                evidence.GetProperty("properties").GetProperty("kind").GetProperty("enum").GetArrayLength().ShouldBe(10);
+                evidence.GetProperty("properties").GetProperty("reference").GetProperty("type").GetString().ShouldBe("string");
+            }
+            if (definition.Name == "dream_propose")
+            {
+                actual.GetProperty("required").EnumerateArray().Select(value => value.GetString()).ShouldContain("target");
+                actual.GetProperty("properties").GetProperty("evidence").GetProperty("items").GetProperty("required").GetArrayLength().ShouldBe(2);
+                actual.GetProperty("anyOf").GetArrayLength().ShouldBe(6);
+            }
+        }
+    }
+
     private sealed class HttpFactory(CaptureHandler handler) : IHttpClientFactory
     {public HttpClient CreateClient(string name)=>new(handler,disposeHandler:false);}
     private sealed class CaptureHandler(string reply) : HttpMessageHandler

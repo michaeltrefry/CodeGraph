@@ -11,10 +11,16 @@ public sealed class DreamSourceReader(GraphAssistant assistant,IGraphStore graph
     {
         var scope=DreamExecutionScope.Current??throw WorkException.Invalid("A source read requires a dreamer run.");
         DreamPolicy.RequireProject(scope.Actor,projectId);
+        if(arguments.ValueKind == JsonValueKind.Object && arguments.EnumerateObject().Any(p => p.Name is "project" or "project_id" or "run_id" or "session_id" or "actor"))
+            throw new WorkException(WorkErrorCodes.Forbidden,"Source tools use the server run identity; it cannot be overridden. Nothing was changed.");
+        var search=tool=="dream_search_graph"?WorkJson.Parse<DreamModelContract.SearchInput>(arguments,tool):null;
+        var source=tool=="dream_read_source"?WorkJson.Parse<DreamModelContract.SourceInput>(arguments,tool):null;
+        if(search is null&&source is null)throw new WorkException(WorkErrorCodes.Forbidden,"Unknown dream source tool.");
         var project=await work.GetProjectAsync(projectId,ct)??throw WorkException.NotFound("No such project.");
-        var repository=arguments.TryGetProperty("repository",out var r)?r.GetString():null;
-        var path=arguments.TryGetProperty("path",out var p)?p.GetString():null;
-        long? nodeId=arguments.TryGetProperty("node_id",out var n)?n.GetInt64():null;
+        var repository=search?.Repository??source?.Repository;
+        var path=source?.Path;
+        long? nodeId=source?.NodeId;
+        if(nodeId is <=0)throw WorkException.Invalid("node_id must be a positive graph node ID.");
         CodeGraph.Models.GraphNode? graphNode=null;
         if(nodeId is {} id)
         {
@@ -33,9 +39,12 @@ public sealed class DreamSourceReader(GraphAssistant assistant,IGraphStore graph
         }
         if(tool=="dream_search_graph")
         {
-            var pattern=arguments.TryGetProperty("name_pattern",out var patternArg)?patternArg.GetString()??"%":"%";
-            var label=arguments.TryGetProperty("label",out var labelArg)&&Enum.TryParse<CodeGraph.Models.NodeLabel>(labelArg.GetString(),true,out var parsed)?parsed:(CodeGraph.Models.NodeLabel?)null;
-            var limit=arguments.TryGetProperty("limit",out var limitArg)?Math.Clamp(limitArg.GetInt32(),1,50):20;
+            var pattern=search!.NamePattern;
+            CodeGraph.Models.NodeLabel? label=null;
+            if(search.Label is {} labelText)
+                label=Enum.GetNames<CodeGraph.Models.NodeLabel>().Contains(labelText,StringComparer.Ordinal)?Enum.Parse<CodeGraph.Models.NodeLabel>(labelText):throw WorkException.Invalid("label must be one of: "+string.Join(", ",Enum.GetNames<CodeGraph.Models.NodeLabel>()));
+            var limit=search.Limit;
+            if(limit is <1 or >50)throw WorkException.Invalid("limit must be 1 to 50.");
             var results=await graph.SearchNodesAsync(repository,pattern,label,limit:limit);
             return new {untrusted_data=new {repository,items=results.Select(node=>new {id=node.Id,name=node.Name,label=node.Label.ToString(),repository=node.Repository,qualified_name=node.QualifiedName,path=node.FilePath,start_line=node.StartLine,end_line=node.EndLine}),more=results.Count==limit}};
         }

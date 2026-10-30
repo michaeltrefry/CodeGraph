@@ -39,18 +39,22 @@ public sealed partial class WorkService : IKnowledgeDreamActions
         var scope = DreamPolicy.RequireScope(actor);
         DreamPolicy.RequireProject(actor, scope.ProjectId);
         var input = JsonNode.Parse(args.GetRawText()) as JsonObject ?? throw WorkException.Invalid("Tool arguments must be an object.");
-        if (input.ContainsKey("project") || input.ContainsKey("project_id") || input.ContainsKey("session_id"))
-            throw WorkException.Invalid("Dream tools use the run's project and actor; they cannot be overridden.");
+        if (input.ContainsKey("project") || input.ContainsKey("project_id") || input.ContainsKey("session_id") || input.ContainsKey("run_id") || input.ContainsKey("actor"))
+            throw new WorkException(WorkErrorCodes.Forbidden,"Dream tools use the server run's project and actor; they cannot be overridden. Nothing was changed.");
         if (tool == "dream_propose")
         {
             input["project"] = scope.ProjectId.ToString();
             input["run_id"] = scope.RunId.ToString();
-            return new { untrusted_data = true, data = await DreamProposeAsync(WorkJson.Parse<DreamProposalRequest>(JsonSerializer.SerializeToElement(input), tool), actor, null, ct) };
+            var request = WorkJson.Parse<DreamProposalRequest>(JsonSerializer.SerializeToElement(input), tool);
+            await RequireEntryAsync(request.Target, "target", scope.ProjectId.ToString(), null, ct);
+            if (request.Other is { } other) await RequireEntryAsync(other, "other", scope.ProjectId.ToString(), null, ct);
+            return new { untrusted_data = true, data = await DreamProposeAsync(request, actor, null, ct) };
         }
         if (tool is "dream_read" or "dream_lessons" or "dream_similar" or "dream_review_queue" or "dream_work_trail")
             return new { untrusted_data = true, data = await ReadBoundedDreamToolAsync(tool, input, scope, ct) };
-        var evidence = input["evidence"]?.Deserialize<List<DreamEvidence>>(WorkJson.Options) ?? throw WorkException.Invalid("Every dream write requires evidence.");
-        var prevalence = input["prevalence"]?.GetValue<string>();
+        var envelope = WorkJson.Parse<DreamWriteEvidence>(JsonSerializer.SerializeToElement(new { evidence = input["evidence"], prevalence = input["prevalence"] }), tool);
+        var evidence = envelope.Evidence;
+        var prevalence = envelope.Prevalence;
         if (evidence.Count is 0 or > 10 || string.IsNullOrWhiteSpace(prevalence) || prevalence.Length > 1000)
             throw WorkException.Invalid("Every dream write requires 1 to 10 evidence references and prevalence (1 to 1000 characters).");
         await DreamKnowledge.ValidateDreamEvidenceAsync(scope.ProjectId, evidence, ct);
@@ -133,6 +137,12 @@ public sealed partial class WorkService : IKnowledgeDreamActions
         }
         var journal = await DreamKnowledge.LastDreamJournalIdAsync(scope.ProjectId, scope.RunId, ct);
         return new { untrusted_data = true, data = result, evidence, prevalence, journal_id = journal != priorJournal ? journal : null };
+    }
+
+    private sealed class DreamWriteEvidence
+    {
+        public required List<DreamEvidence> Evidence { get; init; }
+        public required string Prevalence { get; init; }
     }
 
     private static void RefuseDreamFields(JsonObject input, params string[] allowed)
