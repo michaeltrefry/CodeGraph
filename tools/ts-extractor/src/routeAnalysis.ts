@@ -16,8 +16,11 @@ class RouteAnalysis {
   private complete = true;
   private readonly emitted = new Map<string, GraphNodeDto>();
   private readonly edgeKeys = new Set<string>();
+  private readonly jsxCache = new Map<Node, { targets: string[]; navigate?: Node }>();
   private readonly inputs: string[];
   private readonly appRoots = new Map<string, string>();
+  private readonly markerDirectories = new Set<string>();
+  private readonly frameworkImports = new Map<SourceFile, Map<string, { named: Map<string, Node[]>; namespaces: Node[] }>>();
   private readonly parsedConfigs = new Project({ useInMemoryFileSystem: true });
   constructor(private readonly model: SemanticModel, private readonly nodes: GraphNodeDto[],
     private readonly edges: PendingEdgeDto[], private readonly scope: DiscoveryScope | undefined,
@@ -34,16 +37,22 @@ class RouteAnalysis {
         directory = path.posix.dirname(directory);
       }
     }
+    for (const input of this.inputs) {
+      model.work.charge(input.length + 1);
+      if (/^(package\.json|angular\.json|tsconfig[^/]*\.json|next\.config\.[^/]+)$/.test(path.posix.basename(input))) this.markerDirectories.add(path.posix.dirname(input));
+    }
     for (const node of nodes) if (node.properties.route_kind === 'ui') this.emitted.set(node.qualifiedName, node);
   }
   run(): { complete: boolean } { this.angular(); this.react(); this.next(); return { complete: this.complete && this.reader.complete }; }
   private relative(node: Node): string { return this.model.relative(node); }
   private report(node: Node, reason: string, incomplete = false): void { if (incomplete) this.complete = false; this.diagnostic(`routeUnresolved: ${this.relative(node)}:${node.getStartLineNumber()} ${reason}`); }
   private appRoot(file: string): string {
+    this.model.work.charge(file.length + 1);
     const cached = this.appRoots.get(file); if (cached !== undefined) return cached;
     let directory = path.posix.dirname(file);
     while (directory !== '.') {
-      if (this.inputs.some(input => path.posix.dirname(input) === directory && /^(package\.json|angular\.json|tsconfig[^/]*\.json|next\.config\.[^/]+)$/.test(path.posix.basename(input)))) { this.appRoots.set(file, directory); return directory; }
+      this.model.work.charge(directory.length + 1);
+      if (this.markerDirectories.has(directory)) { this.appRoots.set(file, directory); return directory; }
       directory = path.posix.dirname(directory);
     }
     this.appRoots.set(file, '.');
@@ -57,6 +66,7 @@ class RouteAnalysis {
     return this.reader.read(absolute, true);
   }
   private value(node: Node | undefined, seen = new Set<Node>()): Node | undefined {
+    this.model.work.charge(seen.size + 1);
     if (!node || seen.has(node) || seen.size > 80) return undefined;
     seen.add(node);
     if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isSatisfiesExpression(node) || Node.isTypeAssertion(node)) return this.value(node.getExpression(), seen);
@@ -69,56 +79,109 @@ class RouteAnalysis {
   }
   private text(node: Node | undefined): string | undefined {
     const value = this.value(node);
-    return value && (Node.isStringLiteral(value) || Node.isNoSubstitutionTemplateLiteral(value)) ? value.getLiteralText() : undefined;
+    if (!value || !(Node.isStringLiteral(value) || Node.isNoSubstitutionTemplateLiteral(value))) return undefined;
+    this.model.work.charge(value.getFullWidth() + 1);
+    return value.getLiteralText();
   }
   private prop(node: Node, name: string, seen = new Set<Node>()): Node | undefined {
+    this.model.work.charge(seen.size + name.length + 1);
     const object = this.value(node);
     if (!object || seen.has(object) || !Node.isObjectLiteralExpression(object)) return undefined;
     seen.add(object); let found: Node | undefined;
+    this.model.work.charge(object.compilerNode.properties.length + 1);
     for (const prop of object.getProperties()) {
-      if (Node.isSpreadAssignment(prop)) { const candidate = this.prop(prop.getExpression(), name, new Set(seen)); if (candidate) found = candidate; }
+      this.model.work.charge(prop.getFullWidth() + 1);
+      if (Node.isSpreadAssignment(prop)) { const candidate = this.prop(prop.getExpression(), name, this.history(seen)); if (candidate) found = candidate; }
       if (Node.isPropertyAssignment(prop) && prop.getName().replace(/^['"]|['"]$/g, '') === name) found = prop.getInitializer();
       if (Node.isShorthandPropertyAssignment(prop) && prop.getName() === name) found = prop.getNameNode();
     }
     return found;
   }
   private array(node: Node | undefined, seen = new Set<Node>(), strict = false): Node[] {
+    this.model.work.charge(seen.size + 1);
     const value = this.value(node);
     if (!value || seen.has(value) || seen.size > 80 || !Node.isArrayLiteralExpression(value)) {
       if (strict && node) this.report(node, 'route array/spread is dynamic or cyclic', true);
       return [];
     }
     seen.add(value);
-    return value.getElements().flatMap(item => Node.isSpreadElement(item) ? this.array(item.getExpression(), new Set(seen), strict) : [item]);
+    this.model.work.charge(value.compilerNode.elements.length * 8 + 16);
+    const result: Node[] = [];
+    for (const item of value.getElements()) {
+      this.model.work.charge(8);
+      if (Node.isSpreadElement(item)) {
+        const expanded = this.array(item.getExpression(), this.history(seen), strict);
+        // Charge before copying an expanded shared/spread array, not after allocating its output.
+        this.model.work.charge(expanded.length * 8 + 16);
+        for (const child of expanded) result.push(child);
+      } else result.push(item);
+    }
+    return result;
+  }
+  private history(seen: Set<Node>): Set<Node> { this.model.work.charge(seen.size + 1); return new Set(seen); }
+  private layouts(ancestors: string[], handlers: string[]): string[] {
+    this.model.work.charge(ancestors.length + handlers.length + 1); return [...ancestors, ...handlers];
+  }
+  private joinPath(prefix: string, segment: string): string {
+    this.model.work.charge((prefix.length + segment.length) * 2 + 8); return joinPath(prefix, segment);
   }
   private imported(node: Node, packageName: string, name: string): boolean {
-    for (const imp of node.getSourceFile().getImportDeclarations()) {
-      if (imp.getModuleSpecifierValue() !== packageName) continue;
-      if (Node.isIdentifier(node)) {
-        if (imp.getNamedImports().some(item => item.getName() === name && sameSymbol(node, item.getAliasNode() ?? item.getNameNode()))) return true;
-      } else if (Node.isPropertyAccessExpression(node) && node.getName() === name && sameSymbol(node.getExpression(), imp.getNamespaceImport())) return true;
+    this.model.work.charge(packageName.length + name.length + 1);
+    const file = node.getSourceFile(); let packages = this.frameworkImports.get(file);
+    if (!packages) {
+      packages = new Map(); this.frameworkImports.set(file, packages);
+      for (const imp of file.getImportDeclarations()) {
+        this.model.work.charge(imp.getModuleSpecifier().getFullWidth() + 1);
+        const specifier = imp.getModuleSpecifierValue();
+        let bindings = packages.get(specifier);
+        if (!bindings) { bindings = { named: new Map(), namespaces: [] }; packages.set(specifier, bindings); }
+        for (const item of imp.getNamedImports()) {
+          this.model.work.charge(item.getFullWidth() + 1);
+          const exportedName = item.getName();
+          if (!bindings.named.has(exportedName)) bindings.named.set(exportedName, []);
+          bindings.named.get(exportedName)!.push(item.getAliasNode() ?? item.getNameNode());
+        }
+        const namespace = imp.getNamespaceImport(); if (namespace) bindings.namespaces.push(namespace);
+      }
+    }
+    const bindings = packages.get(packageName); if (!bindings) return false;
+    if (Node.isIdentifier(node)) for (const binding of bindings.named.get(name) ?? []) { this.model.work.charge(); if (sameSymbol(node, binding)) return true; }
+    if (Node.isPropertyAccessExpression(node)) {
+      this.model.work.charge(node.getNameNode().getFullWidth() + 1);
+      if (node.getName() === name) for (const namespace of bindings.namespaces) { this.model.work.charge(); if (sameSymbol(node.getExpression(), namespace)) return true; }
     }
     return false;
   }
   private edge(source: string, target: string, type: string, owner: Node, extra: Record<string, unknown> = {}): void {
+    this.model.work.charge();
     if (source === target) return;
     // Traversal may discover an edge while visiting a descendant page or route literal. Persist
     // outgoing facts with their actual source slice so signature changes replace that source's
     // edges, including shared layout chains whose endpoints both outlive the visited page.
     const declaration = this.model.byQN.get(source);
     const sourceFile = declaration ? this.relative(declaration) : this.emitted.get(source)?.filePath ?? this.relative(owner);
+    // Reserve worst-case JSON escaping before allocating the deduplication key.
+    this.model.work.charge((source.length + target.length + sourceFile.length) * 6 + type.length + 128);
+    this.properties(extra);
     const properties = { extraction_source_file: sourceFile, route_kind: 'ui', ...extra };
     const key = JSON.stringify([source, target, type, properties]);
     if (this.edgeKeys.has(key)) return;
     this.edgeKeys.add(key); this.edges.push({ sourceQN: source, targetQN: target, type, properties });
   }
+  private properties(extra: Record<string, unknown>): void {
+    for (const key in extra) { const value = extra[key]; this.model.work.charge(key.length + (typeof value === 'string' ? value.length * 6 : 1) + 8); }
+  }
   private route(owner: Node, framework: string, fullPath: string, extra: Record<string, unknown> = {}, appRoot = this.appRoot(this.relative(owner))): string {
+    this.model.work.charge(this.model.repository.length + appRoot.length + framework.length + fullPath.length * 2 + this.relative(owner).length + 192);
+    this.properties(extra);
     const qualifiedName = `ui-route:${this.model.repository}:${appRoot}:${framework}:${fullPath}`;
     if (!this.emitted.has(qualifiedName)) {
+      const sourceOwner = this.model.owner(owner);
+      this.model.work.charge(sourceOwner.length * 6 + 1);
       const node: GraphNodeDto = { label: 'Route', name: fullPath, qualifiedName, filePath: this.relative(owner),
         startLine: owner.getStartLineNumber(), endLine: owner.getEndLineNumber(), properties: {
           route_kind: 'ui', framework, full_path: fullPath, app_root: appRoot,
-          extraction_source_file: this.relative(owner), source_owner: this.model.owner(owner), ...extra } };
+          extraction_source_file: this.relative(owner), source_owner: sourceOwner, ...extra } };
       this.nodes.push(node); this.emitted.set(qualifiedName, node);
     } else Object.assign(this.emitted.get(qualifiedName)!.properties, extra);
     return qualifiedName;
@@ -130,9 +193,13 @@ class RouteAnalysis {
       (Node.isPropertyAccessExpression(expression) && ['forRoot', 'forChild'].includes(expression.getName()) && this.imported(expression.getExpression(), '@angular/router', 'RouterModule'));
   }
   private angular(): void {
-    const registrations = this.model.files.flatMap(file => file.getDescendantsOfKind(SyntaxKind.CallExpression).filter(call => this.angularRegistration(call)));
+    const registrations = this.model.files.flatMap(file => {
+      this.model.work.charge(file.getFullWidth() + 1);
+      return file.getDescendantsOfKind(SyntaxKind.CallExpression).filter(call => this.angularRegistration(call));
+    });
     const consumed = new Set<Node>();
     const rootsInModule = (module: Node | undefined, seen = new Set<Node>()): Node[] => {
+      this.model.work.charge(seen.size + 1);
       if (!module || seen.has(module) || seen.size > 60) return [];
       seen.add(module);
       const value = this.value(module);
@@ -146,7 +213,10 @@ class RouteAnalysis {
         for (const imp of this.array(this.prop(metadata, 'imports'))) {
           if (Node.isCallExpression(imp) && this.angularRegistration(imp)) {
             const root = this.value(imp.getArguments()[0]); if (root) roots.push(root);
-          } else roots.push(...rootsInModule(this.model.resolve(imp), new Set(seen)));
+          } else {
+            const nested = rootsInModule(this.model.resolve(imp), this.history(seen));
+            this.model.work.charge(nested.length + 1); for (const root of nested) roots.push(root);
+          }
         }
       }
       return roots;
@@ -161,6 +231,7 @@ class RouteAnalysis {
         return { target, arrays: rootsInModule(target) };
       }
       const loader = this.value(node) ?? node;
+      this.model.work.charge(loader.getFullWidth() + 1);
       const imports = [loader, ...loader.getDescendants()].filter(Node.isCallExpression).filter(call => call.getExpression().getKind() === SyntaxKind.ImportKeyword);
       const load = imports.length === 1 ? imports[0] : undefined;
       const specifier = load ? this.text(load.getArguments()[0]) : undefined;
@@ -184,16 +255,18 @@ class RouteAnalysis {
       return { target, arrays: rootsInModule(target) };
     };
     const discover = (array: Node, seen = new Set<Node>()): void => {
+      this.model.work.charge(seen.size + 1);
       const value = this.value(array); if (!value || seen.has(value) || seen.size > 80) return; seen.add(value);
       for (const item of this.array(value, new Set(), true)) {
         const child = this.value(this.prop(item, 'children'));
-        if (child) { consumed.add(child); discover(child, new Set(seen)); }
+        if (child) { consumed.add(child); discover(child, this.history(seen)); }
         const load = this.prop(item, 'loadChildren');
-        if (load) for (const nested of lazy(load).arrays) { consumed.add(nested); discover(nested, new Set(seen)); }
+        if (load) for (const nested of lazy(load).arrays) { consumed.add(nested); discover(nested, this.history(seen)); }
       }
     };
     for (const registration of registrations) { const array = registration.getArguments()[0]; if (array) discover(array); }
     const walk = (array: Node, prefix: string, parent: string | undefined, app: string, seen = new Set<Node>(), layouts: string[] = []): void => {
+      this.model.work.charge(seen.size + 1);
       const value = this.value(array); if (!value || seen.has(value) || seen.size > 80) { this.report(array, 'Angular route cycle or traversal limit', true); return; }
       if (!Node.isArrayLiteralExpression(value)) { this.report(array, 'Angular route array is not statically enumerable', true); return; }
       seen.add(value);
@@ -201,7 +274,7 @@ class RouteAnalysis {
         const item = this.value(raw); if (!item || !Node.isObjectLiteralExpression(item)) continue;
         const pathNode = this.prop(item, 'path'); const segment = pathNode ? this.text(pathNode) : '';
         if (segment === undefined) { this.report(item, 'dynamic Angular route path', true); continue; }
-        const fullPath = joinPath(prefix, segment); const redirectNode = this.prop(item, 'redirectTo');
+        const fullPath = this.joinPath(prefix, segment); const redirectNode = this.prop(item, 'redirectTo');
         const route = this.route(item, 'angular', fullPath, { ...(redirectNode ? { redirect_to: this.text(redirectNode) ?? '(dynamic)' } : {}), ...(segment === '' ? { empty_path: true } : {}) }, app);
         if (parent) this.edge(parent, route, 'RENDERS', item);
         const component = this.model.target(this.prop(item, 'component'));
@@ -212,7 +285,8 @@ class RouteAnalysis {
           const resolved = lazy(load); const target = resolved.target && this.model.declarations.get(resolved.target);
           if (target) this.edge(route, target, 'HANDLES', item, { lazy: true });
           if (key === 'loadComponent' && target) handlers.push(target);
-          lazyChildren.push(...resolved.arrays);
+          this.model.work.charge(resolved.arrays.length + 1);
+          for (const child of resolved.arrays) lazyChildren.push(child);
         }
         const children = this.prop(item, 'children');
         for (const handler of handlers) {
@@ -220,9 +294,9 @@ class RouteAnalysis {
           if (children || lazyChildren.length) this.edge(route, handler, 'RENDERS', item, { layout: true });
           for (const layout of layouts) this.edge(layout, handler, 'RENDERS', item, { angular_route_outlet: true });
         }
-        const ancestors = [...layouts, ...handlers];
-        if (children) walk(children, fullPath, route, app, new Set(seen), ancestors);
-        for (const child of lazyChildren) walk(child, fullPath, route, app, new Set(seen), ancestors);
+        const ancestors = this.layouts(layouts, handlers);
+        if (children) walk(children, fullPath, route, app, this.history(seen), ancestors);
+        for (const child of lazyChildren) walk(child, fullPath, route, app, this.history(seen), ancestors);
       }
     };
     for (const registration of registrations) {
@@ -245,24 +319,41 @@ class RouteAnalysis {
     const attr = opening.getAttribute(name); if (!attr || !Node.isJsxAttribute(attr)) return undefined;
     const init = attr.getInitializer(); return init && Node.isJsxExpression(init) ? init.getExpression() : init;
   }
-  private renderTargets(expression: Node | undefined): string[] {
-    const value = this.value(expression); if (!value) return [];
-    const targets = new Set<string>();
-    for (const child of [value, ...value.getDescendants()]) {
-      if (!Node.isJsxElement(child) && !Node.isJsxSelfClosingElement(child)) continue;
-      const target = this.model.target(this.jsxName(child)); if (target) targets.add(target);
+  private jsxFacts(expression: Node | undefined): { targets: string[]; navigate?: Node } {
+    const value = this.value(expression); if (!value) return { targets: [] };
+    const cached = this.jsxCache.get(value); if (cached) return cached;
+    const targets = new Set<string>(); let navigate: Node | undefined;
+    this.model.work.charge(8); const pending = [value];
+    while (pending.length) {
+      this.model.work.charge(); const child = pending.pop()!;
+      if (Node.isJsxElement(child) || Node.isJsxSelfClosingElement(child)) {
+        const target = this.model.target(this.jsxName(child));
+        if (target) { this.model.work.charge(target.length + 1); targets.add(target); }
+        if (!navigate && this.routerTag(child, 'Navigate')) navigate = child;
+      }
+      // Preserve source order, charging each reference before materializing/copying children.
+      const children: Node[] = [];
+      child.forEachChild(item => { this.model.work.charge(8); children.push(item); });
+      for (let index = children.length - 1; index >= 0; index--) { this.model.work.charge(8); pending.push(children[index]); }
     }
-    return [...targets];
+    this.model.work.charge(targets.size + 1);
+    const result = { targets: [...targets], navigate }; this.jsxCache.set(value, result); return result;
+  }
+  private renderTargets(expression: Node | undefined): string[] {
+    const targets = this.jsxFacts(expression).targets;
+    this.model.work.charge(targets.length + 1); return [...targets];
   }
   private react(): void {
     const routerApi = (node: Node, name: string): boolean => ['react-router', 'react-router-dom'].some(pkg => this.imported(node, pkg, name));
     for (const file of this.model.files) {
+      this.model.work.charge(file.getFullWidth() + 1);
       const tags = file.getDescendants().filter(node => (Node.isJsxElement(node) || Node.isJsxSelfClosingElement(node)) && this.routerTag(node, 'Route'));
       const walk = (node: Node, prefix: string, parent?: string, layouts: string[] = [], mount = prefix): void => {
+      this.model.work.charge(layouts.length + 1);
         const segmentNode = this.jsxProp(node, 'path'); const segment = segmentNode ? this.text(segmentNode) : '';
         if (segment === undefined) { this.report(node, 'dynamic React Router path', true); return; }
-        const fullPath = segment.startsWith('/') ? joinPath(mount, segment.slice(1)) : joinPath(prefix, segment); const element = this.jsxProp(node, 'element');
-        const navigate = element && [element, ...element.getDescendants()].find(item => this.routerTag(item, 'Navigate'));
+        const fullPath = segment.startsWith('/') ? this.joinPath(mount, segment.slice(1)) : this.joinPath(prefix, segment); const element = this.jsxProp(node, 'element');
+        const navigate = this.jsxFacts(element).navigate;
         const targets = this.renderTargets(element); const component = this.model.target(this.jsxProp(node, 'Component')); if (component) targets.push(component);
         const opening = Node.isJsxElement(node) ? node.getOpeningElement() : node;
         const index = (Node.isJsxOpeningElement(opening) || Node.isJsxSelfClosingElement(opening)) && !!opening.getAttribute('index');
@@ -270,8 +361,9 @@ class RouteAnalysis {
         if (parent) this.edge(parent, route, 'RENDERS', node);
         for (const target of targets) { this.edge(route, target, 'HANDLES', node); for (const layout of layouts) this.edge(layout, target, 'RENDERS', node); }
         if (Node.isJsxElement(node)) {
+          this.model.work.charge(node.getFullWidth() + 1);
           const nested = node.getDescendants().filter(item => (Node.isJsxElement(item) || Node.isJsxSelfClosingElement(item)) && this.routerTag(item, 'Route') && item.getAncestors().find(ancestor => this.routerTag(ancestor, 'Route')) === node);
-          for (const child of nested) walk(child, fullPath, route, [...layouts, ...targets], mount);
+          for (const child of nested) walk(child, fullPath, route, this.layouts(layouts, targets), mount);
         }
       };
       for (const tag of tags) {
@@ -283,6 +375,7 @@ class RouteAnalysis {
         const baseNode = router ? this.jsxProp(router, 'basename') : options && this.prop(options, 'basename'); const base = baseNode ? this.text(baseNode) : '/';
         if (base === undefined) this.report(tag, 'dynamic React Router basename', true); else walk(tag, base);
       }
+      this.model.work.charge(file.getFullWidth() + 1);
       for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
         if (!['createBrowserRouter', 'createHashRouter', 'createMemoryRouter', 'useRoutes'].some(name => routerApi(call.getExpression(), name))) continue;
         const argument = call.getArguments()[0];
@@ -291,6 +384,7 @@ class RouteAnalysis {
         const baseNode = call.getArguments()[1] && this.prop(call.getArguments()[1], 'basename'); const base = baseNode ? this.text(baseNode) : '/';
         if (base === undefined) { this.report(call, 'dynamic React Router basename', true); continue; }
         const walkObject = (array: Node | undefined, prefix: string, parent?: string, layouts: string[] = [], seen = new Set<Node>()): void => {
+      this.model.work.charge(seen.size + 1);
           if (!array) return;
           const value = this.value(array);
           if (!value || seen.has(value) || seen.size > 80) { this.report(array, 'React Router object array is dynamic or cyclic', true); return; }
@@ -298,13 +392,13 @@ class RouteAnalysis {
           for (const item of this.array(value, new Set(), true)) {
             const pathNode = this.prop(item, 'path'); const segment = pathNode ? this.text(pathNode) : '';
             if (segment === undefined) { this.report(item, 'dynamic React Router object path', true); continue; }
-            const fullPath = segment.startsWith('/') ? joinPath(base, segment.slice(1)) : joinPath(prefix, segment); const element = this.prop(item, 'element'); const targets = this.renderTargets(element);
+            const fullPath = segment.startsWith('/') ? this.joinPath(base, segment.slice(1)) : this.joinPath(prefix, segment); const element = this.prop(item, 'element'); const targets = this.renderTargets(element);
             const target = this.model.target(this.prop(item, 'Component')); if (target) targets.push(target);
-            const navigate = element && [element, ...element.getDescendants()].find(node => this.routerTag(node, 'Navigate'));
+            const navigate = this.jsxFacts(element).navigate;
             const route = this.route(item, 'react-router', fullPath, { ...(this.prop(item, 'index')?.getText() === 'true' ? { index: true } : {}), ...(navigate ? { redirect_to: this.text(this.jsxProp(navigate, 'to')) ?? '(dynamic)' } : {}) });
             if (parent) this.edge(parent, route, 'RENDERS', item);
             for (const target of targets) { this.edge(route, target, 'HANDLES', item); for (const layout of layouts) this.edge(layout, target, 'RENDERS', item); }
-            walkObject(this.prop(item, 'children'), fullPath, route, [...layouts, ...targets], new Set(seen));
+            walkObject(this.prop(item, 'children'), fullPath, route, this.layouts(layouts, targets), this.history(seen));
           }
         };
         walkObject(call.getArguments()[0], base);
@@ -316,6 +410,7 @@ class RouteAnalysis {
     const configByRoot = new Map<string, { base?: string; file: string }>();
     for (const config of configs) {
       const text = this.read(config); if (text === undefined) continue;
+      this.model.work.charge(text.length + 1);
       const source = this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true });
       let expression: Node | undefined = source.getExportAssignments()[0]?.getExpression();
       if (!expression) expression = source.getDescendantsOfKind(SyntaxKind.BinaryExpression).find(node => node.getLeft().getText() === 'module.exports')?.getRight();
@@ -338,6 +433,7 @@ class RouteAnalysis {
     const nextRoots = new Set(configByRoot.keys());
     for (const input of this.inputs.filter(file => path.posix.basename(file) === 'package.json')) {
       const text = this.read(input); if (!text) continue;
+      this.model.work.charge(text.length + 1);
       try { const pkg = JSON.parse(text); if (pkg.dependencies?.next || pkg.devDependencies?.next) nextRoots.add(path.posix.dirname(input)); } catch { /* Workspace discovery owns malformed manifests. */ }
     }
     for (const file of this.model.files) if (file.getImportDeclarations().some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue()))) nextRoots.add(this.appRoot(this.relative(file)));
@@ -347,9 +443,11 @@ class RouteAnalysis {
       const within = appRoot === '.' ? relative : relative.slice(appRoot.length + 1);
       const match = /^(?:src\/)?app\/(.*)page\.(?:jsx?|tsx?)$/.exec(within); if (!match) continue;
       const configuration = configByRoot.get(appRoot); if (configuration && configuration.base === undefined) continue;
+      this.model.work.charge(match[1].length + 1);
       const segments = match[1].split('/').filter(Boolean);
       const urlSegments = segments.filter(segment => !/^\(.*\)$/.test(segment) && !segment.startsWith('@'));
-      const fullPath = joinPath(configuration?.base ?? '/', urlSegments.join('/'));
+      this.model.work.charge(match[1].length + urlSegments.length + 1);
+      const fullPath = this.joinPath(configuration?.base ?? '/', urlSegments.join('/'));
       const page = this.model.exported(file, 'default'); const pageQN = page && this.model.declarations.get(page);
       if (!pageQN) { this.report(file, 'Next.js page default export unresolved'); continue; }
       const route = this.route(file, 'nextjs', fullPath, { ...(configuration ? { configuration_file: configuration.file } : {}) }, appRoot);
@@ -357,7 +455,9 @@ class RouteAnalysis {
       const appDirectory = relative.slice(0, relative.length - match[1].length - path.posix.basename(relative).length);
       let previous: string | undefined;
       for (let depth = 0; depth <= segments.length; depth++) {
+        this.model.work.charge(appDirectory.length + match[1].length + depth + 1);
         const directory = `${appDirectory}${segments.slice(0, depth).join('/')}`.replace(/\/$/, '');
+        this.model.work.charge((directory.length + 32) * 4);
         const layoutFile = ['tsx', 'ts', 'jsx', 'js'].map(extension => this.model.byPath.get(`${directory}/layout.${extension}`)).find(Boolean);
         const layout = layoutFile && this.model.exported(layoutFile, 'default'); const layoutQN = layout && this.model.declarations.get(layout); if (!layoutQN) continue;
         this.edge(route, layoutQN, 'RENDERS', file, { layout: true });

@@ -54,7 +54,10 @@ class RouteAnalysis {
         this.complete = true;
         this.emitted = new Map();
         this.edgeKeys = new Set();
+        this.jsxCache = new Map();
         this.appRoots = new Map();
+        this.markerDirectories = new Set();
+        this.frameworkImports = new Map();
         this.parsedConfigs = new ts_morph_1.Project({ useInMemoryFileSystem: true });
         this.inputs = scope ? scope.absoluteFiles().map(file => path.relative(model.root, file).replace(/\\/g, '/')) : model.files.map(file => model.relative(file));
         if (!scope)
@@ -71,6 +74,11 @@ class RouteAnalysis {
                     directory = path.posix.dirname(directory);
                 }
             }
+        for (const input of this.inputs) {
+            model.work.charge(input.length + 1);
+            if (/^(package\.json|angular\.json|tsconfig[^/]*\.json|next\.config\.[^/]+)$/.test(path.posix.basename(input)))
+                this.markerDirectories.add(path.posix.dirname(input));
+        }
         for (const node of nodes)
             if (node.properties.route_kind === 'ui')
                 this.emitted.set(node.qualifiedName, node);
@@ -80,12 +88,14 @@ class RouteAnalysis {
     report(node, reason, incomplete = false) { if (incomplete)
         this.complete = false; this.diagnostic(`routeUnresolved: ${this.relative(node)}:${node.getStartLineNumber()} ${reason}`); }
     appRoot(file) {
+        this.model.work.charge(file.length + 1);
         const cached = this.appRoots.get(file);
         if (cached !== undefined)
             return cached;
         let directory = path.posix.dirname(file);
         while (directory !== '.') {
-            if (this.inputs.some(input => path.posix.dirname(input) === directory && /^(package\.json|angular\.json|tsconfig[^/]*\.json|next\.config\.[^/]+)$/.test(path.posix.basename(input)))) {
+            this.model.work.charge(directory.length + 1);
+            if (this.markerDirectories.has(directory)) {
                 this.appRoots.set(file, directory);
                 return directory;
             }
@@ -104,6 +114,7 @@ class RouteAnalysis {
         return this.reader.read(absolute, true);
     }
     value(node, seen = new Set()) {
+        this.model.work.charge(seen.size + 1);
         if (!node || seen.has(node) || seen.size > 80)
             return undefined;
         seen.add(node);
@@ -119,17 +130,23 @@ class RouteAnalysis {
     }
     text(node) {
         const value = this.value(node);
-        return value && (ts_morph_1.Node.isStringLiteral(value) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(value)) ? value.getLiteralText() : undefined;
+        if (!value || !(ts_morph_1.Node.isStringLiteral(value) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(value)))
+            return undefined;
+        this.model.work.charge(value.getFullWidth() + 1);
+        return value.getLiteralText();
     }
     prop(node, name, seen = new Set()) {
+        this.model.work.charge(seen.size + name.length + 1);
         const object = this.value(node);
         if (!object || seen.has(object) || !ts_morph_1.Node.isObjectLiteralExpression(object))
             return undefined;
         seen.add(object);
         let found;
+        this.model.work.charge(object.compilerNode.properties.length + 1);
         for (const prop of object.getProperties()) {
+            this.model.work.charge(prop.getFullWidth() + 1);
             if (ts_morph_1.Node.isSpreadAssignment(prop)) {
-                const candidate = this.prop(prop.getExpression(), name, new Set(seen));
+                const candidate = this.prop(prop.getExpression(), name, this.history(seen));
                 if (candidate)
                     found = candidate;
             }
@@ -141,6 +158,7 @@ class RouteAnalysis {
         return found;
     }
     array(node, seen = new Set(), strict = false) {
+        this.model.work.charge(seen.size + 1);
         const value = this.value(node);
         if (!value || seen.has(value) || seen.size > 80 || !ts_morph_1.Node.isArrayLiteralExpression(value)) {
             if (strict && node)
@@ -148,22 +166,80 @@ class RouteAnalysis {
             return [];
         }
         seen.add(value);
-        return value.getElements().flatMap(item => ts_morph_1.Node.isSpreadElement(item) ? this.array(item.getExpression(), new Set(seen), strict) : [item]);
+        this.model.work.charge(value.compilerNode.elements.length * 8 + 16);
+        const result = [];
+        for (const item of value.getElements()) {
+            this.model.work.charge(8);
+            if (ts_morph_1.Node.isSpreadElement(item)) {
+                const expanded = this.array(item.getExpression(), this.history(seen), strict);
+                // Charge before copying an expanded shared/spread array, not after allocating its output.
+                this.model.work.charge(expanded.length * 8 + 16);
+                for (const child of expanded)
+                    result.push(child);
+            }
+            else
+                result.push(item);
+        }
+        return result;
+    }
+    history(seen) { this.model.work.charge(seen.size + 1); return new Set(seen); }
+    layouts(ancestors, handlers) {
+        this.model.work.charge(ancestors.length + handlers.length + 1);
+        return [...ancestors, ...handlers];
+    }
+    joinPath(prefix, segment) {
+        this.model.work.charge((prefix.length + segment.length) * 2 + 8);
+        return joinPath(prefix, segment);
     }
     imported(node, packageName, name) {
-        for (const imp of node.getSourceFile().getImportDeclarations()) {
-            if (imp.getModuleSpecifierValue() !== packageName)
-                continue;
-            if (ts_morph_1.Node.isIdentifier(node)) {
-                if (imp.getNamedImports().some(item => item.getName() === name && (0, semanticModel_1.sameSymbol)(node, item.getAliasNode() ?? item.getNameNode())))
+        this.model.work.charge(packageName.length + name.length + 1);
+        const file = node.getSourceFile();
+        let packages = this.frameworkImports.get(file);
+        if (!packages) {
+            packages = new Map();
+            this.frameworkImports.set(file, packages);
+            for (const imp of file.getImportDeclarations()) {
+                this.model.work.charge(imp.getModuleSpecifier().getFullWidth() + 1);
+                const specifier = imp.getModuleSpecifierValue();
+                let bindings = packages.get(specifier);
+                if (!bindings) {
+                    bindings = { named: new Map(), namespaces: [] };
+                    packages.set(specifier, bindings);
+                }
+                for (const item of imp.getNamedImports()) {
+                    this.model.work.charge(item.getFullWidth() + 1);
+                    const exportedName = item.getName();
+                    if (!bindings.named.has(exportedName))
+                        bindings.named.set(exportedName, []);
+                    bindings.named.get(exportedName).push(item.getAliasNode() ?? item.getNameNode());
+                }
+                const namespace = imp.getNamespaceImport();
+                if (namespace)
+                    bindings.namespaces.push(namespace);
+            }
+        }
+        const bindings = packages.get(packageName);
+        if (!bindings)
+            return false;
+        if (ts_morph_1.Node.isIdentifier(node))
+            for (const binding of bindings.named.get(name) ?? []) {
+                this.model.work.charge();
+                if ((0, semanticModel_1.sameSymbol)(node, binding))
                     return true;
             }
-            else if (ts_morph_1.Node.isPropertyAccessExpression(node) && node.getName() === name && (0, semanticModel_1.sameSymbol)(node.getExpression(), imp.getNamespaceImport()))
-                return true;
+        if (ts_morph_1.Node.isPropertyAccessExpression(node)) {
+            this.model.work.charge(node.getNameNode().getFullWidth() + 1);
+            if (node.getName() === name)
+                for (const namespace of bindings.namespaces) {
+                    this.model.work.charge();
+                    if ((0, semanticModel_1.sameSymbol)(node.getExpression(), namespace))
+                        return true;
+                }
         }
         return false;
     }
     edge(source, target, type, owner, extra = {}) {
+        this.model.work.charge();
         if (source === target)
             return;
         // Traversal may discover an edge while visiting a descendant page or route literal. Persist
@@ -171,6 +247,9 @@ class RouteAnalysis {
         // edges, including shared layout chains whose endpoints both outlive the visited page.
         const declaration = this.model.byQN.get(source);
         const sourceFile = declaration ? this.relative(declaration) : this.emitted.get(source)?.filePath ?? this.relative(owner);
+        // Reserve worst-case JSON escaping before allocating the deduplication key.
+        this.model.work.charge((source.length + target.length + sourceFile.length) * 6 + type.length + 128);
+        this.properties(extra);
         const properties = { extraction_source_file: sourceFile, route_kind: 'ui', ...extra };
         const key = JSON.stringify([source, target, type, properties]);
         if (this.edgeKeys.has(key))
@@ -178,13 +257,23 @@ class RouteAnalysis {
         this.edgeKeys.add(key);
         this.edges.push({ sourceQN: source, targetQN: target, type, properties });
     }
+    properties(extra) {
+        for (const key in extra) {
+            const value = extra[key];
+            this.model.work.charge(key.length + (typeof value === 'string' ? value.length * 6 : 1) + 8);
+        }
+    }
     route(owner, framework, fullPath, extra = {}, appRoot = this.appRoot(this.relative(owner))) {
+        this.model.work.charge(this.model.repository.length + appRoot.length + framework.length + fullPath.length * 2 + this.relative(owner).length + 192);
+        this.properties(extra);
         const qualifiedName = `ui-route:${this.model.repository}:${appRoot}:${framework}:${fullPath}`;
         if (!this.emitted.has(qualifiedName)) {
+            const sourceOwner = this.model.owner(owner);
+            this.model.work.charge(sourceOwner.length * 6 + 1);
             const node = { label: 'Route', name: fullPath, qualifiedName, filePath: this.relative(owner),
                 startLine: owner.getStartLineNumber(), endLine: owner.getEndLineNumber(), properties: {
                     route_kind: 'ui', framework, full_path: fullPath, app_root: appRoot,
-                    extraction_source_file: this.relative(owner), source_owner: this.model.owner(owner), ...extra
+                    extraction_source_file: this.relative(owner), source_owner: sourceOwner, ...extra
                 } };
             this.nodes.push(node);
             this.emitted.set(qualifiedName, node);
@@ -201,9 +290,13 @@ class RouteAnalysis {
             (ts_morph_1.Node.isPropertyAccessExpression(expression) && ['forRoot', 'forChild'].includes(expression.getName()) && this.imported(expression.getExpression(), '@angular/router', 'RouterModule'));
     }
     angular() {
-        const registrations = this.model.files.flatMap(file => file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression).filter(call => this.angularRegistration(call)));
+        const registrations = this.model.files.flatMap(file => {
+            this.model.work.charge(file.getFullWidth() + 1);
+            return file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression).filter(call => this.angularRegistration(call));
+        });
         const consumed = new Set();
         const rootsInModule = (module, seen = new Set()) => {
+            this.model.work.charge(seen.size + 1);
             if (!module || seen.has(module) || seen.size > 60)
                 return [];
             seen.add(module);
@@ -226,8 +319,12 @@ class RouteAnalysis {
                         if (root)
                             roots.push(root);
                     }
-                    else
-                        roots.push(...rootsInModule(this.model.resolve(imp), new Set(seen)));
+                    else {
+                        const nested = rootsInModule(this.model.resolve(imp), this.history(seen));
+                        this.model.work.charge(nested.length + 1);
+                        for (const root of nested)
+                            roots.push(root);
+                    }
                 }
             }
             return roots;
@@ -243,6 +340,7 @@ class RouteAnalysis {
                 return { target, arrays: rootsInModule(target) };
             }
             const loader = this.value(node) ?? node;
+            this.model.work.charge(loader.getFullWidth() + 1);
             const imports = [loader, ...loader.getDescendants()].filter(ts_morph_1.Node.isCallExpression).filter(call => call.getExpression().getKind() === ts_morph_1.SyntaxKind.ImportKeyword);
             const load = imports.length === 1 ? imports[0] : undefined;
             const specifier = load ? this.text(load.getArguments()[0]) : undefined;
@@ -272,6 +370,7 @@ class RouteAnalysis {
             return { target, arrays: rootsInModule(target) };
         };
         const discover = (array, seen = new Set()) => {
+            this.model.work.charge(seen.size + 1);
             const value = this.value(array);
             if (!value || seen.has(value) || seen.size > 80)
                 return;
@@ -280,13 +379,13 @@ class RouteAnalysis {
                 const child = this.value(this.prop(item, 'children'));
                 if (child) {
                     consumed.add(child);
-                    discover(child, new Set(seen));
+                    discover(child, this.history(seen));
                 }
                 const load = this.prop(item, 'loadChildren');
                 if (load)
                     for (const nested of lazy(load).arrays) {
                         consumed.add(nested);
-                        discover(nested, new Set(seen));
+                        discover(nested, this.history(seen));
                     }
             }
         };
@@ -296,6 +395,7 @@ class RouteAnalysis {
                 discover(array);
         }
         const walk = (array, prefix, parent, app, seen = new Set(), layouts = []) => {
+            this.model.work.charge(seen.size + 1);
             const value = this.value(array);
             if (!value || seen.has(value) || seen.size > 80) {
                 this.report(array, 'Angular route cycle or traversal limit', true);
@@ -316,7 +416,7 @@ class RouteAnalysis {
                     this.report(item, 'dynamic Angular route path', true);
                     continue;
                 }
-                const fullPath = joinPath(prefix, segment);
+                const fullPath = this.joinPath(prefix, segment);
                 const redirectNode = this.prop(item, 'redirectTo');
                 const route = this.route(item, 'angular', fullPath, { ...(redirectNode ? { redirect_to: this.text(redirectNode) ?? '(dynamic)' } : {}), ...(segment === '' ? { empty_path: true } : {}) }, app);
                 if (parent)
@@ -334,7 +434,9 @@ class RouteAnalysis {
                         this.edge(route, target, 'HANDLES', item, { lazy: true });
                     if (key === 'loadComponent' && target)
                         handlers.push(target);
-                    lazyChildren.push(...resolved.arrays);
+                    this.model.work.charge(resolved.arrays.length + 1);
+                    for (const child of resolved.arrays)
+                        lazyChildren.push(child);
                 }
                 const children = this.prop(item, 'children');
                 for (const handler of handlers) {
@@ -345,11 +447,11 @@ class RouteAnalysis {
                     for (const layout of layouts)
                         this.edge(layout, handler, 'RENDERS', item, { angular_route_outlet: true });
                 }
-                const ancestors = [...layouts, ...handlers];
+                const ancestors = this.layouts(layouts, handlers);
                 if (children)
-                    walk(children, fullPath, route, app, new Set(seen), ancestors);
+                    walk(children, fullPath, route, app, this.history(seen), ancestors);
                 for (const child of lazyChildren)
-                    walk(child, fullPath, route, app, new Set(seen), ancestors);
+                    walk(child, fullPath, route, app, this.history(seen), ancestors);
             }
         };
         for (const registration of registrations) {
@@ -379,34 +481,63 @@ class RouteAnalysis {
         const init = attr.getInitializer();
         return init && ts_morph_1.Node.isJsxExpression(init) ? init.getExpression() : init;
     }
-    renderTargets(expression) {
+    jsxFacts(expression) {
         const value = this.value(expression);
         if (!value)
-            return [];
+            return { targets: [] };
+        const cached = this.jsxCache.get(value);
+        if (cached)
+            return cached;
         const targets = new Set();
-        for (const child of [value, ...value.getDescendants()]) {
-            if (!ts_morph_1.Node.isJsxElement(child) && !ts_morph_1.Node.isJsxSelfClosingElement(child))
-                continue;
-            const target = this.model.target(this.jsxName(child));
-            if (target)
-                targets.add(target);
+        let navigate;
+        this.model.work.charge(8);
+        const pending = [value];
+        while (pending.length) {
+            this.model.work.charge();
+            const child = pending.pop();
+            if (ts_morph_1.Node.isJsxElement(child) || ts_morph_1.Node.isJsxSelfClosingElement(child)) {
+                const target = this.model.target(this.jsxName(child));
+                if (target) {
+                    this.model.work.charge(target.length + 1);
+                    targets.add(target);
+                }
+                if (!navigate && this.routerTag(child, 'Navigate'))
+                    navigate = child;
+            }
+            // Preserve source order, charging each reference before materializing/copying children.
+            const children = [];
+            child.forEachChild(item => { this.model.work.charge(8); children.push(item); });
+            for (let index = children.length - 1; index >= 0; index--) {
+                this.model.work.charge(8);
+                pending.push(children[index]);
+            }
         }
+        this.model.work.charge(targets.size + 1);
+        const result = { targets: [...targets], navigate };
+        this.jsxCache.set(value, result);
+        return result;
+    }
+    renderTargets(expression) {
+        const targets = this.jsxFacts(expression).targets;
+        this.model.work.charge(targets.length + 1);
         return [...targets];
     }
     react() {
         const routerApi = (node, name) => ['react-router', 'react-router-dom'].some(pkg => this.imported(node, pkg, name));
         for (const file of this.model.files) {
+            this.model.work.charge(file.getFullWidth() + 1);
             const tags = file.getDescendants().filter(node => (ts_morph_1.Node.isJsxElement(node) || ts_morph_1.Node.isJsxSelfClosingElement(node)) && this.routerTag(node, 'Route'));
             const walk = (node, prefix, parent, layouts = [], mount = prefix) => {
+                this.model.work.charge(layouts.length + 1);
                 const segmentNode = this.jsxProp(node, 'path');
                 const segment = segmentNode ? this.text(segmentNode) : '';
                 if (segment === undefined) {
                     this.report(node, 'dynamic React Router path', true);
                     return;
                 }
-                const fullPath = segment.startsWith('/') ? joinPath(mount, segment.slice(1)) : joinPath(prefix, segment);
+                const fullPath = segment.startsWith('/') ? this.joinPath(mount, segment.slice(1)) : this.joinPath(prefix, segment);
                 const element = this.jsxProp(node, 'element');
-                const navigate = element && [element, ...element.getDescendants()].find(item => this.routerTag(item, 'Navigate'));
+                const navigate = this.jsxFacts(element).navigate;
                 const targets = this.renderTargets(element);
                 const component = this.model.target(this.jsxProp(node, 'Component'));
                 if (component)
@@ -422,9 +553,10 @@ class RouteAnalysis {
                         this.edge(layout, target, 'RENDERS', node);
                 }
                 if (ts_morph_1.Node.isJsxElement(node)) {
+                    this.model.work.charge(node.getFullWidth() + 1);
                     const nested = node.getDescendants().filter(item => (ts_morph_1.Node.isJsxElement(item) || ts_morph_1.Node.isJsxSelfClosingElement(item)) && this.routerTag(item, 'Route') && item.getAncestors().find(ancestor => this.routerTag(ancestor, 'Route')) === node);
                     for (const child of nested)
-                        walk(child, fullPath, route, [...layouts, ...targets], mount);
+                        walk(child, fullPath, route, this.layouts(layouts, targets), mount);
                 }
             };
             for (const tag of tags) {
@@ -441,6 +573,7 @@ class RouteAnalysis {
                 else
                     walk(tag, base);
             }
+            this.model.work.charge(file.getFullWidth() + 1);
             for (const call of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
                 if (!['createBrowserRouter', 'createHashRouter', 'createMemoryRouter', 'useRoutes'].some(name => routerApi(call.getExpression(), name)))
                     continue;
@@ -455,6 +588,7 @@ class RouteAnalysis {
                     continue;
                 }
                 const walkObject = (array, prefix, parent, layouts = [], seen = new Set()) => {
+                    this.model.work.charge(seen.size + 1);
                     if (!array)
                         return;
                     const value = this.value(array);
@@ -470,13 +604,13 @@ class RouteAnalysis {
                             this.report(item, 'dynamic React Router object path', true);
                             continue;
                         }
-                        const fullPath = segment.startsWith('/') ? joinPath(base, segment.slice(1)) : joinPath(prefix, segment);
+                        const fullPath = segment.startsWith('/') ? this.joinPath(base, segment.slice(1)) : this.joinPath(prefix, segment);
                         const element = this.prop(item, 'element');
                         const targets = this.renderTargets(element);
                         const target = this.model.target(this.prop(item, 'Component'));
                         if (target)
                             targets.push(target);
-                        const navigate = element && [element, ...element.getDescendants()].find(node => this.routerTag(node, 'Navigate'));
+                        const navigate = this.jsxFacts(element).navigate;
                         const route = this.route(item, 'react-router', fullPath, { ...(this.prop(item, 'index')?.getText() === 'true' ? { index: true } : {}), ...(navigate ? { redirect_to: this.text(this.jsxProp(navigate, 'to')) ?? '(dynamic)' } : {}) });
                         if (parent)
                             this.edge(parent, route, 'RENDERS', item);
@@ -485,7 +619,7 @@ class RouteAnalysis {
                             for (const layout of layouts)
                                 this.edge(layout, target, 'RENDERS', item);
                         }
-                        walkObject(this.prop(item, 'children'), fullPath, route, [...layouts, ...targets], new Set(seen));
+                        walkObject(this.prop(item, 'children'), fullPath, route, this.layouts(layouts, targets), this.history(seen));
                     }
                 };
                 walkObject(call.getArguments()[0], base);
@@ -499,6 +633,7 @@ class RouteAnalysis {
             const text = this.read(config);
             if (text === undefined)
                 continue;
+            this.model.work.charge(text.length + 1);
             const source = this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true });
             let expression = source.getExportAssignments()[0]?.getExpression();
             if (!expression)
@@ -534,6 +669,7 @@ class RouteAnalysis {
             const text = this.read(input);
             if (!text)
                 continue;
+            this.model.work.charge(text.length + 1);
             try {
                 const pkg = JSON.parse(text);
                 if (pkg.dependencies?.next || pkg.devDependencies?.next)
@@ -558,9 +694,11 @@ class RouteAnalysis {
             const configuration = configByRoot.get(appRoot);
             if (configuration && configuration.base === undefined)
                 continue;
+            this.model.work.charge(match[1].length + 1);
             const segments = match[1].split('/').filter(Boolean);
             const urlSegments = segments.filter(segment => !/^\(.*\)$/.test(segment) && !segment.startsWith('@'));
-            const fullPath = joinPath(configuration?.base ?? '/', urlSegments.join('/'));
+            this.model.work.charge(match[1].length + urlSegments.length + 1);
+            const fullPath = this.joinPath(configuration?.base ?? '/', urlSegments.join('/'));
             const page = this.model.exported(file, 'default');
             const pageQN = page && this.model.declarations.get(page);
             if (!pageQN) {
@@ -572,7 +710,9 @@ class RouteAnalysis {
             const appDirectory = relative.slice(0, relative.length - match[1].length - path.posix.basename(relative).length);
             let previous;
             for (let depth = 0; depth <= segments.length; depth++) {
+                this.model.work.charge(appDirectory.length + match[1].length + depth + 1);
                 const directory = `${appDirectory}${segments.slice(0, depth).join('/')}`.replace(/\/$/, '');
+                this.model.work.charge((directory.length + 32) * 4);
                 const layoutFile = ['tsx', 'ts', 'jsx', 'js'].map(extension => this.model.byPath.get(`${directory}/layout.${extension}`)).find(Boolean);
                 const layout = layoutFile && this.model.exported(layoutFile, 'default');
                 const layoutQN = layout && this.model.declarations.get(layout);
