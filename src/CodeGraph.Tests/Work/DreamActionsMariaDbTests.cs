@@ -191,7 +191,7 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         var runId = Guid.NewGuid();
         await RegisterRunAsync(runId, project.Id);
         var runStore = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
-        var run = (await runStore.GetRunAsync(project.Id, runId))!;
+        var run = new DreamRun(runId, project.Id, "run_now", new("tester"), "running", DateTime.UtcNow, null, "scripted", "scripted", 0, 0, 0, 1, 0, null, []);
         var actions = (IKnowledgeDreamActions)db.Service;
         object savedResult;
         JsonElement savedArguments;
@@ -247,6 +247,65 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         scope.MarkSourceRead("codegraph", "src/DreamProof.cs", contentHash: "newer", indexHash: "newer");
         await ToolAsync("dream_verify", new { id = fact.Id, expected_version = fact.Version }, fact.Id);
         (await db.Store.GetKnowledgeAsync(fact.Id, false))!.PossiblyStale.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task Graph_only_verification_requires_current_metadata_and_refuses_changed_or_removed_nodes()
+    {
+        var project = await ProjectAsync("DG");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name,file_path,properties) VALUES('codegraph','Service','DreamMetadata','Dream.Metadata','','{\"mode\":\"old\"}')");
+        var node = await connection.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE repository='codegraph' AND qualified_name='Dream.Metadata'");
+        var recorded = await db.CallAsync(WorkTools.Record, new { project = project.Key, entry = new { kind = "fact", summary = "Graph metadata defines the active service mode", nodes = new[] { node } } });
+        var fact = recorded.GetProperty("entry");
+        var id = fact.GetProperty("id").GetGuid();
+        var version = fact.GetProperty("version").GetInt64();
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using var scope = DreamExecutionScope.Begin(run, project.Id, "scripted");
+        scope.MarkGraphRead(node, DreamGraphIdentity.Fingerprint(node, "codegraph", "Service", "DreamMetadata", "Dream.Metadata", "", 0, 0, "{\"mode\":\"old\"}"));
+        await connection.ExecuteAsync("UPDATE nodes SET properties='{\"mode\":\"new\"}' WHERE id=@node", new { node });
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id, expected_version = version }, id));
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(version);
+        scope.MarkGraphRead(node, DreamGraphIdentity.Fingerprint(node, "codegraph", "Service", "DreamMetadata", "Dream.Metadata", "", 0, 0, "{\"mode\":\"new\"}"));
+        await ToolAsync("dream_verify", new { id, expected_version = version }, id);
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(version + 1);
+        await connection.ExecuteAsync("DELETE FROM nodes WHERE id=@node", new { node });
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id, expected_version = version + 1 }, id));
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(version + 1);
+    }
+
+    [Fact]
+    public async Task An_orphaned_running_run_recovers_on_read_and_on_revert_after_its_lease_is_free()
+    {
+        var project = await ProjectAsync("DI");
+        var source = await LessonAsync(project.Key, "Keep committed actions recoverable after interruption");
+        var runStore = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
+        var actions = (IKnowledgeDreamActions)db.Service;
+        foreach (var recoverByRead in new[] { true, false })
+        {
+            var run = Guid.NewGuid();
+            await RegisterRunAsync(run, project.Id);
+            Guid created;
+            using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
+            {
+                var result = await ToolAsync("dream_record", new { entry = new { kind = "fact", summary = "Committed before interruption " + run, confidence = "high" } }, source.Id);
+                created = result.GetProperty("entry").GetProperty("id").GetGuid();
+            }
+            // No active lease remains. The report's actions were never saved.
+            if (recoverByRead)
+            {
+                var recovered = (await runStore.GetRunAsync(project.Id, run))!;
+                recovered.Status.ShouldBe("failed");
+                recovered.Reason!.ShouldContain("interrupted");
+                recovered.Actions.Single().Tool.ShouldBe("dream_record");
+                (await runStore.ListRunsAsync(project.Id, 10)).Single(item => item.Id == run).Status.ShouldBe("failed");
+            }
+            var reverted = await actions.RevertAsync(project.Id, run, new("reviewer"));
+            reverted.Entries.Single().Status.ShouldBe("reverted");
+            (await db.Store.GetKnowledgeAsync(created, false))!.Status.ShouldBe(KnowledgeStatus.Retracted);
+            (await runStore.GetRunAsync(project.Id, run))!.Status.ShouldBe("failed");
+        }
     }
 
 }

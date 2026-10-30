@@ -397,6 +397,11 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             var paths = await ReadEntryPathsAsync(connection, transaction, [entryId], ct);
             var nodes = await ReadEntryNodesAsync(connection, transaction, [entryId], ct);
             var nodeRefs = nodes.Select(node => new NodeRef(node.NodeId, node.RepositoryName, node.QualifiedName, node.FilePath)).ToList();
+            if (DreamPolicy.IsDreamer(actor))
+            {
+                nodeRefs = await ResolveDreamVerificationNodesAsync(connection, transaction, before.ProjectId, nodes, ct);
+                await WriteScopeAsync(connection, transaction, entryId, repositories, paths.Select(path => path.Path).ToList(), nodeRefs, ct);
+            }
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE knowledge_entries SET verified_commit = @commit, verified_at = @now WHERE id = @id",
                 new { commit = commit ?? await IndexedCommitAsync(connection, transaction, repositories, nodeRefs, ct), now, id = entryId },

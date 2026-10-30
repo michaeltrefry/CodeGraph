@@ -86,6 +86,7 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
             DreamPolicy.Refuse(actor, "revert dreaming runs");
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await HoldProjectAsync(connection, transaction, projectId, ct);
+            await MySqlDreamingStore.RecoverInterruptedRunsAsync(connection, projectId, ct, transaction);
             // Holding the project serializes revert with all direct lesson writers. Each entry is
             // also locked, so standalone verify/revise cannot race the conflict check.
             var journals = (await connection.QueryAsync<DreamJournalRow>(new CommandDefinition("SELECT id,entry_id,action,before_json,after_json,reverted_at FROM dream_write_journal WHERE project_id=@projectId AND run_id=@runId ORDER BY id DESC FOR UPDATE", new { projectId, runId }, transaction, cancellationToken: ct))).ToList();

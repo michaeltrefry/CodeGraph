@@ -53,8 +53,19 @@ public sealed partial class MySqlDreamingStore
 
     // Committed mutations are authoritative even if the process died before SaveRunAsync recorded
     // the tool response. Read/error/no-op actions stay intact; durable ids prevent duplicates.
-    private static async Task<DreamRun> RecoverDurableActionsAsync(MySqlConnection connection, DreamRun run, CancellationToken ct)
+    private async Task<DreamRun> RecoverDurableActionsAsync(MySqlConnection connection, DreamRun run, CancellationToken ct)
     {
+        if (run.Status == "running")
+        {
+            // Only an unheld project lease identifies an orphan. An active model run remains
+            // running, including while paused between tool calls.
+            await using var lease = await TryAcquireAsync(run.ProjectId, ct);
+            if (lease is not null)
+            {
+                var latest = await connection.QuerySingleAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@ProjectId AND id=@Id", new { run.ProjectId, run.Id }, cancellationToken: ct));
+                run = JsonSerializer.Deserialize<DreamRun>(latest, WorkJson.Options)!;
+            }
+        }
         var actions = run.Actions.ToList();
         var writes = await connection.QueryAsync<DurableWriteRow>(new CommandDefinition(
             "SELECT id,entry_id AS EntryId,action,before_json AS BeforeJson,after_json AS AfterJson,evidence_json AS EvidenceJson,prevalence,created_at AS CreatedAt,reverted_at AS RevertedAt FROM dream_write_journal WHERE project_id=@ProjectId AND run_id=@Id ORDER BY id",
@@ -85,4 +96,17 @@ public sealed partial class MySqlDreamingStore
         }
         return run with { Actions = actions.OrderBy(action => action.CreatedAt).ToList() };
     }
+    // Called only after acquiring the project's named lease (or by revert while holding it).
+    // Status and report survive a crash; no human cleanup is needed before a later trigger.
+    internal static async Task RecoverInterruptedRunsAsync(MySqlConnection connection, Guid projectId, CancellationToken ct, MySqlTransaction? transaction = null)
+    {
+        var records = (await connection.QueryAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId AND status='running'", new { projectId }, transaction, cancellationToken: ct))).ToList();
+        foreach (var original in records)
+        {
+            var run = JsonSerializer.Deserialize<DreamRun>(original, WorkJson.Options)!;
+            var recovered = run with { Status = "failed", EndedAt = DateTime.UtcNow, Reason = "interrupted: project lease was released before the run completed" };
+            await connection.ExecuteAsync(new CommandDefinition("UPDATE dreaming_runs SET status='failed',ended_at=@EndedAt,run_json=@json WHERE project_id=@ProjectId AND id=@Id AND status='running' AND run_json=@original", new { recovered.EndedAt, recovered.ProjectId, recovered.Id, json = JsonSerializer.Serialize(recovered, WorkJson.Options), original }, transaction, cancellationToken: ct));
+        }
+    }
+
 }

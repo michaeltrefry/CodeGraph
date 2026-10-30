@@ -18,7 +18,10 @@ public sealed partial class MySqlDreamingStore(IOptions<MariaDbStorageOptions> o
         try
         {
             if (await c.ExecuteScalarAsync<long?>(new CommandDefinition("SELECT GET_LOCK(@name,0)", new { name }, cancellationToken: ct)) == 1)
+            {
+                await RecoverInterruptedRunsAsync(c, projectId, ct);
                 return new Lease(c, name);
+            }
             await c.DisposeAsync(); return null;
         }
         catch { await c.DisposeAsync(); throw; }
