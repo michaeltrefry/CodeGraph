@@ -644,3 +644,20 @@ function Child(){useContext(Ctx);return <span/>;} export function App(){const va
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+(0, node_test_1.test)('custom hooks and factories resolve uniquely returned callables and object members', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-returned-callable-'));
+    try {
+        writeFile(root, 'hooks.ts', `function request(){} export function useRun(){return () => request();}
+export function useActions(){const reload=()=>request();return {reload};}`);
+        writeFile(root, 'app.tsx', `import {useRun,useActions} from './hooks';export function App(){const run=useRun();const actions=useActions();run();actions.reload();return <button onClick={run}/>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const returned = result.nodes.find(node => node.qualifiedName.startsWith('Demo:hooks.ts#useRun.$callback'));
+        assert_1.strict.ok(returned);
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === returned.qualifiedName && edge.type === 'CALLS'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:hooks.ts#useActions.reload' && edge.type === 'CALLS'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === returned.qualifiedName && edge.targetQN === 'Demo:hooks.ts#request' && edge.type === 'CALLS'));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

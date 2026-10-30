@@ -135,6 +135,7 @@ export class SemanticModel {
   }
   resolve(node: Node | undefined, seen = new Set<string>()): Node | undefined {
     if (!node) return undefined;
+    if (seen.size > 100) { this.diagnostic(`symbolResolutionLimit: ${this.relative(node)}`); return undefined; }
     const key = `${node.getSourceFile().getFilePath()}:${node.getPos()}:${node.getKind()}`;
     if (seen.has(key)) return undefined; seen.add(key);
     if (this.declarations.has(node)) {
@@ -157,6 +158,23 @@ export class SemanticModel {
           const expression = named?.getInitializer();
           const exportName = expression && Node.isPropertyAccessExpression(expression) ? expression.getName() : 'default';
           return file ? this.exported(file, exportName) : undefined;
+        }
+      }
+      // A known local/imported factory or custom hook can return a callable/object. Follow
+      // only statically unique returns and keep alternatives explicitly unresolved.
+      const callee = this.resolve(node.getExpression(), new Set(seen));
+      if (callee && (Node.isFunctionDeclaration(callee) || Node.isFunctionExpression(callee) || Node.isArrowFunction(callee) || Node.isMethodDeclaration(callee))) {
+        const body = callee.getBody();
+        if (body) {
+          const expressions = Node.isBlock(body)
+            ? body.getDescendantsOfKind(SyntaxKind.ReturnStatement)
+              .filter(statement => this.owner(statement) === this.callables.get(callee))
+              .flatMap(statement => statement.getExpression() ? [statement.getExpression()!] : [])
+            : [body];
+          const resolvedReturns = expressions.map(expression => this.resolve(expression, new Set(seen)));
+          const returns = new Set(resolvedReturns.filter((value): value is Node => !!value));
+          if (returns.size === 1 && resolvedReturns.every(value => !!value)) return [...returns][0];
+          if (returns.size > 1 || returns.size && resolvedReturns.some(value => !value)) this.diagnostic(`functionReturnAmbiguity: ${this.declarations.get(callee)} has ${returns.size} known return candidates and ${resolvedReturns.filter(value => !value).length} unknown returns`);
         }
       }
       return undefined;
@@ -194,6 +212,8 @@ export class SemanticModel {
       if (target && Node.isObjectLiteralExpression(target)) {
         const prop = target.getProperty(node.getName());
         if (prop && Node.isPropertyAssignment(prop)) return this.resolve(prop.getInitializer(), seen);
+        if (prop && Node.isShorthandPropertyAssignment(prop)) return this.resolve(prop.getValueSymbol()?.getDeclarations()[0], seen);
+        if (prop && Node.isMethodDeclaration(prop)) return prop;
       }
     }
     if (Node.isTypeReference(node)) return this.resolve(node.getTypeName(), seen);

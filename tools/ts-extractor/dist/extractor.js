@@ -197,7 +197,7 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     if (workspaceResolution.diagnostics.some(message => (message.startsWith('tsconfig ') && !message.includes('No inputs were found')) ||
         message.includes('stopped after') || message.includes('limited from')))
         complete = false;
-    if (diagnosticCounts.has('contextTraversal'))
+    if (diagnosticCounts.has('contextTraversal') || diagnosticCounts.has('symbolResolutionLimit'))
         complete = false;
     // Edge type summary
     const edgeTypes = {};
