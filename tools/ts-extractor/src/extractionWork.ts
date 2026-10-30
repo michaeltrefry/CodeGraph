@@ -1,5 +1,5 @@
-// The selected indexed frontends peak near 98.1M charged work after indexing/caching.
-// Keep roughly twofold measured headroom while retaining one finite run-wide allowance.
+// The largest selected frontend uses about 158M units with weighted route output.
+// Keep measured headroom and one finite allowance shared by all analysis passes.
 export const DEFAULT_EXTRACTION_WORK_LIMIT = 200_000_000;
 export interface ExtractionWorkControl {
   maxWork?: number;

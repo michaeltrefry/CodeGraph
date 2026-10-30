@@ -1,8 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ExtractionWorkBudget = exports.ExtractionWorkLimitError = exports.DEFAULT_EXTRACTION_WORK_LIMIT = void 0;
-// The selected indexed frontends peak near 98.1M charged work after indexing/caching.
-// Keep roughly twofold measured headroom while retaining one finite run-wide allowance.
+// The largest selected frontend uses about 158M units with weighted route output.
+// Keep measured headroom and one finite allowance shared by all analysis passes.
 exports.DEFAULT_EXTRACTION_WORK_LIMIT = 200000000;
 class ExtractionWorkLimitError extends Error {
     constructor(reason, work, limit) {
