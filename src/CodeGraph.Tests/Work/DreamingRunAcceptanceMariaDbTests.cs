@@ -74,7 +74,7 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
 
         run.Status.ShouldBe("completed", run.Reason);
         SuccessfulWrites(run, 2);
-        var proposed = run.Actions[1].Result.Deserialize<DreamProposalResult>(WorkJson.Options)!;
+        var proposed = ProposalResult(run.Actions[1]);
         proposed.Created.ShouldBeTrue();
         proposed.Proposal!.Evidence.ShouldContain(item => item.Kind == DreamEvidenceKind.GraphNode && item.Id == nodeId.ToString());
         proposed.Proposal.RunId.ShouldBe(run.Id);
@@ -103,7 +103,7 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
             var run = await (await ServiceAsync(model)).RunAsync(project, "run_now", Human);
             run.Status.ShouldBe("completed", run.Reason);
             SuccessfulWrites(run, 1);
-            return (run, run.Actions[0].Result.Deserialize<DreamProposalResult>(WorkJson.Options)!);
+            return (run, ProposalResult(run.Actions[0]));
         }
         var first = await ProposeAsync(target);
         first.Result.Created.ShouldBeTrue();
@@ -263,6 +263,40 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
     }
 
     [Fact]
+    public async Task Knowledge_written_by_another_request_during_a_run_is_seen_by_the_next_run_once()
+    {
+        var project = await ProjectAsync();
+        await RecordAsync(project, "Initial signal before model starts");
+        var calls = 0;
+        var model = new ScriptedModel(async (_, ct) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                db.Clock.Advance(TimeSpan.FromSeconds(1));
+                // A separate HTTP/MCP request has its own ExecutionContext; it must not inherit
+                // the dreamer's ambient run capability from this scripted provider callback.
+                Task externalWrite;
+                using (ExecutionContext.SuppressFlow())
+                    externalWrite = Task.Run(() => RecordAsync(project, "A user fact written while the model was running"), ct);
+                await externalWrite;
+            }
+            return Response();
+        });
+        var service = await ServiceAsync(model);
+
+        var first = await service.RunAsync(project, "run_now", Human);
+        var second = await service.RunAsync(project, "run_now", Human);
+        var third = await service.RunAsync(project, "run_now", Human);
+
+        first.Status.ShouldBe("completed", first.Reason);
+        second.Status.ShouldBe("completed", second.Reason);
+        third.Status.ShouldBe("skipped");
+        third.Reason.ShouldBe("no_signal");
+        model.Requests.Count.ShouldBe(2);
+        model.Requests[1].Messages[0].Content!.ShouldContain("A user fact written while the model was running");
+    }
+
+    [Fact]
     public async Task No_changed_signal_records_a_skipped_run_without_a_second_model_call()
     {
         var project = await ProjectAsync();
@@ -380,6 +414,8 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         entry.MadeAutonomously, entry.Details, entry.Repositories, entry.Paths ?? [], (entry.Nodes ?? []).Select(node => node.Id).ToList(), null);
     private static object[] Evidence(params KnowledgeView[] entries) => entries.Select(entry => (object)new
         { kind = "entry", reference = entry.Id.ToString(), summary = "A persisted project entry" }).ToArray();
+    private static DreamProposalResult ProposalResult(DreamAction action) =>
+        (action.Result.TryGetProperty("data", out var data) ? data : action.Result).Deserialize<DreamProposalResult>(WorkJson.Options)!;
     private static void SuccessfulWrites(DreamRun run, int count)
     {
         run.Actions.Count.ShouldBe(count);
