@@ -101,6 +101,17 @@ describe('DreamingPageComponent', () => {
     expect(page.selected()).toBeNull(); expect(page.confirmRevert()).toBe(false); expect(page.revertResult()).toBeNull();
   });
 
+  it('loads older runs by cursor without resetting unsaved settings or instruction text', async () => {
+    const fixture = await create(); const page = fixture.componentInstance;
+    page.runs.set(Array.from({ length: 30 }, (_, index) => ({ ...run, id: `run-${index}` })));
+    page.hasMore.set(true); page.baseContent = 'Unsaved draft';
+    api['runs'].mockReturnValueOnce(of([{ ...run, id: 'older-run' }]));
+    await page.more();
+    expect(api['runs']).toHaveBeenLastCalledWith('ONE', 30, 'run-29');
+    expect(page.runs()).toHaveLength(31); expect(page.hasMore()).toBe(false);
+    expect(page.baseContent).toBe('Unsaved draft'); expect(api['settings']).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a report visible when effect analytics fail, with an explicit error', async () => {
     const fixture = await create(); const page = fixture.componentInstance;
     api['effects'].mockReturnValueOnce(throwError(() => new Error('Effect read unavailable')));

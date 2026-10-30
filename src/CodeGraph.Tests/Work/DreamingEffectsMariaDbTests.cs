@@ -74,6 +74,8 @@ public sealed class DreamingEffectsMariaDbTests(WorkDatabase db) : IClassFixture
         (await host.SendAsync(HttpMethod.Get, $"/api/work/dreaming/{key}/runs/{run}/effects", token: token)).Status.ShouldBe(403);
         var (status, body) = await host.SendAsync(HttpMethod.Get, $"/api/work/dreaming/{key}/runs/{run}/effects", person: "reviewer");
         status.ShouldBe(200); body.GetProperty("rules").GetArrayLength().ShouldBe(0);
+        var reader = await host.CreateTokenAsync("reader", WorkTools.DreamRuns);
+        (await host.SendAsync(HttpMethod.Get, $"/api/work/dreaming/{key}/runs/{run}/effects", token: reader)).Status.ShouldBe(200);
     }
 
     private async Task<Guid> RuleAsync(string key, string summary) => (await db.CallAsync(WorkTools.Record, new { project = key, entry = new { kind = "lesson", summary, source = new { kind = "prompt" }, applies_when = new { activity = new[] { "reviewing" } } } })).GetProperty("entry").GetProperty("id").GetGuid();

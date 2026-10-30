@@ -50,6 +50,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   'access-tokens': 'Access tokens',
   knowledge: 'Knowledge',
   lessons: 'Lessons',
+  dreaming: 'Dreaming',
   'review-queue': 'Review queue'
 };
 

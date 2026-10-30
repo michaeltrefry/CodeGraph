@@ -3,6 +3,7 @@ using CodeGraph.Api.Auth;
 using CodeGraph.Api.Middleware;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
+using CodeGraph.Services.Work;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -22,7 +23,7 @@ public sealed class DreamingEffectsController(IWorkStore work, IDreamingEffectsS
         if (identity is not null)
         {
             long? tokenId = long.TryParse(identity.FindFirst("mcp_pat_token_id")?.Value, out var parsed) ? parsed : null;
-            var denial = await McpToolAccess.EvaluateAsync(hub, "dream_runs", tokenId, requiresPersonalAccessToken: true, logger, ct);
+            var denial = await McpToolAccess.EvaluateAsync(hub, WorkTools.DreamRuns, tokenId, requiresPersonalAccessToken: true, logger, ct);
             if (denial is not null) return Json(new { code = denial.Code, message = denial.Message }, StatusCodes.Status403Forbidden);
         }
         var target = await work.ResolveAsync(project, ct);

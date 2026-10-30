@@ -69,7 +69,7 @@ public sealed class MySqlDreamingEffectsStore(IOptions<MariaDbStorageOptions> op
     private static bool Boolean(JsonElement row, string key) => Text(row, key) is "true" or "1";
     private static Event EventOf(JsonElement row) => new()
     {
-        EntryId = Guid.Parse(Text(row, "entry_id")), EventHash = Text(row, "event_hash"), CorrectionId = Text(row, "correction_id"),
+        EntryId = Guid.Parse(Text(row, "entry_id")), EventHash = Text(row, "event_hash"), CorrectionId = Guid.Parse(Text(row, "correction_id")),
         Counted = Boolean(row, "counted"), RuleAtEvent = Boolean(row, "rule_at_event"),
         Served = Text(row, "served") == "" ? null : Boolean(row, "served"),
         CreatedAt = DateTime.Parse(Text(row, "created_at"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
@@ -80,7 +80,7 @@ public sealed class MySqlDreamingEffectsStore(IOptions<MariaDbStorageOptions> op
     {
         public Guid EntryId { get; init; }
         public string EventHash { get; init; } = "";
-        public string CorrectionId { get; init; } = "";
+        public Guid CorrectionId { get; init; }
         public bool Counted { get; init; }
         public bool RuleAtEvent { get; init; }
         public bool? Served { get; init; }

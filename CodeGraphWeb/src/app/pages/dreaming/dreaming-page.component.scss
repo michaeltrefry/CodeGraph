@@ -14,3 +14,12 @@ summary { cursor: pointer; color: var(--text); }
 h2, h4 { margin: 0; }
 @media (max-width: 1000px) { .dream-layout { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 600px) { .dream-fields { grid-template-columns: minmax(0, 1fr); } }
+.cg-page-header { flex-wrap: wrap; gap: 16px; }
+.cg-page-header > div:first-child { flex: 1 1 360px; min-width: 0; }
+.cg-page-header-actions { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .cg-page-header { align-items: stretch; }
+  .cg-page-header > div:first-child { flex-basis: 100%; }
+  .cg-page-header-actions { width: 100%; justify-content: flex-start; }
+  .cg-page-header-actions .cg-field { flex: 1 1 100%; }
+}
