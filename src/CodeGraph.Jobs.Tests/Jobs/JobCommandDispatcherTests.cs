@@ -124,7 +124,7 @@ public class JobCommandDispatcherTests
         result.Message.ShouldBe("Indexer run retention deleted 17 rows.");
         retention.Days.ShouldBe(14);
         using var invalid = JsonDocument.Parse("""{"retentionDays":0}""");
-        Should.Throw<ArgumentOutOfRangeException>(() => dispatcher.NormalizeArgsJson(JobTypes.IndexerRunRetention, invalid.RootElement));
+        Should.Throw<InvalidOperationException>(() => dispatcher.NormalizeArgsJson(JobTypes.IndexerRunRetention, invalid.RootElement));
     }
 
     private sealed class RecordingWorkImportRunner : Services.Work.Imports.IWorkImportRunner

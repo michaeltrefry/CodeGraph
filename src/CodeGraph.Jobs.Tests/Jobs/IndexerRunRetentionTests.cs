@@ -9,6 +9,13 @@ public class IndexerRunRetentionTests
     private static readonly DateTimeOffset Now = new(2026, 10, 30, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public async Task Cleanup_ReportsUnsupportedProviderWithoutPreventingOtherJobsFromResolving()
+    {
+        var service = new IndexerRunRetentionService();
+        await Should.ThrowAsync<NotSupportedException>(() => service.CleanupAsync());
+    }
+
+    [Fact]
     public async Task Cleanup_UsesOneCutoffAndContinuesUntilAShortBatch()
     {
         var store = new RetentionStore(5000, 5000, 12);

@@ -78,7 +78,8 @@ public class JobCommandDispatcher(
     private static string NormalizeRetentionArgs(JsonElement? args)
     {
         var request = DeserializeOrDefault<IndexerRunRetentionJobRequest>(args);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(request.RetentionDays);
+        if (request.RetentionDays <= 0)
+            throw new InvalidOperationException("Retention days must be greater than zero.");
         return Serialize(request);
     }
 

@@ -7,7 +7,7 @@ public interface IIndexerRunRetentionService
     Task<long> CleanupAsync(int retentionDays = 30, CancellationToken ct = default);
 }
 
-public sealed class IndexerRunRetentionService(IIndexerRunStore store, TimeProvider? timeProvider = null)
+public sealed class IndexerRunRetentionService(IIndexerRunStore? store = null, TimeProvider? timeProvider = null)
     : IIndexerRunRetentionService
 {
     private const int BatchSize = 5000;
@@ -15,6 +15,8 @@ public sealed class IndexerRunRetentionService(IIndexerRunStore store, TimeProvi
     public async Task<long> CleanupAsync(int retentionDays = 30, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(retentionDays);
+        if (store is null)
+            throw new NotSupportedException("Indexer run retention requires the MariaDB storage provider.");
         var cutoff = (timeProvider ?? TimeProvider.System).GetUtcNow().UtcDateTime.AddDays(-retentionDays);
         long total = 0;
         int deleted;
