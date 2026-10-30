@@ -40,6 +40,7 @@ exports.isCallable = isCallable;
 const ts_morph_1 = require("ts-morph");
 const path = __importStar(require("path"));
 const packageExports_1 = require("./packageExports");
+const extractionWork_1 = require("./extractionWork");
 function declarationQN(file, name) {
     return [...file.replace(/\.(?:tsx?|jsx?)$/, '').replace(/\\/g, '/').split('/').filter(p => p !== 'src' && p !== ''), name].join('.');
 }
@@ -56,7 +57,7 @@ function isCallable(node) {
  * not guessed same-name declarations. Explicit exports/aliases are followed without node_modules.
  */
 class SemanticModel {
-    constructor(repository, root, files, imports, diagnostic) {
+    constructor(repository, root, files, imports, diagnostic, control = {}) {
         this.repository = repository;
         this.root = root;
         this.files = files;
@@ -70,8 +71,14 @@ class SemanticModel {
         this.importBySource = new Map();
         this.resolvedModules = new Map();
         this.externalCallSymbols = new Map();
-        this.memberWrites = new Map();
-        this.memberWriteEvidence = new Map();
+        this.exportIndexes = new Map();
+        this.publicNameSets = new Map();
+        this.starNameSources = new Map();
+        this.returnExpressions = new Map();
+        this.allVariables = [];
+        this.writeTargets = [];
+        this.buildingMutations = false;
+        this.work = control instanceof extractionWork_1.ExtractionWorkBudget ? control : new extractionWork_1.ExtractionWorkBudget(control);
         for (const file of files)
             this.byPath.set(this.relative(file), file);
         for (const imported of imports) {
@@ -81,6 +88,20 @@ class SemanticModel {
         }
         for (const file of files) {
             file.forEachDescendant(node => {
+                this.work.charge();
+                if (ts_morph_1.Node.isVariableDeclaration(node))
+                    this.allVariables.push(node);
+                if (ts_morph_1.Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment)
+                    this.writeTargets.push(node.getLeft());
+                else if ((ts_morph_1.Node.isPrefixUnaryExpression(node) || ts_morph_1.Node.isPostfixUnaryExpression(node)) && [ts_morph_1.SyntaxKind.PlusPlusToken, ts_morph_1.SyntaxKind.MinusMinusToken].includes(node.getOperatorToken()))
+                    this.writeTargets.push(node.getOperand());
+                else if (ts_morph_1.Node.isDeleteExpression(node))
+                    this.writeTargets.push(node.getExpression());
+                else if (ts_morph_1.Node.isCallExpression(node)) {
+                    const expr = node.getExpression();
+                    if (ts_morph_1.Node.isPropertyAccessExpression(expr) && expr.getName() === 'assign' && ts_morph_1.Node.isIdentifier(expr.getExpression()) && expr.getExpression().getText() === 'Object' && node.getArguments()[0])
+                        this.writeTargets.push(node.getArguments()[0]);
+                }
                 if (ts_morph_1.Node.isClassDeclaration(node) || ts_morph_1.Node.isInterfaceDeclaration(node) || ts_morph_1.Node.isEnumDeclaration(node) || ts_morph_1.Node.isVariableDeclaration(node)) {
                     this.identify(node, this.qn(node));
                 }
@@ -105,6 +126,8 @@ class SemanticModel {
     identify(node, qn) { this.declarations.set(node, qn); this.byQN.set(qn, node); }
     qn(node) {
         const owner = node.getAncestors().find(ancestor => isCallable(ancestor) || ts_morph_1.Node.isClassDeclaration(ancestor));
+        const nameNode = node.getNameNode?.();
+        this.work.charge((nameNode?.getFullWidth() ?? 0) + 1);
         let name = node.getName?.();
         const parent = node.getParent();
         if (parent && (ts_morph_1.Node.isVariableDeclaration(parent) || ts_morph_1.Node.isPropertyAssignment(parent) || ts_morph_1.Node.isPropertyDeclaration(parent)) &&
@@ -164,6 +187,7 @@ class SemanticModel {
                 }
                 scopes.unshift(`$scope${indices.join('_')}`);
             }
+        this.work.charge(scopes.reduce((size, value) => size + value.length, 0) + containers.reduce((size, value) => size + value.length, 0) + name.length + this.relative(node).length + this.repository.length + 8);
         const lexicalName = [...scopes, ...containers, name].join('.');
         if (owner)
             return `${this.declarations.get(owner) ?? this.qn(owner)}.${lexicalName}`;
@@ -180,6 +204,7 @@ class SemanticModel {
         return this.fileQN(node);
     }
     module(from, specifier) {
+        this.work.charge(this.relative(from).length + specifier.length + 1);
         const key = `${this.relative(from)}\0${specifier}`;
         if (this.resolvedModules.has(key))
             return this.resolvedModules.get(key);
@@ -188,41 +213,192 @@ class SemanticModel {
         this.resolvedModules.set(key, module);
         return module;
     }
-    /** Conservative writes through an object/import and its static aliases. Rooting assignment
-     * targets catches Icon.Model/alias.Model writes without interpreting application execution. */
-    hasMemberWrites(node, provenance) {
-        const key = node.getSymbol()?.getDeclarations()[0] ?? node;
-        if (this.memberWrites.has(key))
-            return this.memberWrites.get(key);
-        const evidenceKey = provenance ? `${provenance.import_path}\0${provenance.export_name ?? '*'}` : undefined;
-        if (evidenceKey && this.memberWriteEvidence.has(evidenceKey))
-            return this.memberWriteEvidence.get(evidenceKey);
-        const root = (value) => ts_morph_1.Node.isPropertyAccessExpression(value) || ts_morph_1.Node.isElementAccessExpression(value)
-            ? root(value.getExpression()) : ts_morph_1.Node.isParenthesizedExpression(value) || ts_morph_1.Node.isAsExpression(value) ? root(value.getExpression()) : value;
-        const symbols = new Set([node.getSymbol()?.compilerSymbol, key.getSymbol()?.compilerSymbol].filter(value => !!value));
-        const owns = (value) => { const symbol = value?.getSymbol()?.compilerSymbol; return !!symbol && symbols.has(symbol); };
-        const aliases = this.files.flatMap(file => file.getDescendantsOfKind(ts_morph_1.SyntaxKind.VariableDeclaration));
-        for (const file of this.files)
-            for (const imp of file.getImportDeclarations()) {
-                for (const named of imp.getNamedImports()) {
-                    const local = named.getAliasNode() ?? named.getNameNode();
-                    const target = this.resolve(local);
-                    if ((target && (target === key || owns(target)))
-                        || (provenance && imp.getModuleSpecifierValue() === provenance.import_path && (provenance.export_name === undefined || named.getName() === provenance.export_name))) {
-                        const symbol = local.getSymbol()?.compilerSymbol;
-                        if (symbol)
-                            symbols.add(symbol);
-                    }
-                }
-                if (provenance && imp.getModuleSpecifierValue() === provenance.import_path) {
-                    const namespace = imp.getNamespaceImport()?.getSymbol()?.compilerSymbol;
-                    if (namespace)
-                        symbols.add(namespace);
+    exportIndex(file) {
+        this.work.charge();
+        const cached = this.exportIndexes.get(file);
+        if (cached)
+            return cached;
+        this.work.charge(file.compilerNode.statements.length * 2 + 1);
+        const index = { declarations: [], direct: new Map(), explicit: new Set(), named: new Map(), stars: [] };
+        const exports = file.getSymbol();
+        this.work.charge((exports?.compilerSymbol.exports?.size ?? 0) + 1);
+        const exportedSymbols = new Set();
+        const defaultSymbols = new Set();
+        for (const symbol of exports?.getExports() ?? []) {
+            this.work.charge();
+            const alias = symbol.getAliasedSymbol();
+            exportedSymbols.add(symbol.compilerSymbol);
+            if (alias)
+                exportedSymbols.add(alias.compilerSymbol);
+            if (symbol.getName() === 'default') {
+                defaultSymbols.add(symbol.compilerSymbol);
+                if (alias)
+                    defaultSymbols.add(alias.compilerSymbol);
+            }
+        }
+        for (const statement of file.getStatements()) {
+            this.work.charge();
+            if (ts_morph_1.Node.isFunctionDeclaration(statement) || ts_morph_1.Node.isClassDeclaration(statement) || ts_morph_1.Node.isInterfaceDeclaration(statement) || ts_morph_1.Node.isEnumDeclaration(statement))
+                index.declarations.push(statement);
+            if (ts_morph_1.Node.isVariableStatement(statement)) {
+                this.work.charge(statement.compilerNode.declarationList.declarations.length);
+                index.declarations.push(...statement.getDeclarations());
+            }
+            if (ts_morph_1.Node.isExportAssignment(statement) && !index.assignment)
+                index.assignment = statement;
+            if (!ts_morph_1.Node.isExportDeclaration(statement))
+                continue;
+            const named = statement.getNamedExports();
+            if (!named.length)
+                index.stars.push(statement);
+            for (const item of named) {
+                this.work.charge(item.getFullWidth() + 1);
+                const name = item.getAliasNode()?.getText() ?? item.getName();
+                index.explicit.add(name);
+                if (!index.named.has(name))
+                    index.named.set(name, []);
+                index.named.get(name).push({ declaration: statement, item });
+            }
+        }
+        for (const declaration of index.declarations) {
+            this.work.charge((declaration.getNameNode()?.getFullWidth() ?? 0) + 1);
+            const name = declaration.getName();
+            const symbol = (!declaration.hasExportKeyword() || defaultSymbols.size) ? declaration.getSymbol()?.compilerSymbol : undefined;
+            const isDefault = declaration.hasDefaultKeyword() || !!symbol && defaultSymbols.has(symbol);
+            if (isDefault) {
+                index.explicit.add('default');
+                if (!index.defaultDeclaration)
+                    index.defaultDeclaration = declaration;
+            }
+            if (name && (declaration.hasExportKeyword() || !!symbol && exportedSymbols.has(symbol))) {
+                if (!index.direct.has(name))
+                    index.direct.set(name, declaration);
+                index.explicit.add(isDefault ? 'default' : name);
+            }
+        }
+        if (index.assignment)
+            index.explicit.add('default');
+        this.exportIndexes.set(file, index);
+        return index;
+    }
+    publicExportNames(file) {
+        this.work.charge();
+        const prior = this.publicNameSets.get(file);
+        if (prior)
+            return prior;
+        const pending = [file];
+        const discovered = new Set();
+        const reverse = new Map();
+        const frontier = new Set();
+        while (pending.length) {
+            this.work.charge();
+            const current = pending.pop();
+            if (discovered.has(current))
+                continue;
+            discovered.add(current);
+            if (this.publicNameSets.has(current)) {
+                frontier.add(current);
+                continue;
+            }
+            const index = this.exportIndex(current);
+            const names = new Set();
+            for (const name of index.explicit) {
+                this.work.text(name);
+                names.add(name);
+            }
+            this.publicNameSets.set(current, names);
+            for (const star of index.stars) {
+                this.work.charge();
+                const specifier = star.getModuleSpecifierValue();
+                if (!specifier)
+                    continue;
+                const target = this.module(current, specifier);
+                if (!target)
+                    continue;
+                if (!reverse.has(target))
+                    reverse.set(target, new Set());
+                reverse.get(target).add(current);
+                pending.push(target);
+            }
+        }
+        const queue = [];
+        for (const current of discovered)
+            for (const name of this.publicNameSets.get(current) ?? []) {
+                this.work.text(name);
+                queue.push([current, name]);
+            }
+        for (let cursor = 0; cursor < queue.length; cursor++) {
+            this.work.charge();
+            const [source, name] = queue[cursor];
+            if (name === 'default')
+                continue;
+            for (const consumer of reverse.get(source) ?? []) {
+                this.work.text(name);
+                const names = this.publicNameSets.get(consumer);
+                if (!names.has(name)) {
+                    names.add(name);
+                    queue.push([consumer, name]);
                 }
             }
-        for (let pass = 0; pass <= aliases.length; pass++) {
-            let changed = false;
-            for (const alias of aliases) {
+        }
+        return this.publicNameSets.get(file);
+    }
+    starSources(file, name) {
+        let index = this.starNameSources.get(file);
+        if (!index) {
+            index = new Map();
+            const targets = new Set();
+            for (const star of this.exportIndex(file).stars) {
+                this.work.charge();
+                const specifier = star.getModuleSpecifierValue();
+                const target = specifier ? this.module(file, specifier) : undefined;
+                if (target)
+                    targets.add(target);
+            }
+            for (const target of targets)
+                for (const publicName of this.publicExportNames(target)) {
+                    this.work.text(publicName);
+                    if (publicName === 'default')
+                        continue;
+                    if (!index.has(publicName))
+                        index.set(publicName, []);
+                    index.get(publicName).push(target);
+                }
+            this.starNameSources.set(file, index);
+        }
+        return index.get(name) ?? [];
+    }
+    /** One run-wide alias/mutation graph. Writes propagate back to referenced storage once;
+     * imported provenance anchors preserve namespace and exact named-import uncertainty. */
+    ensureMutationIndex() {
+        if (this.mutationIndex)
+            return this.mutationIndex;
+        const written = new Set();
+        if (!this.writeTargets.length) {
+            this.mutationIndex = written;
+            return written;
+        }
+        if (this.buildingMutations)
+            throw new Error('Recursive member mutation indexing');
+        this.buildingMutations = true;
+        const links = new Map();
+        const key = (node) => { this.work.charge(); return node.getSymbol()?.getDeclarations()[0] ?? node; };
+        const link = (from, target) => {
+            this.work.charge();
+            if (!links.has(from))
+                links.set(from, new Set());
+            links.get(from).add(target);
+        };
+        const root = (node) => {
+            while (ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node) || ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node)) {
+                this.work.charge();
+                node = node.getExpression();
+            }
+            return node;
+        };
+        try {
+            for (const alias of this.allVariables) {
+                this.work.charge();
                 const init = alias.getInitializer();
                 if (!init)
                     continue;
@@ -231,50 +407,80 @@ class SemanticModel {
                     continue;
                 const resolved = this.resolve(init);
                 const rootDeclaration = this.resolve(source);
-                if (!owns(source)
-                    && !(resolved && (resolved === key || owns(resolved)))
-                    && !(rootDeclaration && (rootDeclaration === key || owns(rootDeclaration))))
-                    continue;
                 const binding = alias.getNameNode();
                 const names = ts_morph_1.Node.isIdentifier(binding) ? [binding] : binding.getDescendantsOfKind(ts_morph_1.SyntaxKind.Identifier);
                 for (const name of names) {
-                    const symbol = name.getSymbol()?.compilerSymbol;
-                    if (symbol && !symbols.has(symbol)) {
-                        symbols.add(symbol);
-                        changed = true;
+                    const from = key(name);
+                    link(from, key(source));
+                    if (resolved)
+                        link(from, key(resolved));
+                    if (rootDeclaration)
+                        link(from, key(rootDeclaration));
+                }
+            }
+            for (const file of this.files)
+                for (const imported of file.getImportDeclarations()) {
+                    this.work.charge(imported.getModuleSpecifier().getFullWidth() + 1);
+                    const specifier = imported.getModuleSpecifierValue();
+                    for (const named of imported.getNamedImports()) {
+                        this.work.charge(named.getFullWidth() + 1);
+                        const local = named.getAliasNode() ?? named.getNameNode();
+                        const from = key(local);
+                        const target = this.resolve(local);
+                        if (target)
+                            link(from, key(target));
+                        link(from, `named\0${specifier}\0${named.getName()}`);
+                        link(from, `any\0${specifier}`);
+                    }
+                    const namespace = imported.getNamespaceImport();
+                    if (namespace)
+                        link(key(namespace), `namespace\0${specifier}`);
+                }
+            for (const target of this.writeTargets) {
+                let part = target;
+                while (part) {
+                    this.work.charge();
+                    written.add(key(part));
+                    const resolved = this.resolve(part);
+                    if (resolved)
+                        written.add(key(resolved));
+                    part = ts_morph_1.Node.isPropertyAccessExpression(part) || ts_morph_1.Node.isElementAccessExpression(part) ? part.getExpression() : undefined;
+                }
+            }
+            const queue = [...written];
+            for (let cursor = 0; cursor < queue.length; cursor++) {
+                this.work.charge();
+                for (const source of links.get(queue[cursor]) ?? []) {
+                    this.work.charge();
+                    if (!written.has(source)) {
+                        written.add(source);
+                        queue.push(source);
                     }
                 }
             }
-            if (!changed)
-                break;
+            this.mutationIndex = written;
+            return written;
         }
-        const written = this.files.some(file => file.getDescendants().some(expression => {
-            let target;
-            if (ts_morph_1.Node.isBinaryExpression(expression) && expression.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment
-                && expression.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment)
-                target = expression.getLeft();
-            else if ((ts_morph_1.Node.isPrefixUnaryExpression(expression) || ts_morph_1.Node.isPostfixUnaryExpression(expression))
-                && [ts_morph_1.SyntaxKind.PlusPlusToken, ts_morph_1.SyntaxKind.MinusMinusToken].includes(expression.getOperatorToken()))
-                target = expression.getOperand();
-            else if (ts_morph_1.Node.isDeleteExpression(expression))
-                target = expression.getExpression();
-            else if (ts_morph_1.Node.isCallExpression(expression) && expression.getExpression().getText() === 'Object.assign')
-                target = expression.getArguments()[0];
-            if (!target)
-                return false;
-            let part = target;
-            while (part) {
-                const resolved = this.resolve(part);
-                if (owns(part) || (resolved && (resolved === key || owns(resolved))))
-                    return true;
-                part = ts_morph_1.Node.isPropertyAccessExpression(part) || ts_morph_1.Node.isElementAccessExpression(part) ? part.getExpression() : undefined;
-            }
+        finally {
+            this.buildingMutations = false;
+        }
+    }
+    hasMemberWrites(node, provenance) {
+        this.work.charge();
+        const written = this.ensureMutationIndex();
+        if (!written.size)
             return false;
-        }));
-        this.memberWrites.set(key, written);
-        if (evidenceKey)
-            this.memberWriteEvidence.set(evidenceKey, written);
-        return written;
+        const key = node.getSymbol()?.getDeclarations()[0] ?? node;
+        if (written.has(key))
+            return true;
+        const resolved = this.resolve(node);
+        if (resolved && written.has(resolved.getSymbol()?.getDeclarations()[0] ?? resolved))
+            return true;
+        if (!provenance)
+            return false;
+        const specifier = String(provenance.import_path);
+        this.work.text(specifier);
+        return written.has(`namespace\0${specifier}`) || written.has(provenance.export_name === undefined ? `any\0${specifier}` : `named\0${specifier}\0${provenance.export_name}`);
     }
     /** Imported npm provenance, including aliases and bounded local barrels. A display name or
      * an instance member alone never establishes an external application declaration. */
@@ -300,8 +506,8 @@ class SemanticModel {
             branch.add(file);
             if (name === 'default' && file.getExportAssignments().length)
                 return this.externalReference(file.getExportAssignments()[0].getExpression(), branch);
-            const explicit = file.getExportDeclarations().flatMap(declaration => declaration.getNamedExports()
-                .filter(item => (item.getAliasNode()?.getText() ?? item.getName()) === name).map(item => ({ declaration, item })));
+            const index = this.exportIndex(file);
+            const explicit = index.named.get(name) ?? [];
             if (explicit.length) {
                 const candidates = explicit.map(({ declaration, item }) => declaration.getModuleSpecifierValue()
                     ? imported(declaration, declaration.getModuleSpecifierValue(), item.getName(), branch)
@@ -311,11 +517,11 @@ class SemanticModel {
             }
             // Resolve a directly exported local alias before considering stars. Actual local
             // functions/classes have already resolved through target(), so they cannot become imports.
-            const local = [...file.getFunctions(), ...file.getClasses(), ...file.getVariableDeclarations()]
-                .find(declaration => declaration.isExported() && (name === 'default' ? declaration.isDefaultExport() : declaration.getName() === name));
+            const candidate = name === 'default' ? index.defaultDeclaration : index.direct.get(name);
+            const local = candidate && (ts_morph_1.Node.isFunctionDeclaration(candidate) || ts_morph_1.Node.isClassDeclaration(candidate) || ts_morph_1.Node.isVariableDeclaration(candidate)) ? candidate : undefined;
             if (local)
                 return this.externalReference(local, branch);
-            const stars = file.getExportDeclarations().filter(declaration => !declaration.getNamedExports().length && declaration.getModuleSpecifierValue());
+            const stars = index.stars.filter(declaration => !!declaration.getModuleSpecifierValue());
             const candidates = stars.map(declaration => imported(declaration, declaration.getModuleSpecifierValue(), name, branch));
             const identities = new Map(candidates.filter((value) => !!value).map(value => [value.qualifiedName, value]));
             return candidates.length && candidates.every(value => !!value) && identities.size === 1 ? [...identities.values()][0] : undefined;
@@ -361,53 +567,52 @@ class SemanticModel {
         return undefined;
     }
     exported(file, name, seen = new Set()) {
+        this.work.charge(this.relative(file).length + name.length + seen.size + 1);
+        const index = this.exportIndex(file);
         const key = `${this.relative(file)}:${name}`;
         if (seen.has(key))
             return undefined;
         seen.add(key);
         if (name === 'default') {
-            const assignment = file.getExportAssignments()[0];
-            if (assignment)
-                return this.resolve(assignment.getExpression(), seen);
-            const declaration = [...file.getFunctions(), ...file.getClasses()].find(item => item.isDefaultExport());
-            if (declaration)
-                return declaration;
+            if (index.assignment)
+                return this.resolve(index.assignment.getExpression(), seen);
+            if (index.defaultDeclaration)
+                return index.defaultDeclaration;
         }
-        for (const declaration of [...file.getFunctions(), ...file.getClasses(), ...file.getInterfaces(), ...file.getVariableDeclarations(), ...file.getEnums()]) {
-            if (declaration.getName() === name && declaration.isExported())
-                return declaration;
-        }
+        const direct = index.direct.get(name);
+        if (direct)
+            return direct;
         const candidates = new Set();
-        for (const exp of file.getExportDeclarations()) {
-            const target = exp.getModuleSpecifierValue() ? this.module(file, exp.getModuleSpecifierValue()) : file;
+        for (const { declaration, item } of index.named.get(name) ?? []) {
+            this.work.charge(seen.size + 1);
+            const specifier = declaration.getModuleSpecifierValue();
+            const target = specifier ? this.module(file, specifier) : file;
             if (!target)
                 continue;
-            const named = exp.getNamedExports();
-            if (named.length) {
-                const item = named.find(item => (item.getAliasNode()?.getText() ?? item.getName()) === name);
-                if (item) {
-                    const value = target === file ? this.resolve(item.getNameNode(), new Set(seen)) : this.exported(target, item.getName(), new Set(seen));
-                    if (value)
-                        candidates.add(value);
-                }
-            }
-            else if (name !== 'default') {
+            const value = target === file ? this.resolve(item.getNameNode(), new Set(seen)) : this.exported(target, item.getName(), new Set(seen));
+            if (value)
+                candidates.add(value);
+        }
+        if (name !== 'default')
+            for (const target of this.starSources(file, name)) {
+                this.work.charge(seen.size + 1);
                 const value = this.exported(target, name, new Set(seen));
                 if (value)
                     candidates.add(value);
             }
-        }
         if (candidates.size > 1)
             this.diagnostic(`symbolAmbiguity: ${key} has ${candidates.size} export candidates`);
         return candidates.size === 1 ? [...candidates][0] : undefined;
     }
     resolve(node, seen = new Set()) {
+        this.work.charge();
         if (!node)
             return undefined;
         if (seen.size > 100) {
             this.diagnostic(`symbolResolutionLimit: ${this.relative(node)}`);
             return undefined;
         }
+        this.work.charge(node.getSourceFile().getFilePath().length + 32);
         const key = `${node.getSourceFile().getFilePath()}:${node.getPos()}:${node.getKind()}`;
         if (seen.has(key))
             return undefined;
@@ -448,11 +653,23 @@ class SemanticModel {
             if (callee && (ts_morph_1.Node.isFunctionDeclaration(callee) || ts_morph_1.Node.isFunctionExpression(callee) || ts_morph_1.Node.isArrowFunction(callee) || ts_morph_1.Node.isMethodDeclaration(callee))) {
                 const body = callee.getBody();
                 if (body) {
-                    const expressions = ts_morph_1.Node.isBlock(body)
-                        ? body.getDescendantsOfKind(ts_morph_1.SyntaxKind.ReturnStatement)
-                            .filter(statement => this.owner(statement) === this.callables.get(callee))
-                            .flatMap(statement => statement.getExpression() ? [statement.getExpression()] : [])
-                        : [body];
+                    let expressions = this.returnExpressions.get(callee);
+                    if (!expressions) {
+                        expressions = [];
+                        const pending = [body];
+                        while (pending.length) {
+                            this.work.charge();
+                            const current = pending.pop();
+                            if (current !== body && isCallable(current))
+                                continue;
+                            if (ts_morph_1.Node.isReturnStatement(current) && current.getExpression())
+                                expressions.push(current.getExpression());
+                            current.forEachChild(child => { this.work.charge(); pending.push(child); });
+                        }
+                        if (!ts_morph_1.Node.isBlock(body))
+                            expressions = [body];
+                        this.returnExpressions.set(callee, expressions);
+                    }
                     const resolvedReturns = expressions.map(expression => this.resolve(expression, new Set(seen)));
                     const returns = new Set(resolvedReturns.filter((value) => !!value));
                     if (returns.size === 1 && resolvedReturns.every(value => !!value))

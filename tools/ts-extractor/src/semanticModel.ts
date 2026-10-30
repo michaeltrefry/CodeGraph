@@ -1,6 +1,7 @@
-import { Node, SourceFile, SyntaxKind, CallExpression } from 'ts-morph';
+import { Node, SourceFile, SyntaxKind, CallExpression, ExportDeclaration, ExportSpecifier, VariableDeclaration } from 'ts-morph';
 import * as path from 'path';
 import { addNpmExportMetadata } from './packageExports';
+import { ExtractionWorkBudget, ExtractionWorkControl } from './extractionWork';
 import type { GraphNodeDto, PendingEdgeDto, ResolvedImportDto, UnresolvedCallDto } from './protocol';
 
 export function declarationQN(file: string, name: string): string {
@@ -17,6 +18,18 @@ export function isCallable(node: Node): boolean {
     Node.isMethodDeclaration(node) || Node.isGetAccessorDeclaration(node) || Node.isSetAccessorDeclaration(node) || Node.isConstructorDeclaration(node);
 }
 
+type LocalExportDeclaration = ReturnType<SourceFile['getFunctions']>[number] | ReturnType<SourceFile['getClasses']>[number]
+  | ReturnType<SourceFile['getInterfaces']>[number] | VariableDeclaration | ReturnType<SourceFile['getEnums']>[number];
+export interface FileExportIndex {
+  declarations: LocalExportDeclaration[];
+  direct: Map<string, LocalExportDeclaration>;
+  explicit: Set<string>;
+  named: Map<string, Array<{ declaration: ExportDeclaration; item: ExportSpecifier }>>;
+  stars: ExportDeclaration[];
+  assignment?: ReturnType<SourceFile['getExportAssignments']>[number];
+  defaultDeclaration?: LocalExportDeclaration;
+}
+
 /** Shared, source-scoped symbol seam for subsequent HTTP, routes and desktop passes.
  * All resolution is bounded to the already admitted ASTs. Package dependencies remain imports,
  * not guessed same-name declarations. Explicit exports/aliases are followed without node_modules.
@@ -30,10 +43,19 @@ export class SemanticModel {
   private readonly importBySource = new Map<string, ResolvedImportDto>();
   private readonly resolvedModules = new Map<string, SourceFile | undefined>();
   private readonly externalCallSymbols = new Map<string, GraphNodeDto>();
-  private readonly memberWrites = new Map<Node, boolean>();
-  private readonly memberWriteEvidence = new Map<string, boolean>();
+  readonly work: ExtractionWorkBudget;
+  private readonly exportIndexes = new Map<SourceFile, FileExportIndex>();
+  private readonly publicNameSets = new Map<SourceFile, Set<string>>();
+  private readonly starNameSources = new Map<SourceFile, Map<string, SourceFile[]>>();
+  private readonly returnExpressions = new Map<Node, Node[]>();
+  private readonly allVariables: VariableDeclaration[] = [];
+  private readonly writeTargets: Node[] = [];
+  private mutationIndex?: Set<Node | string>;
+  private buildingMutations = false;
   constructor(readonly repository: string, readonly root: string, readonly files: SourceFile[],
-    readonly imports: ResolvedImportDto[], readonly diagnostic: (message: string) => void) {
+    readonly imports: ResolvedImportDto[], readonly diagnostic: (message: string) => void,
+    control: ExtractionWorkControl | ExtractionWorkBudget = {}) {
+    this.work = control instanceof ExtractionWorkBudget ? control : new ExtractionWorkBudget(control);
     for (const file of files) this.byPath.set(this.relative(file), file);
     for (const imported of imports) {
       const key = `${imported.filePath}\0${imported.importedNamespace}`;
@@ -41,6 +63,15 @@ export class SemanticModel {
     }
     for (const file of files) {
       file.forEachDescendant(node => {
+        this.work.charge();
+        if (Node.isVariableDeclaration(node)) this.allVariables.push(node);
+        if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) this.writeTargets.push(node.getLeft());
+        else if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) && [SyntaxKind.PlusPlusToken, SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) this.writeTargets.push(node.getOperand());
+        else if (Node.isDeleteExpression(node)) this.writeTargets.push(node.getExpression());
+        else if (Node.isCallExpression(node)) {
+          const expr = node.getExpression();
+          if (Node.isPropertyAccessExpression(expr) && expr.getName() === 'assign' && Node.isIdentifier(expr.getExpression()) && expr.getExpression().getText() === 'Object' && node.getArguments()[0]) this.writeTargets.push(node.getArguments()[0]);
+        }
         if (Node.isClassDeclaration(node) || Node.isInterfaceDeclaration(node) || Node.isEnumDeclaration(node) || Node.isVariableDeclaration(node)) {
           this.identify(node, this.qn(node));
         }
@@ -65,6 +96,8 @@ export class SemanticModel {
   private identify(node: Node, qn: string): void { this.declarations.set(node, qn); this.byQN.set(qn, node); }
   private qn(node: Node): string {
     const owner = node.getAncestors().find(ancestor => isCallable(ancestor) || Node.isClassDeclaration(ancestor));
+    const nameNode = (node as unknown as { getNameNode?: () => Node | undefined }).getNameNode?.();
+    this.work.charge((nameNode?.getFullWidth() ?? 0) + 1);
     let name = (node as unknown as { getName?: () => string | undefined }).getName?.();
     const parent = node.getParent();
     if (parent && (Node.isVariableDeclaration(parent) || Node.isPropertyAssignment(parent) || Node.isPropertyDeclaration(parent)) &&
@@ -105,6 +138,7 @@ export class SemanticModel {
       }
       scopes.unshift(`$scope${indices.join('_')}`);
     }
+    this.work.charge(scopes.reduce((size, value) => size + value.length, 0) + containers.reduce((size, value) => size + value.length, 0) + name.length + this.relative(node).length + this.repository.length + 8);
     const lexicalName = [...scopes, ...containers, name].join('.');
     if (owner) return `${this.declarations.get(owner) ?? this.qn(owner)}.${lexicalName}`;
     return Node.isClassDeclaration(node) || Node.isInterfaceDeclaration(node) || Node.isEnumDeclaration(node)
@@ -119,6 +153,7 @@ export class SemanticModel {
     return this.fileQN(node);
   }
   module(from: Node, specifier: string): SourceFile | undefined {
+    this.work.charge(this.relative(from).length + specifier.length + 1);
     const key = `${this.relative(from)}\0${specifier}`;
     if (this.resolvedModules.has(key)) return this.resolvedModules.get(key);
     const resolved = this.importBySource.get(key);
@@ -126,67 +161,152 @@ export class SemanticModel {
     this.resolvedModules.set(key, module);
     return module;
   }
-  /** Conservative writes through an object/import and its static aliases. Rooting assignment
-   * targets catches Icon.Model/alias.Model writes without interpreting application execution. */
-  hasMemberWrites(node: Node, provenance?: Record<string, unknown>): boolean {
-    const key = node.getSymbol()?.getDeclarations()[0] ?? node;
-    if (this.memberWrites.has(key)) return this.memberWrites.get(key)!;
-    const evidenceKey = provenance ? `${provenance.import_path}\0${provenance.export_name ?? '*'}` : undefined;
-    if (evidenceKey && this.memberWriteEvidence.has(evidenceKey)) return this.memberWriteEvidence.get(evidenceKey)!;
-    const root = (value: Node): Node => Node.isPropertyAccessExpression(value) || Node.isElementAccessExpression(value)
-      ? root(value.getExpression()) : Node.isParenthesizedExpression(value) || Node.isAsExpression(value) ? root(value.getExpression()) : value;
-    const symbols = new Set([node.getSymbol()?.compilerSymbol, key.getSymbol()?.compilerSymbol].filter(value => !!value));
-    const owns = (value: Node | undefined): boolean => { const symbol = value?.getSymbol()?.compilerSymbol; return !!symbol && symbols.has(symbol); };
-    const aliases = this.files.flatMap(file => file.getDescendantsOfKind(SyntaxKind.VariableDeclaration));
-    for (const file of this.files) for (const imp of file.getImportDeclarations()) {
-      for (const named of imp.getNamedImports()) {
-        const local = named.getAliasNode() ?? named.getNameNode();
-        const target = this.resolve(local);
-        if ((target && (target === key || owns(target)))
-          || (provenance && imp.getModuleSpecifierValue() === provenance.import_path && (provenance.export_name === undefined || named.getName() === provenance.export_name))) {
-          const symbol = local.getSymbol()?.compilerSymbol; if (symbol) symbols.add(symbol);
-        }
-      }
-      if (provenance && imp.getModuleSpecifierValue() === provenance.import_path) {
-        const namespace = imp.getNamespaceImport()?.getSymbol()?.compilerSymbol; if (namespace) symbols.add(namespace);
+  exportIndex(file: SourceFile): FileExportIndex {
+    this.work.charge(); const cached = this.exportIndexes.get(file); if (cached) return cached;
+    this.work.charge(file.compilerNode.statements.length * 2 + 1);
+    const index: FileExportIndex = { declarations: [], direct: new Map(), explicit: new Set(), named: new Map(), stars: [] };
+    const exports = file.getSymbol();
+    this.work.charge((exports?.compilerSymbol.exports?.size ?? 0) + 1);
+    const exportedSymbols = new Set<object>(); const defaultSymbols = new Set<object>();
+    for (const symbol of exports?.getExports() ?? []) {
+      this.work.charge(); const alias = symbol.getAliasedSymbol(); exportedSymbols.add(symbol.compilerSymbol);
+      if (alias) exportedSymbols.add(alias.compilerSymbol);
+      if (symbol.getName() === 'default') { defaultSymbols.add(symbol.compilerSymbol); if (alias) defaultSymbols.add(alias.compilerSymbol); }
+    }
+    for (const statement of file.getStatements()) {
+      this.work.charge();
+      if (Node.isFunctionDeclaration(statement) || Node.isClassDeclaration(statement) || Node.isInterfaceDeclaration(statement) || Node.isEnumDeclaration(statement)) index.declarations.push(statement);
+      if (Node.isVariableStatement(statement)) { this.work.charge(statement.compilerNode.declarationList.declarations.length); index.declarations.push(...statement.getDeclarations()); }
+      if (Node.isExportAssignment(statement) && !index.assignment) index.assignment = statement;
+      if (!Node.isExportDeclaration(statement)) continue;
+      const named = statement.getNamedExports();
+      if (!named.length) index.stars.push(statement);
+      for (const item of named) {
+        this.work.charge(item.getFullWidth() + 1);
+        const name = item.getAliasNode()?.getText() ?? item.getName(); index.explicit.add(name);
+        if (!index.named.has(name)) index.named.set(name, []); index.named.get(name)!.push({ declaration: statement, item });
       }
     }
-    for (let pass = 0; pass <= aliases.length; pass++) {
-      let changed = false;
-      for (const alias of aliases) {
-        const init = alias.getInitializer(); if (!init) continue;
-        const source = root(init);
-        if (!Node.isIdentifier(source)) continue;
+    for (const declaration of index.declarations) {
+      this.work.charge((declaration.getNameNode()?.getFullWidth() ?? 0) + 1);
+      const name = declaration.getName();
+      const symbol = (!declaration.hasExportKeyword() || defaultSymbols.size) ? declaration.getSymbol()?.compilerSymbol : undefined;
+      const isDefault = declaration.hasDefaultKeyword() || !!symbol && defaultSymbols.has(symbol);
+      if (isDefault) { index.explicit.add('default'); if (!index.defaultDeclaration) index.defaultDeclaration = declaration; }
+      if (name && (declaration.hasExportKeyword() || !!symbol && exportedSymbols.has(symbol))) {
+        if (!index.direct.has(name)) index.direct.set(name, declaration); index.explicit.add(isDefault ? 'default' : name);
+      }
+    }
+    if (index.assignment) index.explicit.add('default');
+    this.exportIndexes.set(file, index); return index;
+  }
+  publicExportNames(file: SourceFile): ReadonlySet<string> {
+    this.work.charge(); const prior = this.publicNameSets.get(file); if (prior) return prior;
+    const pending = [file]; const discovered = new Set<SourceFile>();
+    const reverse = new Map<SourceFile, Set<SourceFile>>(); const frontier = new Set<SourceFile>();
+    while (pending.length) {
+      this.work.charge(); const current = pending.pop()!;
+      if (discovered.has(current)) continue; discovered.add(current);
+      if (this.publicNameSets.has(current)) { frontier.add(current); continue; }
+      const index = this.exportIndex(current); const names = new Set<string>();
+      for (const name of index.explicit) { this.work.text(name); names.add(name); }
+      this.publicNameSets.set(current, names);
+      for (const star of index.stars) {
+        this.work.charge(); const specifier = star.getModuleSpecifierValue(); if (!specifier) continue;
+        const target = this.module(current, specifier); if (!target) continue;
+        if (!reverse.has(target)) reverse.set(target, new Set()); reverse.get(target)!.add(current); pending.push(target);
+      }
+    }
+    const queue: Array<[SourceFile, string]> = [];
+    for (const current of discovered) for (const name of this.publicNameSets.get(current) ?? []) { this.work.text(name); queue.push([current, name]); }
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      this.work.charge(); const [source, name] = queue[cursor]; if (name === 'default') continue;
+      for (const consumer of reverse.get(source) ?? []) {
+        this.work.text(name); const names = this.publicNameSets.get(consumer)!;
+        if (!names.has(name)) { names.add(name); queue.push([consumer, name]); }
+      }
+    }
+    return this.publicNameSets.get(file)!;
+  }
+  private starSources(file: SourceFile, name: string): readonly SourceFile[] {
+    let index = this.starNameSources.get(file);
+    if (!index) {
+      index = new Map(); const targets = new Set<SourceFile>();
+      for (const star of this.exportIndex(file).stars) {
+        this.work.charge(); const specifier = star.getModuleSpecifierValue(); const target = specifier ? this.module(file, specifier) : undefined;
+        if (target) targets.add(target);
+      }
+      for (const target of targets) for (const publicName of this.publicExportNames(target)) {
+        this.work.text(publicName); if (publicName === 'default') continue;
+        if (!index.has(publicName)) index.set(publicName, []); index.get(publicName)!.push(target);
+      }
+      this.starNameSources.set(file, index);
+    }
+    return index.get(name) ?? [];
+  }
+  /** One run-wide alias/mutation graph. Writes propagate back to referenced storage once;
+   * imported provenance anchors preserve namespace and exact named-import uncertainty. */
+  private ensureMutationIndex(): Set<Node | string> {
+    if (this.mutationIndex) return this.mutationIndex;
+    const written = new Set<Node | string>();
+    if (!this.writeTargets.length) { this.mutationIndex = written; return written; }
+    if (this.buildingMutations) throw new Error('Recursive member mutation indexing');
+    this.buildingMutations = true;
+    const links = new Map<Node | string, Set<Node | string>>();
+    const key = (node: Node): Node => { this.work.charge(); return node.getSymbol()?.getDeclarations()[0] ?? node; };
+    const link = (from: Node | string, target: Node | string): void => {
+      this.work.charge(); if (!links.has(from)) links.set(from, new Set()); links.get(from)!.add(target);
+    };
+    const root = (node: Node): Node => {
+      while (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node) || Node.isParenthesizedExpression(node) || Node.isAsExpression(node)) { this.work.charge(); node = node.getExpression(); }
+      return node;
+    };
+    try {
+      for (const alias of this.allVariables) {
+        this.work.charge(); const init = alias.getInitializer(); if (!init) continue;
+        const source = root(init); if (!Node.isIdentifier(source)) continue;
         const resolved = this.resolve(init); const rootDeclaration = this.resolve(source);
-        if (!owns(source)
-          && !(resolved && (resolved === key || owns(resolved)))
-          && !(rootDeclaration && (rootDeclaration === key || owns(rootDeclaration)))) continue;
         const binding = alias.getNameNode();
         const names = Node.isIdentifier(binding) ? [binding] : binding.getDescendantsOfKind(SyntaxKind.Identifier);
-        for (const name of names) { const symbol = name.getSymbol()?.compilerSymbol; if (symbol && !symbols.has(symbol)) { symbols.add(symbol); changed = true; } }
+        for (const name of names) {
+          const from = key(name); link(from, key(source));
+          if (resolved) link(from, key(resolved));
+          if (rootDeclaration) link(from, key(rootDeclaration));
+        }
       }
-      if (!changed) break;
-    }
-    const written = this.files.some(file => file.getDescendants().some(expression => {
-      let target: Node | undefined;
-      if (Node.isBinaryExpression(expression) && expression.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment
-        && expression.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) target = expression.getLeft();
-      else if ((Node.isPrefixUnaryExpression(expression) || Node.isPostfixUnaryExpression(expression))
-        && [SyntaxKind.PlusPlusToken, SyntaxKind.MinusMinusToken].includes(expression.getOperatorToken())) target = expression.getOperand();
-      else if (Node.isDeleteExpression(expression)) target = expression.getExpression();
-      else if (Node.isCallExpression(expression) && expression.getExpression().getText() === 'Object.assign') target = expression.getArguments()[0];
-      if (!target) return false;
-      let part: Node | undefined = target;
-      while (part) {
-        const resolved = this.resolve(part);
-        if (owns(part) || (resolved && (resolved === key || owns(resolved)))) return true;
-        part = Node.isPropertyAccessExpression(part) || Node.isElementAccessExpression(part) ? part.getExpression() : undefined;
+      for (const file of this.files) for (const imported of file.getImportDeclarations()) {
+        this.work.charge(imported.getModuleSpecifier().getFullWidth() + 1);
+        const specifier = imported.getModuleSpecifierValue();
+        for (const named of imported.getNamedImports()) {
+          this.work.charge(named.getFullWidth() + 1);
+          const local = named.getAliasNode() ?? named.getNameNode(); const from = key(local); const target = this.resolve(local);
+          if (target) link(from, key(target));
+          link(from, `named\0${specifier}\0${named.getName()}`); link(from, `any\0${specifier}`);
+        }
+        const namespace = imported.getNamespaceImport(); if (namespace) link(key(namespace), `namespace\0${specifier}`);
       }
-      return false;
-    }));
-    this.memberWrites.set(key, written);
-    if (evidenceKey) this.memberWriteEvidence.set(evidenceKey, written);
-    return written;
+      for (const target of this.writeTargets) {
+        let part: Node | undefined = target;
+        while (part) {
+          this.work.charge(); written.add(key(part)); const resolved = this.resolve(part); if (resolved) written.add(key(resolved));
+          part = Node.isPropertyAccessExpression(part) || Node.isElementAccessExpression(part) ? part.getExpression() : undefined;
+        }
+      }
+      const queue = [...written];
+      for (let cursor = 0; cursor < queue.length; cursor++) {
+        this.work.charge(); for (const source of links.get(queue[cursor]) ?? []) { this.work.charge(); if (!written.has(source)) { written.add(source); queue.push(source); } }
+      }
+      this.mutationIndex = written; return written;
+    } finally { this.buildingMutations = false; }
+  }
+  hasMemberWrites(node: Node, provenance?: Record<string, unknown>): boolean {
+    this.work.charge(); const written = this.ensureMutationIndex(); if (!written.size) return false;
+    const key = node.getSymbol()?.getDeclarations()[0] ?? node;
+    if (written.has(key)) return true;
+    const resolved = this.resolve(node); if (resolved && written.has(resolved.getSymbol()?.getDeclarations()[0] ?? resolved)) return true;
+    if (!provenance) return false;
+    const specifier = String(provenance.import_path); this.work.text(specifier);
+    return written.has(`namespace\0${specifier}`) || written.has(provenance.export_name === undefined ? `any\0${specifier}` : `named\0${specifier}\0${provenance.export_name}`);
   }
   /** Imported npm provenance, including aliases and bounded local barrels. A display name or
    * an instance member alone never establishes an external application declaration. */
@@ -207,8 +327,8 @@ export class SemanticModel {
       const branch = new Set(history); branch.add(file);
       if (name === 'default' && file.getExportAssignments().length)
         return this.externalReference(file.getExportAssignments()[0].getExpression(), branch);
-      const explicit = file.getExportDeclarations().flatMap(declaration => declaration.getNamedExports()
-        .filter(item => (item.getAliasNode()?.getText() ?? item.getName()) === name).map(item => ({ declaration, item })));
+      const index = this.exportIndex(file);
+      const explicit = index.named.get(name) ?? [];
       if (explicit.length) {
         const candidates = explicit.map(({ declaration, item }) => declaration.getModuleSpecifierValue()
           ? imported(declaration, declaration.getModuleSpecifierValue()!, item.getName(), branch)
@@ -218,10 +338,10 @@ export class SemanticModel {
       }
       // Resolve a directly exported local alias before considering stars. Actual local
       // functions/classes have already resolved through target(), so they cannot become imports.
-      const local = [...file.getFunctions(), ...file.getClasses(), ...file.getVariableDeclarations()]
-        .find(declaration => declaration.isExported() && (name === 'default' ? declaration.isDefaultExport() : declaration.getName() === name));
+      const candidate = name === 'default' ? index.defaultDeclaration : index.direct.get(name);
+      const local = candidate && (Node.isFunctionDeclaration(candidate) || Node.isClassDeclaration(candidate) || Node.isVariableDeclaration(candidate)) ? candidate : undefined;
       if (local) return this.externalReference(local, branch);
-      const stars = file.getExportDeclarations().filter(declaration => !declaration.getNamedExports().length && declaration.getModuleSpecifierValue());
+      const stars = index.stars.filter(declaration => !!declaration.getModuleSpecifierValue());
       const candidates = stars.map(declaration => imported(declaration, declaration.getModuleSpecifierValue()!, name, branch));
       const identities = new Map(candidates.filter((value): value is NonNullable<typeof value> => !!value).map(value => [value.qualifiedName, value]));
       return candidates.length && candidates.every(value => !!value) && identities.size === 1 ? [...identities.values()][0] : undefined;
@@ -264,38 +384,32 @@ export class SemanticModel {
     return undefined;
   }
   exported(file: SourceFile, name: string, seen = new Set<string>()): Node | undefined {
-    const key = `${this.relative(file)}:${name}`;
+    this.work.charge(this.relative(file).length + name.length + seen.size + 1);
+    const index = this.exportIndex(file); const key = `${this.relative(file)}:${name}`;
     if (seen.has(key)) return undefined; seen.add(key);
     if (name === 'default') {
-      const assignment = file.getExportAssignments()[0];
-      if (assignment) return this.resolve(assignment.getExpression(), seen);
-      const declaration = [...file.getFunctions(), ...file.getClasses()].find(item => item.isDefaultExport());
-      if (declaration) return declaration;
+      if (index.assignment) return this.resolve(index.assignment.getExpression(), seen);
+      if (index.defaultDeclaration) return index.defaultDeclaration;
     }
-    for (const declaration of [...file.getFunctions(), ...file.getClasses(), ...file.getInterfaces(), ...file.getVariableDeclarations(), ...file.getEnums()]) {
-      if (declaration.getName() === name && declaration.isExported()) return declaration;
-    }
+    const direct = index.direct.get(name); if (direct) return direct;
     const candidates = new Set<Node>();
-    for (const exp of file.getExportDeclarations()) {
-      const target = exp.getModuleSpecifierValue() ? this.module(file, exp.getModuleSpecifierValue()!) : file;
-      if (!target) continue;
-      const named = exp.getNamedExports();
-      if (named.length) {
-        const item = named.find(item => (item.getAliasNode()?.getText() ?? item.getName()) === name);
-        if (item) {
-          const value = target === file ? this.resolve(item.getNameNode(), new Set(seen)) : this.exported(target, item.getName(), new Set(seen));
-          if (value) candidates.add(value);
-        }
-      } else if (name !== 'default') {
-        const value = this.exported(target, name, new Set(seen)); if (value) candidates.add(value);
-      }
+    for (const { declaration, item } of index.named.get(name) ?? []) {
+      this.work.charge(seen.size + 1); const specifier = declaration.getModuleSpecifierValue();
+      const target = specifier ? this.module(file, specifier) : file; if (!target) continue;
+      const value = target === file ? this.resolve(item.getNameNode(), new Set(seen)) : this.exported(target, item.getName(), new Set(seen));
+      if (value) candidates.add(value);
+    }
+    if (name !== 'default') for (const target of this.starSources(file, name)) {
+      this.work.charge(seen.size + 1); const value = this.exported(target, name, new Set(seen)); if (value) candidates.add(value);
     }
     if (candidates.size > 1) this.diagnostic(`symbolAmbiguity: ${key} has ${candidates.size} export candidates`);
     return candidates.size === 1 ? [...candidates][0] : undefined;
   }
   resolve(node: Node | undefined, seen = new Set<string>()): Node | undefined {
+    this.work.charge();
     if (!node) return undefined;
     if (seen.size > 100) { this.diagnostic(`symbolResolutionLimit: ${this.relative(node)}`); return undefined; }
+    this.work.charge(node.getSourceFile().getFilePath().length + 32);
     const key = `${node.getSourceFile().getFilePath()}:${node.getPos()}:${node.getKind()}`;
     if (seen.has(key)) return undefined; seen.add(key);
     if (this.declarations.has(node)) {
@@ -329,11 +443,18 @@ export class SemanticModel {
       if (callee && (Node.isFunctionDeclaration(callee) || Node.isFunctionExpression(callee) || Node.isArrowFunction(callee) || Node.isMethodDeclaration(callee))) {
         const body = callee.getBody();
         if (body) {
-          const expressions = Node.isBlock(body)
-            ? body.getDescendantsOfKind(SyntaxKind.ReturnStatement)
-              .filter(statement => this.owner(statement) === this.callables.get(callee))
-              .flatMap(statement => statement.getExpression() ? [statement.getExpression()!] : [])
-            : [body];
+          let expressions = this.returnExpressions.get(callee);
+          if (!expressions) {
+            expressions = []; const pending: Node[] = [body];
+            while (pending.length) {
+              this.work.charge(); const current = pending.pop()!;
+              if (current !== body && isCallable(current)) continue;
+              if (Node.isReturnStatement(current) && current.getExpression()) expressions.push(current.getExpression()!);
+              current.forEachChild(child => { this.work.charge(); pending.push(child); });
+            }
+            if (!Node.isBlock(body)) expressions = [body];
+            this.returnExpressions.set(callee, expressions);
+          }
           const resolvedReturns = expressions.map(expression => this.resolve(expression, new Set(seen)));
           const returns = new Set(resolvedReturns.filter((value): value is Node => !!value));
           if (returns.size === 1 && resolvedReturns.every(value => !!value)) return [...returns][0];

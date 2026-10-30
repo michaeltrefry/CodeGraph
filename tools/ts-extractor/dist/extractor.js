@@ -43,6 +43,7 @@ const discoveryScope_1 = require("./discoveryScope");
 const boundedTextReader_1 = require("./boundedTextReader");
 const extractionEdges_1 = require("./extractionEdges");
 const semanticModel_1 = require("./semanticModel");
+const extractionWork_1 = require("./extractionWork");
 const reactAnalysis_1 = require("./reactAnalysis");
 const httpAnalysis_1 = require("./httpAnalysis");
 const routeAnalysis_1 = require("./routeAnalysis");
@@ -59,20 +60,22 @@ const PRIMITIVE_TYPES = new Set([
     'string', 'number', 'boolean', 'any', 'void',
     'null', 'undefined', 'never', 'unknown', 'object',
 ]);
-function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { }, includedFiles, limits = {}) {
+function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { }, includedFiles, limits = {}, workControl = {}) {
     try {
+        const work = new extractionWork_1.ExtractionWorkBudget(workControl);
+        work.charge(0);
         (0, boundedTextReader_1.validateSourceScope)(includedFiles);
-        return extractProjectCore(repositoryName, rootPath, tsconfigPath, log, includedFiles, limits);
+        return extractProjectCore(repositoryName, rootPath, tsconfigPath, log, includedFiles, limits, work);
     }
     catch (error) {
         const refusal = error;
-        const reason = error instanceof boundedTextReader_1.SourceAdmissionError ? error.message : refusal.code === 'vite_library_analysis_incomplete' ? 'Vite library analysis work limit or cancellation' : `analysis failure (${refusal.code ?? refusal.name ?? 'unknown'})`;
+        const reason = error instanceof boundedTextReader_1.SourceAdmissionError ? error.message : refusal.code === 'vite_library_analysis_incomplete' ? 'Vite library analysis work limit or cancellation' : refusal.code === 'extraction_work_incomplete' ? 'semantic analysis work limit or cancellation' : `analysis failure (${refusal.code ?? refusal.name ?? 'unknown'})`;
         const message = `sourceAdmission: extraction refused: ${reason.slice(0, 240)}`;
         log(message);
         return { complete: false, nodes: [], edges: [], workspacePackages: [], resolvedImports: [], unresolvedImports: [], unresolvedCalls: [], processedFiles: [], diagnostics: [message] };
     }
 }
-function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, includedFiles, limits) {
+function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, includedFiles, limits, work) {
     const nodes = [];
     const edges = [];
     const workspacePackages = [];
@@ -217,7 +220,7 @@ function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, include
             diag(`SLOW file (${fileMs}ms): ${filePath}`);
     }
     diag(`extractionLoop: ${filesProcessed} files in ${Date.now() - t0}ms`);
-    const semantic = new semanticModel_1.SemanticModel(repositoryName, rootPath, sourceFiles, workspaceResolution.resolvedImports, diag);
+    const semantic = new semanticModel_1.SemanticModel(repositoryName, rootPath, sourceFiles, workspaceResolution.resolvedImports, diag, work);
     semantic.extract(nodes, edges, unresolvedCalls);
     (0, reactAnalysis_1.analyzeReact)(semantic, nodes, edges, diag);
     // Reconcile legacy Angular targets using declaration identities, never rendered type strings.
