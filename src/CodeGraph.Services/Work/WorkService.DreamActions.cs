@@ -103,7 +103,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
                 RefuseDreamFields(input, "id", "reason");
                 var id = input["id"]?.GetValue<string>() ?? throw WorkException.Invalid("challenge requires id.");
                 var entry = await RequireEntryAsync(id, "id", scope.ProjectId.ToString(), null, ct);
-                var reason = Text(input["reason"]?.GetValue<string>(), "reason", KnowledgeLimits.MaxReasonLength);
+                var reason = Text(input["reason"]?.GetValue<string>() ?? throw WorkException.Invalid("challenge requires reason."), "reason", KnowledgeLimits.MaxReasonLength);
                 result = await Knowledge.OpenChallengeAsync(entry.Id, reason, evidence.Select(e => new EvidenceView(EvidenceKind.Source, e.Summary, e.Reference)).ToList(), null, actor, ct);
                 break;
             }
