@@ -190,6 +190,12 @@ public class MySqlJobScheduleStore(CodeGraphDbContext db) : IJobScheduleStore
                 SET last_run_completed_utc = {completedAtUtc},
                     last_run_status = {status},
                     last_error = {error},
+                    failure_at_utc = CASE WHEN {status} = 'failed' THEN {completedAtUtc}
+                        WHEN {status} = 'succeeded' THEN NULL ELSE failure_at_utc END,
+                    failure_error = CASE WHEN {status} = 'failed' THEN {error}
+                        WHEN {status} = 'succeeded' THEN NULL ELSE failure_error END,
+                    failure_dismissed_at = CASE WHEN {status} IN ('failed', 'succeeded') THEN NULL
+                        ELSE failure_dismissed_at END,
                     next_run_utc = CASE
                         WHEN schedule_revision = {acquiredScheduleRevision} THEN {nextRun}
                         ELSE next_run_utc
@@ -209,6 +215,12 @@ public class MySqlJobScheduleStore(CodeGraphDbContext db) : IJobScheduleStore
                 SET last_run_completed_utc = {completedAtUtc},
                     last_run_status = {status},
                     last_error = {error},
+                    failure_at_utc = CASE WHEN {status} = 'failed' THEN {completedAtUtc}
+                        WHEN {status} = 'succeeded' THEN NULL ELSE failure_at_utc END,
+                    failure_error = CASE WHEN {status} = 'failed' THEN {error}
+                        WHEN {status} = 'succeeded' THEN NULL ELSE failure_error END,
+                    failure_dismissed_at = CASE WHEN {status} IN ('failed', 'succeeded') THEN NULL
+                        ELSE failure_dismissed_at END,
                     schedule_revision = schedule_revision + 1,
                     lease_acquired_utc = NULL,
                     lease_owner = NULL,

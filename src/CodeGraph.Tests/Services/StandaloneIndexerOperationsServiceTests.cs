@@ -1051,6 +1051,40 @@ public class StandaloneIndexerOperationsServiceTests
         private readonly System.Collections.Concurrent.ConcurrentDictionary<long, IndexerRunEntity> _runs = new();
         private readonly object _gate = new();
         private long _nextId;
+        public int? LastQueueLimit { get; private set; }
+        public string? LastDismissKind { get; private set; }
+        public long? LastDismissId { get; private set; }
+
+        public Task<JobQueueResponse> GetJobQueueAsync(int limit, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            LastQueueLimit = limit;
+            var rows = _runs.Values.Where(r => r.Status is "queued" or "running" ||
+                (r.Status == "failed" && r.DismissedAt == null && r.FailureResolvedAt == null)).ToList();
+            var entries = rows.OrderBy(r => r.Status == "running" ? 0 : r.Status == "failed" ? 1 : 2)
+                .ThenBy(r => r.Status == "failed" ? -r.CreatedAt.Ticks : r.CreatedAt.Ticks).ThenBy(r => r.Id)
+                .Take(Math.Clamp(limit, 1, 500))
+                .Select(r => new JobQueueEntry("indexer-run", r.Id, r.Operation, r.Target, r.Status,
+                    r.RequestedByUsername, r.Message, r.Error ?? r.Message, r.CreatedAt, r.StartedAt,
+                    r.NextAttemptAt, r.AttemptCount, r.Status is "queued" or "running" && r.CancelRequestedAt == null)).ToList();
+            return Task.FromResult(new JobQueueResponse(entries, rows.Count(r => r.Status == "running"),
+                rows.Count(r => r.Status == "queued"), rows.Count(r => r.Status == "failed"), DateTime.UtcNow));
+        }
+
+        public Task<bool> DismissJobAsync(string kind, long id, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            LastDismissKind = kind;
+            LastDismissId = id;
+            lock (_gate)
+            {
+                if (kind != "indexer-run" || !_runs.TryGetValue(id, out var row) || row.Status != "failed" ||
+                    row.DismissedAt != null || row.FailureResolvedAt != null) return Task.FromResult(false);
+                row.DismissedAt = DateTime.UtcNow;
+                return Task.FromResult(true);
+            }
+        }
+
         public bool LoseLeaseOnRenewal { get; init; }
 
         /// <summary>Like the MariaDB store: an expired lease (lease_expires_at &lt;= now) cannot be renewed.</summary>
@@ -1316,6 +1350,9 @@ public class StandaloneIndexerOperationsServiceTests
         {
             Id = run.Id,
             Operation = run.Operation,
+            DismissedAt = run.DismissedAt,
+            FailureResolvedAt = run.FailureResolvedAt,
+            QueueWorkIdentity = run.QueueWorkIdentity,
             Status = run.Status,
             RequestedByUsername = run.RequestedByUsername,
             Target = run.Target,

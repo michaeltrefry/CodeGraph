@@ -13,6 +13,38 @@ namespace CodeGraph.Tests.Controllers;
 public class AdminControllerTests
 {
     [Fact]
+    public async Task JobQueue_UsesAdminStoreLimitAndDismissesOnlyFailedRows()
+    {
+        var runs = new CodeGraph.Tests.Services.StandaloneIndexerOperationsServiceTests.FakeIndexerRunStore();
+        var id = await runs.CreateIndexerRunAsync(new IndexerRunEntity
+        {
+            Operation = "discover", Status = "failed", Error = "dispatch failed", CreatedAt = DateTime.UtcNow
+        });
+        var controller = CreateController(new RecordingAdminStore());
+        var result = await controller.GetJobQueue(runs, CancellationToken.None);
+        var response = result.Result.ShouldBeOfType<OkObjectResult>().Value.ShouldBeOfType<JobQueueResponse>();
+        response.Failed.ShouldBe(1);
+        response.Items.Single().Error.ShouldBe("dispatch failed");
+        runs.LastQueueLimit.ShouldBe(500);
+        (await controller.DismissJob("indexer-run", id, runs, CancellationToken.None)).ShouldBeOfType<NoContentResult>();
+        runs.LastDismissKind.ShouldBe("indexer-run");
+        runs.LastDismissId.ShouldBe(id);
+        (await controller.DismissJob("indexer-run", id, runs, CancellationToken.None)).ShouldBeOfType<NotFoundResult>();
+        (await controller.DismissJob("unknown", id, runs, CancellationToken.None)).ShouldBeOfType<NotFoundResult>();
+    }
+
+    [Fact]
+    public void JobQueue_InheritsAdminAuthorizationAndUsesConstrainedDismissRoute()
+    {
+        var auth = typeof(AdminController).GetCustomAttributes(typeof(Microsoft.AspNetCore.Authorization.AuthorizeAttribute), true)
+            .Cast<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>().Single();
+        auth.Policy.ShouldBe(CodeGraph.Api.Auth.CodeGraphAuthenticationDefaults.AdminPolicy);
+        var route = typeof(AdminController).GetMethod(nameof(AdminController.DismissJob))!
+            .GetCustomAttributes(typeof(HttpPostAttribute), false).Cast<HttpPostAttribute>().Single();
+        route.Template.ShouldBe("jobs/queue/{kind}/{id:long}/dismiss");
+    }
+
+    [Fact]
     public async Task ListAdmins_ReturnsStoredAdminUsers()
     {
         var store = new RecordingAdminStore();
