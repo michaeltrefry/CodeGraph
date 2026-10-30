@@ -154,6 +154,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var resources = (await connection.QueryAsync<ResourceRow>(new CommandDefinition(
             "SELECT r.id, r.project_id, p.project_key, r.name, r.capacity, r.labels_json FROM work_resources r JOIN work_projects p ON p.id = r.project_id " +

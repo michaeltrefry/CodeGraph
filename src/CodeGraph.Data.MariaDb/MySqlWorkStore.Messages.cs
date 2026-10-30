@@ -462,6 +462,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<InboxPage> ReadInboxAsync(InboxQuery query, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("change inbox delivery state");
         await using var connection = await OpenAsync(ct);
         var rows = (await connection.QueryAsync<MessageRow>(new CommandDefinition(
             $"SELECT {MessageColumns}{DeliveryColumns} FROM work_message_deliveries d JOIN work_messages m ON m.id = d.message_id{MessageJoins} " +
@@ -485,6 +486,7 @@ public sealed partial class MySqlWorkStore
     // Under the deadlock retry like every write: a victim is run again, then refused busy.
     public async Task MarkDeliveredAsync(string recipient, IReadOnlyList<Guid> messageIds, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("mark message deliveries");
         if (messageIds.Count == 0)
             return;
         var now = Now();
@@ -496,12 +498,14 @@ public sealed partial class MySqlWorkStore
 
     public async Task<long> GetInboxHeadAsync(CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("read the global inbox head");
         await using var connection = await OpenAsync(ct);
         return await connection.ExecuteScalarAsync<long?>(new CommandDefinition("SELECT MAX(sequence) FROM work_message_deliveries", cancellationToken: ct)) ?? 0;
     }
 
     public async Task<int> CountUnreadAsync(string recipient, Guid projectId, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         return await CountUnreadAsync(connection, recipient, projectId, ct);
     }
@@ -757,6 +761,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<MessageEventView>> ReadMessageEventsAsync(Guid projectId, long afterSequence, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var events = (await connection.QueryAsync<MessageEventRow>(new CommandDefinition(
             "SELECT e.sequence, p.project_key, e.message_id, e.kind, e.recipient, e.actor_name, e.actor_kind, e.actor_session_id, COALESCE(s.harness, e.actor_harness) AS harness, COALESCE(s.model, e.actor_model) AS model, COALESCE(s.host, e.actor_host) AS host, e.created_at " +
@@ -778,6 +783,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(query.ProjectId);
         await using var connection = await OpenAsync(ct);
         var limit = Math.Clamp(query.Limit, 1, WorkLimits.MaxPageSize);
         var rows = (await connection.QueryAsync<MessageRow>(new CommandDefinition(
@@ -797,6 +803,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<long> GetMessageEventHeadAsync(CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("read the global message head");
         await using var connection = await OpenAsync(ct);
         return await connection.ExecuteScalarAsync<long?>(new CommandDefinition("SELECT MAX(sequence) FROM work_message_events", cancellationToken: ct)) ?? 0;
     }

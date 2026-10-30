@@ -67,6 +67,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("record review evidence");
         var targets = await RetryTransientAsync(() => FindEvidenceTargetsAsync(spec, ct), EvidenceAttempts, null, ct);
         var results = new List<GitHubEvidenceItemResult>();
         foreach (var itemId in targets)
@@ -396,6 +397,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default)
     {
+        await RequireDreamEntityAsync("work_items",itemId,ct);
         await using var connection = await OpenAsync(ct);
         var rows = await connection.QueryAsync<EvidenceViewRow>(new CommandDefinition(
             "SELECT id, kind, repository, pr_number, url, author_login, source, priority, review_state, location, body, attempt_id, superseded, external_id, created_at " +

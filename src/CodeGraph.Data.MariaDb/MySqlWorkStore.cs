@@ -926,6 +926,7 @@ public sealed partial class MySqlWorkStore(
 
     public async Task<long> GetChangeHeadAsync(CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("read the global change head");
         await using var connection = await OpenAsync(ct);
         return await connection.ExecuteScalarAsync<long?>(new CommandDefinition("SELECT MAX(sequence) FROM work_changes", cancellationToken: ct)) ?? 0;
     }
@@ -951,6 +952,7 @@ public sealed partial class MySqlWorkStore(
 
     public async Task<IReadOnlyList<ChangeView>> ReadChangesAsync(Guid? projectId, long afterSequence, int limit, CancellationToken ct = default)
     {
+        if(DreamExecutionScope.Current is {} scope) {if(projectId is null)DreamPolicy.Refuse(scope.Actor,"read changes of all projects");DreamPolicy.RequireCurrentProject(projectId!.Value);}
         await using var connection = await OpenAsync(ct);
         // The primary key (or ix_work_changes_project): a range and a limit, never an offset.
         var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
@@ -965,6 +967,7 @@ public sealed partial class MySqlWorkStore(
 
     public async Task<IReadOnlyList<ChangeView>> ReadRecentChangesAsync(Guid projectId, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
             "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +
@@ -976,6 +979,7 @@ public sealed partial class MySqlWorkStore(
 
     public async Task<IReadOnlyList<ChangeView>> ReadEntityChangesAsync(Guid entityId, int limit, CancellationToken ct = default)
     {
+        if(DreamExecutionScope.Current is not null)await ResolveAsync(entityId.ToString(),ct);
         await using var connection = await OpenAsync(ct);
         var rows = await connection.QueryAsync<ChangeRow>(new CommandDefinition(
             "SELECT c.sequence, c.project_id, c.project_key, c.entity_kind, c.entity_id, c.entity_key, c.kind, c.actor_name, c.actor_kind, c.actor_session_id, " +

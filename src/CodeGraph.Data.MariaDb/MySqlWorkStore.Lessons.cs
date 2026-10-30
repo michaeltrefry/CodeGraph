@@ -741,6 +741,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task LogServedRulesAsync(Guid sessionId, Guid projectId, IReadOnlyList<Guid> ruleIds, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("log served rules");
         if (ruleIds.Count == 0)
             return;
         var now = Now();
@@ -753,6 +754,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task SetSessionBriefingContextAsync(Guid sessionId, IReadOnlyList<LessonActivity>? activity, IReadOnlyList<string>? skills, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("set session briefing context");
         if (activity is null && skills is null)
             return;
         await using var connection = await OpenAsync(ct);

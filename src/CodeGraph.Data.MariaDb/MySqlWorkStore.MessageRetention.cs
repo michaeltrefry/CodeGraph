@@ -39,6 +39,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<MessageRetentionResult> PruneMessagesAsync(DateTime cutoff, int batchSize, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("prune messages");
         batchSize = Math.Max(1, batchSize);
         var window = (long)batchSize * RetentionWindowFactor;
         int messages = 0, deliveries = 0, events = 0;

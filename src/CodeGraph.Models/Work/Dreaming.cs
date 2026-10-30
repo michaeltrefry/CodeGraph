@@ -76,12 +76,14 @@ public static class DreamPolicy
     public static void RequireCurrentProject(Guid projectId)
     { if (DreamExecutionScope.Current is {} scope) RequireProject(scope.Actor,projectId); }
     public static void RequireProject(WorkActor actor, Guid projectId)
-    { if (IsDreamer(actor) && RequireScope(actor).ProjectId != projectId) throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may access only its run's project. Nothing was changed."); }
+    { if ((IsDreamer(actor)||DreamExecutionScope.Current is not null) && RequireScope(actor).ProjectId != projectId) throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may access only its run's project. Nothing was changed."); }
+    public static void RefuseAmbient(string operation)
+    {if(DreamExecutionScope.Current is {} scope)Refuse(scope.Actor,operation);}
     public static void Refuse(WorkActor actor, string operation)
-    { if (IsDreamer(actor)) throw new WorkException(WorkErrorCodes.Forbidden,$"The dreamer may not {operation}. Nothing was changed."); }
+    { if (IsDreamer(actor)||DreamExecutionScope.Current is not null) throw new WorkException(WorkErrorCodes.Forbidden,$"The dreamer may not {operation}. Nothing was changed."); }
     public static void RequireWrite(WorkActor actor, string operation)
     {
-        if (!IsDreamer(actor)) return;
+        if (!IsDreamer(actor)&&DreamExecutionScope.Current is null) return;
         var scope = RequireScope(actor);
         if (scope.Evidence.Count == 0 || scope.Evidence.Any(e => string.IsNullOrWhiteSpace(e.Reference) || string.IsNullOrWhiteSpace(e.Summary)))
             throw new WorkException(WorkErrorCodes.Forbidden,$"Dreamer {operation} requires evidence references and what they demonstrate. Nothing was changed.");

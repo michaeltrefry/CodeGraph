@@ -6,8 +6,17 @@ namespace CodeGraph.Data.MariaDb;
 
 public sealed partial class MySqlWorkStore
 {
+    private async Task RequireDreamEntityAsync(string table,Guid id,CancellationToken ct)
+    {
+        if(DreamExecutionScope.Current is null)return;
+        if(table is not ("work_sessions" or "work_items"))throw new InvalidOperationException("Unsupported dream scope entity.");
+        await using var connection=await OpenAsync(ct);
+        var project=await Dapper.SqlMapper.ExecuteScalarAsync<Guid?>(connection,new Dapper.CommandDefinition($"SELECT project_id FROM {table} WHERE id=@id",new {id},cancellationToken:ct));
+        if(project is {} projectId)DreamPolicy.RequireCurrentProject(projectId);
+    }
     private static void RequireDreamRecord(WorkActor actor,Guid projectId,KnowledgeSpec spec)
     {
+        if(DreamExecutionScope.Current is not null)DreamPolicy.RequireScope(actor);
         if(!DreamPolicy.IsDreamer(actor)) return;
         DreamPolicy.RequireProject(actor,projectId);DreamPolicy.RequireWrite(actor,"record");
         if(spec.Kind is not (KnowledgeKind.Fact or KnowledgeKind.Gotcha or KnowledgeKind.Constraint or KnowledgeKind.Attempt or KnowledgeKind.Lesson)

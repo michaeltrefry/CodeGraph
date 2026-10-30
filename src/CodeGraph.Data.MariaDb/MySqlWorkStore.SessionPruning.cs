@@ -49,6 +49,7 @@ public sealed partial class MySqlWorkStore : IWorkSessionPruner
 
     public async Task<WorkSessionPruneResult> PruneSessionsAsync(DateTime cutoffUtc, int batchSize, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("prune sessions");
         batchSize = Math.Clamp(batchSize, 1, 10_000);
         int sessions = 0, claims = 0, keys = 0;
         var now = Now();

@@ -171,6 +171,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     private async Task<KnowledgeView> ChangeKnowledgeAsync(Guid entryId, long expectedVersion, string action, WorkActor actor,
         Func<MySqlConnection, MySqlTransaction, KnowledgeEntryRow, DateTime, Task> change, CancellationToken ct)
     {
+        if(DreamExecutionScope.Current is not null)DreamPolicy.RequireScope(actor);
         if (DreamPolicy.IsDreamer(actor))
         {
             var current = await GetKnowledgeAsync(entryId, false, ct) ?? throw WorkException.NotFound("No such dreamer knowledge entry.");

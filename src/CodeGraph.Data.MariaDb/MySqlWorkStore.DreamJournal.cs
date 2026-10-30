@@ -38,6 +38,7 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
 
     private static async Task<DreamSnapshot?> CaptureDreamBeforeAsync(MySqlConnection connection, MySqlTransaction transaction, WorkActor actor, Guid[] entryIds, CancellationToken ct)
     {
+        if(DreamExecutionScope.Current is not null)DreamPolicy.RequireScope(actor);
         if (actor.Kind != WorkActor.SystemKind || actor.Name != "dreamer") return null;
         if (DreamExecutionScope.Current is not { } scope) throw WorkException.Invalid("A dreamer write requires its active run.");
         DreamPolicy.RequireScope(actor);
