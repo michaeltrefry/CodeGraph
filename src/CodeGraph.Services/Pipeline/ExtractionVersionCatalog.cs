@@ -68,6 +68,7 @@ public sealed class ExtractionVersionCatalog
     /// </summary>
     /// 5 (sc-27973): JS/JSX repository analysis, semantic outgoing-slice reconciliation,
     /// complete-output preservation and component callable ownership impact traversal.
+    /// 6 (sc-27972): native endpoint/Tauri reconciliation and local/cross-repository HTTP binding.
     public const int PipelineVersion = 6;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
