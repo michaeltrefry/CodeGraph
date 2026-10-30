@@ -69,7 +69,8 @@ public sealed class ExtractionVersionCatalog
     /// 5 (sc-27973): JS/JSX repository analysis, semantic outgoing-slice reconciliation,
     /// complete-output preservation and component callable ownership impact traversal.
     /// 6 (sc-27972): native endpoint/Tauri reconciliation and local/cross-repository HTTP binding.
-    public const int PipelineVersion = 6;
+    /// 7 (sc-27972): scoped callable-edge admission and case-insensitive analyzer version coverage.
+    public const int PipelineVersion = 7;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];
@@ -202,7 +203,7 @@ public sealed class ExtractionVersionCatalog
     }
 
     private static bool Covers(string[] extensions, string extension) =>
-        extensions.Contains(extension, StringComparer.Ordinal);
+        extensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
 
     private static void Append(StringBuilder version, string component, string componentVersion) =>
         version.Append(';').Append(component).Append('=').Append(componentVersion);
