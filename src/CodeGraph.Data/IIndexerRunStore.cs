@@ -1,7 +1,18 @@
+using CodeGraph.Models.Responses;
+
 namespace CodeGraph.Data;
 
 public interface IIndexerRunStore
 {
+    Task<JobQueueResponse> GetJobQueueAsync(int limit, CancellationToken ct = default)
+        => throw new NotSupportedException("This store does not support the admin job queue.");
+
+    Task<bool> DismissJobAsync(string kind, long id, CancellationToken ct = default)
+        => throw new NotSupportedException("This store does not support queue failure dismissal.");
+
+    Task<int> DeleteFinishedIndexerRunsBeforeAsync(DateTime cutoffUtc, int batchSize, CancellationToken ct = default)
+        => throw new NotSupportedException("This store does not support indexer run retention.");
+
     Task<long> CreateIndexerRunAsync(IndexerRunEntity run, CancellationToken ct = default);
 
     async Task<IndexerRunSubmissionResult> CreateOrGetIndexerRunAsync(
