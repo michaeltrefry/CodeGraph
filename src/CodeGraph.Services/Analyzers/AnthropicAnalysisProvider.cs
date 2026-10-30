@@ -56,7 +56,8 @@ public class AnthropicAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("Anthropic message request failed {Status}: {Body}",
                 (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var message = await response.Content.ReadFromJsonAsync<AnthropicMessageResponse>(SnakeOpts, ct)
@@ -105,7 +106,8 @@ public class AnthropicAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("Anthropic batch submission failed {Status}: {Body}",
                 (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var created = await response.Content.ReadFromJsonAsync<AnthropicBatchCreatedResponse>(SnakeOpts, ct)
@@ -128,7 +130,8 @@ public class AnthropicAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("Anthropic batch status lookup failed for {BatchId}: {Status} {Body}",
                 batchId, (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var status = await response.Content.ReadFromJsonAsync<AnthropicBatchStatusResponse>(SnakeOpts, ct)
@@ -137,7 +140,8 @@ public class AnthropicAnalysisProvider(
         return new AnalysisBatchStatusResult(
             status.Id,
             status.ProcessingStatus,
-            string.Equals(status.ProcessingStatus, "ended", StringComparison.OrdinalIgnoreCase));
+            string.Equals(status.ProcessingStatus, "ended", StringComparison.OrdinalIgnoreCase),
+            status.Error?.ToString());
     }
 
     public async Task<IReadOnlyList<AnalysisBatchItemResult>> GetBatchResultsAsync(
@@ -155,28 +159,43 @@ public class AnthropicAnalysisProvider(
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             logger.LogError("Anthropic batch results lookup failed for {BatchId}: {Status} {Body}",
                 batchId, (int)response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
+            throw new HttpRequestException($"Provider returned HTTP {(int)response.StatusCode}: {errorBody}",
+                null, response.StatusCode);
         }
 
         var results = new List<AnalysisBatchItemResult>();
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
 
-        while (!reader.EndOfStream)
+        while (true)
         {
             var line = await reader.ReadLineAsync(ct);
+            if (line is null) break;
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
-            var result = JsonSerializer.Deserialize<AnthropicBatchResultLine>(line, SnakeOpts);
-            if (result is null)
+            AnthropicBatchResultLine? result;
+            try
+            {
+                result = JsonSerializer.Deserialize<AnthropicBatchResultLine>(line, SnakeOpts);
+            }
+            catch (JsonException ex)
+            {
+                results.Add(new AnalysisBatchItemResult("", "errored", null, null, $"Malformed provider result: {ex.Message}"));
                 continue;
+            }
+            if (result is null)
+            {
+                results.Add(new AnalysisBatchItemResult("", "errored", null, null, "Null provider result."));
+                continue;
+            }
 
             results.Add(new AnalysisBatchItemResult(
                 result.CustomId,
                 result.Result?.Type ?? "unknown",
                 ExtractText(result.Result?.Message?.Content),
-                result.Result?.Message?.Model));
+                result.Result?.Message?.Model,
+                result.Result?.Error?.ToString()));
         }
 
         return results;
@@ -276,6 +295,7 @@ public class AnthropicAnalysisProvider(
 
     private sealed class AnthropicBatchStatusResponse
     {
+        public JsonElement? Error { get; set; }
         public string Id { get; set; } = "";
         public string ProcessingStatus { get; set; } = "";
     }
@@ -288,6 +308,7 @@ public class AnthropicAnalysisProvider(
 
     private sealed class AnthropicBatchResult
     {
+        public JsonElement? Error { get; set; }
         public string Type { get; set; } = "";
         public AnthropicMessageResponse? Message { get; set; }
     }

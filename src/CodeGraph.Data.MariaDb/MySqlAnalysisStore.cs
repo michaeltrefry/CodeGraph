@@ -125,6 +125,7 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
 
     public async Task<long> CreateAnalysisBatchAsync(AnalysisBatchEntity batch)
     {
+        batch.Error = AnalysisBatchErrorDetails.Limit(batch.Error);
         db.AnalysisBatches.Add(batch);
         await db.SaveChangesAsync();
         return batch.Id;
@@ -175,18 +176,17 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
         return batch is null ? null : MapBatch(batch);
     }
 
-    public async Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt)
+    public async Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt, string? error = null)
     {
-        var batch = await db.AnalysisBatches.FindAsync(batchId);
-        if (batch is null)
-        {
-            return;
-        }
-
-        batch.Status = status;
-        batch.CompletedCount = completedCount;
-        batch.CompletedAt = completedAt;
-        await db.SaveChangesAsync();
+        error = AnalysisBatchErrorDetails.Limit(error);
+        // Fence late pollers/background writers so a failed parent cannot become a success.
+        await db.AnalysisBatches
+            .Where(b => b.Id == batchId && b.Status != "failed" && b.Status != "completed")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(b => b.Status, status)
+                .SetProperty(b => b.CompletedCount, completedCount)
+                .SetProperty(b => b.CompletedAt, completedAt)
+                .SetProperty(b => b.Error, error));
     }
 
     public async Task UpdateBatchRequestStateAsync(long batchId, string customId, string status, int attemptCount,
@@ -374,7 +374,7 @@ public class MySqlAnalysisStore(CodeGraphDbContext db) : IAnalysisStore
     private static StoredAnalysisBatch MapBatch(AnalysisBatchEntity entity)
         => new(entity.Id, entity.Repo, entity.ProviderBatchId, entity.ProviderName, entity.ExecutionMode,
             entity.IncludeAllSource, entity.Status, entity.RequestCount, entity.CompletedCount, entity.SubmittedAt,
-            entity.CompletedAt);
+            entity.CompletedAt, entity.Error);
 
     private static StoredNodeAnalysis MapNodeAnalysis(NodeAnalysisEntity entity)
         => new(entity.NodeId, entity.Description, entity.Confidence, entity.ModelUsed, entity.CreatedAt,

@@ -23,7 +23,8 @@ public interface IAnalysisStore
     Task<IReadOnlyList<StoredAnalysisBatch>> GetPendingBatchesAsync(string? repo = null);
     Task<StoredAnalysisBatch?> GetLatestBatchAsync(string repo);
     Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId);
-    Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt);
+    /// <summary>Updates an unfinished parent; terminal failed/completed batches cannot be overwritten by late writers.</summary>
+    Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt, string? error = null);
     Task UpdateBatchRequestStateAsync(long batchId, string customId, string status, int attemptCount,
         string? responseText, string? modelUsed, DateTime? completedAt);
     Task<IReadOnlyList<AnalysisBatchRequestEntity>> GetBatchRequestsAsync(long batchId);
