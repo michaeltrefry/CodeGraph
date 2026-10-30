@@ -14,7 +14,9 @@ internal static partial class TauriOperationAnalysis
     internal const long DefaultMaxWork = 20_000_000;
     internal const int DefaultMaxDepth = 128;
     private sealed record Token(string Text, int Offset, bool String = false);
-    private sealed record Definition(string Path, string Module, string Name, string ExposedName, int Line, int EndLine, bool Command, Dictionary<string, string> Imports);
+    // Line is the function name's declaration line, matching SCIP name occurrences. Source
+    // offsets retain the full lexical body independently of the native extractor's spans.
+    private sealed record Definition(string Path, string Module, string Name, string ExposedName, int Line, int StartOffset, int EndOffset, bool Command, Dictionary<string, string> Imports);
     private sealed record Constant(string Module, string Name, List<Token> Value, Dictionary<string, string> Imports);
     private sealed record Registration(string Path, string Module, string Target, string? Plugin, int Line, Dictionary<string, string> Imports);
     private sealed record RustFile(string Path, string Crate, string CrateName, List<Token> Tokens,
@@ -38,7 +40,6 @@ internal static partial class TauriOperationAnalysis
         private readonly Dictionary<List<Token>, int[]> _delimiters = [];
         private readonly Dictionary<List<Token>, SpanIndex<Definition>> _syntaxDefinitions = [];
         private readonly Dictionary<(string Path, string Name), SpanIndex<GraphNode>> _functions = [];
-        private readonly Dictionary<string, SpanIndex<GraphNode>> _fileFunctions = new(StringComparer.Ordinal);
         private void Charge(long amount = 1)
         {
             ct.ThrowIfCancellationRequested();
@@ -102,7 +103,6 @@ internal static partial class TauriOperationAnalysis
         private void IndexDeclarations(IReadOnlyList<GraphNode> declarations, HashSet<string> nativePaths)
         {
             var names = new Dictionary<(string, string), List<GraphNode>>();
-            var files = new Dictionary<string, List<GraphNode>>(StringComparer.Ordinal);
             var participatingPaths = new Dictionary<string, bool>(ReferenceEqualityComparer.Instance);
             foreach (var node in declarations)
             {
@@ -120,11 +120,8 @@ internal static partial class TauriOperationAnalysis
                 Charge(node.FilePath.Length + node.Name.Length);
                 if (!names.TryGetValue((node.FilePath, node.Name), out var named)) names[(node.FilePath, node.Name)] = named = [];
                 named.Add(node);
-                if (!files.TryGetValue(node.FilePath, out var file)) files[node.FilePath] = file = [];
-                file.Add(node);
             }
             foreach (var (key, values) in names) { Charge(); _functions[key] = new SpanIndex<GraphNode>(this, values, node => node.StartLine, node => node.EndLine); }
-            foreach (var (key, values) in files) { Charge(); _fileFunctions[key] = new SpanIndex<GraphNode>(this, values, node => node.StartLine, node => node.EndLine); }
         }
         internal Analysis Execute(string repository, IReadOnlyDictionary<string, string> sources,
             IReadOnlyList<GraphNode> declarations, IReadOnlyList<GraphNode> references)
@@ -200,7 +197,7 @@ internal static partial class TauriOperationAnalysis
                 var relative = path[(crate.Length == 0 ? 0 : crate.Length + 1)..];
                 var module = ModuleFor(relative);
                 Parse(tokens, 0, tokens.Count, module, path, source, imports, definitions, registrations, constants);
-                _syntaxDefinitions[tokens] = new SpanIndex<Definition>(this, definitions, definition => definition.Line, definition => definition.EndLine);
+                _syntaxDefinitions[tokens] = new SpanIndex<Definition>(this, definitions, definition => definition.StartOffset, definition => definition.EndOffset);
                 rustFiles.Add(new RustFile(path, crate, crateName, tokens, imports, definitions, registrations, constants));
             }
             IndexDeclarations(declarations, rustFiles.Select(file => file.Path).ToHashSet(StringComparer.Ordinal));
@@ -328,11 +325,12 @@ internal static partial class TauriOperationAnalysis
                             }
                             nameIndex++;
                         }
-                        var eventName = StaticEventName(file, constantDefinitions, nameIndex, Line(sources[file.Path], file.Tokens[index].Offset));
+                        var declaration = _syntaxDefinitions[file.Tokens].Smallest(file.Tokens[index].Offset, requireUnique: true);
+                        var eventName = StaticEventName(file, constantDefinitions, nameIndex, declaration);
                         if (eventName is null)
                         { Diagnostic(() => $"tauriUnresolved: dynamic Rust event in {file.Path}:{Line(sources[file.Path], file.Tokens[index].Offset)}"); continue; }
                         var line = Line(sources[file.Path], file.Tokens[index].Offset);
-                        var function = _fileFunctions.GetValueOrDefault(file.Path)?.Smallest(line);
+                        var function = declaration is null ? null : FindFunction(declaration.Path, declaration.Name, declaration.Line);
                         if (function is null) { Diagnostic(() => $"tauriIncomplete: Rust event producer unavailable at {file.Path}:{line}"); complete = false; continue; }
                         edges.Add(Edge(function.QualifiedName, Event(app, eventName), EdgeType.PUBLISHES, file.Path));
                     }
@@ -393,14 +391,13 @@ internal static partial class TauriOperationAnalysis
             }
             return false;
         }
-        private string? StaticEventName(RustFile file, Dictionary<string, List<Constant>> constants, int start, int line)
+        private string? StaticEventName(RustFile file, Dictionary<string, List<Constant>> constants, int start, Definition? enclosing)
         {
             if (start >= file.Tokens.Count) return null;
             if (file.Tokens[start].String) return file.Tokens[start].Text;
             var end = start; while (end < file.Tokens.Count && file.Tokens[end].Text is not ("," or ")")) { Charge(); end++; }
             var target = TokenText(file.Tokens, start, end - start);
             if (!QualifiedPath(target)) return null;
-            var enclosing = _syntaxDefinitions[file.Tokens].Smallest(line);
             // Parameters/locals can shadow constants. Look only within this producer's lexical body.
             var functionStart = start;
             while (functionStart > 0 && file.Tokens[functionStart].Text != "fn") { Charge(); functionStart--; }
@@ -581,8 +578,8 @@ internal static partial class TauriOperationAnalysis
                     var body = index + 2;
                     while (body < end && tokens[body].Text is not ("{" or ";")) { Charge(); body++; }
                     var close = body < end && tokens[body].Text == "{" ? Close(tokens, body) : body;
-                    definitions.Add(new Definition(path, module, name, rename ?? name, Line(source, tokens[index].Offset),
-                        close < tokens.Count ? Line(source, tokens[close].Offset) : Line(source, tokens[index].Offset), command, imports));
+                    definitions.Add(new Definition(path, module, name, rename ?? name, Line(source, tokens[index + 1].Offset),
+                        tokens[index].Offset, close < tokens.Count ? tokens[close].Offset : tokens[index].Offset, command, imports));
                     command = false; rename = null;
                 }
                 if (tokens[index].Text != "invoke_handler" || index < 1 || tokens[index - 1].Text != "." || index + 2 >= end || tokens[index + 1].Text != "(") continue;

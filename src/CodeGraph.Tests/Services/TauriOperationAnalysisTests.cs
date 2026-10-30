@@ -6,6 +6,7 @@ using CodeGraph.Models;
 using CodeGraph.Data;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Tests.Extractors;
@@ -17,6 +18,100 @@ namespace CodeGraph.Tests.Services;
 
 public class TauriOperationAnalysisTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ScipPointSpan_CommandAndEventReuseTheNativeDeclaration(bool multilineName)
+    {
+        var sources = Fixture();
+        sources["apps/desktop/src/lib.rs"] = "use tauri::{AppHandle, Emitter};\n#[tauri::command]\n"
+            + (multilineName ? "fn\npublish" : "fn publish")
+            + "(app: AppHandle) {\n  app.emit(\"progress\", ());\n}\nfn run() { tauri::Builder::default().invoke_handler(tauri::generate_handler![publish]); }";
+        var nameLine = multilineName ? 4 : 3;
+        var function = new GraphNode { Repository = "App", Label = NodeLabel.Function, Name = "publish", QualifiedName = "scip:crate/publish().",
+            FilePath = "apps/desktop/src/lib.rs", StartLine = nameLine, EndLine = nameLine, Properties = new() { ["source"] = "scip" } };
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, [function], [Reference("publish")]);
+        analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+        var command = analysis.Result.Nodes.Single(node => node.Name == "publish");
+        var eventNode = analysis.Result.Nodes.Single(node => node.Label == NodeLabel.Event && node.Name == "progress");
+        analysis.Result.Edges.ShouldContain(edge => edge.SourceQN == command.QualifiedName && edge.TargetQN == function.QualifiedName && edge.Type == EdgeType.CALLS);
+        analysis.Result.Edges.ShouldContain(edge => edge.SourceQN == function.QualifiedName && edge.TargetQN == eventNode.QualifiedName && edge.Type == EdgeType.PUBLISHES);
+        analysis.Result.Nodes.ShouldNotContain(node => node.QualifiedName == function.QualifiedName);
+    }
+
+    [Fact]
+    public async Task MultilineFunctionName_AlsoBindsTheFallbackDeclaration()
+    {
+        var sources = Fixture(); sources["apps/desktop/src/lib.rs"] = SemanticEventSource("progress");
+        var extracted = await new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance).ExtractAsync(
+            "/test/apps/desktop/src/lib.rs", sources["apps/desktop/src/lib.rs"], new ExtractorContext { RepositoryName = "App", RootPath = "/test" });
+        var function = extracted.Nodes.Single(node => node.Label == NodeLabel.Function && node.Name == "publish");
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, extracted.Nodes, [Reference("publish")]);
+        analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+        analysis.Result.Edges.ShouldContain(edge => edge.SourceQN == function.QualifiedName && edge.Type == EdgeType.PUBLISHES);
+        analysis.Result.Edges.ShouldContain(edge => edge.TargetQN == function.QualifiedName && edge.Type == EdgeType.CALLS);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EventProducerDeclaration_AmbiguityIsPreservedAndSameLineOtherNamesDoNotMatch(bool ambiguous)
+    {
+        var sources = Fixture();
+        sources["apps/desktop/src/lib.rs"] = "use tauri::{AppHandle, Emitter}; fn publish(app: AppHandle) { app.emit(\"progress\", ()); } fn other() {}";
+        var publish = SemanticPoint() with { StartLine = 1, EndLine = 1 };
+        var other = publish with { Name = ambiguous ? "publish" : "other", QualifiedName = "scip:other()." };
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, [publish, other], []);
+        analysis.Result.Complete.ShouldBe(!ambiguous, string.Join(';', analysis.Diagnostics));
+        if (ambiguous)
+        {
+            analysis.Diagnostics.ShouldContain(message => message.Contains("event producer unavailable"));
+            analysis.Result.Edges.ShouldNotContain(edge => edge.Type == EdgeType.PUBLISHES);
+        }
+        else analysis.Result.Edges.Single(edge => edge.Type == EdgeType.PUBLISHES).SourceQN.ShouldBe(publish.QualifiedName);
+    }
+
+    [Fact]
+    public async Task SemanticPointSpanPipeline_PersistsEventRenamesAndRemovalWithoutChurn()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codegraph-tauri-semantic-event-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var sources = Fixture(); var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(store, [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)], Options.Create(new IndexingOptions()), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance, rustAnalyzer: new PointSpanRustAnalyzer());
+            foreach (var name in new string?[] { "before", "after", null })
+            {
+                sources["apps/desktop/src/lib.rs"] = SemanticEventSource(name); Write(root, sources);
+                await pipeline.IndexRepositoryAsync("App", root);
+                var function = store.Nodes.Single(node => node.QualifiedName == SemanticPoint().QualifiedName);
+                function.StartLine.ShouldBe(4); function.EndLine.ShouldBe(4);
+                var command = store.Nodes.Single(node => node.Properties.GetValueOrDefault("kind")?.ToString() == "tauri_command");
+                store.Edges.ShouldContain(edge => edge.SourceId == command.Id && edge.TargetId == function.Id && edge.Type == EdgeType.CALLS);
+                var events = store.Nodes.Where(node => node.Properties.GetValueOrDefault("kind")?.ToString() == "tauri_event").ToList();
+                events.Select(node => node.Name).ShouldBe(name is null ? [] : new[] { name });
+                if (name is not null) store.Edges.ShouldContain(edge => edge.SourceId == function.Id && edge.TargetId == events[0].Id && edge.Type == EdgeType.PUBLISHES);
+                var writes = store.ReplaceRepositoryFilesCallCount;
+                await pipeline.IndexRepositoryAsync("App", root);
+                store.ReplaceRepositoryFilesCallCount.ShouldBe(writes, JsonSerializer.Serialize(store.ReplacedFileSlices));
+                store.FileHashesOf("App").ShouldContainKey("apps/desktop/src/lib.rs");
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static string SemanticEventSource(string? name) => "use tauri::{AppHandle, Emitter};\n#[tauri::command]\nfn\npublish(app: AppHandle) {\n"
+        + (name is null ? "" : $"  app.emit(\"{name}\", ());\n")
+        + "}\nfn run() { tauri::Builder::default().invoke_handler(tauri::generate_handler![publish]); }";
+    private static GraphNode SemanticPoint() => new() { Repository = "App", Label = NodeLabel.Function, Name = "publish", QualifiedName = "scip:crate/publish().",
+        FilePath = "apps/desktop/src/lib.rs", StartLine = 4, EndLine = 4, Properties = new() { ["source"] = "scip" } };
+    private sealed class PointSpanRustAnalyzer : IRustAnalyzer
+    {
+        public Task<IReadOnlyList<ExtractionResult>> AnalyzeProjectAsync(string path, ExtractorContext context, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<ExtractionResult>>([new ExtractionResult { Nodes = [SemanticPoint()], ProcessedFiles = ["apps/desktop/src/lib.rs"] }]);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
