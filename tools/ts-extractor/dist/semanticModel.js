@@ -75,6 +75,7 @@ class SemanticModel {
         this.publicNameSets = new Map();
         this.starNameSources = new Map();
         this.returnExpressions = new Map();
+        this.resolvedRoots = new Map();
         this.allVariables = [];
         this.writeTargets = [];
         this.buildingMutations = false;
@@ -608,10 +609,21 @@ class SemanticModel {
             this.diagnostic(`symbolAmbiguity: ${key} has ${candidates.size} export candidates`);
         return candidates.size === 1 ? [...candidates][0] : undefined;
     }
-    resolve(node, seen = new Set()) {
+    resolve(node, seen) {
         this.work.charge();
         if (!node)
             return undefined;
+        // Only an independent query is context-free. Recursive/history-bound queries must
+        // retain their own cycle and cutoff behavior; HTTP argument bindings live elsewhere.
+        if (seen !== undefined)
+            return this.resolveUncached(node, seen);
+        if (this.resolvedRoots.has(node))
+            return this.resolvedRoots.get(node);
+        const result = this.resolveUncached(node, new Set());
+        this.resolvedRoots.set(node, result);
+        return result;
+    }
+    resolveUncached(node, seen) {
         if (seen.size > 100) {
             this.diagnostic(`symbolResolutionLimit: ${this.relative(node)}`);
             return undefined;

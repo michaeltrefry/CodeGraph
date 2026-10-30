@@ -48,6 +48,7 @@ export class SemanticModel {
   private readonly publicNameSets = new Map<SourceFile, Set<string>>();
   private readonly starNameSources = new Map<SourceFile, Map<string, SourceFile[]>>();
   private readonly returnExpressions = new Map<Node, Node[]>();
+  private readonly resolvedRoots = new Map<Node, Node | undefined>();
   private readonly allVariables: VariableDeclaration[] = [];
   private readonly writeTargets: Node[] = [];
   private mutationIndex?: Set<Node | string>;
@@ -408,9 +409,18 @@ export class SemanticModel {
     if (candidates.size > 1) this.diagnostic(`symbolAmbiguity: ${key} has ${candidates.size} export candidates`);
     return candidates.size === 1 ? [...candidates][0] : undefined;
   }
-  resolve(node: Node | undefined, seen = new Set<string>()): Node | undefined {
+  resolve(node: Node | undefined, seen?: Set<string>): Node | undefined {
     this.work.charge();
     if (!node) return undefined;
+    // Only an independent query is context-free. Recursive/history-bound queries must
+    // retain their own cycle and cutoff behavior; HTTP argument bindings live elsewhere.
+    if (seen !== undefined) return this.resolveUncached(node, seen);
+    if (this.resolvedRoots.has(node)) return this.resolvedRoots.get(node);
+    const result = this.resolveUncached(node, new Set<string>());
+    this.resolvedRoots.set(node, result);
+    return result;
+  }
+  private resolveUncached(node: Node, seen: Set<string>): Node | undefined {
     if (seen.size > 100) { this.diagnostic(`symbolResolutionLimit: ${this.relative(node)}`); return undefined; }
     this.work.charge(node.getSourceFile().getFilePath().length + 32);
     const key = `${node.getSourceFile().getFilePath()}:${node.getPos()}:${node.getKind()}`;

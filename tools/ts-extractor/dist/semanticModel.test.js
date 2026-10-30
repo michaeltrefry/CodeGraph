@@ -28,3 +28,38 @@ const semanticModel_1 = require("./semanticModel");
     ], () => { });
     strict_1.default.equal(next.module(first, './shared'), second);
 });
+(0, node_test_1.default)('independent resolution queries cache per immutable model while explicit histories and cancellation remain authoritative', () => {
+    const project = new ts_morph_1.Project({ useInMemoryFileSystem: true, compilerOptions: { noResolve: true, types: [] } });
+    const file = project.createSourceFile('/repo/index.ts', `
+    function Page(){return 1;} function factory(){return {View:Page};}
+    const api=factory(); const cycleA=cycleB; const cycleB=cycleA; const dynamic=runtimeValue();
+  `);
+    let cancelled = false;
+    const model = new semanticModel_1.SemanticModel('UI', '/repo', [file], [], () => { }, { shouldCancel: () => cancelled });
+    const api = file.getVariableDeclarationOrThrow('api');
+    const expected = model.resolve(api);
+    strict_1.default.ok(expected);
+    const workBefore = model.work.used;
+    for (let index = 0; index < 100; index++)
+        strict_1.default.equal(model.resolve(api), expected);
+    strict_1.default.equal(model.work.used - workBefore, 100, 'cached root queries must still poll/charge without following the factory again');
+    // A history-dependent cutoff must neither replace nor consult the independent cache.
+    strict_1.default.equal(model.resolve(api, new Set(Array.from({ length: 101 }, (_, index) => `history${index}`))), undefined);
+    strict_1.default.equal(model.resolve(api), expected);
+    const cycle = file.getVariableDeclarationOrThrow('cycleA');
+    const firstCycle = model.resolve(cycle, new Set());
+    strict_1.default.equal(model.resolve(cycle), firstCycle);
+    const unknown = file.getVariableDeclarationOrThrow('dynamic').getInitializerOrThrow();
+    strict_1.default.equal(model.resolve(unknown), undefined);
+    const unknownBefore = model.work.used;
+    strict_1.default.equal(model.resolve(unknown), undefined);
+    strict_1.default.equal(model.work.used - unknownBefore, 1);
+    const fresh = new semanticModel_1.SemanticModel('UI', '/repo', [file], [], () => { });
+    const freshBefore = fresh.work.used;
+    strict_1.default.equal(fresh.resolve(api), expected);
+    strict_1.default.ok(fresh.work.used - freshBefore > 1, 'a new model must not reuse a previous run cache');
+    cancelled = true;
+    strict_1.default.throws(() => model.resolve(api), error => error.code === 'extraction_work_incomplete');
+    cancelled = false;
+    strict_1.default.throws(() => model.resolve(api), error => error.code === 'extraction_work_incomplete');
+});
