@@ -57,7 +57,7 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
         var tables = new Dictionary<string, List<Dictionary<string, JsonElement>>>();
         foreach (var table in DreamSnapshotTables)
         {
-            var rows = await connection.QueryAsync(new CommandDefinition($"SELECT * FROM {table} WHERE {DreamWhere(table)}", new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct));
+            var rows = await connection.QueryAsync(new CommandDefinition($"SELECT * FROM {table} WHERE {DreamWhere(table)} FOR UPDATE", new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct));
             tables[table] = rows.Select(row => ((IDictionary<string, object>)row).ToDictionary(pair => pair.Key, pair => JsonSerializer.SerializeToElement(pair.Value))).ToList();
         }
         return new DreamSnapshot(entryIds, tables);

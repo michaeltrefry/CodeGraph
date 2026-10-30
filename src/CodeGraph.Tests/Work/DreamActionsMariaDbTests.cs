@@ -308,4 +308,39 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         }
     }
 
+    [Fact]
+    public async Task Revert_observes_an_edit_committed_after_its_repeatable_read_snapshot_started()
+    {
+        var project = await ProjectAsync("DC");
+        var lesson = await LessonAsync(project.Key, "A concurrent operator edit must survive run reversion");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
+            await ToolAsync("dream_revise", new { id = lesson.Id, expected_version = lesson.Version, applies_when = new { activity = new[] { "testing" } } }, lesson.Id);
+        await using var blocker = new MySqlConnection(db.ConnectionString);
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await blocker.ExecuteAsync("SELECT id FROM dream_write_journal WHERE project_id=@project AND run_id=@run FOR UPDATE", new { project = project.Id, run }, transaction);
+        var revert = ((IKnowledgeDreamActions)db.Service).RevertAsync(project.Id, run, new("reviewer"));
+        await using var observer = new MySqlConnection(db.ConnectionString);
+        await observer.OpenAsync();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var waiting = false;
+        while (DateTime.UtcNow < deadline)
+        {
+            waiting = await observer.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM information_schema.PROCESSLIST WHERE DB=DATABASE() AND INFO LIKE 'SELECT id,entry_id,action,before_json,after_json,reverted_at FROM dream_write_journal%')");
+            if (waiting) break;
+            await Task.Delay(10);
+        }
+        try
+        {
+            waiting.ShouldBeTrue("the revert must have reached its journal lock after opening a transaction snapshot");
+            await db.CallAsync(WorkTools.Record, new { revise = new { id = lesson.Id, expected_version = lesson.Version + 1, summary = "A later session corrected the actual rule" } }, "later-session");
+        }
+        finally { await transaction.CommitAsync(); }
+        var result = await revert.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Entries.Single().Status.ShouldBe("conflict");
+        (await db.Store.GetKnowledgeAsync(lesson.Id, false))!.Summary.ShouldBe("A later session corrected the actual rule");
+    }
+
 }
