@@ -114,21 +114,17 @@ public class CrossRepoLinker
         var httpCallEdges = await ToListAsync(_store.StreamLinkEdgesAsync(
             new LinkEdgeQuery([EdgeType.HTTP_CALLS])
             {
-                EdgePropertyKeys = ["gateway_call", "request_dto", "service_name", "url_pattern", "http_method"]
+                EdgePropertyKeys = ["gateway_call", "request_dto", "service_name", "url_pattern", "http_method", "semantic_owner", "origin", "http_origin", "url_origin", "origin_pattern", "binding_ambiguous"]
             }, ct), ct);
         if (httpCallEdges.Count == 0)
             return 0;
 
         // Route keys across all repositories (may be empty for gateway-only calls)
         var routes = await ToListAsync(_store.StreamLinkNodesAsync(
-            new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = ["http_method", "route_template"] }, ct), ct);
+            new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = HttpRoutePropertyKeys }, ct), ct);
 
         // Build route lookup: normalize templates for matching
-        var routeLookup = routes
-            .GroupBy(r => NormalizeRouteTemplate(
-                r.Properties.GetValueOrDefault("http_method") ?? "",
-                r.Properties.GetValueOrDefault("route_template") ?? ""))
-            .ToDictionary(g => g.Key, g => g.ToList());
+        var routeLookup = BuildHttpRouteLookup(routes);
 
         var crossEdges = new List<CrossRepoEdge>();
 
@@ -138,6 +134,11 @@ public class CrossRepoLinker
 
         foreach (var edge in httpCallEdges)
         {
+            // Local binding is derived enrichment. Its raw wildcard edge remains the one
+            // authoritative input to cross-repository matching.
+            if (edge.EdgeProperties.GetValueOrDefault("semantic_owner") == "http_binding"
+                || GetBoolean(edge.EdgeProperties.GetValueOrDefault("binding_ambiguous")))
+                continue;
             var isGatewayCall = GetBoolean(edge.EdgeProperties.GetValueOrDefault("gateway_call"));
             var requestDto = edge.EdgeProperties.GetValueOrDefault("request_dto");
 
@@ -167,43 +168,14 @@ public class CrossRepoLinker
             var urlPattern = edge.EdgeProperties.GetValueOrDefault("url_pattern");
             var httpMethod = edge.EdgeProperties.GetValueOrDefault("http_method");
 
-            if (urlPattern is null || httpMethod is null)
+            if (!IsMatchableHttpCall(httpMethod, urlPattern))
                 continue;
 
-            var normalizedCall = NormalizeUrlForMatching(httpMethod, urlPattern);
-
-            // Try exact match first, then pattern match
-            var matchedRoutes = FindMatchingRoutes(normalizedCall, httpMethod, urlPattern, routeLookup);
-            var targetRepositoryHint = ResolveHttpTargetRepository(
-                edge.EdgeProperties.GetValueOrDefault("service_name"),
-                requestDto,
-                edge.TargetQualifiedName,
-                repositoryNames);
-
-            if (targetRepositoryHint is not null)
-            {
-                matchedRoutes = matchedRoutes
-                    .Where(route => route.Repository.Equals(targetRepositoryHint, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-            else
-            {
-                var matchingRepositories = matchedRoutes
-                    .Select(route => route.Repository)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (matchingRepositories.Count > 1)
-                {
-                    _logger.LogDebug(
-                        "Skipping ambiguous HTTP route match for {Method} {UrlPattern}: matched {RepositoryCount} repositories ({Repositories})",
-                        httpMethod,
-                        urlPattern,
-                        matchingRepositories.Count,
-                        string.Join(", ", matchingRepositories.Take(10)));
-                    continue;
-                }
-            }
+            var matchedRoutes = SelectHttpRouteMatches(
+                httpMethod!, urlPattern!, edge.EdgeProperties.GetValueOrDefault("service_name"), requestDto,
+                edge.TargetQualifiedName, CallOrigin(edge.EdgeProperties, urlPattern!), repositoryNames, routeLookup);
+            if (matchedRoutes.Count == 0)
+                continue;
 
             foreach (var route in matchedRoutes)
             {
@@ -211,15 +183,20 @@ public class CrossRepoLinker
                     !InScope(scopeRepository, edge.SourceRepository, route.Repository))
                     continue;
 
+                var linkedProperties = new Dictionary<string, object>
+                {
+                    ["http_method"] = httpMethod!, ["url_pattern"] = urlPattern!,
+                    ["route_template"] = route.Properties.GetValueOrDefault("route_template") ?? "",
+                    ["confidence_band"] = "medium"
+                };
+                var origin = CallOrigin(edge.EdgeProperties, urlPattern!);
+                if (origin is not null) linkedProperties["origin"] = origin;
+                foreach (var key in new[] { "service_name", "request_dto", "origin_pattern" })
+                    if (edge.EdgeProperties.GetValueOrDefault(key) is { Length: > 0 } value) linkedProperties[key] = value;
+                if (origin is null && linkedProperties.ContainsKey("origin_pattern")) linkedProperties["origin_unresolved"] = true;
                 crossEdges.Add(CreateCrossRepoEdge(
                     edge.SourceRepository, route.Repository, edge.SourceId, route.Id,
-                    EdgeType.HTTP_CALLS, new()
-                    {
-                        ["http_method"] = httpMethod,
-                        ["url_pattern"] = urlPattern,
-                        ["route_template"] = route.Properties.GetValueOrDefault("route_template") ?? "",
-                        ["confidence_band"] = "medium"
-                    }));
+                    EdgeType.HTTP_CALLS, linkedProperties));
             }
         }
 
@@ -785,61 +762,150 @@ public class CrossRepoLinker
     /// Normalize a route template for matching: lowercase, strip leading slash,
     /// replace parameter placeholders with a wildcard token.
     /// </summary>
-    private static string NormalizeRouteTemplate(string httpMethod, string template)
+    internal static readonly string[] HttpMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+    internal static readonly string[] HttpRoutePropertyKeys =
+    [
+        "http_method", "route_template", "route_kind", "framework", "component", "component_qn",
+        "registration_ambiguous", "origin", "http_origin", "url_origin", "service_name"
+    ];
+
+    internal static bool IsBackendHttpRoute(LinkNodeRow route)
     {
-        var normalized = template.ToLowerInvariant().TrimStart('/');
-        // Replace {anything} with {*} for matching
-        normalized = Regex.Replace(normalized, @"\{[^}]+\}", "{*}");
-        return $"{httpMethod.ToUpperInvariant()}:{normalized}";
+        if (route.Label != NodeLabel.Route || route.QualifiedName.StartsWith("ui-route:", StringComparison.OrdinalIgnoreCase)) return false;
+        var kind = route.Properties.GetValueOrDefault("route_kind")?.ToLowerInvariant();
+        if (kind is "ui" or "frontend" or "page" or "screen") return false;
+        if (GetBoolean(route.Properties.GetValueOrDefault("registration_ambiguous"))) return false;
+        // Legacy Angular pages carried GET plus component metadata before route_kind existed.
+        var explicitlyBackend = kind is "api" or "http" or "backend" or "endpoint";
+        if (!explicitlyBackend && (!string.IsNullOrWhiteSpace(route.Properties.GetValueOrDefault("component"))
+            || !string.IsNullOrWhiteSpace(route.Properties.GetValueOrDefault("component_qn")))) return false;
+        var framework = route.Properties.GetValueOrDefault("framework")?.ToLowerInvariant();
+        if (!explicitlyBackend && framework is ("angular" or "react" or "react-router" or "next" or "nextjs" or "next.js")) return false;
+        return HttpMethods.Contains(route.Properties.GetValueOrDefault("http_method")?.ToUpperInvariant(), StringComparer.Ordinal)
+            && route.Properties.ContainsKey("route_template");
     }
 
-    /// <summary>
-    /// Normalize a concrete URL for matching against route templates:
-    /// replace path segments that look like IDs with {*}.
-    /// </summary>
-    private static string NormalizeUrlForMatching(string httpMethod, string url)
+    internal static Dictionary<string, List<LinkNodeRow>> BuildHttpRouteLookup(IEnumerable<LinkNodeRow> routes) =>
+        routes.Where(IsBackendHttpRoute).DistinctBy(route => (route.Repository, route.QualifiedName))
+            .GroupBy(route => NormalizeRouteTemplate(route.Properties.GetValueOrDefault("http_method")!,
+                route.Properties.GetValueOrDefault("route_template") ?? ""))
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+
+    internal static string NormalizeRouteTemplate(string httpMethod, string template)
     {
-        var normalized = url.ToLowerInvariant().TrimStart('/');
-        // Replace segments that are numeric or GUIDs with {*}
+        var normalized = HttpPath(template).ToLowerInvariant().TrimStart('/');
+        normalized = Regex.Replace(normalized, @"\{\*[^}]+\}", "{**}");
+        normalized = Regex.Replace(normalized, @"\{(?!\*\*\})[^}]+\}", "{*}");
         var segments = normalized.Split('/');
         for (var i = 0; i < segments.Length; i++)
         {
-            if (IsLikelyId(segments[i]))
-                segments[i] = "{*}";
+            if (Regex.IsMatch(segments[i], @"^:[a-z_][a-z0-9_]*(?:\(.+\))?$")) segments[i] = "{*}";
+            else if (Regex.IsMatch(segments[i], @"^\*[a-z_][a-z0-9_]*$")) segments[i] = "{**}";
         }
-        return $"{httpMethod.ToUpperInvariant()}:{string.Join("/", segments)}";
+        return $"{httpMethod.ToUpperInvariant()}:{string.Join('/', segments)}";
     }
 
-    private static bool IsLikelyId(string segment)
+    internal static string NormalizeUrlForMatching(string httpMethod, string url)
     {
-        if (string.IsNullOrEmpty(segment))
-            return false;
-        // Numeric
-        if (long.TryParse(segment, out _))
-            return true;
-        // GUID
-        if (Guid.TryParse(segment, out _))
-            return true;
-        // Already a parameter placeholder
-        if (segment.StartsWith('{') && segment.EndsWith('}'))
-            return true;
-        return false;
+        var segments = HttpPath(url).ToLowerInvariant().TrimStart('/').Split('/');
+        for (var i = 0; i < segments.Length; i++)
+            if (IsLikelyId(segments[i])) segments[i] = "{*}";
+        return $"{httpMethod.ToUpperInvariant()}:{string.Join('/', segments)}";
     }
 
-    private static List<LinkNodeRow> FindMatchingRoutes(
+    private static bool IsLikelyId(string segment) =>
+        long.TryParse(segment, out _) || Guid.TryParse(segment, out _)
+        || (segment.StartsWith('{') && segment.EndsWith('}'));
+
+    private static string HttpPath(string url)
+    {
+        var path = Regex.Replace(url.Trim(), @"^https?://[^/?#]+", "", RegexOptions.IgnoreCase);
+        var braces = 0;
+        for (var i = 0; i < path.Length; i++)
+        {
+            if (path[i] == '{') braces++;
+            if (path[i] == '}') braces--;
+            if (braces == 0 && path[i] is '?' or '#') return path[..i];
+        }
+        return path;
+    }
+
+    internal static bool IsMatchableHttpCall(string? method, string? url)
+    {
+        if (method is null || !HttpMethods.Contains(method.ToUpperInvariant(), StringComparer.Ordinal)
+            || string.IsNullOrWhiteSpace(url)) return false;
+        if (Regex.IsMatch(url, @"^[a-z][a-z0-9+.-]*:", RegexOptions.IgnoreCase)
+            && !Regex.IsMatch(url, @"^https?://", RegexOptions.IgnoreCase)) return false;
+        var path = HttpPath(url).Trim('/');
+        return path.Length == 0 || path.Split('/').Any(segment => segment.Length > 0
+            && segment is not ("*" or "unknown" or "undefined") && !segment.StartsWith('{'));
+    }
+
+    internal static string? CallOrigin(IReadOnlyDictionary<string, string?> properties, string url)
+    {
+        var origin = properties.GetValueOrDefault("origin") ?? properties.GetValueOrDefault("http_origin")
+            ?? properties.GetValueOrDefault("url_origin");
+        if (string.IsNullOrWhiteSpace(origin))
+        {
+            var match = Regex.Match(url, @"^https?://[^/?#]+", RegexOptions.IgnoreCase);
+            origin = match.Success ? match.Value : null;
+        }
+        if (string.IsNullOrWhiteSpace(origin)) return null;
+        return Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https"
+            ? uri.GetLeftPart(UriPartial.Authority).TrimEnd('/') : origin.TrimEnd('/');
+    }
+
+    internal static List<LinkNodeRow> FindMatchingRoutes(
         string normalizedCall, string httpMethod, string urlPattern,
-        Dictionary<string, List<LinkNodeRow>> routeLookup)
+        Dictionary<string, List<LinkNodeRow>> routeLookup, Func<LinkNodeRow, bool>? eligible = null)
     {
-        // Exact match after normalization
-        if (routeLookup.TryGetValue(normalizedCall, out var exact))
-            return exact;
-
-        // Fuzzy: try normalizing the URL as a template too
+        eligible ??= _ => true;
+        // A concrete static registration takes precedence over a parameterized registration.
         var asTemplate = NormalizeRouteTemplate(httpMethod, urlPattern);
-        if (routeLookup.TryGetValue(asTemplate, out var templateMatch))
-            return templateMatch;
+        if (routeLookup.TryGetValue(asTemplate, out var exact) && exact.Where(eligible).ToList() is { Count: > 0 } exactMatches) return exactMatches;
+        if (routeLookup.TryGetValue(normalizedCall, out var normalized) && normalized.Where(eligible).ToList() is { Count: > 0 } normalizedMatches) return normalizedMatches;
+        var prefix = $"{httpMethod.ToUpperInvariant()}:";
+        var callSegments = asTemplate[prefix.Length..].Split('/');
+        return routeLookup.Where(pair => pair.Key.StartsWith(prefix, StringComparison.Ordinal)
+                && MatchesSegments(pair.Key[prefix.Length..].Split('/'), callSegments))
+            .SelectMany(pair => pair.Value).Where(eligible).ToList();
+    }
 
-        return [];
+    private static bool MatchesSegments(string[] template, string[] call)
+    {
+        for (var i = 0; i < template.Length; i++)
+        {
+            if (template[i] == "{**}") return true;
+            if (i >= call.Length || (template[i] != "{*}" && template[i] != call[i])) return false;
+        }
+        return template.Length == call.Length;
+    }
+
+    internal static List<LinkNodeRow> SelectHttpRouteMatches(
+        string method, string url, string? serviceName, string? requestDto, string? targetQualifiedName,
+        string? origin, HashSet<string> repositoryNames, Dictionary<string, List<LinkNodeRow>> routeLookup)
+    {
+        if (!IsMatchableHttpCall(method, url)) return [];
+        var repositoryHint = ResolveHttpTargetRepository(serviceName, requestDto, targetQualifiedName, repositoryNames);
+        // An explicit but unknown service cannot be replaced with an arbitrary path match.
+        if (!string.IsNullOrWhiteSpace(serviceName) && repositoryHint is null) return [];
+        var originRepository = origin is not null && Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+            ? ResolveRepositoryName(uri.Host, repositoryNames) : null;
+        if (repositoryHint is not null && originRepository is not null
+            && !repositoryHint.Equals(originRepository, StringComparison.OrdinalIgnoreCase)) return [];
+        bool Eligible(LinkNodeRow route)
+        {
+            if (repositoryHint is not null && !route.Repository.Equals(repositoryHint, StringComparison.OrdinalIgnoreCase)) return false;
+            if (origin is null) return true;
+            var routeOrigin = CallOrigin(route.Properties, "");
+            if (routeOrigin is not null) return routeOrigin.Equals(origin, StringComparison.OrdinalIgnoreCase);
+            return repositoryHint is not null || (originRepository is not null
+                && route.Repository.Equals(originRepository, StringComparison.OrdinalIgnoreCase));
+        }
+        var matches = FindMatchingRoutes(NormalizeUrlForMatching(method, url), method, url, routeLookup, Eligible);
+        matches = matches.DistinctBy(route => (route.Repository, route.QualifiedName)).ToList();
+        // Multiple route identities in one repository are just as ambiguous as multiple services.
+        return matches.Count == 1 ? matches : [];
     }
 
     /// <summary>
@@ -858,15 +924,14 @@ public class CrossRepoLinker
         return DeriveRepositoryFromDtoType(dtoTypeQN, repositoryNames);
     }
 
-    private static string? ResolveHttpTargetRepository(
+    internal static string? ResolveHttpTargetRepository(
         string? serviceName,
         string? requestDto,
         string? targetQualifiedName,
         HashSet<string> repositoryNames)
     {
-        var serviceRepository = ResolveRepositoryName(serviceName, repositoryNames);
-        if (serviceRepository is not null)
-            return serviceRepository;
+        if (!string.IsNullOrWhiteSpace(serviceName))
+            return ResolveRepositoryName(serviceName, repositoryNames);
 
         if (targetQualifiedName is not null)
         {
