@@ -132,7 +132,10 @@ public sealed record ImportedItemSpec(
     int Order,
     string ContentHash,
     // PR links of PRs already merged or closed in the source: GitHub events on them never move the item.
-    IReadOnlyList<string>? HistoricalLinks = null);
+    IReadOnlyList<string>? HistoricalLinks = null,
+    // The source's own status when Status is not it (an archived story: Status is what the archive makes of the item).
+    // It is the three-way merge's baseline, so an archive never stands in for a status change of the source.
+    WorkStatus? SourceStatus = null);
 
 public sealed record NewAttachmentSpec(string ExternalId, string Filename, string ContentType, long SizeBytes, string? Sha256, string? StoragePath, string? SourceUrl, string? SkippedReason, DateTime CreatedAt);
 

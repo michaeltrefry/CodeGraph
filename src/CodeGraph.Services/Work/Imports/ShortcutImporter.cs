@@ -447,7 +447,8 @@ public sealed class ShortcutImporter(
                 try
                 {
                     var current = await work.GetItemAsync(record!.EntityId, false, ct);
-                    await WriteStoryAsync(source, story, ShortcutMapper.Archived(mapped, current?.Status, story.UpdatedAt), await EnsureProjectAsync(target), repository, featureIds, report, ct);
+                    await WriteStoryAsync(source, story, ShortcutMapper.Archived(mapped, current?.Status, story.UpdatedAt), await EnsureProjectAsync(target), repository, featureIds,
+                        report, ct, sourceStatus: mapped.Status);
                 }
                 catch (Exception exception) when (IsItemFailure(exception, ct))
                 {
@@ -599,19 +600,25 @@ public sealed class ShortcutImporter(
     private static List<string> OwnedOf(ProjectView project) =>
         project.Repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToList();
 
-    /// <summary>The item's repository: what the story names, as CodeGraph indexes it, among the project's owned repositories.</summary>
-    private static string? ChooseRepository(IReadOnlyList<string> candidates, IReadOnlyList<string> owned, RepositoryIndex index) =>
-        ShortcutMapper.ChooseRepository(candidates.Select(candidate => index.Resolve(candidate)?.Name).OfType<string>().Concat(candidates)
+    /// <summary>
+    /// The item's repository: what the story names, as CodeGraph indexes it (<see cref="RepositoryIndex.Resolve"/>), among
+    /// the project's owned repositories; else the project's single owned repository. Only resolved names are matched: a
+    /// name the index rejected (another owner's repository named like an indexed fork) is not matched again by its
+    /// basename. An owned repository is always an indexed one, so nothing an owned repository could match is lost.
+    /// </summary>
+    internal static string? ChooseRepository(IReadOnlyList<string> candidates, IReadOnlyList<string> owned, RepositoryIndex index) =>
+        ShortcutMapper.ChooseRepository(candidates.Select(candidate => index.Resolve(candidate)?.Name).OfType<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList(), owned);
 
+    /// <param name="sourceStatus">The source's own status when <paramref name="mapped"/> carries another (an archived story).</param>
     private async Task WriteStoryAsync(IShortcutSource source, ShortcutStory story, MappedStory mapped, Guid projectId, string? repository,
-        IReadOnlyDictionary<long, Guid> featureIds, ImportReport report, CancellationToken ct)
+        IReadOnlyDictionary<long, Guid> featureIds, ImportReport report, CancellationToken ct, WorkStatus? sourceStatus = null)
     {
         var spec = new ImportedItemSpec(ImportSources.Shortcut, "story", Id(story.Id), projectId,
             story.EpicId is { } featureEpic && featureIds.TryGetValue(featureEpic, out var featureId) ? featureId : null,
             mapped.Title, mapped.Type, mapped.Status, WorkPriority.Medium, mapped.Description, mapped.Labels, repository,
             mapped.AcceptanceCriteria, mapped.Comments, mapped.Links, mapped.Aliases, mapped.Imported, mapped.CreatedAt, mapped.UpdatedAt, 0, "",
-            mapped.HistoricalLinks);
+            mapped.HistoricalLinks, sourceStatus == mapped.Status ? null : sourceStatus);
         var written = await imports.UpsertImportedItemAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
         Count(report, written.Outcome, feature: false);
         foreach (var warning in written.Warnings ?? [])

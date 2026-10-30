@@ -236,7 +236,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             }
 
             var snapshot = new ItemSnapshot(
-                Cap(spec.Title, 240), JsonName(spec.Type), WorkStatuses.Name(spec.Status), JsonName(spec.Priority), spec.Description,
+                Cap(spec.Title, 240), JsonName(spec.Type), WorkStatuses.Name(spec.SourceStatus ?? spec.Status), JsonName(spec.Priority), spec.Description,
                 JoinLabels(spec.Labels.Select(label => label.Replace(',', ' ').Trim()).Where(label => label.Length > 0).Distinct().ToList()),
                 repository, featureId, spec.AcceptanceCriteria);
             var imported = Json(spec.Imported);
@@ -255,7 +255,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                     new
                     {
                         id, projectId = project.Id, number = project.NextItemNumber, snapshot.FeatureId, snapshot.Type, snapshot.Title, snapshot.Description,
-                        snapshot.Status, snapshot.Priority, order = spec.Order, snapshot.Labels, snapshot.Repository,
+                        Status = WorkStatuses.Name(spec.Status), snapshot.Priority, order = spec.Order, snapshot.Labels, snapshot.Repository,
                         acceptance = WriteList(NormalizeCriteria([], spec.AcceptanceCriteria)), imported, actorName = actor.Name, actorKind = actor.Kind,
                         createdAt = Stored(spec.CreatedAt), updatedAt = Stored(spec.UpdatedAt)
                     }, transaction, cancellationToken: ct));
@@ -268,12 +268,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                 before = await ToViewAsync(connection, transaction, existing, ct);
                 var base_ = ReadSnapshot<ItemSnapshot>(record!.SnapshotJson);
                 bool Changed(Func<ItemSnapshot, object?> field) => base_ is null || SnapshotJson(field(base_)) != SnapshotJson(field(snapshot));
-                // The source archiving the item (sc-27929) writes its status whatever the three-way merge says: the
-                // importer closes an item CodeGraph did not finish, also when the mapped status did not change (a story
-                // done in the source that CodeGraph reopened). After that first write the merge applies again.
-                var archiving = spec.Imported.Archived == true &&
-                    (existing.ImportedJson is null || JsonSerializer.Deserialize<ImportedView>(existing.ImportedJson, WorkJson.Options)?.Archived != true);
-                var status = archiving || Changed(s => s.Status) ? snapshot.Status : existing.Status;
+                var status = await ImportedStatusAsync(connection, transaction, spec, existing, Changed(s => s.Status), actor, ct);
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET feature_id = @featureId, item_type = @type, title = @title, description = @description, status = @status, priority = @priority, " +
                     "labels = @labels, repository_name = @repository, acceptance_json = @acceptance, imported_json = @imported, " +
@@ -339,6 +334,55 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             await CommitAsync(connection, transaction, [change], actor, now, ct);
             return new ImportWrite(id, after.Key, after.ProjectId, before is null ? ImportOutcome.Created : ImportOutcome.Updated, warnings.Count == 0 ? null : warnings);
         }, ct);
+
+    /// <summary>
+    /// The status an import writes over an existing item (sc-27929). The baseline of the three-way merge is the
+    /// source's own status (<see cref="ImportedItemSpec.SourceStatus"/>), never what an archive made of the item.
+    /// <list type="bullet">
+    /// <item>Archived now, not before: the importer's status (closed, unless CodeGraph finished it), whatever the merge says.</item>
+    /// <item>Archived before and now: the importer's status when the source's changed (an archived item is not reopened), else as it is.</item>
+    /// <item>Unarchived: the source's status when it changed meanwhile (the source wins); else the status the item had
+    /// before the archive closed it, when the archive is what closed it (its latest status change is this import closing
+    /// it); else as it is, so work CodeGraph finished or moved since stays.</item>
+    /// <item>Otherwise the merge: the source's status when it changed, else as it is.</item>
+    /// </list>
+    /// </summary>
+    private static async Task<string> ImportedStatusAsync(MySqlConnection connection, MySqlTransaction transaction, ImportedItemSpec spec, ItemRow existing,
+        bool sourceChanged, WorkActor actor, CancellationToken ct)
+    {
+        var wasArchived = existing.ImportedJson is not null && JsonSerializer.Deserialize<ImportedView>(existing.ImportedJson, WorkJson.Options)?.Archived == true;
+        var isArchived = spec.Imported.Archived == true;
+        if (isArchived)
+            return !wasArchived || sourceChanged ? WorkStatuses.Name(spec.Status) : existing.Status;
+        if (!wasArchived)
+            return sourceChanged ? WorkStatuses.Name(spec.Status) : existing.Status;
+        if (sourceChanged)
+            return WorkStatuses.Name(spec.SourceStatus ?? spec.Status);
+        return existing.Status == WorkStatuses.Name(WorkStatus.Closed) && await ClosedByAsync(connection, transaction, existing.Id, actor, ct) is { } before
+            ? before
+            : existing.Status;
+    }
+
+    /// <summary>
+    /// The status the item had before <paramref name="actor"/> closed it, when its latest status change in the feed is
+    /// that actor closing it; else null.
+    /// </summary>
+    private static async Task<string?> ClosedByAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, WorkActor actor, CancellationToken ct)
+    {
+        var rows = await connection.QueryAsync<(string ActorName, string Changes)>(new CommandDefinition(
+            "SELECT actor_name, changes FROM work_changes WHERE entity_id = @itemId ORDER BY sequence DESC LIMIT 200",
+            new { itemId }, transaction, cancellationToken: ct));
+        foreach (var (actorName, changes) in rows)
+        {
+            if (JsonNode.Parse(changes) is not JsonArray fields)
+                continue;
+            if (fields.OfType<JsonObject>().FirstOrDefault(field => field["field"]?.GetValue<string>() == "status") is not { } status)
+                continue;
+            return actorName == actor.Name && status["new"]?.GetValue<string>() == WorkStatuses.Name(WorkStatus.Closed) ? status["old"]?.GetValue<string>() : null;
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// The acceptance criteria after a delta, criterion by criterion (by id) against the last imported

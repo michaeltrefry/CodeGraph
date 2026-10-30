@@ -719,3 +719,67 @@ public sealed class WorkImportDependencyUpgradeMariaDbTests(WorkDatabase db) : I
         (await db.CallAsync(WorkTools.GetWork, new { id = "sc-99101" })).GetProperty("repository").GetString().ShouldBe("codegraph");
     }
 }
+
+
+/// <summary>
+/// sc-27929: an archive and unarchive in Shortcut, with no change of the story's state, leave work CodeGraph finished
+/// as it is; an item the archive closed goes back to the status it had; one a person moved since stays where it is.
+/// </summary>
+public sealed class WorkImportUnarchiveMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    private Task<JsonElement> GetAsync(string id) => db.CallAsync(WorkTools.GetWork, new { id });
+
+    private async Task<string> StatusAsync(string id) => (await GetAsync(id)).GetProperty("status").GetString()!;
+
+    [Fact]
+    public async Task Unarchiving_restores_only_what_the_archive_closed()
+    {
+        var key = "UA" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await db.CallAsync(WorkTools.CreateWork, new { new_project = new { key, name = "Unarchive" } });
+        var source = ImportFixtures.Empty();
+        var state = ImportFixtures.Recorded.Stories[27876].WorkflowStateId; // In Progress: the state never changes
+        source.Stories[97301] = ImportFixtures.Story(97301, "Completed in CodeGraph", ImportFixtures.CodeGraphTeam);
+        source.Stories[97302] = ImportFixtures.Story(97302, "Closed by the archive", ImportFixtures.CodeGraphTeam);
+        source.Stories[97303] = ImportFixtures.Story(97303, "Moved by a person after the archive", ImportFixtures.CodeGraphTeam);
+        var service = WorkImportMariaDbTests.Service(db, source, null, Path.Combine(Path.GetTempPath(), "cg-import-ua-" + key));
+        await service.SaveSettingsAsync(ImportSources.Shortcut, new ImportSettings(key + "H", [new ImportTeamMapping(ImportFixtures.CodeGraphTeam, key, "CodeGraph")]),
+            approve: true, "owner", CancellationToken.None);
+        await service.RunAsync(ImportSources.Shortcut, "import", null, "owner", CancellationToken.None);
+        (await StatusAsync("sc-97301")).ShouldBe("in_progress");
+        await db.UpdateAsync((await GetAsync("sc-97301")).GetProperty("key").GetString()!, new { status = "complete" });
+
+        var minutes = 0;
+        async Task<ImportReport> SetArchivedAsync(bool archived)
+        {
+            var at = DateTime.UtcNow.AddMinutes(++minutes);
+            foreach (var id in new long[] { 97301, 97302, 97303 })
+                source.Stories[id] = source.Stories[id] with { Archived = archived, UpdatedAt = at, WorkflowStateId = state };
+            var report = (await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None)).Report!;
+            report.Written.Failures.ShouldBe(0, string.Join("; ", report.Warnings));
+            return report;
+        }
+
+        await SetArchivedAsync(true);
+        (await StatusAsync("sc-97301")).ShouldBe("complete");
+        (await StatusAsync("sc-97302")).ShouldBe("closed");
+        (await StatusAsync("sc-97303")).ShouldBe("closed");
+        await db.UpdateAsync((await GetAsync("sc-97303")).GetProperty("key").GetString()!, new { status = "backlog" });
+
+        await SetArchivedAsync(false);
+        (await StatusAsync("sc-97301")).ShouldBe("complete");    // finished in CodeGraph: never reopened by the cycle
+        (await StatusAsync("sc-97302")).ShouldBe("in_progress"); // the archive closed it: back to its status before
+        (await StatusAsync("sc-97303")).ShouldBe("backlog");     // a person moved it since: left there
+        (await GetAsync("sc-97302")).GetProperty("imported").TryGetProperty("archived", out _).ShouldBeFalse();
+
+        // A later sync with nothing changed in Shortcut keeps all three.
+        var again = (await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None)).Report!;
+        again.Written.ItemsUpdated.ShouldBe(0);
+        (await StatusAsync("sc-97301")).ShouldBe("complete");
+
+        // A rename in Shortcut (its state unchanged) is merged without touching the status.
+        source.Stories[97301] = source.Stories[97301] with { Name = "Renamed", UpdatedAt = DateTime.UtcNow.AddMinutes(30) };
+        await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
+        (await GetAsync("sc-97301")).GetProperty("title").GetString().ShouldBe("Renamed");
+        (await StatusAsync("sc-97301")).ShouldBe("complete");
+    }
+}

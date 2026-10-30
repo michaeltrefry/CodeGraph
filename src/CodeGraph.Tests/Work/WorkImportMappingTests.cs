@@ -455,6 +455,27 @@ public sealed class WorkImportMappingTests
     }
 
     [Fact]
+    public void An_items_repository_is_chosen_from_resolved_repositories_only()
+    {
+        var index = new RepositoryIndex([
+            new IndexedRepository("candle", "https://github.com/michaeltrefry/candle.git", null),
+            new IndexedRepository("sceneworks", null, null),
+            new IndexedRepository("acme/tool", null, null)
+        ]);
+        IReadOnlyList<string> owned = ["candle", "sceneworks", "acme/tool"];
+        string? Choose(string description) =>
+            ShortcutImporter.ChooseRepository(ShortcutMapper.RepositoryCandidates(Recorded.Stories[27876] with { Description = description }), owned, index);
+
+        // The upstream of the indexed fork is not the fork, though the project owns a repository of that name.
+        Choose("Upstream: https://github.com/huggingface/candle/issues/12").ShouldBeNull();
+        // The fork's own owner/repo, an owner/repo that is an indexed full name, a repository with no known remote.
+        Choose("Fork: https://github.com/michaeltrefry/candle/pull/3").ShouldBe("candle");
+        Choose("See https://github.com/acme/tool").ShouldBe("acme/tool");
+        Choose("See https://github.com/SceneWorks/SceneWorks/pull/1").ShouldBe("sceneworks");
+        ShortcutImporter.ChooseRepository(["candle"], owned, index).ShouldBe("candle"); // a bare name, no owner to compare
+    }
+
+    [Fact]
     public void An_archived_story_closes_its_item_unless_it_is_finished()
     {
         var at = new DateTime(2026, 10, 30, 0, 0, 0, DateTimeKind.Utc);
