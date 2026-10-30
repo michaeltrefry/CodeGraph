@@ -33,6 +33,12 @@ public sealed partial class WorkService : IKnowledgeDreamActions
         var input = JsonNode.Parse(args.GetRawText()) as JsonObject ?? throw WorkException.Invalid("Tool arguments must be an object.");
         if (input.ContainsKey("project") || input.ContainsKey("project_id") || input.ContainsKey("session_id"))
             throw WorkException.Invalid("Dream tools use the run's project and actor; they cannot be overridden.");
+        if (tool == "dream_propose")
+        {
+            input["project"] = scope.ProjectId.ToString();
+            input["run_id"] = scope.RunId.ToString();
+            return new { untrusted_data = true, data = await DreamProposeAsync(WorkJson.Parse<DreamProposalRequest>(JsonSerializer.SerializeToElement(input), tool), actor, null, ct) };
+        }
         if (tool is "dream_read" or "dream_lessons" or "dream_similar" or "dream_review_queue" or "dream_work_trail")
             return new { untrusted_data = true, data = await ReadDreamToolAsync(tool, input, scope.ProjectId, ct) };
         var evidence = input["evidence"]?.Deserialize<List<DreamEvidence>>(WorkJson.Options) ?? throw WorkException.Invalid("Every dream write requires evidence.");
