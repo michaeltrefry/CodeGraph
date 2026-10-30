@@ -403,3 +403,29 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
     assert_1.strict.deepEqual(routes(result, 'Demo:sse.ts#ChatScreen'), ['route:*:POST:/v1/chat/completions']);
     assert_1.strict.deepEqual(routes(result, 'Demo:sse.ts#second'), ['route:*:POST:/v1/chat/completions']);
 });
+(0, node_test_1.test)('computed object keys preserve mutation identity, with unknown keys retaining receiver uncertainty', () => {
+    const result = fixture({ 'computed-members.ts': `
+    export function literal(){const options={method:'GET'};const holder={['options']:options};const {options:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function computedBinding(){const options={method:'GET'};const holder={options};const {['options']:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function unknown(key){const first={method:'GET'};const second={method:'POST'};const holder={options:first,[key]:second};const {options:alias}=holder;alias.method='DELETE';fetch('/api',first);return fetch('/api',second);}
+    export function unknownBinding(key){const options={method:'GET'};const holder={options};const {[key]:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function immutable(){const options={method:'GET'};const holder={['options']:options};const {options:alias}=holder;return fetch('/api',options);}
+  ` });
+    for (const name of ['literal', 'computedBinding', 'unknown', 'unknownBinding'])
+        assert_1.strict.deepEqual(routes(result, `Demo:computed-members.ts#${name}`), []);
+    assert_1.strict.deepEqual(routes(result, 'Demo:computed-members.ts#immutable'), ['route:*:GET:/api']);
+});
+(0, node_test_1.test)('array/object spread and rest selections cannot hide writes to their contained options', () => {
+    const result = fixture({ 'spread-members.ts': `
+    export function array(){const options={method:'GET'};const array=[options];const holder=[...array];const [alias]=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function unknownOffset(unknownArray){const options={method:'GET'};const holder=[...unknownArray,options];const [alias]=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function knownBefore(){const options={method:'GET'};const safe=[{}];const holder=[...safe,options];const [,alias]=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function offset(){const options={method:'GET'};const array=[{method:'POST'},options];const holder=[{},...array];const [,,alias]=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function rest(){const options={method:'GET'};const array=[null,options];const [,...tail]=array;const [alias]=tail;alias.method='DELETE';return fetch('/api',options);}
+    export function object(){const options={method:'GET'};const other={options};const holder={...other};const {options:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function immutable(){const options={method:'GET'};const holder=[...[options]];const [alias]=holder;return fetch('/api',options);}
+  ` });
+    for (const name of ['array', 'offset', 'rest', 'object', 'unknownOffset', 'knownBefore'])
+        assert_1.strict.deepEqual(routes(result, `Demo:spread-members.ts#${name}`), []);
+    assert_1.strict.deepEqual(routes(result, 'Demo:spread-members.ts#immutable'), ['route:*:GET:/api']);
+});

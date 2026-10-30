@@ -225,19 +225,37 @@ export class StaticEvaluator {
       });
     }
     const identities = new Map<Node, Node>();
+    const restSources = new Map<Node, Node>();
+    const memberName = (node: Node): string | undefined => {
+      if (Node.isComputedPropertyName(node)) {
+        const expression=node.getExpression();
+        return Node.isStringLiteral(expression) || Node.isNoSubstitutionTemplateLiteral(expression) ? expression.getLiteralText() : Node.isNumericLiteral(expression) ? String(expression.getLiteralValue()) : undefined;
+      }
+      return Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : Node.isNumericLiteral(node) ? String(node.getLiteralValue()) : node.getText();
+    };
     const selectedMember = (receiver: Node, name: string, seen: Set<Node>): Node | undefined => {
       const source=identity(receiver,seen);
       if (seen.has(source)) return undefined;
       seen=new Set(seen); seen.add(source);
       if (Node.isSourceFile(source)) return this.model.exported(source,name);
-      if (Node.isArrayLiteralExpression(source)) return source.getElements()[Number(name)];
+      if (Node.isArrayLiteralExpression(source)) {
+        const elements=source.getElements();
+        // A spread changes subsequent indices and may have unknown length. Retain
+        // the receiver identity so a write covers every statically contained source.
+        if (elements.some(Node.isSpreadElement)) return source;
+        return /^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
+      }
       if (Node.isClassDeclaration(source)) return source.getProperty(name);
       if (!Node.isObjectLiteralExpression(source)) return undefined;
+      // An unresolved spread/computed override may select any contained object.
+      // Keep the container as the conservative identity instead of picking one child.
+      if (source.getProperties().some(Node.isSpreadAssignment)) return source;
       for (const property of source.getProperties().reverse()) {
-        if (Node.isSpreadAssignment(property)) {
-          const member=selectedMember(property.getExpression(),name,new Set(seen)); if (member) return member;
-        } else if (Node.isPropertyAssignment(property) && property.getName().replace(/^["']|["']$/g,'')===name) return property.getInitializer();
-        else if (Node.isShorthandPropertyAssignment(property) && property.getName()===name) return property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration));
+        if (Node.isPropertyAssignment(property)) {
+          const key=memberName(property.getNameNode());
+          if (key===undefined) return source;
+          if (key===name) return property.getInitializer();
+        } else if (Node.isShorthandPropertyAssignment(property) && property.getName()===name) return property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration));
       }
       return undefined;
     };
@@ -251,18 +269,28 @@ export class StaticEvaluator {
       if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) target=node.getExpression();
       else if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) target=node.getInitializer();
       else if (Node.isBindingElement(node)) {
-        const path: string[]=[]; let element=node; let source: Node | undefined;
+        const path: Array<string | undefined>=[]; let element=node; let source: Node | undefined; let rest=false;
         for (;;) {
           const pattern=element.getParentOrThrow();
           const name=element.getPropertyNameNode() ?? element.getNameNode();
-          if (!element.getDotDotDotToken()) path.unshift(Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : name.getText().replace(/^["']|["']$/g,''));
+          if (element.getDotDotDotToken()) rest=true;
+          else path.unshift(Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : memberName(name));
           const owner=pattern.getParentOrThrow();
           if (Node.isBindingElement(owner)) { element=owner; continue; }
           if (Node.isVariableDeclaration(owner)) source=owner.getInitializer();
           break; // Destructured parameters retain separate invocation-bound identities.
         }
-        for (const name of path) { if (!source) break; source=selectedMember(source,name,new Set(seen)); }
-        target=source ?? node.getInitializer();
+        for (const name of path) {
+          if (!source) break;
+          const receiver=source;
+          const selected=name===undefined ? undefined : selectedMember(receiver,name,new Set(seen));
+          if (!selected) { source=identity(receiver,new Set(seen)); break; }
+          source=selected;
+        }
+        // Rest creates a new container with shifted/omitted members. Preserve its
+        // source for conservative write invalidation, without inventing an index map.
+        if (rest && source) restSources.set(node,source);
+        else target=source ?? node.getInitializer();
       } else if (Node.isImportSpecifier(node) || Node.isImportClause(node) || Node.isNamespaceImport(node)) {
         const declaration=node.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
         const file=this.model.module(node,declaration.getModuleSpecifierValue());
@@ -289,6 +317,7 @@ export class StaticEvaluator {
     // Containment is directional: writes through a container may affect referenced
     // children, but writing one child cannot mutate the container's other values.
     const contained = (container: Node): Node[] => {
+      const rest=restSources.get(container); if (rest) return [rest];
       if (Node.isArrayLiteralExpression(container)) return container.getElements().map(element=>Node.isSpreadElement(element) ? element.getExpression() : element);
       if (!Node.isObjectLiteralExpression(container)) return [];
       return container.getProperties().flatMap(property=> {

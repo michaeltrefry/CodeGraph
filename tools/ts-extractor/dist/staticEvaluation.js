@@ -317,6 +317,14 @@ class StaticEvaluator {
             });
         }
         const identities = new Map();
+        const restSources = new Map();
+        const memberName = (node) => {
+            if (ts_morph_1.Node.isComputedPropertyName(node)) {
+                const expression = node.getExpression();
+                return ts_morph_1.Node.isStringLiteral(expression) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(expression) ? expression.getLiteralText() : ts_morph_1.Node.isNumericLiteral(expression) ? String(expression.getLiteralValue()) : undefined;
+            }
+            return ts_morph_1.Node.isStringLiteral(node) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : ts_morph_1.Node.isNumericLiteral(node) ? String(node.getLiteralValue()) : node.getText();
+        };
         const selectedMember = (receiver, name, seen) => {
             const source = identity(receiver, seen);
             if (seen.has(source))
@@ -325,20 +333,30 @@ class StaticEvaluator {
             seen.add(source);
             if (ts_morph_1.Node.isSourceFile(source))
                 return this.model.exported(source, name);
-            if (ts_morph_1.Node.isArrayLiteralExpression(source))
-                return source.getElements()[Number(name)];
+            if (ts_morph_1.Node.isArrayLiteralExpression(source)) {
+                const elements = source.getElements();
+                // A spread changes subsequent indices and may have unknown length. Retain
+                // the receiver identity so a write covers every statically contained source.
+                if (elements.some(ts_morph_1.Node.isSpreadElement))
+                    return source;
+                return /^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
+            }
             if (ts_morph_1.Node.isClassDeclaration(source))
                 return source.getProperty(name);
             if (!ts_morph_1.Node.isObjectLiteralExpression(source))
                 return undefined;
+            // An unresolved spread/computed override may select any contained object.
+            // Keep the container as the conservative identity instead of picking one child.
+            if (source.getProperties().some(ts_morph_1.Node.isSpreadAssignment))
+                return source;
             for (const property of source.getProperties().reverse()) {
-                if (ts_morph_1.Node.isSpreadAssignment(property)) {
-                    const member = selectedMember(property.getExpression(), name, new Set(seen));
-                    if (member)
-                        return member;
+                if (ts_morph_1.Node.isPropertyAssignment(property)) {
+                    const key = memberName(property.getNameNode());
+                    if (key === undefined)
+                        return source;
+                    if (key === name)
+                        return property.getInitializer();
                 }
-                else if (ts_morph_1.Node.isPropertyAssignment(property) && property.getName().replace(/^["']|["']$/g, '') === name)
-                    return property.getInitializer();
                 else if (ts_morph_1.Node.isShorthandPropertyAssignment(property) && property.getName() === name)
                     return property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration));
             }
@@ -363,11 +381,14 @@ class StaticEvaluator {
                 const path = [];
                 let element = node;
                 let source;
+                let rest = false;
                 for (;;) {
                     const pattern = element.getParentOrThrow();
                     const name = element.getPropertyNameNode() ?? element.getNameNode();
-                    if (!element.getDotDotDotToken())
-                        path.unshift(ts_morph_1.Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : name.getText().replace(/^["']|["']$/g, ''));
+                    if (element.getDotDotDotToken())
+                        rest = true;
+                    else
+                        path.unshift(ts_morph_1.Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : memberName(name));
                     const owner = pattern.getParentOrThrow();
                     if (ts_morph_1.Node.isBindingElement(owner)) {
                         element = owner;
@@ -380,9 +401,20 @@ class StaticEvaluator {
                 for (const name of path) {
                     if (!source)
                         break;
-                    source = selectedMember(source, name, new Set(seen));
+                    const receiver = source;
+                    const selected = name === undefined ? undefined : selectedMember(receiver, name, new Set(seen));
+                    if (!selected) {
+                        source = identity(receiver, new Set(seen));
+                        break;
+                    }
+                    source = selected;
                 }
-                target = source ?? node.getInitializer();
+                // Rest creates a new container with shifted/omitted members. Preserve its
+                // source for conservative write invalidation, without inventing an index map.
+                if (rest && source)
+                    restSources.set(node, source);
+                else
+                    target = source ?? node.getInitializer();
             }
             else if (ts_morph_1.Node.isImportSpecifier(node) || ts_morph_1.Node.isImportClause(node) || ts_morph_1.Node.isNamespaceImport(node)) {
                 const declaration = node.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ImportDeclaration);
@@ -416,6 +448,9 @@ class StaticEvaluator {
         // Containment is directional: writes through a container may affect referenced
         // children, but writing one child cannot mutate the container's other values.
         const contained = (container) => {
+            const rest = restSources.get(container);
+            if (rest)
+                return [rest];
             if (ts_morph_1.Node.isArrayLiteralExpression(container))
                 return container.getElements().map(element => ts_morph_1.Node.isSpreadElement(element) ? element.getExpression() : element);
             if (!ts_morph_1.Node.isObjectLiteralExpression(container))
