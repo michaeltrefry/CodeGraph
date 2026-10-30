@@ -304,3 +304,49 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
     assert_1.strict.equal(result.coverage.wrapped, 3);
     assert_1.strict.equal(result.coverage.complete, true);
 });
+(0, node_test_1.test)('legacy ApiContract relative endpoints retain default POST without inventing browser fetch roots', () => {
+    const result = fixture({ 'legacy.ts': `
+    @ApiContract({endpoint:'PlaceBid'}) class PlaceBidRequest {}
+    @ApiContract({endpoint:'api/v1/orders/PlaceBid?cache=1#receipt',httpMethod:'PUT'}) class VersionedRequest {}
+    @ApiContract({endpoint:'https://api.example/admin/v1/bids?cache=1'}) class AbsoluteRequest {}
+    export function legacy(service){return service.send(new PlaceBidRequest());}
+    export function versioned(service){return service.send(new VersionedRequest());}
+    export function absolute(service){return service.send(new AbsoluteRequest());}
+    export function browser(){return fetch('PlaceBid');}
+  ` });
+    assert_1.strict.deepEqual(routes(result, 'Demo:legacy.ts#legacy'), ['route:*:POST:/PlaceBid']);
+    assert_1.strict.deepEqual(routes(result, 'Demo:legacy.ts#versioned'), ['route:*:PUT:/api/v1/orders/PlaceBid']);
+    assert_1.strict.deepEqual(routes(result, 'Demo:legacy.ts#absolute'), ['route:*:POST:/admin/v1/bids']);
+    assert_1.strict.equal(result.edges.find(edge => edge.sourceQN === 'Demo:legacy.ts#absolute')?.properties?.origin, 'https://api.example');
+    assert_1.strict.deepEqual(routes(result, 'Demo:legacy.ts#browser'), []);
+});
+(0, node_test_1.test)('option writes through direct and nested static aliases cannot emit a stale method', () => {
+    const result = fixture({ 'aliases.ts': `
+    export function direct(){const options={method:'GET'};const alias=options;alias.method='DELETE';return fetch('/api/items',options);}
+    export function nested(){const options={method:'GET'};const holder={options};const first=holder.options;const second=first;second.method='DELETE';return fetch('/api/items',options);}
+    export function unchanged(){const options={method:'GET'};return fetch('/api/items',options);}
+  ` });
+    assert_1.strict.deepEqual(routes(result, 'Demo:aliases.ts#direct'), []);
+    assert_1.strict.deepEqual(routes(result, 'Demo:aliases.ts#nested'), []);
+    assert_1.strict.deepEqual(routes(result, 'Demo:aliases.ts#unchanged'), ['route:*:GET:/api/items']);
+});
+(0, node_test_1.test)('writes through imported named and namespace aliases invalidate only their source object', () => {
+    const result = fixture({
+        'options.ts': `export const options={method:'GET'};export const untouched={method:'POST'};`,
+        'writer.ts': `import {options as imported} from './options';const first=imported;const nested={value:first};const alias=nested.value;alias.method='DELETE';`,
+        'namespace.ts': `import * as config from './options';const alias=config.options;alias.method='PUT';`,
+        'calls.ts': `import {options,untouched} from './options';export function stale(){return fetch('/api/items',options);}export function good(){return fetch('/api/items',untouched);}`,
+    });
+    assert_1.strict.deepEqual(routes(result, 'Demo:calls.ts#stale'), []);
+    assert_1.strict.deepEqual(routes(result, 'Demo:calls.ts#good'), ['route:*:POST:/api/items']);
+});
+(0, node_test_1.test)('bound option parameters and their aliases are guarded before environment lookup', () => {
+    const result = fixture({ 'parameters.ts': `
+    function direct(options){options.method='DELETE';return fetch('/api/items',options);}
+    function aliased(options){const alias=options;alias.method='DELETE';return fetch('/api/items',options);}
+    function methodValue(method){method='DELETE';return fetch('/api/items',{method});}
+    export function caller(){direct({method:'GET'});aliased({method:'GET'});methodValue('GET');}
+  ` });
+    assert_1.strict.deepEqual(routes(result, 'Demo:parameters.ts#caller'), []);
+    assert_1.strict.ok(result.coverage.unresolved >= 3);
+});

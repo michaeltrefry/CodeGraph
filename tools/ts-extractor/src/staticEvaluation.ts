@@ -19,6 +19,8 @@ export function staticKey(value: StaticValue): string {
  * declarations, never identifier text; no process-global caches survive extraction. */
 export class StaticEvaluator {
   private readonly mutations = new Map<Node, boolean>();
+  private readonly aliasParents = new Map<object, object>();
+  private writtenAliases: Set<object> | undefined;
   constructor(readonly model: SemanticModel, readonly diagnostic: (message: string) => void) {}
 
   evaluate(node: Node | undefined, env: StaticEnvironment = new Map(), seen = new Set<Node>()): StaticValue {
@@ -26,6 +28,9 @@ export class StaticEvaluator {
     if (seen.has(node) || seen.size > 60) return unknown();
     seen = new Set(seen); seen.add(node);
     const ev = (value: Node | undefined) => this.evaluate(value, env, seen);
+    // Bound arguments are still mutable inside the callee. Check writes before an
+    // environment hit can return a stale object/method supplied by its caller.
+    if (this.isBinding(node) && this.mutated(node)) return unknown();
     if (env.has(node)) return env.get(node);
     if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node) || Node.isAwaitExpression(node) || Node.isSatisfiesExpression(node)) return ev(node.getExpression());
     if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) return node.getLiteralText();
@@ -137,9 +142,6 @@ export class StaticEvaluator {
       return unknown(node.getText());
     }
     if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node) || Node.isPropertyAssignment(node) || Node.isParameterDeclaration(node) || Node.isEnumMember(node) || Node.isBindingElement(node)) {
-      if (env.has(node)) return env.get(node);
-      // A reassigned binding is not a constant. Avoid using a stale initializer as proof.
-      if ((Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) && this.mutated(node)) return unknown(node.getName());
       return node.getInitializer() ? ev(node.getInitializer()) : unknown('getName' in node ? node.getName() : 'param');
     }
     if (Node.isImportSpecifier(node) || Node.isImportClause(node)) {
@@ -182,12 +184,71 @@ export class StaticEvaluator {
   private assignmentTargets(node: Node): Node[] {
     return Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node) ? [node, ...this.assignmentTargets(node.getExpression())] : [node];
   }
+  private isBinding(node: Node): boolean {
+    return Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node) || Node.isParameterDeclaration(node) || Node.isBindingElement(node);
+  }
+  private aliasKey(node: Node): object { return node.getSymbol()?.compilerSymbol ?? node; }
+  private aliasRoot(key: object): object {
+    if (!this.aliasParents.has(key)) { this.aliasParents.set(key,key); return key; }
+    let root=key;
+    while (this.aliasParents.get(root)! !== root) root=this.aliasParents.get(root)!;
+    while (key !== root) { const parent=this.aliasParents.get(key)!; this.aliasParents.set(key,root); key=parent; }
+    return root;
+  }
+  private joinAliases(left: object, right: object): void {
+    const a=this.aliasRoot(left), b=this.aliasRoot(right); if (a !== b) this.aliasParents.set(a,b);
+  }
+  /** One admitted-AST write/alias index per extraction, rather than a full fleet scan
+   * per evaluated binding. Static aliases share a conservative mutable root; symbols
+   * and explicit import resolution keep unrelated names and modules independent. */
+  private indexWrites(): void {
+    if (this.writtenAliases) return;
+    const writes: Node[] = [];
+    const aliases: Node[] = [];
+    for (const file of this.model.files) {
+      for (const imp of file.getImportDeclarations()) {
+        const target = this.model.module(file, imp.getModuleSpecifierValue()); if (!target) continue;
+        for (const named of imp.getNamedImports()) {
+          const exported = this.model.exported(target,named.getName());
+          if (exported) this.joinAliases(this.aliasKey(named.getAliasNode() ?? named.getNameNode()),this.aliasKey(exported));
+        }
+        const local=imp.getDefaultImport(); const exported=local ? this.model.exported(target,'default') : undefined;
+        if (local && exported) this.joinAliases(this.aliasKey(local),this.aliasKey(exported));
+      }
+      file.forEachDescendant(node => {
+        if (this.isBinding(node)) aliases.push(node);
+        if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) writes.push(node.getLeft());
+        else if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) && [SyntaxKind.PlusPlusToken,SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) writes.push(node.getOperand());
+        else if (Node.isDeleteExpression(node)) writes.push(node.getExpression());
+        else if (Node.isCallExpression(node) && node.getExpression().getText()==='Object.assign' && node.getArguments()[0]) writes.push(node.getArguments()[0]);
+      });
+    }
+    for (const alias of aliases) {
+      if (!(Node.isVariableDeclaration(alias) || Node.isPropertyDeclaration(alias) || Node.isParameterDeclaration(alias) || Node.isBindingElement(alias))) continue;
+      const key=this.aliasKey(alias), initializer=alias.getInitializer();
+      const name=alias.getNameNode();
+      if (Node.isObjectBindingPattern(name) || Node.isArrayBindingPattern(name)) for (const element of name.getDescendantsOfKind(SyntaxKind.BindingElement)) this.joinAliases(key,this.aliasKey(element));
+      if (!initializer) continue;
+      if (Node.isObjectLiteralExpression(initializer) || Node.isArrayLiteralExpression(initializer)) { this.joinAliases(key,this.aliasKey(initializer)); continue; }
+      if (!(Node.isIdentifier(initializer) || Node.isPropertyAccessExpression(initializer) || Node.isElementAccessExpression(initializer) || Node.isParenthesizedExpression(initializer) || Node.isAsExpression(initializer) || Node.isNonNullExpression(initializer))) continue;
+      const resolved=this.model.resolve(initializer); if (resolved) this.joinAliases(key,this.aliasKey(resolved));
+      for (const reference of this.assignmentTargets(initializer)) {
+        // A namespace is a container of independent exports, not one mutable export.
+        if (reference.getSymbol()?.getDeclarations().some(Node.isNamespaceImport)) continue;
+        if (reference.getSymbol()) this.joinAliases(key,this.aliasKey(reference));
+      }
+    }
+    this.writtenAliases=new Set<object>();
+    for (const write of writes) for (const reference of this.assignmentTargets(write)) {
+      const resolved=this.model.resolve(reference);
+      this.writtenAliases.add(this.aliasRoot(this.aliasKey(reference)));
+      if (resolved) this.writtenAliases.add(this.aliasRoot(this.aliasKey(resolved)));
+    }
+  }
   private mutated(node: Node): boolean {
     if (this.mutations.has(node)) return this.mutations.get(node)!;
-    const symbol = node.getSymbol()?.compilerSymbol;
-    const mutated = !!symbol && node.getSourceFile().getDescendantsOfKind(SyntaxKind.BinaryExpression).some(binary =>
-      binary.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && binary.getOperatorToken().getKind() <= SyntaxKind.LastAssignment &&
-      this.assignmentTargets(binary.getLeft()).some(target => target.getSymbol()?.compilerSymbol === symbol));
-    this.mutations.set(node, mutated); return mutated;
+    this.indexWrites();
+    const mutated=this.writtenAliases!.has(this.aliasRoot(this.aliasKey(node)));
+    this.mutations.set(node,mutated); return mutated;
   }
 }

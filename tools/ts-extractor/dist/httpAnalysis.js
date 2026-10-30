@@ -202,7 +202,11 @@ function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
         const params = parameters(callable);
         const env = evaluator.bind(callable, params.map(p => (0, staticEvaluation_1.unknown)(p.getName())));
         for (const fact of summarize(callable, env, new Set())) {
-            const url = fact.url ? normalizeHttpUrl(fact.url) : undefined;
+            // ApiContract endpoints are root-relative route declarations even in the legacy
+            // unslashed form. Browser fetch('PlaceBid') remains relative to navigation context.
+            const endpoint = fact.url?.trim();
+            const contractEndpoint = fact.kind === 'apicontract' && endpoint && !endpoint.startsWith('/') && !/^[a-z][\w+.-]*:/i.test(endpoint) ? `/${endpoint}` : endpoint;
+            const url = contractEndpoint ? normalizeHttpUrl(contractEndpoint) : undefined;
             if (!fact.method || !url) {
                 coverage.unresolved++;
                 diag(`${qn}: ${fact.reason ?? 'URL has no static endpoint'} (${fact.kind})`);

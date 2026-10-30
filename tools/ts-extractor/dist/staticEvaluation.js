@@ -25,6 +25,7 @@ class StaticEvaluator {
         this.model = model;
         this.diagnostic = diagnostic;
         this.mutations = new Map();
+        this.aliasParents = new Map();
     }
     evaluate(node, env = new Map(), seen = new Set()) {
         if (!node)
@@ -34,6 +35,10 @@ class StaticEvaluator {
         seen = new Set(seen);
         seen.add(node);
         const ev = (value) => this.evaluate(value, env, seen);
+        // Bound arguments are still mutable inside the callee. Check writes before an
+        // environment hit can return a stale object/method supplied by its caller.
+        if (this.isBinding(node) && this.mutated(node))
+            return (0, exports.unknown)();
         if (env.has(node))
             return env.get(node);
         if (ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isNonNullExpression(node) || ts_morph_1.Node.isTypeAssertion(node) || ts_morph_1.Node.isAwaitExpression(node) || ts_morph_1.Node.isSatisfiesExpression(node))
@@ -200,11 +205,6 @@ class StaticEvaluator {
             return (0, exports.unknown)(node.getText());
         }
         if (ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node) || ts_morph_1.Node.isPropertyAssignment(node) || ts_morph_1.Node.isParameterDeclaration(node) || ts_morph_1.Node.isEnumMember(node) || ts_morph_1.Node.isBindingElement(node)) {
-            if (env.has(node))
-                return env.get(node);
-            // A reassigned binding is not a constant. Avoid using a stale initializer as proof.
-            if ((ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node)) && this.mutated(node))
-                return (0, exports.unknown)(node.getName());
             return node.getInitializer() ? ev(node.getInitializer()) : (0, exports.unknown)('getName' in node ? node.getName() : 'param');
         }
         if (ts_morph_1.Node.isImportSpecifier(node) || ts_morph_1.Node.isImportClause(node)) {
@@ -255,12 +255,107 @@ class StaticEvaluator {
     assignmentTargets(node) {
         return ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node) ? [node, ...this.assignmentTargets(node.getExpression())] : [node];
     }
+    isBinding(node) {
+        return ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node) || ts_morph_1.Node.isParameterDeclaration(node) || ts_morph_1.Node.isBindingElement(node);
+    }
+    aliasKey(node) { return node.getSymbol()?.compilerSymbol ?? node; }
+    aliasRoot(key) {
+        if (!this.aliasParents.has(key)) {
+            this.aliasParents.set(key, key);
+            return key;
+        }
+        let root = key;
+        while (this.aliasParents.get(root) !== root)
+            root = this.aliasParents.get(root);
+        while (key !== root) {
+            const parent = this.aliasParents.get(key);
+            this.aliasParents.set(key, root);
+            key = parent;
+        }
+        return root;
+    }
+    joinAliases(left, right) {
+        const a = this.aliasRoot(left), b = this.aliasRoot(right);
+        if (a !== b)
+            this.aliasParents.set(a, b);
+    }
+    /** One admitted-AST write/alias index per extraction, rather than a full fleet scan
+     * per evaluated binding. Static aliases share a conservative mutable root; symbols
+     * and explicit import resolution keep unrelated names and modules independent. */
+    indexWrites() {
+        if (this.writtenAliases)
+            return;
+        const writes = [];
+        const aliases = [];
+        for (const file of this.model.files) {
+            for (const imp of file.getImportDeclarations()) {
+                const target = this.model.module(file, imp.getModuleSpecifierValue());
+                if (!target)
+                    continue;
+                for (const named of imp.getNamedImports()) {
+                    const exported = this.model.exported(target, named.getName());
+                    if (exported)
+                        this.joinAliases(this.aliasKey(named.getAliasNode() ?? named.getNameNode()), this.aliasKey(exported));
+                }
+                const local = imp.getDefaultImport();
+                const exported = local ? this.model.exported(target, 'default') : undefined;
+                if (local && exported)
+                    this.joinAliases(this.aliasKey(local), this.aliasKey(exported));
+            }
+            file.forEachDescendant(node => {
+                if (this.isBinding(node))
+                    aliases.push(node);
+                if (ts_morph_1.Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment)
+                    writes.push(node.getLeft());
+                else if ((ts_morph_1.Node.isPrefixUnaryExpression(node) || ts_morph_1.Node.isPostfixUnaryExpression(node)) && [ts_morph_1.SyntaxKind.PlusPlusToken, ts_morph_1.SyntaxKind.MinusMinusToken].includes(node.getOperatorToken()))
+                    writes.push(node.getOperand());
+                else if (ts_morph_1.Node.isDeleteExpression(node))
+                    writes.push(node.getExpression());
+                else if (ts_morph_1.Node.isCallExpression(node) && node.getExpression().getText() === 'Object.assign' && node.getArguments()[0])
+                    writes.push(node.getArguments()[0]);
+            });
+        }
+        for (const alias of aliases) {
+            if (!(ts_morph_1.Node.isVariableDeclaration(alias) || ts_morph_1.Node.isPropertyDeclaration(alias) || ts_morph_1.Node.isParameterDeclaration(alias) || ts_morph_1.Node.isBindingElement(alias)))
+                continue;
+            const key = this.aliasKey(alias), initializer = alias.getInitializer();
+            const name = alias.getNameNode();
+            if (ts_morph_1.Node.isObjectBindingPattern(name) || ts_morph_1.Node.isArrayBindingPattern(name))
+                for (const element of name.getDescendantsOfKind(ts_morph_1.SyntaxKind.BindingElement))
+                    this.joinAliases(key, this.aliasKey(element));
+            if (!initializer)
+                continue;
+            if (ts_morph_1.Node.isObjectLiteralExpression(initializer) || ts_morph_1.Node.isArrayLiteralExpression(initializer)) {
+                this.joinAliases(key, this.aliasKey(initializer));
+                continue;
+            }
+            if (!(ts_morph_1.Node.isIdentifier(initializer) || ts_morph_1.Node.isPropertyAccessExpression(initializer) || ts_morph_1.Node.isElementAccessExpression(initializer) || ts_morph_1.Node.isParenthesizedExpression(initializer) || ts_morph_1.Node.isAsExpression(initializer) || ts_morph_1.Node.isNonNullExpression(initializer)))
+                continue;
+            const resolved = this.model.resolve(initializer);
+            if (resolved)
+                this.joinAliases(key, this.aliasKey(resolved));
+            for (const reference of this.assignmentTargets(initializer)) {
+                // A namespace is a container of independent exports, not one mutable export.
+                if (reference.getSymbol()?.getDeclarations().some(ts_morph_1.Node.isNamespaceImport))
+                    continue;
+                if (reference.getSymbol())
+                    this.joinAliases(key, this.aliasKey(reference));
+            }
+        }
+        this.writtenAliases = new Set();
+        for (const write of writes)
+            for (const reference of this.assignmentTargets(write)) {
+                const resolved = this.model.resolve(reference);
+                this.writtenAliases.add(this.aliasRoot(this.aliasKey(reference)));
+                if (resolved)
+                    this.writtenAliases.add(this.aliasRoot(this.aliasKey(resolved)));
+            }
+    }
     mutated(node) {
         if (this.mutations.has(node))
             return this.mutations.get(node);
-        const symbol = node.getSymbol()?.compilerSymbol;
-        const mutated = !!symbol && node.getSourceFile().getDescendantsOfKind(ts_morph_1.SyntaxKind.BinaryExpression).some(binary => binary.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment && binary.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment &&
-            this.assignmentTargets(binary.getLeft()).some(target => target.getSymbol()?.compilerSymbol === symbol));
+        this.indexWrites();
+        const mutated = this.writtenAliases.has(this.aliasRoot(this.aliasKey(node)));
         this.mutations.set(node, mutated);
         return mutated;
     }
