@@ -3,7 +3,7 @@
 **Repository:** `michaeltrefry/CodeGraph`
 **Reviewed:** 2026-10-30, against indexed CodeGraph/main `9050ca9` and representative files at the fleet's recorded index revisions.
 **Confidence:** High for the observed gaps and repository patterns; repository indexes have different ages and are not proof of their latest upstream state.
-**Status:** Approved plan recorded in [Shortcut epic sc-27972](https://app.shortcut.com/trefry/epic/27972). Execution is in progress, starting with sc-27973. Shortcut is the operational source of truth for current states and evidence.
+**Status:** Approved plan recorded in [Shortcut epic sc-27972](https://app.shortcut.com/trefry/epic/27972), with sc-27973 as the prerequisite for the other slices. Shortcut is the operational source of truth for implementation states and delivery evidence.
 
 **Objective:** Given a changed frontend or backend file, identify affected UI components, screens and actual browser routes, and trace their HTTP requests or Tauri operations to backend implementations. Support applications without browser routing as well as routed web apps.
 
