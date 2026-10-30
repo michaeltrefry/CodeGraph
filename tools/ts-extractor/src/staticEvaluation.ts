@@ -226,6 +226,7 @@ export class StaticEvaluator {
     }
     const identities = new Map<Node, Node>();
     const restSources = new Map<Node, Node>();
+    const uncertainIdentities = new Set<Node>();
     const memberName = (node: Node): string | undefined => {
       if (Node.isComputedPropertyName(node)) {
         const expression=node.getExpression();
@@ -233,29 +234,31 @@ export class StaticEvaluator {
       }
       return Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : Node.isNumericLiteral(node) ? String(node.getLiteralValue()) : node.getText();
     };
-    const selectedMember = (receiver: Node, name: string, seen: Set<Node>): Node | undefined => {
+    const selectedMember = (receiver: Node, name: string, seen: Set<Node>): {node: Node; uncertain?: true} | undefined => {
       const source=identity(receiver,seen);
+      if (uncertainIdentities.has(receiver)) return {node:source,uncertain:true};
       if (seen.has(source)) return undefined;
       seen=new Set(seen); seen.add(source);
-      if (Node.isSourceFile(source)) return this.model.exported(source,name);
+      if (Node.isSourceFile(source)) { const member=this.model.exported(source,name); return member ? {node:member} : undefined; }
       if (Node.isArrayLiteralExpression(source)) {
         const elements=source.getElements();
         // A spread changes subsequent indices and may have unknown length. Retain
         // the receiver identity so a write covers every statically contained source.
-        if (elements.some(Node.isSpreadElement)) return source;
-        return /^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
+        if (elements.some(Node.isSpreadElement)) return {node:source,uncertain:true};
+        const member=/^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
+        return member ? {node:member} : undefined;
       }
-      if (Node.isClassDeclaration(source)) return source.getProperty(name);
+      if (Node.isClassDeclaration(source)) { const member=source.getProperty(name); return member ? {node:member} : undefined; }
       if (!Node.isObjectLiteralExpression(source)) return undefined;
       // An unresolved spread/computed override may select any contained object.
       // Keep the container as the conservative identity instead of picking one child.
-      if (source.getProperties().some(Node.isSpreadAssignment)) return source;
+      if (source.getProperties().some(Node.isSpreadAssignment)) return {node:source,uncertain:true};
       for (const property of source.getProperties().reverse()) {
         if (Node.isPropertyAssignment(property)) {
           const key=memberName(property.getNameNode());
-          if (key===undefined) return source;
-          if (key===name) return property.getInitializer();
-        } else if (Node.isShorthandPropertyAssignment(property) && property.getName()===name) return property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration));
+          if (key===undefined) return {node:source,uncertain:true};
+          if (key===name) { const member=property.getInitializer(); return member ? {node:member} : undefined; }
+        } else if (Node.isShorthandPropertyAssignment(property) && property.getName()===name) { const member=property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration)); return member ? {node:member} : undefined; }
       }
       return undefined;
     };
@@ -265,7 +268,7 @@ export class StaticEvaluator {
       if (seen.has(node) || seen.size >= 60) return node;
       const cached=identities.get(node); if (cached) return cached;
       seen=new Set(seen); seen.add(node);
-      let target: Node | undefined;
+      let target: Node | undefined; let uncertain=false;
       if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) target=node.getExpression();
       else if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) target=node.getInitializer();
       else if (Node.isBindingElement(node)) {
@@ -284,12 +287,12 @@ export class StaticEvaluator {
           if (!source) break;
           const receiver=source;
           const selected=name===undefined ? undefined : selectedMember(receiver,name,new Set(seen));
-          if (!selected) { source=identity(receiver,new Set(seen)); break; }
-          source=selected;
+          if (!selected || selected.uncertain) { source=selected?.node ?? identity(receiver,new Set(seen)); uncertain=true; break; }
+          source=selected.node;
         }
         // Rest creates a new container with shifted/omitted members. Preserve its
         // source for conservative write invalidation, without inventing an index map.
-        if (rest && source) restSources.set(node,source);
+        if (rest && source) { restSources.set(node,source); uncertain=true; }
         else target=source ?? node.getInitializer();
       } else if (Node.isImportSpecifier(node) || Node.isImportClause(node) || Node.isNamespaceImport(node)) {
         const declaration=node.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
@@ -301,13 +304,15 @@ export class StaticEvaluator {
       } else if (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node)) {
         const argument=Node.isElementAccessExpression(node) ? node.getArgumentExpression() : undefined;
         const name=Node.isPropertyAccessExpression(node) ? node.getName() : argument && (Node.isStringLiteral(argument) || Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;
-        target=name===undefined ? undefined : selectedMember(node.getExpression(),name,new Set(seen));
+        const selected=name===undefined ? undefined : selectedMember(node.getExpression(),name,new Set(seen));
+        target=selected?.node; uncertain=selected?.uncertain ?? false;
         // Unknown members conservatively refer to their own receiver, never all
         // siblings of an object that merely contains that receiver.
         target ??= node.getSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration) && Node.isPropertyDeclaration(declaration));
-        target ??= node.getExpression();
+        if (!target) { target=node.getExpression(); uncertain=true; }
       }
       const result=target && target!==node ? identity(target,seen) : node;
+      if (uncertain || target && uncertainIdentities.has(target)) uncertainIdentities.add(node);
       identities.set(node,result); return result;
     };
     for (const alias of aliases) {

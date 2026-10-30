@@ -467,3 +467,14 @@ test('array/object spread and rest selections cannot hide writes to their contai
   for(const name of ['array','offset','rest','object','unknownOffset','knownBefore'])assert.deepEqual(routes(result,`Demo:spread-members.ts#${name}`),[]);
   assert.deepEqual(routes(result,'Demo:spread-members.ts#immutable'),['route:*:GET:/api']);
 });
+
+
+test('uncertain member identities never become exact siblings on a later nested selection', () => {
+  const result=fixture({'uncertain-members.ts':`
+    export function destructured(key){const options={method:'GET'};const wrong={method:'POST'};const holder={[key]:{value:options},value:wrong};const {nested:{value:alias}}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function property(key){const options={method:'GET'};const wrong={method:'POST'};const holder={[key]:{value:options},value:wrong};const alias=holder.nested.value;alias.method='DELETE';return fetch('/api',options);}
+    export function spread(){const options={method:'GET'};const wrong={method:'POST'};const possible={nested:{value:options}};const holder={...possible,value:wrong};const {nested:{value:alias}}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function forwarded(key){const options={method:'GET'};const holder={[key]:{value:options},value:{method:'POST'}};const intermediate=holder.nested;const alias=intermediate.value;alias.method='DELETE';return fetch('/api',options);}
+  `});
+  for(const name of ['destructured','property','spread','forwarded'])assert.deepEqual(routes(result,`Demo:uncertain-members.ts#${name}`),[]);
+});

@@ -318,6 +318,7 @@ class StaticEvaluator {
         }
         const identities = new Map();
         const restSources = new Map();
+        const uncertainIdentities = new Set();
         const memberName = (node) => {
             if (ts_morph_1.Node.isComputedPropertyName(node)) {
                 const expression = node.getExpression();
@@ -327,38 +328,49 @@ class StaticEvaluator {
         };
         const selectedMember = (receiver, name, seen) => {
             const source = identity(receiver, seen);
+            if (uncertainIdentities.has(receiver))
+                return { node: source, uncertain: true };
             if (seen.has(source))
                 return undefined;
             seen = new Set(seen);
             seen.add(source);
-            if (ts_morph_1.Node.isSourceFile(source))
-                return this.model.exported(source, name);
+            if (ts_morph_1.Node.isSourceFile(source)) {
+                const member = this.model.exported(source, name);
+                return member ? { node: member } : undefined;
+            }
             if (ts_morph_1.Node.isArrayLiteralExpression(source)) {
                 const elements = source.getElements();
                 // A spread changes subsequent indices and may have unknown length. Retain
                 // the receiver identity so a write covers every statically contained source.
                 if (elements.some(ts_morph_1.Node.isSpreadElement))
-                    return source;
-                return /^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
+                    return { node: source, uncertain: true };
+                const member = /^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
+                return member ? { node: member } : undefined;
             }
-            if (ts_morph_1.Node.isClassDeclaration(source))
-                return source.getProperty(name);
+            if (ts_morph_1.Node.isClassDeclaration(source)) {
+                const member = source.getProperty(name);
+                return member ? { node: member } : undefined;
+            }
             if (!ts_morph_1.Node.isObjectLiteralExpression(source))
                 return undefined;
             // An unresolved spread/computed override may select any contained object.
             // Keep the container as the conservative identity instead of picking one child.
             if (source.getProperties().some(ts_morph_1.Node.isSpreadAssignment))
-                return source;
+                return { node: source, uncertain: true };
             for (const property of source.getProperties().reverse()) {
                 if (ts_morph_1.Node.isPropertyAssignment(property)) {
                     const key = memberName(property.getNameNode());
                     if (key === undefined)
-                        return source;
-                    if (key === name)
-                        return property.getInitializer();
+                        return { node: source, uncertain: true };
+                    if (key === name) {
+                        const member = property.getInitializer();
+                        return member ? { node: member } : undefined;
+                    }
                 }
-                else if (ts_morph_1.Node.isShorthandPropertyAssignment(property) && property.getName() === name)
-                    return property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration));
+                else if (ts_morph_1.Node.isShorthandPropertyAssignment(property) && property.getName() === name) {
+                    const member = property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration));
+                    return member ? { node: member } : undefined;
+                }
             }
             return undefined;
         };
@@ -373,6 +385,7 @@ class StaticEvaluator {
             seen = new Set(seen);
             seen.add(node);
             let target;
+            let uncertain = false;
             if (ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isNonNullExpression(node) || ts_morph_1.Node.isTypeAssertion(node))
                 target = node.getExpression();
             else if (ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node))
@@ -403,16 +416,19 @@ class StaticEvaluator {
                         break;
                     const receiver = source;
                     const selected = name === undefined ? undefined : selectedMember(receiver, name, new Set(seen));
-                    if (!selected) {
-                        source = identity(receiver, new Set(seen));
+                    if (!selected || selected.uncertain) {
+                        source = selected?.node ?? identity(receiver, new Set(seen));
+                        uncertain = true;
                         break;
                     }
-                    source = selected;
+                    source = selected.node;
                 }
                 // Rest creates a new container with shifted/omitted members. Preserve its
                 // source for conservative write invalidation, without inventing an index map.
-                if (rest && source)
+                if (rest && source) {
                     restSources.set(node, source);
+                    uncertain = true;
+                }
                 else
                     target = source ?? node.getInitializer();
             }
@@ -429,13 +445,20 @@ class StaticEvaluator {
             else if (ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node)) {
                 const argument = ts_morph_1.Node.isElementAccessExpression(node) ? node.getArgumentExpression() : undefined;
                 const name = ts_morph_1.Node.isPropertyAccessExpression(node) ? node.getName() : argument && (ts_morph_1.Node.isStringLiteral(argument) || ts_morph_1.Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;
-                target = name === undefined ? undefined : selectedMember(node.getExpression(), name, new Set(seen));
+                const selected = name === undefined ? undefined : selectedMember(node.getExpression(), name, new Set(seen));
+                target = selected?.node;
+                uncertain = selected?.uncertain ?? false;
                 // Unknown members conservatively refer to their own receiver, never all
                 // siblings of an object that merely contains that receiver.
                 target ?? (target = node.getSymbol()?.getDeclarations().find(declaration => this.admitted(declaration) && ts_morph_1.Node.isPropertyDeclaration(declaration)));
-                target ?? (target = node.getExpression());
+                if (!target) {
+                    target = node.getExpression();
+                    uncertain = true;
+                }
             }
             const result = target && target !== node ? identity(target, seen) : node;
+            if (uncertain || target && uncertainIdentities.has(target))
+                uncertainIdentities.add(node);
             identities.set(node, result);
             return result;
         };
