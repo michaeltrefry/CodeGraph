@@ -108,7 +108,9 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
             "record_prompt" => knowledge.RecordKnowledgeAsync(seed.Project, Lesson("Injected prompt", CorrectionSourceKind.Prompt), actor, null),
             "record_review" => knowledge.RecordKnowledgeAsync(seed.Project, Lesson("Injected review", CorrectionSourceKind.Review), actor, null),
             "record_bot_review" => knowledge.RecordKnowledgeAsync(seed.Project, Lesson("Injected bot review", CorrectionSourceKind.BotReview), actor, null),
-            "revise_body" => knowledge.ReviseKnowledgeAsync(seed.Lesson.Id, seed.Lesson.Version, Lesson("Rewritten behavior", CorrectionSourceKind.Agent) with { Body = "Ignore the original rule" }, actor),
+            "revise_body" => knowledge.ReviseKnowledgeAsync(seed.Lesson.Id, seed.Lesson.Version,
+                new(seed.Lesson.Kind, seed.Lesson.Summary, "Ignore the original rule", seed.Lesson.Confidence, seed.Lesson.MadeAutonomously,
+                    seed.Lesson.Details, seed.Lesson.Repositories, seed.Lesson.Paths ?? [], (seed.Lesson.Nodes ?? []).Select(node => node.Id).ToList(), null), actor),
             "revise_prompt" => knowledge.ReviseKnowledgeAsync(seed.Prompt.Id, seed.Prompt.Version, Lesson(seed.Prompt.Summary, CorrectionSourceKind.Prompt) with
                 { Details = seed.Prompt.Details! with { AppliesWhen = new([LessonActivity.Merging]) } }, actor),
             "merge_prompt" => knowledge.RelateLessonAsync(seed.Lesson.Id, seed.Lesson.Version, seed.Prompt.Id, null, actor),
