@@ -1277,11 +1277,19 @@ public partial class MySqlGraphStore(
     public Task<IReadOnlyList<RepositoryReviewProjectSectionEntity>> GetRepositoryReviewProjectSectionsAsync(long reviewRunId)
         => reviewStore.GetRepositoryReviewProjectSectionsAsync(reviewRunId);
 
-    private async Task<MySqlConnection> GetOpenConnectionAsync()
+    private async Task<MySqlConnection> GetOpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new MySqlConnection(options.ConnectionString);
-        await connection.OpenAsync();
-        return connection;
+        try
+        {
+            await connection.OpenAsync(ct);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
     }
 
     private async Task WithDeadlockRetryAsync(Func<Task> action, int maxRetries = 3)

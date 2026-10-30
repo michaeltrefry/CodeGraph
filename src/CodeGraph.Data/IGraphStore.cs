@@ -13,6 +13,12 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         string repository,
         CancellationToken ct = default);
 
+    /// <summary>Acquires the same repository locks as the single-lock API in deterministic
+    /// order, holding them until disposal. Providers share one connection/session per group.</summary>
+    Task<IAsyncDisposable> AcquireRepositoryIndexingLocksAsync(
+        IReadOnlyCollection<string> repositories,
+        CancellationToken ct = default);
+
     // Repositories
     Task UpsertRepositoryAsync(RepositoryEntity repository);
     /// <summary>

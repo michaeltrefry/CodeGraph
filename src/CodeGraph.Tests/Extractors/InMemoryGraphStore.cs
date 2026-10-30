@@ -37,22 +37,42 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Exception? IncrementalReplacementFailure { get; set; }
     public Exception? IndexingLockFailure { get; set; }
 
-    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
-        string repository,
-        CancellationToken ct = default)
+    public Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(string repository, CancellationToken ct = default) =>
+        AcquireRepositoryIndexingLocksAsync([repository], ct);
+
+    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLocksAsync(
+        IReadOnlyCollection<string> repositories, CancellationToken ct = default)
     {
-        if (IndexingLockFailure is not null)
-            throw IndexingLockFailure;
-        var repositoryLock = RepositoryIndexingLocks.GetOrAdd(repository, _ => new SemaphoreSlim(1, 1));
-        await repositoryLock.WaitAsync(ct);
-        return new InMemoryIndexingLock(repositoryLock);
+        ct.ThrowIfCancellationRequested();
+        if (IndexingLockFailure is not null) throw IndexingLockFailure;
+        var acquired = new List<SemaphoreSlim>();
+        try
+        {
+            // The existing in-memory single-lock namespace is case-insensitive.
+            foreach (var repository in repositories.Order(StringComparer.OrdinalIgnoreCase).ThenBy(name => name, StringComparer.Ordinal)
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var repositoryLock = RepositoryIndexingLocks.GetOrAdd(repository, _ => new SemaphoreSlim(1, 1));
+                await repositoryLock.WaitAsync(ct);
+                acquired.Add(repositoryLock);
+            }
+            ct.ThrowIfCancellationRequested();
+            return new InMemoryIndexingLock(acquired);
+        }
+        catch
+        {
+            foreach (var repositoryLock in acquired.AsEnumerable().Reverse()) repositoryLock.Release();
+            throw;
+        }
     }
 
-    private sealed class InMemoryIndexingLock(SemaphoreSlim repositoryLock) : IAsyncDisposable
+    private sealed class InMemoryIndexingLock(IReadOnlyList<SemaphoreSlim> repositoryLocks) : IAsyncDisposable
     {
+        private int _disposed;
         public ValueTask DisposeAsync()
         {
-            repositoryLock.Release();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                foreach (var repositoryLock in repositoryLocks.Reverse()) repositoryLock.Release();
             return ValueTask.CompletedTask;
         }
     }
