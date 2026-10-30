@@ -189,11 +189,53 @@ public sealed class DreamProposalsMariaDbTests(WorkDatabase db) : IClassFixture<
         async Task<(int Status, JsonElement Body)> Review(object body) => await host.SendAsync(HttpMethod.Post, $"/api/work/knowledge/dream-proposals/{proposal.Proposal!.Id}/review", JsonSerializer.Serialize(body, WorkJson.Options), token);
         (await Review(new { project = key, expected_version = 1, action = "reject" })).Status.ShouldBe(400);
         var (status, accepted) = await Review(new { project = key, expected_version = 1, action = "accept" });
-        status.ShouldBe(200); accepted.GetProperty("proposal").GetProperty("draft").GetString().ShouldContain("Regression");
+        status.ShouldBe(200); accepted.GetProperty("proposal").GetProperty("draft").GetString()!.ShouldContain("Regression");
         accepted.GetProperty("proposal").GetProperty("reviewed_by").GetProperty("name").GetString().ShouldBe("draft-reviewer");
         var unchanged = (await db.Store.GetKnowledgeAsync(id, false))!;
         unchanged.Version.ShouldBe(target.Version); (unchanged.Lesson!.AddressedBy ?? []).ShouldBeEmpty();
         (await Review(new { project = key, expected_version = 1, action = "accept" })).Status.ShouldBe(409);
+        using (var scope = DreamExecutionScope.Begin(run, project, "scripted"))
+            proposal = await db.Store.CreateDreamProposalAsync(project, run, new DreamProposalSpec(DreamProposalAction.HookDraft, id, target.Version, "A hook could catch it", "One recurrence while served", [new(DreamEvidenceKind.Entry, id.ToString())], Draft: "#!/bin/sh\nexit 1"), scope.Actor);
+        var (rejectStatus, rejected) = await Review(new { project = key, expected_version = 1, action = "reject", reason = "The hook would block unrelated work" });
+        rejectStatus.ShouldBe(200); rejected.GetProperty("proposal").GetProperty("review_reason").GetString().ShouldBe("The hook would block unrelated work");
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(target.Version);
+    }
+
+    [Fact]
+    public async Task Dreamer_cannot_resolve_review_actions_through_the_shared_service()
+    {
+        var (key, project) = await Project("DPF"); var target = await Fact(key, "Forbidden operations target"); var run = await RunId(project);
+        using var scope = DreamExecutionScope.Begin(run, project, "scripted");
+        var requests = new (string Tool, object Args)[] {
+            (WorkTools.DreamReview, new { project = key, id = Guid.NewGuid(), expected_version = 1, action = "accept" }),
+            (WorkTools.DreamReview, new { project = key, id = Guid.NewGuid(), expected_version = 1, action = "reject", reason = "No" }),
+            (WorkTools.Promote, new { id = target.Id, expected_version = 1, action = "approve" }),
+            (WorkTools.Promote, new { id = target.Id, expected_version = 1, action = "reject", reason = "No" }),
+            (WorkTools.Promote, new { id = target.Id, expected_version = 1, action = "addressed_by", addressed_by = new { kind = "test", name = "fake" } }),
+            (WorkTools.Challenge, new { resolve = new { challenge_id = Guid.NewGuid(), expected_version = 1, outcome = "uphold", reason = "No" } }),
+            (WorkTools.Record, new { acknowledge = new { id = target.Id, expected_version = 1 } })
+        };
+        foreach (var (tool, args) in requests)
+            (await Should.ThrowAsync<WorkException>(() => db.Service.ExecuteAsync(tool, JsonSerializer.SerializeToElement(args, WorkJson.Options), scope.Actor))).Code.ShouldBe(WorkErrorCodes.Forbidden);
+        (await db.Store.GetKnowledgeAsync(target.Id, false))!.Version.ShouldBe(target.Version);
+    }
+
+    [Fact]
+    public async Task Rejection_uses_graph_highwater_to_distinguish_new_nodes_from_old_uncited_nodes()
+    {
+        var (key, project) = await Project("DPG", "codegraph"); var target = await Fact(key, "Node-backed retirement candidate");
+        await using var c = new MySqlConnection(db.ConnectionString);
+        await c.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name) VALUES('codegraph','Method','Prior','DreamEvidence.Prior')");
+        var oldNode = await c.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE qualified_name='DreamEvidence.Prior'");
+        var run = await RunId(project); DreamProposalResult proposal;
+        using (var scope = DreamExecutionScope.Begin(run, project, "scripted")) proposal = await db.Store.CreateDreamProposalAsync(project, run, Retire(target), scope.Actor);
+        await db.Store.ReviewDreamProposalAsync(project, proposal.Proposal!.Id, 1, DreamReviewAction.Reject, "Need new source evidence", new WorkActor("reviewer"));
+        using (var scope = DreamExecutionScope.Begin(run, project, "scripted"))
+            (await db.Store.CreateDreamProposalAsync(project, run, Retire(target, new DreamEvidenceInput(DreamEvidenceKind.GraphNode, oldNode.ToString())), scope.Actor)).Suppressed.ShouldBeTrue();
+        await c.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name) VALUES('codegraph','Method','New','DreamEvidence.New')");
+        var newNode = await c.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE qualified_name='DreamEvidence.New'");
+        using (var scope = DreamExecutionScope.Begin(run, project, "scripted"))
+            (await db.Store.CreateDreamProposalAsync(project, run, Retire(target, new DreamEvidenceInput(DreamEvidenceKind.GraphNode, newNode.ToString())), scope.Actor)).Created.ShouldBeTrue();
     }
 
 }

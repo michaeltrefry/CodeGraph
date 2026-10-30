@@ -5,6 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodeGraph.Api.Middleware;
 using CodeGraph.Data;
+using CodeGraph.Models.Work;
+using Dapper;
+using MySqlConnector;
 using CodeGraph.Mcp.Hub;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Work;
@@ -179,6 +182,30 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
 
         call.IsError.ShouldBeTrue();
         call.Result.ValueKind.ShouldBe(JsonValueKind.Null);
+    }
+
+
+    [Fact]
+    public async Task Dream_proposals_are_reviewable_with_attribution_over_the_real_MCP_endpoint()
+    {
+        var key = await db.NewProjectAsync("DMC");
+        var project = (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("id").GetGuid();
+        var created = await db.CallAsync(WorkTools.Record, new { project = key, entry = new { kind = "fact", summary = "A fact to retire after review" } });
+        var entry = created.GetProperty("entry"); var id = entry.GetProperty("id").GetGuid(); var runId = Guid.NewGuid();
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("INSERT INTO dreaming_runs(id,project_id,status,started_at,run_json) VALUES(@runId,@project,'running',UTC_TIMESTAMP(6),'{}')", new { runId, project });
+        DreamProposalResult proposal;
+        using (var scope = DreamExecutionScope.Begin(runId, project, "scripted"))
+            proposal = await db.Store.CreateDreamProposalAsync(project, runId, new DreamProposalSpec(DreamProposalAction.Retract, id, entry.GetProperty("version").GetInt64(), "The source entry point was removed", "One source entry", [new(DreamEvidenceKind.Entry, id.ToString())]), scope.Actor);
+        using var host = await StartHostAsync(); var reviewer = await Client.ConnectAsync(host, "mcp-reviewer");
+        (await reviewer.ListToolsAsync()).ShouldContain(WorkTools.DreamReview);
+        var queue = (await reviewer.CallAsync(WorkTools.ReviewQueue, new { project = key })).Result;
+        queue.GetProperty("items").EnumerateArray().Single(row => row.GetProperty("kind").GetString() == "dream_proposal").GetProperty("proposal").GetProperty("id").GetGuid().ShouldBe(proposal.Proposal!.Id);
+        var refused = await reviewer.CallAsync(WorkTools.DreamReview, new { project = key, id = proposal.Proposal.Id, expected_version = 1, action = "reject" });
+        refused.IsError.ShouldBeTrue(); refused.Result.GetProperty("code").GetString().ShouldBe("invalid_argument");
+        var accepted = await reviewer.CallAsync(WorkTools.DreamReview, new { project = key, id = proposal.Proposal.Id, expected_version = 1, action = "accept" });
+        accepted.IsError.ShouldBeFalse(); accepted.Result.GetProperty("proposal").GetProperty("reviewed_by").GetProperty("name").GetString().ShouldBe("mcp-reviewer");
+        (await db.Store.GetKnowledgeAsync(id, true))!.Revisions!.First().Author.Name.ShouldBe("mcp-reviewer");
     }
 
     private Task<IHost> StartHostAsync(IWorkService? service = null) =>

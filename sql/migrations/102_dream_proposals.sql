@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS dream_proposals (
     review_reason VARCHAR(1000) NULL,
     reviewed_by_json TEXT NULL,
     reviewed_at DATETIME(6) NULL,
+    rejection_graph_head BIGINT NULL,
     KEY ix_dream_proposal_queue (project_id, status, created_at),
     KEY ix_dream_proposal_rejection (project_id, target_id, action, status, reviewed_at),
     CONSTRAINT fk_dream_proposal_project FOREIGN KEY (project_id) REFERENCES work_projects(id) ON DELETE CASCADE,

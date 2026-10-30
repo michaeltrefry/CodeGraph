@@ -33,11 +33,19 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
         public string? ReviewReason { get; init; }
         public string? ReviewedByJson { get; init; }
         public DateTime? ReviewedAt { get; init; }
+        public long? RejectionGraphHead { get; init; }
     }
 
     private static bool IsDreamer(WorkActor actor) => actor.Kind == WorkActor.SystemKind && actor.Name == "dreamer";
-    private static string ProposalJson<T>(T value) => JsonSerializer.Serialize(value, WorkJson.Options);
-    private static T ProposalRead<T>(string json) => JsonSerializer.Deserialize<T>(json, WorkJson.Options)!;
+    // Persist constructor nulls as well: the public wire options omit them, but KnowledgeSpec's
+    // nullable constructor fields are required when the stored draft is read back for acceptance.
+    private static readonly JsonSerializerOptions ProposalStorageOptions = new(WorkJson.Options)
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
+        RespectRequiredConstructorParameters = false
+    };
+    private static string ProposalJson<T>(T value) => JsonSerializer.Serialize(value, ProposalStorageOptions);
+    private static T ProposalRead<T>(string json) => JsonSerializer.Deserialize<T>(json, ProposalStorageOptions)!;
     private static DreamProposalView ProposalView(ProposalRow row) => new(row.Id, row.ProjectId, row.RunId,
         ParseName<DreamProposalAction>(row.Action), row.TargetId, row.TargetVersion, row.Rationale, row.Prevalence,
         ProposalRead<List<DreamEvidenceView>>(row.EvidenceJson), ParseName<DreamProposalStatus>(row.Status), row.Version,
@@ -73,11 +81,17 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
                 throw WorkException.Invalid("Changes to prompt-sourced lessons require an open challenge, not a proposal.");
             var draft = spec.Action is DreamProposalAction.SkillDraft or DreamProposalAction.HookDraft or DreamProposalAction.TestDraft;
             if ((spec.Action == DreamProposalAction.Supersede) != (spec.Replacement is not null) ||
-                (spec.Action == DreamProposalAction.Merge) != (spec.Other is not null && spec.OtherVersion is not null) ||
+                (spec.Action == DreamProposalAction.Merge ? spec.Other is null || spec.OtherVersion is null : spec.Other is not null || spec.OtherVersion is not null) ||
                 draft != !string.IsNullOrWhiteSpace(spec.Draft) || spec.Draft?.Length > 100_000)
                 throw WorkException.Invalid("supersede requires replacement; merge requires other and other_version; draft actions require draft text only.");
             if (spec.Replacement is { } replacement && (replacement.Supersedes is not null || replacement.SameAs is not null || replacement.Contradicts is not null))
                 throw WorkException.Invalid("A proposal replacement cannot embed lifecycle actions.");
+            if (spec.Replacement is { } next)
+            {
+                await ResolveScopeAsync(connection, tx, project, next.Repositories ?? [], next.Nodes, ct);
+                if (next.ItemId is { } item && await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition("SELECT project_id FROM work_items WHERE id=@item", new { item }, tx, cancellationToken: ct)) != projectId)
+                    throw WorkException.Invalid("A replacement's item must belong to the proposal's project.");
+            }
             if (spec.Other is { } other)
             {
                 var destination = await ReadKnowledgeRowAsync(connection, tx, other, ct);
@@ -100,12 +114,16 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
             if (rejected is not null)
             {
                 var prior = ProposalRead<List<DreamEvidenceView>>(rejected.EvidenceJson);
-                // No model-provided dates or prose participate. Reordered/reworded evidence and old
-                // previously uncited rows do not bypass the rejection. Graph-only new IDs have no
-                // creation timestamp, so require a changed previously cited node or dated evidence.
-                if (!evidence.Any(ev => ev.ObservedAt > Utc(rejected.ReviewedAt!.Value) &&
-                    !prior.Any(old => old.Kind == ev.Kind && old.Id == ev.Id && old.Fingerprint == ev.Fingerprint) &&
-                    (ev.Kind != DreamEvidenceKind.GraphNode || prior.Any(old => old.Kind == ev.Kind && old.Id == ev.Id))))
+                // Evidence dates and graph high-water marks come from the database. Rewording
+                // rationale, reordering refs, or adding pre-existing uncited evidence cannot reset a rejection.
+                bool IsNewEvidence(DreamEvidenceView ev)
+                {
+                    if (prior.Any(old => old.Kind == ev.Kind && old.Id == ev.Id && old.Fingerprint == ev.Fingerprint)) return false;
+                    if (ev.Kind == DreamEvidenceKind.GraphNode && !prior.Any(old => old.Kind == ev.Kind && old.Id == ev.Id))
+                        return long.TryParse(ev.Id, out var node) && node > rejected.RejectionGraphHead.GetValueOrDefault(long.MaxValue);
+                    return ev.ObservedAt > Utc(rejected.ReviewedAt!.Value);
+                }
+                if (!evidence.Any(IsNewEvidence))
                 { await tx.CommitAsync(ct); return new DreamProposalResult(false, true, ProposalView(rejected)); }
             }
             var id = Guid.NewGuid(); var now = Now();
@@ -127,6 +145,8 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
 
     private static async Task<DreamEvidenceView> ResolveDreamEvidenceAsync(MySqlConnection c, MySqlTransaction tx, Guid projectId, DreamEvidenceInput input, CancellationToken ct)
     {
+        if (input.Kind == DreamEvidenceKind.GraphNode ? !long.TryParse(input.Id, out var nodeId) || nodeId <= 0 : !Guid.TryParse(input.Id, out _))
+            throw WorkException.Invalid("Evidence id must be a positive graph node id or a stored entry/event/item/review UUID.");
         string sql = input.Kind switch
         {
             DreamEvidenceKind.Entry => "SELECT SHA2(CONCAT_WS('|',kind,status,summary,body,details_json),256) fingerprint,updated_at observed_at FROM knowledge_entries WHERE id=@id AND project_id=@projectId",
@@ -148,7 +168,16 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
             throw WorkException.Invalid("The proposal must belong to an active dreaming run in this project.");
     }
 
-    public Task<DreamReviewResult> ReviewDreamProposalAsync(Guid projectId, Guid id, long expectedVersion, DreamReviewAction action, string? reason, WorkActor actor, CancellationToken ct = default) =>
+    public async Task<DreamReviewResult> ReviewDreamProposalAsync(Guid projectId, Guid id, long expectedVersion, DreamReviewAction action, string? reason, WorkActor actor, CancellationToken ct = default)
+    {
+        var result = await ReviewDreamProposalCoreAsync(projectId, id, expectedVersion, action, reason, actor, ct);
+        if (result.Proposal.Action != DreamProposalAction.Supersede || result.Entry is not { } entry) return result;
+        // Match ordinary record's post-commit baseline adoption when a first index races acceptance.
+        await AdoptPendingAsync([entry.Id], ct);
+        return result with { Entry = await GetKnowledgeAsync(entry.Id, false, ct) ?? entry };
+    }
+
+    private Task<DreamReviewResult> ReviewDreamProposalCoreAsync(Guid projectId, Guid id, long expectedVersion, DreamReviewAction action, string? reason, WorkActor actor, CancellationToken ct) =>
         RunAsync([DreamProposalLockName, "codegraph_lesson_merges"], async c =>
         {
             DreamPolicy.Refuse(actor, "accept or reject proposals");
@@ -190,8 +219,10 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
                     // addressed_by change, or automatic challenge resolution is performed.
                 }
             }
-            await c.ExecuteAsync(new CommandDefinition("UPDATE dream_proposals SET status=@status,version=version+1,review_reason=@reason,reviewed_by_json=@actor,reviewed_at=@now WHERE id=@id",
-                new { id, status = action == DreamReviewAction.Accept ? "accepted" : "rejected", reason, actor = ProposalJson(actor), now }, tx, cancellationToken: ct));
+            long? graphHead = action == DreamReviewAction.Reject
+                ? await c.ExecuteScalarAsync<long>(new CommandDefinition("SELECT COALESCE(MAX(n.id),0) FROM nodes n JOIN work_project_repositories p ON p.repository_name=n.repository WHERE p.project_id=@projectId", new { projectId }, tx, cancellationToken: ct)) : null;
+            await c.ExecuteAsync(new CommandDefinition("UPDATE dream_proposals SET status=@status,version=version+1,review_reason=@reason,reviewed_by_json=@actor,reviewed_at=@now,rejection_graph_head=@graphHead WHERE id=@id",
+                new { id, status = action == DreamReviewAction.Accept ? "accepted" : "rejected", reason, actor = ProposalJson(actor), now, graphHead }, tx, cancellationToken: ct));
             var result = await c.QuerySingleAsync<ProposalRow>(new CommandDefinition("SELECT * FROM dream_proposals WHERE id=@id", new { id }, tx, cancellationToken: ct));
             await tx.CommitAsync(ct);
             return new DreamReviewResult(ProposalView(result), entry);
