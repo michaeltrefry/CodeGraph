@@ -396,13 +396,13 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         };
         var model = new ScriptedModel(
             new(null, [Call("valid", "dream_record", NewFact("Within budget"))], 3, 2),
-            new(null, [Call("late", "dream_record", NewFact("Must not be written"))], 5, 10));
+            new(null, [Call("late", "dream_record", NewFact("Must not be written"))], 127990, 5));
 
-        var run = await (await ServiceAsync(model, maxTokens: 20)).RunAsync(project, "run_now", Human);
+        var run = await (await ServiceAsync(model, maxTokens: 128000)).RunAsync(project, "run_now", Human);
 
         run.Status.ShouldBe("budget_exhausted", run.Reason);
-        (run.InputTokens + run.OutputTokens).ShouldBe(20);
-        model.Requests.Select(request => request.MaxTokens).ShouldBe([20, 15]);
+        (run.InputTokens + run.OutputTokens).ShouldBe(128000);
+        model.Requests.Select(request => request.MaxTokens).ShouldBe([8192, 8192]);
         run.Actions.Count.ShouldBe(1);
         run.Actions[0].Result.TryGetProperty("error", out _).ShouldBeFalse();
         await using var connection = new MySqlConnection(db.ConnectionString);
@@ -410,6 +410,24 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
             .ShouldContain("Within budget");
         (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM knowledge_entries WHERE project_id=@project AND summary='Must not be written'", new { project })).ShouldBe(0);
         (await runs.GetRunAsync(project, run.Id))!.Actions.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task A_budget_smaller_than_the_input_reservation_makes_no_model_call_or_write()
+    {
+        var project = await ProjectAsync();
+        await RecordAsync(project, "A real signal which cannot fit a twenty token run");
+        var model = new ScriptedModel(Response());
+        var run = await (await ServiceAsync(model, maxTokens: 20)).RunAsync(project, "run_now", Human);
+
+        run.Status.ShouldBe("budget_exhausted", run.Reason);
+        model.Requests.ShouldBeEmpty();
+        run.Actions.ShouldBeEmpty();
+        run.InputTokens.ShouldBe(0);
+        run.OutputTokens.ShouldBe(0);
+        run.EstimatedCost.ShouldBe(0);
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM knowledge_entries WHERE project_id=@project", new { project })).ShouldBe(1);
     }
 
     [Fact]
@@ -494,7 +512,7 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         return (project, stale);
     }
 
-    private async Task<DreamingService> ServiceAsync(ScriptedModel model, int maxTokens = 2000)
+    private async Task<DreamingService> ServiceAsync(ScriptedModel model, int maxTokens = 128000)
     {
         var service = new DreamingService(runs, db.Store, db.Service, model, sources, db.Clock);
         await service.SetSettingsAsync(new(Enabled: true, DefaultProvider: "scripted", DefaultModel: "scripted", MaxTurns: 12,
