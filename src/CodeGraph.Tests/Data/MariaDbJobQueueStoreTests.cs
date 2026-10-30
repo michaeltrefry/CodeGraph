@@ -248,7 +248,7 @@ public class MariaDbJobQueueStoreTests
             async Task ApplySeed()
             {
                 foreach (var statement in MariaDbMigrationRunner.SplitStatements(script))
-                    await db.Database.ExecuteSqlRawAsync(statement);
+                    await db.Database.GetDbConnection().ExecuteAsync(statement);
             }
             await ApplySeed();
             await ApplySeed();
@@ -259,7 +259,7 @@ public class MariaDbJobQueueStoreTests
             schedule.TimeZoneId.ShouldBe("UTC");
             await db.Database.ExecuteSqlRawAsync("""
                 UPDATE job_schedules SET name = 'operator-retention', is_enabled = FALSE,
-                    args_json = '{"retentionDays":7}', cron_expression = '0 2 * * 1'
+                    args_json = JSON_OBJECT('retentionDays',7), cron_expression = '0 2 * * 1'
                 """);
             await ApplySeed();
             var preserved = (await db.JobSchedules.AsNoTracking().ToListAsync()).Single();
