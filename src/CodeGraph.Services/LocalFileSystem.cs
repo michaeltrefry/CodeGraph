@@ -23,6 +23,8 @@ public class LocalFileSystem : IFileSystem
             ? Directory.EnumerateDirectories(path, "*", new EnumerationOptions { IgnoreInaccessible = true })
             : [];
 
+    public Stream OpenRead(string path) => File.OpenRead(path);
+
     public string ReadAllText(string path) => File.ReadAllText(path);
 
     public Task<string> ReadAllTextAsync(string path, CancellationToken ct = default)

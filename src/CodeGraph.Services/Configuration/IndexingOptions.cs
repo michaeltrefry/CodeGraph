@@ -23,6 +23,9 @@ public class IndexingOptions
     /// </summary>
     public int MaxFileSizeKb { get; set; } = 512;
 
+    /// <summary>Total decoded text budget (KB) shared by native endpoint and Tauri analysis per run.</summary>
+    public int MaxRegistrationAnalysisTextKb { get; set; } = 64 * 1024;
+
     /// <summary>
     /// Per-extension size limits (KB) that replace <see cref="MaxFileSizeKb"/>. Swift defaults to
     /// 2048: generated Swift (e.g. a 714 KB, ~240-type DTO file) is legitimate code, and

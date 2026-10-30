@@ -70,7 +70,8 @@ public sealed class ExtractionVersionCatalog
     /// complete-output preservation and component callable ownership impact traversal.
     /// 6 (sc-27972): native endpoint/Tauri reconciliation and local/cross-repository HTTP binding.
     /// 7 (sc-27972): scoped callable-edge admission and case-insensitive analyzer version coverage.
-    public const int PipelineVersion = 7;
+    /// 8: bounded native registration reads and language-specific analyzer case selection.
+    public const int PipelineVersion = 8;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];
@@ -169,7 +170,7 @@ public sealed class ExtractionVersionCatalog
 
         if (_solutionAnalyzer is not null && Covers(SolutionAnalyzerExtensions, extension))
             Append(version, _solutionAnalyzer.GetType().Name, _solutionAnalyzer.ExtractionVersion);
-        if (_typeScriptAnalyzer is not null && Covers(TypeScriptAnalyzerExtensions, extension))
+        if (_typeScriptAnalyzer is not null && TypeScriptAnalyzerExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
             Append(version, _typeScriptAnalyzer.GetType().Name, _typeScriptAnalyzer.ExtractionVersion);
         if (_rustAnalyzer is not null && Covers(RustAnalyzerExtensions, extension))
             Append(version, _rustAnalyzer.GetType().Name, _rustAnalyzer.ExtractionVersion);
@@ -203,7 +204,7 @@ public sealed class ExtractionVersionCatalog
     }
 
     private static bool Covers(string[] extensions, string extension) =>
-        extensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+        extensions.Contains(extension, StringComparer.Ordinal);
 
     private static void Append(StringBuilder version, string component, string componentVersion) =>
         version.Append(';').Append(component).Append('=').Append(componentVersion);

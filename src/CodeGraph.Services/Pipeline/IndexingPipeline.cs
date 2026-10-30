@@ -730,15 +730,16 @@ public partial class IndexingPipeline
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
+        var registrationSources = new RegistrationSourceReader(_fileSystem, _options);
         IReadOnlyList<string> endpointSlices = hasBackendEndpointSources
             ? await PrepareBackendEndpointsAsync(repositoryName, rootPath, context, buffer,
-                successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, ct)
+                successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, registrationSources, ct)
             : [];
         typeScriptReplacementPaths.AddRange(endpointSlices);
         IReadOnlyList<string> tauriSlices = hasRustSources || hasTypeScriptSources || typeScriptScope.Any(IsTauriConfiguration)
             ? await PrepareTauriBindingsAsync(repositoryName, rootPath, typeScriptScope, buffer,
                 successfullyProcessedFiles.Concat(typeScriptProcessedFiles).ToHashSet(StringComparer.OrdinalIgnoreCase),
-                deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, ct)
+                deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, registrationSources, ct)
             : [];
         typeScriptReplacementPaths.AddRange(tauriSlices);
         foreach (var path in tauriSlices.Where(path => _extensions.IsSupportedExtension(Path.GetExtension(path)) || IsTypeScriptPath(path)))
@@ -966,7 +967,8 @@ public partial class IndexingPipeline
             .Select(entry => (Extension: entry.Key.ToLowerInvariant(), Limit: entry.Value))
             .OrderBy(entry => entry.Extension, StringComparer.Ordinal)
             .Select(entry => $"{entry.Extension}={entry.Limit}")
-            .Prepend($"*={_options.MaxFileSizeKb}"));
+            .Prepend($"*={_options.MaxFileSizeKb}")
+            .Append($"registration-text={_options.MaxRegistrationAnalysisTextKb}"));
 
     private const string CargoManifestFileName = "Cargo.toml";
 

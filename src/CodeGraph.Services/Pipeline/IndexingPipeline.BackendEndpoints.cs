@@ -13,24 +13,45 @@ public partial class IndexingPipeline
     // supply the same existing callable graph, while this pass only adds routes and handlers.
     private async Task<IReadOnlyList<string>> PrepareBackendEndpointsAsync(
         string repository, string root, ExtractorContext context, GraphBuffer buffer,
-        HashSet<string> processed, IReadOnlyCollection<string> deleted, bool incremental, CancellationToken ct)
+        HashSet<string> processed, IReadOnlyCollection<string> deleted, bool incremental, RegistrationSourceReader sourceReader, CancellationToken ct)
     {
-        var storedRoutes = incremental
-            ? (await _store.FindNodesByLabelAsync(repository, NodeLabel.Route, int.MaxValue))
-                .Where(node => TypeScriptNodeText(node.Properties.GetValueOrDefault("semantic_owner")) == EndpointOwner).ToList()
-            : [];
+        // Prior ownership also protects manual full rebuilds from silently dropping an oversized source.
+        var storedRoutes = (await _store.FindNodesByLabelAsync(repository, NodeLabel.Route, int.MaxValue))
+            .Where(node => TypeScriptNodeText(node.Properties.GetValueOrDefault("semantic_owner")) == EndpointOwner).ToList();
         var oldPaths = storedRoutes.Where(node => node.FilePath is not null)
             .Select(node => NormalizeRelativePath(node.FilePath!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var protectedPaths = new HashSet<string>(oldPaths, StringComparer.OrdinalIgnoreCase);
+        var storedEdges = new List<PendingEdge>();
+        foreach (var batch in storedRoutes.Select(node => node.Id).Chunk(500))
+        {
+            var rows = await _store.FindEdgesBySourceBatchAsync(batch, [EdgeType.HANDLES]);
+            var targetIds = rows.Select(edge => edge.TargetId).Distinct().ToArray();
+            var targets = await _store.FindNodesByIdBatchAsync(targetIds);
+            var sources = storedRoutes.ToDictionary(node => node.Id);
+            foreach (var target in targets.Values)
+                if (target.FilePath is { } path) protectedPaths.Add(NormalizeRelativePath(path));
+            storedEdges.AddRange(rows.Where(edge => sources.ContainsKey(edge.SourceId) && targets.ContainsKey(edge.TargetId))
+                .Select(edge => new PendingEdge(sources[edge.SourceId].QualifiedName, targets[edge.TargetId].QualifiedName, edge.Type, edge.Properties)));
+        }
         var registrations = new List<(string Path, string Content, IBackendEndpointExtractor Extractor)>();
         foreach (var fullPath in DiscoverPaths(root, "**/*.rs", "**/*.go"))
         {
+            ct.ThrowIfCancellationRequested();
             var relative = NormalizeRelativePath(Path.GetRelativePath(root, fullPath));
             if (_extensions.ExtractorFor(Path.GetExtension(fullPath)) is not IBackendEndpointExtractor extractor)
             {
                 if (oldPaths.Contains(relative)) throw new InvalidOperationException($"Backend registration extractor unavailable for {relative}; retaining prior graph.");
                 continue;
             }
-            var source = _fileSystem.ReadAllText(fullPath);
+            var admitted = await sourceReader.ReadAsync(fullPath, ct);
+            if (admitted is null)
+            {
+                if (protectedPaths.Contains(relative))
+                    throw new InvalidOperationException($"Backend registration analysis incomplete: previously owned source {relative} exceeds its text limit; retaining prior graph and hashes.");
+                _logger.LogWarning("Skipping oversized backend registration source {Path}", relative);
+                continue;
+            }
+            var source = admitted.Content;
             if (oldPaths.Contains(relative) || extractor.MayContainBackendEndpoints(Path.GetExtension(fullPath), source))
                 registrations.Add((fullPath, source, extractor));
         }
@@ -74,16 +95,6 @@ public partial class IndexingPipeline
             nodes.Add(first with { Properties = properties });
             edges.RemoveAll(edge => edge.SourceQN == group.Key);
         }
-        var storedEdges = new List<PendingEdge>();
-        foreach (var batch in storedRoutes.Select(node => node.Id).Chunk(500))
-        {
-            var rows = await _store.FindEdgesBySourceBatchAsync(batch, [EdgeType.HANDLES]);
-            var targetIds = rows.Select(edge => edge.TargetId).Distinct().ToArray();
-            var targets = await _store.FindNodesByIdBatchAsync(targetIds);
-            var sources = storedRoutes.ToDictionary(node => node.Id);
-            storedEdges.AddRange(rows.Where(edge => sources.ContainsKey(edge.SourceId) && targets.ContainsKey(edge.TargetId))
-                .Select(edge => new PendingEdge(sources[edge.SourceId].QualifiedName, targets[edge.TargetId].QualifiedName, edge.Type, edge.Properties)));
-        }
         var before = Signatures(repository, storedRoutes, storedEdges);
         var after = Signatures(repository, nodes, edges);
         var changed = before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase)
@@ -113,7 +124,9 @@ public partial class IndexingPipeline
                     var full = Path.Combine(root, relative);
                     if (_fileSystem.FileExists(full))
                     {
-                        buffer.AddFileHash(relative, Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(_fileSystem.ReadAllBytes(full))));
+                        var source = await sourceReader.ReadAsync(full, ct)
+                            ?? throw new InvalidOperationException($"Backend registration source {relative} exceeds its text limit; retaining prior graph and hashes.");
+                        buffer.AddFileHash(relative, source.Hash);
                         processed.Add(relative);
                     }
                 }

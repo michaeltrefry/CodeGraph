@@ -10,23 +10,38 @@ public partial class IndexingPipeline
     /// Tauri facts changed, restoring their other persisted facts when source was unchanged.</summary>
     private async Task<IReadOnlyList<string>> PrepareTauriBindingsAsync(string repository, string rootPath,
         IReadOnlyList<string> admittedScope, GraphBuffer buffer, IReadOnlySet<string> freshlyProcessedFiles,
-        IReadOnlySet<string> deletedFiles, bool incremental, CancellationToken ct)
+        IReadOnlySet<string> deletedFiles, bool incremental, RegistrationSourceReader sourceReader, CancellationToken ct)
     {
-        var oldEdges = incremental
-            ? await _store.FindEdgesByPropertyAsync(repository,
-                [EdgeType.CALLS, EdgeType.SUBSCRIBES, EdgeType.PUBLISHES, EdgeType.HANDLES], "extraction_owner", [TauriOperationAnalysis.Owner], ct)
-            : [];
+        // Inspect prior ownership even during full rebuilds: oversize is not proof of deletion.
+        var oldEdges = await _store.FindEdgesByPropertyAsync(repository,
+            [EdgeType.CALLS, EdgeType.SUBSCRIBES, EdgeType.PUBLISHES, EdgeType.HANDLES], "extraction_owner", [TauriOperationAnalysis.Owner], ct);
+        var oldPaths = oldEdges.SelectMany(edge => new[] { edge.SourceFilePath, edge.TargetFilePath,
+                TypeScriptNodeText(edge.Properties.GetValueOrDefault("extraction_source_file")) })
+            .OfType<string>().Where(path => path.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var configurations = admittedScope.Where(IsTauriConfiguration).ToList();
         if (configurations.Count == 0 && oldEdges.Count == 0) return [];
         var roots = configurations.Select(path => NormalizeRelativePath(Path.GetDirectoryName(path) ?? "")).ToList();
         bool InApp(string path) => roots.Any(root => root.Length == 0 || path.StartsWith(root + "/", StringComparison.Ordinal));
         var sources = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var path in admittedScope.Where(path => IsTauriConfiguration(path)
-                     || path.EndsWith("package.json", StringComparison.Ordinal) || path.EndsWith("Cargo.toml", StringComparison.Ordinal)
+                     || path.EndsWith("package.json", StringComparison.Ordinal) || path.EndsWith("Cargo.toml", StringComparison.Ordinal) && InApp(path)
                      || path.EndsWith(".rs", StringComparison.Ordinal) && InApp(path)))
         {
             ct.ThrowIfCancellationRequested();
-            try { sources[path] = _fileSystem.ReadAllText(Path.Combine(rootPath, path)); }
+            // Package directory identity is sufficient for frontend-root selection; its body is unused.
+            if (Path.GetFileName(path) == "package.json") { sources[path] = ""; continue; }
+            try
+            {
+                var source = await sourceReader.ReadAsync(Path.Combine(rootPath, path), ct);
+                if (source is null)
+                {
+                    if (IsTauriConfiguration(path) || Path.GetFileName(path) == "Cargo.toml" || oldPaths.Contains(path, StringComparer.OrdinalIgnoreCase))
+                        throw new InvalidOperationException($"Tauri analysis incomplete: required source {path} exceeds its text limit; prior graph and hashes are preserved.");
+                    _logger.LogWarning("Skipping oversized Tauri source {Path}", path);
+                    continue;
+                }
+                sources[path] = source.Content;
+            }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             { throw new InvalidOperationException($"Tauri analysis incomplete: could not read admitted source {path}; prior graph and hashes are preserved.", ex); }
         }
@@ -35,9 +50,6 @@ public partial class IndexingPipeline
         var candidatePaths = sources.Where(pair => pair.Key.EndsWith(".rs", StringComparison.Ordinal)
                 && (pair.Value.Contains("command", StringComparison.Ordinal) || pair.Value.Contains(".emit", StringComparison.Ordinal)))
             .Select(pair => pair.Key).ToList();
-        var oldPaths = oldEdges.SelectMany(edge => new[] { edge.SourceFilePath, edge.TargetFilePath,
-                TypeScriptNodeText(edge.Properties.GetValueOrDefault("extraction_source_file")) })
-            .OfType<string>().Where(path => path.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var lookupPaths = candidatePaths.Concat(oldPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var persistedNodes = new List<GraphNode>();
         if (incremental)

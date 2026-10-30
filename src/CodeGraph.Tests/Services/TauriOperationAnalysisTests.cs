@@ -269,7 +269,7 @@ public class TauriOperationAnalysisTests
     {
         var method = typeof(IndexingPipeline).GetMethod("PrepareTauriBindingsAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
         return await (Task<IReadOnlyList<string>>)method.Invoke(pipeline,
-            ["App", root, scope, buffer, new HashSet<string>(), new HashSet<string>(), incremental, CancellationToken.None])!;
+            ["App", root, scope, buffer, new HashSet<string>(), new HashSet<string>(), incremental, new RegistrationSourceReader(new LocalFileSystem(), new IndexingOptions()), CancellationToken.None])!;
     }
     private static void Write(string root, IReadOnlyDictionary<string, string> sources)
     {

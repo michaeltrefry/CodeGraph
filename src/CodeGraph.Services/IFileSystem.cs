@@ -18,6 +18,9 @@ public interface IFileSystem
     IEnumerable<string> EnumerateDirectories(string path) =>
         Directory.Exists(path) ? Directory.EnumerateDirectories(path) : [];
 
+    /// <summary>Opens a readable stream without materializing the file body.</summary>
+    Stream OpenRead(string path);
+
     string ReadAllText(string path);
 
     Task<string> ReadAllTextAsync(string path, CancellationToken ct = default);
