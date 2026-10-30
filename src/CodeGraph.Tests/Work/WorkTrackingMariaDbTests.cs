@@ -37,6 +37,40 @@ public sealed class WorkTrackingMariaDbTests(WorkDatabase db) : IClassFixture<Wo
     };
 
     [Fact]
+    public async Task Next_work_with_a_feature_hands_out_only_that_features_items()
+    {
+        var project = await db.NewProjectAsync("NF");
+        await db.CallAsync(WorkTools.CreateWork, new
+        {
+            project,
+            idempotency_key = "plan-nf",
+            plan = new
+            {
+                features = new object[] { new { @ref = "a", title = "A" }, new { @ref = "b", title = "B" } },
+                items = new object[]
+                {
+                    new { @ref = "a1", title = "A first", status = "ready", feature = "a", priority = "low" },
+                    new { @ref = "a2", title = "A second", status = "ready", feature = "a", priority = "low", blocked_by = new[] { "a1" } },
+                    new { @ref = "b1", title = "B urgent", status = "ready", feature = "b", priority = "critical" }
+                }
+            }
+        });
+
+        // B's critical item outranks A's, but the feature keeps the session in A.
+        Key((await db.CallAsync(WorkTools.NextWork, new { project, marker = "run-a", feature = $"{project}-F1" })).GetProperty("item")).ShouldBe($"{project}-1");
+        Key((await db.CallAsync(WorkTools.NextWork, new { project, marker = "run-any" })).GetProperty("item")).ShouldBe($"{project}-3");
+        // A's other item waits on the claimed one: nothing else is ready in A.
+        (await db.CallAsync(WorkTools.NextWork, new { project, marker = "run-a2", feature = $"{project}-F1" })).GetProperty("reason").GetString().ShouldBe("no_ready_work");
+
+        var item = await Should.ThrowAsync<WorkException>(() => db.CallAsync(WorkTools.NextWork, new { project, marker = "run-x", feature = $"{project}-1" }));
+        item.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        item.Message.ShouldContain("not a feature");
+        var other = await db.NewProjectAsync("NO");
+        var elsewhere = await Should.ThrowAsync<WorkException>(() => db.CallAsync(WorkTools.NextWork, new { project = other, marker = "run-y", feature = $"{project}-F1" }));
+        elsewhere.Message.ShouldContain("belongs to another project");
+    }
+
+    [Fact]
     public async Task A_plan_is_imported_in_one_call_and_an_item_is_driven_from_ready_to_complete_with_every_write_once_in_order_in_the_feed()
     {
         var project = await db.NewProjectAsync("PL", "sceneworks");
