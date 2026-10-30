@@ -16,7 +16,8 @@ public class JobCommandDispatcher(
     IngestConventionEmbeddingsJob ingestConventionEmbeddingsJob,
     PruneWorkSessionsJob pruneWorkSessionsJob,
     PruneWorkMessagesJob pruneWorkMessagesJob,
-    WorkImportJob workImportJob) : IJobCommandDispatcher
+    WorkImportJob workImportJob,
+    IndexerRunRetentionJob indexerRunRetentionJob) : IJobCommandDispatcher
 {
     public IReadOnlyList<string> GetSupportedJobTypes() => JobTypes.All;
 
@@ -35,6 +36,7 @@ public class JobCommandDispatcher(
             JobTypes.PruneWorkSessions => Serialize(new EmptyJobRequest()),
             JobTypes.PruneWorkMessages => Serialize(new EmptyJobRequest()),
             JobTypes.WorkImport => Serialize(DeserializeOrDefault<WorkImportJobRequest>(args)),
+            JobTypes.IndexerRunRetention => NormalizeRetentionArgs(args),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }
@@ -61,6 +63,7 @@ public class JobCommandDispatcher(
             JobTypes.PruneWorkSessions => pruneWorkSessionsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.PruneWorkMessages => pruneWorkMessagesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.WorkImport => workImportJob.ExecuteAsync(Deserialize<WorkImportJobRequest>(argsJson), ct),
+            JobTypes.IndexerRunRetention => indexerRunRetentionJob.ExecuteAsync(Deserialize<IndexerRunRetentionJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }
@@ -70,6 +73,13 @@ public class JobCommandDispatcher(
         if (string.IsNullOrWhiteSpace(executionKey))
             throw new InvalidOperationException("A durable execution key is required for publication-producing jobs.");
         return executionKey.Trim();
+    }
+
+    private static string NormalizeRetentionArgs(JsonElement? args)
+    {
+        var request = DeserializeOrDefault<IndexerRunRetentionJobRequest>(args);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(request.RetentionDays);
+        return Serialize(request);
     }
 
     private static T Deserialize<T>(string argsJson) where T : new()

@@ -110,6 +110,23 @@ public class JobCommandDispatcherTests
         result.Message.ShouldContain("failed");
     }
 
+    [Fact]
+    public async Task ExecuteAsync_DispatchesIndexerRetentionWithTypedValidatedArguments()
+    {
+        var retention = new RecordingIndexerRunRetentionService { Deleted = 17 };
+        var dispatcher = CreateDispatcher(indexerRetention: retention);
+        dispatcher.GetSupportedJobTypes().ShouldContain(JobTypes.IndexerRunRetention);
+        dispatcher.NormalizeArgsJson(JobTypes.IndexerRunRetention, null).ShouldContain("30");
+        using var custom = JsonDocument.Parse("""{"retentionDays":14}""");
+        var normalized = dispatcher.NormalizeArgsJson(JobTypes.IndexerRunRetention, custom.RootElement);
+        var result = await dispatcher.ExecuteAsync(JobTypes.IndexerRunRetention, normalized);
+        result.Success.ShouldBeTrue();
+        result.Message.ShouldBe("Indexer run retention deleted 17 rows.");
+        retention.Days.ShouldBe(14);
+        using var invalid = JsonDocument.Parse("""{"retentionDays":0}""");
+        Should.Throw<ArgumentOutOfRangeException>(() => dispatcher.NormalizeArgsJson(JobTypes.IndexerRunRetention, invalid.RootElement));
+    }
+
     private sealed class RecordingWorkImportRunner : Services.Work.Imports.IWorkImportRunner
     {
         public List<(string Source, string? Mode, string User)> Calls { get; } = [];
@@ -150,14 +167,16 @@ public class JobCommandDispatcherTests
             new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
             new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)),
             new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()),
-            new WorkImportJob());
+            new WorkImportJob(),
+            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()));
     }
 
     private static JobCommandDispatcher CreateDispatcher(
         RecordingAssistantRetentionCleanupService? cleanupService = null,
         RecordingIndexerClient? indexerClient = null,
         RecordingWorkMessageRetentionService? workMessageRetention = null,
-        Services.Work.Imports.IWorkImportRunner? importRunner = null)
+        Services.Work.Imports.IWorkImportRunner? importRunner = null,
+        RecordingIndexerRunRetentionService? indexerRetention = null)
     {
         indexerClient ??= new RecordingIndexerClient
         {
@@ -174,7 +193,8 @@ public class JobCommandDispatcherTests
             new IngestConventionEmbeddingsJob(new FakeConventionEmbeddingService()),
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
             new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
-            new WorkImportJob(importRunner));
+            new WorkImportJob(importRunner),
+            new IndexerRunRetentionJob(indexerRetention ?? new RecordingIndexerRunRetentionService()));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

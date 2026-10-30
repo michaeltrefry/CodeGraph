@@ -53,8 +53,10 @@ ALTER TABLE indexer_runs ADD COLUMN IF NOT EXISTS dismissed_at DATETIME(6) NULL;
 ALTER TABLE analysis_batches ADD COLUMN IF NOT EXISTS error TEXT NULL;
 ALTER TABLE analysis_batches ADD COLUMN IF NOT EXISTS dismissed_at DATETIME(6) NULL;
 ALTER TABLE job_schedules ADD COLUMN IF NOT EXISTS failure_dismissed_at DATETIME(3) NULL;
--- Also add independent unresolved failure time/error fields and durable indexer failure-resolution state.
--- Exact field names and indexes follow the smallest implementation that preserves the lifecycle below.
+ALTER TABLE indexer_runs ADD COLUMN IF NOT EXISTS failure_resolved_at DATETIME(6) NULL;
+ALTER TABLE indexer_runs ADD COLUMN IF NOT EXISTS queue_work_identity VARCHAR(64) NULL;
+ALTER TABLE job_schedules ADD COLUMN IF NOT EXISTS failure_at_utc DATETIME(3) NULL;
+ALTER TABLE job_schedules ADD COLUMN IF NOT EXISTS failure_error TEXT NULL;
 -- Start the queue empty rather than full of historical failures.
 UPDATE indexer_runs SET dismissed_at = UTC_TIMESTAMP(6) WHERE status = 'failed' AND dismissed_at IS NULL;
 UPDATE analysis_batches SET dismissed_at = UTC_TIMESTAMP(6) WHERE status = 'failed' AND dismissed_at IS NULL;
@@ -73,16 +75,7 @@ Add these to `IIndexerRunStore` (`src/CodeGraph.Data/IIndexerRunStore.cs`) and i
 
 **Queue query.** Use one SQL CTE (Dapper or raw SQL) that unions the sources, then run it twice: once with `ORDER BY ... LIMIT @limit` for the items, and once with `GROUP BY Status` for the counts. TC's version is in `MySqlGraphStore.IndexerRuns.cs` in `ai/tc.codegraphapi`.
 
-- **`indexer_runs`**, kind `indexer-run`:
-  ```sql
-  dismissed_at IS NULL AND (
-    status IN ('queued','running')
-    OR (status = 'failed' AND NOT EXISTS (
-        SELECT 1 FROM indexer_runs later
-        WHERE later.operation = r.operation AND /* same semantic work identity, see below */ TRUE
-          AND later.status = 'completed' AND later.id > r.id)))
-  ```
-  The sketch above requires a semantic matching predicate, not the literal TRUE placeholder. For simple operations compare operation and null-safe target. For `process_repositories`, compare the actual normalized repository set from args (order independent), not the display string such as "2 repositories". For `branch_overlay`, compare repository and requested ref/commit scope through the overlay record, not its unique overlay ID. Do not mutate execution targets or idempotency identities to implement presentation matching. Resolve an older failure only after a later matching run completes, and persist that resolution so deleting the successful row cannot resurrect it. Conservatively retain failures when legacy metadata is insufficient.
+- **`indexer_runs`**, kind `indexer-run`: include all queued/running rows and failed rows whose `dismissed_at` and `failure_resolved_at` are null. Resolve an older failed row when a later matching run is completed. For simple operations compare operation and null-safe target. For `process_repositories`, compare the actual normalized repository set from args (order independent), not the display string such as "2 repositories". For `branch_overlay`, compare repository and requested ref/commit scope through the overlay record, not its unique overlay ID. Store a SHA256 `queue_work_identity` for these special operations, independently of the execution target and submission hash, and backfill existing active/history rows before resolution/deletion. Conservatively retain failures when legacy metadata is insufficient. Persist resolution before pruning a successor, and keep any successful witness still needed by an older active run that could later fail.
   Return `next_attempt_at` and `attempt_count` too, so the UI can show "retrying at …". Use `error`, falling back to `message`.
 - **`analysis_batches`**, kind `analysis-batch`: rows that are not `completed`/`failed` show as `running`. Failed rows, not dismissed and not superseded by a later `completed` batch for the same `repo`, show as `failed`. Operation is `analysis-batch`, target is `repo`. Check the actual status values in `BatchAnalysisService`, and note that `execution_mode` exists.
 - **`job_schedules`**, kind `scheduled-job`: include leased non-indexer jobs and every unresolved schedule failure, including `Discover`, `ReIndexAll`, `ProcessBatchAnalysis`, `LinkAndDetect` and `DetectCommunities` submission failures. Suppress wrapper running rows when the durable run represents their execution, avoiding duplicate successful handoffs without hiding failures before handoff.
@@ -189,10 +182,10 @@ Run `dotnet build CodeGraph.sln`, `dotnet test CodeGraph.sln`, and the Angular t
 
 ## Shortcut slice plan
 
-One coherent delivery batch, with all slices tracked on a dedicated CodeGraph epic:
+Operational source: [epic 27994](https://app.shortcut.com/trefry/epic/27994). One coherent delivery batch:
 
-1. **Feature — Durable Admin job queue and failure lifecycle:** migration, semantic supersession, persistent resolution/dismissal, schedule retry/dispatch failures, queue API, Angular table and regression coverage.
-2. **Bug — Preserve analysis provider and item failures:** terminal provider states, truthful parent status/count/error, store/compatibility propagation and regressions. Integrates with slice 1's error columns.
-3. **Chore — Retain unresolved failures while pruning old indexer runs:** bounded service/job, seeded weekly schedule, editable retention days, docs and integration checks. Depends on slice 1's durable resolution semantics.
+1. [sc-27995](https://app.shortcut.com/trefry/story/27995) **Feature — Durable Admin job queue and failure lifecycle:** migration, semantic supersession, persistent resolution/dismissal, schedule retry/dispatch failures, queue API, Angular table and regression coverage.
+2. [sc-27996](https://app.shortcut.com/trefry/story/27996) **Bug — Preserve analysis provider and item failures:** terminal provider states, truthful parent status/count/error, store/compatibility propagation and regressions. Integrates with slice 1's error columns.
+3. [sc-27997](https://app.shortcut.com/trefry/story/27997) **Chore — Retain unresolved failures while pruning old indexer runs:** bounded service/job, seeded weekly schedule, editable retention days, docs and integration checks. Depends on slice 1's durable resolution semantics.
 
 Integrated acceptance reuses the slice tests plus the full .NET build/test, Angular test/build, browser smoke where supported, independent combined review, and required exact-head CI. No story is Done before its shared implementation is merged and verified.

@@ -204,6 +204,8 @@ Codex analyzes each repo's code and generates natural language summaries with **
 
 ## Design Decisions
 
+- **Admin job queue** — Operations combines durable indexer runs, analysis batches, and scheduled execution/failure state. Failures persist until dismissal or a later successful matching operation, including across schedule retries. The seeded Sunday 04:00 UTC `IndexerRunRetention` job prunes resolved history after 30 days while preserving active work and unresolved failures.
+
 - **MariaDB/MySQL primary persistence** — Runtime storage for graph, analysis, reviews, admin/settings, assistant/MCP telemetry, jobs, wiki, vectors, and memory
 - **Neo4j compatibility boundary** — Retained temporarily for migration/export reference, not as an equal first-class runtime backend for the first standalone MariaDB release
 - **Roslyn for C#** — Semantic analysis far exceeds tree-sitter's syntactic parsing
