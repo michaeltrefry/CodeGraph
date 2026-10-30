@@ -60,6 +60,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js for the TypeScript sidecar
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/ts-extractor/package-lock.json
+
+      - name: Test sidecar and verify committed output
+        working-directory: tools/ts-extractor
+        timeout-minutes: 5
+        run: |
+          npm ci
+          npm test
+          git diff --exit-code -- dist
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
