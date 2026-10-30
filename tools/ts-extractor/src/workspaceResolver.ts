@@ -635,12 +635,17 @@ function resolveImportSpec(
   }
 
   const config = findConfigForFile(ctx.tsconfigs, ctx.fallbackConfig, importerPath);
+  // The compiler rejects upper-case JS/TS suffixes. An explicit relative specifier can
+  // still name one exact admitted source; preserve its case without probing or guessing.
+  const literalRelativeTarget = /^\.{1,2}\//.test(spec.specifier)
+    ? normalizeAbsolute(path.resolve(path.dirname(importerPath), spec.specifier)) : undefined;
   const resolved = ts.resolveModuleName(
     spec.specifier,
     importerPath,
     config.options,
     ctx.moduleHost,
-  ).resolvedModule;
+  ).resolvedModule ?? (literalRelativeTarget && ctx.sourceFilesByPath.has(literalRelativeTarget)
+    ? { resolvedFileName: literalRelativeTarget } : undefined);
 
   const localPackage = findWorkspacePackageBySpecifier(ctx.packagesByName, spec.specifier, importerPath);
   if (!resolved && localPackage) {

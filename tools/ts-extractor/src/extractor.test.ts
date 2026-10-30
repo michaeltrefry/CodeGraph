@@ -884,3 +884,67 @@ const A=buildA(()=>import('./target'));const B=buildB(()=>import('./target'));`;
     assert.deepEqual(targetEdges(extract('<B/><A/>')), first);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('an explicit discovery scope admits Cypress and e2e sources without reading excluded neighbors', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-admitted-browser-tests-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-outside-browser-tests-'));
+  const nodeFs = require('fs') as typeof fs;
+  const originalRead = nodeFs.readFileSync;
+  try {
+    const sources = ['src/app.jsx', 'cypress/e2e/login.cy.ts', 'e2e/app.e2e-spec.ts', 'src/UPPER.TS', 'src/UpperPanel.JSX'];
+    writeFile(root, sources[0], "import {login} from '../cypress/e2e/login.cy';import {upper} from './UPPER.TS';import {UpperPanel} from './UpperPanel.JSX';export function App(){login();upper();return <UpperPanel/>;}");
+    writeFile(root, sources[1], 'export function login(){return true;}');
+    writeFile(root, sources[2], "import {login} from '../cypress/e2e/login.cy';export function browserFlow(){return login();}");
+    writeFile(root, sources[3], 'export function upper(){return 1;}');
+    writeFile(root, sources[4], 'export function UpperPanel(){return <aside/>;}');
+    const excluded = ['e2e/not-admitted.ts', 'node_modules/pkg/hidden.ts', '.git/hidden.ts', '.claude/worktrees/agent/hidden.ts'];
+    for (const file of excluded) writeFile(root, file, 'export const invalid=(;');
+    writeFile(outside, 'secret.ts', 'export const invalid=(;');
+    try { fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(root, 'e2e/outside-link.ts')); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error; }
+    const reads: string[] = [];
+    nodeFs.readFileSync = ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (typeof file === 'string') reads.push(path.resolve(file));
+      return (originalRead as (...args: unknown[]) => unknown)(file, ...args);
+    }) as typeof fs.readFileSync;
+    const result = extractProject('Demo', root, path.join(root, 'tsconfig.json'), () => {}, sources);
+    assert.equal(result.complete, true);
+    assert.deepEqual(result.processedFiles.sort(), [...sources].sort());
+    for (const source of sources) assert.ok(reads.includes(path.join(root, source)), source);
+    for (const file of [...excluded.map(file => path.join(root, file)), path.join(root, 'e2e/outside-link.ts'), path.join(outside, 'secret.ts')]) assert.ok(!reads.includes(file), file);
+    assert.ok(result.edges.some(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:cypress/e2e/login.cy.ts#login' && edge.type === 'CALLS'));
+    assert.ok(result.nodes.some(node => node.filePath === 'e2e/app.e2e-spec.ts' && node.name === 'browserFlow'));
+    assert.ok(result.nodes.some(node => node.filePath === 'src/UPPER.TS' && node.name === 'upper'));
+    assert.ok(result.edges.some(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:src/UPPER.TS#upper' && edge.type === 'CALLS'));
+    assert.ok(result.edges.some(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:src/UpperPanel.JSX#UpperPanel' && edge.type === 'RENDERS'));
+    assert.ok(result.nodes.some(node => node.filePath === 'src/UpperPanel.JSX' && node.name === 'UpperPanel' && node.label === 'Component'));
+    const coverage = JSON.parse(result.diagnostics!.find(message => message.startsWith('Link coverage: '))!.slice('Link coverage: '.length));
+    assert.equal(coverage.admitted_by_extension['.ts'], 3);
+    assert.equal(coverage.processed_by_extension['.jsx'], 2);
+    nodeFs.readFileSync = originalRead;
+    const standalone = extractProject('Demo', root, path.join(root, 'tsconfig.json'));
+    assert.ok(!standalone.processedFiles.some(file => file.startsWith('cypress/') || file.startsWith('e2e/')));
+  } finally { nodeFs.readFileSync = originalRead; fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+});
+
+test('the final extraction boundary stores one edge identity with all callable and injection evidence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-edge-storage-identity-'));
+  try {
+    writeFile(root, 'src/deps.ts', 'export class Service{} export class Consumer{constructor(private first:Service,private second:Service){}}');
+    writeFile(root, 'src/app.jsx', 'export function App(){const handler=()=>{};handler();return <button onClick={handler}/>;}');
+    const extract = () => extractProject('Demo', root, path.join(root, 'tsconfig.json'));
+    const first = extract();
+    const callback = first.edges.filter(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:src/app.jsx#App.handler' && edge.type === 'CALLS');
+    assert.equal(callback.length, 1);
+    const callEvidence = callback[0].properties?.extraction_evidence as Record<string, unknown>[];
+    assert.equal(callEvidence.length, 2);
+    assert.ok(callEvidence.some(properties => properties.call_kind === 'event_handler'));
+    assert.ok(callEvidence.some(properties => Object.keys(properties).length === 0));
+    const injections = first.edges.filter(edge => edge.sourceQN === 'deps.Consumer' && edge.targetQN === 'deps.Service' && edge.type === 'INJECTS');
+    assert.equal(injections.length, 1);
+    const injectionEvidence = injections[0].properties?.extraction_evidence as Record<string, unknown>[];
+    assert.deepEqual(injectionEvidence.map(properties => properties.parameter_name).sort(), ['first', 'second']);
+    assert.equal(new Set(first.edges.map(edge => JSON.stringify([edge.sourceQN, edge.targetQN, edge.type]))).size, first.edges.length);
+    assert.deepEqual(first.edges, extract().edges);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

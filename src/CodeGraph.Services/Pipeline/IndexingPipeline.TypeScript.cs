@@ -60,9 +60,16 @@ public partial class IndexingPipeline
             .Select(node => node.QualifiedName)
             .Where(qualifiedName => !keptQns.Contains(qualifiedName))
             .ToHashSet(StringComparer.Ordinal);
+        // JS/TS declaration identities include a lexical suffix after their source file (and
+        // legal source filenames may themselves contain '#'). Trust exact kept declarations
+        // with a concrete admitted owner instead of interpreting the whole identity as a path.
+        var admittedDeclarationQns = kept.Where(node => !string.IsNullOrWhiteSpace(node.FilePath))
+            .Select(node => node.QualifiedName).ToHashSet(StringComparer.Ordinal);
         var filePrefix = $"{repositoryName}:";
         bool AdmittedFileQn(string qualifiedName) =>
             !qualifiedName.StartsWith(filePrefix, StringComparison.Ordinal)
+            || admittedDeclarationQns.Contains(qualifiedName)
+            // Structural file references retain their literal path, with no lexical guessing.
             || Admitted(qualifiedName[filePrefix.Length..]);
         var clamped = result with
         {

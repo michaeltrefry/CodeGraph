@@ -207,14 +207,21 @@ const aliases = (node) => node.properties.npm_exports;
       import * as ui from '@sceneworks/ui'; import {checkAccent} from '../barrel.js';
       const check = valid;
       export function App() { valid('blue'); check('green'); ui.isAccentId('red'); checkAccent('blue'); StatusDot(); return <StatusDot/>; }
+      export function Direct() { return valid('blue'); }
+      export function LocalAlias() { return check('green'); }
+      export function NamespaceAlias() { return ui.isAccentId('red'); }
+      export function BarrelAlias() { return checkAccent('blue'); }
       export function Shadow(valid: (value:string)=>boolean) { return valid('blue'); }
       export function NamespaceShadow(ui: any) { return ui.isAccentId('blue'); }`,
     }, (root, scope) => {
         const output = (0, extractor_1.extractProject)('App', root, path.join(root, 'tsconfig.json'), () => { }, scope);
         const app = output.nodes.find(node => node.name === 'App').qualifiedName;
         const calls = output.edges.filter(edge => edge.type === 'CALLS' && edge.targetQN === 'npm-symbol:@sceneworks/ui#isAccentId');
-        strict_1.default.equal(calls.length, 4);
-        strict_1.default.ok(calls.every(edge => edge.sourceQN === app));
+        // Repeated call sites share one stored edge. Distinct callers keep every alias form
+        // independently observable, including the negative shadowing cases below.
+        strict_1.default.equal(calls.length, 5);
+        strict_1.default.equal(calls.filter(edge => edge.sourceQN === app).length, 1);
+        strict_1.default.deepEqual(calls.map(edge => output.nodes.find(node => node.qualifiedName === edge.sourceQN).name).sort(), ['App', 'BarrelAlias', 'Direct', 'LocalAlias', 'NamespaceAlias']);
         strict_1.default.equal(output.nodes.filter(node => node.qualifiedName === 'npm-symbol:@sceneworks/ui#StatusDot').length, 1);
         strict_1.default.deepEqual(output.nodes.find(node => node.qualifiedName === 'npm-symbol:@sceneworks/ui#isAccentId').properties, {
             package_name: '@sceneworks/ui', import_path: '@sceneworks/ui', export_name: 'isAccentId', extraction_owner: 'typescript',

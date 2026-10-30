@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { analyzeWorkspaceImports } from './workspaceResolver';
 import { DiscoveryScope } from './discoveryScope';
+import { canonicalExtractionEdges } from './extractionEdges';
 import { SemanticModel } from './semanticModel';
 import { analyzeReact } from './reactAnalysis';
 import { analyzeHttp } from './httpAnalysis';
@@ -86,8 +87,10 @@ export function extractProject(
   const typeRoots = checkoutRoots(rootPath);
 
   let t0 = Date.now();
+  // Explicit discovery has already applied repository safety/exclusion policy. Standalone
+  // walk defaults must not silently remove an admitted source before processed-file accounting.
   const tsFiles = scope
-    ? scope.absoluteFiles(file => /\.[jt]sx?$/.test(file) && !file.split('/').some(segment => SKIP_DIRS.has(segment)))
+    ? scope.absoluteFiles(file => /\.[jt]sx?$/i.test(file))
     : findTsFiles(rootPath);
   diag(`findTsFiles: ${tsFiles.length} files in ${Date.now() - t0}ms`);
 
@@ -120,7 +123,7 @@ export function extractProject(
 
   t0 = Date.now();
   const parsedFiles = project.getSourceFiles().filter(source => !invalidFiles.has(source.getFilePath()));
-  const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !source.getFilePath().includes('.generated.'));
+  const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !/\.generated\./i.test(source.getFilePath()));
   diag(`getSourceFiles: ${sourceFiles.length} files in ${Date.now() - t0}ms`);
 
   t0 = Date.now();
@@ -184,6 +187,8 @@ export function extractProject(
   complete &&= httpCoverage.complete;
   analyzeTauri(semantic, nodes, edges, diag);
   semantic.reconcilePackageExports(nodes);
+  const canonicalEdges = canonicalExtractionEdges(edges);
+  edges.splice(0, edges.length, ...canonicalEdges);
   for (const node of nodes) node.properties.extraction_owner = 'typescript';
   for (const edge of edges) edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
 
@@ -191,8 +196,8 @@ export function extractProject(
     Array.isArray(edge.properties?.screen_selections) ? edge.properties!.screen_selections as Record<string, unknown>[] :
       edge.properties?.screen_key !== undefined ? [edge.properties] : []);
   diag(`Link coverage: ${JSON.stringify({
-    admitted_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, tsFiles.filter(file => file.endsWith(extension)).length])),
-    processed_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, processedFiles.filter(file => file.endsWith(extension)).length])),
+    admitted_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, tsFiles.filter(file => file.toLowerCase().endsWith(extension)).length])),
+    processed_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, processedFiles.filter(file => file.toLowerCase().endsWith(extension)).length])),
     components: nodes.filter(node => node.label === 'Component').length,
     pages: nodes.filter(node => node.properties.route_kind === 'ui').length,
     screens: new Set(screenSelections.map(selection =>
@@ -513,7 +518,7 @@ function isFrameworkType(typeName: string): boolean {
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'cypress', 'e2e', '.git', '.angular']);
 
 function isTsSourceFile(fileName: string): boolean {
-  return /\.(?:tsx?|jsx?)$/.test(fileName) && !/\.d\.ts$|\.spec\.[jt]sx?$/.test(fileName);
+  return /\.(?:tsx?|jsx?)$/i.test(fileName) && !/\.d\.ts$|\.spec\.[jt]sx?$/i.test(fileName);
 }
 
 // ── Type text ─────────────────────────────────────────────────────────────────

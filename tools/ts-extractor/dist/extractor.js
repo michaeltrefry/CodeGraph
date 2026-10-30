@@ -40,6 +40,7 @@ const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const workspaceResolver_1 = require("./workspaceResolver");
 const discoveryScope_1 = require("./discoveryScope");
+const extractionEdges_1 = require("./extractionEdges");
 const semanticModel_1 = require("./semanticModel");
 const reactAnalysis_1 = require("./reactAnalysis");
 const httpAnalysis_1 = require("./httpAnalysis");
@@ -101,8 +102,10 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     const scope = includedFiles ? new discoveryScope_1.DiscoveryScope(rootPath, includedFiles) : undefined;
     const typeRoots = checkoutRoots(rootPath);
     let t0 = Date.now();
+    // Explicit discovery has already applied repository safety/exclusion policy. Standalone
+    // walk defaults must not silently remove an admitted source before processed-file accounting.
     const tsFiles = scope
-        ? scope.absoluteFiles(file => /\.[jt]sx?$/.test(file) && !file.split('/').some(segment => SKIP_DIRS.has(segment)))
+        ? scope.absoluteFiles(file => /\.[jt]sx?$/i.test(file))
         : findTsFiles(rootPath);
     diag(`findTsFiles: ${tsFiles.length} files in ${Date.now() - t0}ms`);
     t0 = Date.now();
@@ -144,7 +147,7 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     diag(`serviceName: ${serviceName ?? '(none)'}`);
     t0 = Date.now();
     const parsedFiles = project.getSourceFiles().filter(source => !invalidFiles.has(source.getFilePath()));
-    const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !source.getFilePath().includes('.generated.'));
+    const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !/\.generated\./i.test(source.getFilePath()));
     diag(`getSourceFiles: ${sourceFiles.length} files in ${Date.now() - t0}ms`);
     t0 = Date.now();
     const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(repositoryName, rootPath, tsconfigPath, sourceFiles, log, scope);
@@ -193,6 +196,8 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     complete && (complete = httpCoverage.complete);
     (0, tauriAnalysis_1.analyzeTauri)(semantic, nodes, edges, diag);
     semantic.reconcilePackageExports(nodes);
+    const canonicalEdges = (0, extractionEdges_1.canonicalExtractionEdges)(edges);
+    edges.splice(0, edges.length, ...canonicalEdges);
     for (const node of nodes)
         node.properties.extraction_owner = 'typescript';
     for (const edge of edges)
@@ -200,8 +205,8 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     const screenSelections = edges.filter(edge => edge.type === 'RENDERS').flatMap(edge => Array.isArray(edge.properties?.screen_selections) ? edge.properties.screen_selections :
         edge.properties?.screen_key !== undefined ? [edge.properties] : []);
     diag(`Link coverage: ${JSON.stringify({
-        admitted_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, tsFiles.filter(file => file.endsWith(extension)).length])),
-        processed_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, processedFiles.filter(file => file.endsWith(extension)).length])),
+        admitted_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, tsFiles.filter(file => file.toLowerCase().endsWith(extension)).length])),
+        processed_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, processedFiles.filter(file => file.toLowerCase().endsWith(extension)).length])),
         components: nodes.filter(node => node.label === 'Component').length,
         pages: nodes.filter(node => node.properties.route_kind === 'ui').length,
         screens: new Set(screenSelections.map(selection => JSON.stringify([selection.screen_selector_owner, selection.screen_selector, selection.screen_key]))).size,
@@ -470,7 +475,7 @@ function isFrameworkType(typeName) {
 }
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'cypress', 'e2e', '.git', '.angular']);
 function isTsSourceFile(fileName) {
-    return /\.(?:tsx?|jsx?)$/.test(fileName) && !/\.d\.ts$|\.spec\.[jt]sx?$/.test(fileName);
+    return /\.(?:tsx?|jsx?)$/i.test(fileName) && !/\.d\.ts$|\.spec\.[jt]sx?$/i.test(fileName);
 }
 // ── Type text ─────────────────────────────────────────────────────────────────
 /** The checkout root as given and as resolved through symlinks (e.g. /tmp vs /private/tmp). */

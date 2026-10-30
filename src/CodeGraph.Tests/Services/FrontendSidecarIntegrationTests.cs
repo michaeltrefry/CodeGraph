@@ -109,4 +109,119 @@ public sealed class FrontendSidecarIntegrationTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task RealSidecar_AccountsForAdmittedCypressAndE2eSources_WithoutReadingExcludedPaths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-ui-admitted-tests-{Guid.NewGuid():N}");
+        var outside = Path.Combine(Path.GetTempPath(), $"codegraph-ui-excluded-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        try
+        {
+            async Task Write(string relative, string content)
+            {
+                var path = Path.Combine(root, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                await File.WriteAllTextAsync(path, content);
+            }
+            const string repository = "BrowserTests";
+            string[] sources = ["cypress/e2e/login.cy.ts", "e2e/app.e2e-spec.ts", "src/Panel#fragment.ts", "src/UPPER.TS", "src/UpperPanel.JSX", "src/app.jsx", "src/deps.ts"];
+            await Write("package.json", """{"name":"browser-scope","dependencies":{"react":"*"}}""");
+            await Write("src/app.jsx", "import {login,LoginScreen} from '../cypress/e2e/login.cy';import {HashPanel} from './Panel#fragment';import {upper} from './UPPER.TS';import {UpperPanel} from './UpperPanel.JSX';export function App(){const handler=()=>login();login();handler();upper();return <><LoginScreen/><HashPanel/><UpperPanel/><button onClick={handler}/></>;}");
+            await Write("cypress/e2e/login.cy.ts", "export function login(){return true;}export function LoginScreen(){return null;}");
+            await Write("src/Panel#fragment.ts", "export function HashPanel(){return null;}");
+            await Write("src/deps.ts", "export class Service{}export class Consumer{constructor(private first:Service,private second:Service){}}");
+            await Write("src/UPPER.TS", "export function upper(){return 1;}");
+            await Write("src/UpperPanel.JSX", "export function UpperPanel(){return <aside/>;}");
+            await Write("e2e/app.e2e-spec.ts", "import {login} from '../cypress/e2e/login.cy';export function browserFlow(){return login();}");
+            await Write(".gitignore", "ignored/\noutside-link.ts\n");
+            await Write("ignored/invalid.ts", "export const invalid=(;");
+            await Write("node_modules/private/invalid.ts", "export const invalid=(;");
+            await Write(".claude/worktrees/agent/invalid.ts", "export const invalid=(;");
+            await File.WriteAllTextAsync(Path.Combine(outside, "invalid.ts"), "export const invalid=(;");
+            try { File.CreateSymbolicLink(Path.Combine(root, "outside-link.ts"), Path.Combine(outside, "invalid.ts")); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { }
+            GitWorkingCopyDiscoveryTests.Git(root, "init", "-q");
+            GitWorkingCopyDiscoveryTests.Git(root, "add", "--force", "package.json", ".gitignore", "src/app.jsx",
+                "cypress/e2e/login.cy.ts", "e2e/app.e2e-spec.ts", "src/Panel#fragment.ts", "src/UPPER.TS", "src/UpperPanel.JSX", "src/deps.ts", "node_modules/private/invalid.ts", ".claude/worktrees/agent/invalid.ts");
+            GitWorkingCopyDiscoveryTests.Commit(root);
+            await Write(".git/invalid.ts", "export const invalid=(;");
+
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            using var server = new TypeScriptServerManager(port, NullLogger.Instance);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            (await server.EnsureStartedAsync(timeout.Token)).ShouldBeTrue();
+            var response = await server.ExtractProjectAsync(new ExtractProjectRequest
+            {
+                RepositoryName = repository,
+                RootPath = root,
+                TsconfigPath = Path.Combine(root, "tsconfig.json"),
+                IncludedFiles = ["package.json", .. sources]
+            }, timeout.Token);
+            response.ShouldNotBeNull();
+            response.Complete.ShouldBeTrue();
+            response.ProcessedFiles.Order(StringComparer.Ordinal).ShouldBe(sources);
+            response.Edges.ShouldContain(edge => edge.SourceQN == $"{repository}:src/app.jsx#App"
+                && edge.TargetQN == $"{repository}:cypress/e2e/login.cy.ts#login" && edge.Type == "CALLS");
+            response.Edges.ShouldContain(edge => edge.SourceQN == $"{repository}:src/app.jsx#App"
+                && edge.TargetQN == $"{repository}:cypress/e2e/login.cy.ts#LoginScreen" && edge.Type == "RENDERS");
+            var callback = response.Edges.Where(edge => edge.SourceQN == $"{repository}:src/app.jsx#App"
+                && edge.TargetQN == $"{repository}:src/app.jsx#App.handler" && edge.Type == "CALLS").ShouldHaveSingleItem();
+            callback.Properties!["extraction_evidence"].ShouldBeOfType<JsonElement>().GetArrayLength().ShouldBe(2);
+            var injection = response.Edges.Where(edge => edge.SourceQN == "deps.Consumer"
+                && edge.TargetQN == "deps.Service" && edge.Type == "INJECTS").ShouldHaveSingleItem();
+            injection.Properties!["extraction_evidence"].ShouldBeOfType<JsonElement>().GetArrayLength().ShouldBe(2);
+
+            var analyzer = new TypeScriptProjectAnalyzer(server, NullLogger<TypeScriptProjectAnalyzer>.Instance);
+            var store = new InMemoryGraphStore();
+            var pipeline = new IndexingPipeline(store, [], Options.Create(new IndexingOptions { MaxParallelFiles = 1 }),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: analyzer);
+            Task Index() => pipeline.IndexRepositoryAsync(repository, root, ct: timeout.Token);
+            await Index(); // The required complete-source coverage guard remains in force.
+            var hashes = await store.GetFileHashRecordsAsync(repository);
+            hashes.Keys.Order(StringComparer.Ordinal).ShouldBe(sources);
+            var versions = new ExtractionVersionCatalog([], typeScriptAnalyzer: analyzer);
+            foreach (var source in sources)
+            {
+                hashes[source].ExtractionVersion.ShouldBe(versions.ForPath(source));
+                hashes[source].ExtractionVersion!.ShouldContain($"{nameof(TypeScriptProjectAnalyzer)}={analyzer.ExtractionVersion}");
+                hashes[source].ContentHash.ShouldBe(Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(await File.ReadAllBytesAsync(Path.Combine(root, source)))));
+                store.Nodes.ShouldContain(node => node.Label == NodeLabel.File && node.FilePath == source);
+            }
+            var app = store.Nodes.Single(node => node.Name == "App" && node.Label == NodeLabel.Component);
+            var login = store.Nodes.Single(node => node.Name == "login" && node.FilePath == "cypress/e2e/login.cy.ts");
+            var loginScreen = store.Nodes.Single(node => node.Name == "LoginScreen" && node.Label == NodeLabel.Component);
+            var hashPanel = store.Nodes.Single(node => node.Name == "HashPanel" && node.Label == NodeLabel.Component);
+            var upper = store.Nodes.Single(node => node.Name == "upper" && node.FilePath == "src/UPPER.TS");
+            var upperPanel = store.Nodes.Single(node => node.Name == "UpperPanel" && node.Label == NodeLabel.Component && node.FilePath == "src/UpperPanel.JSX");
+            store.Nodes.ShouldNotContain(node => node.FilePath != null &&
+                (node.FilePath.StartsWith("ignored/") || node.FilePath.StartsWith("node_modules/") ||
+                 node.FilePath.StartsWith(".claude/") || node.FilePath.StartsWith(".git/") || node.FilePath == "outside-link.ts"));
+            var handler = store.Nodes.Single(node => node.Name == "handler" && node.FilePath == "src/app.jsx");
+            var consumer = store.Nodes.Single(node => node.Name == "Consumer" && node.Label == NodeLabel.Class);
+            var service = store.Nodes.Single(node => node.Name == "Service" && node.Label == NodeLabel.Class);
+            store.Edges.Where(edge => edge.SourceId == app.Id && edge.TargetId == handler.Id && edge.Type == EdgeType.CALLS).ShouldHaveSingleItem();
+            store.Edges.Where(edge => edge.SourceId == consumer.Id && edge.TargetId == service.Id && edge.Type == EdgeType.INJECTS).ShouldHaveSingleItem();
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            await Index();
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+            store.Edges.ShouldContain(edge => edge.SourceId == app.Id && edge.TargetId == login.Id && edge.Type == EdgeType.CALLS);
+            store.Edges.ShouldContain(edge => edge.SourceId == app.Id && edge.TargetId == loginScreen.Id && edge.Type == EdgeType.RENDERS);
+            store.Edges.ShouldContain(edge => edge.SourceId == app.Id && edge.TargetId == hashPanel.Id && edge.Type == EdgeType.RENDERS);
+            store.Edges.ShouldContain(edge => edge.SourceId == app.Id && edge.TargetId == upper.Id && edge.Type == EdgeType.CALLS);
+            store.Edges.ShouldContain(edge => edge.SourceId == app.Id && edge.TargetId == upperPanel.Id && edge.Type == EdgeType.RENDERS);
+        }
+        finally
+        {
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                File.SetAttributes(file, FileAttributes.Normal);
+            Directory.Delete(root, recursive: true);
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
 }

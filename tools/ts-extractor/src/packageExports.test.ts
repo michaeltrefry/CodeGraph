@@ -157,14 +157,22 @@ test('external imported function aliases, namespaces and barrels retain exact pr
       import * as ui from '@sceneworks/ui'; import {checkAccent} from '../barrel.js';
       const check = valid;
       export function App() { valid('blue'); check('green'); ui.isAccentId('red'); checkAccent('blue'); StatusDot(); return <StatusDot/>; }
+      export function Direct() { return valid('blue'); }
+      export function LocalAlias() { return check('green'); }
+      export function NamespaceAlias() { return ui.isAccentId('red'); }
+      export function BarrelAlias() { return checkAccent('blue'); }
       export function Shadow(valid: (value:string)=>boolean) { return valid('blue'); }
       export function NamespaceShadow(ui: any) { return ui.isAccentId('blue'); }`,
   }, (root, scope) => {
     const output = extractProject('App', root, path.join(root, 'tsconfig.json'), () => {}, scope);
     const app = output.nodes.find(node => node.name === 'App')!.qualifiedName;
     const calls = output.edges.filter(edge => edge.type === 'CALLS' && edge.targetQN === 'npm-symbol:@sceneworks/ui#isAccentId');
-    assert.equal(calls.length, 4);
-    assert.ok(calls.every(edge => edge.sourceQN === app));
+    // Repeated call sites share one stored edge. Distinct callers keep every alias form
+    // independently observable, including the negative shadowing cases below.
+    assert.equal(calls.length, 5);
+    assert.equal(calls.filter(edge => edge.sourceQN === app).length, 1);
+    assert.deepEqual(calls.map(edge => output.nodes.find(node => node.qualifiedName === edge.sourceQN)!.name).sort(),
+      ['App', 'BarrelAlias', 'Direct', 'LocalAlias', 'NamespaceAlias']);
     assert.equal(output.nodes.filter(node => node.qualifiedName === 'npm-symbol:@sceneworks/ui#StatusDot').length, 1);
     assert.deepEqual(output.nodes.find(node => node.qualifiedName === 'npm-symbol:@sceneworks/ui#isAccentId')!.properties, {
       package_name: '@sceneworks/ui', import_path: '@sceneworks/ui', export_name: 'isAccentId', extraction_owner: 'typescript',
