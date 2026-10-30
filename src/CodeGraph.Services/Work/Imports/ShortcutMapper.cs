@@ -303,13 +303,16 @@ public static partial class ShortcutMapper
     }
 
     /// <summary>
-    /// An imported story its source archived since (sc-27929): the item is closed, unless it is finished (in the source,
-    /// or <paramref name="current"/> in CodeGraph), and says why; its import view is flagged archived.
+    /// An imported story its source archived since (sc-27929): the item is closed, unless it is finished in CodeGraph
+    /// (<paramref name="current"/>), and says why; its import view is flagged archived. A story done in the source that
+    /// CodeGraph reopened is closed too. Without the item's status (none read), a story done in the source stays so.
     /// </summary>
     public static MappedStory Archived(MappedStory mapped, WorkStatus? current, DateTime archivedAt)
     {
         static bool Finished(WorkStatus? status) => status is WorkStatus.Complete or WorkStatus.Closed;
-        var status = Finished(current) ? current!.Value : Finished(mapped.Status) ? mapped.Status : WorkStatus.Closed;
+        var status = Finished(current) ? current!.Value
+            : current is null && Finished(mapped.Status) ? mapped.Status
+            : WorkStatus.Closed;
         var note = status == WorkStatus.Closed
             ? "Archived in Shortcut: the import closed this item."
             : $"Archived in Shortcut: the item stays {WorkStatuses.Name(status)}.";

@@ -268,7 +268,12 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                 before = await ToViewAsync(connection, transaction, existing, ct);
                 var base_ = ReadSnapshot<ItemSnapshot>(record!.SnapshotJson);
                 bool Changed(Func<ItemSnapshot, object?> field) => base_ is null || SnapshotJson(field(base_)) != SnapshotJson(field(snapshot));
-                var status = Changed(s => s.Status) ? snapshot.Status : existing.Status;
+                // The source archiving the item (sc-27929) writes its status whatever the three-way merge says: the
+                // importer closes an item CodeGraph did not finish, also when the mapped status did not change (a story
+                // done in the source that CodeGraph reopened). After that first write the merge applies again.
+                var archiving = spec.Imported.Archived == true &&
+                    (existing.ImportedJson is null || JsonSerializer.Deserialize<ImportedView>(existing.ImportedJson, WorkJson.Options)?.Archived != true);
+                var status = archiving || Changed(s => s.Status) ? snapshot.Status : existing.Status;
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET feature_id = @featureId, item_type = @type, title = @title, description = @description, status = @status, priority = @priority, " +
                     "labels = @labels, repository_name = @repository, acceptance_json = @acceptance, imported_json = @imported, " +

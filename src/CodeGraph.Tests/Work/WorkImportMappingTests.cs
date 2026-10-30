@@ -466,6 +466,7 @@ public sealed class WorkImportMappingTests
 
         ShortcutMapper.Archived(Map(27866), WorkStatus.Complete, at).Status.ShouldBe(WorkStatus.Complete); // done in Shortcut
         ShortcutMapper.Archived(Map(27876), WorkStatus.Complete, at).Status.ShouldBe(WorkStatus.Complete); // finished in CodeGraph
+        ShortcutMapper.Archived(Map(27866), WorkStatus.InProgress, at).Status.ShouldBe(WorkStatus.Closed); // done in Shortcut, reopened in CodeGraph
         ShortcutMapper.Hash(open).ShouldNotBe(ShortcutMapper.Hash(Map(27876)));
     }
 

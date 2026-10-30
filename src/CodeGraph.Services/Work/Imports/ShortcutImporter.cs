@@ -209,8 +209,13 @@ public sealed class ShortcutImporter(
             {
                 try
                 {
-                    var updated = await work.UpdateProjectAsync(project.Id, project.Version, new ProjectPatchSpec(Repositories:
-                        [.. project.Repositories, .. target.Attach.Select(name => new RepositoryMemberView(name, RepositoryRole.Owned))]), Actor, ct);
+                    // A repository the project lists as a dependency becomes owned in its place (a repository is listed once).
+                    var listed = project.Repositories.Select(member => member.Repository).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var repositories = project.Repositories
+                        .Select(member => target.Attach.Contains(member.Repository, StringComparer.OrdinalIgnoreCase) ? member with { Role = RepositoryRole.Owned } : member)
+                        .Concat(target.Attach.Where(name => !listed.Contains(name)).Select(name => new RepositoryMemberView(name, RepositoryRole.Owned)))
+                        .ToList();
+                    var updated = await work.UpdateProjectAsync(project.Id, project.Version, new ProjectPatchSpec(Repositories: repositories), Actor, ct);
                     report.Written.RepositoriesAttached += target.Attach.Count;
                     target.Owned = OwnedOf(updated);
                     target.Applied.AddRange(target.Attach);
@@ -314,25 +319,25 @@ public sealed class ShortcutImporter(
                 var spec = new ImportedFeatureSpec(ImportSources.Shortcut, Id(epic.Id), await EnsureProjectAsync(target), epic.Name.Trim().Length == 0 ? $"Epic {epic.Id}" : epic.Name.Trim(),
                     epic.Description, ShortcutMapper.EpicDocuments(epic, documents, members), !epic.Done, archived ? imported with { Archived = true } : imported,
                     epic.CreatedAt, epic.UpdatedAt, "");
-                // Whether the feature was flagged archived before this write: only a change of that moves its reconcile task.
+                // Only a change of the feature's archived flag moves its reconcile task, and the task moves before the
+                // flag is written: a move that fails (the task changed meanwhile) leaves the flag as it was, so the
+                // retry moves it; a retry after the move finds the task moved already and leaves it be.
                 var wasArchived = known is not null && (await work.GetFeatureAsync(known.EntityId, ct))?.Imported?.Archived == true;
+                var reconcile = reconcileRecords.GetValueOrDefault(Id(epic.Id));
+                if (archived && !wasArchived)
+                    // Closed when the epic becomes archived; one a person reopens after that stays open.
+                    await MoveReconcileTaskAsync(reconcile, WorkStatus.Closed,
+                        $"Shortcut epic {epic.Id} was archived, so its requirements are not reconciled: closed by the import.", ct);
+                else if (!archived && wasArchived && !epic.Done)
+                    // Unarchived: open again, if the archive is what closed it.
+                    await MoveReconcileTaskAsync(reconcile, WorkStatus.Ready,
+                        $"Shortcut epic {epic.Id} was unarchived, so its requirements are to be reconciled again: reopened by the import.", ct);
+
                 var written = await imports.UpsertImportedFeatureAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
                 featureIds[epic.Id] = written.Id;
                 Count(report, written.Outcome, feature: true);
-                var reconcile = reconcileRecords.GetValueOrDefault(Id(epic.Id));
                 if (archived)
-                {
-                    // Closed when the epic becomes archived; one a person reopens after that stays open.
-                    if (!wasArchived)
-                        await MoveReconcileTaskAsync(reconcile, WorkStatus.Closed,
-                            $"Shortcut epic {epic.Id} was archived, so its requirements are not reconciled: closed by the import.", ct);
                     continue;
-                }
-
-                // Unarchived in Shortcut: the flag went with this write; the reconcile task the archive closed is open again.
-                if (wasArchived && !epic.Done && reconcile is not null)
-                    await MoveReconcileTaskAsync(reconcile, WorkStatus.Ready,
-                        $"Shortcut epic {epic.Id} was unarchived, so its requirements are to be reconciled again: reopened by the import.", ct);
 
                 // Open features get a reconcile task, once: it is the agent's to finish, and a re-run never resets it.
                 if (!epic.Done && reconcile is null)
@@ -615,16 +620,37 @@ public sealed class ShortcutImporter(
     }
 
     /// <summary>
-    /// The reconcile task of a feature whose epic was archived (closed, when open) or unarchived (ready again, when the
-    /// archive closed it): a finished task is never reopened but a closed one, and a complete one is left alone.
+    /// The reconcile task of a feature whose epic was archived (closed, when open) or unarchived (ready again, only when
+    /// the archive is what closed it): a task someone else finished is left as it is.
     /// </summary>
     private async Task MoveReconcileTaskAsync(ImportRecord? record, WorkStatus status, string comment, CancellationToken ct)
     {
         if (record is null || await work.GetItemAsync(record.EntityId, false, ct) is not { } task)
             return;
-        var moves = status == WorkStatus.Closed ? !WorkStatuses.IsFinished(task.Status) : task.Status == WorkStatus.Closed;
+        var moves = status == WorkStatus.Closed
+            ? !WorkStatuses.IsFinished(task.Status)
+            : task.Status == WorkStatus.Closed && await ClosedByImportAsync(task.Id, ct);
         if (moves)
             await work.UpdateItemAsync(task.Id, task.Version, new ItemPatchSpec(Status: status, Comment: comment), Actor, ct);
+    }
+
+    /// <summary>
+    /// Whether the item's latest status change in the feed is the import closing it. The import closes a reconcile task
+    /// only when its epic is archived, and that close is written with its status in one fed write, so the feed is the
+    /// record of who closed it: a task a person closed (before the archive, or after reopening it) is not reopened.
+    /// </summary>
+    private async Task<bool> ClosedByImportAsync(Guid itemId, CancellationToken ct)
+    {
+        foreach (var change in (await work.ReadEntityChangesAsync(itemId, 200, ct)).Reverse())
+        {
+            if (change.Changes.ValueKind != JsonValueKind.Array)
+                continue;
+            foreach (var field in change.Changes.EnumerateArray())
+                if (field.TryGetProperty("field", out var name) && name.GetString() == "status")
+                    return change.Actor.Name == Actor.Name && field.TryGetProperty("new", out var value) && value.GetString() == WorkStatuses.Name(WorkStatus.Closed);
+        }
+
+        return false;
     }
 
     /// <summary>

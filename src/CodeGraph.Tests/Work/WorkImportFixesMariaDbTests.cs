@@ -292,13 +292,13 @@ public sealed class WorkImportArchivedMariaDbTests(WorkDatabase db) : IClassFixt
         var fullChanges = (await db.AllChangesAsync(key)).Skip(settled).ToList();
         fullChanges.Select(change => change.GetProperty("entity_key").GetString()).ShouldBe([(await GetAsync("sc-96003")).GetProperty("key").GetString()]);
 
-        // ---- Unarchived in Shortcut: the flag goes, the reconcile task the archive closed opens again ----
+        // ---- Unarchived in Shortcut: the flag goes; the reconcile task a person closed stays closed ----
         await db.UpdateAsync(reconcile, new { status = "closed" });
         source.Epics[27864] = source.Epics[27864] with { Archived = false, UpdatedAt = DateTime.UtcNow.AddMinutes(10) };
         var unarchived = await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
         unarchived.Report!.Written.FeaturesUpdated.ShouldBe(1);
         (await GetAsync(feature)).GetProperty("imported").TryGetProperty("archived", out _).ShouldBeFalse();
-        (await GetAsync(reconcile)).GetProperty("status").GetString().ShouldBe("ready");
+        (await GetAsync(reconcile)).GetProperty("status").GetString().ShouldBe("closed");
     }
 
     private async Task<JsonElement> SessionUpdateAsync(string id, string session, object fields)
@@ -547,5 +547,175 @@ public sealed class WorkImportAttachFailureMariaDbTests(WorkDatabase db) : IClas
         report.Warnings.ShouldContain(warning => warning.Contains("codegraph were not attached") && warning.Contains("The project changed meanwhile."));
         report.NoRepository.ShouldBe(["sc-99001"]);
         (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("repositories").GetArrayLength().ShouldBe(0);
+    }
+}
+
+
+/// <summary>
+/// sc-27929: a story done in Shortcut that CodeGraph reopened and an agent claimed is closed when Shortcut archives it
+/// (the mapped status did not change, the archive still closes it), with its claim, session claims and attempt ended.
+/// </summary>
+public sealed class WorkImportArchiveReopenedMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    [Fact]
+    public async Task Archiving_closes_an_item_done_in_shortcut_that_codegraph_reopened_and_claimed()
+    {
+        var key = "RO" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await db.CallAsync(WorkTools.CreateWork, new { new_project = new { key, name = "Reopened" } });
+        var source = ImportFixtures.Empty();
+        source.Stories[96101] = ImportFixtures.Story(96101, "Done in Shortcut", ImportFixtures.CodeGraphTeam) with { WorkflowStateId = ImportFixtures.DoneState };
+        var service = WorkImportMariaDbTests.Service(db, source, null, Path.Combine(Path.GetTempPath(), "cg-import-reopen-" + key));
+        await service.SaveSettingsAsync(ImportSources.Shortcut, new ImportSettings(key + "H", [new ImportTeamMapping(ImportFixtures.CodeGraphTeam, key, "CodeGraph")]),
+            approve: true, "owner", CancellationToken.None);
+        await service.RunAsync(ImportSources.Shortcut, "import", null, "owner", CancellationToken.None);
+        var item = await db.CallAsync(WorkTools.GetWork, new { id = "sc-96101" });
+        item.GetProperty("status").GetString().ShouldBe("complete");
+        var itemKey = item.GetProperty("key").GetString()!;
+
+        // CodeGraph reopens it and an agent's session claims it.
+        var session = (await db.CallAsync(WorkTools.StartSession, new { project = key, harness = "claude-code", host = "dev-mac" }, "michael"))
+            .GetProperty("session").GetProperty("id").GetString()!;
+        var reopened = (await db.CallAsync(WorkTools.UpdateWork, new { id = itemKey, session_id = session, expected_version = item.GetProperty("version").GetInt64(), status = "in_progress", claim = new { } },
+            "michael")).GetProperty("item");
+        reopened.GetProperty("claim").GetProperty("session_id").GetString().ShouldBe(session);
+
+        source.Stories[96101] = source.Stories[96101] with { Archived = true, UpdatedAt = DateTime.UtcNow.AddMinutes(5) };
+        var delta = await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
+        delta.Report!.Written.Failures.ShouldBe(0, string.Join("; ", delta.Report.Warnings));
+
+        var closed = await db.CallAsync(WorkTools.GetWork, new { id = itemKey });
+        closed.GetProperty("status").GetString().ShouldBe("closed");
+        closed.GetProperty("imported").GetProperty("archived").GetBoolean().ShouldBeTrue();
+        closed.TryGetProperty("claim", out _).ShouldBeFalse();
+        closed.GetProperty("attempts").EnumerateArray().Single().GetProperty("outcome").GetString().ShouldBe("closed");
+        (await ImportFixtures.CountAsync(db, "SELECT COUNT(*) FROM work_session_claims WHERE session_id = @session AND released_at IS NULL", new { session })).ShouldBe(0);
+
+        // Archived already: the next delta changes nothing.
+        var again = await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None);
+        again.Report!.Written.ItemsUpdated.ShouldBe(0);
+    }
+}
+
+/// <summary>
+/// sc-27929: the reconcile task of an archived epic moves before the feature's flag is written, so a failed move is
+/// retried; unarchiving reopens it only when the archive is what closed it.
+/// </summary>
+public sealed class WorkImportReconcileMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    /// <summary>The work store, refusing item updates while <see cref="Refuse"/> is set (an agent won the race).</summary>
+    public class RefusingItemUpdates : System.Reflection.DispatchProxy
+    {
+        public IWorkStore Inner { get; set; } = null!;
+        public bool Refuse { get; set; }
+
+        protected override object? Invoke(System.Reflection.MethodInfo? method, object?[]? args)
+        {
+            if (Refuse && method!.Name == nameof(IWorkStore.UpdateItemAsync))
+                return Task.FromException<ItemView>(new WorkException(WorkErrorCodes.Conflict, "The task changed meanwhile."));
+            try
+            {
+                return method!.Invoke(Inner, args);
+            }
+            catch (System.Reflection.TargetInvocationException exception)
+            {
+                throw exception.InnerException!;
+            }
+        }
+    }
+
+    private sealed class Sources(IShortcutSource shortcut) : IWorkImportSourceFactory
+    {
+        public Task<IShortcutSource> ShortcutAsync(CancellationToken ct) => Task.FromResult(shortcut);
+        public Task<IKanbanSource> KanbanAsync(CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private Task<JsonElement> GetAsync(string id) => db.CallAsync(WorkTools.GetWork, new { id });
+
+    [Fact]
+    public async Task The_reconcile_task_follows_the_archive_and_a_failed_move_is_retried()
+    {
+        var key = "RC" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await db.CallAsync(WorkTools.CreateWork, new { new_project = new { key, name = "Reconcile" } });
+        var source = ImportFixtures.Empty();
+        source.Epics[27864] = ImportFixtures.Recorded.Epics[27864] with { TeamIds = [ImportFixtures.CodeGraphTeam] };
+        source.Stories[97101] = ImportFixtures.Story(97101, "In the epic", ImportFixtures.CodeGraphTeam, 27864);
+        var work = System.Reflection.DispatchProxy.Create<IWorkStore, RefusingItemUpdates>();
+        var refusing = (RefusingItemUpdates)(object)work;
+        refusing.Inner = db.Store;
+        var options = Options.Create(new WorkImportOptions { AttachmentStoragePath = Path.Combine(Path.GetTempPath(), "cg-import-rc-" + key) });
+        var service = new WorkImportService(db.Store, new ShortcutImporter(work, db.Store, new WorkAttachmentStorage(options, Options.Create(new WikiOptions())), options),
+            new KanbanImporter(db.Store, db.Store), new Sources(source));
+        await service.SaveSettingsAsync(ImportSources.Shortcut, new ImportSettings(key + "H", [new ImportTeamMapping(ImportFixtures.CodeGraphTeam, key, "CodeGraph")]),
+            approve: true, "owner", CancellationToken.None);
+        await service.RunAsync(ImportSources.Shortcut, "import", null, "owner", CancellationToken.None);
+        var feature = (await GetAsync("sc-97101")).GetProperty("feature").GetProperty("key").GetString()!;
+        var reconcile = (await db.CallAsync(WorkTools.FindWork, new { project = key, label = "import-reconcile" })).GetProperty("items")[0].GetProperty("key").GetString()!;
+        var minutes = 0;
+        async Task<ImportReport> SetArchivedAsync(bool archived)
+        {
+            source.Epics[27864] = source.Epics[27864] with { Archived = archived, UpdatedAt = DateTime.UtcNow.AddMinutes(++minutes) };
+            return (await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None)).Report!;
+        }
+
+        bool Flagged(JsonElement view) => view.GetProperty("imported").TryGetProperty("archived", out var flag) && flag.GetBoolean();
+
+        // ---- The move fails: the flag is not written, so the next delta retries it -------------
+        refusing.Refuse = true;
+        var failed = await SetArchivedAsync(true);
+        failed.FailedIds.ShouldContain("epic-27864");
+        Flagged(await GetAsync(feature)).ShouldBeFalse();
+        (await GetAsync(reconcile)).GetProperty("status").GetString().ShouldBe("ready");
+        refusing.Refuse = false;
+        var retried = (await service.RunAsync(ImportSources.Shortcut, "delta", null, "owner", CancellationToken.None)).Report!;
+        retried.Written.Failures.ShouldBe(0, string.Join("; ", retried.Warnings));
+        Flagged(await GetAsync(feature)).ShouldBeTrue();
+        (await GetAsync(reconcile)).GetProperty("status").GetString().ShouldBe("closed");
+
+        // ---- Unarchived: the archive closed it, so it opens again ------------------------------
+        await SetArchivedAsync(false);
+        Flagged(await GetAsync(feature)).ShouldBeFalse();
+        (await GetAsync(reconcile)).GetProperty("status").GetString().ShouldBe("ready");
+
+        // ---- A person closes it, then the epic is archived and unarchived: it stays closed ----
+        await db.UpdateAsync(reconcile, new { status = "closed" });
+        await SetArchivedAsync(true);
+        Flagged(await GetAsync(feature)).ShouldBeTrue();
+        await SetArchivedAsync(false);
+        Flagged(await GetAsync(feature)).ShouldBeFalse();
+        (await GetAsync(reconcile)).GetProperty("status").GetString().ShouldBe("closed");
+    }
+}
+
+/// <summary>sc-27928: a table repository the project lists as a dependency becomes owned in its place, not listed twice.</summary>
+public sealed class WorkImportDependencyUpgradeMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    [Fact]
+    public async Task A_dependency_named_by_the_table_becomes_owned()
+    {
+        var key = "DU" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        await db.CallAsync(WorkTools.CreateWork, new
+        {
+            new_project = new { key, name = "Dependency", repositories = new[] { new { repository = "inference", role = "owned" }, new { repository = "codegraph", role = "dependency" } } }
+        });
+        var source = ImportFixtures.Empty();
+        source.Stories[99101] = ImportFixtures.Story(99101, "PR in CodeGraph", ImportFixtures.CodeGraphTeam) with
+        {
+            PullRequests = [new ShortcutPullRequest(1, "https://github.com/michaeltrefry/CodeGraph/pull/1", "x", true, false)]
+        };
+        var service = WorkImportMariaDbTests.Service(db, source, null, Path.Combine(Path.GetTempPath(), "cg-import-du-" + key));
+        await service.SaveSettingsAsync(ImportSources.Shortcut,
+            new ImportSettings(key + "H", [new ImportTeamMapping(ImportFixtures.CodeGraphTeam, key, "CodeGraph", Repositories: ["codegraph"])]), approve: true, "owner", CancellationToken.None);
+
+        var dry = (await service.RunAsync(ImportSources.Shortcut, "dry_run", null, "owner", CancellationToken.None)).Report!;
+        var report = (await service.RunAsync(ImportSources.Shortcut, "import", null, "owner", CancellationToken.None)).Report!;
+
+        report.Written.Failures.ShouldBe(0, string.Join("; ", report.Warnings));
+        report.Written.RepositoriesAttached.ShouldBe(1);
+        report.Projects[key].Repositories.ShouldBe(dry.Projects[key].Repositories);
+        report.Projects[key].Repositories.ShouldBe(["inference", "codegraph"]);
+        (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("repositories").EnumerateArray()
+            .Select(member => (member.GetProperty("repository").GetString(), member.GetProperty("role").GetString()))
+            .ShouldBe([("inference", "owned"), ("codegraph", "owned")]);
+        (await db.CallAsync(WorkTools.GetWork, new { id = "sc-99101" })).GetProperty("repository").GetString().ShouldBe("codegraph");
     }
 }
