@@ -24,9 +24,9 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         var targetSession = (await db.CallAsync(WorkTools.StartSession, new { project, harness = "codex" })).GetProperty("session").GetProperty("id").GetString();
         var source = await Lesson(project, "Use bounded retry on source operations", "source-event", "reviewing", sessionId: sourceSession);
         var sourceId = source.GetProperty("id").GetString()!;
-        source = await Lesson(project, "Use bounded retry on source operations", "shared-event", "reviewing", "agent", sourceId, sourceSession);
+        source = await Lesson(project, "Use bounded retry on source operations", "shared-event", "reviewing", "review", sourceId, sourceSession);
         // Original uncounted redeliveries must retain their flags when restored.
-        source = await Lesson(project, "Use bounded retry on source operations", "shared-event", "reviewing", "agent", sourceId, sourceSession);
+        source = await Lesson(project, "Use bounded retry on source operations", "shared-event", "reviewing", "review", sourceId, sourceSession);
         var target = await Lesson(project, "Use bounded retry for target operations", "shared-event", sessionId: targetSession);
         var targetId = target.GetProperty("id").GetString()!;
         var other = await Lesson(project, "Never retry these operations", "contradiction-event");
@@ -45,6 +45,7 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         var run = Guid.NewGuid();
         using (var scope = DreamExecutionScope.Begin(run, projectId, "scripted"))
         using (scope.UseEvidence([new DreamEvidence("entry", sourceId, "Duplicate rule and lesson: two sessions")]))
+        using (DreamWriteMetadata.Begin("Two events across two sessions"))
             await db.Store.RelateLessonAsync(Guid.Parse(sourceId), source.GetProperty("version").GetInt64(), Guid.Parse(targetId), null, scope.Actor);
         var merged = await Entry(targetId);
         merged.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
@@ -54,9 +55,11 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         var restored = (await db.CallAsync(WorkTools.Record, new { unmerge = new { id = sourceId, expected_version = superseded.GetProperty("version").GetInt64() } }, "another-user")).GetProperty("entry");
         restored.GetProperty("status").GetString().ShouldBe("active");
         restored.GetProperty("lesson").GetProperty("state").GetString().ShouldBe("rule");
+        restored.GetProperty("lesson").GetProperty("priority").GetString().ShouldBe("high");
         restored.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
         var targetAfter = await Entry(targetId);
         targetAfter.GetProperty("lesson").GetProperty("state").GetString().ShouldBe("candidate");
+        targetAfter.GetProperty("lesson").GetProperty("priority").GetString().ShouldBe("normal");
         targetAfter.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(1);
         targetAfter.GetProperty("details").GetProperty("applies_when").GetProperty("activity").EnumerateArray().Select(a => a.GetString()).ShouldBe(["implementing"]);
         (await connection.QueryAsync<(Guid CorrectionId, Guid EntryId, bool Counted)>("SELECT correction_id, entry_id, counted FROM lesson_events WHERE entry_id IN @ids ORDER BY correction_id", new { ids = new[] { sourceId, targetId } })).ShouldBe(original);
@@ -64,7 +67,7 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         (await connection.ExecuteScalarAsync<Guid>("SELECT entry_id FROM lesson_challenges WHERE id = @challenge", new { challenge })).ShouldBe(Guid.Parse(sourceId));
         (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE entry_id = @target OR other_id = @target", new { target = targetId })).ShouldBe(0);
         var stale = await db.RefusedAsync(WorkTools.Record, new { unmerge = new { id = sourceId, expected_version = superseded.GetProperty("version").GetInt64() } });
-        stale.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        stale.Code.ShouldBe(WorkErrorCodes.Conflict);
     }
 
     [Fact]

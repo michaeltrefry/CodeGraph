@@ -80,6 +80,10 @@ public sealed partial class MySqlWorkStore
         DreamPolicy.RequireProject(actor, projectId);
         DreamPolicy.RequireWrite(actor, "unmerge");
         await HoldProjectAsync(connection, transaction, projectId, ct);
+        var currentSource = (await ReadKnowledgeRowAsync(connection, transaction, entryId, ct))!;
+        if (currentSource.Version != expectedVersion)
+            throw new WorkException(WorkErrorCodes.Conflict, "The lesson changed after it was read. Read it again and use its current version. Nothing was changed.",
+                await LoadKnowledgeViewAsync(connection, transaction, entryId, false, ct));
         var journal = await connection.QuerySingleOrDefaultAsync<(long SourceVersion, Guid TargetId, string SnapshotJson)?>(new CommandDefinition(
             "SELECT source_version, target_id, snapshot_json FROM lesson_merges WHERE source_id = @entryId AND unmerged_at IS NULL ORDER BY source_version DESC LIMIT 1 FOR UPDATE",
             new { entryId }, transaction, cancellationToken: ct))

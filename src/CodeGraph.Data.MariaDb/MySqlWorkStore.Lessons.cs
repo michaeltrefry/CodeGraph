@@ -803,6 +803,7 @@ public sealed partial class MySqlWorkStore
             "SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE",
             new { ids = new[] { entryId.ToString(), other.ToString() } }, transaction, cancellationToken: ct));
 
+        var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId, other], ct);
         var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
         if (before.Kind != "lesson")
             throw WorkException.Invalid($"Entry {entryId} is a {before.Kind}; relate takes lessons. Nothing was changed.");
@@ -817,6 +818,7 @@ public sealed partial class MySqlWorkStore
             await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "contradicted", actor, now, ct);
             await BumpLessonAsync(connection, transaction, target, "contradicted", actor, now, ct);
             var linked = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "contradicts", ct);
             return linked;
         }
 
@@ -833,6 +835,7 @@ public sealed partial class MySqlWorkStore
         await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "merged", actor, now, ct);
         await BumpLessonAsync(connection, transaction, target, "merged_into", actor, now, ct);
         var view = (await LoadKnowledgeViewAsync(connection, transaction, other, withRevisions: false, ct))!;
+        await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "same_as", ct);
         return view;
     }
 
