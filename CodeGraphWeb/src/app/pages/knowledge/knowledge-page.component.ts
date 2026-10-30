@@ -177,6 +177,12 @@ export class KnowledgePageComponent implements OnInit {
     await this.write(() => firstValueFrom(this.api.record({ verify: { id: entry.id, expected_version: entry.version } })), 'Verified against the current index.');
   }
 
+  async unmerge(): Promise<void> {
+    const entry = this.selected();
+    if (!entry) return;
+    await this.write(() => firstValueFrom(this.api.record({ unmerge: { id: entry.id, expected_version: entry.version } })), 'Unmerged: the lesson and its transferred evidence are restored.');
+  }
+
   async acknowledge(): Promise<void> {
     const entry = this.selected();
     if (!entry) return;

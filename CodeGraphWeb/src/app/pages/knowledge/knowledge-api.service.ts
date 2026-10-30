@@ -46,7 +46,7 @@ export class KnowledgeApiService {
       .pipe(map(result => result.items[0]));
   }
 
-  /** record: entry (with supersedes), revise, retract, verify, relate or acknowledge. */
+  /** record: entry (with supersedes), revise, retract, verify, relate, unmerge or acknowledge. */
   record(body: RecordBody): Observable<RecordResult> {
     return this.http.post<RecordResult>(`${this.base}/knowledge`, body);
   }

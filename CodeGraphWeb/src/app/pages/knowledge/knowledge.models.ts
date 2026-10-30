@@ -348,6 +348,7 @@ export interface RecordBody {
   retract?: { id: string; expected_version: number; reason: string };
   verify?: { id: string; expected_version: number };
   relate?: { id: string; expected_version: number; same_as?: string; contradicts?: string };
+  unmerge?: { id: string; expected_version: number };
   acknowledge?: { id: string; expected_version: number };
 }
 

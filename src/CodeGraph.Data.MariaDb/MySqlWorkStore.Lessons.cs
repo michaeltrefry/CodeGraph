@@ -33,6 +33,7 @@ public sealed partial class MySqlWorkStore
         public Guid CorrectionId { get; init; }
         public Guid EntryId { get; init; }
         public string EventHash { get; init; } = "";
+        public string? AppliesWhenJson { get; init; }
         public bool Counted { get; init; }
         public bool RuleAtEvent { get; init; }
         public bool? Served { get; init; }
@@ -193,15 +194,15 @@ public sealed partial class MySqlWorkStore
         string key, bool counted, bool ruleAtEvent, bool? served, Guid? item, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, source_ref_key, " +
-            "summary, summary_hash, what, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
-            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @item, @session, @author, @authorKind, " +
+            "summary, summary_hash, what, applies_when_json, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
+            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @appliesWhen, @item, @session, @author, @authorKind, " +
             "@harness, @model, @host, @now)",
             new
             {
                 correction = spec.Id, entryId, projectId, key = key.Length > 600 ? key[..600] : key, hash = Sha(key), counted, ruleAtEvent, served,
                 sourceKind = spec.Details?.Source is { } source ? JsonName(source.Kind) : null, sourceRef = spec.Details?.Source?.Ref,
                 sourceRefKey = SourceRefKey(spec.Details?.Source?.Ref),
-                summary = spec.Summary, summaryHash = KnowledgePaths.HashSummary(spec.Summary), what = spec.Details?.What, item,
+                summary = spec.Summary, summaryHash = KnowledgePaths.HashSummary(spec.Summary), what = spec.Details?.What, appliesWhen = AppliesWhenJson(spec.Details?.AppliesWhen), item,
                 session = actor.SessionId, author = actor.Name, authorKind = actor.Kind, harness = actor.Harness, model = actor.Model, host = actor.Host, now
             },
             transaction, cancellationToken: ct));
@@ -393,7 +394,7 @@ public sealed partial class MySqlWorkStore
         entryIds.Count == 0
             ? Array.Empty<EventRow>().ToLookup(row => row.EntryId)
             : (await connection.QueryAsync<EventRow>(new CommandDefinition(
-                "SELECT correction_id, entry_id, event_hash, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
+                "SELECT correction_id, entry_id, event_hash, applies_when_json, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
                 "FROM lesson_events WHERE entry_id IN @ids ORDER BY created_at, correction_id",
                 new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct))).ToLookup(row => row.EntryId);
 
@@ -774,51 +775,61 @@ public sealed partial class MySqlWorkStore
 
     // ---- record relate / acknowledge ----------------------------------------------------------------
 
+    public const string LessonMergeLockName = "codegraph_lesson_merges";
+
     public Task<KnowledgeView> RelateLessonAsync(Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, CancellationToken ct = default) =>
-        RunAsync([], async connection =>
+        RunAsync([LessonMergeLockName], async connection =>
         {
-            var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            var other = sameAs ?? contradicts ?? throw WorkException.Invalid("relate needs same_as or contradicts. Nothing was changed.");
-            if (other == entryId)
-                throw WorkException.Invalid("A lesson cannot be related to itself. Nothing was changed.");
-            var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
-                "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
-                ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
-            var project = await HoldProjectAsync(connection, transaction, projectId, ct);
-            // Both rows, in id order.
-            await connection.ExecuteAsync(new CommandDefinition(
-                "SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE",
-                new { ids = new[] { entryId.ToString(), other.ToString() } }, transaction, cancellationToken: ct));
-
-            var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
-            if (before.Kind != "lesson")
-                throw WorkException.Invalid($"Entry {entryId} is a {before.Kind}; relate takes lessons. Nothing was changed.");
-            var target = await RequireLessonAsync(connection, transaction, project.Id, other, sameAs is not null ? "relate.same_as" : "relate.contradicts", ct);
-
-            if (contradicts is not null)
-            {
-                await LinkContradictionAsync(connection, transaction, entryId, other, actor, now, ct);
-                await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "contradicted", actor, now, ct);
-                await BumpLessonAsync(connection, transaction, target, "contradicted", actor, now, ct);
-                var linked = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
-                await transaction.CommitAsync(ct);
-                return linked;
-            }
-
-            // same_as: the lesson is merged into the target and superseded by it; its corrections,
-            // links, open challenges, applies-when and rule status pass to the target.
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @target, status_reason = @reason WHERE id = @entryId",
-                new { target = other, reason = $"Merged into {other}: the same lesson.", entryId }, transaction, cancellationToken: ct));
-            await TransferLessonAsync(connection, transaction, before, other, actor, now, uniteAppliesWhen: true, ct);
-
-            await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "merged", actor, now, ct);
-            await BumpLessonAsync(connection, transaction, target, "merged_into", actor, now, ct);
-            var view = (await LoadKnowledgeViewAsync(connection, transaction, other, withRevisions: false, ct))!;
+            var result = await RelateLessonCoreAsync(connection, transaction, entryId, expectedVersion, sameAs, contradicts, actor, Now(), ct);
             await transaction.CommitAsync(ct);
-            return view;
+            return result;
         }, ct);
+
+    private async Task<KnowledgeView> RelateLessonCoreAsync(MySqlConnection connection, MySqlTransaction transaction,
+        Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, DateTime now, CancellationToken ct)
+    {
+        var other = sameAs ?? contradicts ?? throw WorkException.Invalid("relate needs same_as or contradicts. Nothing was changed.");
+        if (other == entryId)
+            throw WorkException.Invalid("A lesson cannot be related to itself. Nothing was changed.");
+        var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+            "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
+            ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+        var project = await HoldProjectAsync(connection, transaction, projectId, ct);
+        // Both rows, in id order.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE",
+            new { ids = new[] { entryId.ToString(), other.ToString() } }, transaction, cancellationToken: ct));
+
+        var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
+        if (before.Kind != "lesson")
+            throw WorkException.Invalid($"Entry {entryId} is a {before.Kind}; relate takes lessons. Nothing was changed.");
+        var target = await RequireLessonAsync(connection, transaction, project.Id, other, sameAs is not null ? "relate.same_as" : "relate.contradicts", ct);
+
+        if (contradicts is not null)
+        {
+            await LinkContradictionAsync(connection, transaction, entryId, other, actor, now, ct);
+            await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "contradicted", actor, now, ct);
+            await BumpLessonAsync(connection, transaction, target, "contradicted", actor, now, ct);
+            var linked = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            return linked;
+        }
+
+        var merge = await CaptureLessonMergeAsync(connection, transaction, before, target, ct);
+
+        // same_as: the lesson is merged into the target and superseded by it; its corrections,
+        // links, open challenges, applies-when and rule status pass to the target.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @target, status_reason = @reason WHERE id = @entryId",
+            new { target = other, reason = $"Merged into {other}: the same lesson.", entryId }, transaction, cancellationToken: ct));
+        await TransferLessonAsync(connection, transaction, before, other, actor, now, uniteAppliesWhen: true, ct);
+
+        await SaveLessonMergeAsync(connection, transaction, merge, before.Version, actor, now, ct);
+        await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "merged", actor, now, ct);
+        await BumpLessonAsync(connection, transaction, target, "merged_into", actor, now, ct);
+        var view = (await LoadKnowledgeViewAsync(connection, transaction, other, withRevisions: false, ct))!;
+        return view;
+    }
 
     public Task<KnowledgeView> AcknowledgeKnowledgeAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default) =>
         ChangeKnowledgeAsync(entryId, expectedVersion, "acknowledged", actor, async (connection, transaction, before, now) =>
