@@ -55,7 +55,8 @@ public partial class IndexingPipeline
             .DistinctBy(node => node.QualifiedName).ToList();
         var references = buffer.AllNodes.Where(node => TypeScriptNodeText(node.Properties.GetValueOrDefault("kind")) is
             "tauri_command_reference" or "tauri_event_reference").ToList();
-        var analysis = TauriOperationAnalysis.Analyze(repository, sources, declarations, references);
+        var analysis = TauriOperationAnalysis.Analyze(repository, sources, declarations, references,
+            ct, _options.MaxTauriAnalysisWork, _options.MaxTauriAnalysisDepth);
         foreach (var diagnostic in analysis.Diagnostics) _logger.LogInformation("{Diagnostic}", diagnostic);
         if (!analysis.Result.Complete)
             throw new InvalidOperationException("Tauri analysis incomplete; prior graph and source hashes are preserved. "
@@ -71,7 +72,8 @@ public partial class IndexingPipeline
         // source slices. Restore their complete non-Tauri outgoing facts, then add fresh native
         // facts; a removed command must not remove the actual Rust function's other dependencies.
         var restorePaths = changed.Where(path => !freshlyProcessedFiles.Contains(path) && !deletedFiles.Contains(path)).ToList();
-        var restoreNodes = persistedNodes.Where(node => restorePaths.Contains(node.FilePath, StringComparer.OrdinalIgnoreCase)).ToList();
+        var restorePathSet = restorePaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var restoreNodes = persistedNodes.Where(node => restorePathSet.Contains(node.FilePath)).ToList();
         var missingPaths = restorePaths.Except(restoreNodes.Select(node => node.FilePath), StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var batch in missingPaths.Chunk(500)) restoreNodes.AddRange(await _store.FindNodesByFilesAsync(repository, batch, ct));
         var byId = restoreNodes.DistinctBy(node => node.Id).ToDictionary(node => node.Id);

@@ -26,6 +26,14 @@ public class IndexingOptions
     /// <summary>Total decoded text budget (KB) shared by native endpoint and Tauri analysis per run.</summary>
     public int MaxRegistrationAnalysisTextKb { get; set; } = 64 * 1024;
 
+    /// <summary>Deterministic examined work allowed for source-only Tauri binding analysis.
+    /// Exhaustion preserves the prior graph/hashes; raising this limit retries unchanged commits.</summary>
+    public long MaxTauriAnalysisWork { get; set; } = 20_000_000;
+
+    /// <summary>Maximum Tauri delimiter, module/import and constant-resolution nesting depth,
+    /// capped at 512 to keep recursive parsing within a safe stack bound.</summary>
+    public int MaxTauriAnalysisDepth { get; set; } = 128;
+
     /// <summary>
     /// Per-extension size limits (KB) that replace <see cref="MaxFileSizeKb"/>. Swift defaults to
     /// 2048: generated Swift (e.g. a 714 KB, ~240-type DTO file) is legitimate code, and

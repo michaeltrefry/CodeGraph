@@ -968,7 +968,8 @@ public partial class IndexingPipeline
             .OrderBy(entry => entry.Extension, StringComparer.Ordinal)
             .Select(entry => $"{entry.Extension}={entry.Limit}")
             .Prepend($"*={_options.MaxFileSizeKb}")
-            .Append($"registration-text={_options.MaxRegistrationAnalysisTextKb}"));
+            .Append($"registration-text={_options.MaxRegistrationAnalysisTextKb}")
+            .Append($"tauri-work={_options.MaxTauriAnalysisWork};tauri-depth={_options.MaxTauriAnalysisDepth}"));
 
     private const string CargoManifestFileName = "Cargo.toml";
 

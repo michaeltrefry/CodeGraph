@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using CodeGraph.Models;
 using CodeGraph.Data;
@@ -15,6 +17,206 @@ namespace CodeGraph.Tests.Services;
 
 public class TauriOperationAnalysisTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CommandRegistrationWork_GrowsWithIndexedInputRatherThanAllDeclarationPairs(bool sameNames)
+    {
+        long previous = 0;
+        foreach (var count in new[] { 250, 500, 1000 })
+        {
+            var fixture = Commands(count, sameNames);
+            var analysis = TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, []);
+            analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+            analysis.Result.Nodes.Count.ShouldBe(count);
+            analysis.Result.Edges.Count.ShouldBe(count);
+            analysis.Result.Edges.Select(edge => edge.TargetQN).Order().ShouldBe(fixture.Declarations.Select(node => node.QualifiedName).Order());
+            if (previous > 0) analysis.WorkUnits.ShouldBeLessThan(previous * 5 / 2);
+            previous = analysis.WorkUnits;
+            TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, []).WorkUnits.ShouldBe(analysis.WorkUnits);
+        }
+    }
+
+    [Fact]
+    public void IndexedCommandAndDeclarationAmbiguity_IsPreserved()
+    {
+        var fixture = Commands(1);
+        var declaration = fixture.Declarations.Single();
+        var duplicate = declaration with { QualifiedName = "another-declaration" };
+        TauriOperationAnalysis.Analyze("App", fixture.Sources, [declaration, duplicate], []).Result.Complete.ShouldBeFalse();
+        fixture.Sources["apps/desktop/src/lib.rs"] = "#[tauri::command]\nfn cmd000000() {}\n#[tauri::command]\nfn cmd000000() {}\nfn run() { tauri::Builder::default().invoke_handler(tauri::generate_handler![cmd000000]); }";
+        var analysis = TauriOperationAnalysis.Analyze("App", fixture.Sources, [declaration], []);
+        analysis.Result.Complete.ShouldBeFalse();
+        analysis.Diagnostics.ShouldContain(message => message.Contains("2 admitted command declarations"));
+    }
+
+    [Fact]
+    public void UnrelatedRepositoryDeclarations_DoNotEnterNativeNameOrSpanIndexes()
+    {
+        var fixture = Commands(1);
+        var baseline = TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, []);
+        var declarations = new List<GraphNode>(fixture.Declarations);
+        var unrelatedName = new string('x', 100_000);
+        for (var index = 0; index < 50_000; index++)
+            declarations.Add(new GraphNode { Repository = "App", Label = NodeLabel.Function, Name = unrelatedName,
+                QualifiedName = "unrelated:" + index, FilePath = "engines/worker/src/unrelated.rs", StartLine = index, EndLine = index });
+        var analysis = TauriOperationAnalysis.Analyze("App", fixture.Sources, declarations, []);
+        analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+        analysis.Result.Nodes.Select(node => node.QualifiedName).ShouldBe(baseline.Result.Nodes.Select(node => node.QualifiedName));
+        (analysis.WorkUnits - baseline.WorkUnits).ShouldBeLessThan(100_000);
+    }
+
+    [Fact]
+    public void LongSharedModulesAndRepeatedEventScans_CannotBypassWorkBudget()
+    {
+        var fixture = Commands(200);
+        var module = new string('m', 4096);
+        fixture.Sources["apps/desktop/src/lib.rs"] = "mod " + module + " {\n" + fixture.Sources["apps/desktop/src/lib.rs"] + "\n}";
+        var bounded = TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, [], maxWork: 100_000);
+        bounded.Result.Complete.ShouldBeFalse(); bounded.WorkUnits.ShouldBeLessThanOrEqualTo(100_000);
+        bounded.Diagnostics.ShouldContain(message => message.Contains("work budget"));
+        var complete = TauriOperationAnalysis.Analyze("App", fixture.Sources,
+            fixture.Declarations.Select(node => node with { StartLine = node.StartLine + 1, EndLine = node.EndLine + 1 }).ToList(), []);
+        complete.Result.Complete.ShouldBeTrue(string.Join(';', complete.Diagnostics));
+        complete.Result.Nodes.Count.ShouldBe(200);
+
+        var events = Fixture();
+        events["apps/desktop/src/lib.rs"] = "use tauri::{AppHandle, Emitter};\nfn producer(app: AppHandle) {\n"
+            + string.Concat(Enumerable.Repeat("app.emit(\"event\", ());\n", 1000)) + "}\n";
+        var eventResult = TauriOperationAnalysis.Analyze("App", events, Functions(events), [], maxWork: 500_000);
+        eventResult.Result.Complete.ShouldBeFalse(); eventResult.WorkUnits.ShouldBeLessThanOrEqualTo(500_000);
+        eventResult.Diagnostics.ShouldContain(message => message.Contains("work budget"));
+    }
+
+    [Fact]
+    public void WorkAndDepthExhaustion_AreIncompleteAndDiagnosticsRemainBounded()
+    {
+        var fixture = Commands(10);
+        var budget = TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, [], maxWork: 100);
+        budget.Result.Complete.ShouldBeFalse(); budget.Result.Nodes.ShouldBeEmpty(); budget.WorkUnits.ShouldBeLessThanOrEqualTo(100);
+        budget.Diagnostics.ShouldContain(message => message.Contains("work budget exhausted"));
+        fixture.Sources["apps/desktop/src/lib.rs"] += "\n" + string.Concat(Enumerable.Repeat("mod nested {", 20)) + "fn helper() {}" + new string('}', 20);
+        var depth = TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, [], maxDepth: 4);
+        depth.Result.Complete.ShouldBeFalse(); depth.Diagnostics.ShouldContain(message => message.Contains("depth limit"));
+        var references = Enumerable.Range(0, 1000).Select(index => Reference("missing" + index)).ToList();
+        var noisy = TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, references);
+        noisy.Result.Complete.ShouldBeTrue(string.Join(';', noisy.Diagnostics));
+        noisy.Diagnostics.Count.ShouldBeLessThanOrEqualTo(100);
+        noisy.Diagnostics.ShouldContain(message => message.StartsWith("tauriCoverage:"));
+    }
+
+    [Fact]
+    public void Cancellation_IsObservedBeforeAndDuringAnalysis()
+    {
+        var fixture = Commands(100);
+        using var preCancelled = new CancellationTokenSource(); preCancelled.Cancel();
+        Should.Throw<OperationCanceledException>(() => TauriOperationAnalysis.Analyze("App", fixture.Sources, fixture.Declarations, [], preCancelled.Token));
+        using var midCancelled = new CancellationTokenSource();
+        var cancellingDeclarations = new CancellingDeclarations(fixture.Declarations, midCancelled);
+        Should.Throw<OperationCanceledException>(() => TauriOperationAnalysis.Analyze("App", fixture.Sources, cancellingDeclarations, [], midCancelled.Token));
+        cancellingDeclarations.Read.ShouldBeGreaterThan(0);
+        cancellingDeclarations.Read.ShouldBeLessThan(fixture.Declarations.Count);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RefusedAnalysis_PreservesPersistedGraphHashesAndUnchangedReruns(bool rebuild, bool depth)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "codegraph-tauri-work-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var sources = Fixture();
+            sources["apps/desktop/src/lib.rs"] += string.Concat(Enumerable.Repeat("\nmod nested {", 8)) + "fn helper() {}" + new string('}', 8);
+            Write(root, sources);
+            var store = new InMemoryGraphStore();
+            IndexingPipeline Create(IndexingOptions options) => new(store, [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+                Options.Create(options), new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance);
+            var pipeline = Create(new IndexingOptions());
+            await pipeline.IndexRepositoryAsync("App", root);
+            var before = JsonSerializer.Serialize(new { store.Nodes, store.Edges });
+            var hashes = store.FileHashesOf("App").ToDictionary();
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            await pipeline.IndexRepositoryAsync("App", root);
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+            var options = new IndexingOptions();
+            if (depth) options.MaxTauriAnalysisDepth = 4; else options.MaxTauriAnalysisWork = 100;
+            sources["apps/desktop/src/lib.rs"] += "\n// source changed, replacement must be withheld"; Write(root, sources);
+            (await Should.ThrowAsync<InvalidOperationException>(() => Create(options).IndexRepositoryAsync("App", root, replaceExistingGraph: rebuild)))
+                .Message.ShouldContain(depth ? "depth limit" : "work budget");
+            JsonSerializer.Serialize(new { store.Nodes, store.Edges }).ShouldBe(before);
+            store.FileHashesOf("App").ShouldBe(hashes);
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void WorkPolicyParticipatesInRoutineSyncFingerprint()
+    {
+        IndexingPipeline Create(long work, int depth) => new(new InMemoryGraphStore(), [], Options.Create(new IndexingOptions
+            { MaxTauriAnalysisWork = work, MaxTauriAnalysisDepth = depth }), new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance);
+        Create(100, 4).ExtractionFingerprint.ShouldNotBe(Create(101, 4).ExtractionFingerprint);
+        Create(100, 4).ExtractionFingerprint.ShouldNotBe(Create(100, 5).ExtractionFingerprint);
+        ExtractionVersionCatalog.PipelineVersion.ShouldBe(10);
+    }
+
+    private static (Dictionary<string, string> Sources, List<GraphNode> Declarations) Commands(int count, bool sameNames = false)
+    {
+        var sources = Fixture(); var declarations = new List<GraphNode>(); var content = new StringBuilder(); var registrations = new List<string>();
+        for (var index = 0; index < count; index++)
+        {
+            var name = sameNames ? "command" : $"cmd{index:D6}";
+            var target = sameNames ? $"m{index:D6}::{name}" : name;
+            if (sameNames) content.Append("mod m").Append(index.ToString("D6")).Append(" { #[tauri::command(rename=\"command")
+                .Append(index.ToString("D6")).Append("\")] fn ").Append(name).Append("() {} }\n");
+            else content.Append("#[tauri::command]\nfn ").Append(name).Append("() {}\n");
+            registrations.Add(target);
+            var line = sameNames ? index + 1 : index * 2 + 2;
+            // Same Rust names need distinct exposed names too, so each remains a valid binding.
+            declarations.Add(new GraphNode { Repository = "App", Label = NodeLabel.Function, Name = name, QualifiedName = "rust:" + target,
+                FilePath = "apps/desktop/src/lib.rs", StartLine = line, EndLine = line });
+        }
+        content.Append("fn run() { tauri::Builder::default().invoke_handler(tauri::generate_handler![")
+            .AppendJoin(',', registrations).Append("]); }");
+        sources["apps/desktop/src/lib.rs"] = content.ToString(); return (sources, declarations);
+    }
+
+    private sealed class CancellingDeclarations(IReadOnlyList<GraphNode> declarations, CancellationTokenSource cancellation) : IReadOnlyList<GraphNode>
+    {
+        public int Read { get; private set; }
+        public int Count => declarations.Count;
+        public GraphNode this[int index] => declarations[index];
+        public IEnumerator<GraphNode> GetEnumerator()
+        {
+            foreach (var declaration in declarations)
+            {
+                if (++Read == 10) cancellation.Cancel();
+                yield return declaration;
+            }
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    [Fact]
+    public void RawByteStringsWithEmbeddedQuotes_DoNotExposeApostrophesInLaterStrings()
+    {
+        var sources = Fixture();
+        sources["apps/desktop/src/lib.rs"] = """
+            fn helper() {
+                let xml = br#"<?xml version="1.0" encoding="UTF-8"?>"#;
+                let error = "'nvidia-smi' is not recognized as an internal or external command";
+                let escaped = "quoted \"'text'\"";
+            }
+            """ + "\n" + sources["apps/desktop/src/lib.rs"];
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, Functions(sources), [Reference("get_app_overview")]);
+        analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+        analysis.Result.Edges.ShouldContain(edge => edge.Type == EdgeType.CALLS && edge.TargetQN == "rust:apps/desktop/src/lib.rs:get_app_overview");
+    }
+
     [Theory]
     [InlineData("'\\\"'")]
     [InlineData("'\\''")]
