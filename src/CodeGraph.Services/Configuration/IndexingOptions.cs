@@ -2,6 +2,13 @@ namespace CodeGraph.Services.Configuration;
 
 public class IndexingOptions
 {
+    /// <summary>Shared examined work for HTTP route indexing, matching and reconciliation.
+    /// Refusal preserves prior graph/hashes; changing the limit retries unchanged commits.</summary>
+    public long MaxHttpBindingWork { get; set; } = 100_000_000;
+
+    /// <summary>HTTP path segment limit (capped at 512); trie traversal is iterative.</summary>
+    public int MaxHttpBindingDepth { get; set; } = 128;
+
     public int MaxParallelFiles { get; set; } = 8;
 
     /// <summary>

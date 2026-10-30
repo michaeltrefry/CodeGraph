@@ -970,7 +970,8 @@ public partial class IndexingPipeline
             .Prepend($"*={_options.MaxFileSizeKb}")
             .Append($"registration-text={_options.MaxRegistrationAnalysisTextKb}")
             .Append($"endpoint-work={_options.MaxBackendEndpointAnalysisWork};endpoint-depth={_options.MaxBackendEndpointAnalysisDepth}")
-            .Append($"tauri-work={_options.MaxTauriAnalysisWork};tauri-depth={_options.MaxTauriAnalysisDepth}"));
+            .Append($"tauri-work={_options.MaxTauriAnalysisWork};tauri-depth={_options.MaxTauriAnalysisDepth}")
+            .Append($"http-work={_options.MaxHttpBindingWork};http-depth={_options.MaxHttpBindingDepth}"));
 
     private const string CargoManifestFileName = "Cargo.toml";
 
