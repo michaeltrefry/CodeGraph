@@ -143,6 +143,18 @@ public class TypeScriptSidecarFailureTests
         sidecar.ExtractBodies.ShouldBeEmpty();
     }
 
+    [Fact]
+    public async Task V2SidecarWithoutReactWorkLimits_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 2);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
     /// <summary>A minimal stand-in for the Node sidecar on a free loopback port.</summary>
     private sealed class FakeSidecar : IAsyncDisposable
     {
@@ -154,7 +166,7 @@ public class TypeScriptSidecarFailureTests
         public List<string> ExtractBodies { get; } = [];
         public List<string> ScopeFileContents { get; } = [];
 
-        public static async Task<FakeSidecar> StartAsync(HttpStatusCode extractStatus, string extractBody, bool supportsSourceBounds = true, int sourceBoundsVersion = 2)
+        public static async Task<FakeSidecar> StartAsync(HttpStatusCode extractStatus, string extractBody, bool supportsSourceBounds = true, int sourceBoundsVersion = 3)
         {
             var builder = WebApplication.CreateSlimBuilder();
             builder.Logging.ClearProviders();
