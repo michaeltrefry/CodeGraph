@@ -35,7 +35,8 @@ public sealed partial class WorkService(
     IKnowledgeStore? knowledgeStore = null,
     // Lesson similarity (S9): the embedding provider (local ONNX in the hosts) and the lesson settings.
     CodeGraph.Services.Embeddings.IEmbeddingService? embeddingService = null,
-    IOptions<WorkLessonOptions>? lessonOptions = null) : IWorkService
+    IOptions<WorkLessonOptions>? lessonOptions = null,
+    IServiceProvider? serviceProvider = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -82,6 +83,8 @@ public sealed partial class WorkService(
             return await ExecuteDreamerWorkAsync(tool, arguments, actor, ct);
         if (DreamExecutionScope.Current is not null)
             throw new WorkException(WorkErrorCodes.Forbidden, "The dreamer may not replace its actor identity.");
+        if (tool is WorkTools.DreamRun or WorkTools.DreamRuns or WorkTools.DreamSettings or WorkTools.DreamInstructions or WorkTools.DreamRevert)
+            return await ExecuteDreamSurfaceAsync(tool, arguments, actor, ct);
         // Every argument is read before anything is written, the heartbeat included.
         object request = tool switch
         {

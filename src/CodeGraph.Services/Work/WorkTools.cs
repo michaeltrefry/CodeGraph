@@ -35,6 +35,11 @@ public static class WorkTools
     public const string Challenge = "challenge";
     public const string Lessons = "lessons";
     public const string ReviewQueue = "review_queue";
+    public const string DreamRun = "dream_run";
+    public const string DreamRuns = "dream_runs";
+    public const string DreamSettings = "dream_settings";
+    public const string DreamInstructions = "dream_instructions";
+    public const string DreamRevert = "dream_revert";
 
     private const string SavePoints =
         " Save points: decisions, attempts, corrections (lessons) and findings (facts, gotchas, constraints) are stored as entries of the project's knowledge " +
@@ -62,6 +67,11 @@ public static class WorkTools
 
     public static readonly IReadOnlyList<WorkToolDefinition> All =
     [
+        new(DreamRun,"Run Dreaming",typeof(DreamRunRequest),"Run a budgeted knowledge-curation pass for one project. No signal skips without a model call; an active run returns busy.",false,false),
+        new(DreamRuns,"Dreaming Runs",typeof(DreamRunsRequest),"List project runs newest first, with before (last run id) for older pages; id reads one full report.",true,true),
+        new(DreamSettings,"Dreaming Settings",typeof(DreamSettingsRequest),"Read settings, or replace settings: tool-use provider/model, budget, interval, nightly schedule and token costs.",false,true),
+        new(DreamInstructions,"Dreaming Instructions",typeof(DreamInstructionsRequest),"Read the base and project conventions-wiki instruction pages with revision history, or edit content using scope and expected_revision.",false,true),
+        new(DreamRevert,"Revert Dreaming Run",typeof(DreamRevertRequest),"Revert direct writes newest first as new revisions, reporting conflicts with later edits.",false,true),
         new(CreateWork, "Create Work", typeof(CreateWorkRequest),
             "Create work in a Project: a new_project; or, in project, one feature (with documents), one item, or a whole plan. " +
             "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, up to 10 acceptance_criteria (0 allowed for backward compatibility), inherits (requirements of their feature) and touches. " +

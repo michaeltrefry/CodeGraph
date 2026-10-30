@@ -8,6 +8,7 @@ public interface IDreamingService
     Task<DreamRun> RunAsync(Guid projectId, string trigger, WorkActor initiator, CancellationToken ct = default);
     Task<DreamRun?> GetRunAsync(Guid projectId, Guid runId, CancellationToken ct = default);
     Task<IReadOnlyList<DreamRun>> ListRunsAsync(Guid projectId, int limit = 30, CancellationToken ct = default);
+    Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId, Guid? before, int limit = 30, CancellationToken ct = default);
     Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default);
     Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default);
     Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default);

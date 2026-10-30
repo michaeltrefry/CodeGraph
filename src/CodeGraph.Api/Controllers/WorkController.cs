@@ -19,7 +19,7 @@ namespace CodeGraph.Api.Controllers;
 [ApiController]
 [Authorize(AuthenticationSchemes = CodeGraphAuthenticationDefaults.Scheme + "," + McpPatAuthenticationDefaults.Scheme)]
 [Route("api/work")]
-public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<WorkController> logger) : ControllerBase
+public sealed partial class WorkController(IWorkService work, IMcpHubStore hub, ILogger<WorkController> logger) : ControllerBase
 {
     /// <summary>create_work.</summary>
     [HttpPost]
@@ -370,6 +370,7 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
 
     public static int StatusFor(string code) => code switch
     {
+        WorkErrorCodes.Forbidden => StatusCodes.Status403Forbidden,
         WorkErrorCodes.InvalidArgument => StatusCodes.Status400BadRequest,
         WorkErrorCodes.NotFound => StatusCodes.Status404NotFound,
         WorkErrorCodes.Conflict or WorkErrorCodes.AlreadyClaimed or WorkErrorCodes.Cycle or WorkErrorCodes.ClaimLost => StatusCodes.Status409Conflict,

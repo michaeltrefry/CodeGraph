@@ -55,6 +55,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IMetricsEventStore, MySqlMetricsEventStore>();
         services.AddTransient<IAdminReportsStore, MySqlAdminReportsStore>();
         services.AddTransient<IApplicationLogStore, MySqlApplicationLogStore>();
+        services.AddTransient<IDreamingStore, MySqlDreamingStore>();
         services.AddTransient<IWorkStore, MySqlWorkStore>();
         services.AddTransient<IWorkSessionPruner, MySqlWorkStore>();
         // The knowledge store (S5) is the work store: save points share the work write's transaction.

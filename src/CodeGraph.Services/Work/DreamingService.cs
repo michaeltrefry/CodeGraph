@@ -10,6 +10,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     public Task<DreamRun?> GetRunAsync(Guid projectId, Guid runId, CancellationToken ct = default) => store.GetRunAsync(projectId,runId,ct);
     public Task<IReadOnlyList<DreamRun>> ListRunsAsync(Guid projectId, int limit = 30, CancellationToken ct = default) => store.ListRunsAsync(projectId,limit,ct);
+    public Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId,Guid? before,int limit=30,CancellationToken ct=default)=>store.ListRunsBeforeAsync(projectId,before,limit,ct);
     public Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default) => store.GetSettingsAsync(ct);
     public Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default) => store.GetInstructionsAsync(projectId,ct);
     public Task<DreamInstructions> SetInstructionsAsync(Guid projectId,string scope,string content,int expectedRevision,WorkActor actor,CancellationToken ct=default) => store.SetInstructionsAsync(projectId,scope,content,expectedRevision,actor,ct);
