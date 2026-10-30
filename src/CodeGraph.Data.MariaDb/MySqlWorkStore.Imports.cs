@@ -182,6 +182,9 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             var after = (await LoadFeatureViewAsync(connection, transaction, existing.Id, withCounts: false, ct))!;
             var addedViews = after.Documents.Where(document => before.Documents.All(prior => prior.Id != document.Id)).ToList();
             var changes = WithDocuments(Diff(Snapshot(before), Snapshot(after)), addedViews, changed);
+            // What the feature came from changed (the source archived it, sc-27929): in the feed like any field.
+            if (existing.ImportedJson != imported)
+                changes.Add(Change("imported", existing.ImportedJson is null ? null : JsonNode.Parse(existing.ImportedJson), spec.Imported));
             await CommitAsync(connection, transaction,
                 [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated, changes)],
                 actor, now, ct);
@@ -728,6 +731,17 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             "WHERE source = @source ORDER BY started_at DESC LIMIT @limit",
             new { source, limit = Math.Clamp(limit, 1, 100) }, cancellationToken: ct));
         return rows.Select(row => row.ToView()).ToList();
+    }
+
+    public async Task<IReadOnlyList<IndexedRepository>> ListIndexedRepositoriesAsync(CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<IndexedRepository>(new CommandDefinition(
+            "SELECT r.name AS Name, r.repo_url AS RepoUrl, " +
+            "(SELECT p.project_key FROM work_project_repositories w JOIN work_projects p ON p.id = w.project_id WHERE w.repository_name = r.name AND w.role = 'owned' LIMIT 1) AS OwnedBy " +
+            "FROM repositories r ORDER BY r.name",
+            cancellationToken: ct));
+        return rows.ToList();
     }
 
     public async Task<ImportRunView?> LastCompletedImportAsync(string source, CancellationToken ct = default)

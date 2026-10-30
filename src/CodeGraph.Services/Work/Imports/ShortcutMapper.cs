@@ -126,19 +126,46 @@ public static partial class ShortcutMapper
         return links.Where(link => link.Url.Length <= 2048).DistinctBy(link => (link.Kind, link.Url)).ToList();
     }
 
-    /// <summary>The repositories the story's PRs, branches and commits live in, as <c>owner/repo</c>, most named first.</summary>
-    public static IReadOnlyList<string> RepositoryCandidates(ShortcutStory story) =>
-        story.PullRequests.Select(pr => pr.Url)
+    [GeneratedRegex(@"https?://(?:www\.)?github\.com/(?<owner>[A-Za-z0-9][A-Za-z0-9-]*)/(?<repo>[A-Za-z0-9._-]+)", RegexOptions.IgnoreCase)]
+    private static partial Regex GitHubUrlInText();
+
+    // github.com paths that are not owner/repo.
+    private static readonly HashSet<string> NotOwners = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "about", "apps", "collections", "enterprise", "enterprises", "explore", "features", "login", "marketplace", "notifications",
+        "orgs", "organizations", "pricing", "search", "settings", "sponsors", "topics", "users"
+    };
+
+    private static string RepositoryName(string owner, string repo)
+    {
+        repo = repo.TrimEnd('.');
+        if (repo.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+            repo = repo[..^4];
+        return $"{owner}/{repo}";
+    }
+
+    /// <summary>
+    /// The repositories the story names, as <c>owner/repo</c>: those its PRs, branches and commits live in, most named
+    /// first; then those GitHub links in its description name (sc-27928), most named first.
+    /// </summary>
+    public static IReadOnlyList<string> RepositoryCandidates(ShortcutStory story)
+    {
+        static IEnumerable<string> Ranked(IEnumerable<string> names) =>
+            names.GroupBy(name => name, StringComparer.OrdinalIgnoreCase).OrderByDescending(group => group.Count()).Select(group => group.First());
+
+        var linked = Ranked(story.PullRequests.Select(pr => pr.Url)
             .Concat(story.Branches.Select(branch => branch.Url ?? ""))
             .Concat(story.Commits.Select(commit => commit.Url ?? ""))
             .Concat(story.ExternalLinks.Where(url => LinkKind(url) != WorkLinkKind.Other))
             .Select(url => GitHubUrl().Match(url))
             .Where(match => match.Success)
-            .Select(match => $"{match.Groups["owner"].Value}/{match.Groups["repo"].Value.Replace(".git", "", StringComparison.OrdinalIgnoreCase)}")
-            .GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(group => group.Count())
-            .Select(group => group.First())
-            .ToList();
+            .Select(match => RepositoryName(match.Groups["owner"].Value, match.Groups["repo"].Value)));
+        var written = Ranked(GitHubUrlInText().Matches(story.Description ?? "")
+            .Where(match => !NotOwners.Contains(match.Groups["owner"].Value))
+            .Select(match => RepositoryName(match.Groups["owner"].Value, match.Groups["repo"].Value))
+            .Where(name => !name.EndsWith('/')));
+        return linked.Concat(written).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
 
     /// <summary>
     /// The item's repository: the owned repository its PRs/branches name (by <c>owner/repo</c> or by the
@@ -275,6 +302,25 @@ public static partial class ShortcutMapper
                 epic.TeamIds.FirstOrDefault() is { } team && teams.TryGetValue(team, out var named) ? named.Name : null));
     }
 
+    /// <summary>
+    /// An imported story its source archived since (sc-27929): the item is closed, unless it is finished (in the source,
+    /// or <paramref name="current"/> in CodeGraph), and says why; its import view is flagged archived.
+    /// </summary>
+    public static MappedStory Archived(MappedStory mapped, WorkStatus? current, DateTime archivedAt)
+    {
+        static bool Finished(WorkStatus? status) => status is WorkStatus.Complete or WorkStatus.Closed;
+        var status = Finished(current) ? current!.Value : Finished(mapped.Status) ? mapped.Status : WorkStatus.Closed;
+        var note = status == WorkStatus.Closed
+            ? "Archived in Shortcut: the import closed this item."
+            : $"Archived in Shortcut: the item stays {WorkStatuses.Name(status)}.";
+        return mapped with
+        {
+            Status = status,
+            Imported = mapped.Imported with { Archived = true },
+            Comments = [.. mapped.Comments, new ImportedComment("archived", ImportSources.Actor(ImportSources.Shortcut).Name, WorkActor.SystemKind, note, archivedAt)]
+        };
+    }
+
     public static string ReconcileDescription(string featureKey, long epicId) =>
         $"Feature {featureKey} was imported from Shortcut epic {epicId} with its requirements left in its description (unreconciled).\n\n" +
         "Read the feature's description and documents, extract its numbered requirements (E1…En) and acceptance tests, and write them as structured " +
@@ -287,6 +333,24 @@ public static partial class ShortcutMapper
 
     private static string Cut(string text, int length) => text.Length <= length ? text : text[..length];
 
+    /// <summary>
+    /// <paramref name="key"/>, or (when <paramref name="taken"/> says it is taken) the key with its end replaced by the
+    /// lowest number from 2 that makes it free (SCENEWORKS → SCENEWORK2): two teams whose names cut to the same ten
+    /// characters are not proposed into one project (sc-27931).
+    /// </summary>
+    public static string UniqueKey(string key, Func<string, bool> taken)
+    {
+        if (!taken(key))
+            return key;
+        for (var number = 2; ; number++)
+        {
+            var suffix = number.ToString(CultureInfo.InvariantCulture);
+            var candidate = key[..Math.Min(key.Length, 10 - suffix.Length)] + suffix;
+            if (!taken(candidate))
+                return candidate;
+        }
+    }
+
     /// <summary>A proposed project key for a team: its name's letters and digits, upper-cased, 2–10 characters.</summary>
     public static string ProposedKey(string name)
     {
@@ -296,5 +360,44 @@ public static partial class ShortcutMapper
         if (letters.Length < 2)
             letters += "X";
         return letters.Length <= 10 ? letters : letters[..10];
+    }
+}
+
+/// <summary>
+/// The repositories CodeGraph indexes, looked up by what a story names (sc-27928): <c>owner/repo</c> matches the
+/// repository whose remote is that GitHub repository, else the one named <c>owner/repo</c>, else the one named
+/// <c>repo</c> (ignoring case: a repository moved to another owner is still the one CodeGraph indexes).
+/// </summary>
+public sealed partial class RepositoryIndex
+{
+    private readonly Dictionary<string, IndexedRepository> byName;
+    private readonly Dictionary<string, IndexedRepository> byRemote = new(StringComparer.OrdinalIgnoreCase);
+
+    public RepositoryIndex(IEnumerable<IndexedRepository> repositories)
+    {
+        var list = repositories.ToList();
+        byName = list.GroupBy(repository => repository.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        foreach (var repository in list)
+            if (repository.RepoUrl is { } url && Remote().Match(url) is { Success: true } match)
+                byRemote.TryAdd($"{match.Groups["owner"].Value}/{match.Groups["repo"].Value}", repository);
+    }
+
+    [GeneratedRegex(@"github\.com[/:](?<owner>[^/\s:]+)/(?<repo>[^/\s#?]+?)(?:\.git)?/?$", RegexOptions.IgnoreCase)]
+    private static partial Regex Remote();
+
+    public IReadOnlyCollection<IndexedRepository> All => byName.Values;
+
+    /// <summary>The indexed repository named exactly so (ignoring case), or null.</summary>
+    public IndexedRepository? Named(string name) => byName.GetValueOrDefault(name.Trim());
+
+    /// <summary>The indexed repository a story's <c>owner/repo</c> (or bare name) is, or null.</summary>
+    public IndexedRepository? Resolve(string candidate)
+    {
+        if (byRemote.TryGetValue(candidate, out var remote))
+            return remote;
+        if (byName.TryGetValue(candidate, out var named))
+            return named;
+        var slash = candidate.LastIndexOf('/');
+        return slash >= 0 ? byName.GetValueOrDefault(candidate[(slash + 1)..]) : null;
     }
 }

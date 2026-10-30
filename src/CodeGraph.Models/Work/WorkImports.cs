@@ -14,7 +14,8 @@ public static class ImportSources
 }
 
 /// <summary>What an imported feature or item came from, and the source's history fields kept as history (not claims).</summary>
-public sealed record ImportedView(string Source, string ExternalId, string? Url = null, ImportHistory? History = null);
+/// <param name="Archived">true once the source object was archived after it was imported (sc-27929): the item is closed (a finished one stays complete), the feature is flagged.</param>
+public sealed record ImportedView(string Source, string ExternalId, string? Url = null, ImportHistory? History = null, bool? Archived = null);
 
 /// <param name="Owners">Owners in the source, by name: history, never converted into claims.</param>
 /// <param name="State">The source workflow state the status was mapped from.</param>
@@ -46,7 +47,13 @@ public static class ImportRunStatuses
 }
 
 /// <summary>One row of the team → project table. <see cref="TeamKey"/> is the Shortcut team id, or <c>none</c> for work without a team.</summary>
-public sealed record ImportTeamMapping(string TeamKey, string ProjectKey, string? TeamName = null, string? ProjectName = null);
+/// <param name="Repositories">
+/// Repositories CodeGraph indexes that the import makes owned repositories of <see cref="ProjectKey"/> before it writes
+/// any item (sc-27928), so an item whose story names one gets it. A repository is owned by at most one project: one owned
+/// by another project is refused when the table is saved. Null or empty: none is attached (the dry run proposes them, in
+/// the team's row of its report, from the repositories the stories name).
+/// </param>
+public sealed record ImportTeamMapping(string TeamKey, string ProjectKey, string? TeamName = null, string? ProjectName = null, IReadOnlyList<string>? Repositories = null);
 
 /// <summary>How a source account is attributed: <see cref="Kind"/> is <c>user</c> or <c>agent</c>.</summary>
 public sealed record ImportMemberMapping(string MemberId, string Name, string Kind);
@@ -92,6 +99,11 @@ public sealed class ImportReport
     public SortedDictionary<string, ImportProjectCounts> Projects { get; set; } = new(StringComparer.Ordinal);
     public ImportSourceCounts Epics { get; set; } = new();
     public ImportSourceCounts Stories { get; set; } = new();
+    /// <summary>
+    /// The repositories the stories name (by their PRs, branches, commits, links and description), most named first
+    /// (sc-27928): which CodeGraph repository each one is, and whether another project owns it. The first 200.
+    /// </summary>
+    public List<ImportRepositoryMention> RepositoryMentions { get; set; } = [];
     public int NoRepositoryCount { get; set; }
     /// <summary>The first 500 of them (sc-NNNN).</summary>
     public List<string> NoRepository { get; set; } = [];
@@ -130,10 +142,36 @@ public sealed class ImportTeamRow
     public bool ProjectExists { get; set; }
     public int Epics { get; set; }
     public int Stories { get; set; }
+    /// <summary>
+    /// Where the team's epics and stories actually go, by project key (sc-27931): a story follows its epic's project,
+    /// and work imported before stays where it is, so this can differ from <see cref="ProjectKey"/>.
+    /// </summary>
+    public SortedDictionary<string, int> EpicsByProject { get; set; } = new(StringComparer.Ordinal);
+    public SortedDictionary<string, int> StoriesByProject { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>The repositories of the table's row (null: none set).</summary>
+    public List<string>? Repositories { get; set; }
+    /// <summary>
+    /// Indexed repositories this team's stories name that the row's project would own, most named first (sc-27928):
+    /// put them in the row's repositories (edited as you like) before approving. A repository another project owns,
+    /// or one more stories of another project name, is not proposed here.
+    /// </summary>
+    public List<string> ProposedRepositories { get; set; } = [];
+    /// <summary>The other teams of the table mapped to the same project key (sc-27931): confirm they belong together before approving.</summary>
+    public List<string> SharesProjectWith { get; set; } = [];
 }
+
+/// <param name="Name">As the stories name it: <c>owner/repo</c>.</param>
+/// <param name="Repository">The CodeGraph repository it is (matched by URL or name), or null when CodeGraph indexes none.</param>
+/// <param name="OwnedBy">The project that owns that repository, if any.</param>
+/// <param name="ProposedFor">The project whose stories name it most (it would own it), when it is indexed and no other project owns it.</param>
+public sealed record ImportRepositoryMention(string Name, int Stories, string? Repository = null, string? OwnedBy = null, string? ProposedFor = null);
 
 public sealed class ImportProjectCounts
 {
+    /// <summary>false: the import creates the project (sc-27931).</summary>
+    public bool Exists { get; set; }
+    /// <summary>The owned repositories the import's items choose from: the project's own and the table's (sc-27928).</summary>
+    public List<string> Repositories { get; set; } = [];
     public int Features { get; set; }
     public int Items { get; set; }
     public SortedDictionary<string, int> ByStatus { get; set; } = new(StringComparer.Ordinal);
@@ -143,7 +181,13 @@ public sealed class ImportProjectCounts
 public sealed class ImportSourceCounts
 {
     public int Seen { get; set; }
+    /// <summary>Archived in the source and never imported: skipped.</summary>
     public int ArchivedSkipped { get; set; }
+    /// <summary>
+    /// Imported before the source archived them (sc-27929): an item is closed (a finished one stays complete) and a
+    /// feature flagged archived, with its open reconcile task closed. On a dry run, what the import would do.
+    /// </summary>
+    public int ArchivedClosed { get; set; }
     public int Open { get; set; }
     public int Done { get; set; }
     public int Mapped { get; set; }
@@ -176,6 +220,8 @@ public sealed class ImportWriteCounts
     public int DependenciesRemoved { get; set; }
     public int RelationComments { get; set; }
     public int AttachmentsStored { get; set; }
+    /// <summary>The table's repositories made owned repositories of their projects (sc-27928).</summary>
+    public int RepositoriesAttached { get; set; }
     public int Failures { get; set; }
 }
 

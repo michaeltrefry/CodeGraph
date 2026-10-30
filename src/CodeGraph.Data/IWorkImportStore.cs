@@ -55,7 +55,14 @@ public interface IWorkImportStore
 
     /// <summary>The newest completed import run of the source with its report (a delta continues from its start and retries its failures).</summary>
     Task<ImportRunView?> LastCompletedImportAsync(string source, CancellationToken ct = default);
+
+    /// <summary>Every repository CodeGraph indexes, with its remote URL and the project that owns it (sc-27928).</summary>
+    Task<IReadOnlyList<IndexedRepository>> ListIndexedRepositoriesAsync(CancellationToken ct = default);
 }
+
+/// <param name="Name">The repository as CodeGraph names it (repositories.name).</param>
+/// <param name="OwnedBy">The key of the project that owns it, or null.</param>
+public sealed record IndexedRepository(string Name, string? RepoUrl, string? OwnedBy);
 
 /// <param name="Edges">The blockers whose edges the import inserted (the only ones it may remove).</param>
 /// <param name="HasRelations">Whether a dependency sync recorded the source's blockers.</param>

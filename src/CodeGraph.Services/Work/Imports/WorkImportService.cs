@@ -83,7 +83,40 @@ public sealed partial class WorkImportService(
             throw WorkException.Invalid($"A member's kind is user or agent; {wrong.MemberId} has '{wrong.Kind}'. Nothing was saved.");
         if (source == ImportSources.Kanban && settings.KanbanEpicId is { } epic && epic != KanbanImporter.CodeReviewEpicId)
             throw WorkException.Invalid($"Only the KanbanBoard epic SceneWorks Code Review 2026-10-27 ({KanbanImporter.CodeReviewEpicId}) is imported (D23); not {epic}. Nothing was saved.");
+        if (settings.Teams.Any(team => team.Repositories is { Count: > 0 }))
+            settings = settings with { Teams = await CheckRepositoriesAsync(settings.Teams, ct) };
         return await imports.SaveImportSettingsAsync(source, settings, approve ? user : null, ct);
+    }
+
+    /// <summary>
+    /// The table's repositories (sc-27928): each one CodeGraph indexes (spelled as CodeGraph does), given to one
+    /// project only, and owned by no other project: a repository is owned by at most one project (E2), and the
+    /// import never takes one from its owner.
+    /// </summary>
+    private async Task<List<ImportTeamMapping>> CheckRepositoriesAsync(IReadOnlyList<ImportTeamMapping> teams, CancellationToken ct)
+    {
+        var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct));
+        var unknown = teams.SelectMany(team => team.Repositories ?? []).Where(name => index.Named(name) is null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (unknown.Count > 0)
+        {
+            var known = index.All.Select(repository => repository.Name).Order(StringComparer.OrdinalIgnoreCase).ToList();
+            throw WorkException.Invalid($"CodeGraph indexes no repository named {string.Join(", ", unknown.Select(name => $"'{name}'"))}. " +
+                $"Indexed repositories: {(known.Count == 0 ? "none" : string.Join(", ", known.Take(100)) + (known.Count > 100 ? $" and {known.Count - 100} more" : ""))}. Nothing was saved.");
+        }
+
+        var result = teams.Select(team => team.Repositories is null ? team
+            : team with { Repositories = team.Repositories.Select(name => index.Named(name)!.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList() }).ToList();
+        var given = result.SelectMany(team => (team.Repositories ?? []).Select(repository => (Repository: repository, team.ProjectKey))).Distinct().ToList();
+        var split = given.GroupBy(pair => pair.Repository, StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1).ToList();
+        if (split.Count > 0)
+            throw WorkException.Invalid("A repository is owned by one project, but the table gives " +
+                string.Join("; ", split.Select(group => $"{group.Key} to {string.Join(" and ", group.Select(pair => pair.ProjectKey))}")) + ". Nothing was saved.");
+        var taken = given.Where(pair => index.Named(pair.Repository)!.OwnedBy is { } owner && owner != pair.ProjectKey).ToList();
+        if (taken.Count > 0)
+            throw new WorkException(WorkErrorCodes.Conflict, "A repository is owned by one project: " +
+                string.Join("; ", taken.Select(pair => $"{pair.Repository} is owned by {index.Named(pair.Repository)!.OwnedBy}, so {pair.ProjectKey} cannot own it")) +
+                ". Take it out of the table, or change the owning project first. Nothing was saved.");
+        return result;
     }
 
     /// <summary>

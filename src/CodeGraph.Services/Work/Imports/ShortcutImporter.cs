@@ -33,7 +33,20 @@ public sealed class ShortcutImporter(
     {
         public string Key { get; } = key;
         public Guid? Id { get; set; }
+        /// <summary>Whether the project existed when the run started (a dry run's "exists" and the import's agree).</summary>
+        public bool Existed { get; set; }
+        /// <summary>The owned repositories items choose from: the project's, and (once attached, or on a dry run) the table's.</summary>
         public IReadOnlyList<string> Owned { get; set; } = [];
+        /// <summary>The table's repositories the project does not own yet: attached before any item is written (sc-27928).</summary>
+        public List<string> Attach { get; } = [];
+    }
+
+    /// <summary>A repository the stories name, tallied for the report (sc-27928).</summary>
+    private sealed class Mention(string name)
+    {
+        public string Name { get; } = name;
+        public int Stories { get; set; }
+        public Dictionary<string, int> ByProject { get; } = new(StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -45,10 +58,17 @@ public sealed class ShortcutImporter(
         var teams = await source.ListTeamsAsync(ct);
         var members = await source.ListMembersAsync(ct);
         var projects = await ListProjectsAsync(ct);
+        // A proposed key is new: not an existing project's (unless the team is named like it), not the holding
+        // project's, not another proposal's (sc-27931: names cut to ten characters can collide).
+        var used = projects.Select(project => project.Key).Append(DefaultHoldingProject).ToHashSet(StringComparer.Ordinal);
         var mappings = teams.OrderBy(team => team.Name, StringComparer.OrdinalIgnoreCase).Select(team =>
         {
             var existing = projects.FirstOrDefault(project => project.Name.Equals(team.Name, StringComparison.OrdinalIgnoreCase));
-            return new ImportTeamMapping(team.Id, existing?.Key ?? ShortcutMapper.ProposedKey(team.Name), team.Name, existing?.Name ?? team.Name);
+            if (existing is not null)
+                return new ImportTeamMapping(team.Id, existing.Key, team.Name, existing.Name);
+            var key = ShortcutMapper.UniqueKey(ShortcutMapper.ProposedKey(team.Name), used.Contains);
+            used.Add(key);
+            return new ImportTeamMapping(team.Id, key, team.Name, team.Name);
         }).ToList();
         mappings.Add(new ImportTeamMapping(NoTeam, DefaultHoldingProject, "(no team)", "Shortcut import (unmapped)"));
         return new ImportSettings(DefaultHoldingProject, mappings, members.Select(ShortcutMapper.DefaultMember).ToList());
@@ -136,19 +156,79 @@ public sealed class ShortcutImporter(
             if (await work.ResolveAsync(target.Key, ct) is { Kind: WorkEntityKind.Project } found && await work.GetProjectAsync(found.Id, ct) is { } project)
             {
                 target.Id = project.Id;
-                target.Owned = project.Repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToList();
+                target.Existed = true;
+                target.Owned = OwnedOf(project);
             }
         }
 
-        // A project of the table that does not exist yet is created when the first work for it is written.
+        // ---- The table's repositories (sc-27928) ------------------------------------------------
+        // Only repositories CodeGraph indexes, and none another project owns (a repository has one owner): the
+        // table was checked when it was saved, and is checked again here against what is true now.
+        var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct));
+        foreach (var group in settings.Teams.Where(row => row.Repositories is { Count: > 0 } && targets.ContainsKey(row.ProjectKey)).GroupBy(row => row.ProjectKey))
+        {
+            var target = targets[group.Key];
+            foreach (var name in group.SelectMany(row => row.Repositories!).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (index.Named(name) is not { } repository)
+                    report.AddWarning($"The table gives {group.Key} the repository '{name}', but CodeGraph indexes no repository by that name: it is not attached.");
+                else if (repository.OwnedBy is { } owner && owner != target.Key)
+                    report.AddWarning($"The table gives {group.Key} the repository {repository.Name}, but {owner} owns it (a repository is owned by one project): it is not attached.");
+                else if (!target.Owned.Contains(repository.Name, StringComparer.OrdinalIgnoreCase) && !target.Attach.Contains(repository.Name, StringComparer.OrdinalIgnoreCase))
+                    target.Attach.Add(repository.Name);
+            }
+        }
+
+        foreach (var target in targets.Values.Where(target => target.Attach.Count > 0))
+        {
+            // A dry run reports against the repositories the import will attach, and a project the import creates
+            // is created with them.
+            if (mode != ImportMode.Import || target.Id is null)
+            {
+                target.Owned = [.. target.Owned, .. target.Attach];
+                continue;
+            }
+
+            // An existing project gets them now, before any item is written.
+            if (await work.GetProjectAsync(target.Id.Value, ct) is not { } project)
+                continue;
+            try
+            {
+                var updated = await work.UpdateProjectAsync(project.Id, project.Version, new ProjectPatchSpec(Repositories:
+                    [.. project.Repositories, .. target.Attach.Select(name => new RepositoryMemberView(name, RepositoryRole.Owned))]), Actor, ct);
+                report.Written.RepositoriesAttached += target.Attach.Count;
+                target.Owned = OwnedOf(updated);
+            }
+            catch (WorkException exception)
+            {
+                report.AddWarning($"{target.Key}: the table's repositories {string.Join(", ", target.Attach)} were not attached: {exception.Message}");
+            }
+        }
+
+        // A project of the table that does not exist yet is created (with the table's repositories) when the first
+        // work for it is written.
         async Task<Guid> EnsureProjectAsync(ProjectTarget target)
         {
             if (target.Id is { } existing)
                 return existing;
             var name = settings.Teams.FirstOrDefault(row => row.ProjectKey == target.Key)?.ProjectName ?? target.Key;
-            var created = await work.CreateProjectAsync(new NewProjectSpec(target.Key, name, "Created by the Shortcut import (sc-27876).", [], []), Actor, null, ct);
+            WorkCreated<ProjectView> created;
+            try
+            {
+                created = await work.CreateProjectAsync(new NewProjectSpec(target.Key, name, "Created by the Shortcut import (sc-27876).", [],
+                    target.Attach.Select(repository => new RepositoryMemberView(repository, RepositoryRole.Owned)).ToList()), Actor, null, ct);
+                report.Written.RepositoriesAttached += created.Created ? target.Attach.Count : 0;
+            }
+            catch (WorkException exception) when (target.Attach.Count > 0)
+            {
+                // Another project took one of them since the run started: the project is created without them.
+                report.AddWarning($"{target.Key}: the table's repositories {string.Join(", ", target.Attach)} were not attached: {exception.Message}");
+                created = await work.CreateProjectAsync(new NewProjectSpec(target.Key, name, "Created by the Shortcut import (sc-27876).", [], []), Actor, null, ct);
+            }
+
             report.Written.ProjectsCreated += created.Created ? 1 : 0;
             target.Id = created.Value.Id;
+            target.Owned = OwnedOf(created.Value);
             return created.Value.Id;
         }
 
@@ -173,7 +253,9 @@ public sealed class ShortcutImporter(
             if (updatedSince is { } since && listed.UpdatedAt < since && !retried.Contains("epic-" + Id(listed.Id)))
                 continue;
             report.Epics.Seen++;
-            if (listed.Archived)
+            // An archived epic never imported is skipped; one imported before is flagged (sc-27929).
+            var archived = listed.Archived;
+            if (archived && known is null)
             {
                 report.Epics.ArchivedSkipped++;
                 continue;
@@ -184,23 +266,38 @@ public sealed class ShortcutImporter(
                 var epic = await source.GetEpicAsync(listed.Id, ct) ?? listed;
                 var projectKey = epicProject[listed.Id];
                 var documents = epic.RelatedDocuments > 0 || listed.RelatedDocuments > 0 ? await source.ListEpicDocumentsAsync(epic.Id, ct) : [];
-                teamRow.Epics++;
-                report.Epics.Mapped++;
-                if (epic.Done) report.Epics.Done++; else report.Epics.Open++;
-                report.Project(projectKey).Features++;
-                if (!epic.Done)
-                    report.ReconcileTasks++;
-                report.Documents += documents.Count;
+                if (archived)
+                {
+                    report.Epics.ArchivedClosed++;
+                }
+                else
+                {
+                    teamRow.Epics++;
+                    Increment(teamRow.EpicsByProject, projectKey);
+                    report.Epics.Mapped++;
+                    if (epic.Done) report.Epics.Done++; else report.Epics.Open++;
+                    report.Project(projectKey).Features++;
+                    if (!epic.Done)
+                        report.ReconcileTasks++;
+                    report.Documents += documents.Count;
+                }
+
                 if (mode != ImportMode.Import)
                     continue;
 
                 var target = targets[projectKey];
+                var imported = ShortcutMapper.EpicImported(epic, members, teams);
                 var spec = new ImportedFeatureSpec(ImportSources.Shortcut, Id(epic.Id), await EnsureProjectAsync(target), epic.Name.Trim().Length == 0 ? $"Epic {epic.Id}" : epic.Name.Trim(),
-                    epic.Description, ShortcutMapper.EpicDocuments(epic, documents, members), !epic.Done, ShortcutMapper.EpicImported(epic, members, teams),
+                    epic.Description, ShortcutMapper.EpicDocuments(epic, documents, members), !epic.Done, archived ? imported with { Archived = true } : imported,
                     epic.CreatedAt, epic.UpdatedAt, "");
                 var written = await imports.UpsertImportedFeatureAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
                 featureIds[epic.Id] = written.Id;
                 Count(report, written.Outcome, feature: true);
+                if (archived)
+                {
+                    await CloseReconcileTaskAsync(reconcileRecords.GetValueOrDefault(Id(epic.Id)), epic.Id, ct);
+                    continue;
+                }
 
                 // Open features get a reconcile task, once: it is the agent's to finish, and a re-run never resets it.
                 if (!epic.Done && !reconcileRecords.ContainsKey(Id(epic.Id)))
@@ -227,10 +324,21 @@ public sealed class ShortcutImporter(
         foreach (var failed in retried.Where(id => id.StartsWith("sc-", StringComparison.Ordinal)))
             if (long.TryParse(failed["sc-".Length..], NumberStyles.None, CultureInfo.InvariantCulture, out var retryId) && summaries.All(summary => summary.Id != retryId))
                 summaries.Add(new ShortcutStorySummary(retryId, DateTime.UnixEpoch));
+        // A full run lists the non-archived stories only: an imported story it no longer lists is read again, so
+        // one archived since is closed (sc-27929).
+        var reread = new HashSet<long>();
+        if (updatedSince is null)
+        {
+            var listedIds = summaries.Select(summary => summary.Id).ToHashSet();
+            foreach (var externalId in storyRecords.Keys)
+                if (long.TryParse(externalId, NumberStyles.None, CultureInfo.InvariantCulture, out var importedId) && !listedIds.Contains(importedId) && reread.Add(importedId))
+                    summaries.Add(new ShortcutStorySummary(importedId, DateTime.UnixEpoch));
+        }
+
         foreach (var warning in source.Warnings)
             report.AddWarning(warning);
-        if (updatedSince is null)
-            report.Stories.ArchivedSkipped = await source.CountArchivedStoriesAsync(ct);
+        var archivedCount = updatedSince is null ? await source.CountArchivedStoriesAsync(ct) : 0;
+        var mentions = new Dictionary<string, Mention>(StringComparer.OrdinalIgnoreCase);
         var storyProject = new Dictionary<long, string>();
         foreach (var (externalId, record) in storyRecords)
             if (KeyOf(targets, record.ProjectId) is { } key)
@@ -242,6 +350,14 @@ public sealed class ShortcutImporter(
             ct.ThrowIfCancellationRequested();
             if (++processed % 100 == 0 && progress is not null)
                 await progress(report);
+            // An archived story a delta lists that was never imported is skipped without reading it.
+            if (summary.Archived && !storyRecords.ContainsKey(Id(summary.Id)) && !retried.Contains(ShortcutMapper.Alias(summary.Id)))
+            {
+                report.Stories.Seen++;
+                report.Stories.ArchivedSkipped++;
+                continue;
+            }
+
             ShortcutStory? story;
             try
             {
@@ -257,12 +373,16 @@ public sealed class ShortcutImporter(
 
             if (story is null)
             {
-                report.AddWarning($"sc-{summary.Id} was listed but could not be read.");
+                report.AddWarning(reread.Contains(summary.Id)
+                    ? $"sc-{summary.Id} was imported, but Shortcut no longer has it: its item was left as it is."
+                    : $"sc-{summary.Id} was listed but could not be read.");
                 continue;
             }
 
             report.Stories.Seen++;
-            if (story.Archived)
+            var record = storyRecords.GetValueOrDefault(Id(story.Id));
+            var archived = story.Archived;
+            if (archived && record is null)
             {
                 report.Stories.ArchivedSkipped++;
                 continue;
@@ -271,11 +391,43 @@ public sealed class ShortcutImporter(
             var mapped = ShortcutMapper.Map(story, states, members, teams);
             var teamRow = TeamRow(story.TeamId ?? (story.EpicId is { } epicId ? epics.FirstOrDefault(epic => epic.Id == epicId)?.TeamIds.FirstOrDefault() : null));
             // An item goes where its feature is, so the story keeps its epic.
-            var projectKey = storyRecords.TryGetValue(Id(story.Id), out var known) && KeyOf(targets, known.ProjectId) is { } knownKey ? knownKey
+            var projectKey = record is not null && KeyOf(targets, record.ProjectId) is { } knownKey ? knownKey
                 : story.EpicId is { } epicOf && epicProject.TryGetValue(epicOf, out var featureProject) ? featureProject
                 : teamRow.ProjectKey;
             storyProject[story.Id] = projectKey;
+            var target = targets[projectKey];
+            var repository = ChooseRepository(mapped.RepositoryCandidates, target.Owned, index);
+
+            // Imported, then archived in Shortcut (sc-27929): the item is closed (a finished one stays finished).
+            if (archived)
+            {
+                report.Stories.ArchivedClosed++;
+                if (mode != ImportMode.Import)
+                    continue;
+                try
+                {
+                    var current = await work.GetItemAsync(record!.EntityId, false, ct);
+                    await WriteStoryAsync(source, story, ShortcutMapper.Archived(mapped, current?.Status, story.UpdatedAt), await EnsureProjectAsync(target), repository, featureIds, report, ct);
+                }
+                catch (Exception exception) when (IsItemFailure(exception, ct))
+                {
+                    report.Written.Failures++;
+                    report.FailedIds.Add(ShortcutMapper.Alias(story.Id));
+                    report.AddWarning($"sc-{story.Id}: {exception.Message}");
+                }
+
+                continue;
+            }
+
             teamRow.Stories++;
+            Increment(teamRow.StoriesByProject, projectKey);
+            foreach (var named in mapped.RepositoryCandidates)
+            {
+                if (!mentions.TryGetValue(named, out var mention))
+                    mentions[named] = mention = new Mention(named);
+                mention.Stories++;
+                Increment(mention.ByProject, projectKey);
+            }
             report.Stories.Mapped++;
             if (mapped.Status is WorkStatus.Complete or WorkStatus.Closed) report.Stories.Done++; else report.Stories.Open++;
             var counts = report.Project(projectKey);
@@ -298,8 +450,6 @@ public sealed class ShortcutImporter(
                 report.Attachments.OverLimitBytes += file.Size;
             }
 
-            var target = targets[projectKey];
-            var repository = ShortcutMapper.ChooseRepository(mapped.RepositoryCandidates, target.Owned);
             if (repository is null)
             {
                 report.NoRepositoryCount++;
@@ -313,16 +463,7 @@ public sealed class ShortcutImporter(
 
             try
             {
-                var spec = new ImportedItemSpec(ImportSources.Shortcut, "story", Id(story.Id), await EnsureProjectAsync(target),
-                    story.EpicId is { } featureEpic && featureIds.TryGetValue(featureEpic, out var featureId) ? featureId : null,
-                    mapped.Title, mapped.Type, mapped.Status, WorkPriority.Medium, mapped.Description, mapped.Labels, repository,
-                    mapped.AcceptanceCriteria, mapped.Comments, mapped.Links, mapped.Aliases, mapped.Imported, mapped.CreatedAt, mapped.UpdatedAt, 0, "",
-                    mapped.HistoricalLinks);
-                var written = await imports.UpsertImportedItemAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
-                Count(report, written.Outcome, feature: false);
-                foreach (var warning in written.Warnings ?? [])
-                    report.AddWarning($"sc-{story.Id}: {warning}");
-                await StoreFilesAsync(source, story, written.Id, report, ct);
+                await WriteStoryAsync(source, story, mapped, await EnsureProjectAsync(target), repository, featureIds, report, ct);
             }
             catch (Exception exception) when (IsItemFailure(exception, ct))
             {
@@ -401,6 +542,9 @@ public sealed class ShortcutImporter(
             }
         }
 
+        if (updatedSince is null)
+            report.Stories.ArchivedSkipped = Math.Max(0, archivedCount - report.Stories.ArchivedClosed);
+        Summarize(report, settings, targets, teamRows, mentions, index);
         report.Teams = teamRows.Values.OrderBy(row => row.TeamName, StringComparer.OrdinalIgnoreCase).ToList();
         if (report.UnmappedRelations.Count > ListedLimit)
         {
@@ -410,6 +554,101 @@ public sealed class ShortcutImporter(
 
         log.LogInformation("Shortcut {Mode} finished: {Epics} epics, {Stories} stories mapped; {Failures} failures", mode, report.Epics.Mapped, report.Stories.Mapped, report.Written.Failures);
         return report;
+    }
+
+    private static List<string> OwnedOf(ProjectView project) =>
+        project.Repositories.Where(member => member.Role == RepositoryRole.Owned).Select(member => member.Repository).ToList();
+
+    /// <summary>The item's repository: what the story names, as CodeGraph indexes it, among the project's owned repositories.</summary>
+    private static string? ChooseRepository(IReadOnlyList<string> candidates, IReadOnlyList<string> owned, RepositoryIndex index) =>
+        ShortcutMapper.ChooseRepository(candidates.Select(candidate => index.Resolve(candidate)?.Name).OfType<string>().Concat(candidates)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList(), owned);
+
+    private async Task WriteStoryAsync(IShortcutSource source, ShortcutStory story, MappedStory mapped, Guid projectId, string? repository,
+        IReadOnlyDictionary<long, Guid> featureIds, ImportReport report, CancellationToken ct)
+    {
+        var spec = new ImportedItemSpec(ImportSources.Shortcut, "story", Id(story.Id), projectId,
+            story.EpicId is { } featureEpic && featureIds.TryGetValue(featureEpic, out var featureId) ? featureId : null,
+            mapped.Title, mapped.Type, mapped.Status, WorkPriority.Medium, mapped.Description, mapped.Labels, repository,
+            mapped.AcceptanceCriteria, mapped.Comments, mapped.Links, mapped.Aliases, mapped.Imported, mapped.CreatedAt, mapped.UpdatedAt, 0, "",
+            mapped.HistoricalLinks);
+        var written = await imports.UpsertImportedItemAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
+        Count(report, written.Outcome, feature: false);
+        foreach (var warning in written.Warnings ?? [])
+            report.AddWarning($"sc-{story.Id}: {warning}");
+        await StoreFilesAsync(source, story, written.Id, report, ct);
+    }
+
+    /// <summary>The reconcile task of an archived epic's feature, when still open, is closed: there is nothing left to reconcile.</summary>
+    private async Task CloseReconcileTaskAsync(ImportRecord? record, long epicId, CancellationToken ct)
+    {
+        if (record is null || await work.GetItemAsync(record.EntityId, false, ct) is not { } task || task.Status is WorkStatus.Complete or WorkStatus.Closed)
+            return;
+        await work.UpdateItemAsync(task.Id, task.Version, new ItemPatchSpec(Status: WorkStatus.Closed,
+            Comment: $"Shortcut epic {epicId} was archived, so its requirements are not reconciled: closed by the import."), Actor, ct);
+    }
+
+    /// <summary>
+    /// The report's tables: each project's existence and repositories, the repositories the stories name and which
+    /// project each would go to (sc-27928), each team's proposed repositories, and the teams that share a project (sc-27931).
+    /// </summary>
+    private static void Summarize(ImportReport report, ImportSettings settings, Dictionary<string, ProjectTarget> targets, Dictionary<string, ImportTeamRow> teamRows,
+        Dictionary<string, Mention> mentions, RepositoryIndex index)
+    {
+        foreach (var (key, counts) in report.Projects)
+        {
+            if (!targets.TryGetValue(key, out var target))
+                continue;
+            counts.Exists = target.Existed;
+            counts.Repositories = target.Owned.Union(target.Attach, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        // Which project a repository is proposed for: none when a project owns it already; else the one the table gives
+        // it to; else the project whose stories name it most. Several owner/repo names can be one indexed repository.
+        var table = settings.Teams.Where(row => row.Repositories is not null)
+            .SelectMany(row => row.Repositories!.Select(name => (Repository: index.Named(name)?.Name, row.ProjectKey)))
+            .Where(pair => pair.Repository is not null)
+            .GroupBy(pair => pair.Repository!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().ProjectKey, StringComparer.OrdinalIgnoreCase);
+        var resolved = mentions.Values.Select(mention => (Mention: mention, Repository: index.Resolve(mention.Name))).ToList();
+        var proposedFor = resolved.Where(pair => pair.Repository is { OwnedBy: null })
+            .GroupBy(pair => pair.Repository!.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => table.GetValueOrDefault(group.Key) ?? group
+                .SelectMany(pair => pair.Mention.ByProject)
+                .GroupBy(count => count.Key, StringComparer.Ordinal)
+                .Select(project => (Key: project.Key, Stories: project.Sum(count => count.Value)))
+                .OrderByDescending(project => project.Stories).ThenBy(project => project.Key, StringComparer.Ordinal)
+                .First().Key, StringComparer.OrdinalIgnoreCase);
+        report.RepositoryMentions = resolved
+            .OrderByDescending(pair => pair.Mention.Stories).ThenBy(pair => pair.Mention.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(200)
+            .Select(pair => new ImportRepositoryMention(pair.Mention.Name, pair.Mention.Stories, pair.Repository?.Name, pair.Repository?.OwnedBy,
+                pair.Repository is { } repository ? proposedFor.GetValueOrDefault(repository.Name) : null))
+            .ToList();
+
+        var namedMost = resolved.Where(pair => pair.Repository is not null)
+            .GroupBy(pair => pair.Repository!.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Sum(pair => pair.Mention.Stories), StringComparer.OrdinalIgnoreCase);
+        var tableRows = settings.Teams.ToDictionary(row => row.TeamKey, StringComparer.Ordinal);
+        foreach (var row in teamRows.Values)
+        {
+            row.Repositories = tableRows.GetValueOrDefault(row.TeamKey)?.Repositories?.ToList();
+            var target = targets.GetValueOrDefault(row.ProjectKey);
+            row.ProposedRepositories = proposedFor.Where(pair => pair.Value == row.ProjectKey)
+                .Select(pair => pair.Key)
+                .Where(name => target is null || !target.Owned.Union(target.Attach, StringComparer.OrdinalIgnoreCase).Contains(name, StringComparer.OrdinalIgnoreCase))
+                .OrderByDescending(name => namedMost.GetValueOrDefault(name)).ThenBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        // Two teams mapped to one project (other than the holding project): flagged, for the owner to confirm.
+        foreach (var group in teamRows.Values.Where(row => row.ProjectKey != settings.HoldingProjectKey).GroupBy(row => row.ProjectKey).Where(group => group.Count() > 1))
+        {
+            foreach (var row in group)
+                row.SharesProjectWith = group.Where(other => other != row).Select(other => other.TeamName ?? other.TeamKey).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+            report.AddWarning($"Teams {string.Join(", ", group.Select(row => row.TeamName ?? row.TeamKey).OrderBy(name => name, StringComparer.OrdinalIgnoreCase))} all map to project {group.Key}. " +
+                "If they belong apart, give each its own project key before approving.");
+        }
     }
 
     private async Task StoreFilesAsync(IShortcutSource source, ShortcutStory story, Guid itemId, ImportReport report, CancellationToken ct)
@@ -466,8 +705,8 @@ public sealed class ShortcutImporter(
     private static string KeyOfStory(IReadOnlyDictionary<string, ImportRecord> records, Guid itemId) =>
         records.FirstOrDefault(pair => pair.Value.EntityId == itemId).Key is { } id ? "sc-" + id : itemId.ToString();
 
-    private static void Increment(SortedDictionary<string, int> counts, string key) =>
-        counts[key] = counts.GetValueOrDefault(key) + 1;
+    private static void Increment(IDictionary<string, int> counts, string key) =>
+        counts[key] = counts.TryGetValue(key, out var count) ? count + 1 : 1;
 
     private static void Count(ImportReport report, ImportOutcome outcome, bool feature)
     {

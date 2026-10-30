@@ -666,6 +666,20 @@ public sealed partial class MySqlWorkStore(
                 new { alias }, cancellationToken: ct))
             : null;
 
+    /// <summary>
+    /// sc-N naming a Shortcut epic (sc-27930): Shortcut's epics and stories share one number space, so
+    /// people name an epic as sc-N too. It resolves through the epic's import record to its feature.
+    /// </summary>
+    private static async Task<TargetRow?> FindImportedEpicAsync(MySqlConnection connection, string value, CancellationToken ct)
+    {
+        if (WorkReferences.NormalizeAlias(value) is not { } alias || !alias.StartsWith("sc-", StringComparison.Ordinal))
+            return null;
+        return await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(
+            "SELECT 'feature' AS kind, f.id, f.project_id FROM work_import_records r JOIN work_features f ON f.id = r.entity_id " +
+            "WHERE r.source = 'shortcut' AND r.external_kind = 'epic' AND r.external_id = @externalId",
+            new { externalId = alias["sc-".Length..] }, cancellationToken: ct));
+    }
+
     public async Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
@@ -689,12 +703,18 @@ public sealed partial class MySqlWorkStore(
             // An external alias (an imported story's sc-27866) resolves like a key (sc-27870).
             if (hit is null && kind == WorkEntityKind.Item)
                 hit = await FindAliasAsync(connection, value, ct);
-            return hit is null ? null : new WorkTarget(kind, hit.Id, hit.ProjectId);
+            if (hit is not null)
+                return new WorkTarget(kind, hit.Id, hit.ProjectId);
+            return kind == WorkEntityKind.Item && await FindImportedEpicAsync(connection, value, ct) is { } epic
+                ? new WorkTarget(WorkEntityKind.Feature, epic.Id, epic.ProjectId)
+                : null;
         }
 
         // sc-0012 (leading zeros) is not a key but names the alias sc-12.
         if (await FindAliasAsync(connection, value, ct) is { } aliased)
             return new WorkTarget(WorkEntityKind.Item, aliased.Id, aliased.ProjectId);
+        if (await FindImportedEpicAsync(connection, value, ct) is { } imported)
+            return new WorkTarget(WorkEntityKind.Feature, imported.Id, imported.ProjectId);
 
         var key = value.ToUpperInvariant();
         if (!WorkKeys.IsValidProjectKey(key))

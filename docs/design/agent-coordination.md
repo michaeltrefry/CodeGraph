@@ -461,7 +461,7 @@ One story workflow (`Standard`: Backlog, To Do, In Progress, In Review, Done) an
 
 | Shortcut | CodeGraph |
 |---|---|
-| Team | Project, through a mapping table you approve in the dry run (teams don't line up exactly with projects: DarkFactory also holds OMP Desktop, Simple Router and SystemOne work; some stories and epics have no team). Unmapped → a holding project, listed for you. |
+| Team | Project, through a mapping table you approve in the dry run (teams don't line up exactly with projects: DarkFactory also holds OMP Desktop, Simple Router and SystemOne work; some stories and epics have no team). Unmapped → a holding project, listed for you. Each row also names the repositories its project owns; the dry run proposes them from the repositories the team's stories name (sc-27928). The report shows where each team's work actually lands (a story follows its epic's project) and flags teams mapped to one project (sc-27931). |
 | Epic | Feature. Description kept verbatim. Its requirements are imported as **unreconciled**: the feature is flagged until a planning agent extracts E1…En and acceptance tests into structured form (a normal agent task, created automatically for open features). Done epics stay Complete without reconciling. |
 | Story | Item. Name → title, description verbatim, labels kept. |
 | Story type feature / bug / chore | story / bug / task |
@@ -472,17 +472,17 @@ One story workflow (`Standard`: Backlog, To Do, In Progress, In Review, Done) an
 | Sub-tasks (child stories) | Items with a `blocked_by` edge from the parent |
 | Comments | Comments, with original author and timestamp; authored as human or agent by account (you / Claude / Codex) |
 | Branches, PRs, commits, external links | Item links (`branch` / `pr` / `other`) |
-| Repository | Inferred from linked PRs/branches; otherwise from the project's single owned repository; otherwise left empty |
+| Repository | Inferred from linked PRs/branches/commits, then GitHub links in the description, among the project's owned repositories (the table's are attached before items are written; only repositories CodeGraph indexes, and never one another project owns); otherwise from the project's single owned repository; otherwise left empty |
 | Owners, requester | Recorded on the item as history; not converted into claims |
 | Estimates | Dropped |
 | Created / updated / completed times | Kept |
 | Shortcut Docs linked to an epic | Feature documents |
 | File attachments | Downloaded and stored with the item (Shortcut file URLs need Shortcut auth, so links alone would rot) |
-| `sc-NNNN` | Kept as an alias: `get_work("sc-26226")` resolves, and GitHub evidence matching recognizes `sc-NNNN` in branch names and PR titles as well as new keys, so in-flight branches keep linking |
+| `sc-NNNN` | Kept as an alias: `get_work("sc-26226")` resolves, and GitHub evidence matching recognizes `sc-NNNN` in branch names and PR titles as well as new keys, so in-flight branches keep linking. Epics share the number space: `sc-N` of an imported epic resolves to its feature (sc-27930) |
 
 **Imported items are an explicit exception to the new-item schema:** they may lack AC, repository, `inherits` and `touches`, and are marked `imported`. An agent that picks one up fills the gaps first (in the same `update_work`).
 
-**Scope:** every non-archived epic and story, open and done. Done work is searchable history — closeout comments, PR links, what shipped and why — and agents planning new work need it. Archived items are skipped.
+**Scope:** every non-archived epic and story, open and done. Done work is searchable history — closeout comments, PR links, what shipped and why — and agents planning new work need it. Archived items are skipped. One archived after it was imported is closed by the next sync (a finished one stays finished), and an archived epic's feature is flagged `imported.archived` with its reconcile task closed (sc-27929).
 
 **Procedure** (re-runnable; keyed by Shortcut id, so a second run updates rather than duplicates):
 1. **Dry run** — read everything, produce the mapping report: team → project table, counts per project and status, items with no inferable repository, unmapped relations, attachment volume. Nothing is written.

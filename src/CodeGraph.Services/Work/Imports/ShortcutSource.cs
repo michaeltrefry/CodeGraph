@@ -26,7 +26,10 @@ public interface IShortcutSource
 
     Task<IReadOnlyList<ShortcutDocument>> ListEpicDocumentsAsync(long epicId, CancellationToken ct);
 
-    /// <summary>The non-archived stories, or those updated at or after <paramref name="updatedSince"/>.</summary>
+    /// <summary>
+    /// The non-archived stories; with <paramref name="updatedSince"/> (a delta) those updated at or after it, archived
+    /// ones included, so an imported story archived since reaches the import (sc-27929).
+    /// </summary>
     Task<IReadOnlyList<ShortcutStorySummary>> ListStoriesAsync(DateTime? updatedSince, CancellationToken ct);
 
     /// <summary>How many stories are archived (reported as skipped).</summary>
@@ -262,16 +265,22 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
         // Search filters by whole days: a day earlier, so nothing updated on the boundary day (in any
         // time zone) is missed; the exact bound is applied below.
         var filter = updatedSince is { } since ? $" updated:{since.AddDays(-1):yyyy-MM-dd}..*" : "";
-        await CollectAsync(new DateOnly(2000, 1, 1), DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1), filter, found, ct);
+        var from = new DateOnly(2000, 1, 1);
+        var to = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1);
+        await CollectAsync(from, to, filter, archived: false, found, ct);
+        // A delta also reads the stories archived since (sc-27929): an imported one is closed. A full import
+        // skips archived stories; the importer re-reads the imported ones it no longer lists.
+        if (updatedSince is not null)
+            await CollectAsync(from, to, filter, archived: true, found, ct);
         return found.Values
             // Search filters by day; the exact bound is applied here.
             .Where(story => updatedSince is null || story.UpdatedAt >= updatedSince.Value)
             .OrderBy(story => story.Id).ToList();
     }
 
-    private async Task CollectAsync(DateOnly from, DateOnly to, string filter, Dictionary<long, ShortcutStorySummary> found, CancellationToken ct)
+    private async Task CollectAsync(DateOnly from, DateOnly to, string filter, bool archived, Dictionary<long, ShortcutStorySummary> found, CancellationToken ct)
     {
-        var query = $"!is:archived created:{from:yyyy-MM-dd}..{to:yyyy-MM-dd}{filter}";
+        var query = $"{(archived ? "" : "!")}is:archived created:{from:yyyy-MM-dd}..{to:yyyy-MM-dd}{filter}";
         // Shortcut's search pages hold at most 25 results.
         var path = $"search/stories?detail=slim&page_size=25&query={Uri.EscapeDataString(query)}";
         var first = (await GetJsonAsync(path, ct))!.Value;
@@ -281,8 +290,8 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
         if (total > SearchCap && to.DayNumber - from.DayNumber > 0)
         {
             var middle = DateOnly.FromDayNumber(from.DayNumber + (to.DayNumber - from.DayNumber) / 2);
-            await CollectAsync(from, middle, filter, found, ct);
-            await CollectAsync(middle.AddDays(1), to, filter, found, ct);
+            await CollectAsync(from, middle, filter, archived, found, ct);
+            await CollectAsync(middle.AddDays(1), to, filter, archived, found, ct);
             return;
         }
 
@@ -291,8 +300,8 @@ public sealed class ShortcutRestSource(HttpClient http, string token, RequestRat
         {
             if (page.TryGetProperty("data", out var data))
                 foreach (var story in data.EnumerateArray())
-                    if (ShortcutPayload.Long(story, "id") is { } id && !ShortcutPayload.Bool(story, "archived"))
-                        found[id] = new ShortcutStorySummary(id, ShortcutPayload.Time(story, "updated_at") ?? DateTime.UnixEpoch);
+                    if (ShortcutPayload.Long(story, "id") is { } id && ShortcutPayload.Bool(story, "archived") == archived)
+                        found[id] = new ShortcutStorySummary(id, ShortcutPayload.Time(story, "updated_at") ?? DateTime.UnixEpoch, archived);
             if (ShortcutPayload.Str(page, "next") is not { Length: > 0 } next)
                 return;
             // next is a path with the API prefix (/api/v3/search/stories?...&next=...).
@@ -442,8 +451,8 @@ public sealed class RecordedShortcutSource : IShortcutSource
 
     public Task<IReadOnlyList<ShortcutStorySummary>> ListStoriesAsync(DateTime? updatedSince, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<ShortcutStorySummary>>(Stories.Values
-            .Where(story => !story.Archived && (updatedSince is null || story.UpdatedAt >= updatedSince.Value))
-            .OrderBy(story => story.Id).Select(story => new ShortcutStorySummary(story.Id, story.UpdatedAt)).ToList());
+            .Where(story => updatedSince is null ? !story.Archived : story.UpdatedAt >= updatedSince.Value)
+            .OrderBy(story => story.Id).Select(story => new ShortcutStorySummary(story.Id, story.UpdatedAt, story.Archived)).ToList());
 
     public Task<int> CountArchivedStoriesAsync(CancellationToken ct) => Task.FromResult(Stories.Values.Count(story => story.Archived));
 
