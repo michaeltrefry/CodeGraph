@@ -20,6 +20,50 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
     private static readonly WorkActor Human = new("alice");
 
     [Theory]
+    [InlineData("entry")]
+    [InlineData("entry_rows")]
+    [InlineData("recall")]
+    [InlineData("relevant")]
+    [InlineData("rules")]
+    [InlineData("project")]
+    [InlineData("item")]
+    [InlineData("record")]
+    [InlineData("revise")]
+    public async Task Actorless_store_reads_and_direct_writes_cannot_cross_the_active_runs_project(string operation)
+    {
+        var own = await SeedAsync();
+        var foreign = await SeedAsync();
+        var runId = Guid.NewGuid();
+        await PersistRunAsync(runId, own.Project);
+        var before = await SnapshotAsync();
+        var knowledge = (IKnowledgeStore)db.Store;
+        using var scope = DreamExecutionScope.Begin(runId, own.Project, "scripted-policy");
+        using var evidence = scope.UseEvidence([new("entry", own.Lesson.Id.ToString(), "A real local lesson")]);
+        using var prevalence = DreamWriteMetadata.Begin("one local lesson");
+        // Positive controls prove this is a project boundary, not a blanket denial of all reads.
+        (await knowledge.GetKnowledgeAsync(own.Lesson.Id, false))!.Id.ShouldBe(own.Lesson.Id);
+        (await db.Store.GetProjectAsync(own.Project))!.Id.ShouldBe(own.Project);
+        Task Invoke() => operation switch
+        {
+            "entry" => knowledge.GetKnowledgeAsync(foreign.Lesson.Id, true),
+            "entry_rows" => knowledge.GetKnowledgeRowsAsync([own.Lesson.Id, foreign.Lesson.Id]),
+            "recall" => knowledge.RecallAsync(new(foreign.Project, null, null, [], [], null, null, null, [], [KnowledgeStatus.Active], null, WorkDetail.Full, 20, null)),
+            "relevant" => knowledge.ReadRelevantKnowledgeAsync(new(foreign.Project, null, [], [], [KnowledgeKind.Lesson], 20)),
+            "rules" => knowledge.ReadRulesAsync(new(foreign.Project, [LessonActivity.Testing], null, [], "codex", 10)),
+            "project" => db.Store.GetProjectAsync(foreign.Project),
+            "item" => db.Store.GetItemAsync(foreign.Item.Id, false),
+            "record" => knowledge.RecordKnowledgeAsync(foreign.Project, Spec(KnowledgeKind.Fact, "An attempted foreign write"), scope.Actor, null),
+            "revise" => knowledge.ReviseKnowledgeAsync(foreign.Lesson.Id, foreign.Lesson.Version,
+                new(foreign.Lesson.Kind, foreign.Lesson.Summary, foreign.Lesson.Body, foreign.Lesson.Confidence, foreign.Lesson.MadeAutonomously,
+                    foreign.Lesson.Details! with { AppliesWhen = new([LessonActivity.Merging]) }, foreign.Lesson.Repositories, [], [], null), scope.Actor),
+            _ => throw new InvalidOperationException(operation)
+        };
+        var refused = await Should.ThrowAsync<WorkException>(Invoke);
+        refused.Message.ShouldContain("project", Case.Insensitive);
+        (await SnapshotAsync()).ShouldBe(before);
+    }
+
+    [Theory]
     [InlineData("retract")]
     [InlineData("acknowledge")]
     [InlineData("approve")]
