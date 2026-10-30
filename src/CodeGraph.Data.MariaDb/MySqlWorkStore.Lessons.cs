@@ -28,7 +28,7 @@ public sealed partial class MySqlWorkStore
 
     private const string NotAddressed = "NOT EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id)";
 
-    private sealed class EventRow
+    private sealed record EventRow
     {
         public Guid CorrectionId { get; init; }
         public Guid EntryId { get; init; }

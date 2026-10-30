@@ -51,7 +51,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         "FROM knowledge_entries e JOIN work_projects p ON p.id = e.project_id " +
         "LEFT JOIN work_items wi ON wi.id = e.item_id LEFT JOIN work_features wf ON wf.id = e.feature_id";
 
-    private sealed class KnowledgeEntryRow
+    private sealed record KnowledgeEntryRow
     {
         public Guid Id { get; init; }
         public Guid ProjectId { get; init; }

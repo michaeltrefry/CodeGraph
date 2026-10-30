@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS lesson_merges (
     target_revision INT NOT NULL,
     project_id CHAR(36) NOT NULL,
     snapshot_json LONGTEXT NOT NULL,
+    -- Original audit snapshot stays immutable; active inverse plans are rebased by selected unmerge.
+    inverse_json LONGTEXT NULL,
     author VARCHAR(255) NOT NULL,
     author_kind VARCHAR(16) NOT NULL,
     author_session_id VARCHAR(64) NULL,

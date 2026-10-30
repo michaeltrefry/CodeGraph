@@ -43,6 +43,7 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         var challenge = await connection.ExecuteScalarAsync<Guid>("SELECT id FROM lesson_challenges WHERE entry_id = @source", new { source = sourceId });
         var projectId = source.GetProperty("project_id").GetGuid();
         var run = Guid.NewGuid();
+        await RegisterRun(run, projectId);
         using (var scope = DreamExecutionScope.Begin(run, projectId, "scripted"))
         using (scope.UseEvidence([new DreamEvidence("entry", sourceId, "Duplicate rule and lesson: two sessions")]))
         using (DreamWriteMetadata.Begin("Two events across two sessions"))
@@ -102,11 +103,14 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         var project = await db.NewProjectAsync("UP");
         var source = await Lesson(project, "Source prompt test", "source-prompt", source: promptSource ? "prompt" : "agent");
         var target = await Lesson(project, "Target prompt test", "target-prompt", source: promptSource ? "agent" : "prompt");
-        using var scope = DreamExecutionScope.Begin(Guid.NewGuid(), source.GetProperty("project_id").GetGuid(), "scripted");
-        using var evidence = scope.UseEvidence([new DreamEvidence("entry", source.GetProperty("id").GetString()!, "Two similar lessons")]);
-        var refused = await Should.ThrowAsync<WorkException>(() => db.Store.RelateLessonAsync(source.GetProperty("id").GetGuid(),
-            source.GetProperty("version").GetInt64(), target.GetProperty("id").GetGuid(), null, scope.Actor));
-        refused.Code.ShouldBe("forbidden");
+        using (var scope = DreamExecutionScope.Begin(Guid.NewGuid(), source.GetProperty("project_id").GetGuid(), "scripted"))
+        using (scope.UseEvidence([new DreamEvidence("entry", source.GetProperty("id").GetString()!, "Two similar lessons")]))
+        {
+            await RegisterRun(scope.RunId, scope.ProjectId);
+            var refused = await Should.ThrowAsync<WorkException>(() => db.Store.RelateLessonAsync(source.GetProperty("id").GetGuid(),
+                source.GetProperty("version").GetInt64(), target.GetProperty("id").GetGuid(), null, scope.Actor));
+            refused.Code.ShouldBe("forbidden");
+        }
         (await Entry(source.GetProperty("id").GetString()!)).GetProperty("status").GetString().ShouldBe("active");
     }
 
@@ -145,6 +149,76 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         response.Body.GetProperty("entry").GetProperty("status").GetString().ShouldBe("active");
         await using var connection = new MySqlConnection(db.ConnectionString);
         (await connection.ExecuteScalarAsync<string>("SELECT author FROM knowledge_revisions WHERE entry_id = @sourceId ORDER BY revision DESC LIMIT 1", new { sourceId })).ShouldBe("rest-unmerger");
+    }
+
+    [Fact]
+    public async Task Selected_unmerge_rebases_later_inverse_plans_without_changing_original_audit_evidence()
+    {
+        var project = await db.NewProjectAsync("UO");
+        var first = await Lesson(project, "First source", "first-source", "reviewing", "review");
+        var second = await Lesson(project, "Second source", "second-source", "testing");
+        var target = await Lesson(project, "Shared target", "shared-target");
+        var other = await Lesson(project, "Conflicting lesson", "conflicting-event");
+        var firstId = first.GetProperty("id").GetString()!;
+        var secondId = second.GetProperty("id").GetString()!;
+        var targetId = target.GetProperty("id").GetString()!;
+        var otherId = other.GetProperty("id").GetString()!;
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = firstId, expected_version = 1, contradicts = otherId } });
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = secondId, expected_version = 1, contradicts = otherId } });
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = firstId, expected_version = 2, same_as = targetId } });
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = secondId, expected_version = 2, same_as = targetId } });
+        await Lesson(project, "New target correction", "new-target-event", "merging", sameAs: targetId);
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var audit = await connection.ExecuteScalarAsync<string>("SELECT snapshot_json FROM lesson_merges WHERE source_id = @secondId", new { secondId });
+        await db.CallAsync(WorkTools.Record, new { unmerge = new { id = firstId, expected_version = 3 } });
+        target = await Entry(targetId);
+        target.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(3);
+        target.GetProperty("lesson").GetProperty("priority").GetString().ShouldBe("normal");
+        target.GetProperty("details").GetProperty("applies_when").GetProperty("activity").EnumerateArray().Select(a => a.GetString()).ShouldBe(["implementing", "merging", "testing"], ignoreOrder: true);
+        (await Entry(firstId)).GetProperty("status").GetString().ShouldBe("active");
+        (await Entry(secondId)).GetProperty("status").GetString().ShouldBe("superseded");
+        (await connection.ExecuteScalarAsync<string>("SELECT snapshot_json FROM lesson_merges WHERE source_id = @secondId", new { secondId })).ShouldBe(audit);
+        (await connection.ExecuteScalarAsync<string>("SELECT inverse_json FROM lesson_merges WHERE source_id = @secondId", new { secondId })).ShouldNotBe(audit);
+        // Undo the later independent merge: the removed first source must never be re-imported.
+        await db.CallAsync(WorkTools.Record, new { unmerge = new { id = secondId, expected_version = 3 } });
+        target = await Entry(targetId);
+        target.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
+        target.GetProperty("lesson").GetProperty("priority").GetString().ShouldBe("normal");
+        target.GetProperty("details").GetProperty("applies_when").GetProperty("activity").EnumerateArray().Select(a => a.GetString()).ShouldBe(["implementing", "merging"]);
+        (await connection.ExecuteScalarAsync<string>("SELECT entry_id FROM lesson_events WHERE source_ref = 'first-source'", new { })).ShouldBe(firstId);
+        (await connection.ExecuteScalarAsync<string>("SELECT entry_id FROM lesson_events WHERE source_ref = 'second-source'", new { })).ShouldBe(secondId);
+        (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE entry_id = @targetId OR other_id = @targetId", new { targetId })).ShouldBe(0);
+        (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE other_id = @otherId", new { otherId })).ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task Dreamer_cannot_unmerge_directly_or_through_record()
+    {
+        var project = await db.NewProjectAsync("UD");
+        var source = await Lesson(project, "Source unmerge policy", "source-unmerge-policy");
+        var target = await Lesson(project, "Target unmerge policy", "target-unmerge-policy");
+        var sourceId = source.GetProperty("id").GetString()!;
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = sourceId, expected_version = 1, same_as = target.GetProperty("id").GetString() } });
+        using (var scope = DreamExecutionScope.Begin(Guid.NewGuid(), source.GetProperty("project_id").GetGuid(), "scripted"))
+        using (scope.UseEvidence([new DreamEvidence("entry", sourceId, "A previous merge")]))
+        {
+            await RegisterRun(scope.RunId, scope.ProjectId);
+            var direct = await Should.ThrowAsync<WorkException>(() => db.Store.UnmergeLessonAsync(Guid.Parse(sourceId), 2, scope.Actor));
+            direct.Code.ShouldBe("forbidden");
+            var record = await Should.ThrowAsync<WorkException>(() => db.Service.ExecuteAsync(WorkTools.Record,
+                JsonSerializer.SerializeToElement(new { unmerge = new { id = sourceId, expected_version = 2 } }, WorkJson.Options), scope.Actor));
+            record.Code.ShouldBe("forbidden");
+        }
+        (await Entry(sourceId)).GetProperty("status").GetString().ShouldBe("superseded");
+    }
+
+    private async Task RegisterRun(Guid id, Guid projectId)
+    {
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var run = new DreamRun(id, projectId, "run_now", new WorkActor("alice"), "running", DateTime.UtcNow, null,
+            "test", "scripted", 0, 0, 0, 1, 0, null, []);
+        await connection.ExecuteAsync("INSERT INTO dreaming_runs (id,project_id,status,started_at,run_json) VALUES (@id,@projectId,'running',UTC_TIMESTAMP(6),@json)",
+            new { id, projectId, json = JsonSerializer.Serialize(run, WorkJson.Options) });
     }
 
     [Fact]
