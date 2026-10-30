@@ -699,7 +699,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     public async Task<KnowledgeView?> GetKnowledgeAsync(Guid entryId, bool withRevisions, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await LoadKnowledgeViewAsync(connection, null, entryId, withRevisions, ct);
+        var view=await LoadKnowledgeViewAsync(connection, null, entryId, withRevisions, ct);
+        if(view is not null) DreamPolicy.RequireCurrentProject(view.ProjectId);
+        return view;
     }
 
     public async Task<IReadOnlyList<KnowledgeRow>> GetKnowledgeRowsAsync(IReadOnlyList<Guid> entryIds, CancellationToken ct = default)
@@ -715,6 +717,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.id IN @ids", new { ids = ids.Concat(mergedInto.Values).Distinct().ToArray() }, cancellationToken: ct)))
             .ToDictionary(row => row.Id);
+        foreach(var row in rows.Values) DreamPolicy.RequireCurrentProject(row.ProjectId);
         var answered = new List<KnowledgeRow>();
         foreach (var id in entryIds)
         {
@@ -729,6 +732,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<RecallPage> RecallAsync(RecallSpec spec, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(spec.ProjectId);
         // Reads write nothing: baselines are adopted at index time (KnowledgeBaselines).
         await using var connection = await OpenAsync(ct);
 
@@ -875,6 +879,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<IReadOnlyList<KnowledgeRow>> ReadRelevantKnowledgeAsync(KnowledgeContext context, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(context.ProjectId);
         // Reads write nothing: baselines are adopted at index time (KnowledgeBaselines). Each tier is
         // its own query, filtered in SQL, so a matching entry is never crowded out by newer unrelated ones.
         await using var connection = await OpenAsync(ct);

@@ -680,7 +680,13 @@ public sealed partial class MySqlWorkStore(
             new { externalId = alias["sc-".Length..] }, cancellationToken: ct));
     }
 
-    public async Task<WorkTarget?> ResolveAsync(string idOrKey, CancellationToken ct = default)
+    public async Task<WorkTarget?> ResolveAsync(string idOrKey,CancellationToken ct=default)
+    {
+        var target=await ResolveCoreAsync(idOrKey,ct);
+        if(target is not null)DreamPolicy.RequireCurrentProject(target.ProjectId);
+        return target;
+    }
+    private async Task<WorkTarget?> ResolveCoreAsync(string idOrKey, CancellationToken ct)
     {
         await using var connection = await OpenAsync(ct);
         var value = idOrKey.Trim();
@@ -728,6 +734,7 @@ public sealed partial class MySqlWorkStore(
     public async Task<ProjectView?> GetProjectAsync(Guid projectId, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
+        DreamPolicy.RequireCurrentProject(projectId);
         return await LoadProjectViewAsync(connection, null, projectId, withCounts: true, ct);
     }
 
@@ -738,6 +745,7 @@ public sealed partial class MySqlWorkStore(
         // mixes item states from before and after a concurrent write.
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
         var view = await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: true, ct);
+        if(view is not null)DreamPolicy.RequireCurrentProject(view.ProjectId);
         await transaction.CommitAsync(ct);
         return view;
     }
@@ -751,12 +759,18 @@ public sealed partial class MySqlWorkStore(
         // The brief carries the thread's open questions and requests (§5.9), whoever reads it.
         if (view is not null)
             view = view with { OpenMessages = await ReadOpenMessagesAsync(connection, transaction, itemId, ct) };
+        if(view is not null)DreamPolicy.RequireCurrentProject(view.ProjectId);
         await transaction.CommitAsync(ct);
         return view;
     }
 
     public async Task<FindWorkResult> FindAsync(FindWorkSpec spec, CancellationToken ct = default)
     {
+        if(DreamExecutionScope.Current is {} scope)
+        {
+            if(spec.Kind==WorkEntityKind.Project||spec.ProjectId is null)DreamPolicy.Refuse(scope.Actor,"list other projects");
+            DreamPolicy.RequireCurrentProject(spec.ProjectId!.Value);
+        }
         await using var connection = await OpenAsync(ct);
         return spec.Kind switch
         {

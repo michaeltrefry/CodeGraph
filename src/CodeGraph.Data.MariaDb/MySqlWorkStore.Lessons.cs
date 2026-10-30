@@ -480,6 +480,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, LessonEmbedder? embedder, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         if (entryIds.Count == 0)
             return [];
         await using var connection = await OpenAsync(ct);
@@ -623,6 +624,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<BriefingRule>> ReadRulesAsync(RuleContext context, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(context.ProjectId);
         if (context.Activities.Count == 0)
             return [];
         await using var connection = await OpenAsync(ct);
@@ -726,6 +728,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<LessonActivity>> ReadRuleActivitiesAsync(Guid projectId, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var lists = await connection.QueryAsync<string>(new CommandDefinition(
             $"SELECT DISTINCT e.activities FROM knowledge_entries e WHERE {ActiveRule} AND NOT {AddressedEverywhere} AND e.activities IS NOT NULL",
@@ -1064,7 +1067,11 @@ public sealed partial class MySqlWorkStore
     public async Task<ChallengeView?> GetChallengeAsync(Guid challengeId, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await ReadChallengeRowAsync(connection, null, challengeId, ct) is { } row ? ToView(row) : null;
+        var row=await ReadChallengeRowAsync(connection,null,challengeId,ct);
+        if(row is null)return null;
+        var entry=await ReadKnowledgeRowAsync(connection,null,row.EntryId,ct);
+        if(entry is not null)DreamPolicy.RequireCurrentProject(entry.ProjectId);
+        return ToView(row);
     }
 
     // ---- lessons (the Lessons page's data) --------------------------------------------------------
@@ -1076,6 +1083,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<LessonsPage> ReadLessonsAsync(LessonsSpec spec, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(spec.ProjectId);
         if (spec.View == LessonsView.UnlearnedReviews)
             return await ReadUnlearnedReviewsAsync(spec, ct);
         await using var connection = await OpenAsync(ct);
@@ -1206,6 +1214,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<ReviewQueuePage> ReadReviewQueueAsync(Guid projectId, int offset, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var items = new List<ReviewItem>();
 

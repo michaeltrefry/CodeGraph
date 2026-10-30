@@ -409,6 +409,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor,"add item aliases");
         // Leading zeros in the number do not make another alias: sc-0012 is sc-12.
         var normalized = aliases.Select(alias => WorkReferences.NormalizeAlias(alias) ?? alias.Trim()).Distinct().ToList();
         var invalid = normalized.Where(alias => WorkReferences.NormalizeAlias(alias) != alias).ToList();

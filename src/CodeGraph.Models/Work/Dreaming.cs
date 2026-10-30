@@ -51,6 +51,8 @@ public static class DreamPolicy
             throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer requires an active, matching server run. Nothing was changed.");
         return scope;
     }
+    public static void RequireCurrentProject(Guid projectId)
+    { if (DreamExecutionScope.Current is {} scope) RequireProject(scope.Actor,projectId); }
     public static void RequireProject(WorkActor actor, Guid projectId)
     { if (IsDreamer(actor) && RequireScope(actor).ProjectId != projectId) throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may access only its run's project. Nothing was changed."); }
     public static void Refuse(WorkActor actor, string operation)

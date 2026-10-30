@@ -9,6 +9,7 @@ public sealed partial class MySqlWorkStore
 {
     public async Task<DreamKnowledgeDigest> ReadDreamDigestAsync(Guid projectId, DateTime? since, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var entries = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition($"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id=@projectId ORDER BY e.id", new { projectId }, cancellationToken: ct))).ToList();
         var events = (await connection.QueryAsync(new CommandDefinition("SELECT correction_id,entry_id,event_hash,counted,rule_at_event,served,created_at FROM lesson_events WHERE project_id=@projectId ORDER BY correction_id", new { projectId }, cancellationToken: ct))).ToArray();
@@ -34,6 +35,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<object> ReadDreamSimilarAsync(Guid projectId, int offset, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         // Unlike interactive capture's bounded similarity pool, dreaming considers every active
         // lesson. Pairs are paged in stable id order and previously related pairs are omitted.
@@ -57,6 +59,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<object> ReadDreamWorkTrailAsync(Guid projectId, DateTime? since, int offset, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var rows = (await connection.QueryAsync(new CommandDefinition("""
             SELECT * FROM (
@@ -77,6 +80,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task ValidateDreamEvidenceAsync(Guid projectId, IReadOnlyList<DreamEvidence> evidence, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         foreach (var item in evidence)
         {
