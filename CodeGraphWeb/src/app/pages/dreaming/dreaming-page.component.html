@@ -28,7 +28,7 @@
                 <span class="kn-meta">@for (count of actionCounts(run); track count.action) { <span class="cg-chip">{{ count.action }} {{ count.count }}</span> } @empty { <span>No actions</span> }</span>
               </button>
             } @empty { <p class="kn-empty">{{ loading() ? 'Loading runs…' : 'No runs yet.' }}</p> }
-            @if (runs().length >= limit) { <div class="kn-more"><button type="button" class="cg-btn" [disabled]="loading()" (click)="more()">Load older runs</button></div> }
+            @if (hasMore()) { <div class="kn-more"><button type="button" class="cg-btn" [disabled]="loading()" (click)="more()">Load older runs</button></div> }
           </div>
           <section class="cg-card dream-report" aria-label="Run report">
             @if (selected(); as run) {
@@ -43,12 +43,12 @@
               </dl>
               @if (run.reason) { <p>{{ run.reason }}</p> }
               <div class="kn-meta">@for (count of counts(); track count.action) { <span class="cg-chip">{{ count.action }}: {{ count.count }}</span> }</div>
-              @if (run.report) { <h3>Report</h3><pre class="dream-data">{{ run.report | json }}</pre> }
+              @if (run.report) { <h3>Report</h3><p class="dream-data">{{ run.report }}</p> }
               <h3>Every action and proposal</h3>
               @for (action of run.actions; track $index) {
                 <article class="dream-action">
                   <h4>{{ $index + 1 }}. {{ action.tool }} <span class="cg-muted cg-small">{{ action.created_at | date:'medium' }}</span></h4>
-                  <details open><summary>Evidence and prevalence</summary><pre class="dream-data">{{ action.evidence | json }}</pre></details>
+                  <details open><summary>Evidence and prevalence</summary>@if (prevalence(action)) { <p>{{ prevalence(action) }}</p> }<pre class="dream-data">{{ action.evidence | json }}</pre></details>
                   <details><summary>Action and target</summary><pre class="dream-data">{{ action.arguments | json }}</pre></details>
                   <details open><summary>Result / proposal</summary><pre class="dream-data">{{ action.result | json }}</pre></details>
                 </article>

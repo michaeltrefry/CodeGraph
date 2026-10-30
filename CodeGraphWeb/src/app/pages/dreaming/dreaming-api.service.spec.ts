@@ -12,9 +12,9 @@ describe('DreamingApiService', () => {
     const injector = Injector.create({ providers: [{ provide: HttpClient, useValue: http }] });
     const api = runInInjectionContext(injector, () => new DreamingApiService());
     const base = `${environment.apiUrl}/work/dreaming/ONE%2FTWO`;
-    await firstValueFrom(api.runs('ONE/TWO', 60));
+    await firstValueFrom(api.runs('ONE/TWO', 60, 'run/older'));
     const [url, options] = http.get.mock.calls.at(-1)! as [string, { params: HttpParams }];
-    expect(url).toBe(`${base}/runs`); expect(options.params.get('limit')).toBe('60');
+    expect(url).toBe(`${base}/runs`); expect(options.params.get('limit')).toBe('60'); expect(options.params.get('before')).toBe('run/older');
     await firstValueFrom(api.run('ONE/TWO', 'run/one')); expect(http.get).toHaveBeenLastCalledWith(`${base}/runs/run%2Fone`);
     await firstValueFrom(api.runNow('ONE/TWO')); expect(http.post).toHaveBeenLastCalledWith(`${base}/runs`, { trigger: 'run_now' });
     await firstValueFrom(api.revert('ONE/TWO', 'run/one')); expect(http.post).toHaveBeenLastCalledWith(`${base}/runs/run%2Fone/revert`, {});

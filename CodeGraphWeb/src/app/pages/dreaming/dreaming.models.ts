@@ -37,7 +37,7 @@ export interface DreamRun {
   base_instruction_revision: number;
   project_instruction_revision: number;
   actions: DreamAction[];
-  report: unknown;
+  report?: string;
   reason?: string;
 }
 export interface DreamRevertEntry { journal_id: number; entry_id: string; action: string; status: 'reverted' | 'conflict' | 'already_reverted'; reason?: string; }

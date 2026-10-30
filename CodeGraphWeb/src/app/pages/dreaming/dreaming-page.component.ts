@@ -6,7 +6,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
 import { KnowledgeProjectService, actorLabel, workError, words } from '../knowledge/knowledge-ui';
 import { DreamingApiService } from './dreaming-api.service';
-import { DreamEffects, DreamInstructionSet, DreamRevertResult, DreamRun, DreamSettings } from './dreaming.models';
+import { DreamAction, DreamEffects, DreamInstructionSet, DreamRevertResult, DreamRun, DreamSettings } from './dreaming.models';
 
 @Component({
   selector: 'app-dreaming-page',
@@ -38,7 +38,8 @@ export class DreamingPageComponent implements OnInit {
   settings: DreamSettings | null = null;
   baseContent = '';
   projectContent = '';
-  limit = 30;
+  readonly hasMore = signal(false);
+  private readonly pageSize = 30;
   private generation = 0;
   private detailGeneration = 0;
 
@@ -64,7 +65,7 @@ export class DreamingPageComponent implements OnInit {
     this.instructions.set(null);
     this.settings = null;
     this.baseContent = this.projectContent = '';
-    this.limit = 30;
+    this.hasMore.set(false);
     this.notice.set('');
     await this.reload();
   }
@@ -77,10 +78,11 @@ export class DreamingPageComponent implements OnInit {
     this.error.set('');
     try {
       const [runs, settings, instructions] = await Promise.all([
-        firstValueFrom(this.api.runs(key, this.limit)), firstValueFrom(this.api.settings(key)), firstValueFrom(this.api.instructions(key))
+        firstValueFrom(this.api.runs(key, this.pageSize)), firstValueFrom(this.api.settings(key)), firstValueFrom(this.api.instructions(key))
       ]);
       if (generation !== this.generation) return;
       this.runs.set(runs);
+      this.hasMore.set(runs.length === this.pageSize);
       this.settings = { ...settings };
       this.setInstructions(instructions);
     } catch (error) {
@@ -90,7 +92,24 @@ export class DreamingPageComponent implements OnInit {
     }
   }
 
-  async more(): Promise<void> { this.limit += 30; await this.reload(); }
+  async more(): Promise<void> {
+    const key = this.project.selected()!;
+    const before = this.runs().at(-1)?.id;
+    if (!before || this.loading()) return;
+    const generation = this.generation;
+    this.loading.set(true);
+    try {
+      const older = await firstValueFrom(this.api.runs(key, this.pageSize, before));
+      if (generation !== this.generation) return;
+      const known = new Set(this.runs().map(run => run.id));
+      this.runs.update(runs => [...runs, ...older.filter(run => !known.has(run.id))]);
+      this.hasMore.set(older.length === this.pageSize);
+    } catch (error) {
+      if (generation === this.generation) this.error.set(workError(error).message);
+    } finally {
+      if (generation === this.generation) this.loading.set(false);
+    }
+  }
 
   async select(id: string): Promise<void> {
     const key = this.project.selected()!;
@@ -177,9 +196,16 @@ export class DreamingPageComponent implements OnInit {
         throw error;
       }
       if (key !== this.project.selected()) return;
-      this.setInstructions(await firstValueFrom(this.api.instructions(key)));
+      const latest = await firstValueFrom(this.api.instructions(key));
+      if (key !== this.project.selected()) return;
+      this.setInstructions(latest);
       this.notice.set(`${scope === 'base' ? 'Base instructions' : 'Project addendum'} saved with revision history.`);
     });
+  }
+
+  prevalence(action: DreamAction): string {
+    const fields = action.arguments as { prevalence?: unknown } | null;
+    return typeof fields?.prevalence === 'string' ? fields.prevalence : '';
   }
 
   actionCounts(run: DreamRun | null): { action: string; count: number }[] {
