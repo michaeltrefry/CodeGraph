@@ -377,6 +377,7 @@ public sealed partial class RepositoryIndex
     private readonly Dictionary<string, IndexedRepository> byName;
     private readonly Dictionary<string, IndexedRepository> byRemote = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> remoteOwner = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> owners = new(StringComparer.OrdinalIgnoreCase);
 
     public RepositoryIndex(IEnumerable<IndexedRepository> repositories)
     {
@@ -387,6 +388,7 @@ public sealed partial class RepositoryIndex
             {
                 byRemote.TryAdd($"{match.Groups["owner"].Value}/{match.Groups["repo"].Value}", repository);
                 remoteOwner.TryAdd(repository.Name, match.Groups["owner"].Value);
+                owners.Add(match.Groups["owner"].Value);
             }
     }
 
@@ -398,7 +400,11 @@ public sealed partial class RepositoryIndex
     /// <summary>The indexed repository named exactly so (ignoring case), or null.</summary>
     public IndexedRepository? Named(string name) => byName.GetValueOrDefault(name.Trim());
 
-    /// <summary>The indexed repository a story's <c>owner/repo</c> (or bare name) is, or null.</summary>
+    /// <summary>
+    /// The indexed repository a story's <c>owner/repo</c> (or bare name) is, or null. Under another owner than its
+    /// remote's, a name is the same repository only when that owner holds indexed repositories too (one moved between
+    /// accounts the index covers, <c>michaeltrefry/SceneWorks</c> → <c>SceneWorks/SceneWorks</c>), not an upstream's.
+    /// </summary>
     public IndexedRepository? Resolve(string candidate)
     {
         if (byRemote.TryGetValue(candidate, out var remote))
@@ -408,6 +414,9 @@ public sealed partial class RepositoryIndex
         var slash = candidate.LastIndexOf('/');
         if (slash < 0 || byName.GetValueOrDefault(candidate[(slash + 1)..]) is not { } bare)
             return null;
-        return remoteOwner.TryGetValue(bare.Name, out var owner) && !owner.Equals(candidate[..slash], StringComparison.OrdinalIgnoreCase) ? null : bare;
+        var mentioned = candidate[..slash];
+        return remoteOwner.TryGetValue(bare.Name, out var owner) && !owner.Equals(mentioned, StringComparison.OrdinalIgnoreCase) && !owners.Contains(mentioned)
+            ? null
+            : bare;
     }
 }

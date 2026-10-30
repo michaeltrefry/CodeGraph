@@ -445,6 +445,23 @@ public sealed class WorkImportMappingTests
     }
 
     [Fact]
+    public void A_repository_moved_between_indexed_owners_resolves_under_its_old_owner()
+    {
+        var index = new RepositoryIndex([
+            new IndexedRepository("SceneWorks", "https://github.com/SceneWorks/SceneWorks.git", "SCENEWORKS"),
+            new IndexedRepository("CodeGraph", "https://github.com/michaeltrefry/CodeGraph.git", "CODEGRAPH"),
+            new IndexedRepository("candle", "https://github.com/SceneWorks/candle.git", "SCENEWORKS")
+        ]);
+
+        // michaeltrefry holds indexed repositories, so its SceneWorks is the one that moved to the SceneWorks org.
+        index.Resolve("michaeltrefry/SceneWorks")!.Name.ShouldBe("SceneWorks");
+        index.Resolve("SceneWorks/CodeGraph")!.Name.ShouldBe("CodeGraph");
+        // An owner with no indexed repository is an upstream, not a move.
+        index.Resolve("huggingface/candle").ShouldBeNull();
+        index.Resolve("user-attachments/SceneWorks").ShouldBeNull();
+    }
+
+    [Fact]
     public void Proposed_keys_that_collide_get_a_number()
     {
         var taken = new HashSet<string> { "SCENEWORKS", "CODEFLOWCL", "CODEFLOWC2" };
