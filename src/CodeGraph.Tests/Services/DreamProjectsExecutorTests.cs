@@ -58,6 +58,7 @@ public class DreamProjectsExecutorTests
         }
         public Task<DreamRun?> GetRunAsync(Guid projectId, Guid runId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<DreamRun>> ListRunsAsync(Guid projectId, int limit = 30, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId, Guid? before, int limit = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
@@ -72,6 +73,7 @@ public class DreamProjectsExecutorTests
         public Task<DreamRun?> GetRunAsync(Guid projectId, Guid runId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<DreamRun>> ListRunsAsync(Guid projectId, int limit, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamRun?> LastCompletedAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId, Guid? before, int limit = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
