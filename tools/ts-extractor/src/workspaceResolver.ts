@@ -10,6 +10,7 @@ import type {
   UnresolvedImportDto,
   WorkspacePackageDto,
 } from './protocol';
+import { viteLibrarySource } from './viteLibraryExports';
 import type { DiscoveryScope } from './discoveryScope';
 
 /** Absolute paths of the files named `fileName` below `dir`, at most `limit` of them. */
@@ -483,7 +484,8 @@ function packageEntryPoints(pkg: WorkspacePackageInfo, ctx: ResolverContext): Ar
   };
   const sourceCandidates = (absolute: string): string[] => {
     if (ctx.sourceFilesByPath.has(absolute)) return [absolute];
-    const candidates: string[] = [];
+    const candidates = viteLibrarySource(pkg.rootPath, ctx.sourceFilesByPath, absolute,
+      message => ctx.diagnostics.push(message));
     if (!path.extname(absolute)) candidates.push(...['.ts', '.tsx', '.js', '.jsx'].map(extension => absolute + extension),
       ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map(index => path.join(absolute, index)));
     if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.outDir), absolute)) {

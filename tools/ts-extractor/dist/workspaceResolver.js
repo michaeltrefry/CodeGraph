@@ -38,6 +38,7 @@ const ts_morph_1 = require("ts-morph");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const ts = __importStar(require("typescript"));
+const viteLibraryExports_1 = require("./viteLibraryExports");
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.angular']);
 const MAX_TSCONFIGS = 200;
 const MAX_WORKSPACE_PACKAGES = 500;
@@ -387,7 +388,7 @@ function packageEntryPoints(pkg, ctx) {
     const sourceCandidates = (absolute) => {
         if (ctx.sourceFilesByPath.has(absolute))
             return [absolute];
-        const candidates = [];
+        const candidates = (0, viteLibraryExports_1.viteLibrarySource)(pkg.rootPath, ctx.sourceFilesByPath, absolute, message => ctx.diagnostics.push(message));
         if (!path.extname(absolute))
             candidates.push(...['.ts', '.tsx', '.js', '.jsx'].map(extension => absolute + extension), ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map(index => path.join(absolute, index)));
         if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.outDir), absolute)) {

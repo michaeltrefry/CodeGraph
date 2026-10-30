@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.addNpmExportMetadata = addNpmExportMetadata;
+const ts_morph_1 = require("ts-morph");
 /** Explicit public aliases attach to their actual declarations, so consumers in another indexed
  * repository can bind exact package+subpath+export identities without guessing display names. */
 function addNpmExportMetadata(model, nodes) {
@@ -34,6 +35,50 @@ function addNpmExportMetadata(model, nodes) {
         }
         return result;
     };
+    const members = (declaration, seen = new Set(), prefix = '') => {
+        if (seen.has(declaration) || seen.size > 12)
+            return undefined;
+        seen = new Set(seen);
+        seen.add(declaration);
+        if (ts_morph_1.Node.isVariableDeclaration(declaration)) {
+            if (declaration.getVariableStatement()?.getDeclarationKind() !== 'const' || model.hasMemberWrites(declaration))
+                return undefined;
+            const init = declaration.getInitializer();
+            if (!init)
+                return undefined;
+            const value = model.resolve(init) ?? init;
+            return members(value, seen, prefix);
+        }
+        if (!ts_morph_1.Node.isObjectLiteralExpression(declaration))
+            return new Map();
+        const result = new Map();
+        for (const property of declaration.getProperties()) {
+            if (!(ts_morph_1.Node.isPropertyAssignment(property) || ts_morph_1.Node.isMethodDeclaration(property) || ts_morph_1.Node.isShorthandPropertyAssignment(property)))
+                return undefined;
+            const key = property.getName().replace(/^['"]|['"]$/g, '');
+            if (!/^[a-zA-Z_$][\w$]*$/.test(key))
+                return undefined;
+            const member = prefix ? `${prefix}.${key}` : key;
+            const expression = ts_morph_1.Node.isPropertyAssignment(property) ? property.getInitializer()
+                : ts_morph_1.Node.isShorthandPropertyAssignment(property) ? property.getValueSymbol()?.getDeclarations()[0] : property;
+            if (!expression)
+                return undefined;
+            const resolved = model.resolve(expression) ?? expression;
+            if (ts_morph_1.Node.isObjectLiteralExpression(resolved) || ts_morph_1.Node.isVariableDeclaration(resolved)) {
+                const nested = members(resolved, seen, member);
+                if (!nested)
+                    return undefined;
+                for (const [path, qn] of nested)
+                    result.set(path, qn);
+            }
+            else {
+                const qn = model.target(expression);
+                if (qn && byQn.has(qn) && ['Component', 'Function', 'Method'].includes(byQn.get(qn).label))
+                    result.set(member, qn);
+            }
+        }
+        return result;
+    };
     const namesByEntry = new Map();
     for (const module of nodes.filter(node => node.properties.module_kind === 'typescript_workspace_package')) {
         const packageName = module.properties.package_name;
@@ -53,11 +98,22 @@ function addNpmExportMetadata(model, nodes) {
                 model.diagnostic(`packageExportUnresolved: ${importPath} has an unadmitted or unresolved runtime entry`);
                 continue;
             }
-            for (const entry of candidates) {
-                const file = model.byPath.get(entry.file_path);
+            const files = [...new Set(candidates.map(entry => model.byPath.get(entry.file_path)))];
+            for (const file of files)
                 if (!namesByEntry.has(file))
                     namesByEntry.set(file, names(file));
-                for (const name of namesByEntry.get(file)) {
+            const publicNames = new Set(files.flatMap(file => [...namesByEntry.get(file)]));
+            for (const name of publicNames) {
+                const surfaces = [];
+                let complete = true;
+                // Runtime conditions are alternatives, not independent packages. Every modeled entry
+                // must resolve this name before any of its declaration identities can be advertised.
+                for (const file of files) {
+                    if (!namesByEntry.get(file).has(name)) {
+                        model.diagnostic(`packageExportUnresolved: ${importPath}#${name} is missing from runtime entry ${model.relative(file)}`);
+                        complete = false;
+                        continue;
+                    }
                     const explicit = [...file.getFunctions(), ...file.getClasses(), ...file.getInterfaces(), ...file.getVariableDeclarations(), ...file.getEnums()]
                         .some(declaration => declaration.isExported() && (declaration.isDefaultExport() ? name === 'default' : declaration.getName() === name))
                         || file.getExportDeclarations().some(exported => exported.getNamedExports().some(item => (item.getAliasNode()?.getText() ?? item.getName()) === name));
@@ -65,18 +121,42 @@ function addNpmExportMetadata(model, nodes) {
                         && exported.getModuleSpecifierValue() && !model.module(file, exported.getModuleSpecifierValue()));
                     if (!explicit && unknownStar) {
                         model.diagnostic(`packageExportUnresolved: ${importPath}#${name} has an unresolved star-export alternative`);
+                        complete = false;
                         continue;
                     }
                     const declaration = model.exported(file, name);
-                    const qn = declaration && model.declarations.get(declaration);
-                    if (!qn || !byQn.has(qn)) {
+                    if (!declaration) {
                         model.diagnostic(`packageExportUnresolved: ${importPath}#${name} has no admitted declaration`);
+                        complete = false;
                         continue;
                     }
-                    if (!identities.has(qn))
-                        identities.set(qn, new Map());
-                    const identity = { package_name: packageName, import_path: importPath, export_name: name };
-                    identities.get(qn).set(`${packageName}\0${importPath}\0${name}`, identity);
+                    const surface = members(declaration);
+                    if (!surface) {
+                        model.diagnostic(`packageExportUnresolved: ${importPath}#${name} has mutable or unsupported member definitions`);
+                        complete = false;
+                        continue;
+                    }
+                    const resolved = model.resolve(declaration) ?? declaration;
+                    const qn = model.declarations.get(resolved);
+                    if (qn && byQn.has(qn))
+                        surface.set('', qn);
+                    surfaces.push(surface);
+                }
+                if (!complete)
+                    continue;
+                const paths = new Set(surfaces.flatMap(surface => [...surface.keys()]));
+                for (const member of paths) {
+                    if (surfaces.some(surface => !surface.has(member))) {
+                        model.diagnostic(`packageExportUnresolved: ${importPath}#${name}${member ? `::${member}` : ''} is missing from a runtime entry`);
+                        continue;
+                    }
+                    const identity = { package_name: packageName, import_path: importPath, export_name: name,
+                        ...(member ? { member_path: member } : {}) };
+                    for (const qn of new Set(surfaces.map(surface => surface.get(member)))) {
+                        if (!identities.has(qn))
+                            identities.set(qn, new Map());
+                        identities.get(qn).set(`${packageName}\0${importPath}\0${name}\0${member}`, identity);
+                    }
                 }
             }
         }

@@ -59,15 +59,23 @@ public sealed class NpmExportLinkingTests
             }
             Write("SceneWorks", "package.json", """{"name":"sceneworks-app","dependencies":{"@sceneworks/ui":"*"}}""");
             Write("SceneWorks", "src/app.tsx", """
-                import { Button as Primary } from '@sceneworks/ui';
+                import { Button as Primary, isAccentId as valid, Icon } from '@sceneworks/ui';
                 import SubpathButton from '@sceneworks/ui/button';
-                export function SceneWorksApp() { return <Primary/>; }
+                export function SceneWorksApp() { return valid("blue") ? <Primary/> : null; }
                 export function SubpathScreen() { return <SubpathButton/>; }
+                export function ModelScreen() { return <Icon.Model/>; }
                 """);
             void Library(string repo, string name)
             {
-                Write(repo, "package.json", """{"name":"@sceneworks/ui","exports":{".":"./src/index.ts","./button":"./src/button.tsx"}}""");
-                Write(repo, "src/index.ts", "export { default as Button } from './button';");
+                Write(repo, "package.json", """{"name":"@sceneworks/ui","type":"module","exports":{".":{"import":"./dist/sceneworks-ui.js"},"./button":"./src/button.tsx"}}""");
+                Write(repo, "vite.config.js", """
+                    import {resolve} from 'node:path'; import {defineConfig} from 'vite';
+                    const root = import.meta.dirname;
+                    export default defineConfig({build:{lib:{entry:resolve(root,'src/index.js'),formats:['es'],fileName:()=> 'sceneworks-ui.js'}}});
+                    """);
+                Write(repo, "src/index.js", "export { default as Button } from './button'; export { isAccentId } from './accents'; export {Icon} from './icons';");
+                Write(repo, "src/accents.js", "export function isAccentId(value) { return value === 'blue'; }");
+                Write(repo, "src/icons.jsx", "export const Icon={Model:()=> <svg/>};");
                 Write(repo, "src/button.tsx", $"export default function {name}() {{ return <button/>; }}");
             }
             Library("SharedUI", "PrimaryActual");
@@ -104,8 +112,15 @@ public sealed class NpmExportLinkingTests
             await Index("SharedUI");
             var actual = Named("SharedUI", "PrimaryActual");
             actual.Properties.ShouldContainKey("npm_exports");
-            Links().Count.ShouldBe(2);
-            Links().ShouldAllBe(edge => edge.Type == EdgeType.RENDERS && edge.TargetNodeId == actual.Id && edge.TargetRepository == "SharedUI");
+            Links().Count.ShouldBe(4);
+            Links().Where(edge => edge.Type == EdgeType.RENDERS && !edge.Properties.ContainsKey("member_path")).ShouldAllBe(edge => edge.TargetNodeId == actual.Id && edge.TargetRepository == "SharedUI");
+            Links().Single(edge => edge.Type == EdgeType.CALLS).TargetNodeId.ShouldBe(Named("SharedUI", "isAccentId").Id);
+            (await Impact(Named("SharedUI", "isAccentId"))).ShouldContain("SceneWorksApp");
+            var memberLink = Links().Single(edge => edge.Properties.GetValueOrDefault("member_path")?.ToString() == "Model");
+            var iconModel = store.Nodes.Single(node => node.Repository == "SharedUI" && node.QualifiedName.EndsWith("#Icon.Model"));
+            memberLink.TargetNodeId.ShouldBe(iconModel.Id);
+            memberLink.Properties["export_name"].ShouldBe("Icon");
+            (await Impact(iconModel)).ShouldContain("ModelScreen");
             var source = Named("SceneWorks", "SceneWorksApp");
             var subpath = Named("SceneWorks", "SubpathScreen");
             store.Edges.ShouldContain(edge => edge.SourceId == source.Id && edge.Type == EdgeType.RENDERS
@@ -131,16 +146,16 @@ public sealed class NpmExportLinkingTests
             // Removing the rival's public entries restores the original exact package/export match.
             Write("RivalUI", "package.json", """{"name":"@sceneworks/ui","exports":{"./private":"./src/button.tsx"}}""");
             await Index("RivalUI");
-            Links().Count.ShouldBe(2);
+            Links().Count.ShouldBe(4);
             Links().ShouldAllBe(edge => edge.TargetRepository == "SharedUI");
             Named("SceneWorks", "SceneWorksApp").Id.ShouldBe(source.Id);
             store.CrossEdges.ShouldContain(edge => edge.Id == independentId);
 
             Write("SharedUI", "src/alternate.tsx", "export function AlternateActual() { return <b/>; }");
-            Write("SharedUI", "src/index.ts", "export { AlternateActual as Button } from './alternate';");
+            Write("SharedUI", "src/index.js", "export { AlternateActual as Button } from './alternate'; export { isAccentId } from './accents'; export {Icon} from './icons';");
             await Index("SharedUI");
             var alternate = Named("SharedUI", "AlternateActual");
-            Links().Single(edge => edge.SourceNodeId == source.Id).TargetNodeId.ShouldBe(alternate.Id);
+            Links().Single(edge => edge.SourceNodeId == source.Id && edge.Type == EdgeType.RENDERS).TargetNodeId.ShouldBe(alternate.Id);
             Links().Single(edge => edge.SourceNodeId == subpath.Id).TargetNodeId.ShouldBe(Named("SharedUI", "PrimaryActual").Id);
             (await Impact(alternate)).ShouldContain("SceneWorksApp");
             (await Impact(alternate)).ShouldNotContain("SubpathScreen");

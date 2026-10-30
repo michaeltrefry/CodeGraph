@@ -12,9 +12,9 @@ public partial class CrossRepoLinker
     private static readonly LinkEdgeQuery NpmReferenceQuery = new(NpmReferenceTypes)
     {
         TargetLabels = [NodeLabel.ExternalSymbol],
-        TargetPropertyKeys = ["package_name", "import_path", "export_name"]
+        TargetPropertyKeys = ["package_name", "import_path", "export_name", "member_path"]
     };
-    private readonly record struct NpmExportIdentity(string Package, string ImportPath, string Export);
+    private readonly record struct NpmExportIdentity(string Package, string ImportPath, string Export, string Member);
     private static bool IsNpmExportLink(CrossRepoEdge edge) =>
         edge.Properties.GetValueOrDefault("semantic_owner")?.ToString() == NpmExportOwner;
     private static NpmExportIdentity? NpmIdentity(IReadOnlyDictionary<string, string?> properties)
@@ -24,7 +24,7 @@ public partial class CrossRepoLinker
         var export = properties.GetValueOrDefault("export_name");
         return !string.IsNullOrWhiteSpace(package) && !string.IsNullOrWhiteSpace(import) && !string.IsNullOrWhiteSpace(export)
             && (import == package || import.StartsWith(package + "/", StringComparison.Ordinal))
-            ? new(package, import, export) : null;
+            ? new(package, import, export, properties.GetValueOrDefault("member_path") ?? "") : null;
     }
 
     /// <summary>
@@ -76,6 +76,7 @@ public partial class CrossRepoLinker
             var link = CreateCrossRepoEdge(edge.SourceRepository, target.Repository, edge.SourceId, target.Id, edge.Type,
                 new() { ["semantic_owner"] = NpmExportOwner, ["package_name"] = identity.Package,
                     ["import_path"] = identity.ImportPath, ["export_name"] = identity.Export, ["confidence_band"] = "high" });
+            if (identity.Member.Length > 0) link.Properties["member_path"] = identity.Member;
             expected[NpmLinkKey(link)] = link;
         }
         var queries = references.Select(reference => (Repository: reference.Edge.SourceRepository, reference.Edge.Type)).ToHashSet();

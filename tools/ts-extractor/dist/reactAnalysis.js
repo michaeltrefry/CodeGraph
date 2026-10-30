@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeReact = analyzeReact;
 const ts_morph_1 = require("ts-morph");
-const semanticModel_1 = require("./semanticModel");
 const reactLazyWrappers_1 = require("./reactLazyWrappers");
 /** Walk observed render trees with a provider environment; never flatten provider values into
  * a global registry. A provider returned by a component does not provide its own hooks. */
@@ -152,20 +151,13 @@ function analyzeReact(model, nodes, edges, diagnostic) {
                 }
             }
             if (!target) {
-                for (const imp of file.getImportDeclarations()) {
-                    const named = imp.getNamedImports().find(item => (0, semanticModel_1.sameSymbol)(tag, item.getAliasNode() ?? item.getNameNode()));
-                    const namespace = imp.getNamespaceImport()?.getText();
-                    const defaultImport = (0, semanticModel_1.sameSymbol)(tag, imp.getDefaultImport());
-                    const exportName = named?.getName() ?? (defaultImport ? 'default' : namespace && ts_morph_1.Node.isPropertyAccessExpression(tag) && (0, semanticModel_1.sameSymbol)(tag.getExpression(), imp.getNamespaceImport()) ? tag.getName() : undefined);
-                    if (!exportName || model.module(tag, imp.getModuleSpecifierValue()))
-                        continue;
-                    const resolved = model.imports.find(item => item.filePath === model.relative(file) && item.importedNamespace === imp.getModuleSpecifierValue() && item.classification === 'external_npm_package');
-                    if (!resolved?.externalPackageName)
-                        continue;
-                    target = `npm-symbol:${imp.getModuleSpecifierValue()}#${exportName}`;
+                const reference = model.externalReference(tag);
+                if (reference) {
+                    target = reference.qualifiedName;
                     if (!external.has(target)) {
-                        nodes.push({ label: 'ExternalSymbol', name: exportName, qualifiedName: target, filePath: model.relative(file), startLine: 0, endLine: 0,
-                            properties: { package_name: resolved.externalPackageName, import_path: imp.getModuleSpecifierValue(), export_name: exportName, framework: 'react' } });
+                        nodes.push({ label: 'ExternalSymbol', name: [reference.properties.export_name, reference.properties.member_path].filter(Boolean).join('.'),
+                            qualifiedName: target, filePath: model.relative(file), startLine: 0, endLine: 0,
+                            properties: { ...reference.properties, framework: 'react' } });
                         external.add(target);
                     }
                 }

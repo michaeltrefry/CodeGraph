@@ -29,6 +29,9 @@ export class SemanticModel {
   private readonly relativePaths = new Map<SourceFile, string>();
   private readonly importBySource = new Map<string, ResolvedImportDto>();
   private readonly resolvedModules = new Map<string, SourceFile | undefined>();
+  private readonly externalCallSymbols = new Map<string, GraphNodeDto>();
+  private readonly memberWrites = new Map<Node, boolean>();
+  private readonly memberWriteEvidence = new Map<string, boolean>();
   constructor(readonly repository: string, readonly root: string, readonly files: SourceFile[],
     readonly imports: ResolvedImportDto[], readonly diagnostic: (message: string) => void) {
     for (const file of files) this.byPath.set(this.relative(file), file);
@@ -122,6 +125,143 @@ export class SemanticModel {
     const module = resolved?.resolvedFilePath ? this.byPath.get(resolved.resolvedFilePath) : undefined;
     this.resolvedModules.set(key, module);
     return module;
+  }
+  /** Conservative writes through an object/import and its static aliases. Rooting assignment
+   * targets catches Icon.Model/alias.Model writes without interpreting application execution. */
+  hasMemberWrites(node: Node, provenance?: Record<string, unknown>): boolean {
+    const key = node.getSymbol()?.getDeclarations()[0] ?? node;
+    if (this.memberWrites.has(key)) return this.memberWrites.get(key)!;
+    const evidenceKey = provenance ? `${provenance.import_path}\0${provenance.export_name ?? '*'}` : undefined;
+    if (evidenceKey && this.memberWriteEvidence.has(evidenceKey)) return this.memberWriteEvidence.get(evidenceKey)!;
+    const root = (value: Node): Node => Node.isPropertyAccessExpression(value) || Node.isElementAccessExpression(value)
+      ? root(value.getExpression()) : Node.isParenthesizedExpression(value) || Node.isAsExpression(value) ? root(value.getExpression()) : value;
+    const symbols = new Set([node.getSymbol()?.compilerSymbol, key.getSymbol()?.compilerSymbol].filter(value => !!value));
+    const owns = (value: Node | undefined): boolean => { const symbol = value?.getSymbol()?.compilerSymbol; return !!symbol && symbols.has(symbol); };
+    const aliases = this.files.flatMap(file => file.getDescendantsOfKind(SyntaxKind.VariableDeclaration));
+    for (const file of this.files) for (const imp of file.getImportDeclarations()) {
+      for (const named of imp.getNamedImports()) {
+        const local = named.getAliasNode() ?? named.getNameNode();
+        const target = this.resolve(local);
+        if ((target && (target === key || owns(target)))
+          || (provenance && imp.getModuleSpecifierValue() === provenance.import_path && (provenance.export_name === undefined || named.getName() === provenance.export_name))) {
+          const symbol = local.getSymbol()?.compilerSymbol; if (symbol) symbols.add(symbol);
+        }
+      }
+      if (provenance && imp.getModuleSpecifierValue() === provenance.import_path) {
+        const namespace = imp.getNamespaceImport()?.getSymbol()?.compilerSymbol; if (namespace) symbols.add(namespace);
+      }
+    }
+    for (let pass = 0; pass <= aliases.length; pass++) {
+      let changed = false;
+      for (const alias of aliases) {
+        const init = alias.getInitializer(); if (!init) continue;
+        const source = root(init);
+        if (!Node.isIdentifier(source)) continue;
+        const resolved = this.resolve(init); const rootDeclaration = this.resolve(source);
+        if (!owns(source)
+          && !(resolved && (resolved === key || owns(resolved)))
+          && !(rootDeclaration && (rootDeclaration === key || owns(rootDeclaration)))) continue;
+        const binding = alias.getNameNode();
+        const names = Node.isIdentifier(binding) ? [binding] : binding.getDescendantsOfKind(SyntaxKind.Identifier);
+        for (const name of names) { const symbol = name.getSymbol()?.compilerSymbol; if (symbol && !symbols.has(symbol)) { symbols.add(symbol); changed = true; } }
+      }
+      if (!changed) break;
+    }
+    const written = this.files.some(file => file.getDescendants().some(expression => {
+      let target: Node | undefined;
+      if (Node.isBinaryExpression(expression) && expression.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment
+        && expression.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) target = expression.getLeft();
+      else if ((Node.isPrefixUnaryExpression(expression) || Node.isPostfixUnaryExpression(expression))
+        && [SyntaxKind.PlusPlusToken, SyntaxKind.MinusMinusToken].includes(expression.getOperatorToken())) target = expression.getOperand();
+      else if (Node.isDeleteExpression(expression)) target = expression.getExpression();
+      else if (Node.isCallExpression(expression) && expression.getExpression().getText() === 'Object.assign') target = expression.getArguments()[0];
+      if (!target) return false;
+      let part: Node | undefined = target;
+      while (part) {
+        const resolved = this.resolve(part);
+        if (owns(part) || (resolved && (resolved === key || owns(resolved)))) return true;
+        part = Node.isPropertyAccessExpression(part) || Node.isElementAccessExpression(part) ? part.getExpression() : undefined;
+      }
+      return false;
+    }));
+    this.memberWrites.set(key, written);
+    if (evidenceKey) this.memberWriteEvidence.set(evidenceKey, written);
+    return written;
+  }
+  /** Imported npm provenance, including aliases and bounded local barrels. A display name or
+   * an instance member alone never establishes an external application declaration. */
+  externalReference(expression: Node | undefined, seen = new Set<Node>()): { qualifiedName: string; properties: Record<string, unknown> } | undefined {
+    if (!expression || seen.has(expression) || seen.size > 60) return undefined;
+    seen.add(expression);
+    const imported = (from: Node, specifier: string, name: string, history = seen): ReturnType<SemanticModel['externalReference']> => {
+      const module = this.module(from, specifier);
+      if (module) return exported(module, name, history);
+      const resolution = this.importBySource.get(`${this.relative(from)}\0${specifier}`);
+      if (resolution?.classification !== 'external_npm_package' || !resolution.externalPackageName || specifier.startsWith('node:')) return undefined;
+      return { qualifiedName: `npm-symbol:${specifier}#${name}`, properties: {
+        package_name: resolution.externalPackageName, import_path: specifier, export_name: name,
+      } };
+    };
+    const exported = (file: SourceFile, name: string, history: Set<Node>): ReturnType<SemanticModel['externalReference']> => {
+      if (history.has(file) || history.size > 60) return undefined;
+      const branch = new Set(history); branch.add(file);
+      if (name === 'default' && file.getExportAssignments().length)
+        return this.externalReference(file.getExportAssignments()[0].getExpression(), branch);
+      const explicit = file.getExportDeclarations().flatMap(declaration => declaration.getNamedExports()
+        .filter(item => (item.getAliasNode()?.getText() ?? item.getName()) === name).map(item => ({ declaration, item })));
+      if (explicit.length) {
+        const candidates = explicit.map(({ declaration, item }) => declaration.getModuleSpecifierValue()
+          ? imported(declaration, declaration.getModuleSpecifierValue()!, item.getName(), branch)
+          : this.externalReference(item.getNameNode(), branch));
+        const identities = new Map(candidates.filter((value): value is NonNullable<typeof value> => !!value).map(value => [value.qualifiedName, value]));
+        return candidates.every(value => !!value) && identities.size === 1 ? [...identities.values()][0] : undefined;
+      }
+      // Resolve a directly exported local alias before considering stars. Actual local
+      // functions/classes have already resolved through target(), so they cannot become imports.
+      const local = [...file.getFunctions(), ...file.getClasses(), ...file.getVariableDeclarations()]
+        .find(declaration => declaration.isExported() && (name === 'default' ? declaration.isDefaultExport() : declaration.getName() === name));
+      if (local) return this.externalReference(local, branch);
+      const stars = file.getExportDeclarations().filter(declaration => !declaration.getNamedExports().length && declaration.getModuleSpecifierValue());
+      const candidates = stars.map(declaration => imported(declaration, declaration.getModuleSpecifierValue()!, name, branch));
+      const identities = new Map(candidates.filter((value): value is NonNullable<typeof value> => !!value).map(value => [value.qualifiedName, value]));
+      return candidates.length && candidates.every(value => !!value) && identities.size === 1 ? [...identities.values()][0] : undefined;
+    };
+    if (Node.isParenthesizedExpression(expression) || Node.isAsExpression(expression) || Node.isNonNullExpression(expression))
+      return this.externalReference(expression.getExpression(), seen);
+    if (Node.isVariableDeclaration(expression) && expression.getVariableStatement()?.getDeclarationKind() === 'const')
+      return this.externalReference(expression.getInitializer(), seen);
+    if (Node.isPropertyAccessExpression(expression)) {
+      const namespace = expression.getExpression().getSymbol()?.getDeclarations() ?? [];
+      if (namespace.length === 1 && Node.isNamespaceImport(namespace[0])) {
+        const declaration = namespace[0].getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
+        if (this.hasMemberWrites(expression.getExpression(), { import_path: declaration.getModuleSpecifierValue() })) {
+          this.diagnostic(`externalMemberUnresolved: ${declaration.getModuleSpecifierValue()} namespace has writes`);
+          return undefined;
+        }
+        return imported(declaration, declaration.getModuleSpecifierValue(), expression.getName());
+      }
+      const base = this.externalReference(expression.getExpression(), new Set(seen));
+      if (base) {
+        if (this.hasMemberWrites(expression.getExpression(), base.properties)) {
+          this.diagnostic(`externalMemberUnresolved: ${base.qualifiedName} has writes through its binding or aliases`);
+          return undefined;
+        }
+        const member = [base.properties.member_path, expression.getName()].filter(Boolean).join('.');
+        return { qualifiedName: `npm-symbol:${base.properties.import_path}#${base.properties.export_name}::${member}`,
+          properties: { ...base.properties, member_path: member } };
+      }
+      return undefined;
+    }
+    const declarations = expression.getSymbol()?.getDeclarations() ?? [];
+    if (declarations.length !== 1) return undefined;
+    const declaration = declarations[0];
+    if (Node.isImportSpecifier(declaration)) {
+      const imp = declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
+      return imported(imp, imp.getModuleSpecifierValue(), declaration.getName());
+    }
+    if (Node.isImportClause(declaration)) return imported(declaration, declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!.getModuleSpecifierValue(), 'default');
+    if (Node.isVariableDeclaration(declaration)) return this.externalReference(declaration, seen);
+    return undefined;
   }
   exported(file: SourceFile, name: string, seen = new Set<string>()): Node | undefined {
     const key = `${this.relative(file)}:${name}`;
@@ -287,16 +427,30 @@ export class SemanticModel {
       }
       for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
         const source = this.owner(call); const target = this.target(call.getExpression());
+        let external: ReturnType<SemanticModel['externalReference']>;
         if (target && callableQNs.has(target)) edges.push({ sourceQN: source, targetQN: target, type: 'CALLS' });
+        else if ((external = this.externalReference(call.getExpression()))) {
+          if (!this.externalCallSymbols.has(external.qualifiedName)) this.externalCallSymbols.set(external.qualifiedName, {
+            label: 'ExternalSymbol', name: [external.properties.export_name, external.properties.member_path].filter(Boolean).join('.'), qualifiedName: external.qualifiedName,
+            filePath: this.relative(call), startLine: 0, endLine: 0, properties: external.properties,
+          });
+          edges.push({ sourceQN: source, targetQN: external.qualifiedName, type: 'CALLS', properties: { call_kind: 'external_import' } });
+        }
         for (const arg of call.getArguments()) {
           const callback = this.target(arg);
           if (callback && callback !== source && callableQNs.has(callback)) edges.push({ sourceQN: source, targetQN: callback, type: 'CALLS', properties: { call_kind: 'callback' } });
         }
-        if (!target && unresolved.length < 100 && !this.reactApi(call)) unresolved.push({ callerQN: source, calleeName: call.getExpression().getText().slice(0, 160), confidence: 0 });
+        if (!target && !external && unresolved.length < 100 && !this.reactApi(call)) unresolved.push({ callerQN: source, calleeName: call.getExpression().getText().slice(0, 160), confidence: 0 });
       }
     }
   }
-  reconcilePackageExports(nodes: GraphNodeDto[]): void { addNpmExportMetadata(this, nodes); }
+  reconcilePackageExports(nodes: GraphNodeDto[]): void {
+    // Rendering may already have materialized the same npm symbol. Keep a single declaration
+    // owner instead of emitting conflicting node copies for call-plus-render references.
+    const present = new Set(nodes.map(node => node.qualifiedName));
+    for (const [qn, node] of this.externalCallSymbols) if (!present.has(qn)) nodes.push(node);
+    addNpmExportMetadata(this, nodes);
+  }
   reconcileAngular(nodes: GraphNodeDto[], edges: PendingEdgeDto[]): void {
     const angular = new Set(['INHERITS', 'IMPLEMENTS', 'INJECTS', 'HANDLES']);
     for (let index = edges.length - 1; index >= 0; index--) {
