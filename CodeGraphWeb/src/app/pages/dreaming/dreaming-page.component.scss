@@ -1,0 +1,16 @@
+.dream-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+.dream-report, .dream-form { display: flex; flex-direction: column; gap: 14px; padding: 20px; min-width: 0; }
+.dream-action { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }
+.dream-data { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-sm); color: var(--text-2); max-height: 420px; overflow: auto; margin: 8px 0; }
+.dream-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dream-editor { font-family: var(--font-mono); width: 100%; resize: vertical; }
+.dream-check, .dream-actions { display: flex; gap: 10px; align-items: center; }
+.dream-table-wrap { overflow-x: auto; }
+.dream-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.dream-table th, .dream-table td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.dream-table th[scope=row] { font-weight: normal; }
+.dream-table code { overflow-wrap: anywhere; }
+summary { cursor: pointer; color: var(--text); }
+h2, h4 { margin: 0; }
+@media (max-width: 1000px) { .dream-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .dream-fields { grid-template-columns: minmax(0, 1fr); } }

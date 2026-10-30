@@ -48,7 +48,7 @@ internal sealed class WorkRestHost : IAsyncDisposable
     /// <summary>A handler that sends requests into the test server (for clients such as cg).</summary>
     public HttpMessageHandler CreateHandler() => host.GetTestServer().CreateHandler();
 
-    public static async Task<WorkRestHost> StartAsync(IWorkService work, IWorkStore? store = null)
+    public static async Task<WorkRestHost> StartAsync(IWorkService work, IWorkStore? store = null, Action<IServiceCollection>? configureServices = null)
     {
         var hub = new InMemoryMcpHubStore();
         await new McpHubCatalogSeeder(hub, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
@@ -63,6 +63,7 @@ internal sealed class WorkRestHost : IAsyncDisposable
                 {
                     services.AddLogging();
                     services.AddSingleton(work);
+                    configureServices?.Invoke(services);
                     if (store is not null)
                         services.AddSingleton(store);
                     services.AddSingleton<IMcpHubStore>(hub);
