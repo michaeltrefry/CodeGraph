@@ -40,13 +40,15 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             if(!settings.Enabled) return await FinishAsync(run,"skipped","disabled",ct);
             if(last?.EndedAt is {} ended && now-ended<TimeSpan.FromMinutes(settings.MinimumIntervalMinutes))
                 return await FinishAsync(run,"skipped","minimum_interval",ct);
+            var instructions=await store.GetInstructionsAsync(projectId,ct);
+            var instructionsChanged=last is not null && (last.BaseInstructionRevision!=instructions.Base.Revision
+                || last.ProjectInstructionRevision!=instructions.Project.Revision);
             var digest=await actions.BuildDigestAsync(projectId,last?.StartedAt,ct);
-            run=run with {SignalFingerprint=digest.Fingerprint};
-            if(!digest.HasSignal || last?.SignalFingerprint==digest.Fingerprint)
+            run=run with {SignalFingerprint=digest.Fingerprint,BaseInstructionRevision=instructions.Base.Revision,
+                ProjectInstructionRevision=instructions.Project.Revision};
+            if(!instructionsChanged && (!digest.HasSignal || last?.SignalFingerprint==digest.Fingerprint))
                 return await FinishAsync(run,"skipped","no_signal",ct);
             if(!model.SupportsTools(settings.DefaultProvider)) throw WorkException.Invalid("The dreaming provider must support tool use.");
-            var instructions=await store.GetInstructionsAsync(projectId,ct);
-            run=run with {BaseInstructionRevision=instructions.Base.Revision,ProjectInstructionRevision=instructions.Project.Revision};
             await store.SaveRunAsync(run,ct);
             using var scope=DreamExecutionScope.Begin(run.Id,projectId,settings.DefaultModel);
             var messages=new List<DreamModelMessage> {new("user",JsonSerializer.Serialize(new {untrusted_data=digest.Data},WorkJson.Options))};
