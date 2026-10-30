@@ -15,6 +15,70 @@ namespace CodeGraph.Tests.Services;
 
 public class TauriOperationAnalysisTests
 {
+    [Theory]
+    [InlineData("'\\\"'")]
+    [InlineData("'\\''")]
+    [InlineData("'\\\\'")]
+    [InlineData("'\\n'")]
+    [InlineData("'\\r'")]
+    [InlineData("'\\t'")]
+    [InlineData("'\\0'")]
+    [InlineData("'\\x22'")]
+    [InlineData("'\\x27'")]
+    [InlineData("'\\x5c'")]
+    [InlineData("'\\u{22}'")]
+    [InlineData("'\\u{1_f4a9}'")]
+    [InlineData("'💖'")]
+    [InlineData("'{'")]
+    [InlineData("'}'")]
+    [InlineData("')'")]
+    [InlineData("b'\\\"'")]
+    [InlineData("b'\\xFF'")]
+    public async Task CharacterLiteralInUnrelatedHelper_PreservesLifetimesAndBindsRegisteredRustFunction(string literal)
+    {
+        var sources = Fixture();
+        sources["apps/desktop/src/lib.rs"] = """
+            fn helper<'a>(value: &'a str) -> &'a str {
+                'outer: loop { break 'outer; }
+                let borrowed: &'_ str = value;
+                let raw = r#"quotes '\"' and brackets [({"#;
+                let character =
+            """ + literal + ";\nvalue\n}\n" + sources["apps/desktop/src/lib.rs"];
+        var extractor = new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance);
+        var extracted = await extractor.ExtractAsync("/test/apps/desktop/src/lib.rs", sources["apps/desktop/src/lib.rs"],
+            new ExtractorContext { RepositoryName = "App", RootPath = "/test" });
+        extracted.Succeeded.ShouldBeTrue();
+        var actual = extracted.Nodes.Single(node => node.Name == "get_app_overview" && node.Label == NodeLabel.Function);
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, extracted.Nodes, [Reference("get_app_overview")]);
+        analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+        var command = analysis.Result.Nodes.Single(node => node.Properties.GetValueOrDefault("kind")?.ToString() == "tauri_command");
+        analysis.Result.Edges.ShouldContain(edge => edge.SourceQN == command.QualifiedName && edge.TargetQN == actual.QualifiedName && edge.Type == EdgeType.CALLS);
+    }
+
+    [Theory]
+    [InlineData("'\\q'")]
+    [InlineData("'\\x2'")]
+    [InlineData("'\\xGG'")]
+    [InlineData("'\\xFF'")]
+    [InlineData("b'\\u{22}'")]
+    [InlineData("'\\u{}'")]
+    [InlineData("'\\u{110000}'")]
+    [InlineData("'\\u{d800}'")]
+    [InlineData("'\\u{1234567}'")]
+    [InlineData("'\\u{22'")]
+    [InlineData("'\\\"")]
+    [InlineData("''")]
+    [InlineData("'ab'")]
+    [InlineData("'\n'")]
+    public void MalformedCharacterLiteral_IsExplicitlyIncomplete(string literal)
+    {
+        var sources = Fixture();
+        sources["apps/desktop/src/lib.rs"] = "fn helper() { let bad = " + literal + "; }\n" + sources["apps/desktop/src/lib.rs"];
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, Functions(sources), [Reference("get_app_overview")]);
+        analysis.Result.Complete.ShouldBeFalse();
+        analysis.Diagnostics.ShouldContain(message => message.StartsWith("tauriIncomplete:") && message.Contains("character literal"));
+    }
+
     [Fact]
     public async Task CommandBinding_UsesExistingNativeFallbackExtractorFunctionIdentity()
     {

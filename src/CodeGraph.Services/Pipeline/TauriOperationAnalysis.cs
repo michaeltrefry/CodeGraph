@@ -66,7 +66,8 @@ internal static partial class TauriOperationAnalysis
             if (manifest is null) continue;
             var crate = DirectoryPart(manifest);
             var crateName = Regex.Match(sources[manifest], "(?m)^\\s*name\\s*=\\s*\"([^\"]+)\"").Groups[1].Value.Replace('-', '_');
-            var tokens = Lex(source);
+            var tokens = Lex(source, out var lexicalError);
+            if (lexicalError is not null) { diagnostics.Add($"tauriIncomplete: {lexicalError} in {path}"); complete = false; continue; }
             if (!Balanced(tokens)) { diagnostics.Add($"tauriIncomplete: unbalanced Rust input {path}"); complete = false; continue; }
             var imports = Imports(tokens);
             var definitions = new List<Definition>();
@@ -439,9 +440,10 @@ internal static partial class TauriOperationAnalysis
         return stack.Count == 0;
     }
 
-    private static List<Token> Lex(string source)
+    private static List<Token> Lex(string source, out string? error)
     {
         var tokens = new List<Token>();
+        error = null;
         for (var index = 0; index < source.Length;)
         {
             var start = index;
@@ -482,8 +484,15 @@ internal static partial class TauriOperationAnalysis
                 catch (JsonException) { tokens.Add(new Token("<unsupported-string>", start, true)); }
                 continue;
             }
-            if (source[index] == '\'' && index + 2 < source.Length && source[index + 2] == '\'')
-            { tokens.Add(new Token(source[index..(index + 3)], start, true)); index += 3; continue; }
+            if (source[index] == '\'')
+            {
+                var isByte = tokens.Count > 0 && tokens[^1].Text == "b" && tokens[^1].Offset == index - 1;
+                if (!TryCharacterLiteral(source, index, isByte, out var end, out var lifetime))
+                { error = $"malformed Rust character literal at line {Line(source, start)}"; break; }
+                if (!lifetime)
+                { tokens.Add(new Token(source[start..end], start, true)); index = end; continue; }
+                // Keep lifetime/label tokenization unchanged: apostrophe followed by identifier.
+            }
             if (char.IsLetterOrDigit(source[index]) || source[index] == '_')
             {
                 index++; while (index < source.Length && (char.IsLetterOrDigit(source[index]) || source[index] == '_')) index++;
@@ -494,5 +503,56 @@ internal static partial class TauriOperationAnalysis
             tokens.Add(new Token(source[index++].ToString(), start));
         }
         return tokens;
+    }
+
+    private static bool TryCharacterLiteral(string source, int start, bool isByte, out int end, out bool lifetime)
+    {
+        var cursor = start + 1;
+        end = cursor; lifetime = false;
+        if (cursor >= source.Length) return false;
+        if (source[cursor] == '\\')
+        {
+            if (++cursor >= source.Length) return false;
+            var escape = source[cursor++];
+            if (escape == 'x')
+            {
+                if (cursor + 1 >= source.Length || !char.IsAsciiHexDigit(source[cursor]) || !char.IsAsciiHexDigit(source[cursor + 1])) return false;
+                // Character hex escapes are ASCII; byte literals also permit 0x80..0xff.
+                if (!isByte && source[cursor] > '7') return false;
+                cursor += 2;
+            }
+            else if (escape == 'u')
+            {
+                if (isByte || cursor >= source.Length || source[cursor++] != '{') return false;
+                var digits = 0; var value = 0;
+                while (cursor < source.Length && source[cursor] != '}')
+                {
+                    var character = source[cursor++];
+                    if (character == '_' && digits > 0) continue;
+                    if (!char.IsAsciiHexDigit(character) || ++digits > 6) return false;
+                    value = value * 16 + (character <= '9' ? character - '0' : char.ToLowerInvariant(character) - 'a' + 10);
+                }
+                if (digits == 0 || cursor >= source.Length || !System.Text.Rune.IsValid(value)) return false;
+                cursor++;
+            }
+            else if (escape is not ('n' or 'r' or 't' or '0' or '\\' or '\'' or '"')) return false;
+        }
+        else
+        {
+            if (!System.Text.Rune.TryGetRuneAt(source, cursor, out var scalar) || scalar.Value is '\'' or '\n' or '\r' or '\t'
+                || isByte && !scalar.IsAscii) return false;
+            cursor += scalar.Utf16SequenceLength;
+            if (!isByte && (System.Text.Rune.IsLetter(scalar) || scalar.Value == '_') && (cursor >= source.Length || source[cursor] != '\''))
+            {
+                // A named lifetime/loop label has no closing quote. A closed multi-character
+                // token such as 'ab' is malformed, rather than a lifetime plus stray apostrophe.
+                while (cursor < source.Length && (char.IsLetterOrDigit(source[cursor]) || source[cursor] == '_'
+                    || char.GetUnicodeCategory(source[cursor]) is System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.SpacingCombiningMark)) cursor++;
+                if (cursor < source.Length && source[cursor] == '\'') return false;
+                lifetime = true; return true;
+            }
+        }
+        if (cursor >= source.Length || source[cursor] != '\'') return false;
+        end = cursor + 1; return true;
     }
 }
