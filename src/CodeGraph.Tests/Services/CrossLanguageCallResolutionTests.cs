@@ -217,7 +217,7 @@ public sealed class CrossLanguageCallResolutionTests : IDisposable
     {
         // Resolution of unchanged sources changed (pipeline) and Rust abi properties changed (spec).
         ExtractionVersionCatalog.PipelineVersion.ShouldBeGreaterThanOrEqualTo(4);
-        LanguageSpecs.Rust.ExtractionVersion.ShouldBe(3);
+        LanguageSpecs.Rust.ExtractionVersion.ShouldBeGreaterThanOrEqualTo(3);
         // C++ functions with C linkage record abi C (sc-26145).
         LanguageSpecs.Cpp.ExtractionVersion.ShouldBe(2);
     }

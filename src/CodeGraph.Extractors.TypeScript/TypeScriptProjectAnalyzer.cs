@@ -21,8 +21,10 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// extraction ownership/completeness with default configuration and full source accounting.
     /// 5 (sc-27972): framework routes/templates/providers, HTTP wrappers, Tauri references,
     /// declared screen keys and exact public package-export identities.
+    /// 6 (sc-27972): authoritative scoped source coverage, relative ApiContract endpoints
+    /// and alias-aware static request values.
     /// </remarks>
-    public string ExtractionVersion => "5";
+    public string ExtractionVersion => "6";
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;

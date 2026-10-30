@@ -31,8 +31,9 @@ public class TypeScriptExtractor : ICodeExtractor
     /// directory instead of with the (random, per-run) absolute temp path.
     /// 3 (sc-27973): shared callable/component sidecar output and explicit completeness.
     /// 4 (sc-27972): frontend extensions and module-relative file-scoped identities.
+    /// 5 (sc-27972): complete admitted coverage and conservative aliased request values.
     /// </remarks>
-    public string GetExtractionVersion(string extension) => "4";
+    public string GetExtractionVersion(string extension) => "5";
 
     public async Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)

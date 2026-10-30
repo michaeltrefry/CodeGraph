@@ -160,6 +160,14 @@ public partial class IndexingPipeline
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
         var deletedFiles = GetDeletedFiles(repositoryName, rootPath, changedFilesOnly, files, existingHashes);
+        // Prior paths keep owner cleanup active when the last participating source is removed.
+        // Repositories containing only other languages need no HTTP/Tauri store probes.
+        var sourcePaths = files.Concat(existingHashes.Keys).ToList();
+        var hasHttpSources = sourcePaths.Any(path => IsTypeScriptPath(path)
+            || path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase));
+        var hasRustSources = sourcePaths.Any(path => path.EndsWith(".rs", StringComparison.OrdinalIgnoreCase));
+        var hasBackendEndpointSources = hasRustSources
+            || sourcePaths.Any(path => path.EndsWith(".go", StringComparison.OrdinalIgnoreCase));
         var languageStats = ComputeLanguageStats(files);
         // Files over their size limit record their oversize version whichever component
         // processes them, so the stored version always matches what FilterByHash expects.
@@ -291,9 +299,9 @@ public partial class IndexingPipeline
         IReadOnlyList<GraphNode>? typeScriptNodes = null;
         IReadOnlyList<ExtractionResult>? typeScriptResults = null;
         var typeScriptProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var typeScriptScope = DiscoverTypeScriptScope(rootPath);
         if (_typeScriptAnalyzer is not null)
         {
-            var typeScriptScope = DiscoverTypeScriptScope(rootPath);
             if (typeScriptScope.Any(IsTypeScriptPath))
             {
                 // A synthetic path is the existing analyzer contract's default-config seam.
@@ -721,12 +729,16 @@ public partial class IndexingPipeline
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
-        var endpointSlices = await PrepareBackendEndpointsAsync(repositoryName, rootPath, context, buffer,
-            successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, ct);
+        IReadOnlyList<string> endpointSlices = hasBackendEndpointSources
+            ? await PrepareBackendEndpointsAsync(repositoryName, rootPath, context, buffer,
+                successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, ct)
+            : [];
         typeScriptReplacementPaths.AddRange(endpointSlices);
-        var tauriSlices = await PrepareTauriBindingsAsync(repositoryName, rootPath, DiscoverTypeScriptScope(rootPath), buffer,
-            successfullyProcessedFiles.Concat(typeScriptProcessedFiles).ToHashSet(StringComparer.OrdinalIgnoreCase),
-            deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, ct);
+        IReadOnlyList<string> tauriSlices = hasRustSources || typeScriptScope.Any(IsTauriConfiguration)
+            ? await PrepareTauriBindingsAsync(repositoryName, rootPath, typeScriptScope, buffer,
+                successfullyProcessedFiles.Concat(typeScriptProcessedFiles).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, ct)
+            : [];
         typeScriptReplacementPaths.AddRange(tauriSlices);
         foreach (var path in tauriSlices.Where(path => _extensions.IsSupportedExtension(Path.GetExtension(path)) || IsTypeScriptPath(path)))
         {
@@ -775,7 +787,9 @@ public partial class IndexingPipeline
             swiftImportRebinding);
         var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
             repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
-        var httpRebinding = await RebindHttpCallsAsync(repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+        var httpRebinding = hasHttpSources || buffer.AllPendingEdges.Any(edge => edge.Type == EdgeType.HTTP_CALLS)
+            ? await RebindHttpCallsAsync(repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct)
+            : HttpRebinding.None;
         if (httpRebinding.ReboundEdges.Count > 0 || !httpRebinding.Retractions.IsEmpty)
             typeScriptReplacementPaths.Add(HttpBindingSlice);
         CreateStubNodesForExternalTargets(repositoryName, buffer);

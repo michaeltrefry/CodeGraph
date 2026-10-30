@@ -1071,7 +1071,10 @@ public partial class MySqlGraphStore(
         foreach (var ids in edgeIds.Distinct().Chunk(options.BatchSize))
         {
             ct.ThrowIfCancellationRequested();
-            await db.CrossRepoEdges.Where(edge => ids.Contains(edge.Id)).ExecuteDeleteAsync(ct);
+            // Keep EF's collection parameter on List.Contains; .NET 10 can bind an array
+            // Contains call through ReadOnlySpan, which EF cannot evaluate or translate.
+            var batchIds = ids.ToList();
+            await db.CrossRepoEdges.Where(edge => batchIds.Contains(edge.Id)).ExecuteDeleteAsync(ct);
         }
     }
 
