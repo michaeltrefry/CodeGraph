@@ -870,11 +870,11 @@ public sealed partial class MySqlWorkStore
             DreamPolicy.RequireProject(actor, projectId);
             DreamPolicy.RequireWrite(actor, "promote propose");
             if (DreamPolicy.IsDreamer(actor) && (action != PromoteAction.Propose || addressedBy is not null))
-                throw WorkException.Invalid("The dreamer may only propose rule status.");
+                throw new WorkException(WorkErrorCodes.Forbidden, "The dreamer may only propose rule status.");
             await HoldProjectAsync(connection, transaction, projectId, ct);
             var row = await RequireLessonAsync(connection, transaction, projectId, entryId, "id", ct);
             if (DreamPolicy.IsDreamer(actor) && row.DetailsJson is { } details && JsonSerializer.Deserialize<KnowledgeDetails>(details, WorkJson.Options)?.Source?.Kind == CorrectionSourceKind.Prompt)
-                throw WorkException.Invalid("A prompt lesson can only be challenged by the dreamer.");
+                throw new WorkException(WorkErrorCodes.Forbidden, "A prompt lesson can only be challenged by the dreamer.");
             var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var state = row.RuleState is { } stored ? ParseName<LessonRuleState>(stored) : LessonRuleState.Candidate;
 
