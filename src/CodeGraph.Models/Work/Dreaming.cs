@@ -28,6 +28,7 @@ public sealed class DreamExecutionScope : IDisposable
     private readonly DreamExecutionScope? previous;
     private readonly HashSet<string> sourceReads = new(StringComparer.Ordinal);
     private readonly Dictionary<string,(string? Content,string? Index)> sourceHashes = new(StringComparer.Ordinal);
+    private readonly Dictionary<long,string> graphReads = new();
     public static DreamExecutionScope? Current => Slot.Value;
     public Guid RunId { get; }
     public Guid ProjectId { get; }
@@ -45,8 +46,21 @@ public sealed class DreamExecutionScope : IDisposable
         &&proof.Content is not null&&string.Equals(proof.Content,proof.Index,StringComparison.OrdinalIgnoreCase)?proof.Index:null;
     public bool ReadFile(string repository, string path) => sourceReads.Contains($"file:{repository}:{path}");
     public bool ReadNode(long id) => sourceReads.Contains($"node:{id}");
+    public void MarkGraphRead(long id,string fingerprint) {sourceReads.Add($"node:{id}");graphReads[id]=fingerprint;}
+    public string? ReadNodeHash(long id)=>graphReads.GetValueOrDefault(id);
     public void Dispose() => Slot.Value = previous;
     private sealed class Restore(Action action) : IDisposable { public void Dispose() => action(); }
+}
+
+public static class DreamGraphIdentity
+{
+    public static string Fingerprint(long id,string repository,string label,string name,string qualifiedName,string path,int start,int end,string propertiesJson)
+    {
+        using var properties=JsonDocument.Parse(propertiesJson);
+        var ordered=properties.RootElement.EnumerateObject().OrderBy(p=>p.Name,StringComparer.Ordinal).ToDictionary(p=>p.Name,p=>p.Value);
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(new {id,repository,label,name,qualifiedName,path,start,end,properties=ordered}))));
+    }
 }
 
 public static class DreamPolicy

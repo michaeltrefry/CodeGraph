@@ -15,14 +15,22 @@ public sealed class DreamSourceReader(GraphAssistant assistant,IGraphStore graph
         var repository=arguments.TryGetProperty("repository",out var r)?r.GetString():null;
         var path=arguments.TryGetProperty("path",out var p)?p.GetString():null;
         long? nodeId=arguments.TryGetProperty("node_id",out var n)?n.GetInt64():null;
+        CodeGraph.Models.GraphNode? graphNode=null;
         if(nodeId is {} id)
         {
             var node=await graph.FindNodeByIdAsync(id)??throw WorkException.NotFound("Graph node not found.");
+            graphNode=node;
             if(repository is not null&&!repository.Equals(node.Repository,StringComparison.OrdinalIgnoreCase)) throw WorkException.Invalid("Graph node belongs to another repository.");
             repository=node.Repository;path=node.FilePath;
         }
         if(string.IsNullOrWhiteSpace(repository)||!project.Repositories.Any(m=>m.Repository.Equals(repository,StringComparison.OrdinalIgnoreCase)))
             throw WorkException.Invalid("The dreamer may read only the project's repositories.");
+        if(tool=="dream_read_source"&&graphNode is {} metadata&&string.IsNullOrWhiteSpace(path))
+        {
+            var fingerprint=DreamGraphIdentity.Fingerprint(metadata.Id,metadata.Repository,metadata.Label.ToString(),metadata.Name,metadata.QualifiedName,metadata.FilePath,metadata.StartLine,metadata.EndLine,JsonSerializer.Serialize(metadata.Properties));
+            scope.MarkGraphRead(metadata.Id,fingerprint);
+            return new {untrusted_data=new {node=metadata,graph_fingerprint=fingerprint}};
+        }
         if(tool=="dream_search_graph")
         {
             var pattern=arguments.TryGetProperty("name_pattern",out var patternArg)?patternArg.GetString()??"%":"%";
