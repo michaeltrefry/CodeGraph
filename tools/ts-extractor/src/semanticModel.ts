@@ -58,6 +58,7 @@ export class SemanticModel {
     this.work = control instanceof ExtractionWorkBudget ? control : new ExtractionWorkBudget(control);
     for (const file of files) this.byPath.set(this.relative(file), file);
     for (const imported of imports) {
+      this.work.charge(imported.filePath.length + imported.importedNamespace.length + 1);
       const key = `${imported.filePath}\0${imported.importedNamespace}`;
       if (!this.importBySource.has(key)) this.importBySource.set(key, imported);
     }
@@ -87,6 +88,7 @@ export class SemanticModel {
     const file = node.getSourceFile();
     let relative = this.relativePaths.get(file);
     if (relative === undefined) {
+      this.work.charge(this.root.length + file.getFilePath().length + 1);
       relative = path.relative(this.root, file.getFilePath()).replace(/\\/g, '/');
       this.relativePaths.set(file, relative);
     }
@@ -253,7 +255,7 @@ export class SemanticModel {
     if (this.buildingMutations) throw new Error('Recursive member mutation indexing');
     this.buildingMutations = true;
     const links = new Map<Node | string, Set<Node | string>>();
-    const key = (node: Node): Node => { this.work.charge(); return node.getSymbol()?.getDeclarations()[0] ?? node; };
+    const key = (node: Node): Node => { const symbol = node.getSymbol(); this.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1); return symbol?.getDeclarations()[0] ?? node; };
     const link = (from: Node | string, target: Node | string): void => {
       this.work.charge(); if (!links.has(from)) links.set(from, new Set()); links.get(from)!.add(target);
     };
@@ -301,7 +303,8 @@ export class SemanticModel {
   }
   hasMemberWrites(node: Node, provenance?: Record<string, unknown>): boolean {
     this.work.charge(); const written = this.ensureMutationIndex(); if (!written.size) return false;
-    const key = node.getSymbol()?.getDeclarations()[0] ?? node;
+    const symbol = node.getSymbol(); this.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1);
+    const key = symbol?.getDeclarations()[0] ?? node;
     if (written.has(key)) return true;
     const resolved = this.resolve(node); if (resolved && written.has(resolved.getSymbol()?.getDeclarations()[0] ?? resolved)) return true;
     if (!provenance) return false;
@@ -455,6 +458,7 @@ export class SemanticModel {
             if (!Node.isBlock(body)) expressions = [body];
             this.returnExpressions.set(callee, expressions);
           }
+          this.work.charge(expressions.length * (seen.size + 1) + 1);
           const resolvedReturns = expressions.map(expression => this.resolve(expression, new Set(seen)));
           const returns = new Set(resolvedReturns.filter((value): value is Node => !!value));
           if (returns.size === 1 && resolvedReturns.every(value => !!value)) return [...returns][0];
@@ -464,6 +468,7 @@ export class SemanticModel {
       return undefined;
     }
     const symbol = node.getSymbol();
+    this.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1);
     const declarations = symbol?.getDeclarations() ?? [];
     for (const declaration of declarations) {
       if (!this.byPath.has(this.relative(declaration))) continue;

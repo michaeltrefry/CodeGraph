@@ -5,27 +5,14 @@ import type { SemanticModel } from './semanticModel';
 /** Explicit public aliases attach to their actual declarations, so consumers in another indexed
  * repository can bind exact package+subpath+export identities without guessing display names. */
 export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]): void {
-  const byQn = new Map(nodes.map(node => [node.qualifiedName, node]));
+  const work = model.work;
+  const byQn = new Map<string, GraphNodeDto>();
+  for (const node of nodes) { work.text(node.qualifiedName); byQn.set(node.qualifiedName, node); }
   const identities = new Map<string, Map<string, { package_name: string; import_path: string; export_name: string; member_path?: string }>>();
-  const names = (file: SourceFile, seen = new Set<SourceFile>()): Set<string> => {
-    if (seen.has(file)) return new Set(); seen.add(file);
-    const result = new Set<string>();
-    for (const declaration of [...file.getFunctions(), ...file.getClasses(), ...file.getInterfaces(), ...file.getVariableDeclarations(), ...file.getEnums()]) {
-      if (declaration.isDefaultExport()) result.add('default');
-      else if (declaration.isExported() && declaration.getName()) result.add(declaration.getName()!);
-    }
-    if (file.getExportAssignments().length) result.add('default');
-    for (const exported of file.getExportDeclarations()) {
-      const named = exported.getNamedExports();
-      if (named.length) for (const item of named) result.add(item.getAliasNode()?.getText() ?? item.getName());
-      else if (exported.getModuleSpecifierValue()) {
-        const target = model.module(file, exported.getModuleSpecifierValue()!);
-        if (target) for (const name of names(target, new Set(seen))) if (name !== 'default') result.add(name);
-      }
-    }
-    return result;
-  };
+  const membersCache = new Map<Node, Map<string, string> | undefined>();
+  const unknownStars = new Map<SourceFile, boolean>();
   const members = (declaration: Node, seen = new Set<Node>(), prefix = ''): Map<string, string> | undefined => {
+    work.charge(seen.size + prefix.length + 1);
     if (seen.has(declaration) || seen.size > 12) return undefined;
     seen = new Set(seen); seen.add(declaration);
     if (Node.isParenthesizedExpression(declaration) || Node.isAsExpression(declaration) || Node.isNonNullExpression(declaration))
@@ -59,69 +46,96 @@ export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]
     if ((owner && Node.isVariableDeclaration(owner) && (owner.getVariableStatement()?.getDeclarationKind() !== 'const'
       || model.hasMemberWrites(owner))) || model.hasMemberWrites(declaration)) return undefined;
     const result = new Map<string, string>();
+    work.charge(declaration.compilerNode.properties.length + 1);
     for (const property of declaration.getProperties()) {
+      work.charge();
       if (!(Node.isPropertyAssignment(property) || Node.isMethodDeclaration(property) || Node.isShorthandPropertyAssignment(property))) return undefined;
+      work.charge(property.getNameNode().getFullWidth() + 1);
       const key = property.getName().replace(/^['"]|['"]$/g, '');
       if (!/^[a-zA-Z_$][\w$]*$/.test(key)) return undefined;
+      work.charge(prefix.length + key.length + 1);
       const member = prefix ? `${prefix}.${key}` : key;
       const expression = Node.isPropertyAssignment(property) ? property.getInitializer()
         : Node.isShorthandPropertyAssignment(property) ? property.getValueSymbol()?.getDeclarations()[0] : property;
       if (!expression) return undefined;
       const nested = members(expression, seen, member); if (!nested) return undefined;
-      for (const [path, qn] of nested) result.set(path, qn);
+      for (const [path, qn] of nested) { work.charge(path.length + qn.length + 1); result.set(path, qn); }
       const qn = model.target(expression);
       if (qn && byQn.has(qn) && ['Component', 'Function', 'Method'].includes(byQn.get(qn)!.label)) result.set(member, qn);
     }
     return result;
   };
-  const namesByEntry = new Map<SourceFile, Set<string>>();
-  for (const module of nodes.filter(node => node.properties.module_kind === 'typescript_workspace_package')) {
+  // Root-only caching: nested recursion depends on seen/prefix. Never memoize a cutoff from
+  // another root, and clone before the caller adds its declaration identity to a surface.
+  const surfaceFor = (declaration: Node): Map<string, string> | undefined => {
+    work.charge();
+    if (!membersCache.has(declaration)) membersCache.set(declaration, members(declaration));
+    const cached = membersCache.get(declaration); work.charge((cached?.size ?? 0) + 1);
+    return cached ? new Map(cached) : undefined;
+  };
+  for (const module of nodes) {
+    work.charge(); if (module.properties.module_kind !== 'typescript_workspace_package') continue;
     const packageName = module.properties.package_name;
     const entries = module.properties.package_entrypoints;
     if (typeof packageName !== 'string' || !Array.isArray(entries)) continue;
+    work.text(packageName); work.charge(entries.length + 1);
     const byImport = new Map<string, Array<{ file_path?: string }>>();
     for (const entry of entries) {
-      if (!entry || typeof entry.import_path !== 'string') continue;
+      work.charge(); if (!entry || typeof entry.import_path !== 'string') continue;
+      work.text(entry.import_path); if (typeof entry.file_path === 'string') work.text(entry.file_path);
       if (!byImport.has(entry.import_path)) byImport.set(entry.import_path, []);
       byImport.get(entry.import_path)!.push(entry);
     }
     for (const [importPath, candidates] of byImport) {
+      work.charge(candidates.length * 2 + 1);
       if (candidates.some(entry => !entry.file_path || !model.byPath.has(entry.file_path))) {
-        model.diagnostic(`packageExportUnresolved: ${importPath} has an unadmitted or unresolved runtime entry`);
+        work.text(importPath); model.diagnostic(`packageExportUnresolved: ${importPath} has an unadmitted or unresolved runtime entry`);
         continue;
       }
       const files = [...new Set(candidates.map(entry => model.byPath.get(entry.file_path!)!))];
-      for (const file of files) if (!namesByEntry.has(file)) namesByEntry.set(file, names(file));
-      const publicNames = new Set(files.flatMap(file => [...namesByEntry.get(file)!]));
+      const publicNames = new Set<string>();
+      for (const file of files) for (const name of model.publicExportNames(file)) { work.text(name); publicNames.add(name); }
       for (const name of publicNames) {
+        work.text(name);
         const surfaces: Map<string, string>[] = [];
         let complete = true;
         // Runtime conditions are alternatives, not independent packages. Every modeled entry
         // must resolve this name before any of its declaration identities can be advertised.
         for (const file of files) {
-          if (!namesByEntry.get(file)!.has(name)) {
+          work.charge();
+          if (!model.publicExportNames(file).has(name)) {
+            work.charge(importPath.length + name.length + model.relative(file).length + 1);
             model.diagnostic(`packageExportUnresolved: ${importPath}#${name} is missing from runtime entry ${model.relative(file)}`);
             complete = false;
             continue;
           }
-          const explicit = [...file.getFunctions(), ...file.getClasses(), ...file.getInterfaces(), ...file.getVariableDeclarations(), ...file.getEnums()]
-            .some(declaration => declaration.isExported() && (declaration.isDefaultExport() ? name === 'default' : declaration.getName() === name))
-            || file.getExportDeclarations().some(exported => exported.getNamedExports().some(item => (item.getAliasNode()?.getText() ?? item.getName()) === name));
-          const unknownStar = file.getExportDeclarations().some(exported => !exported.getNamedExports().length
-            && exported.getModuleSpecifierValue() && !model.module(file, exported.getModuleSpecifierValue()!));
+          const index = model.exportIndex(file);
+          const explicit = index.explicit.has(name);
+          let unknownStar = unknownStars.get(file);
+          if (unknownStar === undefined) {
+            unknownStar = false;
+            for (const exported of index.stars) {
+              work.charge(); const specifier = exported.getModuleSpecifierValue();
+              if (specifier && !model.module(file, specifier)) unknownStar = true;
+            }
+            unknownStars.set(file, unknownStar);
+          }
           if (!explicit && unknownStar) {
+            work.charge(importPath.length + name.length + 1);
             model.diagnostic(`packageExportUnresolved: ${importPath}#${name} has an unresolved star-export alternative`);
             complete = false;
             continue;
           }
           const declaration = model.exported(file, name);
           if (!declaration) {
+            work.charge(importPath.length + name.length + 1);
             model.diagnostic(`packageExportUnresolved: ${importPath}#${name} has no admitted declaration`);
             complete = false;
             continue;
           }
-          const surface = members(declaration);
+          const surface = surfaceFor(declaration);
           if (!surface) {
+            work.charge(importPath.length + name.length + 1);
             model.diagnostic(`packageExportUnresolved: ${importPath}#${name} has mutable or unsupported member definitions`);
             complete = false;
             continue;
@@ -132,15 +146,21 @@ export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]
           surfaces.push(surface);
         }
         if (!complete) continue;
-        const paths = new Set(surfaces.flatMap(surface => [...surface.keys()]));
+        const paths = new Set<string>();
+        for (const surface of surfaces) for (const member of surface.keys()) { work.text(member); paths.add(member); }
         for (const member of paths) {
+          work.charge(member.length + surfaces.length + 1);
           if (surfaces.some(surface => !surface.has(member))) {
+            work.charge(importPath.length + name.length + member.length + 1);
             model.diagnostic(`packageExportUnresolved: ${importPath}#${name}${member ? `::${member}` : ''} is missing from a runtime entry`);
             continue;
           }
+          work.charge(packageName.length + importPath.length + name.length + member.length + 8);
           const identity = { package_name: packageName, import_path: importPath, export_name: name,
             ...(member ? { member_path: member } : {}) };
+          work.charge(surfaces.length + 1);
           for (const qn of new Set(surfaces.map(surface => surface.get(member)!))) {
+            work.charge(qn.length + packageName.length + importPath.length + name.length + member.length + 8);
             if (!identities.has(qn)) identities.set(qn, new Map());
             identities.get(qn)!.set(`${packageName}\0${importPath}\0${name}\0${member}`, identity);
           }
@@ -148,6 +168,13 @@ export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]
       }
     }
   }
-  for (const [qn, aliases] of identities) byQn.get(qn)!.properties.npm_exports =
-    [...aliases.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, identity]) => identity);
+  const output = new Map<string, unknown[]>();
+  for (const [qn, aliases] of identities) {
+    work.charge(qn.length + aliases.size + 1);
+    const values = [...aliases.entries()].sort(([a], [b]) => { work.charge(a.length + b.length + 1); return a < b ? -1 : a > b ? 1 : 0; }).map(([, identity]) => identity);
+    output.set(qn, values);
+  }
+  work.charge(output.size + 1);
+  for (const [qn, aliases] of output) byQn.get(qn)!.properties.npm_exports = aliases;
+  work.charge(0);
 }

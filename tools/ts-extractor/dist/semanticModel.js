@@ -82,6 +82,7 @@ class SemanticModel {
         for (const file of files)
             this.byPath.set(this.relative(file), file);
         for (const imported of imports) {
+            this.work.charge(imported.filePath.length + imported.importedNamespace.length + 1);
             const key = `${imported.filePath}\0${imported.importedNamespace}`;
             if (!this.importBySource.has(key))
                 this.importBySource.set(key, imported);
@@ -117,6 +118,7 @@ class SemanticModel {
         const file = node.getSourceFile();
         let relative = this.relativePaths.get(file);
         if (relative === undefined) {
+            this.work.charge(this.root.length + file.getFilePath().length + 1);
             relative = path.relative(this.root, file.getFilePath()).replace(/\\/g, '/');
             this.relativePaths.set(file, relative);
         }
@@ -382,7 +384,7 @@ class SemanticModel {
             throw new Error('Recursive member mutation indexing');
         this.buildingMutations = true;
         const links = new Map();
-        const key = (node) => { this.work.charge(); return node.getSymbol()?.getDeclarations()[0] ?? node; };
+        const key = (node) => { const symbol = node.getSymbol(); this.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1); return symbol?.getDeclarations()[0] ?? node; };
         const link = (from, target) => {
             this.work.charge();
             if (!links.has(from))
@@ -470,7 +472,9 @@ class SemanticModel {
         const written = this.ensureMutationIndex();
         if (!written.size)
             return false;
-        const key = node.getSymbol()?.getDeclarations()[0] ?? node;
+        const symbol = node.getSymbol();
+        this.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1);
+        const key = symbol?.getDeclarations()[0] ?? node;
         if (written.has(key))
             return true;
         const resolved = this.resolve(node);
@@ -670,6 +674,7 @@ class SemanticModel {
                             expressions = [body];
                         this.returnExpressions.set(callee, expressions);
                     }
+                    this.work.charge(expressions.length * (seen.size + 1) + 1);
                     const resolvedReturns = expressions.map(expression => this.resolve(expression, new Set(seen)));
                     const returns = new Set(resolvedReturns.filter((value) => !!value));
                     if (returns.size === 1 && resolvedReturns.every(value => !!value))
@@ -681,6 +686,7 @@ class SemanticModel {
             return undefined;
         }
         const symbol = node.getSymbol();
+        this.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1);
         const declarations = symbol?.getDeclarations() ?? [];
         for (const declaration of declarations) {
             if (!this.byPath.has(this.relative(declaration)))

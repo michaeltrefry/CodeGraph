@@ -91,7 +91,7 @@ function readIncludedFiles(request) {
 }
 function buildApp(logsDir = defaultLogsDir) {
     const app = (0, fastify_1.default)({ logger: false, bodyLimit: exports.BODY_LIMIT_BYTES });
-    app.get('/health', async () => ({ status: 'ok', sourceBoundsVersion: 1 }));
+    app.get('/health', async () => ({ status: 'ok', sourceBoundsVersion: 2 }));
     app.post('/extract-project', async (request, reply) => {
         const { repositoryName, rootPath, tsconfigPath } = request.body;
         const logStream = openLogFile(logsDir, repositoryName);
