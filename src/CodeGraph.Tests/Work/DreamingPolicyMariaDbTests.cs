@@ -59,6 +59,7 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
             _ => throw new InvalidOperationException(operation)
         };
         var refused = await Should.ThrowAsync<WorkException>(Invoke);
+        refused.Code.ShouldBe(WorkErrorCodes.Forbidden);
         refused.Message.ShouldContain("project", Case.Insensitive);
         (await SnapshotAsync()).ShouldBe(before);
     }
@@ -120,6 +121,7 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
         };
 
         var refused = await Should.ThrowAsync<WorkException>(Invoke);
+        refused.Code.ShouldBe(WorkErrorCodes.Forbidden);
         refused.Message.ShouldContain("dreamer", Case.Insensitive);
         (await SnapshotAsync()).ShouldBe(before);
     }
@@ -158,6 +160,7 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
         using var evidence = run.UseEvidence([new("entry", seed.Lesson.Id.ToString(), "Existing entry")]);
         using var prevalence = DreamWriteMetadata.Begin("one existing project lesson");
         var refused = await Should.ThrowAsync<WorkException>(() => db.Service.ExecuteAsync(tool, JsonSerializer.SerializeToElement(args, WorkJson.Options), run.Actor));
+        refused.Code.ShouldBe(WorkErrorCodes.Forbidden);
         refused.Message.ShouldContain("dreamer", Case.Insensitive);
         (await SnapshotAsync()).ShouldBe(before);
     }
