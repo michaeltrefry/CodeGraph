@@ -1,9 +1,11 @@
 using System.Text.Json;
 using CodeGraph.Data;
+using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Work;
 using Dapper;
 using MySqlConnector;
+using Microsoft.Extensions.Options;
 using Shouldly;
 
 namespace CodeGraph.Tests.Work;
@@ -40,9 +42,12 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
     {
         var seed = await SeedAsync();
         var knowledge = (IKnowledgeStore)db.Store;
+        var runId = Guid.NewGuid();
+        await PersistRunAsync(runId, seed.Project);
         var before = await SnapshotAsync();
-        using var run = DreamExecutionScope.Begin(Guid.NewGuid(), seed.Project, "scripted-policy");
+        using var run = DreamExecutionScope.Begin(runId, seed.Project, "scripted-policy");
         using var evidence = run.UseEvidence([new("entry", seed.Lesson.Id.ToString(), "A real existing lesson")]);
+        using var prevalence = DreamWriteMetadata.Begin("one existing project lesson");
         var actor = run.Actor;
         var spec = Spec(KnowledgeKind.Fact, "An injected replacement");
         Task Invoke() => operation switch
@@ -103,8 +108,11 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
             _ => throw new InvalidOperationException(operation)
         };
         var before = await SnapshotAsync();
-        using var run = DreamExecutionScope.Begin(Guid.NewGuid(), seed.Project, "scripted-policy");
+        var runId = Guid.NewGuid();
+        await PersistRunAsync(runId, seed.Project);
+        using var run = DreamExecutionScope.Begin(runId, seed.Project, "scripted-policy");
         using var evidence = run.UseEvidence([new("entry", seed.Lesson.Id.ToString(), "Existing entry")]);
+        using var prevalence = DreamWriteMetadata.Begin("one existing project lesson");
         var refused = await Should.ThrowAsync<WorkException>(() => db.Service.ExecuteAsync(tool, JsonSerializer.SerializeToElement(args, WorkJson.Options), run.Actor));
         refused.Message.ShouldContain("dreamer", Case.Insensitive);
         (await SnapshotAsync()).ShouldBe(before);
@@ -125,6 +133,9 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
     }
 
     private static KnowledgeSpec Spec(KnowledgeKind kind, string summary) => new(kind, summary, null, KnowledgeConfidence.High, null, null, null, [], [], null);
+    private Task PersistRunAsync(Guid runId, Guid project) => new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }))
+        .SaveRunAsync(new(runId, project, "run_now", Human, "running", db.Clock.GetUtcNow().UtcDateTime, null,
+            "scripted", "scripted-policy", 0, 0, 0, 0, 0, null, []));
     private static KnowledgeSpec Lesson(string summary, CorrectionSourceKind source) => Spec(KnowledgeKind.Lesson, summary) with
     { Details = new(What: "A correction", AppliesWhen: new([LessonActivity.Testing]), Source: new(source, source == CorrectionSourceKind.Prompt ? "highest" : "normal", Guid.NewGuid().ToString())) };
 
