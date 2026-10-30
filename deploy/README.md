@@ -140,7 +140,7 @@ When `CODEGRAPH_DEPLOY_ENABLED` is not `true`, the deploy job succeeds but emits
 
 - Branches, PR titles and PR bodies naming an item key (`SW-142`) or an imported alias (`sc-27866`) link to that item. The repository must belong to the item's project.
 - Forward moves only (In Progress on a push, In Review on an open PR); a merge flags `merged_awaiting_acceptance` and never completes the item; a PR closed unmerged returns an In Review item to Ready only when that PR is linked to the item's current attempt. Evidence of superseded attempts is recorded and moves nothing.
-- Reviews and comments are stored with source (human or bot) and priority. The repository owner's login counts as the owner automatically; for **organisation-owned repositories** set `CodeGraph:RepositorySource:GitHub:OwnerLogins` (comma-separated GitHub logins) so the owner's reviews are stored with high priority (bots and other accounts are normal).
+- Reviews and comments are stored with source (human or bot) and priority. The repository owner's login counts as the owner automatically; for **organisation-owned repositories** set `CodeGraph:RepositorySource:GitHub:OwnerLogins` (comma-separated GitHub logins) so the owner's reviews are stored with high priority (bots and other accounts are normal). Production defaults it to `michaeltrefry` in `deploy/docker-compose.production.yml`; the `production` environment variable `CODEGRAPH__REPOSITORYSOURCE__GITHUB__OWNERLOGINS` overrides it.
 - Evidence that changes no link, status or claim (a comment, a review) is fed to the change feed but does not bump the item's version.
 
 ### Redelivering a failed delivery

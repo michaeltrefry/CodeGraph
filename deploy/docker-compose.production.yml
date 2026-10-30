@@ -18,6 +18,7 @@ services:
       CodeGraph__AuthOptions__AllowedOrigins__0: ${CodeGraph__AuthOptions__AllowedOrigins__0:-https://codegraph.trefry.net}
       CodeGraph__AuthOptions__RequireHttpsMetadata: ${CodeGraph__AuthOptions__RequireHttpsMetadata:-true}
       CodeGraph__McpOptions__RequirePersonalAccessToken: ${CodeGraph__McpOptions__RequirePersonalAccessToken:-true}
+      CodeGraph__RepositorySource__GitHub__OwnerLogins: ${CodeGraph__RepositorySource__GitHub__OwnerLogins:-michaeltrefry}
       CodeGraph__Indexer__BaseUrl: ${CodeGraph__Indexer__BaseUrl:-http://codegraph-indexer:5042}
       CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
       CodeGraph__Memory__BaseUrl: ${CodeGraph__Memory__BaseUrl:-http://codegraph-memory:5039}
