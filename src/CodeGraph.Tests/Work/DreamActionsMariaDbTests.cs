@@ -93,7 +93,9 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         scope.MarkSourceRead("codegraph", "src/Old.cs");
         await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id = lesson.Id, expected_version = changed.Version }, lesson.Id));
         (await db.Store.GetKnowledgeAsync(lesson.Id, false))!.Version.ShouldBe(changed.Version);
-        scope.MarkSourceRead("codegraph", "src/Tests.cs");
+        await using (var hashes = new MySqlConnection(db.ConnectionString))
+            await hashes.ExecuteAsync("INSERT INTO file_hashes(repository,rel_path,content_hash) VALUES('codegraph','src/Tests.cs','scopeHash') ON DUPLICATE KEY UPDATE content_hash='scopeHash'");
+        scope.MarkSourceRead("codegraph", "src/Tests.cs", contentHash: "scopeHash", indexHash: "scopeHash");
         await ToolAsync("dream_verify", new { id = lesson.Id, expected_version = changed.Version }, lesson.Id);
         changed = (await db.Store.GetKnowledgeAsync(lesson.Id, false))!;
         await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_revise", new { id = lesson.Id, expected_version = changed.Version, summary = "Hijacked" }, lesson.Id));
@@ -128,8 +130,8 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
             await ToolAsync("dream_promote", new { id = a.Id, expected_version = a.Version + 1 }, a.Id);
             await ToolAsync("dream_relate", new { id = b.Id, expected_version = b.Version, contradicts = a.Id }, a.Id);
             await ToolAsync("dream_relate", new { id = mergeSource.Id, expected_version = mergeSource.Version, same_as = mergeTarget.Id }, mergeTarget.Id);
-            scope.MarkSourceRead("codegraph", "src/DreamFresh.cs");
-            scope.MarkSourceRead("codegraph", "src/DreamConflict.cs");
+            scope.MarkSourceRead("codegraph", "src/DreamFresh.cs", contentHash: "new", indexHash: "new");
+            scope.MarkSourceRead("codegraph", "src/DreamConflict.cs", contentHash: "new", indexHash: "new");
             await ToolAsync("dream_verify", new { id = fresh.Id, expected_version = fresh.Version }, fresh.Id);
             await ToolAsync("dream_verify", new { id = conflict.Id, expected_version = conflict.Version }, conflict.Id);
             var recorded = await ToolAsync("dream_record", new { entry = new { kind = "gotcha", summary = "A deploy may race the final token replacement", confidence = "low" } }, fresh.Id);
@@ -217,13 +219,34 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         recovered.Actions.Count(action => action.Tool == "dream_record").ShouldBe(1);
         recovered.Actions.Count(action => action.Tool == "dream_propose").ShouldBe(1);
         recovered.Actions.Count(action => action.Result.TryGetProperty("journal_id", out _)).ShouldBe(2);
-        recovered.Actions.ShouldContain(action => action.Result.TryGetProperty("error", out var code) && code.GetString() == "forbidden");
+        recovered.Actions.Any(action => action.Result.TryGetProperty("error", out var code) && code.GetString() == "forbidden").ShouldBeTrue();
         recovered.Actions.Single(action => action.Tool == "dream_record").Result.GetProperty("prevalence").GetString().ShouldBe("Observed once in one session");
         recovered.Actions.Single(action => action.Tool == "dream_propose").Evidence.Single().Reference.ShouldBe(lesson.Id.ToString());
         (await runStore.ListRunsAsync(project.Id, 10)).Single().Actions.Count.ShouldBe(5);
         await runStore.SaveRunAsync(recovered);
         (await runStore.GetRunAsync(project.Id, runId))!.Actions.Count.ShouldBe(5);
         (await runStore.GetRunAsync(Guid.NewGuid(), runId)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task A_source_read_does_not_authorize_verification_against_a_later_indexed_revision()
+    {
+        var project = await ProjectAsync("DH");
+        var fact = await FactAsync(project.Key, "Source must match the exact indexed revision verified", "src/DreamProof.cs");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using var scope = DreamExecutionScope.Begin(run, project.Id, "scripted");
+        scope.MarkSourceRead("codegraph", "src/DreamProof.cs", contentHash: "new", indexHash: "new");
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("UPDATE file_hashes SET content_hash='newer' WHERE repository='codegraph' AND rel_path='src/DreamProof.cs'");
+        var refused = await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id = fact.Id, expected_version = fact.Version }, fact.Id));
+        refused.Code.ShouldBe(WorkErrorCodes.Forbidden);
+        var unchanged = (await db.Store.GetKnowledgeAsync(fact.Id, false))!;
+        unchanged.Version.ShouldBe(fact.Version);
+        unchanged.PossiblyStale.ShouldBeTrue();
+        scope.MarkSourceRead("codegraph", "src/DreamProof.cs", contentHash: "newer", indexHash: "newer");
+        await ToolAsync("dream_verify", new { id = fact.Id, expected_version = fact.Version }, fact.Id);
+        (await db.Store.GetKnowledgeAsync(fact.Id, false))!.PossiblyStale.ShouldBeFalse();
     }
 
 }

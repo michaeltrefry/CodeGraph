@@ -57,7 +57,7 @@ public sealed partial class MySqlDreamingStore
     {
         var actions = run.Actions.ToList();
         var writes = await connection.QueryAsync<DurableWriteRow>(new CommandDefinition(
-            "SELECT id,entry_id,action,before_json,after_json,evidence_json,prevalence,created_at,reverted_at FROM dream_write_journal WHERE project_id=@ProjectId AND run_id=@Id ORDER BY id",
+            "SELECT id,entry_id AS EntryId,action,before_json AS BeforeJson,after_json AS AfterJson,evidence_json AS EvidenceJson,prevalence,created_at AS CreatedAt,reverted_at AS RevertedAt FROM dream_write_journal WHERE project_id=@ProjectId AND run_id=@Id ORDER BY id",
             new { run.ProjectId, run.Id }, cancellationToken: ct));
         foreach (var write in writes)
         {
@@ -72,7 +72,7 @@ public sealed partial class MySqlDreamingStore
             actions.Add(new(DurableTool(write.Action), arguments, result, evidence, DateTime.SpecifyKind(write.CreatedAt, DateTimeKind.Utc)));
         }
         var proposals = await connection.QueryAsync<DurableProposalRow>(new CommandDefinition(
-            "SELECT id,target_id,target_version,action,rationale,prevalence,evidence_json,status,draft,created_at FROM dream_proposals WHERE project_id=@ProjectId AND run_id=@Id ORDER BY created_at,id",
+            "SELECT id,target_id AS TargetId,target_version AS TargetVersion,action,rationale,prevalence,evidence_json AS EvidenceJson,status,draft,created_at AS CreatedAt FROM dream_proposals WHERE project_id=@ProjectId AND run_id=@Id ORDER BY created_at,id",
             new { run.ProjectId, run.Id }, cancellationToken: ct));
         foreach (var proposal in proposals)
         {

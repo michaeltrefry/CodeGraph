@@ -407,7 +407,21 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             // these tentative baselines back with the whole transaction. Old baselines alone
             // would let an applies_when location change authorize unread files.
             if (DreamPolicy.IsDreamer(actor))
+            {
                 DreamPolicy.RequireVerification(actor, (await LoadKnowledgeViewAsync(connection, transaction, entryId, false, ct))!);
+                // Locking reads see the current committed index, even if earlier reads in this
+                // transaction established an older repeatable-read snapshot. Hold the index rows
+                // through commit so a successful proof cannot race a newly indexed revision.
+                var files = await connection.QueryAsync<(string RepositoryName, string Path, string? BaselineHash, string? IndexedHash)>(new CommandDefinition(
+                    "SELECT k.repository_name,k.path,k.content_hash AS baseline_hash,h.content_hash AS indexed_hash FROM knowledge_entry_files k LEFT JOIN file_hashes h ON h.repository=k.repository_name AND h.rel_path=k.path WHERE k.entry_id=@entryId LOCK IN SHARE MODE",
+                    new { entryId }, transaction, cancellationToken: ct));
+                foreach (var file in files)
+                {
+                    var readHash = DreamExecutionScope.Current!.ReadFileHash(file.RepositoryName, file.Path);
+                    if (readHash is null || !string.Equals(readHash, file.IndexedHash, StringComparison.OrdinalIgnoreCase) || !string.Equals(readHash, file.BaselineHash, StringComparison.OrdinalIgnoreCase))
+                        throw new WorkException(WorkErrorCodes.Forbidden, "The source read no longer matches the indexed file being verified. Read the current source again; nothing was changed.");
+                }
+            }
         }, ct);
 
     // A change of an existing entry: the versioned advance, the entry must be active, the change, a
