@@ -512,6 +512,17 @@ function collectImportSpecs(sourceFile: SourceFile): Array<{ specifier: string; 
     }
   }
 
+  // Angular's pre-import() lazy syntax still goes through the normal scoped module resolver.
+  // Keep the export suffix out of the module specifier; route analysis resolves that export.
+  for (const property of sourceFile.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
+    if (property.getName() !== 'loadChildren') continue;
+    const initializer = property.getInitializer();
+    if (initializer && (Node.isStringLiteral(initializer) || Node.isNoSubstitutionTemplateLiteral(initializer))) {
+      const specifier = initializer.getLiteralText().split('#')[0];
+      if (specifier) specs.push({ specifier, kind: 'dynamic' });
+    }
+  }
+
   return specs;
 }
 

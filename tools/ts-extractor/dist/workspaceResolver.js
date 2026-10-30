@@ -397,6 +397,18 @@ function collectImportSpecs(sourceFile) {
             specs.push({ specifier: '<dynamic expression>', kind: 'dynamic' });
         }
     }
+    // Angular's pre-import() lazy syntax still goes through the normal scoped module resolver.
+    // Keep the export suffix out of the module specifier; route analysis resolves that export.
+    for (const property of sourceFile.getDescendantsOfKind(ts_morph_1.SyntaxKind.PropertyAssignment)) {
+        if (property.getName() !== 'loadChildren')
+            continue;
+        const initializer = property.getInitializer();
+        if (initializer && (ts_morph_1.Node.isStringLiteral(initializer) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(initializer))) {
+            const specifier = initializer.getLiteralText().split('#')[0];
+            if (specifier)
+                specs.push({ specifier, kind: 'dynamic' });
+        }
+    }
     return specs;
 }
 function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, spec) {
