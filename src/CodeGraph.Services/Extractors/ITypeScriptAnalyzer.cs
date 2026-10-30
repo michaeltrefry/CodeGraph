@@ -28,3 +28,37 @@ public interface ITypeScriptAnalyzer
         IReadOnlyList<string> includedFiles,
         CancellationToken ct = default);
 }
+
+/// <summary>Per-request decoded UTF-16 text limits, applied before sidecar parsing.</summary>
+public sealed record TypeScriptSourceLimits
+{
+    // Independent of decoded text: empty files and path metadata still consume memory.
+    public const int MaxAdmittedPaths = 50_000;
+    public const int MaxPathCharacters = 8 * 1024 * 1024;
+    public const int MaxReadFiles = 20_000;
+
+    public static void ValidateScope(IReadOnlyList<string> paths, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (paths.Count > MaxAdmittedPaths)
+            throw new InvalidOperationException("Frontend admitted path count exceeds its bounded analysis limit.");
+        long characters = 0;
+        foreach (var path in paths)
+        {
+            ct.ThrowIfCancellationRequested();
+            characters += path.Length;
+            if (characters > MaxPathCharacters)
+                throw new InvalidOperationException("Frontend admitted path text exceeds its bounded analysis limit.");
+        }
+    }
+
+    public int MaxFileSizeKb { get; init; } = 512;
+    public IReadOnlyDictionary<string, int> MaxFileSizeKbByExtension { get; init; } = new Dictionary<string, int>();
+    public int MaxAnalysisTextKb { get; init; } = 64 * 1024;
+    public int MaxFileSizeKbFor(string extension)
+    {
+        foreach (var (key, value) in MaxFileSizeKbByExtension)
+            if (string.Equals(key, extension, StringComparison.OrdinalIgnoreCase)) return value;
+        return MaxFileSizeKb;
+    }
+}

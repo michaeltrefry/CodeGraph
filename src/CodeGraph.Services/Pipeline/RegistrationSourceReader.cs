@@ -6,7 +6,7 @@ namespace CodeGraph.Services.Pipeline;
 
 /// <summary>A run-scoped, shared budget for native registration analysis. Limits use decoded
 /// UTF-16 characters, like ordinary extraction; hashes always cover the original bytes.</summary>
-internal sealed class RegistrationSourceReader(IFileSystem files, IndexingOptions options, string? repositoryRoot = null)
+internal sealed class RegistrationSourceReader(IFileSystem files, IndexingOptions options, string? repositoryRoot = null, int? maxAnalysisTextKb = null)
 {
     internal sealed record Source(string Content, string Hash);
     private readonly Dictionary<string, Source?> _cache = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
@@ -18,7 +18,7 @@ internal sealed class RegistrationSourceReader(IFileSystem files, IndexingOption
         path = Path.GetFullPath(path);
         if (_cache.TryGetValue(path, out var cached)) return cached;
         var limit = Math.Max(0L, (long)options.MaxFileSizeKbFor(Path.GetExtension(path)) * 1024);
-        var budget = Math.Max(0L, (long)options.MaxRegistrationAnalysisTextKb * 1024);
+        var budget = Math.Max(0L, (long)(maxAnalysisTextKb ?? options.MaxRegistrationAnalysisTextKb) * 1024);
         Stream input;
         try { input = files.OpenRead(path, repositoryRoot); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

@@ -33,6 +33,8 @@ public class ExtractorContext
     /// </summary>
     public string? DotnetProject { get; init; }
 
+    public TypeScriptSourceLimits TypeScriptSourceLimits { get; init; } = new();
+
     /// <summary>Run-scoped endpoint allowance; preliminary and resolved passes share it.</summary>
     public BackendEndpointWorkBudget? BackendEndpointWork { get; init; }
 

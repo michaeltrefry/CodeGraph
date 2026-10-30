@@ -33,11 +33,14 @@ public class TypeScriptExtractor : ICodeExtractor
     /// 4 (sc-27972): frontend extensions and module-relative file-scoped identities.
     /// 5 (sc-27972): complete admitted coverage and conservative aliased request values.
     /// </remarks>
-    public string GetExtractionVersion(string extension) => "5";
+    public string GetExtractionVersion(string extension) => "6"; // Shared bounded sidecar input.
 
     public async Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
     {
+        if (content.Length > Math.Max(0L, (long)context.TypeScriptSourceLimits.MaxFileSizeKbFor(Path.GetExtension(filePath)) * 1024))
+            return ExtractionResult.Failure("Frontend source exceeds its configured text limit; prior facts and hashes must be retained.");
+
         // Skip definition and test files
         if (filePath.EndsWith(".d.ts", StringComparison.OrdinalIgnoreCase) ||
             filePath.EndsWith(".spec.ts", StringComparison.OrdinalIgnoreCase))
@@ -69,6 +72,9 @@ public class TypeScriptExtractor : ICodeExtractor
                 RootPath = tempDir,
                 TsconfigPath = tempTsconfig,
                 IncludedFiles = [relative, Path.GetFileName(tempTsconfig)],
+                MaxFileSizeKb = context.TypeScriptSourceLimits.MaxFileSizeKb,
+                MaxFileSizeKbByExtension = context.TypeScriptSourceLimits.MaxFileSizeKbByExtension,
+                MaxAnalysisTextKb = context.TypeScriptSourceLimits.MaxAnalysisTextKb,
             }, ct);
 
             if (response is null)

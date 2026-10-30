@@ -30,6 +30,9 @@ public class IndexingOptions
     /// </summary>
     public int MaxFileSizeKb { get; set; } = 512;
 
+    /// <summary>Total decoded text budget (KB) shared by frontend source/config/template reads.</summary>
+    public int MaxFrontendAnalysisTextKb { get; set; } = 64 * 1024;
+
     /// <summary>Total decoded text budget (KB) shared by native endpoint and Tauri analysis per run.</summary>
     public int MaxRegistrationAnalysisTextKb { get; set; } = 64 * 1024;
 

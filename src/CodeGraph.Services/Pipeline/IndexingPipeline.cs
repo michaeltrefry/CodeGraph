@@ -147,6 +147,12 @@ public partial class IndexingPipeline
             RepositoryName = repositoryName,
             RootPath = rootPath,
             FoundationalKnowledge = knowledge,
+            TypeScriptSourceLimits = new TypeScriptSourceLimits
+            {
+                MaxFileSizeKb = _options.MaxFileSizeKb,
+                MaxFileSizeKbByExtension = new Dictionary<string, int>(_options.MaxFileSizeKbByExtension, StringComparer.OrdinalIgnoreCase),
+                MaxAnalysisTextKb = _options.MaxFrontendAnalysisTextKb
+            },
             RepositoryToolingTrust = dotnetToolingTrusted
                 ? RepositoryToolingTrust.Trusted
                 : RepositoryToolingTrust.Untrusted
@@ -159,6 +165,13 @@ public partial class IndexingPipeline
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
+        var typeScriptScope = DiscoverTypeScriptScope(rootPath);
+        var frontendInputs = await ReadFrontendInputsAsync(rootPath, typeScriptScope, ct);
+        // Templates belong to project analysis and are read only when referenced, including
+        // template-only change lists; ordinary per-file hashing must not open them first.
+        if (_typeScriptAnalyzer is not null)
+            files.RemoveAll(path => path.EndsWith(".html", StringComparison.OrdinalIgnoreCase)
+                || IsFrontendReadInput(path) && !frontendInputs.ContainsKey(Path.GetFullPath(path)));
         var deletedFiles = GetDeletedFiles(repositoryName, rootPath, changedFilesOnly, files, existingHashes);
         // Prior paths keep owner cleanup active when the last participating source is removed.
         // Repositories containing only other languages need no HTTP/Tauri store probes.
@@ -169,11 +182,11 @@ public partial class IndexingPipeline
         var hasRustSources = sourcePaths.Any(path => path.EndsWith(".rs", StringComparison.OrdinalIgnoreCase));
         var hasBackendEndpointSources = hasRustSources
             || sourcePaths.Any(path => path.EndsWith(".go", StringComparison.OrdinalIgnoreCase));
-        var languageStats = ComputeLanguageStats(files);
+        var languageStats = ComputeLanguageStats(files, frontendInputs);
         // Files over their size limit record their oversize version whichever component
         // processes them, so the stored version always matches what FilterByHash expects.
         var oversizeFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, oversizeFiles, out var outdatedVersionFiles);
+        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, oversizeFiles, out var outdatedVersionFiles, frontendInputs);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
         if (outdatedVersionFiles > 0)
         {
@@ -300,7 +313,6 @@ public partial class IndexingPipeline
         IReadOnlyList<GraphNode>? typeScriptNodes = null;
         IReadOnlyList<ExtractionResult>? typeScriptResults = null;
         var typeScriptProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var typeScriptScope = DiscoverTypeScriptScope(rootPath);
         if (_typeScriptAnalyzer is not null)
         {
             if (typeScriptScope.Any(IsTypeScriptPath))
@@ -842,8 +854,9 @@ public partial class IndexingPipeline
                          && !buffer.AllFileHashes.ContainsKey(path)))
             {
                 var fullPath = Path.Combine(rootPath, path);
-                if (_fileSystem.FileExists(fullPath))
-                    buffer.AddFileHash(path, Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(_fileSystem.ReadAllBytes(fullPath))));
+                var certified = frontendInputs.GetValueOrDefault(Path.GetFullPath(fullPath))
+                    ?? throw new InvalidOperationException($"Frontend source {path} has no bounded input snapshot; retaining prior graph and hashes.");
+                buffer.AddFileHash(path, certified.Hash);
             }
             var sourceHashes = buffer.AllFileHashes
                 .Where(hash => successfullyProcessedFiles.Contains(hash.Key)
@@ -969,6 +982,7 @@ public partial class IndexingPipeline
             .Select(entry => $"{entry.Extension}={entry.Limit}")
             .Prepend($"*={_options.MaxFileSizeKb}")
             .Append($"registration-text={_options.MaxRegistrationAnalysisTextKb}")
+            .Append($"frontend-text={_options.MaxFrontendAnalysisTextKb}")
             .Append($"endpoint-work={_options.MaxBackendEndpointAnalysisWork};endpoint-depth={_options.MaxBackendEndpointAnalysisDepth}")
             .Append($"tauri-work={_options.MaxTauriAnalysisWork};tauri-depth={_options.MaxTauriAnalysisDepth}")
             .Append($"http-work={_options.MaxHttpBindingWork};http-depth={_options.MaxHttpBindingDepth}"));
@@ -1317,17 +1331,18 @@ public partial class IndexingPipeline
     /// </summary>
     private List<string> FilterByHash(List<string> files, string rootPath,
         Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, ISet<string> oversizeFiles,
-        out int outdatedVersionFiles)
+        out int outdatedVersionFiles, IReadOnlyDictionary<string, RegistrationSourceReader.Source>? frontendInputs = null)
     {
         var changed = new List<string>();
         outdatedVersionFiles = 0;
         foreach (var file in files)
         {
             var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
-            var bytes = _fileSystem.ReadAllBytes(file);
-            var hash = Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
+            var bounded = frontendInputs?.GetValueOrDefault(Path.GetFullPath(file));
+            var bytes = bounded is null ? _fileSystem.ReadAllBytes(file) : null;
+            var hash = bounded?.Hash ?? Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes!));
             buffer.AddFileHash(relPath, hash);
-            var oversize = IsOversize(file, relPath, bytes.Length);
+            var oversize = bounded is null && IsOversize(file, relPath, bytes!.Length);
             if (oversize)
                 oversizeFiles.Add(relPath);
 
@@ -1893,7 +1908,8 @@ public partial class IndexingPipeline
                 });
     }
 
-    private Dictionary<string, LanguageStatAccumulator> ComputeLanguageStats(IReadOnlyList<string> files)
+    private Dictionary<string, LanguageStatAccumulator> ComputeLanguageStats(IReadOnlyList<string> files,
+        IReadOnlyDictionary<string, RegistrationSourceReader.Source>? frontendInputs = null)
     {
         var result = new Dictionary<string, LanguageStatAccumulator>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
@@ -1905,7 +1921,7 @@ public partial class IndexingPipeline
             string content;
             try
             {
-                content = _fileSystem.ReadAllText(file);
+                content = frontendInputs?.GetValueOrDefault(Path.GetFullPath(file))?.Content ?? _fileSystem.ReadAllText(file);
             }
             catch (Exception ex)
             {

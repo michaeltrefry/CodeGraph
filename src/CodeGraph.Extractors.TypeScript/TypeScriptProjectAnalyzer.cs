@@ -24,7 +24,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// 6 (sc-27972): authoritative scoped source coverage, relative ApiContract endpoints
     /// and alias-aware static request values.
     /// </remarks>
-    public string ExtractionVersion => "6";
+    public string ExtractionVersion => "7"; // Bounded source/config/template admission and Vite alias work.
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
@@ -43,6 +43,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
         IReadOnlyList<string> includedFiles,
         CancellationToken ct = default)
     {
+        TypeScriptSourceLimits.ValidateScope(includedFiles, ct);
         if (!await _server.EnsureStartedAsync(ct))
             return [];
 
@@ -62,6 +63,9 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
                 RootPath = context.RootPath,
                 TsconfigPath = tsconfigPath,
                 IncludedFilesPath = scopePath,
+                MaxFileSizeKb = context.TypeScriptSourceLimits.MaxFileSizeKb,
+                MaxFileSizeKbByExtension = context.TypeScriptSourceLimits.MaxFileSizeKbByExtension,
+                MaxAnalysisTextKb = context.TypeScriptSourceLimits.MaxAnalysisTextKb,
             }, ct);
         }
         finally

@@ -3,6 +3,7 @@ using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Services.Extractors;
 
 namespace CodeGraph.Services.Pipeline;
 
@@ -29,6 +30,44 @@ public partial class IndexingPipeline
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.Ordinal)
             .ToList();
+
+    private static bool IsFrontendReadInput(string path) => IsTypeScriptPath(path)
+        || Path.GetFileName(path) is "package.json" or "angular.json"
+        || Path.GetFileName(path).StartsWith("tsconfig", StringComparison.Ordinal) && path.EndsWith(".json", StringComparison.Ordinal)
+        || Path.GetFileName(path).StartsWith("jsconfig", StringComparison.Ordinal) && path.EndsWith(".json", StringComparison.Ordinal)
+        || Path.GetFileName(path).StartsWith("next.config.", StringComparison.Ordinal)
+        || Path.GetFileName(path).StartsWith("vite.config.", StringComparison.Ordinal);
+
+    // Preflight before ordinary source hashing/LOC reads. HTML is deliberately left unread:
+    // only the sidecar knows which admitted templates a component actually references.
+    private async Task<IReadOnlyDictionary<string, RegistrationSourceReader.Source>> ReadFrontendInputsAsync(
+        string root, IReadOnlyList<string> scope, CancellationToken ct)
+    {
+        var sources = new Dictionary<string, RegistrationSourceReader.Source>(
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (_typeScriptAnalyzer is null || !scope.Any(IsTypeScriptPath)) return sources;
+        try
+        {
+            TypeScriptSourceLimits.ValidateScope(scope, ct);
+            var inputs = scope.Where(IsFrontendReadInput).ToList();
+            if (inputs.Count > TypeScriptSourceLimits.MaxReadFiles)
+                throw new InvalidOperationException("Frontend source/config file count exceeds its bounded analysis limit.");
+            var reader = new RegistrationSourceReader(_fileSystem, _options, root, _options.MaxFrontendAnalysisTextKb);
+            foreach (var path in inputs)
+            {
+                var full = Path.GetFullPath(Path.Combine(root, path));
+                sources[full] = await reader.ReadAsync(full, ct)
+                    ?? throw new InvalidOperationException($"Required frontend source/config {path} exceeds its text limit.");
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Frontend input admission incomplete; preserving prior graph and source hashes");
+            throw new InvalidOperationException("Frontend analysis incomplete; no graph or hash replacement was committed.", ex);
+        }
+        return sources;
+    }
 
     /// <summary>
     /// The tsconfig.json whose compiler options the sidecar starts from: the root one, else the
