@@ -47,11 +47,12 @@ public sealed partial class WorkService(
     /// <summary>The overlap detector (impact radius and cache) this service runs with.</summary>
     public WorkOverlaps Overlaps => overlaps;
 
-    // Overlap warnings must never push a call past cg's 1.5 s watchdog: direct overlaps are always
-    // reported, the graph is consulted only within these deadlines.
-    private static readonly TimeSpan BriefingOverlapDeadline = TimeSpan.FromMilliseconds(800);
-    private static readonly TimeSpan CallOverlapDeadline = TimeSpan.FromMilliseconds(300);
     private readonly WorkSessionOptions sessions = sessionOptions?.Value ?? new WorkSessionOptions();
+
+    // Overlap warnings must never push a call past cg's 1.5 s watchdog: direct overlaps are always
+    // reported, the graph is consulted only within these deadlines (WorkSessionOptions).
+    private TimeSpan BriefingOverlapDeadline => TimeSpan.FromMilliseconds(sessions.OverlapBriefingBudgetMilliseconds);
+    private TimeSpan CallOverlapDeadline => TimeSpan.FromMilliseconds(sessions.OverlapCallBudgetMilliseconds);
     private readonly WorkLessonOptions lessons = lessonOptions?.Value ?? new WorkLessonOptions();
     private readonly CodeGraph.Services.Embeddings.IEmbeddingService? embeddings = embeddingService;
 
@@ -956,7 +957,8 @@ public sealed partial class WorkService(
             if (WorkKeys.TryParse(item.Ref, out _, out var kind, out _) && kind == WorkEntityKind.Item)
             {
                 var named = await Store.ResolveAsync(item.Ref, ct);
-                if (named is null || named.ProjectId != feature.ProjectId)
+                // An item key names an item: sc-N of an imported epic resolves to a feature (sc-27930), which is not one.
+                if (named is not { Kind: WorkEntityKind.Item } || named.ProjectId != feature.ProjectId)
                     throw WorkException.Invalid($"{where}: ref '{item.Ref}' is an item key, but there is no such item in the feature's project. Use another ref for a new item. Nothing was changed.");
                 keyMatch = named.Id;
             }

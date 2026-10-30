@@ -51,7 +51,8 @@ public sealed record ShortcutEpic(
     string? AppUrl,
     int RelatedDocuments);
 
-public sealed record ShortcutStorySummary(long Id, DateTime UpdatedAt);
+/// <param name="Archived">Archived in Shortcut (a delta lists those too, sc-27929).</param>
+public sealed record ShortcutStorySummary(long Id, DateTime UpdatedAt, bool Archived = false);
 
 public sealed record ShortcutStory(
     long Id,

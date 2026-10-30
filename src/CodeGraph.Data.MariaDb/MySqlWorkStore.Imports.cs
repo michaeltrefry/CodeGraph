@@ -182,6 +182,9 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             var after = (await LoadFeatureViewAsync(connection, transaction, existing.Id, withCounts: false, ct))!;
             var addedViews = after.Documents.Where(document => before.Documents.All(prior => prior.Id != document.Id)).ToList();
             var changes = WithDocuments(Diff(Snapshot(before), Snapshot(after)), addedViews, changed);
+            // What the feature came from changed (the source archived it, sc-27929): in the feed like any field.
+            if (existing.ImportedJson != imported)
+                changes.Add(Change("imported", existing.ImportedJson is null ? null : JsonNode.Parse(existing.ImportedJson), spec.Imported));
             await CommitAsync(connection, transaction,
                 [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Feature, after.Id, after.Key, WorkChangeKinds.FeatureUpdated, changes)],
                 actor, now, ct);
@@ -233,7 +236,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             }
 
             var snapshot = new ItemSnapshot(
-                Cap(spec.Title, 240), JsonName(spec.Type), WorkStatuses.Name(spec.Status), JsonName(spec.Priority), spec.Description,
+                Cap(spec.Title, 240), JsonName(spec.Type), WorkStatuses.Name(spec.SourceStatus ?? spec.Status), JsonName(spec.Priority), spec.Description,
                 JoinLabels(spec.Labels.Select(label => label.Replace(',', ' ').Trim()).Where(label => label.Length > 0).Distinct().ToList()),
                 repository, featureId, spec.AcceptanceCriteria);
             var imported = Json(spec.Imported);
@@ -252,7 +255,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                     new
                     {
                         id, projectId = project.Id, number = project.NextItemNumber, snapshot.FeatureId, snapshot.Type, snapshot.Title, snapshot.Description,
-                        snapshot.Status, snapshot.Priority, order = spec.Order, snapshot.Labels, snapshot.Repository,
+                        Status = WorkStatuses.Name(spec.Status), snapshot.Priority, order = spec.Order, snapshot.Labels, snapshot.Repository,
                         acceptance = WriteList(NormalizeCriteria([], spec.AcceptanceCriteria)), imported, actorName = actor.Name, actorKind = actor.Kind,
                         createdAt = Stored(spec.CreatedAt), updatedAt = Stored(spec.UpdatedAt)
                     }, transaction, cancellationToken: ct));
@@ -265,6 +268,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                 before = await ToViewAsync(connection, transaction, existing, ct);
                 var base_ = ReadSnapshot<ItemSnapshot>(record!.SnapshotJson);
                 bool Changed(Func<ItemSnapshot, object?> field) => base_ is null || SnapshotJson(field(base_)) != SnapshotJson(field(snapshot));
+                var status = await ImportedStatusAsync(connection, transaction, spec, existing, Changed(s => s.Status), actor, ct);
                 await connection.ExecuteAsync(new CommandDefinition(
                     "UPDATE work_items SET feature_id = @featureId, item_type = @type, title = @title, description = @description, status = @status, priority = @priority, " +
                     "labels = @labels, repository_name = @repository, acceptance_json = @acceptance, imported_json = @imported, " +
@@ -275,7 +279,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                         type = Changed(s => s.Type) ? snapshot.Type : existing.ItemType,
                         title = Changed(s => s.Title) ? snapshot.Title : existing.Title,
                         description = Changed(s => s.Description) ? snapshot.Description : existing.Description,
-                        status = Changed(s => s.Status) ? snapshot.Status : existing.Status,
+                        status,
                         priority = Changed(s => s.Priority) ? snapshot.Priority : existing.Priority,
                         labels = Changed(s => s.Labels) ? snapshot.Labels : existing.Labels,
                         // A repository the source no longer names is not cleared.
@@ -285,6 +289,25 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
                             : existing.AcceptanceJson,
                         imported, updatedAt = Stored(spec.UpdatedAt), id
                     }, transaction, cancellationToken: ct));
+
+                // A finished item (the source finished or archived it) is claimed by no one, like any
+                // finished item (UpdateItemAsync's rule, E1): its claim is cleared, every session's
+                // claim on it released and its active attempt ended, all in this write's feed entry.
+                var finished = WorkStatuses.Parse(status);
+                if (WorkStatuses.IsFinished(finished))
+                {
+                    if (existing.ClaimHolder is not null)
+                        await connection.ExecuteAsync(new CommandDefinition(
+                            "UPDATE work_items SET claim_holder = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
+                            new { id }, transaction, cancellationToken: ct));
+                    await ReleaseSessionClaimsAsync(connection, transaction, id, now, ct);
+                    if (await ActiveAttemptAsync(connection, transaction, id, ct) is { } attempt)
+                        await FinishAttemptAsync(connection, transaction, attempt, existing.Key, finished, actor, now, extra, ct);
+                }
+
+                // What the item came from changed (the source archived it, sc-27929): in the feed like any field (E7).
+                if (existing.ImportedJson != imported)
+                    extra.Add(Change("imported", existing.ImportedJson is null ? null : JsonNode.Parse(existing.ImportedJson), spec.Imported));
             }
 
             await WriteImportedCommentsAsync(connection, transaction, id, spec.Comments, extra, now, ct);
@@ -302,6 +325,8 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             else
             {
                 change = new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, WorkChangeKinds.ItemUpdated, Diff(Snapshot(before), Snapshot(after)));
+                foreach (var claim in Diff(ClaimSnapshot(existing!), ClaimSnapshot((await ReadItemRowAsync(connection, transaction, id, ct))!)))
+                    change.Changes.Add(claim!.DeepClone());
             }
 
             foreach (var node in extra)
@@ -309,6 +334,55 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             await CommitAsync(connection, transaction, [change], actor, now, ct);
             return new ImportWrite(id, after.Key, after.ProjectId, before is null ? ImportOutcome.Created : ImportOutcome.Updated, warnings.Count == 0 ? null : warnings);
         }, ct);
+
+    /// <summary>
+    /// The status an import writes over an existing item (sc-27929). The baseline of the three-way merge is the
+    /// source's own status (<see cref="ImportedItemSpec.SourceStatus"/>), never what an archive made of the item.
+    /// <list type="bullet">
+    /// <item>Archived now, not before: the importer's status (closed, unless CodeGraph finished it), whatever the merge says.</item>
+    /// <item>Archived before and now: the importer's status when the source's changed (an archived item is not reopened), else as it is.</item>
+    /// <item>Unarchived: the source's status when it changed meanwhile (the source wins); else the status the item had
+    /// before the archive closed it, when the archive is what closed it (its latest status change is this import closing
+    /// it); else as it is, so work CodeGraph finished or moved since stays.</item>
+    /// <item>Otherwise the merge: the source's status when it changed, else as it is.</item>
+    /// </list>
+    /// </summary>
+    private static async Task<string> ImportedStatusAsync(MySqlConnection connection, MySqlTransaction transaction, ImportedItemSpec spec, ItemRow existing,
+        bool sourceChanged, WorkActor actor, CancellationToken ct)
+    {
+        var wasArchived = existing.ImportedJson is not null && JsonSerializer.Deserialize<ImportedView>(existing.ImportedJson, WorkJson.Options)?.Archived == true;
+        var isArchived = spec.Imported.Archived == true;
+        if (isArchived)
+            return !wasArchived || sourceChanged ? WorkStatuses.Name(spec.Status) : existing.Status;
+        if (!wasArchived)
+            return sourceChanged ? WorkStatuses.Name(spec.Status) : existing.Status;
+        if (sourceChanged)
+            return WorkStatuses.Name(spec.SourceStatus ?? spec.Status);
+        return existing.Status == WorkStatuses.Name(WorkStatus.Closed) && await ClosedByAsync(connection, transaction, existing.Id, actor, ct) is { } before
+            ? before
+            : existing.Status;
+    }
+
+    /// <summary>
+    /// The status the item had before <paramref name="actor"/> closed it, when its latest status change in the feed is
+    /// that actor closing it; else null.
+    /// </summary>
+    private static async Task<string?> ClosedByAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, WorkActor actor, CancellationToken ct)
+    {
+        var rows = await connection.QueryAsync<(string ActorName, string Changes)>(new CommandDefinition(
+            "SELECT actor_name, changes FROM work_changes WHERE entity_id = @itemId ORDER BY sequence DESC LIMIT 200",
+            new { itemId }, transaction, cancellationToken: ct));
+        foreach (var (actorName, changes) in rows)
+        {
+            if (JsonNode.Parse(changes) is not JsonArray fields)
+                continue;
+            if (fields.OfType<JsonObject>().FirstOrDefault(field => field["field"]?.GetValue<string>() == "status") is not { } status)
+                continue;
+            return actorName == actor.Name && status["new"]?.GetValue<string>() == WorkStatuses.Name(WorkStatus.Closed) ? status["old"]?.GetValue<string>() : null;
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// The acceptance criteria after a delta, criterion by criterion (by id) against the last imported
@@ -728,6 +802,46 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
             "WHERE source = @source ORDER BY started_at DESC LIMIT @limit",
             new { source, limit = Math.Clamp(limit, 1, 100) }, cancellationToken: ct));
         return rows.Select(row => row.ToView()).ToList();
+    }
+
+    public async Task<IReadOnlyList<IndexedRepository>> ListIndexedRepositoriesAsync(CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<IndexedRepository>(new CommandDefinition(
+            "SELECT r.name AS Name, r.repo_url AS RepoUrl, " +
+            "(SELECT p.project_key FROM work_project_repositories w JOIN work_projects p ON p.id = w.project_id WHERE w.repository_name = r.name AND w.role = 'owned' LIMIT 1) AS OwnedBy " +
+            "FROM repositories r ORDER BY r.name",
+            cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    // Applied repositories are import records of kind 'repository' keyed by a hash of (project, repository): the
+    // name can be longer than an external id; the record's snapshot holds it.
+    private static string AppliedRepositoryId(Guid projectId, string repository) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{projectId}\n{repository.ToLowerInvariant()}")));
+
+    public async Task<IReadOnlySet<string>> ListAppliedRepositoriesAsync(string source, Guid projectId, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<string>(new CommandDefinition(
+            "SELECT snapshot_json FROM work_import_records WHERE source = @source AND external_kind = 'repository' AND project_id = @projectId",
+            new { source, projectId }, cancellationToken: ct));
+        return rows.Select(json => JsonSerializer.Deserialize<string>(json, SnapshotOptions)!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task RecordAppliedRepositoriesAsync(string source, Guid projectId, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+    {
+        if (repositories.Count == 0)
+            return;
+        await using var connection = await OpenAsync(ct);
+        var now = Now();
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT IGNORE INTO work_import_records (source, external_kind, external_id, entity_kind, entity_id, project_id, content_hash, snapshot_json, imported_at) " +
+            "VALUES (@source, 'repository', @externalId, 'project', @projectId, @projectId, @externalId, @snapshot, @now)",
+            repositories.Distinct(StringComparer.OrdinalIgnoreCase).Select(repository => new
+            {
+                source, externalId = AppliedRepositoryId(projectId, repository), projectId, snapshot = SnapshotJson(repository), now
+            }), cancellationToken: ct));
     }
 
     public async Task<ImportRunView?> LastCompletedImportAsync(string source, CancellationToken ct = default)

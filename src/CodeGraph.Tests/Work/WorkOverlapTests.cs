@@ -256,6 +256,13 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
     private const string MainPath = "Sources/App/Main.swift";
     private const string LonelyPath = "Sources/App/Lonely.swift";
 
+    // The production time-boxes (300 ms per call, 800 ms per briefing) mean "a slow graph gives fewer
+    // warnings". A cold first lookup (JIT, EF model, MariaDB round trips) on a loaded CI runner can
+    // exceed 300 ms, and the test then saw no impact warning at all (sc-27923). These tests assert
+    // the warnings themselves, so the time-box is out of the picture here; the time-box has its own
+    // tests (the slow-graph one below and WorkOverlapUnitTests).
+    private const int GenerousBudgetMilliseconds = 60_000;
+
     private string root = null!;
     private WorkService service = null!;
 
@@ -292,7 +299,12 @@ public sealed class WorkOverlapMariaDbTests(WorkDatabase db) : IClassFixture<Wor
         await store.UpsertSyncStateAsync(new SyncStateEntity { Repository = Repository, LastCommitSha = sha });
 
         var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
-        service = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }), new WorkOverlaps(impact));
+        service = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions
+        {
+            IdleSeconds = WorkDatabase.IdleSeconds,
+            OverlapCallBudgetMilliseconds = GenerousBudgetMilliseconds,
+            OverlapBriefingBudgetMilliseconds = GenerousBudgetMilliseconds
+        }), new WorkOverlaps(impact));
     }
 
     public Task DisposeAsync()

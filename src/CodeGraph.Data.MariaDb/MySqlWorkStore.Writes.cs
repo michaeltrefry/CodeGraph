@@ -544,13 +544,9 @@ public sealed partial class MySqlWorkStore
 
             // Merge evidence only flags an item; completing it (the agent's call) clears the flag.
             var merged = status == WorkStatus.Complete ? false : effective.MergedAwaitingAcceptance ?? beforeRow.MergedAwaitingAcceptance;
-            // Finishing an item (by anyone) ends every session's claim on it: a session that held it
-            // and writes later is not told claim_lost for a claim that was never taken from it (E1).
             if (WorkStatuses.IsFinished(status))
             {
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE work_session_claims SET released_at = @now WHERE item_id = @itemId AND released_at IS NULL",
-                    new { itemId, now }, transaction, cancellationToken: ct));
+                await ReleaseSessionClaimsAsync(connection, transaction, itemId, now, ct);
             }
             else if (actor.SessionId is { } claimingSession)
             {
@@ -615,8 +611,7 @@ public sealed partial class MySqlWorkStore
             if (attempt is not null)
             {
                 if (WorkStatuses.IsFinished(status))
-                    await EndAttemptAsync(connection, transaction, attempt, status == WorkStatus.Complete ? AttemptOutcome.Complete : AttemptOutcome.Closed,
-                        $"{before.Key} was marked {WorkStatuses.Name(status)} by {actor.Name}.", now, extra, ct);
+                    await FinishAttemptAsync(connection, transaction, attempt, before.Key, status, actor, now, extra, ct);
                 else if (effective.Claim is { Action: ClaimAction.Release })
                     await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Abandoned, $"The claim was released by {actor.Name}.", now, extra, ct);
                 else if (abandonLapsed && attempt.SessionId == actor.SessionId)
@@ -653,6 +648,20 @@ public sealed partial class MySqlWorkStore
     }
 
     private sealed record ClaimFields(string? ClaimHolder, string? ClaimMarker, string? ClaimSessionId, DateTime? ClaimedAt, DateTime? ClaimExpiresAt);
+
+    // Finishing an item (by anyone: an agent, a person, GitHub evidence, an import) ends every
+    // session's claim on it: a session that held it and writes later is not told claim_lost for a
+    // claim that was never taken from it (E1).
+    private static Task ReleaseSessionClaimsAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, DateTime now, CancellationToken ct) =>
+        connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE work_session_claims SET released_at = @now WHERE item_id = @itemId AND released_at IS NULL",
+            new { itemId, now }, transaction, cancellationToken: ct));
+
+    /// <summary>Finishing an item ends its active attempt, complete or closed as the item is (an "attempt" change).</summary>
+    private static Task FinishAttemptAsync(MySqlConnection connection, MySqlTransaction transaction, AttemptRow attempt, string key, WorkStatus status, WorkActor actor,
+        DateTime now, JsonArray changes, CancellationToken ct) =>
+        EndAttemptAsync(connection, transaction, attempt, status == WorkStatus.Complete ? AttemptOutcome.Complete : AttemptOutcome.Closed,
+            $"{key} was marked {WorkStatuses.Name(status)} by {actor.Name}.", now, changes, ct);
 
     // KanbanBoard's claim rules, decided while the transaction holds the item's row:
     // claim succeeds when the item is unclaimed, its claim lapsed, or the same identity and marker

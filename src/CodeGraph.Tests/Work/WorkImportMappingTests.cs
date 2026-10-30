@@ -381,6 +381,116 @@ public sealed class WorkImportMappingTests
         source.Warnings[0].ShouldContain("More than 1000 stories");
     }
 
+    // ---- sc-27928..sc-27931 ----------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_delta_also_lists_the_stories_archived_since_and_a_full_run_does_not()
+    {
+        var handler = new FakeShortcut
+        {
+            Answer = request => FakeShortcut.Json(Uri.UnescapeDataString(request.RequestUri!.Query).Contains("query=is:archived")
+                ? new { total = 1, data = new object[] { new { id = 7, updated_at = "2026-10-11T00:00:00Z", archived = true } }, next = (string?)null }
+                : new { total = 1, data = new object[] { new { id = 8, updated_at = "2026-10-11T00:00:00Z", archived = false } }, next = (string?)null })
+        };
+
+        var delta = await Rest(handler).ListStoriesAsync(new DateTime(2026, 10, 10, 0, 0, 0, DateTimeKind.Utc), CancellationToken.None);
+
+        delta.ShouldBe([new ShortcutStorySummary(7, new DateTime(2026, 10, 11, 0, 0, 0, DateTimeKind.Utc), Archived: true), new ShortcutStorySummary(8, new DateTime(2026, 10, 11, 0, 0, 0, DateTimeKind.Utc))]);
+        handler.Requests.ShouldContain(request => request.Contains("query=is:archived created:") && request.Contains("updated:2026-10-09..*"));
+        handler.Requests.ShouldContain(request => request.Contains("query=!is:archived created:"));
+
+        handler.Requests.Clear();
+        var full = await Rest(handler).ListStoriesAsync(null, CancellationToken.None);
+        full.Select(story => story.Id).ShouldBe([8L]);
+        handler.Requests.ShouldAllBe(request => request.Contains("query=!is:archived"));
+    }
+
+    [Fact]
+    public void A_story_names_repositories_by_its_links_first_then_by_github_links_in_its_description()
+    {
+        var story = Recorded.Stories[27866] with
+        {
+            Description = "Started in https://github.com/SceneWorks/mlx-rs/blob/main/src/lib.rs, see also https://github.com/SceneWorks/mlx-rs/pull/3. " +
+                          "Not a repository: https://github.com/orgs/SceneWorks/people, https://github.com/user-attachments/assets/1234. " +
+                          "Old home: https://github.com/michaeltrefry/codegraph.git."
+        };
+
+        ShortcutMapper.RepositoryCandidates(story).ShouldBe(["michaeltrefry/CodeGraph", "SceneWorks/mlx-rs"]);
+        // A story whose only mention is in its text gets that repository when its project owns it.
+        ShortcutMapper.ChooseRepository(ShortcutMapper.RepositoryCandidates(Recorded.Stories[27876] with { Description = "Fix in https://github.com/SceneWorks/mlx-rs/blob/main/a.rs" }),
+            ["sceneworks", "mlx-rs"]).ShouldBe("mlx-rs");
+    }
+
+    [Fact]
+    public void The_repository_index_matches_a_named_repository_by_remote_then_full_name_then_name()
+    {
+        var index = new RepositoryIndex([
+            new IndexedRepository("Renamed", "https://github.com/michaeltrefry/OldName.git", null),
+            new IndexedRepository("viassh", "git@github.com:acme/over-ssh.git", null),
+            new IndexedRepository("sceneworks", null, "SW"),
+            new IndexedRepository("OldName", null, null),
+            new IndexedRepository("candle", "https://github.com/michaeltrefry/candle.git", null)
+        ]);
+
+        index.Resolve("michaeltrefry/OldName")!.Name.ShouldBe("Renamed"); // the remote wins over a repository named like it
+        index.Resolve("acme/over-ssh")!.Name.ShouldBe("viassh");
+        index.Resolve("SceneWorks/SceneWorks")!.OwnedBy.ShouldBe("SW");
+        index.Resolve("michaeltrefry/sceneworks")!.Name.ShouldBe("sceneworks"); // moved to another owner: the same repository
+        index.Resolve("acme/not-indexed").ShouldBeNull();
+        // A repository with a GitHub remote is not another owner's repository of the same name (an upstream of a fork).
+        index.Resolve("huggingface/candle").ShouldBeNull();
+        index.Resolve("michaeltrefry/candle")!.Name.ShouldBe("candle");
+        index.Named("SCENEWORKS")!.Name.ShouldBe("sceneworks");
+        index.Named("acme/over-ssh").ShouldBeNull();
+    }
+
+    [Fact]
+    public void Proposed_keys_that_collide_get_a_number()
+    {
+        var taken = new HashSet<string> { "SCENEWORKS", "CODEFLOWCL", "CODEFLOWC2" };
+        ShortcutMapper.UniqueKey("SCENEWORKS", taken.Contains).ShouldBe("SCENEWORK2");
+        ShortcutMapper.UniqueKey("CODEFLOWCL", taken.Contains).ShouldBe("CODEFLOWC3");
+        ShortcutMapper.UniqueKey("XX", taken.Contains).ShouldBe("XX");
+        ShortcutMapper.UniqueKey("XX", new HashSet<string> { "XX" }.Contains).ShouldBe("XX2");
+    }
+
+    [Fact]
+    public void An_items_repository_is_chosen_from_resolved_repositories_only()
+    {
+        var index = new RepositoryIndex([
+            new IndexedRepository("candle", "https://github.com/michaeltrefry/candle.git", null),
+            new IndexedRepository("sceneworks", null, null),
+            new IndexedRepository("acme/tool", null, null)
+        ]);
+        IReadOnlyList<string> owned = ["candle", "sceneworks", "acme/tool"];
+        string? Choose(string description) =>
+            ShortcutImporter.ChooseRepository(ShortcutMapper.RepositoryCandidates(Recorded.Stories[27876] with { Description = description }), owned, index);
+
+        // The upstream of the indexed fork is not the fork, though the project owns a repository of that name.
+        Choose("Upstream: https://github.com/huggingface/candle/issues/12").ShouldBeNull();
+        // The fork's own owner/repo, an owner/repo that is an indexed full name, a repository with no known remote.
+        Choose("Fork: https://github.com/michaeltrefry/candle/pull/3").ShouldBe("candle");
+        Choose("See https://github.com/acme/tool").ShouldBe("acme/tool");
+        Choose("See https://github.com/SceneWorks/SceneWorks/pull/1").ShouldBe("sceneworks");
+        ShortcutImporter.ChooseRepository(["candle"], owned, index).ShouldBe("candle"); // a bare name, no owner to compare
+    }
+
+    [Fact]
+    public void An_archived_story_closes_its_item_unless_it_is_finished()
+    {
+        var at = new DateTime(2026, 10, 30, 0, 0, 0, DateTimeKind.Utc);
+        var open = ShortcutMapper.Archived(Map(27876), WorkStatus.InProgress, at);
+        open.Status.ShouldBe(WorkStatus.Closed);
+        open.Imported.Archived.ShouldBe(true);
+        var note = open.Comments.Single(comment => comment.ExternalId == "archived");
+        (note.Author, note.AuthorKind, note.CreatedAt).ShouldBe(("import:shortcut", WorkActor.SystemKind, at));
+
+        ShortcutMapper.Archived(Map(27866), WorkStatus.Complete, at).Status.ShouldBe(WorkStatus.Complete); // done in Shortcut
+        ShortcutMapper.Archived(Map(27876), WorkStatus.Complete, at).Status.ShouldBe(WorkStatus.Complete); // finished in CodeGraph
+        ShortcutMapper.Archived(Map(27866), WorkStatus.InProgress, at).Status.ShouldBe(WorkStatus.Closed); // done in Shortcut, reopened in CodeGraph
+        ShortcutMapper.Hash(open).ShouldNotBe(ShortcutMapper.Hash(Map(27876)));
+    }
+
     // ---- Native memory -------------------------------------------------------------------------
 
     [Fact]

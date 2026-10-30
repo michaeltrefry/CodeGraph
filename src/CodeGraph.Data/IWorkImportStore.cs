@@ -55,7 +55,23 @@ public interface IWorkImportStore
 
     /// <summary>The newest completed import run of the source with its report (a delta continues from its start and retries its failures).</summary>
     Task<ImportRunView?> LastCompletedImportAsync(string source, CancellationToken ct = default);
+
+    /// <summary>Every repository CodeGraph indexes, with its remote URL and the project that owns it (sc-27928).</summary>
+    Task<IReadOnlyList<IndexedRepository>> ListIndexedRepositoriesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// The repositories an import's table has applied to a project (sc-27928): attached by it, or owned already when
+    /// the table named them. A repository is applied once, so one the owner takes away later is not attached again.
+    /// </summary>
+    Task<IReadOnlySet<string>> ListAppliedRepositoriesAsync(string source, Guid projectId, CancellationToken ct = default);
+
+    /// <summary>Records repositories as applied to the project (a repeat changes nothing).</summary>
+    Task RecordAppliedRepositoriesAsync(string source, Guid projectId, IReadOnlyCollection<string> repositories, CancellationToken ct = default);
 }
+
+/// <param name="Name">The repository as CodeGraph names it (repositories.name).</param>
+/// <param name="OwnedBy">The key of the project that owns it, or null.</param>
+public sealed record IndexedRepository(string Name, string? RepoUrl, string? OwnedBy);
 
 /// <param name="Edges">The blockers whose edges the import inserted (the only ones it may remove).</param>
 /// <param name="HasRelations">Whether a dependency sync recorded the source's blockers.</param>
@@ -116,7 +132,10 @@ public sealed record ImportedItemSpec(
     int Order,
     string ContentHash,
     // PR links of PRs already merged or closed in the source: GitHub events on them never move the item.
-    IReadOnlyList<string>? HistoricalLinks = null);
+    IReadOnlyList<string>? HistoricalLinks = null,
+    // The source's own status when Status is not it (an archived story: Status is what the archive makes of the item).
+    // It is the three-way merge's baseline, so an archive never stands in for a status change of the source.
+    WorkStatus? SourceStatus = null);
 
 public sealed record NewAttachmentSpec(string ExternalId, string Filename, string ContentType, long SizeBytes, string? Sha256, string? StoragePath, string? SourceUrl, string? SkippedReason, DateTime CreatedAt);
 

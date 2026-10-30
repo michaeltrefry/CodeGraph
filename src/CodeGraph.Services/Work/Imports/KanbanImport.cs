@@ -241,6 +241,10 @@ public sealed class KanbanImporter(IWorkStore work, IWorkImportStore imports)
         if (open) report.Epics.Open = 1; else report.Epics.Done = 1;
         report.Documents = documents.Count;
         report.Project(projectKey).Features = 1;
+        report.Project(projectKey).Exists = target is not null;
+        report.Project(projectKey).Repositories = owned;
+        report.Teams[0].StoriesByProject[projectKey] = items.Count;
+        report.Teams[0].EpicsByProject[projectKey] = 1;
         if (open)
             report.ReconcileTasks = 1;
 
