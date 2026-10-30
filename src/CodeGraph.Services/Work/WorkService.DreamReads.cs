@@ -25,18 +25,12 @@ public sealed partial class WorkService
     private async Task<object> ReadBoundedDreamToolAsync(string tool, JsonObject input, DreamExecutionScope scope, CancellationToken ct)
     {
         var snapshots = DreamReads.GetOrCreateValue(scope);
-        int limit;
-        try { limit = input["limit"]?.GetValue<int>() ?? 20; }
-        catch (InvalidOperationException) { throw WorkException.Invalid("limit must be an integer from 1 to 100."); }
+        var window = WorkJson.Parse<DreamReadWindow>(JsonSerializer.SerializeToElement(new { limit = input["limit"], cursor = input["cursor"] }),tool);
+        var limit = window.Limit ?? 20;
         if (limit is < 1 or > 100) throw WorkException.Invalid("limit must be 1 to 100.");
         DreamReadCursor cursor;
         DreamReadSnapshot snapshot;
-        string? cursorText = null;
-        if (input["cursor"] is { } supplied)
-        {
-            if (supplied is not JsonValue value || !value.TryGetValue<string>(out cursorText))
-                throw WorkException.Invalid("cursor must be a string; pass next_cursor unchanged.");
-        }
+        var cursorText = window.Cursor;
         if (cursorText?.StartsWith("dr:", StringComparison.Ordinal) == true)
         {
             RefuseDreamFields(input, "cursor", "limit");
@@ -61,8 +55,23 @@ public sealed partial class WorkService
         return await PageDreamReadAsync(snapshot, cursor, limit, ct);
     }
 
+    private sealed record DreamReadWindow(int? Limit=null,string? Cursor=null);
+
     private async Task<IReadOnlyList<DreamReadItem>> CaptureDreamReadAsync(string tool, JsonObject input, Guid projectId, CancellationToken ct)
     {
+        var arguments = JsonSerializer.SerializeToElement(input);
+        // Validate the complete initial request before any JsonNode getters or selection.
+        // Continuations were validated separately and accept only cursor and limit.
+        switch (tool)
+        {
+            case "dream_read": _ = WorkJson.Parse<RecallRequest>(arguments,tool); break;
+            case "dream_lessons": _ = WorkJson.Parse<LessonsRequest>(arguments,tool); break;
+            case "dream_review_queue": _ = WorkJson.Parse<ReviewQueueRequest>(arguments,tool); break;
+            case "dream_similar":
+                RefuseDreamFields(input,"offset","limit");
+                _ = WorkJson.Parse<DreamModelContract.PageInput>(arguments,tool); break;
+            case "dream_work_trail": _ = WorkJson.Parse<DreamModelContract.PageInput>(arguments,tool); break;
+        }
         if (tool == "dream_work_trail")
         {
             RefuseDreamFields(input, "offset", "limit", "since");

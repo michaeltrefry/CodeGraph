@@ -38,7 +38,8 @@ public sealed partial class WorkService : IKnowledgeDreamActions
     {
         var scope = DreamPolicy.RequireScope(actor);
         DreamPolicy.RequireProject(actor, scope.ProjectId);
-        var input = JsonNode.Parse(args.GetRawText()) as JsonObject ?? throw WorkException.Invalid("Tool arguments must be an object.");
+        var validated = WorkJson.ReadObject(System.Text.Encoding.UTF8.GetBytes(args.GetRawText()),tool);
+        var input = JsonNode.Parse(validated.GetRawText())!.AsObject();
         if (input.ContainsKey("project") || input.ContainsKey("project_id") || input.ContainsKey("session_id") || input.ContainsKey("run_id") || input.ContainsKey("actor"))
             throw new WorkException(WorkErrorCodes.Forbidden,"Dream tools use the server run's project and actor; they cannot be overridden. Nothing was changed.");
         if (tool == "dream_propose")
@@ -113,7 +114,8 @@ public sealed partial class WorkService : IKnowledgeDreamActions
             case "dream_record":
             {
                 RefuseDreamFields(input, "entry");
-                var entry = input["entry"]?.Deserialize<KnowledgeEntryInput>(WorkJson.Options) ?? throw WorkException.Invalid("dream_record requires entry.");
+                if (input["entry"] is null) throw WorkException.Invalid("dream_record requires entry.");
+                var entry = WorkJson.Parse<KnowledgeEntryInput>(JsonSerializer.SerializeToElement(input["entry"]), tool);
                 if (entry.Confidence is null || entry.Kind is not (KnowledgeKind.Fact or KnowledgeKind.Gotcha or KnowledgeKind.Constraint or KnowledgeKind.Attempt or KnowledgeKind.Lesson))
                     throw new WorkException(WorkErrorCodes.Forbidden, "Dreaming records fact, gotcha, constraint, attempt or lesson with explicit confidence.");
                 if (entry.Supersedes is not null || entry.SameAs is not null || entry.Contradicts is not null)
@@ -126,9 +128,9 @@ public sealed partial class WorkService : IKnowledgeDreamActions
             case "dream_challenge":
             {
                 RefuseDreamFields(input, "id", "reason");
-                var id = input["id"]?.GetValue<string>() ?? throw WorkException.Invalid("challenge requires id.");
-                var entry = await RequireEntryAsync(id, "id", scope.ProjectId.ToString(), null, ct);
-                var reason = Text(input["reason"]?.GetValue<string>() ?? throw WorkException.Invalid("challenge requires reason."), "reason", KnowledgeLimits.MaxReasonLength);
+                var request = WorkJson.Parse<DreamModelContract.ChallengeInput>(JsonSerializer.SerializeToElement(input), tool);
+                var entry = await RequireEntryAsync(request.Id, "id", scope.ProjectId.ToString(), null, ct);
+                var reason = Text(request.Reason, "reason", KnowledgeLimits.MaxReasonLength);
                 result = await Knowledge.OpenChallengeAsync(entry.Id, reason, evidence.Select(e => new EvidenceView(EvidenceKind.Source, e.Summary, e.Reference)).ToList(), null, actor, ct);
                 break;
             }
@@ -175,7 +177,8 @@ public sealed partial class WorkService : IKnowledgeDreamActions
             input["project"] = projectId.ToString();
             return await ReviewQueueAsync(WorkJson.Parse<ReviewQueueRequest>(JsonSerializer.SerializeToElement(input), tool), null, ct, completeDreamSnapshot: true);
         }
-        RefuseDreamFields(input, "offset", "limit", "since");
+        if (tool == "dream_similar") RefuseDreamFields(input, "offset", "limit");
+        else RefuseDreamFields(input, "offset", "limit", "since");
         var offset = input["offset"]?.GetValue<int>() ?? 0;
         var limit = input["limit"]?.GetValue<int>() ?? 50;
         if (offset < 0 || limit is < 1 or > 100) throw WorkException.Invalid("offset must be nonnegative; limit must be 1 to 100.");

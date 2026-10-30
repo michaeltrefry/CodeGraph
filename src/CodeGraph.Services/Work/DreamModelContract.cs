@@ -7,6 +7,8 @@ namespace CodeGraph.Services.Work;
 /// on the wider public work contracts. Keep public MCP/REST requests unchanged.</summary>
 internal static class DreamModelContract
 {
+    internal sealed record PageInput(int Offset=0,int Limit=20,DateTime? Since=null,string? Cursor=null);
+    internal sealed record ChallengeInput(string Id,string Reason);
     internal sealed record SearchInput(string Repository,string NamePattern="%",string? Label=null,int Limit=20);
     internal sealed record SourceInput(string? Repository=null,string? Path=null,long? NodeId=null);
 

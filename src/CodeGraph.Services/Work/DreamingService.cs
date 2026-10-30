@@ -82,7 +82,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
                     catch(WorkException ex) {result=new {error=ex.Code,message=ex.Message};}
                     var json=JsonSerializer.SerializeToElement(result,result.GetType(),WorkJson.Options);
                     var evidence=ReadActionEvidence(call.Arguments);
-                    var action=new DreamAction(call.Name,call.Arguments.Clone(),json,evidence,clock.GetUtcNow().UtcDateTime);
+                    var action=new DreamAction(call.Name,RecordedArguments(call.Arguments),json,evidence,clock.GetUtcNow().UtcDateTime);
                     run=run with {Actions=run.Actions.Append(action).ToList()};
                     await store.SaveRunAsync(run,ct);
                     messages.Add(new("tool",json.GetRawText(),ToolCallId:call.Id));
@@ -104,11 +104,30 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
     }
     private static IReadOnlyList<DreamEvidence> ReadActionEvidence(JsonElement args)
     {
-        if(!args.TryGetProperty("evidence",out var values)||values.ValueKind!=JsonValueKind.Array)return [];
+        // This is observational logging of possibly refused input, never a second parser.
+        // Preserve the original arguments on the action; malformed citations must not abort
+        // the loop after the executor has already returned a structured refusal.
+        if(args.ValueKind!=JsonValueKind.Object||!args.TryGetProperty("evidence",out var values)||values.ValueKind!=JsonValueKind.Array)return [];
+        static string? Text(JsonElement value,string name)=>value.ValueKind==JsonValueKind.Object
+            &&value.TryGetProperty(name,out var field)&&field.ValueKind==JsonValueKind.String?field.GetString():null;
         return values.EnumerateArray().Select(e=>new DreamEvidence(
-            e.TryGetProperty("kind",out var k)?k.GetString()??"other":"other",
-            e.TryGetProperty("reference",out var r)?r.GetString()??"":e.TryGetProperty("id",out var i)?i.GetString()??"":"",
-            e.TryGetProperty("summary",out var s)?s.GetString()??"Evidence cited by proposal":"Evidence cited by proposal")).ToList();
+            Text(e,"kind")??"other",Text(e,"reference")??Text(e,"id")??"",
+            Text(e,"summary")??"Evidence cited by proposal")).ToList();
+    }
+    private static JsonElement RecordedArguments(JsonElement arguments)
+    {
+        var raw=arguments.GetRawText();
+        try
+        {
+            using var document=JsonDocument.Parse(raw,new JsonDocumentOptions {AllowDuplicateProperties=false});
+            return document.RootElement.Clone();
+        }
+        catch(JsonException)
+        {
+            // Keep refused duplicate-member input losslessly as text, so the strict run
+            // reader can still deserialize its report and expose the original payload.
+            return JsonSerializer.SerializeToElement(new {invalid_arguments_json=raw});
+        }
     }
     private async Task<DreamRun> FinishAsync(DreamRun run,string status,string? reason,CancellationToken ct)
     {run=run with {Status=status,Reason=reason,EndedAt=clock.GetUtcNow().UtcDateTime};await store.SaveRunAsync(run,ct);return run;}
@@ -152,14 +171,14 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
         var schemas=new Dictionary<string,JsonElement>
         {
             ["dream_read"]=Shape(typeof(RecallRequest)),["dream_lessons"]=Shape(typeof(LessonsRequest)),["dream_review_queue"]=Shape(typeof(ReviewQueueRequest)),
-            ["dream_similar"]=Shape(typeof(DreamPageInput),["offset","limit","cursor"]),["dream_work_trail"]=Shape(typeof(DreamPageInput)),
+            ["dream_similar"]=Shape(typeof(DreamModelContract.PageInput),["offset","limit","cursor"]),["dream_work_trail"]=Shape(typeof(DreamModelContract.PageInput)),
             ["dream_search_graph"]=Shape(typeof(DreamModelContract.SearchInput)),["dream_read_source"]=Shape(typeof(DreamModelContract.SourceInput)),
             ["dream_verify"]=Shape(typeof(KnowledgeVerifyInput),write:true),
             ["dream_revise"]=Shape(typeof(KnowledgeRevisionInput),["id","expected_version","applies_when"],true),
             ["dream_relate"]=Shape(typeof(KnowledgeRelateInput),write:true),
             ["dream_promote"]=Shape(typeof(PromoteRequest),["id","expected_version"],true),
             ["dream_record"]=Shape(typeof(RecordRequest),["entry"],true),
-            ["dream_challenge"]=Shape(typeof(DreamChallengeInput),write:true),
+            ["dream_challenge"]=Shape(typeof(DreamModelContract.ChallengeInput),write:true),
             ["dream_propose"]=Shape(typeof(DreamProposalRequest))
         };
         foreach (var tool in new[] { "dream_read", "dream_lessons", "dream_review_queue" })
@@ -172,8 +191,6 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
         }
         return definitions.Select(d=>new DreamToolDefinition(d.Key,d.Value,DreamModelContract.Complete(d.Key,schemas[d.Key]))).ToList();
     }
-    private sealed record DreamPageInput(int Offset=0,int Limit=20,DateTime? Since=null,string? Cursor=null);
-    private sealed record DreamChallengeInput(string Id,string Reason);
 }
 
 public interface IDreamSourceReader
