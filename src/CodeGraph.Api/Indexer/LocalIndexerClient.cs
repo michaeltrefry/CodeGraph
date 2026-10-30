@@ -12,6 +12,9 @@ namespace CodeGraph.Api.Indexer;
 /// </summary>
 public sealed class LocalIndexerClient(IIndexerOperationsService operations) : IIndexerClient
 {
+    public Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+        => operations.StartDreamProjectsAsync(username, submissionKey, ct);
+
     public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username, string repo, string? submissionKey = null, CancellationToken ct = default)
         => operations.StartReAnalyzeRepositoryAsync(username, repo, submissionKey, ct);

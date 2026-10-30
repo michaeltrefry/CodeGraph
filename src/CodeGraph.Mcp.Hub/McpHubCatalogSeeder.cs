@@ -214,7 +214,7 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
             tool.ReadOnly,
             Destructive: false,
             EnabledByDefault: true,
-            DefaultSelected: true,
+            DefaultSelected: !McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(tool.Name),
             AccessClass: tool.ReadOnly ? "read" : "write",
             ProviderType: "native"));
 

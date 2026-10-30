@@ -35,7 +35,8 @@ public sealed partial class WorkService(
     IKnowledgeStore? knowledgeStore = null,
     // Lesson similarity (S9): the embedding provider (local ONNX in the hosts) and the lesson settings.
     CodeGraph.Services.Embeddings.IEmbeddingService? embeddingService = null,
-    IOptions<WorkLessonOptions>? lessonOptions = null) : IWorkService
+    IOptions<WorkLessonOptions>? lessonOptions = null,
+    IServiceProvider? serviceProvider = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -78,6 +79,12 @@ public sealed partial class WorkService(
 
     public async Task<object> ExecuteAsync(string tool, JsonElement arguments, WorkActor actor, CancellationToken ct = default)
     {
+        if (DreamPolicy.IsDreamer(actor))
+            return await ExecuteDreamerWorkAsync(tool, arguments, actor, ct);
+        if (DreamExecutionScope.Current is not null)
+            throw new WorkException(WorkErrorCodes.Forbidden, "The dreamer may not replace its actor identity.");
+        if (tool is WorkTools.DreamRun or WorkTools.DreamRuns or WorkTools.DreamSettings or WorkTools.DreamInstructions or WorkTools.DreamRevert)
+            return await ExecuteDreamSurfaceAsync(tool, arguments, actor, ct);
         // Every argument is read before anything is written, the heartbeat included.
         object request = tool switch
         {
@@ -104,6 +111,8 @@ public sealed partial class WorkService(
             WorkTools.Challenge => WorkJson.Parse<ChallengeRequest>(arguments, tool),
             WorkTools.Lessons => WorkJson.Parse<LessonsRequest>(arguments, tool),
             WorkTools.ReviewQueue => WorkJson.Parse<ReviewQueueRequest>(arguments, tool),
+            WorkTools.DreamPropose => WorkJson.Parse<DreamProposalRequest>(arguments, tool),
+            WorkTools.DreamReview => WorkJson.Parse<DreamReviewRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -177,6 +186,8 @@ public sealed partial class WorkService(
             ChallengeRequest challenge => await ChallengeAsync(challenge, actor, session, ct),
             LessonsRequest lessons => await LessonsAsync(lessons, session, ct),
             ReviewQueueRequest review => await ReviewQueueAsync(review, session, ct),
+            DreamProposalRequest proposal => await DreamProposeAsync(proposal, actor, session, ct),
+            DreamReviewRequest proposal => await DreamReviewAsync(proposal, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
 

@@ -285,10 +285,13 @@ public sealed class WorkHoldsMariaDbTests(WorkDatabase db) : IClassFixture<WorkD
         ending.IsCompleted.ShouldBeFalse();
 
         // ... a hold of the session lands on another resource meanwhile (a concurrent acquire's commit) ...
+        // Use the store's UTC clock: MariaDB NOW() follows its server time zone, and the
+        // shared fixture's ShiftableClock may also have advanced in another lifecycle test.
+        var now = db.Clock.GetUtcNow().UtcDateTime;
         await blocker.ExecuteAsync(
             "INSERT INTO work_holds (id, resource_id, project_id, identity, session_id, purpose, priority, state, ttl_seconds, requested_at, granted_at, expires_at) " +
-            "SELECT UUID(), @second, project_id, 'michael', @session, 'late', 'medium', 'held', 3600, NOW(6), NOW(6), DATE_ADD(NOW(6), INTERVAL 1 HOUR) FROM work_resources WHERE id = @second",
-            new { second, session }, transaction);
+            "SELECT UUID(), @second, project_id, 'michael', @session, 'late', 'medium', 'held', 3600, @now, @now, @expires FROM work_resources WHERE id = @second",
+            new { second, session, now, expires = now.AddHours(1) }, transaction);
         await transaction.CommitAsync();
 
         // ... and is released too.

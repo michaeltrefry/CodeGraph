@@ -93,6 +93,18 @@ describe('KnowledgePageComponent', () => {
     expect(page.notice()).toBe('Retracted.');
   });
 
+  it('offers unmerge for a merged lesson and sends its current version', async () => {
+    const fixture = await create();
+    const page = fixture.componentInstance;
+    page.selected.set(entry({ id: 'merged-1', kind: 'lesson', status: 'superseded',
+      status_reason: 'Merged into e-1: the same lesson.', superseded_by: 'e-1', version: 7 }));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('Unmerge');
+    await page.unmerge();
+    expect(api.record).toHaveBeenLastCalledWith({ unmerge: { id: 'merged-1', expected_version: 7 } });
+    expect(page.notice()).toContain('Unmerged');
+  });
+
   it('revises only the fields that changed', async () => {
     const fixture = await create();
     const page = fixture.componentInstance;

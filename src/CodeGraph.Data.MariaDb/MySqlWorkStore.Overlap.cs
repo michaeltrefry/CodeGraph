@@ -25,6 +25,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<WorkArea>> ReadLiveWorkAreasAsync(Guid projectId, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var now = Now();
         var rows = await connection.QueryAsync<AreaRow>(new CommandDefinition(

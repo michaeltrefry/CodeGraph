@@ -251,7 +251,7 @@ public sealed class RecordRequest : ISessionArguments
     [Description("Key or id of the Project. May be left out with session_id (the session's project), and with revise, retract, verify.")]
     public string? Project { get; init; }
 
-    [Description("A new entry. Pass exactly one of entry, revise, retract, verify, relate, acknowledge.")]
+    [Description("A new entry. Pass exactly one of entry, revise, retract, verify, relate, unmerge, acknowledge.")]
     public KnowledgeEntryInput? Entry { get; init; }
 
     [Description("A new revision of an active entry: the fields passed replace the stored ones; the entry is re-verified against its files.")]
@@ -265,6 +265,9 @@ public sealed class RecordRequest : ISessionArguments
 
     [Description("Lessons: decide about a stored lesson after seeing its similar lessons: same_as (merge it into that lesson) or contradicts (keep both, linked and flagged).")]
     public KnowledgeRelateInput? Relate { get; init; }
+
+    [Description("Reverse a same_as merge using the superseded source lesson id and its current version. Restores its transferred state; later target corrections stay on the target.")]
+    public KnowledgeAcknowledgeInput? Unmerge { get; init; }
 
     [Description("Review queue: an autonomous decision was reviewed and stands; it leaves the review queue.")]
     public KnowledgeAcknowledgeInput? Acknowledge { get; init; }

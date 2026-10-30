@@ -12,6 +12,20 @@ namespace CodeGraph.Jobs.Tests.Jobs;
 public class JobCommandDispatcherTests
 {
     [Fact]
+    public async Task DreamProjects_DispatchesWithDurableExecutionKey()
+    {
+        var client = new RecordingIndexerClient();
+        var dispatcher = CreateDispatcher(indexerClient: client);
+        dispatcher.GetSupportedJobTypes().ShouldContain(JobTypes.DreamProjects);
+        dispatcher.NormalizeArgsJson(JobTypes.DreamProjects, null).ShouldBe("{}");
+        await dispatcher.ExecuteAsync(JobTypes.DreamProjects, "{}", "job:dream-stable");
+        await dispatcher.ExecuteAsync(JobTypes.DreamProjects, "{}", "job:dream-stable");
+        client.DreamProjectsCalls.ShouldBe(2);
+        client.SubmissionKeys.ShouldBe(["job:dream-stable", "job:dream-stable"]);
+        client.PublicationCount.ShouldBe(1);
+    }
+
+    [Fact]
     public void NormalizeArgsJson_UsesTypedDefaults()
     {
         var dispatcher = CreateDispatcher();
@@ -168,7 +182,8 @@ public class JobCommandDispatcherTests
             new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)),
             new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()),
             new WorkImportJob(),
-            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()));
+            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()),
+            new DreamProjectsJob(indexerClient));
     }
 
     private static JobCommandDispatcher CreateDispatcher(
@@ -194,7 +209,8 @@ public class JobCommandDispatcherTests
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
             new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
             new WorkImportJob(importRunner),
-            new IndexerRunRetentionJob(indexerRetention ?? new RecordingIndexerRunRetentionService()));
+            new IndexerRunRetentionJob(indexerRetention ?? new RecordingIndexerRunRetentionService()),
+            new DreamProjectsJob(indexerClient));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService
