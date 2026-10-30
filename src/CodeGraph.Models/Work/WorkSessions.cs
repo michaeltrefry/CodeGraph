@@ -25,6 +25,16 @@ public sealed class WorkSessionOptions
 
     /// <summary>Sessions deleted per transaction by the prune job.</summary>
     public int PruneBatchSize { get; set; } = 10;
+
+    /// <summary>
+    /// Time-box, in milliseconds, for the impact-radius lookups behind the overlap warnings of an
+    /// ordinary work-tool call (default 300). It keeps a call inside cg's 1.5 s watchdog; past it the
+    /// call reports only the overlaps already known, so a slow graph means fewer warnings (sc-27923).
+    /// </summary>
+    public int OverlapCallBudgetMilliseconds { get; set; } = 300;
+
+    /// <summary>The same time-box for get_briefing (default 800).</summary>
+    public int OverlapBriefingBudgetMilliseconds { get; set; } = 800;
 }
 
 /// <summary>A tool argument type that can carry the caller's session.</summary>
