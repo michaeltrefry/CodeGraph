@@ -478,3 +478,33 @@ test('uncertain member identities never become exact siblings on a later nested 
   `});
   for(const name of ['destructured','property','spread','forwarded'])assert.deepEqual(routes(result,`Demo:uncertain-members.ts#${name}`),[]);
 });
+
+test('nested sibling writes preserve captured URLs and methods through direct and imported aliases', () => {
+  const result=fixture({
+    'urls.ts':`export const url='/api/imported';`,
+    'siblings.ts':`import {url as importedUrl} from './urls';
+      export function direct(){const url='/api/items';const holder={url,options:{}};holder.options.headers={};return fetch(url);}
+      export function alias(){const url='/api/items';const holder={url,nested:{options:{}}};const alias=holder.nested;alias.options.headers={};return fetch(url);}
+      export function imported(){const holder={url:importedUrl,options:{}};holder.options.headers={};return fetch(importedUrl);}
+      export function oneLevel(){const url='/api/items';const options={url,headers:{}};options.headers={};return fetch(url);}
+      export function capturedMethod(){const method='POST';const options={method,headers:{}};options.headers={};return fetch('/api/items',{method});}
+    `,
+  });
+  for(const name of ['direct','alias','oneLevel'])assert.deepEqual(routes(result,`Demo:siblings.ts#${name}`),['route:*:GET:/api/items']);
+  assert.deepEqual(routes(result,'Demo:siblings.ts#imported'),['route:*:GET:/api/imported']);
+  assert.deepEqual(routes(result,'Demo:siblings.ts#capturedMethod'),['route:*:POST:/api/items']);
+});
+
+test('nested literal and bound-object reads mask changed fields while retaining independent sibling paths', () => {
+  const result=fixture({'bound-siblings.ts':`
+    export function literal(){const holder={url:'/api/items',options:{method:'GET'}};holder.options.method='DELETE';fetch(holder.url,{method:'POST'});return fetch('/api/items',holder.options);}
+    function bound(holder){holder.options.method='DELETE';fetch(holder.url,{method:'POST'});return fetch('/api/items',holder.options);}
+    function request(options){options.headers={};return fetch(options.url,{method:'POST'});}
+    function destructured({url,options}){const holder={url,options};holder.options.headers={};return fetch(url);}
+    export function caller(){bound({url:'/api/items',options:{method:'GET'}});request({url:'/api/second',headers:{}});destructured({url:'/api/third',options:{}});}
+    export function addedMethod(){const options={};options.method='DELETE';return fetch('/api/items',options);}
+  `});
+  assert.deepEqual(routes(result,'Demo:bound-siblings.ts#literal'),['route:*:POST:/api/items']);
+  assert.deepEqual(routes(result,'Demo:bound-siblings.ts#caller'),['route:*:GET:/api/third','route:*:POST:/api/items','route:*:POST:/api/second']);
+  assert.deepEqual(routes(result,'Demo:bound-siblings.ts#addedMethod'),[]);
+});

@@ -18,9 +18,8 @@ export function staticKey(value: StaticValue): string {
 /** Bounded, non-executing evaluation over admitted ASTs only. Environments are keyed by
  * declarations, never identifier text; no process-global caches survive extraction. */
 export class StaticEvaluator {
-  private readonly mutations = new Map<Node, boolean>();
   private readonly aliasParents = new Map<object, object>();
-  private writtenAliases: Set<object> | undefined;
+  private memberWrites: Map<object, { names: Set<string>; all: boolean; deep: boolean }> | undefined;
   private readonly writtenBindings = new Set<object>();
   constructor(readonly model: SemanticModel, readonly diagnostic: (message: string) => void) {}
 
@@ -31,8 +30,8 @@ export class StaticEvaluator {
     const ev = (value: Node | undefined) => this.evaluate(value, env, seen);
     // Bound arguments are still mutable inside the callee. Check writes before an
     // environment hit can return a stale object/method supplied by its caller.
-    if (this.isBinding(node) && this.mutated(node)) return unknown();
-    if (env.has(node)) return env.get(node);
+    if (this.isBinding(node) && this.reassigned(node)) return unknown();
+    if (env.has(node)) return this.maskWrites(node,env.get(node));
     if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node) || Node.isAwaitExpression(node) || Node.isSatisfiesExpression(node)) return ev(node.getExpression());
     if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) return node.getLiteralText();
     if (Node.isNumericLiteral(node)) return node.getLiteralValue();
@@ -87,7 +86,7 @@ export class StaticEvaluator {
           else { for (const key of result.properties.keys()) result.properties.set(key, unknown()); result.unknownKeys = true; }
         } else if (Node.isShorthandPropertyAssignment(prop)) result.properties.set(prop.getName(), ev(prop.getValueSymbol()?.getDeclarations().find(d => this.admitted(d))));
       }
-      return result;
+      return this.maskWrites(node,result);
     }
     if (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node)) {
       const key = Node.isPropertyAccessExpression(node) ? node.getName() : ev(node.getArgumentExpression());
@@ -143,7 +142,7 @@ export class StaticEvaluator {
       return unknown(node.getText());
     }
     if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node) || Node.isPropertyAssignment(node) || Node.isParameterDeclaration(node) || Node.isEnumMember(node) || Node.isBindingElement(node)) {
-      return node.getInitializer() ? ev(node.getInitializer()) : unknown('getName' in node ? node.getName() : 'param');
+      return node.getInitializer() ? this.maskWrites(node,ev(node.getInitializer())) : unknown('getName' in node ? node.getName() : 'param');
     }
     if (Node.isImportSpecifier(node) || Node.isImportClause(node)) {
       const imp = node.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
@@ -203,7 +202,7 @@ export class StaticEvaluator {
    * per evaluated binding. Static aliases share a conservative mutable root; symbols
    * and explicit import resolution keep unrelated names and modules independent. */
   private indexWrites(): void {
-    if (this.writtenAliases) return;
+    if (this.memberWrites) return;
     const writes: Array<{ target: Node; member: boolean }> = [];
     const aliases: Node[] = [];
     for (const file of this.model.files) {
@@ -331,26 +330,49 @@ export class StaticEvaluator {
         return Node.isSpreadAssignment(property) ? [property.getExpression()] : [];
       });
     };
-    this.writtenAliases=new Set<object>();
-    const marked=new Set<Node>();
-    const mark = (reference: Node): void => {
-      const source=identity(reference);
-      this.writtenAliases!.add(this.aliasRoot(this.aliasKey(source)));
-      if (marked.has(source)) return; marked.add(source);
-      for (const child of contained(source)) mark(child);
+    this.memberWrites=new Map();
+    const record = (reference: Node, name: string | undefined, deep: boolean, seen = new Set<Node>()): void => {
+      const source=identity(reference), key=this.aliasRoot(this.aliasKey(source));
+      const entry=this.memberWrites!.get(key) ?? {names:new Set<string>(),all:false,deep:false};
+      if (name===undefined) entry.all=true; else entry.names.add(name);
+      entry.deep ||= deep; this.memberWrites!.set(key,entry);
+      if (!deep || seen.has(source)) return;
+      seen.add(source);
+      for (const child of contained(source)) record(child,name,true,seen);
     };
     for (const {target,member} of writes) {
-      // Rebinding a local changes that binding, not objects that previously captured
-      // its value. Member writes, unlike rebinding, invalidate the shared referent.
+      // Rebinding changes the binding; an exact member write changes its receiver's
+      // property. Ordinary ancestors and captured child values are not mutated.
       if (!member) { this.writtenBindings.add(this.aliasKey(target)); continue; }
-      for (const reference of this.assignmentTargets(target)) mark(reference);
+      let receiver=target, name: string | undefined;
+      if (Node.isPropertyAccessExpression(target) || Node.isElementAccessExpression(target)) {
+        receiver=target.getExpression();
+        const argument=Node.isElementAccessExpression(target) ? target.getArgumentExpression() : undefined;
+        name=Node.isPropertyAccessExpression(target) ? target.getName() : argument && (Node.isStringLiteral(argument) || Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;
+        // A class field is itself a binding. Replacing it cannot reuse its initializer.
+        for (const declaration of target.getSymbol()?.getDeclarations() ?? []) if (Node.isPropertyDeclaration(declaration) && this.admitted(declaration)) this.writtenBindings.add(this.aliasKey(declaration));
+      }
+      identity(receiver);
+      record(receiver,name,uncertainIdentities.has(receiver));
     }
   }
-  private mutated(node: Node): boolean {
-    if (this.mutations.has(node)) return this.mutations.get(node)!;
+  private reassigned(node: Node): boolean {
+    this.indexWrites(); return this.writtenBindings.has(this.aliasKey(node));
+  }
+  /** Mask properties that may have changed, keeping independent siblings/captured
+   * primitives intact. Deep masking is only for an uncertain selected receiver. */
+  private maskWrites(node: Node, value: StaticValue): StaticValue {
     this.indexWrites();
-    const key=this.aliasKey(node);
-    const mutated=this.writtenBindings.has(key) || this.writtenAliases!.has(this.aliasRoot(key));
-    this.mutations.set(node,mutated); return mutated;
+    const writes=this.memberWrites!.get(this.aliasRoot(this.aliasKey(node)));
+    if (!writes || !isObject(value)) return value;
+    const mask = (object: ObjectValue, seen = new Set<ObjectValue>()): StaticValue => {
+      if (seen.has(object) || seen.size >= 60) return unknown();
+      seen=new Set(seen); seen.add(object);
+      const properties=new Map<string,StaticValue>();
+      for (const [name, member] of object.properties) properties.set(name,writes.all || writes.names.has(name) ? unknown(name) : writes.deep && isObject(member) ? mask(member,seen) : member);
+      for (const name of writes.names) if (!properties.has(name)) properties.set(name,unknown(name));
+      return {kind:'object',properties,unknownKeys:object.unknownKeys || writes.all};
+    };
+    return mask(value);
   }
 }
