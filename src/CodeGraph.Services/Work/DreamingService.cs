@@ -39,7 +39,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             if(!settings.Enabled) return await FinishAsync(run,"skipped","disabled",ct);
             if(last?.EndedAt is {} ended && now-ended<TimeSpan.FromMinutes(settings.MinimumIntervalMinutes))
                 return await FinishAsync(run,"skipped","minimum_interval",ct);
-            var digest=await actions.BuildDigestAsync(projectId,last?.EndedAt,ct);
+            var digest=await actions.BuildDigestAsync(projectId,last?.StartedAt,ct);
             run=run with {SignalFingerprint=digest.Fingerprint};
             if(!digest.HasSignal || last?.SignalFingerprint==digest.Fingerprint)
                 return await FinishAsync(run,"skipped","no_signal",ct);

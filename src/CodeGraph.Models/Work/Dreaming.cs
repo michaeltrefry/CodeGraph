@@ -11,7 +11,12 @@ public sealed record DreamAction(string Tool, JsonElement Arguments, JsonElement
 public sealed record DreamRun(Guid Id, Guid ProjectId, string Trigger, WorkActor Initiator, string Status, DateTime StartedAt,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] DateTime? EndedAt, string Provider, string Model, long InputTokens, long OutputTokens, decimal EstimatedCost,
     int BaseInstructionRevision, int ProjectInstructionRevision, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] string? SignalFingerprint, IReadOnlyList<DreamAction> Actions,
-    string? Report = null, string? Reason = null);
+    string? Report = null, string? Reason = null)
+{
+    public IReadOnlyDictionary<string,int> ActionCounts => Actions
+        .Where(a=>a.Tool is "dream_verify" or "dream_revise" or "dream_relate" or "dream_promote" or "dream_record" or "dream_challenge" or "dream_propose")
+        .Where(a=>!a.Result.TryGetProperty("error",out _)).GroupBy(a=>a.Tool).ToDictionary(g=>g.Key,g=>g.Count());
+}
 public sealed record DreamInstructionRevision(int Revision, string Content, string EditedBy, DateTime CreatedAt);
 public sealed record DreamInstructions(string Slug, string Content, int Revision, IReadOnlyList<DreamInstructionRevision> History);
 public sealed record DreamInstructionSet(DreamInstructions Base, DreamInstructions Project);

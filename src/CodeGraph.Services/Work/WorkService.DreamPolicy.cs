@@ -12,7 +12,7 @@ public sealed partial class WorkService
         if(tool==WorkTools.Record)
         {
             var request=WorkJson.Parse<RecordRequest>(arguments,tool);
-            if(request.Retract is not null||request.Acknowledge is not null) DreamPolicy.Refuse(actor,"retract or acknowledge knowledge");
+            if(request.Retract is not null||request.Acknowledge is not null||request.Unmerge is not null) DreamPolicy.Refuse(actor,"retract, acknowledge or unmerge knowledge");
             return await RecordAsync(request,actor,null,ct);
         }
         if(tool==WorkTools.Promote)

@@ -12,9 +12,9 @@ public sealed partial class MySqlWorkStore
         DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var entries = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition($"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id=@projectId ORDER BY e.id", new { projectId }, cancellationToken: ct))).ToList();
-        var events = (await connection.QueryAsync(new CommandDefinition("SELECT correction_id,entry_id,event_hash,counted,rule_at_event,served,created_at FROM lesson_events WHERE project_id=@projectId ORDER BY correction_id", new { projectId }, cancellationToken: ct))).ToArray();
+        var events = (await connection.QueryAsync(new CommandDefinition("SELECT correction_id,entry_id,event_hash,counted,rule_at_event,served,author,author_kind,created_at FROM lesson_events WHERE project_id=@projectId ORDER BY correction_id", new { projectId }, cancellationToken: ct))).ToArray();
         var reviews = (await connection.QueryAsync(new CommandDefinition("SELECT r.id,r.updated_at FROM work_github_evidence r JOIN work_items i ON i.id=r.item_id WHERE i.project_id=@projectId ORDER BY r.id", new { projectId }, cancellationToken: ct))).ToArray();
-        var challenges = (await connection.QueryAsync(new CommandDefinition("SELECT id,entry_id,status,created_at,resolved_at FROM lesson_challenges WHERE project_id=@projectId ORDER BY id", new { projectId }, cancellationToken: ct))).ToArray();
+        var challenges = (await connection.QueryAsync(new CommandDefinition("SELECT id,entry_id,status,created_at,resolved_at,author,author_kind,resolved_by,resolved_by_kind FROM lesson_challenges WHERE project_id=@projectId ORDER BY id", new { projectId }, cancellationToken: ct))).ToArray();
         var proposals = (await connection.QueryAsync(new CommandDefinition("SELECT id,target_id,status,version,created_at,reviewed_at FROM dream_proposals WHERE project_id=@projectId ORDER BY id", new { projectId }, cancellationToken: ct))).ToArray();
         var trail = (await connection.QueryAsync(new CommandDefinition("SELECT m.id,m.created_at,m.resolved_at,m.state FROM work_messages m WHERE m.project_id=@projectId ORDER BY m.id", new { projectId }, cancellationToken: ct))).ToArray();
         var activity = (await connection.QueryAsync(new CommandDefinition("""
@@ -23,20 +23,32 @@ public sealed partial class MySqlWorkStore
             UNION ALL SELECT 'thread',c.id,c.created_at,NULL FROM work_item_comments c JOIN work_items i ON i.id=c.item_id WHERE i.project_id=@projectId
             ORDER BY kind,id
             """, new { projectId }, cancellationToken: ct))).ToArray();
-        var revisions = (await connection.QueryAsync(new CommandDefinition("SELECT r.entry_id,r.revision,r.action,r.author,r.author_kind,r.created_at,r.snapshot_json FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND (@since IS NULL OR r.created_at>@since) ORDER BY r.created_at DESC,r.entry_id,r.revision DESC LIMIT 101", new { projectId, since }, cancellationToken: ct))).ToArray();
+        var changedRevisions = (await connection.QueryAsync(new CommandDefinition("SELECT r.entry_id,r.revision,r.action,r.author,r.author_kind,r.created_at,r.snapshot_json FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND (@since IS NULL OR r.created_at>@since) ORDER BY r.created_at DESC,r.entry_id,r.revision DESC LIMIT 101", new { projectId, since }, cancellationToken: ct))).ToArray();
         var freshness = (await connection.QueryAsync(new CommandDefinition("SELECT k.entry_id,k.repository_name,k.path,k.content_hash,h.content_hash AS current_hash FROM knowledge_entry_files k JOIN knowledge_entries e ON e.id=k.entry_id LEFT JOIN file_hashes h ON h.repository=k.repository_name AND h.rel_path=k.path WHERE e.project_id=@projectId ORDER BY k.entry_id,k.repository_name,k.path", new { projectId }, cancellationToken: ct))).ToArray();
-        // Stable state fingerprint also detects newly stale files, removed graph dependencies and
-        // edits of review evidence. The run service compares it to the last completed run.
-        var fingerprint = HashUrl(JsonSerializer.Serialize(new { entries = entries.Select(row => new { row.Id, row.Version, row.Status, row.Stale, row.RuleState }), events, reviews, challenges, proposals, trail, activity, freshness }));
-        var changed = entries.Where(row => since is null || row.UpdatedAt > since).ToList();
-        var stale = entries.Where(row => row.PossiblyStale && row.Status == "active").ToList();
-        var hasSignal = changed.Count > 0 || stale.Count > 0 || events.Any(row => since is null || (DateTime)row.created_at > since) || reviews.Any(row => since is null || (DateTime)row.updated_at > since) || challenges.Any(row => since is null || (DateTime)row.created_at > since) || proposals.Any(row => since is null || (DateTime)row.created_at > since) || trail.Any(row => since is null || (DateTime)row.created_at > since || row.resolved_at is DateTime resolved && resolved > since) || activity.Any(row => since is null || (DateTime)row.changed_at > since);
+        // The watermark is the previous digest's start, not its completion: changes that arrive
+        // while a model is working must remain eligible for the following pass. Dreamer output
+        // is excluded from the signal identity so an unchanged project cannot self-trigger forever.
+        var revisions=(await connection.QueryAsync(new CommandDefinition("SELECT r.entry_id,r.revision,r.action,r.created_at FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND NOT (r.author_kind='system' AND r.author='dreamer') ORDER BY r.entry_id,r.revision",new {projectId},cancellationToken:ct))).ToArray();
+        var externalEvents=events.Where(row=>(string)row.author_kind!="system"||(string)row.author!="dreamer").ToArray();
+        var externalChallenges=challenges.Where(row=>(string)row.author_kind!="system"||(string)row.author!="dreamer"||row.resolved_at is not null).ToArray();
+        var nodes=(await connection.QueryAsync(new CommandDefinition("SELECT k.entry_id,k.node_id,n.repository,n.qualified_name,n.file_path FROM knowledge_entry_nodes k JOIN knowledge_entries e ON e.id=k.entry_id LEFT JOIN nodes n ON n.id=k.node_id WHERE e.project_id=@projectId ORDER BY k.entry_id,k.node_id",new {projectId},cancellationToken:ct))).ToArray();
+        var externalProposals=proposals.Where(row=>row.reviewed_at is not null).ToArray();
+        var fingerprint=HashUrl(JsonSerializer.Serialize(new {revisions,events=externalEvents.Select(row=>new {correction_id=(string)row.correction_id,event_hash=(string)row.event_hash,created_at=(DateTime)row.created_at}),reviews,challenges=externalChallenges,proposals=externalProposals,trail,activity,
+            freshness=freshness.Select(row=>new {entry_id=(string)row.entry_id,repository_name=(string)row.repository_name,path=(string)row.path,current_hash=(string?)row.current_hash}),nodes}));
+        var changed=entries.Where(row=>since is null||row.UpdatedAt>=since).ToList();
+        var stale=entries.Where(row=>row.PossiblyStale&&row.Status=="active").ToList();
+        var hasSignal=revisions.Any(row=>since is null||(DateTime)row.created_at>=since)||stale.Count>0
+            ||externalEvents.Any(row=>since is null||(DateTime)row.created_at>=since)||reviews.Any(row=>since is null||(DateTime)row.updated_at>=since)
+            ||externalChallenges.Any(row=>since is null||(DateTime)row.created_at>=since||row.resolved_at is DateTime resolved&&resolved>=since)
+            ||externalProposals.Any(row=>since is null||row.reviewed_at is DateTime reviewed&&reviewed>=since)
+            ||trail.Any(row=>since is null||(DateTime)row.created_at>=since||row.resolved_at is DateTime resolved&&resolved>=since)
+            ||activity.Any(row=>since is null||(DateTime)row.changed_at>=since);
         var data = JsonSerializer.SerializeToElement(new
         {
             untrusted_data = true, project_id = projectId, since,
             changed_count = changed.Count, changed_entries = changed.Take(100).Select(row => ToRow(row)), changed_more = changed.Count > 100,
             stale_count = stale.Count, possibly_stale = stale.Take(100).Select(row => ToRow(row)), stale_more = stale.Count > 100,
-            changed_revisions = revisions.Take(100), changed_revisions_more = revisions.Length > 100,
+            changed_revisions = changedRevisions.Take(100), changed_revisions_more = changedRevisions.Length > 100,
             lesson_event_count = events.Length, review_evidence_count = reviews.Length,
             available_reads = new[] { "dream_read", "dream_lessons", "dream_similar", "dream_review_queue", "dream_work_trail", "dream_search_graph", "dream_read_source" }
         }, WorkJson.Options);
