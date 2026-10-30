@@ -1,6 +1,6 @@
 # Production Deployment
 
-On a push to `main`, the CI workflow builds six images once and pushes them to GHCR tagged with the commit SHA (pull requests build but never push). After that CI run succeeds, the deploy workflow retags those exact images as `latest` without rebuilding and can deploy them to the public host. A failed CI run on `main` skips deployment, and a manual dispatch is refused unless a CI push run succeeded for the commit:
+On a push to `main`, the CI workflow builds six images once and pushes them to GHCR tagged with the commit SHA (pull requests build but never push). After that CI run succeeds, the deploy workflow retags those exact images as `latest` without rebuilding and can deploy them to the public host. A failed CI run on `main` skips deployment, and a manual dispatch is refused unless a CI push run succeeded for the commit. A push that only changes `CODEGRAPH.md` files (CodeGraph's own documentation commits) runs no CI, so it neither builds nor deploys: production keeps the last code commit, and a long import is not restarted mid-run. Images:
 
 - `ghcr.io/<owner>/codegraph-api:<sha>`
 - `ghcr.io/<owner>/codegraph-jobs:<sha>`

@@ -132,10 +132,14 @@ public sealed class ProductionDeploymentConfigurationTests
         var ci = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n");
         var workflow = File.ReadAllText(Path.Combine(repositoryRoot, ".github", "workflows", "deploy.yml")).Replace("\r\n", "\n");
 
-        // CI runs on PRs and on every push to main, without cancelling main runs.
+        // CI runs on PRs and on every push to main, without cancelling main runs, except a push that only
+        // changes generated CODEGRAPH.md files: it would deploy, restarting the API under a running import.
         ci.ShouldStartWith("name: CI\n");
         ci.ShouldContain("on:\n  pull_request:\n");
         ci.ShouldContain("\n  push:\n    branches:\n      - main\n");
+        var push = ci[ci.IndexOf("\n  push:\n", StringComparison.Ordinal)..ci.IndexOf("\npermissions:", StringComparison.Ordinal)];
+        push.ShouldContain("    paths-ignore:\n      - '**/CODEGRAPH.md'\n");
+        ci[..ci.IndexOf("\n  push:\n", StringComparison.Ordinal)].ShouldNotContain("paths-ignore"); // PRs are always checked
         ci.ShouldContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
 
         // Deploy is triggered by a completed CI run on main (or manually), never by a raw push.
