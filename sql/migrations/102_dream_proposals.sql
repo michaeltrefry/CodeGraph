@@ -27,4 +27,3 @@ CREATE TABLE IF NOT EXISTS dream_proposals (
     CONSTRAINT fk_dream_proposal_project FOREIGN KEY (project_id) REFERENCES work_projects(id) ON DELETE CASCADE,
     CONSTRAINT fk_dream_proposal_target FOREIGN KEY (target_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
-
