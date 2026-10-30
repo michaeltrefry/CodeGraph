@@ -82,7 +82,7 @@ public sealed class DreamingInstructionCollationMigrationTests : IAsyncLifetime
         body.ShouldBe(edited ? "Custom base instructions" : await File.ReadAllTextAsync(Path.Combine(migrations, "../../docs/dreaming/base-instructions.md")));
         revision.ShouldBe(edited ? 1 : 4);
         var addendum = await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_pages WHERE slug=@slug", new { slug = "dreaming-project-" + project.ToString("N") });
-        if (edited) addendum.ShouldBe("Custom project instructions"); else addendum.ShouldContain("CodeGraph project addendum");
+        if (edited) addendum.ShouldBe("Custom project instructions"); else addendum!.ShouldContain("CodeGraph project addendum");
         (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_pages WHERE slug=@slug", new { slug = "dreaming-project-" + project.ToString("N") })).ShouldBe(1);
         (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base')")).ShouldBe(edited ? 1 : 4);
         (await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base') AND revision=1")).ShouldBe(edited ? "Custom base instructions" : BootstrapText);
