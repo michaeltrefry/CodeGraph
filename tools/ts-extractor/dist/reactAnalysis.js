@@ -3,9 +3,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeReact = analyzeReact;
 const ts_morph_1 = require("ts-morph");
 const semanticModel_1 = require("./semanticModel");
+const reactLazyWrappers_1 = require("./reactLazyWrappers");
 /** Walk observed render trees with a provider environment; never flatten provider values into
  * a global registry. A provider returned by a component does not provide its own hooks. */
 function analyzeReact(model, nodes, edges, diagnostic) {
+    const screenMetadata = declaredScreenMetadata(model);
+    const lazyTargets = (0, reactLazyWrappers_1.lazyWrapperTargets)(model, diagnostic);
     const contexts = new Map();
     const providers = new Map();
     const consumers = new Map();
@@ -169,10 +172,18 @@ function analyzeReact(model, nodes, edges, diagnostic) {
             }
             if (target) {
                 renders.push({ owner, target, element });
-                edges.push({ sourceQN: owner, targetQN: target, type: 'RENDERS', properties: { framework: 'react' } });
+                edges.push({ sourceQN: owner, targetQN: target, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element) } });
             }
             else
                 diagnostic(`renderUnresolved: ${owner}: ${text}`);
+            for (const lazy of lazyTargets(tag)) {
+                if (lazy.qualifiedName === target || !renderable.has(lazy.qualifiedName))
+                    continue;
+                renders.push({ owner, target: lazy.qualifiedName, element, uncertain: true });
+                edges.push({ sourceQN: owner, targetQN: lazy.qualifiedName, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element),
+                        lazy_wrapper: true, lazy_target_file: lazy.filePath, lazy_wrapper_chain: lazy.wrapperChain,
+                        confidence_band: 'medium', candidate: true, lazy_evidence: 'source_initializer_to_react_lazy' } });
+            }
         }
     }
     const calls = new Map();
@@ -222,6 +233,10 @@ function analyzeReact(model, nodes, edges, diagnostic) {
             return next;
         };
         const visitRender = (render, inherited) => {
+            // Source-initializer lazy candidates preserve impact, but do not prove the provider
+            // environment inside a factory wrapper. Keep its consumers explicitly unresolved.
+            if (render.uncertain)
+                return;
             const next = withProviders(render.element, inherited);
             walk(render.target, next, depth + 1);
             const children = owned.filter(child => parentOf(child) === render);
@@ -274,4 +289,154 @@ function analyzeReact(model, nodes, edges, diagnostic) {
                         edges.push({ sourceQN: owner, targetQN: target, type: 'CALLS', properties: { ...properties, call_kind: 'context_default' } });
             }
         }
+    canonicalizeScreenSelections(edges);
+}
+/** Persistence identifies an edge by source/target/type. Factory instances can share a wrapper
+ * declaration, so keep each declared selection canonically instead of allowing last-write wins. */
+function canonicalizeScreenSelections(edges) {
+    const groups = new Map();
+    for (const edge of edges) {
+        if (edge.type !== 'RENDERS' || edge.properties?.framework !== 'react')
+            continue;
+        const key = JSON.stringify([edge.sourceQN, edge.targetQN]);
+        if (!groups.has(key))
+            groups.set(key, []);
+        groups.get(key).push(edge);
+    }
+    const discard = new Set();
+    for (const group of groups.values()) {
+        if (group.length < 2 || !group.some(edge => edge.properties?.screen_key !== undefined))
+            continue;
+        const selections = new Map();
+        for (const edge of group) {
+            if (edge.properties?.screen_key === undefined)
+                continue;
+            const selection = Object.fromEntries(Object.entries(edge.properties).filter(([key]) => key.startsWith('screen_')));
+            selections.set(JSON.stringify(selection), selection);
+        }
+        const canonical = [...selections].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value);
+        const first = group[0];
+        first.properties = { ...first.properties };
+        for (const key of Object.keys(first.properties))
+            if (key.startsWith('screen_'))
+                delete first.properties[key];
+        if (canonical.length === 1)
+            Object.assign(first.properties, canonical[0]);
+        else
+            first.properties.screen_selections = canonical;
+        for (const duplicate of group.slice(1))
+            discard.add(duplicate);
+    }
+    if (discard.size)
+        edges.splice(0, edges.length, ...edges.filter(edge => !discard.has(edge)));
+}
+/** Preserve declared screen selection, not arbitrary conditional visibility. A selector must
+ * first be used by an actual navigation landmark's aria-current=page declaration. Only positive
+ * literal guards using that same symbol (or immutable boolean aliases) become screen metadata.
+ * Keep-alive wrappers can pass the declared selection through their explicit active prop.
+ */
+function declaredScreenMetadata(model) {
+    const selectors = new Map();
+    const unwrap = (node) => {
+        while (ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isNonNullExpression(node))
+            node = node.getExpression();
+        return node;
+    };
+    const declarationOf = (node) => {
+        if (!ts_morph_1.Node.isIdentifier(node))
+            return undefined;
+        const declarations = node.getSymbol()?.getDeclarations() ?? [];
+        return declarations.length === 1 ? declarations[0] : undefined;
+    };
+    const literal = (node) => ts_morph_1.Node.isStringLiteral(node) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : undefined;
+    for (const file of model.files)
+        for (const attribute of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.JsxAttribute)) {
+            if (attribute.getNameNode().getText() !== 'aria-current')
+                continue;
+            const navigation = attribute.getAncestors().some(ancestor => ts_morph_1.Node.isJsxElement(ancestor) && ancestor.getOpeningElement().getTagNameNode().getText() === 'nav');
+            if (!navigation)
+                continue;
+            const initializer = attribute.getInitializer();
+            const expression = initializer && ts_morph_1.Node.isJsxExpression(initializer) ? initializer.getExpression() : undefined;
+            if (!expression)
+                continue;
+            const conditional = unwrap(expression);
+            if (!ts_morph_1.Node.isConditionalExpression(conditional) || literal(unwrap(conditional.getWhenTrue())) !== 'page')
+                continue;
+            const condition = unwrap(conditional.getCondition());
+            if (!ts_morph_1.Node.isBinaryExpression(condition) || condition.getOperatorToken().getKind() !== ts_morph_1.SyntaxKind.EqualsEqualsEqualsToken)
+                continue;
+            for (const operand of [condition.getLeft(), condition.getRight()]) {
+                const reference = unwrap(operand);
+                const declaration = declarationOf(reference);
+                if (declaration)
+                    selectors.set(declaration, { name: reference.getText(), owner: model.owner(declaration) });
+            }
+        }
+    const selection = (expression, seen = new Set()) => {
+        const node = unwrap(expression);
+        if (seen.has(node) || seen.size > 8)
+            return undefined;
+        seen.add(node);
+        if (ts_morph_1.Node.isIdentifier(node)) {
+            const declaration = declarationOf(node);
+            if (!declaration || !ts_morph_1.Node.isVariableDeclaration(declaration) || declaration.getParentIfKind(ts_morph_1.SyntaxKind.VariableDeclarationList)?.getDeclarationKind() !== 'const')
+                return undefined;
+            const initializer = declaration.getInitializer();
+            return initializer ? selection(initializer, seen) : undefined;
+        }
+        if (!ts_morph_1.Node.isBinaryExpression(node))
+            return undefined;
+        if (node.getOperatorToken().getKind() === ts_morph_1.SyntaxKind.AmpersandAmpersandToken) {
+            const left = selection(node.getLeft(), new Set(seen));
+            const right = selection(node.getRight(), new Set(seen));
+            if (left && right && (left.owner !== right.owner || left.selector !== right.selector || left.key !== right.key))
+                return undefined;
+            return left ?? right;
+        }
+        if (node.getOperatorToken().getKind() !== ts_morph_1.SyntaxKind.EqualsEqualsEqualsToken)
+            return undefined;
+        for (const [reference, value] of [[node.getLeft(), node.getRight()], [node.getRight(), node.getLeft()]]) {
+            const declaration = declarationOf(unwrap(reference));
+            const key = literal(unwrap(value));
+            const selector = declaration ? selectors.get(declaration) : undefined;
+            if (selector && key !== undefined)
+                return { key, selector: selector.name, owner: selector.owner };
+        }
+        return undefined;
+    };
+    return element => {
+        const ancestors = element.getAncestors();
+        const contained = new Set([element, ...ancestors]);
+        const metadata = (value, evidence) => ({ screen_key: value.key, screen_selector: value.selector,
+            screen_selector_owner: value.owner, screen_evidence: evidence, screen_selection_evidence: 'navigation_aria_current_page' });
+        for (const ancestor of [element, ...ancestors]) {
+            if (model.callables.has(ancestor))
+                break;
+            if (ts_morph_1.Node.isJsxElement(ancestor) || ts_morph_1.Node.isJsxSelfClosingElement(ancestor)) {
+                const opening = ts_morph_1.Node.isJsxElement(ancestor) ? ancestor.getOpeningElement() : ancestor;
+                const active = opening.getAttributes().find(attribute => ts_morph_1.Node.isJsxAttribute(attribute) && attribute.getNameNode().getText() === 'active');
+                const initializer = active && ts_morph_1.Node.isJsxAttribute(active) ? active.getInitializer() : undefined;
+                const expression = initializer && ts_morph_1.Node.isJsxExpression(initializer) ? initializer.getExpression() : undefined;
+                const value = expression ? selection(expression) : undefined;
+                if (value)
+                    return metadata(value, 'active_prop');
+                // A surrounding component owns its children rendering. Do not infer its nested JSX to
+                // be another screen from an outer guard unless it explicitly passes an active selector.
+                if (ancestor !== element && /^[A-Z]/.test(opening.getTagNameNode().getText()))
+                    break;
+            }
+            if (ts_morph_1.Node.isConditionalExpression(ancestor) && contained.has(ancestor.getWhenTrue())) {
+                const value = selection(ancestor.getCondition());
+                if (value)
+                    return metadata(value, 'conditional_guard');
+            }
+            if (ts_morph_1.Node.isBinaryExpression(ancestor) && ancestor.getOperatorToken().getKind() === ts_morph_1.SyntaxKind.AmpersandAmpersandToken && contained.has(ancestor.getRight())) {
+                const value = selection(ancestor.getLeft());
+                if (value)
+                    return metadata(value, 'conditional_guard');
+            }
+        }
+        return {};
+    };
 }

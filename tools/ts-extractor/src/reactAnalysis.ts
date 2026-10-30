@@ -1,13 +1,16 @@
 import { Node, SyntaxKind } from 'ts-morph';
 import type { GraphNodeDto, PendingEdgeDto } from './protocol';
 import { SemanticModel, sameSymbol } from './semanticModel';
+import { lazyWrapperTargets } from './reactLazyWrappers';
 
 interface Provider { qn: string; context: string; element: Node; values: Set<string>; dynamic: boolean; }
-interface Render { owner: string; target: string; element: Node; }
+interface Render { owner: string; target: string; element: Node; uncertain?: boolean; }
 
 /** Walk observed render trees with a provider environment; never flatten provider values into
  * a global registry. A provider returned by a component does not provide its own hooks. */
 export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges: PendingEdgeDto[], diagnostic: (message: string) => void): void {
+  const screenMetadata = declaredScreenMetadata(model);
+  const lazyTargets = lazyWrapperTargets(model, diagnostic);
   const contexts = new Map<string, { declaration: Node; defaults: Set<string> }>();
   const providers = new Map<Node, Provider>();
   const consumers = new Map<string, Set<string>>();
@@ -126,8 +129,15 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
           }
         }
       }
-      if (target) { renders.push({ owner, target, element }); edges.push({ sourceQN: owner, targetQN: target, type: 'RENDERS', properties: { framework: 'react' } }); }
+      if (target) { renders.push({ owner, target, element }); edges.push({ sourceQN: owner, targetQN: target, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element) } }); }
       else diagnostic(`renderUnresolved: ${owner}: ${text}`);
+      for (const lazy of lazyTargets(tag)) {
+        if (lazy.qualifiedName === target || !renderable.has(lazy.qualifiedName)) continue;
+        renders.push({ owner, target: lazy.qualifiedName, element, uncertain: true });
+        edges.push({ sourceQN: owner, targetQN: lazy.qualifiedName, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element),
+          lazy_wrapper: true, lazy_target_file: lazy.filePath, lazy_wrapper_chain: lazy.wrapperChain,
+          confidence_band: 'medium', candidate: true, lazy_evidence: 'source_initializer_to_react_lazy' } });
+      }
     }
   }
   const calls = new Map<string, Set<string>>();
@@ -164,6 +174,9 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
       return next;
     };
     const visitRender = (render: Render, inherited: Map<string, Provider>): void => {
+      // Source-initializer lazy candidates preserve impact, but do not prove the provider
+      // environment inside a factory wrapper. Keep its consumers explicitly unresolved.
+      if (render.uncertain) return;
       const next = withProviders(render.element, inherited);
       walk(render.target, next, depth + 1);
       const children = owned.filter(child => parentOf(child) === render);
@@ -197,4 +210,117 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
       else for (const target of contexts.get(context)?.defaults ?? []) edges.push({ sourceQN: owner, targetQN: target, type: 'CALLS', properties: { ...properties, call_kind: 'context_default' } });
     }
   }
+  canonicalizeScreenSelections(edges);
+}
+
+/** Persistence identifies an edge by source/target/type. Factory instances can share a wrapper
+ * declaration, so keep each declared selection canonically instead of allowing last-write wins. */
+function canonicalizeScreenSelections(edges: PendingEdgeDto[]): void {
+  const groups = new Map<string, PendingEdgeDto[]>();
+  for (const edge of edges) {
+    if (edge.type !== 'RENDERS' || edge.properties?.framework !== 'react') continue;
+    const key = JSON.stringify([edge.sourceQN, edge.targetQN]);
+    if (!groups.has(key)) groups.set(key, []); groups.get(key)!.push(edge);
+  }
+  const discard = new Set<PendingEdgeDto>();
+  for (const group of groups.values()) {
+    if (group.length < 2 || !group.some(edge => edge.properties?.screen_key !== undefined)) continue;
+    const selections = new Map<string, Record<string, unknown>>();
+    for (const edge of group) {
+      if (edge.properties?.screen_key === undefined) continue;
+      const selection = Object.fromEntries(Object.entries(edge.properties).filter(([key]) => key.startsWith('screen_')));
+      selections.set(JSON.stringify(selection), selection);
+    }
+    const canonical = [...selections].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value);
+    const first = group[0]; first.properties = { ...first.properties };
+    for (const key of Object.keys(first.properties)) if (key.startsWith('screen_')) delete first.properties[key];
+    if (canonical.length === 1) Object.assign(first.properties, canonical[0]);
+    else first.properties.screen_selections = canonical;
+    for (const duplicate of group.slice(1)) discard.add(duplicate);
+  }
+  if (discard.size) edges.splice(0, edges.length, ...edges.filter(edge => !discard.has(edge)));
+}
+
+/** Preserve declared screen selection, not arbitrary conditional visibility. A selector must
+ * first be used by an actual navigation landmark's aria-current=page declaration. Only positive
+ * literal guards using that same symbol (or immutable boolean aliases) become screen metadata.
+ * Keep-alive wrappers can pass the declared selection through their explicit active prop.
+ */
+function declaredScreenMetadata(model: SemanticModel): (element: Node) => Record<string, unknown> {
+  interface Selection { key: string; selector: string; owner: string; }
+  const selectors = new Map<Node, { name: string; owner: string }>();
+  const unwrap = (node: Node): Node => {
+    while (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node)) node = node.getExpression();
+    return node;
+  };
+  const declarationOf = (node: Node): Node | undefined => {
+    if (!Node.isIdentifier(node)) return undefined;
+    const declarations = node.getSymbol()?.getDeclarations() ?? [];
+    return declarations.length === 1 ? declarations[0] : undefined;
+  };
+  const literal = (node: Node): string | undefined => Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : undefined;
+  for (const file of model.files) for (const attribute of file.getDescendantsOfKind(SyntaxKind.JsxAttribute)) {
+    if (attribute.getNameNode().getText() !== 'aria-current') continue;
+    const navigation = attribute.getAncestors().some(ancestor => Node.isJsxElement(ancestor) && ancestor.getOpeningElement().getTagNameNode().getText() === 'nav');
+    if (!navigation) continue;
+    const initializer = attribute.getInitializer();
+    const expression = initializer && Node.isJsxExpression(initializer) ? initializer.getExpression() : undefined;
+    if (!expression) continue;
+    const conditional = unwrap(expression);
+    if (!Node.isConditionalExpression(conditional) || literal(unwrap(conditional.getWhenTrue())) !== 'page') continue;
+    const condition = unwrap(conditional.getCondition());
+    if (!Node.isBinaryExpression(condition) || condition.getOperatorToken().getKind() !== SyntaxKind.EqualsEqualsEqualsToken) continue;
+    for (const operand of [condition.getLeft(), condition.getRight()]) {
+      const reference = unwrap(operand); const declaration = declarationOf(reference);
+      if (declaration) selectors.set(declaration, { name: reference.getText(), owner: model.owner(declaration) });
+    }
+  }
+  const selection = (expression: Node, seen = new Set<Node>()): Selection | undefined => {
+    const node = unwrap(expression);
+    if (seen.has(node) || seen.size > 8) return undefined; seen.add(node);
+    if (Node.isIdentifier(node)) {
+      const declaration = declarationOf(node);
+      if (!declaration || !Node.isVariableDeclaration(declaration) || declaration.getParentIfKind(SyntaxKind.VariableDeclarationList)?.getDeclarationKind() !== 'const') return undefined;
+      const initializer = declaration.getInitializer(); return initializer ? selection(initializer, seen) : undefined;
+    }
+    if (!Node.isBinaryExpression(node)) return undefined;
+    if (node.getOperatorToken().getKind() === SyntaxKind.AmpersandAmpersandToken) {
+      const left = selection(node.getLeft(), new Set(seen)); const right = selection(node.getRight(), new Set(seen));
+      if (left && right && (left.owner !== right.owner || left.selector !== right.selector || left.key !== right.key)) return undefined;
+      return left ?? right;
+    }
+    if (node.getOperatorToken().getKind() !== SyntaxKind.EqualsEqualsEqualsToken) return undefined;
+    for (const [reference, value] of [[node.getLeft(), node.getRight()], [node.getRight(), node.getLeft()]]) {
+      const declaration = declarationOf(unwrap(reference)); const key = literal(unwrap(value));
+      const selector = declaration ? selectors.get(declaration) : undefined;
+      if (selector && key !== undefined) return { key, selector: selector.name, owner: selector.owner };
+    }
+    return undefined;
+  };
+  return element => {
+    const ancestors = element.getAncestors(); const contained = new Set<Node>([element, ...ancestors]);
+    const metadata = (value: Selection, evidence: string) => ({ screen_key: value.key, screen_selector: value.selector,
+      screen_selector_owner: value.owner, screen_evidence: evidence, screen_selection_evidence: 'navigation_aria_current_page' });
+    for (const ancestor of [element, ...ancestors]) {
+      if (model.callables.has(ancestor)) break;
+      if (Node.isJsxElement(ancestor) || Node.isJsxSelfClosingElement(ancestor)) {
+        const opening = Node.isJsxElement(ancestor) ? ancestor.getOpeningElement() : ancestor;
+        const active = opening.getAttributes().find(attribute => Node.isJsxAttribute(attribute) && attribute.getNameNode().getText() === 'active');
+        const initializer = active && Node.isJsxAttribute(active) ? active.getInitializer() : undefined;
+        const expression = initializer && Node.isJsxExpression(initializer) ? initializer.getExpression() : undefined;
+        const value = expression ? selection(expression) : undefined;
+        if (value) return metadata(value, 'active_prop');
+        // A surrounding component owns its children rendering. Do not infer its nested JSX to
+        // be another screen from an outer guard unless it explicitly passes an active selector.
+        if (ancestor !== element && /^[A-Z]/.test(opening.getTagNameNode().getText())) break;
+      }
+      if (Node.isConditionalExpression(ancestor) && contained.has(ancestor.getWhenTrue())) {
+        const value = selection(ancestor.getCondition()); if (value) return metadata(value, 'conditional_guard');
+      }
+      if (Node.isBinaryExpression(ancestor) && ancestor.getOperatorToken().getKind() === SyntaxKind.AmpersandAmpersandToken && contained.has(ancestor.getRight())) {
+        const value = selection(ancestor.getLeft()); if (value) return metadata(value, 'conditional_guard');
+      }
+    }
+    return {};
+  };
 }

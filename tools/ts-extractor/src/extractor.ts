@@ -187,12 +187,16 @@ export function extractProject(
   for (const node of nodes) node.properties.extraction_owner = 'typescript';
   for (const edge of edges) edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
 
+  const screenSelections = edges.filter(edge => edge.type === 'RENDERS').flatMap(edge =>
+    Array.isArray(edge.properties?.screen_selections) ? edge.properties!.screen_selections as Record<string, unknown>[] :
+      edge.properties?.screen_key !== undefined ? [edge.properties] : []);
   diag(`Link coverage: ${JSON.stringify({
     admitted_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, tsFiles.filter(file => file.endsWith(extension)).length])),
     processed_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, processedFiles.filter(file => file.endsWith(extension)).length])),
     components: nodes.filter(node => node.label === 'Component').length,
     pages: nodes.filter(node => node.properties.route_kind === 'ui').length,
-    screens: nodes.filter(node => node.properties.screen_key !== undefined).length,
+    screens: new Set(screenSelections.map(selection =>
+      JSON.stringify([selection.screen_selector_owner, selection.screen_selector, selection.screen_key]))).size,
     renders: edges.filter(edge => edge.type === 'RENDERS').length,
     calls: edges.filter(edge => edge.type === 'CALLS').length,
     contexts: nodes.filter(node => node.properties.context_kind === 'context').length,
@@ -206,7 +210,7 @@ export function extractProject(
     (message.startsWith('tsconfig ') && !message.includes('No inputs were found')) ||
     message.includes('stopped after') || message.includes('limited from'))) complete = false;
 
-  if (diagnosticCounts.has('contextTraversal') || diagnosticCounts.has('symbolResolutionLimit') || diagnosticCounts.has('tauriTraversal')) complete = false;
+  if (diagnosticCounts.has('contextTraversal') || diagnosticCounts.has('symbolResolutionLimit') || diagnosticCounts.has('tauriTraversal') || diagnosticCounts.has('reactLazyTraversal')) complete = false;
 
   // Edge type summary
   const edgeTypes: Record<string, number> = {};
