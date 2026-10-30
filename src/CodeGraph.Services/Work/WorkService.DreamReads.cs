@@ -89,7 +89,7 @@ public sealed partial class WorkService
             }
             IEnumerable<JsonElement> values = page.TryGetProperty("items", out var items) ? items.EnumerateArray().ToArray()
                 : page.TryGetProperty("reviews", out var reviews) ? reviews.EnumerateArray().ToArray()
-                : page.TryGetProperty("groups", out var groups) ? groups.EnumerateArray().SelectMany(group => group.GetProperty("items").EnumerateArray()).ToArray() : [];
+                : page.TryGetProperty("groups", out var groups) ? groups.EnumerateArray().SelectMany(group => group.GetProperty("lessons").EnumerateArray()).ToArray() : [];
             foreach (var value in values)
             {
                 // Unaddressed groups may repeat one lesson for several activities. Its activity
