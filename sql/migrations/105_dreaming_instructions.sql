@@ -87,10 +87,10 @@ Use high, medium or low confidence explicitly. Prefer a precise statement tied t
 FROM wiki_sections s CROSS JOIN work_projects w
 WHERE s.slug='conventions' AND (LOWER(w.project_key)='codegraph' OR LOWER(w.name)='codegraph')
 AND NOT EXISTS (SELECT 1 FROM wiki_pages p WHERE p.section_id=s.id AND p.parent_id IS NULL
-  AND p.slug=CONCAT('dreaming-project-',REPLACE(w.id,'-','')));
+  AND p.slug COLLATE utf8mb4_unicode_ci=CONCAT('dreaming-project-',REPLACE(w.id,'-','')) COLLATE utf8mb4_unicode_ci);
 
 INSERT IGNORE INTO wiki_revisions (page_id,revision,title,content,author)
 SELECT p.id,p.revision,p.title,p.content,p.author FROM wiki_pages p
 JOIN wiki_sections s ON s.id=p.section_id AND s.slug='conventions'
-JOIN work_projects w ON p.slug=CONCAT('dreaming-project-',REPLACE(w.id,'-',''))
+JOIN work_projects w ON p.slug COLLATE utf8mb4_unicode_ci=CONCAT('dreaming-project-',REPLACE(w.id,'-','')) COLLATE utf8mb4_unicode_ci
 WHERE p.parent_id IS NULL AND (LOWER(w.project_key)='codegraph' OR LOWER(w.name)='codegraph');
