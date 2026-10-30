@@ -74,6 +74,9 @@ public interface IKnowledgeStore
     /// <summary>record relate: merge a lesson into another (same_as) or link the two as contradicting.</summary>
     Task<KnowledgeView> RelateLessonAsync(Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, CancellationToken ct = default);
 
+    /// <summary>Reverses the journalled same_as merge of this superseded lesson, preserving later target corrections.</summary>
+    Task<KnowledgeView> UnmergeLessonAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default);
+
     /// <summary>record acknowledge: an autonomous decision was reviewed (it leaves the review queue).</summary>
     Task<KnowledgeView> AcknowledgeKnowledgeAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default);
 

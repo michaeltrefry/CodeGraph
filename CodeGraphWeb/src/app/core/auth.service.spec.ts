@@ -56,6 +56,28 @@ describe('AuthService token renewal', () => {
     sessionStorage.clear();
   });
 
+  it.each([false, true])('loads the effective local admin permission (%s) without an OAuth token', async isAdmin => {
+    http.get.mockReturnValueOnce(of({ ...authConfig, enabled: false }))
+      .mockReturnValueOnce(of({ username: 'local-user', isAdmin }));
+
+    await service.initialize();
+
+    expect(http.get.mock.calls.map(([url]) => url)).toEqual([
+      expect.stringContaining('/auth/config'), expect.stringContaining('/auth/me')
+    ]);
+    expect(service.currentUser()).toEqual({ username: 'local-user', isAdmin });
+    expect(http.post).not.toHaveBeenCalled();
+  });
+
+  it('keeps effective permissions unavailable when local user metadata cannot be loaded', async () => {
+    http.get.mockReturnValueOnce(of({ ...authConfig, enabled: false }))
+      .mockReturnValueOnce(throwError(() => new Error('unavailable')));
+
+    await service.initialize();
+
+    expect(service.currentUser()).toBeNull();
+  });
+
   it('refreshes an expired access token before returning one to API callers', async () => {
     sessionStorage.setItem(TOKEN_KEY, JSON.stringify({
       accessToken: 'expired-access',

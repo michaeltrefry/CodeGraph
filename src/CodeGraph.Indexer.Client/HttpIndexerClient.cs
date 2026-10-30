@@ -17,6 +17,9 @@ public sealed class HttpIndexerClient(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private IndexerClientOptions Options => optionsAccessor.Value;
 
+    public Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+        => SendJsonAsync<IndexerAcceptedResponse>(username, HttpMethod.Post, "api/indexer/dream-projects", submissionKey: submissionKey, ct: ct);
+
     public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,
         string repo,

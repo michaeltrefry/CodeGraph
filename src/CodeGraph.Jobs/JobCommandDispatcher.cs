@@ -17,7 +17,8 @@ public class JobCommandDispatcher(
     PruneWorkSessionsJob pruneWorkSessionsJob,
     PruneWorkMessagesJob pruneWorkMessagesJob,
     WorkImportJob workImportJob,
-    IndexerRunRetentionJob indexerRunRetentionJob) : IJobCommandDispatcher
+    IndexerRunRetentionJob indexerRunRetentionJob,
+    DreamProjectsJob dreamProjectsJob) : IJobCommandDispatcher
 {
     public IReadOnlyList<string> GetSupportedJobTypes() => JobTypes.All;
 
@@ -27,6 +28,7 @@ public class JobCommandDispatcher(
         {
             JobTypes.Discover => Serialize(DeserializeOrDefault<DiscoverRequest>(args)),
             JobTypes.ProcessBatchAnalysis => Serialize(DeserializeOrDefault<ProcessBatchAnalysisJobRequest>(args)),
+            JobTypes.DreamProjects => Serialize(new EmptyJobRequest()),
             JobTypes.ReIndexAll => Serialize(new EmptyJobRequest()),
             JobTypes.LinkAndDetect => Serialize(new EmptyJobRequest()),
             JobTypes.DetectCommunities => Serialize(new EmptyJobRequest()),
@@ -49,6 +51,8 @@ public class JobCommandDispatcher(
     {
         return jobType switch
         {
+            JobTypes.DreamProjects => dreamProjectsJob.ExecuteAsync(
+                Deserialize<EmptyJobRequest>(argsJson), RequireExecutionKey(executionKey), ct),
             JobTypes.Discover => discoverRepositoriesJob.ExecuteAsync(
                 Deserialize<DiscoverRequest>(argsJson), RequireExecutionKey(executionKey), ct),
             JobTypes.ProcessBatchAnalysis => processBatchAnalysisJob.ExecuteAsync(

@@ -12,6 +12,17 @@ namespace CodeGraph.Tests.IndexerHost;
 public class IndexerControllerTests
 {
     [Fact]
+    public async Task DreamProjects_ForwardsAuthenticatedUsernameAndSubmissionKey()
+    {
+        var operations = new RecordingIndexerOperations();
+        var result = await CreateController(operations).DreamProjects(CancellationToken.None);
+        result.Result.ShouldBeOfType<AcceptedResult>();
+        operations.LastOperation.ShouldBe("dream-projects");
+        operations.LastUsername.ShouldBe("Michael");
+        operations.LastSubmissionKey.ShouldBe("test-submission");
+    }
+
+    [Fact]
     public async Task ReAnalyze_DelegatesToIndexerOperationsWithUsername()
     {
         var operations = new RecordingIndexerOperations();
@@ -172,6 +183,14 @@ public class IndexerControllerTests
         public string? LastOperationFilter { get; private set; }
         public int? LastTake { get; private set; }
         public IReadOnlyList<IndexerRunResponse> Runs { get; set; } = [];
+        public Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+        {
+            LastOperation = "dream-projects";
+            LastUsername = username;
+            LastSubmissionKey = submissionKey;
+            return Task.FromResult(Accepted);
+        }
+
         public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
             string username,
             string repo,

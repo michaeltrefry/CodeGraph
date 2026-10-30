@@ -359,7 +359,8 @@ public class JobScheduleServiceTests
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
             new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
             new WorkImportJob(),
-            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()));
+            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()),
+            new DreamProjectsJob(indexerClient));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

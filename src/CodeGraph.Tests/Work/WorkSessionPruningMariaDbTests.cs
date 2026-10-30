@@ -202,6 +202,81 @@ public sealed class WorkSessionPruningMariaDbTests(WorkDatabase db) : IClassFixt
     }
 
     [Fact]
+    public async Task Merge_journal_and_restored_links_keep_the_complete_actor_after_session_pruning_and_legacy_backfill()
+    {
+        var project = await db.NewProjectAsync("PM");
+        var session = await StartAsync(project, harness: "codex");
+        async Task<JsonElement> Lesson(string summary, string source) =>
+            (await db.CallAsync(WorkTools.Record, new { project, session_id = session, entry = new
+            {
+                kind = "lesson", summary, confidence = "high", what = summary,
+                applies_when = new { activity = new[] { "implementing" } },
+                source = new { kind = source, @ref = summary }
+            } }, "michael")).GetProperty("entry");
+        async Task<JsonElement> Read(string id) =>
+            (await db.CallAsync(WorkTools.Recall, new { id, detail = "full" })).GetProperty("items")[0];
+        var source = await Lesson("Source journal correction", "prompt");
+        var sourceId = source.GetProperty("id").GetString()!;
+        var targetId = (await Lesson("Target journal correction", "agent")).GetProperty("id").GetString()!;
+        var otherId = (await Lesson("Contradicting journal correction", "agent")).GetProperty("id").GetString()!;
+        await db.CallAsync(WorkTools.Record, new { session_id = session, relate = new
+        {
+            id = sourceId, expected_version = source.GetProperty("version").GetInt64(), contradicts = otherId
+        } }, "michael");
+        await db.CallAsync(WorkTools.Challenge, new { session_id = session, open = new
+        {
+            id = sourceId, reason = "Narrow the rule", evidence = new[] { new { kind = "test_result", summary = "Observed exception" } }
+        } }, "michael");
+        source = await Read(sourceId);
+        await db.CallAsync(WorkTools.Record, new { session_id = session, relate = new
+        {
+            id = sourceId, expected_version = source.GetProperty("version").GetInt64(), same_as = targetId
+        } }, "michael");
+        var mergedSource = await Read(sourceId);
+        var mergedTarget = await Read(targetId);
+        await using var connection = await OpenAsync();
+        async Task AssertJournalActor() =>
+            (await connection.QuerySingleAsync<(string Name, string Kind, string Session, string Harness, string Model, string Host)>(
+                "SELECT author, author_kind, author_session_id, author_harness, author_model, author_host FROM lesson_merges WHERE source_id = @sourceId",
+                new { sourceId })).ShouldBe(("michael", "session", session, "codex", "opus", "dev-mac"));
+        await AssertJournalActor(); // New journals persist the full actor at write time.
+        var snapshot = await connection.ExecuteScalarAsync<string>("SELECT snapshot_json FROM lesson_merges WHERE source_id = @sourceId", new { sourceId });
+        // Simulate an older journal; pruning must copy attribution before deleting the session.
+        await connection.ExecuteAsync("UPDATE lesson_merges SET author_harness = NULL, author_model = NULL, author_host = NULL WHERE source_id = @sourceId", new { sourceId });
+        await db.CallAsync(WorkTools.EndSession, new { session_id = session }, "michael");
+        var old = Cutoff.AddDays(-40);
+        await SetTimesAsync(connection, session, old, old);
+        await Pruner.PruneSessionsAsync(Cutoff, 100);
+        (await ExistsAsync(connection, session)).ShouldBeFalse();
+        await AssertJournalActor();
+        (await Read(sourceId)).GetRawText().ShouldBe(mergedSource.GetRawText());
+        (await Read(targetId)).GetRawText().ShouldBe(mergedTarget.GetRawText());
+
+        // An upgrade also recovers a journal whose session was pruned before this migration.
+        await connection.ExecuteAsync("UPDATE lesson_merges SET author_harness = NULL, author_model = NULL, author_host = NULL WHERE source_id = @sourceId", new { sourceId });
+        var migration = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations/107_lesson_merge_attribution.sql"));
+        await connection.ExecuteAsync(migration);
+        await AssertJournalActor();
+        (await connection.ExecuteScalarAsync<string>("SELECT snapshot_json FROM lesson_merges WHERE source_id = @sourceId", new { sourceId })).ShouldBe(snapshot);
+        (await connection.ExecuteScalarAsync<string>("SELECT inverse_json FROM lesson_merges WHERE source_id = @sourceId", new { sourceId })).ShouldBe(snapshot);
+
+        var restored = (await db.CallAsync(WorkTools.Record, new { unmerge = new
+        {
+            id = sourceId, expected_version = mergedSource.GetProperty("version").GetInt64()
+        } }, "unmerger")).GetProperty("entry");
+        restored.GetProperty("status").GetString().ShouldBe("active");
+        restored.GetProperty("lesson").GetProperty("state").GetString().ShouldBe("rule");
+        restored.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(1);
+        (await Read(targetId)).GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(1);
+        (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE (entry_id = @sourceId OR other_id = @sourceId) " +
+            "AND author = 'michael' AND author_kind = 'session' AND author_session_id = @session AND author_harness = 'codex' AND author_model = 'opus' AND author_host = 'dev-mac'",
+            new { sourceId, session })).ShouldBe(2);
+        (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_challenges WHERE entry_id = @sourceId AND status = 'open' " +
+            "AND author_session_id = @session AND author_harness = 'codex' AND author_model = 'opus' AND author_host = 'dev-mac'", new { sourceId, session })).ShouldBe(1);
+        await AssertJournalActor();
+    }
+
+    [Fact]
     public async Task Every_session_id_column_is_attributed_or_exempt()
     {
         var exempt = new Dictionary<string, string>

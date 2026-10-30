@@ -6,13 +6,13 @@ using Shouldly;
 namespace CodeGraph.Tests.Work;
 
 /// <summary>
-/// The work tools are in the hub catalog, enabled and pre-selected for new tokens. Existing
-/// selected-mode tokens get them only when an owner selects them.
+/// Work tools are enabled and pre-selected, except global settings that require an admin's
+/// deliberate selection. Existing selected-mode tokens get new tools only by selection.
 /// </summary>
 public sealed class WorkToolGrantMigrationTests
 {
     [Fact]
-    public async Task The_catalog_lists_every_work_tool_enabled_and_selected_by_default()
+    public async Task The_catalog_preselects_work_tools_except_global_configuration()
     {
         var store = new InMemoryMcpHubStore();
         await new McpHubCatalogSeeder(store, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
@@ -21,9 +21,10 @@ public sealed class WorkToolGrantMigrationTests
         foreach (var definition in WorkTools.All)
         {
             var tool = tools[definition.Name];
-            (tool.Enabled, tool.DefaultSelected, tool.IsAvailable, tool.ProviderKey).ShouldBe((true, true, true, "codegraph"), definition.Name);
+            var ordinaryWork = definition.Name != WorkTools.DreamSettings;
+            (tool.Enabled, tool.DefaultSelected, tool.IsAvailable, tool.ProviderKey).ShouldBe((true, ordinaryWork, true, "codegraph"), definition.Name);
             tool.ReadOnly.ShouldBe(definition.ReadOnly, definition.Name);
-            McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(definition.Name).ShouldBeFalse();
+            McpHubExplicitEntitlementPolicy.RequiresExplicitSelection(definition.Name).ShouldBe(!ordinaryWork);
         }
     }
 }

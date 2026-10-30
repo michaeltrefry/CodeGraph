@@ -771,9 +771,10 @@ public partial class GraphAssistant(
         IReadOnlyList<OpenAiToolDefinition>? tools,
         string? username,
         string path,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? systemPrompt = null)
     {
-        var request = await CreateOpenAiCompatibleRequestAsync(provider, assistantConfig, messages, tools, ct);
+        var request = await CreateOpenAiCompatibleRequestAsync(provider, assistantConfig, messages, tools, ct, systemPrompt);
         using var response = await http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -872,7 +873,8 @@ public partial class GraphAssistant(
         LlmAssistantRuntimeConfig assistantConfig,
         IReadOnlyList<OpenAiChatMessage> messages,
         IReadOnlyList<OpenAiToolDefinition>? tools,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? systemPrompt = null)
     {
         var providerOptions = await ResolveOpenAiCompatibleOptionsAsync(provider, ct);
         var url = BuildOpenAiCompatibleUrl(providerOptions);
@@ -889,7 +891,7 @@ public partial class GraphAssistant(
         {
             Model = assistantConfig.DefaultModel,
             MaxCompletionTokens = assistantConfig.MaxTokens,
-            Messages = await BuildOpenAiCompatibleMessagesAsync(messages),
+            Messages = await BuildOpenAiCompatibleMessagesAsync(messages, systemPrompt),
             Tools = tools?.ToList()
         };
 
@@ -897,14 +899,14 @@ public partial class GraphAssistant(
         return request;
     }
 
-    private async Task<List<OpenAiChatMessage>> BuildOpenAiCompatibleMessagesAsync(IReadOnlyList<OpenAiChatMessage> messages)
+    private async Task<List<OpenAiChatMessage>> BuildOpenAiCompatibleMessagesAsync(IReadOnlyList<OpenAiChatMessage> messages, string? systemPrompt = null)
     {
         var result = new List<OpenAiChatMessage>(messages.Count + 1)
         {
             new()
             {
                 Role = "system",
-                Content = await GetSystemPromptAsync()
+                Content = systemPrompt ?? await GetSystemPromptAsync()
             }
         };
 
@@ -1064,7 +1066,7 @@ public partial class GraphAssistant(
     {
         public string Name { get; set; } = "";
         public string Description { get; set; } = "";
-        public OpenAiFunctionParameters Parameters { get; set; } = new();
+        public object Parameters { get; set; } = new OpenAiFunctionParameters();
     }
 
     private sealed class OpenAiFunctionParameters

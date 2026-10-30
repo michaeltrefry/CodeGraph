@@ -5,6 +5,9 @@ namespace CodeGraph.Services.Indexer;
 
 public interface IIndexerOperationsService
 {
+    Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+        => throw new NotSupportedException("This indexer does not support knowledge dreaming.");
+
     Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(string username, string repo, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartProcessRepositoriesAsync(string username, ProcessRequest request, CancellationToken ct = default);
     Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, CancellationToken ct = default);

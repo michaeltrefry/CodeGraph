@@ -1,0 +1,115 @@
+<section class="cg-page">
+  <header class="cg-page-header">
+    <div><h1>Dreaming</h1><p>Scheduled knowledge curation, with evidence, reversible changes and proposals for review.</p></div>
+    <div class="cg-page-header-actions">
+      <label class="cg-field"><span class="cg-field-label">Project</span><select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)" [disabled]="busy()">@for (p of project.projects(); track p.key) { <option [value]="p.key">{{ p.key }} · {{ p.title }}</option> }</select></label>
+      <button type="button" class="cg-btn" [disabled]="loading() || busy() || !project.selected()" (click)="reload()">Refresh</button>
+      <button type="button" class="cg-btn primary" [disabled]="busy() || !project.selected()" (click)="runNow()">{{ busy() ? 'Working…' : 'Run now' }}</button>
+    </div>
+  </header>
+  @if (project.error()) { <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p> }
+  @if (error()) { <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p> }
+  @if (notice()) { <p class="adm-banner kn-banner" role="status">{{ notice() }}</p> }
+  @if (project.selected()) {
+    <nav class="cg-segmented" aria-label="Dreaming views">
+      <button type="button" [class.active]="tab() === 'runs'" (click)="tab.set('runs')">Runs</button>
+      <button type="button" [class.active]="tab() === 'settings'" (click)="tab.set('settings')">Settings</button>
+      <button type="button" [class.active]="tab() === 'instructions'" (click)="tab.set('instructions')">Instructions</button>
+    </nav>
+    @switch (tab()) {
+      @case ('runs') {
+        <div class="dream-layout">
+          <div class="cg-card kn-list" aria-label="Dreaming runs">
+            @for (run of runs(); track run.id) {
+              <button type="button" class="kn-row" [class.selected]="selected()?.id === run.id" (click)="select(run.id)">
+                <span class="kn-summary">{{ words(run.status) }} <span class="cg-muted cg-small">{{ run.started_at | date:'medium' }}</span></span>
+                <span class="kn-meta">{{ words(run.trigger) }} · {{ actorLabel(run.initiator) }} · {{ run.provider }} / {{ run.model }}</span>
+                <span class="kn-meta">{{ run.input_tokens }} input · {{ run.output_tokens }} output tokens · {{ run.estimated_cost | currency:'USD':'symbol':'1.4-6' }}</span>
+                <span class="kn-meta">@for (count of actionCounts(run); track count.action) { <span class="cg-chip">{{ count.action }} {{ count.count }}</span> } @empty { <span>No actions</span> }</span>
+              </button>
+            } @empty { <p class="kn-empty">{{ loading() ? 'Loading runs…' : 'No runs yet.' }}</p> }
+            @if (hasMore()) { <div class="kn-more"><button type="button" class="cg-btn" [disabled]="loading()" (click)="more()">Load older runs</button></div> }
+          </div>
+          <section class="cg-card dream-report" aria-label="Run report">
+            @if (selected(); as run) {
+              <div class="kn-meta"><span class="cg-chip">{{ words(run.status) }}</span><span class="cg-mono">{{ run.id }}</span></div><h2>Run report</h2>
+              <dl class="kn-defs">
+                <dt>Trigger / initiator</dt><dd>{{ words(run.trigger) }} · {{ actorLabel(run.initiator) }}</dd>
+                <dt>Started / ended</dt><dd>{{ run.started_at | date:'medium' }} / {{ run.ended_at ? (run.ended_at | date:'medium') : 'Running' }}</dd>
+                <dt>Provider / model</dt><dd>{{ run.provider }} / {{ run.model }}</dd>
+                <dt>Tokens</dt><dd>{{ run.input_tokens }} input · {{ run.output_tokens }} output</dd>
+                <dt>Estimated cost</dt><dd>{{ run.estimated_cost | currency:'USD':'symbol':'1.4-6' }}</dd>
+                <dt>Instructions used</dt><dd>Base revision {{ run.base_instruction_revision }} · project revision {{ run.project_instruction_revision }}</dd>
+              </dl>
+              @if (run.reason) { <p>{{ run.reason }}</p> }
+              <div class="kn-meta">@for (count of counts(); track count.action) { <span class="cg-chip">{{ count.action }}: {{ count.count }}</span> }</div>
+              @if (run.report) { <h3>Report</h3><p class="dream-data">{{ run.report }}</p> }
+              <h3>Every action and proposal</h3>
+              @for (action of run.actions; track $index) {
+                <article class="dream-action">
+                  <h4>{{ $index + 1 }}. {{ action.tool }} <span class="cg-muted cg-small">{{ action.created_at | date:'medium' }}</span></h4>
+                  <details open><summary>Evidence and prevalence</summary>@if (prevalence(action)) { <p>{{ prevalence(action) }}</p> }<pre class="dream-data">{{ action.evidence | json }}</pre></details>
+                  <details><summary>Action and target</summary><pre class="dream-data">{{ action.arguments | json }}</pre></details>
+                  <details open><summary>Result / proposal</summary><pre class="dream-data">{{ action.result | json }}</pre></details>
+                </article>
+              } @empty { <p class="cg-muted">No writes or proposals recorded.</p> }
+              <a class="cg-btn secondary" routerLink="/review-queue">Review proposals</a>
+              <h3>Recurrence after a rule was served</h3>
+              <p class="cg-muted cg-small">Distinct correction events before and after each change. Counts come from lesson events; the after period grows over time and is not a causal score.</p>
+              @if (effectsError()) { <p role="alert" class="adm-banner err">{{ effectsError() }}</p> }
+              @if (effects(); as effect) {
+                <div class="dream-table-wrap"><table class="dream-table"><thead><tr><th scope="col">Changed rule</th><th scope="col">Before</th><th scope="col">After</th></tr></thead><tbody>
+                  @for (rule of effect.rules; track rule.entry_id + rule.changed_at) {
+                    <tr><th scope="row">{{ rule.summary }}<br><small>{{ rule.changed_at | date:'medium' }}</small><br><code>{{ rule.entry_id }}</code></th>
+                      <td>{{ rule.before.while_served }} recurred while served<br>{{ rule.before.while_not_served }} while not served<br>{{ rule.before.events }} distinct events</td>
+                      <td>{{ rule.after.while_served }} recurred while served<br>{{ rule.after.while_not_served }} while not served<br>{{ rule.after.events }} distinct events</td>
+                    </tr>
+                  } @empty { <tr><td colspan="3">This run changed no rules.</td></tr> }
+                </tbody></table></div>
+              } @else if (!effectsError()) { <p class="cg-muted">Loading recurrence…</p> }
+              @if (run.status !== 'running') {
+                @if (!confirmRevert()) { <button type="button" class="cg-btn danger" [disabled]="busy() || !run.actions.length" (click)="confirmRevert.set(true)">Revert run</button> }
+                @else { <div class="dream-action"><p>Revert this run's direct writes, newest first. Later edits remain and appear as conflicts. Proposals stay in the review queue.</p><div class="dream-actions"><button type="button" class="cg-btn" (click)="confirmRevert.set(false)">Cancel</button><button type="button" class="cg-btn danger" [disabled]="busy()" (click)="revert()">Confirm revert</button></div></div> }
+              }
+              @if (revertResult(); as result) {
+                <section aria-label="Revert results"><h3>Revert results</h3>@for (entry of result.entries; track entry.journal_id) { <p><span class="cg-chip" [class.cg-chip-warn]="entry.status === 'conflict'">{{ words(entry.status) }}</span> {{ entry.action }} · <code>{{ entry.entry_id }}</code> {{ entry.reason }}</p> } @empty { <p>No direct writes needed reverting.</p> }</section>
+              }
+            } @else { <p class="kn-empty">{{ detailLoading() ? 'Loading report…' : 'Select a run to inspect its report, evidence and effect, or revert its direct writes.' }}</p> }
+          </section>
+        </div>
+      }
+      @case ('settings') {
+        @if (settings; as s) {
+          <form class="cg-card dream-form" (ngSubmit)="saveSettings()"><h2>Dreaming settings</h2><p class="cg-muted">Shared defaults for scheduled and on-demand runs. The provider must support tool use.</p>
+            @if (!canEditSettings()) { <p class="cg-muted">Administrator access is required to change these shared settings.</p> }
+            <fieldset class="dream-settings-fields" [disabled]="!canEditSettings()">
+            <label class="dream-check"><input type="checkbox" name="enabled" [(ngModel)]="s.enabled"> Enabled</label>
+            <div class="dream-fields">
+              <label class="cg-field"><span class="cg-field-label">Provider</span><input class="cg-input" name="provider" [(ngModel)]="s.default_provider" required></label>
+              <label class="cg-field"><span class="cg-field-label">Model</span><input class="cg-input" name="model" [(ngModel)]="s.default_model" required></label>
+              <label class="cg-field"><span class="cg-field-label">Schedule (cron)</span><input class="cg-input" name="schedule" [(ngModel)]="s.schedule" required></label>
+              <label class="cg-field"><span class="cg-field-label">Minimum interval (minutes)</span><input class="cg-input" type="number" name="interval" min="0" step="1" [(ngModel)]="s.minimum_interval_minutes" required></label>
+              <label class="cg-field"><span class="cg-field-label">Maximum turns</span><input class="cg-input" type="number" name="turns" min="1" step="1" [(ngModel)]="s.max_turns" required></label>
+              <label class="cg-field"><span class="cg-field-label">Maximum tokens per run</span><input class="cg-input" type="number" name="tokens" min="1" step="1" [(ngModel)]="s.max_tokens_per_run" required></label>
+              <label class="cg-field"><span class="cg-field-label">Input price (USD / million tokens)</span><input class="cg-input" type="number" name="inputPrice" min="0" step="any" [(ngModel)]="s.input_cost_per_million" required></label>
+              <label class="cg-field"><span class="cg-field-label">Output price (USD / million tokens)</span><input class="cg-input" type="number" name="outputPrice" min="0" step="any" [(ngModel)]="s.output_cost_per_million" required></label>
+            </div></fieldset><button type="submit" class="cg-btn primary" [disabled]="!canEditSettings() || busy() || settingsConflict()">Save settings</button>
+          </form>
+        } @else { <p class="kn-empty">{{ loading() ? 'Loading settings…' : 'Settings unavailable. Refresh to retry.' }}</p> }
+      }
+      @case ('instructions') {
+        @if (instructions(); as set) {
+          <p class="cg-muted">Wiki instructions are versioned. Every run records the revisions it used. Base instructions apply to every project; the addendum applies to {{ project.selected() }}.</p>
+          @for (scope of ['base', 'project']; track scope) {
+            @let instruction = scope === 'base' ? set.base : set.project;
+            <section class="cg-card dream-form"><h2>{{ scope === 'base' ? 'Base instructions' : 'Project addendum' }} <span class="cg-chip">revision {{ instruction.revision }}</span></h2><p class="cg-mono cg-muted cg-small">Wiki: {{ instruction.slug }}</p>
+              @if (scope === 'base') { <label class="cg-field"><span class="cg-field-label">Base instruction text</span><textarea class="cg-input dream-editor" rows="12" [(ngModel)]="baseContent"></textarea></label><button type="button" class="cg-btn primary" [disabled]="busy()" (click)="saveInstructions('base')">Save base instructions</button> }
+              @else { <label class="cg-field"><span class="cg-field-label">Project instruction text</span><textarea class="cg-input dream-editor" rows="8" [(ngModel)]="projectContent" placeholder="Optional project instructions"></textarea></label><button type="button" class="cg-btn primary" [disabled]="busy()" (click)="saveInstructions('project')">Save project addendum</button> }
+              <details><summary>Revision history ({{ instruction.history.length }})</summary>@for (revision of instruction.history; track revision.revision) { <details class="dream-action"><summary>Revision {{ revision.revision }} · {{ revision.edited_by }} · {{ revision.created_at | date:'medium' }}</summary><pre class="dream-data">{{ revision.content }}</pre></details> } @empty { <p class="cg-muted">No saved revisions yet.</p> }</details>
+            </section>
+          }
+        } @else { <p class="kn-empty">{{ loading() ? 'Loading instructions…' : 'Instructions unavailable. Refresh to retry.' }}</p> }
+      }
+    }
+  } @else if (!project.error()) { <p class="kn-empty">No projects yet.</p> }
+</section>

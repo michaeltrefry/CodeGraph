@@ -110,12 +110,54 @@ public sealed class WorkContractTests
     {
         var tools = WorkMcpTool.CreateAll().ToList();
 
-        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(["create_work", "get_work", "find_work", "update_work", "next_work", "changes", "start_session", "end_session", "get_briefing", "acquire", "renew_hold", "release", "sync_plan", "record", "recall", "import_knowledge", "post", "inbox", "ack", "promote", "challenge", "lessons", "review_queue"]);
+        // An explicit inventory: adding a tool requires choosing its schema and hints here,
+        // rather than allowing any future tool or merely comparing definitions to themselves.
+        (string Name, Type Arguments, bool ReadOnly, bool Idempotent)[] expected =
+        [
+            ("dream_run", typeof(DreamRunRequest), false, false),
+            ("dream_runs", typeof(DreamRunsRequest), true, true),
+            ("dream_settings", typeof(DreamSettingsRequest), false, true),
+            ("dream_instructions", typeof(DreamInstructionsRequest), false, true),
+            ("dream_revert", typeof(DreamRevertRequest), false, true),
+            ("create_work", typeof(CreateWorkRequest), false, true),
+            ("get_work", typeof(GetWorkRequest), true, true),
+            ("find_work", typeof(FindWorkRequest), true, true),
+            ("update_work", typeof(UpdateWorkRequest), false, false),
+            ("next_work", typeof(NextWorkRequest), false, true),
+            ("changes", typeof(ChangesRequest), true, true),
+            ("start_session", typeof(StartSessionRequest), false, false),
+            ("end_session", typeof(EndSessionRequest), false, true),
+            ("get_briefing", typeof(GetBriefingRequest), false, true),
+            ("acquire", typeof(AcquireRequest), false, true),
+            ("renew_hold", typeof(RenewHoldRequest), false, true),
+            ("release", typeof(ReleaseHoldRequest), false, true),
+            ("sync_plan", typeof(SyncPlanRequest), false, true),
+            ("record", typeof(RecordRequest), false, false),
+            ("recall", typeof(RecallRequest), true, true),
+            ("import_knowledge", typeof(ImportKnowledgeRequest), false, false),
+            ("post", typeof(PostRequest), false, true),
+            ("inbox", typeof(InboxRequest), false, true),
+            ("ack", typeof(AckRequest), false, true),
+            ("promote", typeof(PromoteRequest), false, true),
+            ("challenge", typeof(ChallengeRequest), false, false),
+            ("lessons", typeof(LessonsRequest), true, true),
+            ("dream_propose", typeof(DreamProposalRequest), false, true),
+            ("dream_review", typeof(DreamReviewRequest), false, false),
+            ("review_queue", typeof(ReviewQueueRequest), true, true)
+        ];
+        tools.Select(tool => tool.ProtocolTool.Name).ShouldBe(expected.Select(tool => tool.Name));
         foreach (var tool in tools)
         {
+            var contract = expected.Single(item => item.Name == tool.ProtocolTool.Name);
             var definition = WorkTools.Find(tool.ProtocolTool.Name)!;
-            tool.ProtocolTool.Annotations!.ReadOnlyHint.ShouldBe(definition.ReadOnly);
-            tool.ProtocolTool.InputSchema.GetProperty("additionalProperties").GetBoolean().ShouldBeFalse();
+            definition.ArgumentsType.ShouldBe(contract.Arguments);
+            definition.ReadOnly.ShouldBe(contract.ReadOnly, contract.Name);
+            definition.Idempotent.ShouldBe(contract.Idempotent, contract.Name);
+            tool.ProtocolTool.Annotations!.ReadOnlyHint.ShouldBe(contract.ReadOnly, contract.Name);
+            tool.ProtocolTool.Annotations.IdempotentHint.ShouldBe(contract.Idempotent, contract.Name);
+            tool.ProtocolTool.Annotations.OpenWorldHint.ShouldBe(false, contract.Name);
+            tool.ProtocolTool.InputSchema.GetRawText().ShouldBe(WorkJson.SchemaOf(contract.Arguments).GetRawText(), contract.Name);
+            AssertClosed(tool.ProtocolTool.InputSchema, contract.Name);
         }
     }
 
@@ -164,11 +206,11 @@ public sealed class WorkContractTests
     }
 
     [Fact]
-    public void The_error_vocabulary_is_exactly_the_seven_codes_of_e1()
+    public void The_error_vocabulary_is_exactly_the_eight_codes_of_amended_e1()
     {
         typeof(WorkErrorCodes).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
             .Select(field => (string)field.GetRawConstantValue()!)
-            .ShouldBe(["not_found", "conflict", "already_claimed", "cycle", "invalid_argument", "busy", "claim_lost"], ignoreOrder: true);
+            .ShouldBe(["not_found", "conflict", "already_claimed", "cycle", "invalid_argument", "busy", "claim_lost", "forbidden"], ignoreOrder: true);
     }
 
     // Every enum field of every request, with a template whose {0} is the JSON of the value and a

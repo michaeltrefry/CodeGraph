@@ -210,7 +210,7 @@ export class AuthService {
     try {
       const config = await firstValueFrom(this.http.get<AuthConfigResponse>(`${API}/auth/config`));
       this.config.set(config);
-      if (config.enabled && await this.getValidAccessToken()) {
+      if (!config.enabled || await this.getValidAccessToken()) {
         await this.loadCurrentUser();
       }
     } finally {
@@ -219,7 +219,9 @@ export class AuthService {
   }
 
   private async loadCurrentUser(): Promise<void> {
-    if (!this.enabled() || !await this.getValidAccessToken()) return;
+    // Local development also has an effective user and admin policy. Ask the server rather
+    // than inferring permissions from whether OAuth is enabled.
+    if (this.enabled() && !await this.getValidAccessToken()) return;
 
     try {
       const user = await firstValueFrom(this.http.get<CurrentUserResponse>(`${API}/auth/me`));

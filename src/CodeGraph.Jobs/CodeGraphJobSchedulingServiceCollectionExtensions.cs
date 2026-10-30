@@ -8,6 +8,7 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
 {
     public static IServiceCollection AddCodeGraphJobScheduling(this IServiceCollection services)
     {
+        services.AddTransient<DreamProjectsJob>();
         services.AddTransient<DiscoverRepositoriesJob>();
         services.AddTransient<ReIndexAllRepositoriesJob>();
         services.AddTransient<ProcessBatchAnalysisJob>();

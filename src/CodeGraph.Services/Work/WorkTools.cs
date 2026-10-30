@@ -35,6 +35,13 @@ public static class WorkTools
     public const string Challenge = "challenge";
     public const string Lessons = "lessons";
     public const string ReviewQueue = "review_queue";
+    public const string DreamRun = "dream_run";
+    public const string DreamRuns = "dream_runs";
+    public const string DreamSettings = "dream_settings";
+    public const string DreamInstructions = "dream_instructions";
+    public const string DreamRevert = "dream_revert";
+    public const string DreamPropose = "dream_propose";
+    public const string DreamReview = "dream_review";
 
     private const string SavePoints =
         " Save points: decisions, attempts, corrections (lessons) and findings (facts, gotchas, constraints) are stored as entries of the project's knowledge " +
@@ -50,7 +57,7 @@ public static class WorkTools
 
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
-        "not_found, conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
+        "not_found, forbidden (the dreamer attempted an operation its policy refuses), conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
 
     private const string Sessions =
         " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it." +
@@ -62,6 +69,11 @@ public static class WorkTools
 
     public static readonly IReadOnlyList<WorkToolDefinition> All =
     [
+        new(DreamRun,"Run Dreaming",typeof(DreamRunRequest),"Run a budgeted knowledge-curation pass for one project. No signal skips without a model call; an active run returns busy.",false,false),
+        new(DreamRuns,"Dreaming Runs",typeof(DreamRunsRequest),"List project runs newest first, with before (last run id) for older pages; id reads one full report.",true,true),
+        new(DreamSettings,"Dreaming Settings",typeof(DreamSettingsRequest),"Read settings and their version, or replace settings with expected_version from the last read. The version includes the authoritative job schedule revision; stale writes conflict. Settings cover tool-use provider/model, budget, interval, schedule and costs.",false,true),
+        new(DreamInstructions,"Dreaming Instructions",typeof(DreamInstructionsRequest),"Read the base and project conventions-wiki instruction pages with revision history, or edit content using scope and expected_revision.",false,true),
+        new(DreamRevert,"Revert Dreaming Run",typeof(DreamRevertRequest),"Revert direct writes newest first as new revisions, reporting conflicts with later edits.",false,true),
         new(CreateWork, "Create Work", typeof(CreateWorkRequest),
             "Create work in a Project: a new_project; or, in project, one feature (with documents), one item, or a whole plan. " +
             "Features take goals, numbered requirements (E1..En) and acceptance_tests; items take goal, up to 10 acceptance_criteria (0 allowed for backward compatibility), inherits (requirements of their feature) and touches. " +
@@ -178,7 +190,8 @@ public static class WorkTools
             "revision of an active entry. retract: mark one wrong (kept, status retracted). verify: re-baseline it against its files. relate: after reading " +
             "similar, merge a stored lesson into another (same_as) or link the two (contradicts). acknowledge: an autonomous decision was reviewed (it leaves the " +
             "review queue). A lesson entry takes same_as and contradicts like a correction, and its answer lists similar lessons. Entries are never edited " +
-            "in place; every write adds a revision. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
+            "in place; every write adds a revision. unmerge {id, expected_version} reverses a same_as merge using the superseded source id, " +
+            "restoring its transferred evidence and state while retaining new target corrections. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
             "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry. record " +
             "(entry, supersede, revise, retract, verify) writes no changes entry: the change feed covers projects, features and items; save points stored by " +
             "update_work on one of those appear in its entry as a knowledge change." + Sessions + Errors,
@@ -247,6 +260,10 @@ public static class WorkTools
             "reviews and review comments on the project's items that no lesson names as its source.ref (their URL or id), newest first. Filters activity and source; " +
             "pages of limit with next_cursor. Each lesson row carries its author." + Sessions + Errors,
             ReadOnly: true, Idempotent: true),
+        new(DreamPropose, "Dream Proposal", typeof(DreamProposalRequest),
+            "Dreamer only: propose retract, supersede, merge, skill_draft, hook_draft or test_draft, scoped to its active run and project. Requires rationale, prevalence and server-resolved evidence. Targets remain active and stale until accepted. Rejected same-action/target proposals stay suppressed until new evidence arrives. Draft text is stored for external application.", false, true),
+        new(DreamReview, "Review Dream Proposal", typeof(DreamReviewRequest),
+            "Accept or reject a dream_proposal using its id and expected_version, in project. Reject needs reason. Accept applies the exact proposed target versions atomically as the accepting actor; stale versions refuse conflict. Draft acceptance only records the draft for external application. The dreamer cannot accept or reject.", false, false),
         new(ReviewQueue, "Review Queue", typeof(ReviewQueueRequest),
             "Read the project's review queue: open challenges of rules (one item per rule), lessons proposed for rule status, contradicting lessons (one item per " +
             "pair) and decisions agents made autonomously not yet acknowledged (record acknowledge), ranked by priority, then recurrence, then age. Informational: " +

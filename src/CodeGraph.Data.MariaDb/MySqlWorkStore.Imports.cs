@@ -91,6 +91,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
     public Task<ImportWrite> UpsertImportedFeatureAsync(ImportedFeatureSpec spec, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "UpsertImportedFeatureAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var project = await HoldProjectAsync(connection, transaction, spec.ProjectId, ct);
@@ -196,6 +197,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
     public Task<ImportWrite> UpsertImportedItemAsync(ImportedItemSpec spec, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "UpsertImportedItemAsync");
             var now = Now();
             var warnings = new List<string>();
             await using var transaction = await connection.BeginTransactionAsync(ct);
@@ -520,6 +522,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
     public Task<DependencySync> SyncImportedDependenciesAsync(string source, string externalKind, string externalId, IReadOnlyList<Guid> blockers, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([DependencyLockName], async connection =>
         {
+            DreamPolicy.Refuse(actor, "SyncImportedDependenciesAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var record = await ReadRecordAsync(connection, transaction, source, externalKind, externalId, ct)
@@ -617,6 +620,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
     public Task<int> AddImportedCommentsAsync(Guid itemId, IReadOnlyList<ImportedComment> comments, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "AddImportedCommentsAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await connection.ExecuteAsync(new CommandDefinition(
@@ -649,6 +653,7 @@ public sealed partial class MySqlWorkStore : IWorkImportStore
     public Task AddAttachmentAsync(Guid itemId, NewAttachmentSpec attachment, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "AddAttachmentAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await connection.ExecuteAsync(new CommandDefinition(

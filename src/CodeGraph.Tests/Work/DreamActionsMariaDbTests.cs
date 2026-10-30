@@ -1,0 +1,346 @@
+using System.Text.Json;
+using CodeGraph.Models.Work;
+using CodeGraph.Data.MariaDb;
+using Microsoft.Extensions.Options;
+using CodeGraph.Services.Work;
+using Dapper;
+using MySqlConnector;
+using Shouldly;
+
+namespace CodeGraph.Tests.Work;
+
+/// <summary>Deterministic scripted dream tools against real MariaDB; no provider/network calls.</summary>
+public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    private async Task<(string Key, Guid Id)> ProjectAsync(string prefix)
+    {
+        var key = await db.NewProjectAsync(prefix);
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("INSERT INTO work_project_repositories(project_id,repository_name,role,position) SELECT id,'codegraph','dependency',0 FROM work_projects WHERE project_key=@key", new { key });
+        return (key, (await db.Store.ResolveAsync(key))!.Id);
+    }
+
+    private async Task RegisterRunAsync(Guid runId, Guid projectId)
+    {
+        var store = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
+        await store.SaveRunAsync(new DreamRun(runId, projectId, "run_now", new("tester"), "running", DateTime.UtcNow, null, "scripted", "scripted", 0, 0, 0, 1, 0, null, []));
+    }
+
+    private async Task<KnowledgeView> LessonAsync(string project, string summary, string source = "agent")
+    {
+        var result = await db.CallAsync(WorkTools.Record, new { project, entry = new { kind = "lesson", summary, what = "Observed correction", source = new { kind = source, @ref = Guid.NewGuid().ToString() }, applies_when = new { activity = new[] { "implementing" } } } });
+        return (await db.Store.GetKnowledgeAsync(result.GetProperty("entry").GetProperty("id").GetGuid(), false))!;
+    }
+
+    private async Task<KnowledgeView> FactAsync(string project, string summary, string path)
+    {
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("INSERT INTO file_hashes(repository,rel_path,content_hash) VALUES('codegraph',@path,'old') ON DUPLICATE KEY UPDATE content_hash='old'", new { path });
+        var result = await db.CallAsync(WorkTools.Record, new { project, entry = new { kind = "fact", summary, repositories = new[] { "codegraph" }, paths = new[] { path } } });
+        await connection.ExecuteAsync("UPDATE file_hashes SET content_hash='new' WHERE repository='codegraph' AND rel_path=@path", new { path });
+        return (await db.Store.GetKnowledgeAsync(result.GetProperty("entry").GetProperty("id").GetGuid(), false))!;
+    }
+
+    private async Task<JsonElement> ToolAsync(string tool, object input, Guid evidenceEntry)
+    {
+        var args = JsonSerializer.SerializeToNode(input, WorkJson.Options)!.AsObject();
+        args["evidence"] = JsonSerializer.SerializeToNode(new[] { new DreamEvidence("entry", evidenceEntry.ToString(), "Observed in the scoped knowledge entry") }, WorkJson.Options);
+        args["prevalence"] = "Observed once in one session";
+        var result = await ((IKnowledgeDreamActions)db.Service).ExecuteToolAsync(tool, JsonSerializer.SerializeToElement(args), DreamExecutionScope.Current!.Actor);
+        return JsonSerializer.SerializeToElement(result, WorkJson.Options).GetProperty("data");
+    }
+
+    [Fact]
+    public async Task A_prompt_rule_is_challenged_without_changing_its_content_or_serving_and_the_challenge_reverts()
+    {
+        var project = await ProjectAsync("DP");
+        var prompt = await LessonAsync(project.Key, "Keep explicit requirements before coding", "prompt");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
+        {
+            await ToolAsync("dream_challenge", new { id = prompt.Id, reason = "Trail evidence calls for narrower applicability" }, prompt.Id);
+            var refused = await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_revise", new { id = prompt.Id, expected_version = prompt.Version, applies_when = new { activity = new[] { "testing" } } }, prompt.Id));
+            refused.Message.ShouldContain("non-prompt");
+            (await db.Store.GetKnowledgeAsync(prompt.Id, false))!.Version.ShouldBe(prompt.Version);
+            (await db.Store.GetKnowledgeAsync(prompt.Id, false))!.Summary.ShouldBe(prompt.Summary);
+            var rules = await db.Store.ReadRulesAsync(new(project.Id, [LessonActivity.Implementing], null, [], null, 20));
+            rules.ShouldContain(rule => rule.Id == prompt.Id && rule.Challenges!.Count == 1);
+        }
+        var reverted = await ((IKnowledgeDreamActions)db.Service).RevertAsync(project.Id, run, new("michael"));
+        reverted.Entries.Single().Status.ShouldBe("reverted");
+        var restored = (await db.Store.GetKnowledgeAsync(prompt.Id, true))!;
+        restored.Summary.ShouldBe(prompt.Summary);
+        (restored.Lesson!.Challenges?.Count ?? 0).ShouldBe(0);
+        restored.Revision.ShouldBe(prompt.Revision + 1);
+        restored.Revisions!.First().Action.ShouldBe("dream_reverted");
+        restored.Revisions!.First().Author.Name.ShouldBe("michael");
+    }
+
+    [Fact]
+    public async Task Only_applies_when_can_be_revised_and_new_lessons_require_agent_source_and_explicit_confidence()
+    {
+        var project = await ProjectAsync("DA");
+        var lesson = await LessonAsync(project.Key, "Validate release artifacts against declared inputs");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using var scope = DreamExecutionScope.Begin(run, project.Id, "scripted");
+        await ToolAsync("dream_revise", new { id = lesson.Id, expected_version = lesson.Version, applies_when = new { activity = new[] { "testing" }, paths = new[] { "src/Tests.cs" }, repositories = new[] { "codegraph" } } }, lesson.Id);
+        var changed = (await db.Store.GetKnowledgeAsync(lesson.Id, false))!;
+        changed.Summary.ShouldBe(lesson.Summary);
+        changed.Paths.ShouldBe(["src/Tests.cs"]);
+        changed.Details!.AppliesWhen!.Activity.ShouldBe([LessonActivity.Testing]);
+        scope.MarkSourceRead("codegraph", "src/Old.cs");
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id = lesson.Id, expected_version = changed.Version }, lesson.Id));
+        (await db.Store.GetKnowledgeAsync(lesson.Id, false))!.Version.ShouldBe(changed.Version);
+        await using (var hashes = new MySqlConnection(db.ConnectionString))
+            await hashes.ExecuteAsync("INSERT INTO file_hashes(repository,rel_path,content_hash) VALUES('codegraph','src/Tests.cs','scopeHash') ON DUPLICATE KEY UPDATE content_hash='scopeHash'");
+        scope.MarkSourceRead("codegraph", "src/Tests.cs", contentHash: "scopeHash", indexHash: "scopeHash");
+        await ToolAsync("dream_verify", new { id = lesson.Id, expected_version = changed.Version }, lesson.Id);
+        changed = (await db.Store.GetKnowledgeAsync(lesson.Id, false))!;
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_revise", new { id = lesson.Id, expected_version = changed.Version, summary = "Hijacked" }, lesson.Id));
+        foreach (var source in new[] { "prompt", "review", "bot_review", "subagent" })
+            await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_record", new { entry = new { kind = "lesson", summary = "Wrong authority " + source, what = "observed", source = new { kind = source }, confidence = "high" } }, lesson.Id));
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_record", new { entry = new { kind = "fact", summary = "No confidence supplied" } }, lesson.Id));
+        var recorded = await ToolAsync("dream_record", new { entry = new { kind = "lesson", summary = "Wait for linker output before final validation", what = "Observed linker race", confidence = "medium", source = new { kind = "agent" }, applies_when = new { activity = new[] { "testing" } } } }, lesson.Id);
+        recorded.GetProperty("entry").GetProperty("lesson").GetProperty("state").GetString().ShouldBe("candidate");
+        recorded.GetProperty("entry").GetProperty("details").GetProperty("source").GetProperty("kind").GetString().ShouldBe("agent");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var journal = (await connection.QueryAsync<(string EvidenceJson, string Prevalence)>("SELECT evidence_json,prevalence FROM dream_write_journal WHERE run_id=@run", new { run = scope.RunId })).ToList();
+        journal.Count.ShouldBe(3);
+        journal.ShouldAllBe(row => row.EvidenceJson.Contains(lesson.Id.ToString()) && row.Prevalence == "Observed once in one session");
+    }
+
+    [Fact]
+    public async Task A_multi_operation_run_reverts_newest_first_as_revisions_and_reports_a_later_session_edit_as_conflict()
+    {
+        var project = await ProjectAsync("DR");
+        var a = await LessonAsync(project.Key, "Run native unit coverage before updating release references");
+        var b = await LessonAsync(project.Key, "Inspect target behavior when reviewing a distributed release");
+        var mergeSource = await LessonAsync(project.Key, "Gather operator evidence before approving a service change");
+        var mergeTarget = await LessonAsync(project.Key, "Collect maintainer diagnostics prior to accepting a deployment");
+        var fresh = await FactAsync(project.Key, "Formatting changed while the method remained equivalent", "src/DreamFresh.cs");
+        var conflict = await FactAsync(project.Key, "A session will edit this after dreaming verifies it", "src/DreamConflict.cs");
+        var run = Guid.NewGuid();
+        Guid createdId;
+        await RegisterRunAsync(run, project.Id);
+        using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
+        {
+            await ToolAsync("dream_revise", new { id = a.Id, expected_version = a.Version, applies_when = new { activity = new[] { "testing" } } }, a.Id);
+            await ToolAsync("dream_promote", new { id = a.Id, expected_version = a.Version + 1 }, a.Id);
+            await ToolAsync("dream_relate", new { id = b.Id, expected_version = b.Version, contradicts = a.Id }, a.Id);
+            await ToolAsync("dream_relate", new { id = mergeSource.Id, expected_version = mergeSource.Version, same_as = mergeTarget.Id }, mergeTarget.Id);
+            scope.MarkSourceRead("codegraph", "src/DreamFresh.cs", contentHash: "new", indexHash: "new");
+            scope.MarkSourceRead("codegraph", "src/DreamConflict.cs", contentHash: "new", indexHash: "new");
+            await ToolAsync("dream_verify", new { id = fresh.Id, expected_version = fresh.Version }, fresh.Id);
+            await ToolAsync("dream_verify", new { id = conflict.Id, expected_version = conflict.Version }, conflict.Id);
+            var recorded = await ToolAsync("dream_record", new { entry = new { kind = "gotcha", summary = "A deploy may race the final token replacement", confidence = "low" } }, fresh.Id);
+            createdId = recorded.GetProperty("entry").GetProperty("id").GetGuid();
+        }
+        await db.CallAsync(WorkTools.Record, new { revise = new { id = conflict.Id, expected_version = conflict.Version + 1, summary = "The later session's corrected fact" } }, "session-owner");
+        var result = await ((IKnowledgeDreamActions)db.Service).RevertAsync(project.Id, run, new("reviewer"));
+        result.Entries.Count.ShouldBe(7);
+        result.Entries.Select(entry => entry.JournalId).ShouldBeInOrder(SortDirection.Descending);
+        result.Entries.Count(entry => entry.Status == "reverted").ShouldBe(6);
+        result.Entries.Single(entry => entry.Status == "conflict").EntryId.ShouldBe(conflict.Id);
+        var restored = (await db.Store.GetKnowledgeAsync(a.Id, true))!;
+        restored.Lesson!.State.ShouldBe(LessonRuleState.Candidate);
+        restored.Details!.AppliesWhen!.Activity.ShouldBe([LessonActivity.Implementing]);
+        (restored.Lesson.Contradicts?.Count ?? 0).ShouldBe(0);
+        restored.Revisions!.Count(revision => revision.Action == "dream_reverted").ShouldBe(3);
+        (await db.Store.GetKnowledgeAsync(mergeSource.Id, false))!.Status.ShouldBe(KnowledgeStatus.Active);
+        (await db.Store.GetKnowledgeAsync(mergeTarget.Id, false))!.Lesson!.Recurrence.Events.ShouldBe(1);
+        (await db.Store.GetKnowledgeAsync(fresh.Id, false))!.PossiblyStale.ShouldBeTrue();
+        (await db.Store.GetKnowledgeAsync(conflict.Id, false))!.Summary.ShouldBe("The later session's corrected fact");
+        (await db.Store.GetKnowledgeAsync(createdId, false))!.Status.ShouldBe(KnowledgeStatus.Retracted);
+        var repeated = await ((IKnowledgeDreamActions)db.Service).RevertAsync(project.Id, run, new("reviewer"));
+        repeated.Entries.Count(entry => entry.Status == "already_reverted").ShouldBe(6);
+        repeated.Entries.Count(entry => entry.Status == "conflict").ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Every_read_and_evidence_reference_stays_within_the_run_project_and_marks_text_as_untrusted()
+    {
+        var local = await ProjectAsync("DL");
+        var remote = await ProjectAsync("DO");
+        var own = await LessonAsync(local.Key, "Read project-scoped operator state before acting");
+        var foreign = await LessonAsync(remote.Key, "A different project's private release constraint");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, local.Id);
+        using var scope = DreamExecutionScope.Begin(run, local.Id, "scripted");
+        var actions = (IKnowledgeDreamActions)db.Service;
+        await Should.ThrowAsync<WorkException>(() => actions.ExecuteToolAsync("dream_read", JsonSerializer.SerializeToElement(new { id = foreign.Id }), scope.Actor));
+        foreach (var tool in new[] { "dream_read", "dream_lessons", "dream_similar", "dream_review_queue", "dream_work_trail" })
+        {
+            var input = tool == "dream_lessons" ? JsonSerializer.SerializeToElement(new { view = "unaddressed" }) : JsonSerializer.SerializeToElement(new { });
+            var result = JsonSerializer.SerializeToElement(await actions.ExecuteToolAsync(tool, input, scope.Actor), WorkJson.Options);
+            result.GetProperty("untrusted_data").GetBoolean().ShouldBeTrue();
+            result.GetRawText().ShouldNotContain(foreign.Summary);
+        }
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_promote", new { id = own.Id, expected_version = own.Version }, foreign.Id));
+        var digest = await actions.BuildDigestAsync(local.Id, null);
+        digest.Data.GetRawText().ShouldNotContain(foreign.Summary);
+        digest.HasSignal.ShouldBeTrue();
+        digest.Fingerprint.ShouldBe((await actions.BuildDigestAsync(local.Id, null)).Fingerprint);
+    }
+    [Fact]
+    public async Task A_run_report_recovers_committed_writes_and_proposals_after_lost_action_save_without_duplicating_saved_actions()
+    {
+        var project = await ProjectAsync("DE");
+        var lesson = await LessonAsync(project.Key, "Keep source attribution while recovering operator evidence");
+        var runId = Guid.NewGuid();
+        await RegisterRunAsync(runId, project.Id);
+        var runStore = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
+        var run = new DreamRun(runId, project.Id, "run_now", new("tester"), "running", DateTime.UtcNow, null, "scripted", "scripted", 0, 0, 0, 1, 0, null, []);
+        var actions = (IKnowledgeDreamActions)db.Service;
+        object savedResult;
+        JsonElement savedArguments;
+        using (var scope = DreamExecutionScope.Begin(runId, project.Id, "scripted"))
+        {
+            savedArguments = JsonSerializer.SerializeToElement(new { id = lesson.Id, expected_version = lesson.Version, applies_when = new { activity = new[] { "testing" } }, evidence = new[] { new DreamEvidence("entry", lesson.Id.ToString(), "A scoped source") }, prevalence = "Observed once" }, WorkJson.Options);
+            savedResult = await actions.ExecuteToolAsync("dream_revise", savedArguments, scope.Actor);
+            await ToolAsync("dream_record", new { entry = new { kind = "constraint", summary = "Crash recovery preserves every committed action", confidence = "high" } }, lesson.Id);
+            await actions.ExecuteToolAsync("dream_propose", JsonSerializer.SerializeToElement(new
+            {
+                action = "retract", target = lesson.Id, expected_version = lesson.Version + 1, rationale = "Evidence proposes retirement, without applying it", prevalence = "Observed once",
+                evidence = new[] { new { kind = "entry", id = lesson.Id.ToString() } }
+            }, WorkJson.Options), scope.Actor);
+        }
+        // The first response was saved. The subsequent committed write and proposal were lost
+        // before the separate run-record update. Read and error actions must remain visible too.
+        var savedJson = JsonSerializer.SerializeToElement(savedResult, WorkJson.Options);
+        var read = new DreamAction("dream_read", JsonSerializer.SerializeToElement(new { id = lesson.Id }), JsonSerializer.SerializeToElement(new { untrusted_data = true }), [], run.StartedAt);
+        var error = new DreamAction("dream_revise", JsonSerializer.SerializeToElement(new { id = lesson.Id }), JsonSerializer.SerializeToElement(new { error = "forbidden", message = "A refused operation" }), [], run.StartedAt);
+        var stored = new DreamAction("dream_revise", savedArguments, savedJson, [new("entry", lesson.Id.ToString(), "A scoped source")], run.StartedAt);
+        await runStore.SaveRunAsync(run with { Actions = [read, error, stored], Status = "failed", EndedAt = DateTime.UtcNow });
+
+        var recovered = (await runStore.GetRunAsync(project.Id, runId))!;
+        recovered.Actions.Count.ShouldBe(5);
+        recovered.Actions.Count(action => action.Tool == "dream_record").ShouldBe(1);
+        recovered.Actions.Count(action => action.Tool == "dream_propose").ShouldBe(1);
+        recovered.Actions.Count(action => action.Result.TryGetProperty("journal_id", out _)).ShouldBe(2);
+        recovered.Actions.Any(action => action.Result.TryGetProperty("error", out var code) && code.GetString() == "forbidden").ShouldBeTrue();
+        recovered.Actions.Single(action => action.Tool == "dream_record").Result.GetProperty("prevalence").GetString().ShouldBe("Observed once in one session");
+        recovered.Actions.Single(action => action.Tool == "dream_propose").Evidence.Single().Reference.ShouldBe(lesson.Id.ToString());
+        (await runStore.ListRunsAsync(project.Id, 10)).Single().Actions.Count.ShouldBe(5);
+        await runStore.SaveRunAsync(recovered);
+        (await runStore.GetRunAsync(project.Id, runId))!.Actions.Count.ShouldBe(5);
+        (await runStore.GetRunAsync(Guid.NewGuid(), runId)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task A_source_read_does_not_authorize_verification_against_a_later_indexed_revision()
+    {
+        var project = await ProjectAsync("DH");
+        var fact = await FactAsync(project.Key, "Source must match the exact indexed revision verified", "src/DreamProof.cs");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using var scope = DreamExecutionScope.Begin(run, project.Id, "scripted");
+        scope.MarkSourceRead("codegraph", "src/DreamProof.cs", contentHash: "new", indexHash: "new");
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("UPDATE file_hashes SET content_hash='newer' WHERE repository='codegraph' AND rel_path='src/DreamProof.cs'");
+        var refused = await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id = fact.Id, expected_version = fact.Version }, fact.Id));
+        refused.Code.ShouldBe(WorkErrorCodes.Forbidden);
+        var unchanged = (await db.Store.GetKnowledgeAsync(fact.Id, false))!;
+        unchanged.Version.ShouldBe(fact.Version);
+        unchanged.PossiblyStale.ShouldBeTrue();
+        scope.MarkSourceRead("codegraph", "src/DreamProof.cs", contentHash: "newer", indexHash: "newer");
+        await ToolAsync("dream_verify", new { id = fact.Id, expected_version = fact.Version }, fact.Id);
+        (await db.Store.GetKnowledgeAsync(fact.Id, false))!.PossiblyStale.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task Graph_only_verification_requires_current_metadata_and_refuses_changed_or_removed_nodes()
+    {
+        var project = await ProjectAsync("DG");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name,file_path,properties) VALUES('codegraph','Service','DreamMetadata','Dream.Metadata','','{\"mode\":\"old\"}')");
+        var node = await connection.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE repository='codegraph' AND qualified_name='Dream.Metadata'");
+        var recorded = await db.CallAsync(WorkTools.Record, new { project = project.Key, entry = new { kind = "fact", summary = "Graph metadata defines the active service mode", nodes = new[] { node } } });
+        var fact = recorded.GetProperty("entry");
+        var id = fact.GetProperty("id").GetGuid();
+        var version = fact.GetProperty("version").GetInt64();
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using var scope = DreamExecutionScope.Begin(run, project.Id, "scripted");
+        scope.MarkGraphRead(node, DreamGraphIdentity.Fingerprint(node, "codegraph", "Service", "DreamMetadata", "Dream.Metadata", "", 0, 0, "{\"mode\":\"old\"}"));
+        await connection.ExecuteAsync("UPDATE nodes SET properties='{\"mode\":\"new\"}' WHERE id=@node", new { node });
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id, expected_version = version }, id));
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(version);
+        scope.MarkGraphRead(node, DreamGraphIdentity.Fingerprint(node, "codegraph", "Service", "DreamMetadata", "Dream.Metadata", "", 0, 0, "{\"mode\":\"new\"}"));
+        await ToolAsync("dream_verify", new { id, expected_version = version }, id);
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(version + 1);
+        await connection.ExecuteAsync("DELETE FROM nodes WHERE id=@node", new { node });
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id, expected_version = version + 1 }, id));
+        (await db.Store.GetKnowledgeAsync(id, false))!.Version.ShouldBe(version + 1);
+    }
+
+    [Fact]
+    public async Task An_orphaned_running_run_recovers_on_read_and_on_revert_after_its_lease_is_free()
+    {
+        var project = await ProjectAsync("DI");
+        var source = await LessonAsync(project.Key, "Keep committed actions recoverable after interruption");
+        var runStore = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
+        var actions = (IKnowledgeDreamActions)db.Service;
+        foreach (var recoverByRead in new[] { true, false })
+        {
+            var run = Guid.NewGuid();
+            await RegisterRunAsync(run, project.Id);
+            Guid created;
+            using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
+            {
+                var result = await ToolAsync("dream_record", new { entry = new { kind = "fact", summary = "Committed before interruption " + run, confidence = "high" } }, source.Id);
+                created = result.GetProperty("entry").GetProperty("id").GetGuid();
+            }
+            // No active lease remains. The report's actions were never saved.
+            if (recoverByRead)
+            {
+                var recovered = (await runStore.GetRunAsync(project.Id, run))!;
+                recovered.Status.ShouldBe("failed");
+                recovered.Reason!.ShouldContain("interrupted");
+                recovered.Actions.Single().Tool.ShouldBe("dream_record");
+                (await runStore.ListRunsAsync(project.Id, 10)).Single(item => item.Id == run).Status.ShouldBe("failed");
+            }
+            var reverted = await actions.RevertAsync(project.Id, run, new("reviewer"));
+            reverted.Entries.Single().Status.ShouldBe("reverted");
+            (await db.Store.GetKnowledgeAsync(created, false))!.Status.ShouldBe(KnowledgeStatus.Retracted);
+            (await runStore.GetRunAsync(project.Id, run))!.Status.ShouldBe("failed");
+        }
+    }
+
+    [Fact]
+    public async Task Revert_observes_an_edit_committed_after_its_repeatable_read_snapshot_started()
+    {
+        var project = await ProjectAsync("DC");
+        var lesson = await LessonAsync(project.Key, "A concurrent operator edit must survive run reversion");
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
+            await ToolAsync("dream_revise", new { id = lesson.Id, expected_version = lesson.Version, applies_when = new { activity = new[] { "testing" } } }, lesson.Id);
+        await using var blocker = new MySqlConnection(db.ConnectionString);
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await blocker.ExecuteAsync("SELECT id FROM dream_write_journal WHERE project_id=@project AND run_id=@run FOR UPDATE", new { project = project.Id, run }, transaction);
+        var revert = ((IKnowledgeDreamActions)db.Service).RevertAsync(project.Id, run, new("reviewer"));
+        await using var observer = new MySqlConnection(db.ConnectionString);
+        await observer.OpenAsync();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var waiting = false;
+        while (DateTime.UtcNow < deadline)
+        {
+            waiting = await observer.ExecuteScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM information_schema.PROCESSLIST WHERE DB=DATABASE() AND INFO LIKE 'SELECT id,entry_id,action,before_json,after_json,reverted_at FROM dream_write_journal%')");
+            if (waiting) break;
+            await Task.Delay(10);
+        }
+        try
+        {
+            waiting.ShouldBeTrue("the revert must have reached its journal lock after opening a transaction snapshot");
+            await db.CallAsync(WorkTools.Record, new { revise = new { id = lesson.Id, expected_version = lesson.Version + 1, summary = "A later session corrected the actual rule" } }, "later-session");
+        }
+        finally { await transaction.CommitAsync(); }
+        var result = await revert.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Entries.Single().Status.ShouldBe("conflict");
+        (await db.Store.GetKnowledgeAsync(lesson.Id, false))!.Summary.ShouldBe("A later session corrected the actual rule");
+    }
+
+}

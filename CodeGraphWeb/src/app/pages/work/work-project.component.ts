@@ -30,6 +30,7 @@ import { FeatureView, MessageView, ProjectView } from './work.models';
           <span class="wrk-live" [attr.data-state]="feedError() ? 'off' : 'on'">{{ feedError() ? 'reconnecting' : 'live' }}</span>
           <span class="wrk-grow"></span>
           <a class="wrk-btn" routerLink="/work" (click)="ctx.select(p.key)">Now</a>
+          <a class="wrk-btn" [routerLink]="['/work/projects', p.key, 'dreaming']">Dreaming</a>
           <a class="wrk-btn" routerLink="/work/messages" (click)="ctx.select(p.key)">Message board</a>
           <button type="button" class="wrk-btn" [disabled]="busy()" (click)="claimNext()">Claim next item</button>
           <button type="button" class="wrk-btn" (click)="dialog.set('item')">New item</button>

@@ -159,12 +159,12 @@ public sealed partial class WorkService
         {
             ("entry", request.Entry is not null), ("revise", request.Revise is not null),
             ("retract", request.Retract is not null), ("verify", request.Verify is not null),
-            ("relate", request.Relate is not null), ("acknowledge", request.Acknowledge is not null)
+            ("relate", request.Relate is not null), ("unmerge", request.Unmerge is not null), ("acknowledge", request.Acknowledge is not null)
         }.Where(entry => entry.Item2).Select(entry => entry.Item1).ToList();
         if (chosen.Count != 1)
-            throw WorkException.Invalid($"record takes exactly one of entry, revise, retract, verify, relate, acknowledge; this call passes {(chosen.Count == 0 ? "none" : string.Join(" and ", chosen))}. Nothing was changed.");
+            throw WorkException.Invalid($"record takes exactly one of entry, revise, retract, verify, relate, unmerge, acknowledge; this call passes {(chosen.Count == 0 ? "none" : string.Join(" and ", chosen))}. Nothing was changed.");
         if (request.IdempotencyKey is not null && request.Entry is null)
-            throw WorkException.Invalid("idempotency_key goes with entry (a new entry); revise, retract, verify, relate and acknowledge are guarded by expected_version. Nothing was changed.");
+            throw WorkException.Invalid("idempotency_key goes with entry (a new entry); revise, retract, verify, relate, unmerge and acknowledge are guarded by expected_version. Nothing was changed.");
 
         if (request.Entry is { } entry)
         {
@@ -179,6 +179,7 @@ public sealed partial class WorkService
         var (id, expectedVersion) = request.Revise is { } revise ? (revise.Id, revise.ExpectedVersion)
             : request.Retract is { } retract ? (retract.Id, retract.ExpectedVersion)
             : request.Relate is { } relate ? (relate.Id, relate.ExpectedVersion)
+            : request.Unmerge is { } unmerge ? (unmerge.Id, unmerge.ExpectedVersion)
             : request.Acknowledge is { } acknowledge ? (acknowledge.Id, acknowledge.ExpectedVersion)
             : (request.Verify!.Id, request.Verify.ExpectedVersion);
         var where = chosen[0];
@@ -193,6 +194,8 @@ public sealed partial class WorkService
             return new RecordResult(false, related, Merged: sameAs is not null ? true : null);
         }
 
+        if (request.Unmerge is not null)
+            return new RecordResult(false, await Knowledge.UnmergeLessonAsync(current.Id, expectedVersion, actor, ct));
         if (request.Acknowledge is not null)
             return new RecordResult(false, await Knowledge.AcknowledgeKnowledgeAsync(current.Id, expectedVersion, actor, ct));
         if (request.Revise is { } revision)

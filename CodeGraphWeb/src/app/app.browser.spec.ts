@@ -36,6 +36,7 @@ describe('app browser shell', () => {
       'Memory',
       'Knowledge',
       'Lessons',
+      'Dreaming',
       'Review',
       'Clusters',
       'Impact',

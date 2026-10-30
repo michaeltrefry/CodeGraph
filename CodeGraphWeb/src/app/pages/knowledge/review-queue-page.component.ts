@@ -18,7 +18,8 @@ export const REVIEW_KIND_LABELS: Record<ReviewKind, string> = {
   challenge: 'Challenged rule',
   proposed_rule: 'Proposed rule',
   contradiction: 'Contradicting lessons',
-  autonomous_decision: 'Autonomous decision'
+  autonomous_decision: 'Autonomous decision',
+  dream_proposal: 'Dreaming proposal'
 };
 
 const PAGE_SIZE = 20;
@@ -65,7 +66,7 @@ export class ReviewQueuePageComponent implements OnInit {
   }
 
   keyOf(item: ReviewItem): string {
-    return `${item.kind}:${item.entry.id}:${item.other?.id ?? ''}`;
+    return `${item.kind}:${item.proposal?.id ?? item.entry.id}:${item.other?.id ?? ''}`;
   }
 
   async load(more = false): Promise<void> {
@@ -98,7 +99,10 @@ export class ReviewQueuePageComponent implements OnInit {
 
   /** Approve: a proposed rule becomes a rule; an autonomous decision is acknowledged (it stands). */
   async approve(item: ReviewItem): Promise<void> {
-    if (item.kind === 'proposed_rule') {
+    if (item.kind === 'dream_proposal' && item.proposal) {
+      await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.project.selected()!, item.proposal!.version, 'accept')),
+        item.proposal.draft ? 'Draft accepted. Apply the draft outside CodeGraph.' : 'Proposal accepted.');
+    } else if (item.kind === 'proposed_rule') {
       await this.run(() => firstValueFrom(this.api.promote(item.entry.id, { expected_version: item.entry.version, action: 'approve' })), 'Approved: it is a rule now.');
     } else if (item.kind === 'autonomous_decision') {
       await this.run(() => this.acknowledge(item.entry.id, item.entry.version), 'Acknowledged: the decision stands.');
@@ -128,6 +132,13 @@ export class ReviewQueuePageComponent implements OnInit {
     if (!form || form.key !== this.keyOf(item)) return;
     const reason = this.reason.trim();
     const summary = this.amendSummary.trim();
+
+    if (item.kind === 'dream_proposal' && item.proposal) {
+      if (!reason) return this.need('Give a reason for rejecting this proposal.');
+      await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.project.selected()!, item.proposal!.version, 'reject', reason)),
+        'Rejected. The same action stays suppressed until new evidence arrives.');
+      return;
+    }
 
     if (form.challengeId) {
       if (!reason) return this.need('Give the reason for the outcome.');

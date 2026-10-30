@@ -46,7 +46,7 @@ export class KnowledgeApiService {
       .pipe(map(result => result.items[0]));
   }
 
-  /** record: entry (with supersedes), revise, retract, verify, relate or acknowledge. */
+  /** record: entry (with supersedes), revise, retract, verify, relate, unmerge or acknowledge. */
   record(body: RecordBody): Observable<RecordResult> {
     return this.http.post<RecordResult>(`${this.base}/knowledge`, body);
   }
@@ -64,6 +64,12 @@ export class KnowledgeApiService {
   /** lessons: a view and its filters. */
   lessons(filters: LessonsFilters): Observable<LessonsResult> {
     return this.http.post<LessonsResult>(`${this.base}/knowledge/lessons`, filters);
+  }
+
+  reviewDreamProposal(id: string, project: string, expectedVersion: number, action: 'accept' | 'reject', reason?: string): Observable<unknown> {
+    return this.http.post(`${this.base}/knowledge/dream-proposals/${encodeURIComponent(id)}/review`, {
+      project, expected_version: expectedVersion, action, ...(reason ? { reason } : {})
+    });
   }
 
   /** review_queue: project, limit and cursor as query parameters. */

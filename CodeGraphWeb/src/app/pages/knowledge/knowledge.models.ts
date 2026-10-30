@@ -30,7 +30,7 @@ export type ChallengeStatus = 'open' | 'upheld' | 'amended' | 'retracted';
 export type ChallengeOutcome = 'uphold' | 'amend' | 'retract';
 export type EvidenceKind = 'test_result' | 'source' | 'counter_example' | 'link' | 'other';
 export type LessonsView = 'recently_learned' | 'recurrence' | 'unaddressed' | 'unmatched' | 'unlearned_reviews';
-export type ReviewKind = 'challenge' | 'proposed_rule' | 'contradiction' | 'autonomous_decision';
+export type ReviewKind = 'challenge' | 'proposed_rule' | 'contradiction' | 'autonomous_decision' | 'dream_proposal';
 
 export const KNOWLEDGE_KINDS: KnowledgeKind[] = ['goal', 'decision', 'constraint', 'fact', 'gotcha', 'attempt', 'architecture', 'lesson'];
 export const LESSON_ACTIVITIES: LessonActivity[] = [
@@ -288,6 +288,7 @@ export interface ReviewItem {
   more_challenges?: number;
   author?: WorkActor;
   other_author?: WorkActor;
+  proposal?: DreamProposal;
 }
 
 export interface ReviewQueueResult {
@@ -348,6 +349,7 @@ export interface RecordBody {
   retract?: { id: string; expected_version: number; reason: string };
   verify?: { id: string; expected_version: number };
   relate?: { id: string; expected_version: number; same_as?: string; contradicts?: string };
+  unmerge?: { id: string; expected_version: number };
   acknowledge?: { id: string; expected_version: number };
 }
 
@@ -368,4 +370,21 @@ export interface ChallengeBody {
     reason: string;
     amend?: { summary?: string; what?: string; applies_when?: AppliesWhen };
   };
+}
+
+export interface DreamProposal {
+  id: string;
+  run_id: string;
+  action: 'retract' | 'supersede' | 'merge' | 'skill_draft' | 'hook_draft' | 'test_draft';
+  target: string;
+  target_version: number;
+  other?: string;
+  other_version?: number;
+  version: number;
+  rationale: string;
+  prevalence: string;
+  evidence: { kind: string; id: string; fingerprint: string; observed_at: string }[];
+  draft?: string;
+  replacement?: { summary: string; body?: string };
+  status: 'pending' | 'accepted' | 'rejected';
 }
