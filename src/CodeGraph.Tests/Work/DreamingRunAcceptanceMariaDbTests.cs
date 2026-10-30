@@ -196,8 +196,11 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         SuccessfulWrites(run, 3);
         var knowledge = (IKnowledgeStore)db.Store;
         var current = (await knowledge.GetKnowledgeAsync(changed.Id, false))!;
-        var edited = await knowledge.ReviseKnowledgeAsync(changed.Id, current.Version,
-            SpecFrom(current) with { Summary = "A session revised this after the run" }, new("followup", WorkActor.SessionKind, Guid.NewGuid().ToString()));
+        var session = await db.CallAsync(WorkTools.StartSession, new { project, harness = "codex" }, "followup");
+        var sessionId = session.GetProperty("session").GetProperty("id").GetString();
+        await db.CallAsync(WorkTools.Record, new { session_id = sessionId,
+            revise = new { id = changed.Id, expected_version = current.Version, summary = "A session revised this after the run" } }, "followup");
+        var edited = (await knowledge.GetKnowledgeAsync(changed.Id, false))!;
 
         var result = await ((IKnowledgeDreamActions)db.Service).RevertAsync(project, run.Id, Human);
 
@@ -211,6 +214,49 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         restored.Revisions!.MaxBy(revision => revision.Revision)!.Author.Name.ShouldBe(Human.Name);
         await using var connection = new MySqlConnection(db.ConnectionString);
         (await connection.QuerySingleAsync<string>("SELECT status FROM knowledge_entries WHERE project_id=@project AND summary='A reversible run fact'", new { project })).ShouldBe("retracted");
+    }
+
+    [Fact]
+    public async Task Reverting_an_active_run_is_busy_without_changes_and_the_completed_run_can_be_reverted()
+    {
+        var project = await ProjectAsync();
+        var evidence = await RecordAsync(project, "Evidence for an active run write");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var model = new ScriptedModel(async (_, ct) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                return Response(Call("record", "dream_record", new { entry = new { kind = "fact", summary = "Written before the run finished", confidence = "high" },
+                    evidence = Evidence(evidence), prevalence = "one source entry" }));
+            entered.SetResult();
+            await release.Task.WaitAsync(ct);
+            return Response();
+        });
+        var pending = (await ServiceAsync(model)).RunAsync(project, "run_now", Human);
+        Guid entryId;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            var active = (await runs.ListRunsAsync(project, 10)).Single();
+            active.Status.ShouldBe("running");
+            await using var connection = new MySqlConnection(db.ConnectionString);
+            entryId = await connection.QuerySingleAsync<Guid>("SELECT id FROM knowledge_entries WHERE project_id=@project AND summary='Written before the run finished'", new { project });
+            var before = JsonSerializer.Serialize(await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(entryId, true), WorkJson.Options);
+
+            var refused = await Should.ThrowAsync<WorkException>(() => ((IKnowledgeDreamActions)db.Service).RevertAsync(project, active.Id, Human));
+
+            refused.Code.ShouldBe(WorkErrorCodes.Busy);
+            JsonSerializer.Serialize(await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(entryId, true), WorkJson.Options).ShouldBe(before);
+        }
+        finally { release.TrySetResult(); }
+        var completed = await pending;
+        completed.Status.ShouldBe("completed", completed.Reason);
+        SuccessfulWrites(completed, 1);
+        var reverted = await ((IKnowledgeDreamActions)db.Service).RevertAsync(project, completed.Id, Human);
+        reverted.Entries.Count.ShouldBe(1);
+        reverted.Entries.Single().Status.ShouldBe("reverted");
+        (await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(entryId, false))!.Status.ShouldBe(KnowledgeStatus.Retracted);
     }
 
     [Fact]
@@ -418,8 +464,6 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
             new(KnowledgeKind.Lesson, summary, null, KnowledgeConfidence.High, null,
                 new(What: "A source correction", AppliesWhen: new([LessonActivity.Testing]), Source: new(source, source == CorrectionSourceKind.Prompt ? "highest" : "normal", Guid.NewGuid().ToString())),
                 null, [], [], null), actor, null)).Entry;
-    private static KnowledgeSpec SpecFrom(KnowledgeView entry) => new(entry.Kind, entry.Summary, entry.Body, entry.Confidence,
-        entry.MadeAutonomously, entry.Details, entry.Repositories, entry.Paths ?? [], (entry.Nodes ?? []).Select(node => node.Id).ToList(), null);
     private static object[] Evidence(params KnowledgeView[] entries) => entries.Select(entry => (object)new
         { kind = "entry", reference = entry.Id.ToString(), summary = "A persisted project entry" }).ToArray();
     private static DreamProposalResult ProposalResult(DreamAction action) =>
