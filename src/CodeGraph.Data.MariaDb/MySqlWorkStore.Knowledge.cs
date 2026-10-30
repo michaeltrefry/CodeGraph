@@ -576,7 +576,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 "SELECT repository_name FROM work_project_repositories WHERE project_id = @projectId", new { projectId }, transaction, cancellationToken: ct))).ToArray();
 
         var lookups = concrete.SelectMany(path => targets.Select(repository => (repository, path)))
-            .Concat(nodes.Where(node => node.FilePath is not null).Select(node => (repository: node.Repository, path: node.FilePath!)))
+            .Concat(nodes.Where(node => !string.IsNullOrWhiteSpace(node.FilePath)).Select(node => (repository: node.Repository, path: node.FilePath!)))
             .Distinct()
             .ToList();
         if (lookups.Count > 0)
