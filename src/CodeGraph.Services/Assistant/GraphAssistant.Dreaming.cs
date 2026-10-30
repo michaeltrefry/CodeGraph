@@ -18,7 +18,7 @@ public partial class GraphAssistant : IDreamBatchModel
         var messages=request.Messages.Select(m=>new OpenAiChatMessage {Role=m.Role,Content=m.Content,ToolCallId=m.ToolCallId,
             ToolCalls=m.ToolCalls?.Select(t=>new OpenAiToolCall {Id=t.Id,Function=new() {Name=t.Name,Arguments=t.Arguments.GetRawText()}}).ToList()}).ToList();
         var tools=request.Tools.Select(t=>new OpenAiToolDefinition {Function=new() {Name=t.Name,Description=t.Description,
-            Parameters=JsonSerializer.Deserialize<OpenAiFunctionParameters>(t.Parameters,CodeGraphJsonDefaults.SnakeCase)!}}).ToList();
+            Parameters=t.Parameters.Clone()}}).ToList();
         var config=new LlmAssistantRuntimeConfig(request.Provider,request.Model,request.MaxTokens,1,null,null,true);
         var completion=await CompleteOpenAiCompatibleTurnAsync(httpClientFactory.CreateClient(),request.Provider,config,messages,tools,"dreamer","dreaming.run",ct,request.System);
         var message=completion.Choices.FirstOrDefault()?.Message??throw new InvalidOperationException("Provider returned no batch tool response.");

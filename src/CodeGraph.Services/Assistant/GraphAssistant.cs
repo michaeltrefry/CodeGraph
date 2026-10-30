@@ -1066,7 +1066,7 @@ public partial class GraphAssistant(
     {
         public string Name { get; set; } = "";
         public string Description { get; set; } = "";
-        public OpenAiFunctionParameters Parameters { get; set; } = new();
+        public object Parameters { get; set; } = new OpenAiFunctionParameters();
     }
 
     private sealed class OpenAiFunctionParameters

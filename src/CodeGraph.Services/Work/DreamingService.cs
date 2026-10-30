@@ -95,8 +95,9 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
     {
         // Byte-level upper bound for the configured BPE providers, plus protocol framing. Count
         // the complete replay and schemas on every turn, rather than only the latest user text.
-        var bytes=System.Text.Encoding.UTF8.GetByteCount(system)+System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(messages,WorkJson.Options))
-            +System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(tools,WorkJson.Options));
+        var framedMessages=messages.Select(m=>new {role=m.Role,content=m.Content,tool_call_id=m.ToolCallId,
+            tool_calls=m.ToolCalls?.Select(t=>new {id=t.Id,type="function",function=new {name=t.Name,arguments=t.Arguments.GetRawText()}})});
+        var bytes=System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(new {system,messages=framedMessages,tools}));
         return (long)bytes+4096L+128L*(messages.Count+tools.Count);
     }
     private static IReadOnlyList<DreamEvidence> ReadActionEvidence(JsonElement args)
