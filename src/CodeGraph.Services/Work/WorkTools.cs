@@ -102,7 +102,8 @@ public static class WorkTools
         new(NextWork, "Next Work", typeof(NextWorkRequest),
             "Claim the best item available in a project for the caller. First a recoverable item (in_progress, every blocker complete, its claim lapsed or released), " +
             "answered with recovery: the previous holder, branch and PR links, the latest handoff (or the previous holder's last change when it left none); then a " +
-            "ready item (every blocker complete, a closed blocker does not count, no live claim), ordered by priority, then order, then creation. With session_id the " +
+            "ready item (every blocker complete, a closed blocker does not count, no live claim), ordered by priority, then order, then creation. feature, repository, " +
+            "type and label narrow both to matching items (feature: work through one feature, item by item). With session_id the " +
             "claim is the session's and lasts while the session is live; without it, it belongs to the caller's identity and marker and lapses after ttl_seconds " +
             "unless renewed. Safe to retry: without another true it answers the caller's existing live claim instead of a second one, and a repeated idempotency_key " +
             "answers the same allocation (reused true), or claim_lost when that claim lapsed and passed on. Concurrent callers never get the same item. No item: item " +
