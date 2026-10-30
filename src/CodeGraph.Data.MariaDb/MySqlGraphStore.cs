@@ -1121,8 +1121,8 @@ public partial class MySqlGraphStore(
     public Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId)
         => analysisStore.GetBatchByProviderBatchIdAsync(providerBatchId);
 
-    public Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt)
-        => analysisStore.UpdateBatchStatusAsync(batchId, status, completedCount, completedAt);
+    public Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt, string? error = null)
+        => analysisStore.UpdateBatchStatusAsync(batchId, status, completedCount, completedAt, error);
 
     public Task UpdateBatchRequestStateAsync(long batchId, string customId, string status, int attemptCount, string? responseText, string? modelUsed, DateTime? completedAt)
         => analysisStore.UpdateBatchRequestStateAsync(batchId, customId, status, attemptCount, responseText, modelUsed, completedAt);

@@ -457,3 +457,14 @@ internal sealed class RecordingWorkSessionPruner : CodeGraph.Data.IWorkSessionPr
         return Task.FromResult(Result);
     }
 }
+
+internal sealed class RecordingIndexerRunRetentionService : CodeGraph.Services.Indexer.IIndexerRunRetentionService
+{
+    public long Deleted { get; init; }
+    public int? Days { get; private set; }
+    public Task<long> CleanupAsync(int retentionDays = 30, CancellationToken ct = default)
+    {
+        Days = retentionDays;
+        return Task.FromResult(Deleted);
+    }
+}

@@ -114,6 +114,35 @@ public class MariaDbAnalysisStoreTests
             (await store.GetLatestBatchAsync("CodeGraph"))!.Status.ShouldBe("completed");
             (await store.GetPendingBatchesAsync("CodeGraph")).ShouldBeEmpty();
 
+            var failedId = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
+            {
+                Repo = "CodeGraph", ProviderBatchId = "failed-provider-batch", ProviderName = "local",
+                Status = "submitted", RequestCount = 2, SubmittedAt = now.AddSeconds(1)
+            });
+            await store.UpdateBatchStatusAsync(failedId, "failed", 1, now, "request-2: provider quota exhausted");
+            await store.UpdateBatchStatusAsync(failedId, "submitted", 2, null);
+            await store.UpdateBatchStatusAsync(failedId, "completed", 2, now);
+            var failed = (await store.GetBatchByProviderBatchIdAsync("failed-provider-batch"))!;
+            failed.Status.ShouldBe("failed");
+            failed.CompletedCount.ShouldBe(1);
+            failed.Error.ShouldBe("request-2: provider quota exhausted");
+            (await store.GetLatestBatchAsync("CodeGraph"))!.Error.ShouldBe(failed.Error);
+            var largeErrorId = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
+            {
+                Repo = "CodeGraph", ProviderBatchId = "large-error-batch", ProviderName = "local",
+                Status = "submitted", RequestCount = 500, SubmittedAt = now
+            });
+            await store.UpdateBatchStatusAsync(largeErrorId, "failed", 0, now,
+                "0/500 requests succeeded. Provider reason: " + new string('界', 100_000));
+            var largeError = (await store.GetBatchByProviderBatchIdAsync("large-error-batch"))!;
+            largeError.Status.ShouldBe("failed");
+            largeError.Error!.ShouldStartWith("0/500 requests succeeded. Provider reason:");
+            largeError.Error.ShouldEndWith("[additional error details truncated]");
+            System.Text.Encoding.UTF8.GetByteCount(largeError.Error).ShouldBeLessThan(65_535);
+            // A late provider writer must also not turn a successful parent back into pending work.
+            await store.UpdateBatchStatusAsync(batchId, "submitted", 0, null);
+            (await store.GetBatchByProviderBatchIdAsync("provider-batch"))!.Status.ShouldBe("completed");
+
             await store.UpsertNodeAnalysisAsync(new NodeAnalysisEntity
             {
                 NodeId = 10,

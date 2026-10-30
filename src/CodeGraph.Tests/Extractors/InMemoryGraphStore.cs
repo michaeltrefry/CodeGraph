@@ -1171,12 +1171,13 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task<long> CreateAnalysisBatchAsync(AnalysisBatchEntity batch)
     {
+        batch.Error = AnalysisBatchErrorDetails.Limit(batch.Error);
         batch.Id = _nextBatchId++;
         _batches.Add(batch);
         return Task.FromResult(batch.Id);
     }
 
-    public Task CreateBatchRequestsAsync(IEnumerable<AnalysisBatchRequestEntity> requests)
+    public virtual Task CreateBatchRequestsAsync(IEnumerable<AnalysisBatchRequestEntity> requests)
     {
         _batchRequests.AddRange(requests);
         return Task.CompletedTask;
@@ -1187,7 +1188,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             _batches
                 .Where(b => b.Status == "submitted" && (repo is null || b.Repo == repo))
                 .Select(b => new StoredAnalysisBatch(b.Id, b.Repo, b.ProviderBatchId, b.ProviderName, b.ExecutionMode, b.IncludeAllSource, b.Status,
-                    b.RequestCount, b.CompletedCount, b.SubmittedAt, b.CompletedAt))
+                    b.RequestCount, b.CompletedCount, b.SubmittedAt, b.CompletedAt, b.Error))
                 .ToList());
 
     public Task<StoredAnalysisBatch?> GetLatestBatchAsync(string repo)
@@ -1199,7 +1200,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(batch is null
             ? null
             : new StoredAnalysisBatch(batch.Id, batch.Repo, batch.ProviderBatchId, batch.ProviderName, batch.ExecutionMode, batch.IncludeAllSource, batch.Status,
-                batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt));
+                batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt, batch.Error));
     }
 
     public virtual Task<StoredAnalysisBatch?> GetBatchByProviderBatchIdAsync(string providerBatchId)
@@ -1211,17 +1212,19 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(batch is null
             ? null
             : new StoredAnalysisBatch(batch.Id, batch.Repo, batch.ProviderBatchId, batch.ProviderName, batch.ExecutionMode, batch.IncludeAllSource, batch.Status,
-                batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt));
+                batch.RequestCount, batch.CompletedCount, batch.SubmittedAt, batch.CompletedAt, batch.Error));
     }
 
-    public Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt)
+    public Task UpdateBatchStatusAsync(long batchId, string status, int completedCount, DateTime? completedAt, string? error = null)
     {
+        error = AnalysisBatchErrorDetails.Limit(error);
         var batch = _batches.FirstOrDefault(b => b.Id == batchId);
-        if (batch is not null)
+        if (batch is not null && batch.Status is not ("failed" or "completed"))
         {
             batch.Status = status;
             batch.CompletedCount = completedCount;
             batch.CompletedAt = completedAt;
+            batch.Error = error;
         }
         return Task.CompletedTask;
     }

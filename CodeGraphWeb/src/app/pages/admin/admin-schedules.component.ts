@@ -128,6 +128,13 @@ interface JobTypeOption {
           </label>
         }
 
+        @if (jobType === 'IndexerRunRetention') {
+          <label class="adm-field">
+            <span class="adm-field-label">Retention days</span>
+            <input class="adm-input" type="number" [(ngModel)]="retentionDays" min="1" step="1" />
+          </label>
+        }
+
         <div class="editor-actions">
           <button class="adm-btn primary" type="button" (click)="save()" [disabled]="saving()">{{ editingId() ? 'Update' : 'Create' }}</button>
           <button class="adm-btn" type="button" (click)="resetForm()" [disabled]="saving()">Clear</button>
@@ -232,6 +239,7 @@ export class AdminSchedulesComponent implements OnInit {
     { value: 'DetectCommunities', label: 'Detect Communities', description: 'Re-run community detection using the current graph edges.' },
     { value: 'RegenerateMcpDocs', label: 'Regenerate MCP Docs', description: 'Rebuild MCP documentation wiki pages from current tool metadata.' },
     { value: 'PruneWorkSessions', label: 'Prune Work Sessions', description: 'Delete agent work sessions that ended or went idle beyond the retention window (default 30 days), keeping any still referenced by history.' },
+    { value: 'IndexerRunRetention', label: 'Indexer Run Retention', description: 'Delete resolved terminal indexer runs older than the retention window (default 30 days). Active runs and unresolved failures are kept.' },
     { value: 'WorkImport', label: 'Work Import (Shortcut delta sync)', description: 'Bring Shortcut changes since the last completed import into the work tracker (read-only on Shortcut). Needs an approved team-to-project table.' }
   ];
 
@@ -255,6 +263,7 @@ export class AdminSchedulesComponent implements OnInit {
   discoverNamePattern = '';
   discoverLimit: number | null = null;
   batchRepo = '';
+  retentionDays = 30;
 
   async ngOnInit(): Promise<void> {
     await this.load();
@@ -297,6 +306,7 @@ export class AdminSchedulesComponent implements OnInit {
     this.discoverNamePattern = args.namePattern ?? '';
     this.discoverLimit = args.limit ?? null;
     this.batchRepo = args.repo ?? '';
+    this.retentionDays = args.retentionDays ?? 30;
     this.success.set('');
     this.error.set('');
   }
@@ -315,10 +325,15 @@ export class AdminSchedulesComponent implements OnInit {
     this.discoverNamePattern = '';
     this.discoverLimit = null;
     this.batchRepo = '';
+    this.retentionDays = 30;
     this.error.set('');
   }
 
   async save(): Promise<void> {
+    if (this.jobType === 'IndexerRunRetention' && (!Number.isInteger(this.retentionDays) || this.retentionDays <= 0)) {
+      this.error.set('Retention days must be a positive whole number.');
+      return;
+    }
     this.saving.set(true);
     this.error.set('');
     this.success.set('');
@@ -403,6 +418,8 @@ export class AdminSchedulesComponent implements OnInit {
           namePattern: this.discoverNamePattern.trim() || null,
           limit: this.discoverLimit && this.discoverLimit > 0 ? this.discoverLimit : null
         };
+      case 'IndexerRunRetention':
+        return { retentionDays: this.retentionDays };
       case 'ProcessBatchAnalysis':
         return {
           repo: this.batchRepo.trim() || null

@@ -151,6 +151,8 @@ public class MigrationHistoryEntity
 
 public class AnalysisBatchEntity
 {
+    public string? Error { get; set; }
+    public DateTime? DismissedAt { get; set; }
     public long Id { get; set; }
     public string Repo { get; set; } = "";
     public string ProviderBatchId { get; set; } = "";
@@ -754,6 +756,9 @@ public class McpToolInvocationEntity
 
 public class JobScheduleEntity
 {
+    public DateTime? FailureAtUtc { get; set; }
+    public string? FailureError { get; set; }
+    public DateTime? FailureDismissedAt { get; set; }
     public long Id { get; set; }
     public string Name { get; set; } = "";
     public string JobType { get; set; } = "";
@@ -776,6 +781,9 @@ public class JobScheduleEntity
 
 public class IndexerRunEntity
 {
+    public DateTime? DismissedAt { get; set; }
+    public DateTime? FailureResolvedAt { get; set; }
+    public string? QueueWorkIdentity { get; set; }
     public long Id { get; set; }
     public string Operation { get; set; } = "";
     public string? RequestedByUsername { get; set; }

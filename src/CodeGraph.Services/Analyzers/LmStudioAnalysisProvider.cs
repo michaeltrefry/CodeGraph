@@ -87,7 +87,8 @@ public class LmStudioAnalysisProvider(
 
                     logger.LogError("LM Studio chat completion failed {Status}: {Body}",
                         (int)response.StatusCode, errorBody);
-                    response.EnsureSuccessStatusCode();
+                    throw new HttpRequestException($"LM Studio returned HTTP {(int)response.StatusCode}: {errorBody}",
+                        null, response.StatusCode);
                 }
 
                 var rawBody = await response.Content.ReadAsStringAsync(ct);
@@ -157,11 +158,18 @@ public class LmStudioAnalysisProvider(
         var batch = await store.GetBatchByProviderBatchIdAsync(batchId)
             ?? throw new InvalidOperationException($"LM Studio batch '{batchId}' was not found.");
 
-        var requests = await store.GetBatchRequestsAsync(batch.Id);
-        if (requests.Count == 0)
-            return new AnalysisBatchStatusResult(batchId, "submitted", IsCompleted: false);
+        ct.ThrowIfCancellationRequested();
+        if (batch.Status is "failed" or "completed")
+            return new AnalysisBatchStatusResult(batchId, batch.Status, batch.Status == "completed", batch.Error);
 
-        var completedCount = requests.Count(r => IsTerminalStatus(r.Status));
+        var requests = await store.GetBatchRequestsAsync(batch.Id);
+        // Parent and requests are persisted separately; don't run or terminalize a partial submission.
+        if (batch.RequestCount > 0 && requests.Count < batch.RequestCount)
+            return new AnalysisBatchStatusResult(batchId, "submitted", IsCompleted: false);
+        if (requests.Count == 0)
+            return new AnalysisBatchStatusResult(batchId, "completed", IsCompleted: true);
+
+        var completedCount = requests.Count(r => string.Equals(r.Status, "succeeded", StringComparison.OrdinalIgnoreCase));
         var isCompleted = requests.Count > 0 && requests.All(r => IsTerminalStatus(r.Status));
         // The background runner keeps writing the batch row (status/completed count) until its task finishes,
         // even after the last request turns terminal. Reporting completion while it is still running lets the
@@ -204,7 +212,8 @@ public class LmStudioAnalysisProvider(
                 r.CustomId,
                 r.Status,
                 r.ResponseText,
-                r.ModelUsed))
+                r.ModelUsed,
+                string.Equals(r.Status, "errored", StringComparison.OrdinalIgnoreCase) ? r.ResponseText : null))
             .ToList();
     }
 
@@ -227,7 +236,7 @@ public class LmStudioAnalysisProvider(
             logger.LogError(ex, "LM Studio batch {BatchId} request {CustomId} has invalid request payload JSON",
                 batch.ProviderBatchId, request.CustomId);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
-                responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
+                responseText: ex.ToString(), modelUsed: null, completedAt: DateTime.UtcNow);
             return;
         }
 
@@ -236,7 +245,7 @@ public class LmStudioAnalysisProvider(
             logger.LogError("LM Studio batch {BatchId} request {CustomId} is missing request payload JSON",
                 batch.ProviderBatchId, request.CustomId);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
-                responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
+                responseText: "Missing request payload JSON.", modelUsed: null, completedAt: DateTime.UtcNow);
             return;
         }
 
@@ -254,12 +263,12 @@ public class LmStudioAnalysisProvider(
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "pending", nextAttempt,
                 responseText: null, modelUsed: null, completedAt: null);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
         {
             logger.LogError(ex, "LM Studio batch {BatchId} request {CustomId} failed",
                 batch.ProviderBatchId, request.CustomId);
             await batchStore.UpdateBatchRequestStateAsync(batch.Id, request.CustomId, "errored", nextAttempt,
-                responseText: null, modelUsed: null, completedAt: DateTime.UtcNow);
+                responseText: ex.ToString(), modelUsed: null, completedAt: DateTime.UtcNow);
         }
     }
 
@@ -358,17 +367,19 @@ public class LmStudioAnalysisProvider(
         while (true)
         {
             var batch = await batchStore.GetBatchByProviderBatchIdAsync(batchId);
-            if (batch is null)
+            if (batch is null || batch.Status is "failed" or "completed")
                 return;
 
             var requests = await batchStore.GetBatchRequestsAsync(batch.Id);
+            if (batch.RequestCount > 0 && requests.Count < batch.RequestCount)
+                return;
             if (requests.Count == 0)
             {
                 await batchStore.UpdateBatchStatusAsync(batch.Id, "submitted", 0, completedAt: null);
                 return;
             }
 
-            var completedCount = requests.Count(r => IsTerminalStatus(r.Status));
+            var completedCount = requests.Count(r => string.Equals(r.Status, "succeeded", StringComparison.OrdinalIgnoreCase));
             var pendingRequest = requests
                 .Where(r => string.Equals(r.Status, "pending", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(r => r.Sequence)
@@ -385,7 +396,7 @@ public class LmStudioAnalysisProvider(
             await ProcessPendingBatchRequestAsync(batchStore, batch, pendingRequest, CancellationToken.None);
 
             requests = await batchStore.GetBatchRequestsAsync(batch.Id);
-            completedCount = requests.Count(r => IsTerminalStatus(r.Status));
+            completedCount = requests.Count(r => string.Equals(r.Status, "succeeded", StringComparison.OrdinalIgnoreCase));
             await batchStore.UpdateBatchStatusAsync(batch.Id, "submitted", completedCount, completedAt: null);
 
             var updatedRequest = requests.FirstOrDefault(r => string.Equals(r.CustomId, pendingRequest.CustomId, StringComparison.Ordinal));

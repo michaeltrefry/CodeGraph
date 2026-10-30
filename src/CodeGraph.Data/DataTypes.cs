@@ -100,4 +100,5 @@ public record StoredAnalysisBatch(
     int RequestCount,
     int CompletedCount,
     DateTime SubmittedAt,
-    DateTime? CompletedAt);
+    DateTime? CompletedAt,
+    string? Error = null);

@@ -193,6 +193,7 @@ public partial class BatchAnalysisService(
 
     private async Task ProcessCompletedBatchesCoreAsync(string? repo, string? providerBatchId, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var pendingBatches = await store.GetPendingBatchesAsync(repo);
         if (!string.IsNullOrWhiteSpace(providerBatchId))
         {
@@ -214,159 +215,180 @@ public partial class BatchAnalysisService(
 
         foreach (var pending in pendingBatches)
         {
-            var provider = providerRegistry.GetProvider(pending.ProviderName);
-            AnalysisBatchStatusResult status;
+            ct.ThrowIfCancellationRequested();
+            var completed = 0;
+            string? providerFailure = null;
+            var shouldPublish = false;
             try
             {
-                status = await provider.GetBatchStatusAsync(pending.ProviderBatchId, ct);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed to retrieve batch results for {Id} on repo {Repo}",
-                    pending.ProviderBatchId, pending.Repo);
-                await store.UpdateBatchStatusAsync(pending.Id, "failed", 0, DateTime.UtcNow);
-                continue;
-            }
+                var batchRequests = await store.GetBatchRequestsAsync(pending.Id);
+                // Submission saves the parent before its requests; a concurrent sweep must wait.
+                if (pending.RequestCount > 0 && batchRequests.Count < pending.RequestCount)
+                    continue;
 
-            if (!status.IsCompleted)
-            {
-                logger.LogDebug("Batch {Id} status: {Status} — skipping",
-                    pending.ProviderBatchId, status.ProcessingStatus);
-                continue;
-            }
+                var provider = providerRegistry.GetProvider(pending.ProviderName);
+                var status = await provider.GetBatchStatusAsync(pending.ProviderBatchId, ct);
+                ct.ThrowIfCancellationRequested();
+                if (status.IsFailed)
+                    providerFailure = $"Provider {pending.ProviderName} batch {pending.ProviderBatchId} {status.ProcessingStatus}: " +
+                        (status.Error ?? "No provider error details were supplied.");
 
-            logger.LogInformation("Batch {Id} completed, processing results for {Repo}",
-                pending.ProviderBatchId, pending.Repo);
-
-            // Load batch requests to map customId → project name
-            var batchRequests = await store.GetBatchRequestsAsync(pending.Id);
-            var projectNameByCustomId = batchRequests.ToDictionary(r => r.CustomId, r => r.NodeLabel);
-
-            int completed = 0;
-            IReadOnlyList<AnalysisBatchItemResult> results;
-            try
-            {
-                results = await provider.GetBatchResultsAsync(
-                    pending.ProviderBatchId,
-                    batchRequests.Select(r => r.CustomId).ToList(),
-                    ct);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Failed to download batch result lines for {Id} on repo {Repo}",
-                    pending.ProviderBatchId, pending.Repo);
-                await store.UpdateBatchStatusAsync(pending.Id, "failed", 0, DateTime.UtcNow);
-                continue;
-            }
-
-            foreach (var result in results)
-            {
-                var projectName = projectNameByCustomId.GetValueOrDefault(result.CustomId, result.CustomId);
-                await ProcessBatchResultAsync(result, pending.Id, pending.Repo, pending.ProviderBatchId, projectName, attemptCount: 1, ct);
-                completed++;
-            }
-
-            await store.UpdateBatchStatusAsync(pending.Id, "completed", completed, DateTime.UtcNow);
-            logger.LogInformation("Batch {Id}: {Count} result(s) stored", pending.ProviderBatchId, completed);
-
-            // Publish event to trigger synthesis and doc generation asynchronously
-            if (completed > 0)
-            {
-                await messageBus.PublishAsync(new ProjectAnalysisResultsProcessed
+                if (!status.IsCompleted && !status.IsFailed)
                 {
-                    RepoName = pending.Repo,
-                    ProviderBatchId = pending.ProviderBatchId,
-                    CompletedCount = completed
-                });
-                logger.LogInformation("Published ProjectAnalysisResultsProcessed for {Repo}", pending.Repo);
+                    logger.LogDebug("Batch {Id} status: {Status} — skipping", pending.ProviderBatchId, status.ProcessingStatus);
+                    continue;
+                }
+
+                var results = await provider.GetBatchResultsAsync(pending.ProviderBatchId,
+                    batchRequests.Select(r => r.CustomId).ToList(), ct);
+                var errors = new List<string>();
+                if (providerFailure is not null) errors.Add(providerFailure);
+                var requestsById = batchRequests.ToDictionary(r => r.CustomId, StringComparer.Ordinal);
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                if (batchRequests.Count == 0 || batchRequests.Count != pending.RequestCount)
+                    errors.Add($"Expected {pending.RequestCount} stored requests, found {batchRequests.Count}.");
+
+                foreach (var result in results)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (string.IsNullOrWhiteSpace(result.CustomId) || !requestsById.TryGetValue(result.CustomId, out var request))
+                    {
+                        errors.Add($"Unexpected result request '{result.CustomId}': {result.Error ?? "no matching stored request"}.");
+                        continue;
+                    }
+                    if (!seen.Add(result.CustomId))
+                    {
+                        errors.Add($"Duplicate result for request '{result.CustomId}'. {result.Error}");
+                        continue;
+                    }
+
+                    string? error;
+                    try
+                    {
+                        error = await ProcessBatchResultAsync(result, pending.Id, pending.Repo,
+                            request.NodeLabel, Math.Max(1, request.AttemptCount), ct);
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
+                    {
+                        error = ex.ToString();
+                        await store.UpdateBatchRequestStateAsync(pending.Id, result.CustomId, "errored",
+                            Math.Max(1, request.AttemptCount), result.Text, result.ModelUsed, DateTime.UtcNow);
+                    }
+                    if (error is null)
+                        completed++;
+                    else
+                        errors.Add($"Request '{result.CustomId}': {error}");
+                }
+
+                foreach (var request in batchRequests.Where(r => !seen.Contains(r.CustomId)))
+                {
+                    errors.Add($"Request '{request.CustomId}': provider returned no result.");
+                    await store.UpdateBatchRequestStateAsync(pending.Id, request.CustomId, "errored",
+                        Math.Max(1, request.AttemptCount), null, null, DateTime.UtcNow);
+                }
+
+                ct.ThrowIfCancellationRequested();
+                var failed = errors.Count > 0;
+                await store.UpdateBatchStatusAsync(pending.Id, failed ? "failed" : "completed", completed, DateTime.UtcNow,
+                    failed ? $"{completed}/{pending.RequestCount} requests succeeded. " + string.Join(" ", errors) : null);
+                logger.LogInformation("Batch {Id}: {Count}/{Total} succeeded; failed: {Failed}",
+                    pending.ProviderBatchId, completed, pending.RequestCount, failed);
+
+                shouldPublish = !failed && completed > 0;
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
+            {
+                logger.LogError(ex, "Failed to process analysis batch {Id} on repo {Repo}",
+                    pending.ProviderBatchId, pending.Repo);
+                await store.UpdateBatchStatusAsync(pending.Id, "failed", completed, DateTime.UtcNow,
+                    providerFailure is null ? ex.ToString() : providerFailure + " " + ex);
+            }
+
+            // A partial failure retains its useful output but must not advertise a successful batch.
+            // Keep publication outside the failure handler: a bus outage is not an analysis failure.
+            if (shouldPublish)
+            {
+                var current = await store.GetBatchByProviderBatchIdAsync(pending.ProviderBatchId);
+                if (current?.Status == "completed")
+                    await messageBus.PublishAsync(new ProjectAnalysisResultsProcessed
+                    {
+                        RepoName = pending.Repo,
+                        ProviderBatchId = pending.ProviderBatchId,
+                        CompletedCount = completed
+                    }, ct);
             }
         }
     }
 
-    private async Task ProcessBatchResultAsync(AnalysisBatchItemResult result, long batchRecordId, string repoName,
-        string batchId, string projectName, int attemptCount, CancellationToken ct)
+    // Null means the complete request result was valid and stored; a reason means it failed.
+    private async Task<string?> ProcessBatchResultAsync(AnalysisBatchItemResult result, long batchRecordId, string repoName,
+        string projectName, int attemptCount, CancellationToken ct)
     {
         if (!string.Equals(result.Status, "succeeded", StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(result.Text))
+            !string.IsNullOrWhiteSpace(result.Error) || string.IsNullOrWhiteSpace(result.Text))
         {
-            logger.LogWarning("Batch {BatchId} request {CustomId} did not succeed: {Type}",
-                batchId, result.CustomId, result.Status);
             await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "errored", attemptCount,
-                responseText: null, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
-            return;
+                responseText: result.Text, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
+            return result.Error ?? (string.IsNullOrWhiteSpace(result.Text)
+                ? $"{result.Status}: empty output." : $"Provider returned status '{result.Status}'.");
         }
 
         ProjectAnalysisResult? parsed;
+        string? error = null;
         try
         {
             parsed = JsonSerializer.Deserialize<ProjectAnalysisResult>(result.Text.NormalizeJsonResponse(), CamelOpts);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            // Keep salvageable data, but truncated/malformed output is still a failed request.
             parsed = TryRepairTruncatedProjectJson(result.Text);
-            if (parsed is null)
-            {
-                logger.LogWarning("Batch {BatchId} request {CustomId}: truncated JSON could not be repaired",
-                    batchId, result.CustomId);
-                await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "errored", attemptCount,
-                    responseText: result.Text, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
-                return;
-            }
-
-            logger.LogWarning("Batch {BatchId} request {CustomId}: salvaged partial result (nodes: {NodeCount})",
-                batchId, result.CustomId, parsed.Nodes?.Count ?? 0);
+            error = $"Invalid JSON output: {ex.Message}";
         }
 
-        if (parsed is null) return;
+        var validNodes = parsed?.Nodes?.Where(n => n is not null && n.NodeId > 0 && !string.IsNullOrWhiteSpace(n.Description)).ToList() ?? [];
+        if (parsed is null || (string.IsNullOrWhiteSpace(parsed.ProjectSummary) && validNodes.Count == 0))
+        {
+            await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "errored", attemptCount,
+                result.Text, result.ModelUsed, DateTime.UtcNow);
+            return error ?? "Output contains no project summary or valid node descriptions.";
+        }
+        if (parsed.Nodes?.Any(n => n is null || n.NodeId <= 0 || string.IsNullOrWhiteSpace(n.Description)) == true)
+            error = "Output contains invalid node descriptions or node identifiers.";
 
         var analysisSettings = await GetAnalysisSettingsAsync(ct);
         var model = result.ModelUsed ?? analysisSettings.DefaultModel;
-
-        // Store per-project summary
         if (!string.IsNullOrWhiteSpace(parsed.ProjectSummary))
         {
-            var confidence = ((string)parsed.Confidence).TryParseEnum<ConfidenceLevel>()
-                ?? ConfidenceLevel.Medium;
+            var confidence = parsed.Confidence.TryParseEnum<ConfidenceLevel>() ?? ConfidenceLevel.Medium;
             await store.UpsertProjectAnalysisAsync(repoName, new StoredProjectAnalysis(
-                Repo: repoName,
-                ProjectName: projectName,
-                Summary: parsed.ProjectSummary,
-                Confidence: confidence,
-                Endpoints: Array.Empty<StoredEndpoint>(),
-                Services: Array.Empty<StoredService>(),
-                ExternalDependencies: Array.Empty<string>(),
-                DatabaseTables: Array.Empty<string>(),
-                ModelUsed: model,
-                UpdatedAt: DateTime.UtcNow));
+                Repo: repoName, ProjectName: projectName, Summary: parsed.ProjectSummary, Confidence: confidence,
+                Endpoints: Array.Empty<StoredEndpoint>(), Services: Array.Empty<StoredService>(),
+                ExternalDependencies: Array.Empty<string>(), DatabaseTables: Array.Empty<string>(),
+                ModelUsed: model, UpdatedAt: DateTime.UtcNow));
         }
 
-        // Store per-node descriptions
-        int nodeCount = 0;
-        foreach (var node in parsed.Nodes ?? [])
+        foreach (var node in validNodes)
         {
-            if (string.IsNullOrWhiteSpace(node.Description)) continue;
+            ct.ThrowIfCancellationRequested();
             try
             {
                 await store.UpsertNodeAnalysisAsync(new NodeAnalysisEntity
                 {
-                    NodeId = node.NodeId,
-                    Description = node.Description,
-                    Confidence = node.Confidence ?? "medium",
-                    ModelUsed = model
+                    NodeId = node.NodeId, Description = node.Description,
+                    Confidence = node.Confidence ?? "medium", ModelUsed = model
                 });
-                nodeCount++;
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
+            catch (Exception ex) when (ex is not OutOfMemoryException && !ct.IsCancellationRequested)
             {
                 logger.LogError(ex, "Failed to upsert node analysis for NodeId {NodeId} in {Repo}", node.NodeId, repoName);
+                error = (error is null ? "" : error + " ") + $"Node {node.NodeId}: {ex}";
             }
         }
 
-        logger.LogInformation("Stored project summary for {Project}, {NodeCount} node descriptions for {Repo}",
-            projectName, nodeCount, repoName);
-
-        await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, "succeeded", attemptCount,
-            responseText: result.Text, modelUsed: result.ModelUsed, completedAt: DateTime.UtcNow);
+        await store.UpdateBatchRequestStateAsync(batchRecordId, result.CustomId, error is null ? "succeeded" : "errored",
+            attemptCount, result.Text, result.ModelUsed, DateTime.UtcNow);
+        return error;
     }
 
     /// <summary>

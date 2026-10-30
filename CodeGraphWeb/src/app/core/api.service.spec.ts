@@ -68,3 +68,16 @@ describe('ApiService streaming requests', () => {
       }));
   });
 });
+
+describe('ApiService job queue requests', () => {
+  it('uses the admin queue URLs and posts an empty dismissal body', () => {
+    const http = { get: vi.fn(), post: vi.fn() };
+    const injector = Injector.create({ providers: [ApiService, { provide: AuthService, useValue: {} }, { provide: HttpClient, useValue: http }] });
+    const api = runInInjectionContext(injector, () => injector.get(ApiService));
+    api.getJobQueue();
+    api.dismissJob('scheduled-job', 12);
+    expect(http.get).toHaveBeenCalledWith('http://localhost:5037/api/admin/jobs/queue');
+    expect(http.post).toHaveBeenCalledWith('http://localhost:5037/api/admin/jobs/queue/scheduled-job/12/dismiss', {});
+    injector.destroy();
+  });
+});
