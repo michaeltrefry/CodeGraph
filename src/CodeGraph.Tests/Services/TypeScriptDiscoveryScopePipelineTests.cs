@@ -310,11 +310,11 @@ public class TypeScriptDiscoveryScopePipelineTests
     }
 
     /// <summary>
-    /// With no admitted tsconfig the sidecar never runs, yet stored workspace modules (one keyed
-    /// by an excluded directory, one root module) are stale and removed.
+    /// Without an admitted tsconfig, sources use default configuration. Stale workspace modules
+    /// (including excluded directories and removed root packages) are still removed.
     /// </summary>
     [Fact]
-    public async Task IndexRepositoryAsync_NoAdmittedTsconfig_RemovesStoredWorkspaceModules()
+    public async Task IndexRepositoryAsync_NoAdmittedTsconfig_UsesDefaultsAndRemovesStaleWorkspaceModules()
     {
         var rootPath = CreateRepository();
         try
@@ -330,7 +330,7 @@ public class TypeScriptDiscoveryScopePipelineTests
 
             await IndexAsync(rootPath, store, analyzer);
 
-            analyzer.Tsconfigs.ShouldBeEmpty();
+            analyzer.Tsconfigs.ShouldBe(["tsconfig.json", "tsconfig.json"]);
             store.Nodes.ShouldNotContain(node => node.Label == NodeLabel.Module);
             store.Nodes.ShouldContain(node => node.QualifiedName == Repository && node.Label == NodeLabel.Repository);
         }
@@ -351,19 +351,26 @@ public class TypeScriptDiscoveryScopePipelineTests
             var store = new InMemoryGraphStore();
             await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: true));
             File.AppendAllText(Path.Combine(rootPath, "src/app.ts"), "// changed\n");
-            // A module under an excluded directory is stale whether or not the sidecar runs.
+            // A refused run makes no slice changes, including discovery cleanup. A later successful
+            // run removes this excluded module together with the current complete output.
             await SeedWorkspaceModulesAsync(store,
                 ($"typescript-package:{Repository}:@lens/vendored", "web/node_modules/vendored"));
 
-            await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: true, unavailable: true));
+            var hashes = await store.GetFileHashRecordsAsync(Repository);
+            await Should.ThrowAsync<InvalidOperationException>(() => IndexAsync(rootPath, store,
+                new FakeTypeScriptAnalyzer(rootPath, honourScope: true, unavailable: true)));
+            (await store.GetFileHashRecordsAsync(Repository)).ShouldBe(hashes);
 
             store.Nodes.Where(node => node.Label == NodeLabel.Module)
                 .Select(node => $"{node.QualifiedName}:{node.FilePath}")
                 .Order(StringComparer.Ordinal)
                 .ShouldBe([
                     $"typescript-package:{Repository}:@lens/app:",
+                    $"typescript-package:{Repository}:@lens/vendored:web/node_modules/vendored",
                     $"typescript-package:{Repository}:@lens/web:apps/web"
                 ]);
+            await IndexAsync(rootPath, store, new FakeTypeScriptAnalyzer(rootPath, honourScope: true));
+            store.Nodes.ShouldNotContain(node => node.QualifiedName == $"typescript-package:{Repository}:@lens/vendored");
         }
         finally
         {

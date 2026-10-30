@@ -82,6 +82,46 @@ public sealed class ImpactCrossRepoDirectionTests
     }
 
     [Fact]
+    public async Task NestedReturnedHookCallback_PropagatesToCallableOwnerAndComponentWithoutStructuralOwners()
+    {
+        var request = Node(App, "request", "src/api.ts");
+        var callback = Node(App, "returnedCallback", "src/useData.ts");
+        var hook = Node(App, "useData", "src/useData.ts");
+        var screen = Node(App, "Screen", "src/screen.tsx");
+        var file = _store.AddNode(new GraphNode { Repository = App, Label = NodeLabel.File,
+            Name = "useData.ts", QualifiedName = $"{App}:src/useData.ts", FilePath = "src/useData.ts" });
+        await _store.InsertEdgeBatchAsync([
+            new GraphEdge { Repository = App, SourceId = callback, TargetId = request, Type = EdgeType.CALLS },
+            new GraphEdge { Repository = App, SourceId = hook, TargetId = callback, Type = EdgeType.DEFINES },
+            new GraphEdge { Repository = App, SourceId = file, TargetId = callback, Type = EdgeType.DEFINES },
+            new GraphEdge { Repository = App, SourceId = screen, TargetId = hook, Type = EdgeType.CALLS }
+        ]);
+        var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
+        var report = (await impact.AnalyzeImpactAsync($"{App}:src/api.ts:request", App, 3))!;
+        report.AffectedNodes.Select(node => (node.Name, node.Depth, node.EdgeType)).OrderBy(node => node.Depth)
+            .ShouldBe([("returnedCallback", 1, "CALLS"), ("useData", 2, "DEFINES"), ("Screen", 3, "CALLS")]);
+        report.AffectedNodes.ShouldNotContain(node => node.NodeId == file);
+    }
+
+    [Fact]
+    public async Task CallsThroughComponentOwnedCallbacks_ReachRenderingScreens()
+    {
+        var helper = Node(App, "helper", "src/helper.ts");
+        var callback = Node(App, "onClick", "src/widget.tsx");
+        var widget = Node(App, "Widget", "src/widget.tsx");
+        var screen = Node(App, "Screen", "src/screen.tsx");
+        await _store.InsertEdgeBatchAsync([
+            new GraphEdge { Repository = App, SourceId = callback, TargetId = helper, Type = EdgeType.CALLS },
+            new GraphEdge { Repository = App, SourceId = widget, TargetId = callback, Type = EdgeType.DEFINES_METHOD },
+            new GraphEdge { Repository = App, SourceId = screen, TargetId = widget, Type = EdgeType.RENDERS }
+        ]);
+        var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
+        var report = (await impact.AnalyzeImpactAsync($"{App}:src/helper.ts:helper", App, 3))!;
+        report.AffectedNodes.Select(node => (node.Name, node.Depth, node.EdgeType)).OrderBy(node => node.Depth)
+            .ShouldBe([("onClick", 1, "CALLS"), ("Widget", 2, "DEFINES_METHOD"), ("Screen", 3, "RENDERS")]);
+    }
+
+    [Fact]
     public async Task FileThatOnlyCallsAnotherRepository_HasNoCrossRepoDependents()
     {
         var impact = await SeedAsync();

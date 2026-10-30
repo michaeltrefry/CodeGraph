@@ -63,6 +63,33 @@ public class TypeScriptSidecarFailureTests
         File.Exists(scopePath).ShouldBeFalse();
     }
 
+    [Fact]
+    public async Task AnalyzeProjectAsync_IncompleteResponse_RefusesToReplacePreviousFacts()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":false,"nodes":[],"edges":[],"processedFiles":["src/good.ts"],"diagnostics":["Syntax error in broken.ts"]}""");
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        var failure = await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync(
+            "/repo/tsconfig.json", new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" },
+            ["src/good.ts", "src/broken.ts"]));
+        failure.Message.ShouldContain("incomplete");
+        failure.Message.ShouldContain("Syntax error in broken.ts");
+    }
+
+    [Fact]
+    public async Task PerFileExtractor_IncompleteResponse_DoesNotReportSuccessfulEmptyOutput()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":false,"nodes":[],"edges":[],"processedFiles":[]}""");
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var extractor = new TypeScriptExtractor(server, new RecordingLogger<TypeScriptExtractor>());
+        var result = await extractor.ExtractAsync("/repo/app.ts", "const broken = ;",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" });
+        result.Succeeded.ShouldBeFalse();
+        result.FailureReason.ShouldNotBeNull().ShouldContain("incomplete");
+    }
+
     /// <summary>A minimal stand-in for the Node sidecar on a free loopback port.</summary>
     private sealed class FakeSidecar : IAsyncDisposable
     {

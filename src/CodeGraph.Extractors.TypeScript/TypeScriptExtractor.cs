@@ -5,8 +5,8 @@ using CodeGraph.Services;
 namespace CodeGraph.Extractors.TypeScript;
 
 /// <summary>
-/// Per-file fallback extractor for .ts files in repos that have no tsconfig.json.
-/// Repos with a tsconfig.json use TypeScriptProjectAnalyzer (project-level) instead.
+/// Per-file fallback extractor for .ts files when no repository analyzer is registered.
+/// TypeScriptProjectAnalyzer otherwise owns admitted JS/JSX/TS/TSX with optional configuration.
 /// </summary>
 public class TypeScriptExtractor : ICodeExtractor
 {
@@ -29,8 +29,9 @@ public class TypeScriptExtractor : ICodeExtractor
     /// <remarks>
     /// 2 (sc-26145): type text renders <c>import("…")</c> paths relative to the extraction
     /// directory instead of with the (random, per-run) absolute temp path.
+    /// 3 (sc-27973): shared callable/component sidecar output and explicit completeness.
     /// </remarks>
-    public string GetExtractionVersion(string extension) => "2";
+    public string GetExtractionVersion(string extension) => "3";
 
     public async Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
@@ -66,6 +67,8 @@ public class TypeScriptExtractor : ICodeExtractor
 
             if (response is null)
                 return ExtractionResult.Failure("TypeScript sidecar returned no response.");
+            if (!response.Complete)
+                return ExtractionResult.Failure("TypeScript sidecar returned incomplete analysis; prior facts and hashes must be retained.");
 
             return new ExtractionResult
             {

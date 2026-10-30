@@ -289,45 +289,57 @@ public partial class IndexingPipeline
         // workspace packages and sources itself, so it is handed exactly the files discovery
         // admits (sc-26145): agent worktrees and dependency directories are never analyzed.
         IReadOnlyList<GraphNode>? typeScriptNodes = null;
+        IReadOnlyList<ExtractionResult>? typeScriptResults = null;
+        var typeScriptProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (_typeScriptAnalyzer is not null)
         {
             var typeScriptScope = DiscoverTypeScriptScope(rootPath);
-            // The sidecar scans sources from the scope (ignoring tsconfig include/files), so one
-            // tsconfig per repo supplies the compiler options.
-            if (SelectTypeScriptConfig(typeScriptScope) is { } tsconfig)
+            if (typeScriptScope.Any(IsTypeScriptPath))
             {
+                // A synthetic path is the existing analyzer contract's default-config seam.
+                var tsconfig = SelectTypeScriptConfig(typeScriptScope) ?? TypeScriptConfigFileName;
                 _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}", tsconfig);
                 stepSw.Restart();
                 try
                 {
                     var results = (await _typeScriptAnalyzer.AnalyzeProjectAsync(
                             Path.Combine(rootPath, tsconfig), context, typeScriptScope, ct))
-                        .Select(result => ClampToDiscovery(result, repositoryName, rootPath))
+                        .Select(result => OwnTypeScriptResult(ClampToDiscovery(result, repositoryName, rootPath)))
                         .ToList();
+                    if (results.Count == 0 || results.Any(result => !result.Succeeded || !result.Complete))
+                        throw new InvalidOperationException("The TypeScript analyzer did not return complete successful repository output.");
                     _logger.LogInformation("[Timing] TypeScript repository analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+                    typeScriptResults = results;
+                    typeScriptNodes = results.SelectMany(result => result.Nodes).ToList();
+                    typeScriptProcessedFiles.UnionWith(results.SelectMany(result => result.ProcessedFiles).Select(NormalizeRelativePath));
+                    var unprocessed = typeScriptScope.Where(IsTypeScriptPath)
+                        .Where(path => !typeScriptProcessedFiles.Contains(path)).Take(5).ToList();
+                    if (unprocessed.Count > 0)
+                        throw new InvalidOperationException($"The TypeScript analyzer left admitted source files unprocessed: {string.Join(", ", unprocessed)}");
+                    // Change-list runs may refresh derived facts for an unchanged entry file.
+                    // Its structural File endpoint must be reinserted with that source slice.
+                    var missingStructure = typeScriptProcessedFiles.Where(IsTypeScriptPath)
+                        .Where(path => buffer.FindByQN($"{repositoryName}:{path}") is null)
+                        .Select(path => Path.Combine(rootPath, path)).ToList();
+                    if (missingStructure.Count > 0)
+                        CreateStructuralNodes(repositoryName, rootPath, missingStructure, [], buffer);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
-                    // No result (sidecar unavailable) says nothing about the workspace packages.
-                    if (results.Any(result => result.Succeeded))
-                    {
-                        typeScriptNodes = results.Where(result => result.Succeeded)
-                            .SelectMany(result => result.Nodes)
-                            .ToList();
-                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
-                        "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
-                        tsconfig);
+                        "TypeScript project analysis incomplete for {Repository}; preserving the prior graph and source hashes",
+                        repositoryName);
+                    throw new InvalidOperationException($"TypeScript analysis incomplete for {repositoryName}; no graph or hash replacement was committed.", ex);
                 }
             }
             else
             {
-                // No admitted tsconfig: the repository has no TypeScript workspace packages.
                 typeScriptNodes = [];
+                typeScriptResults = [];
             }
         }
 
@@ -667,13 +679,16 @@ public partial class IndexingPipeline
                 var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(repositoryName, typeScriptNodes);
                 typeScriptReplacementPaths.AddRange(moduleSlices);
                 typeScriptModulesChanged = moduleSlices.Count > 0;
+                var semanticSlices = await FindChangedTypeScriptSemanticSlicesAsync(repositoryName, typeScriptResults!, ct);
+                typeScriptReplacementPaths.AddRange(semanticSlices);
+                _logger.LogInformation("TypeScript semantic refresh of {Repository}: {Count} changed slice(s)", repositoryName, semanticSlices.Count);
             }
             var typeScriptVersionRefresh = changedRelativePaths.Any(path =>
                 IsTypeScriptPath(path)
                 && existingHashes.TryGetValue(path, out var record)
                 && buffer.AllFileHashes.TryGetValue(path, out var hash)
                 && record.ContentHash == hash);
-            if (excludedSlices.Count > 0 || typeScriptVersionRefresh)
+            if (typeScriptReplacementPaths.Count > 0 || typeScriptVersionRefresh)
                 typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(repositoryName);
         }
 
@@ -690,8 +705,8 @@ public partial class IndexingPipeline
 
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
-            .Where(file => !successfullyProcessedFiles.Contains(
-                NormalizeRelativePath(Path.GetRelativePath(rootPath, file))))
+            .Where(file => !typeScriptProcessedFiles.Contains(NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
+                && !successfullyProcessedFiles.Contains(NormalizeRelativePath(Path.GetRelativePath(rootPath, file))))
             .ToList();
 
         if (remainingFiles.Count > 0)
@@ -781,8 +796,19 @@ public partial class IndexingPipeline
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
             if (typeScriptModulesChanged)
                 AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
+            // A change-list run can analyze unchanged callers outside its hash discovery list.
+            // Replacing those derived slices must retain their successfully processed hash too.
+            foreach (var path in typeScriptReplacementPaths.Where(path =>
+                         IsTypeScriptPath(path) && typeScriptProcessedFiles.Contains(path)
+                         && !buffer.AllFileHashes.ContainsKey(path)))
+            {
+                var fullPath = Path.Combine(rootPath, path);
+                if (_fileSystem.FileExists(fullPath))
+                    buffer.AddFileHash(path, Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(_fileSystem.ReadAllBytes(fullPath))));
+            }
             var sourceHashes = buffer.AllFileHashes
-                .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
+                .Where(hash => successfullyProcessedFiles.Contains(hash.Key)
+                    || (typeScriptProcessedFiles.Contains(hash.Key) && typeScriptReplacementPaths.Contains(hash.Key, StringComparer.OrdinalIgnoreCase)))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
             var (replacementHashes, replacementVersions) = WithManifestRecords(
                 sourceHashes, ExtractionVersionsFor(sourceHashes.Keys, oversizeFiles), manifestHashRecords);
@@ -1176,7 +1202,7 @@ public partial class IndexingPipeline
             throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
 
         return DiscoverPaths(rootPath, "**/*")
-            .Where(f => _extensions.IsSupportedExtension(Path.GetExtension(f)))
+            .Where(f => _extensions.IsSupportedExtension(Path.GetExtension(f)) || (_typeScriptAnalyzer is not null && IsTypeScriptPath(f)))
             .ToList();
     }
 

@@ -20,6 +20,8 @@ public record ExtractProjectRequest
 
 public record ExtractProjectResponse
 {
+    /// <summary>False when any admitted source could not be read or parsed. Legacy responses default to complete.</summary>
+    [JsonPropertyName("complete")] public bool Complete { get; init; } = true;
     [JsonPropertyName("nodes")]            public List<GraphNodeDto> Nodes { get; init; } = [];
     [JsonPropertyName("edges")]            public List<PendingEdgeDto> Edges { get; init; } = [];
     [JsonPropertyName("workspacePackages")] public List<WorkspacePackageDto> WorkspacePackages { get; init; } = [];

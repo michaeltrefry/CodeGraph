@@ -17,8 +17,10 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// <c>import("…")</c> paths repo-relative instead of with the absolute checkout path.
     /// 3 (sc-26145): same-named workspace packages get directory-qualified Module qualified names
     /// and an import of such a name binds the importer's nearest package.
+    /// 4 (sc-27973): JS/JSX components, lexical callables, rendering/context and explicit
+    /// extraction ownership/completeness with default configuration and full source accounting.
     /// </remarks>
-    public string ExtractionVersion => "3";
+    public string ExtractionVersion => "4";
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
@@ -63,16 +65,23 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
             try { File.Delete(scopePath); } catch (IOException) { /* best effort */ }
         }
 
-        // A failed request is not an empty project: the pipeline logs it and falls back.
+        // A failed request is not an empty project: the pipeline preserves the prior graph.
         if (response is null)
         {
             throw new InvalidOperationException(
                 $"The TypeScript sidecar returned no extraction result for {context.RepositoryName} (see the preceding warning for the cause).");
         }
 
-        // Detect Angular vs plain Node.js from angular.json in root
-        var hasAngular = File.Exists(Path.Combine(context.RootPath, "angular.json"));
-        var metadata = new ProjectMetadata("TypeScript", hasAngular ? "Angular" : "Node.js");
+        if (!response.Complete)
+            throw new InvalidOperationException($"TypeScript analysis of {context.RepositoryName} is incomplete; retaining the previous graph and hashes. {string.Join("; ", response.Diagnostics?.Take(5) ?? [])}");
+
+        // Framework evidence comes from admitted configuration and extracted source metadata.
+        var hasAngular = includedFiles.Any(path => Path.GetFileName(path) == "angular.json")
+            || response.Nodes.Any(node => PropertyText(node.Properties.GetValueOrDefault("framework")) == "angular");
+        var hasReact = response.Nodes.Any(node => PropertyText(node.Properties.GetValueOrDefault("framework")) == "react");
+        var language = includedFiles.Any(path => path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase)) ? "TypeScript" : "JavaScript";
+        var metadata = new ProjectMetadata(language, hasAngular ? "Angular" : hasReact ? "React" : "Node.js");
 
         var result = new ExtractionResult
         {
@@ -109,6 +118,9 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
 
         return [result];
     }
+
+    private static string? PropertyText(object? value) => value is JsonElement json && json.ValueKind == JsonValueKind.String
+        ? json.GetString() : value?.ToString();
 
     private static GraphNode ToGraphNode(GraphNodeDto dto, string repositoryName) => new()
     {

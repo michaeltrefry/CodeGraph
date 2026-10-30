@@ -22,7 +22,8 @@ public partial class IndexingPipeline
     /// package.json files that no discovery exclusion (skip pattern or dependency directory) hides.
     /// </summary>
     private IReadOnlyList<string> DiscoverTypeScriptScope(string rootPath) =>
-        DiscoverPaths(rootPath, "**/*.ts", "**/*.tsx", $"**/{TypeScriptConfigFileName}", "**/package.json")
+        DiscoverPaths(rootPath, "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.html",
+                "**/tsconfig*.json", "**/jsconfig*.json", "**/package.json", "**/angular.json", "**/next.config.*", "**/vite.config.*")
             .Select(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.Ordinal)
@@ -33,7 +34,7 @@ public partial class IndexingPipeline
     /// shallowest one discovery admits. The sidecar scans sources from the scope, not from it.
     /// </summary>
     private static string? SelectTypeScriptConfig(IReadOnlyList<string> scope) =>
-        scope.Where(path => Path.GetFileName(path) == TypeScriptConfigFileName)
+        scope.Where(path => Path.GetFileName(path) is TypeScriptConfigFileName or "jsconfig.json")
             .OrderBy(path => path.Count(ch => ch == '/'))
             .ThenBy(path => path, StringComparer.Ordinal)
             .FirstOrDefault();
@@ -51,7 +52,8 @@ public partial class IndexingPipeline
 
         // A copy can share its qualified name with the admitted original (a vendored package),
         // so nodes are dropped individually and edges only for names no admitted node keeps.
-        var kept = result.Nodes.Where(node => Admitted(node.FilePath)).ToList();
+        var kept = result.Nodes.Where(node => Admitted(node.FilePath)
+            && Admitted(TypeScriptNodeText(node.Properties.GetValueOrDefault("extraction_source_file")))).ToList();
         var keptQns = kept.Select(node => node.QualifiedName).ToHashSet(StringComparer.Ordinal);
         var dropped = result.Nodes
             .Select(node => node.QualifiedName)
@@ -66,7 +68,8 @@ public partial class IndexingPipeline
             Nodes = kept,
             Edges = result.Edges
                 .Where(edge => !dropped.Contains(edge.SourceQN) && !dropped.Contains(edge.TargetQN)
-                               && AdmittedFileQn(edge.SourceQN) && AdmittedFileQn(edge.TargetQN))
+                               && AdmittedFileQn(edge.SourceQN) && AdmittedFileQn(edge.TargetQN)
+                               && Admitted(TypeScriptNodeText(edge.Properties?.GetValueOrDefault("extraction_source_file"))))
                 .ToList(),
             UnresolvedCalls = result.UnresolvedCalls.Where(call => !dropped.Contains(call.CallerQN)).ToList(),
             UnresolvedImports = result.UnresolvedImports.Where(import => AdmittedFileQn(import.FileQN)).ToList(),
@@ -112,10 +115,12 @@ public partial class IndexingPipeline
         // moved onto a reserved slice that this write then replaces with nothing.
         var currentRoots = WorkspaceModules(analyzed)
             .Where(node => string.IsNullOrWhiteSpace(node.FilePath))
-            .Select(node => node.QualifiedName)
-            .ToHashSet(StringComparer.Ordinal);
+            .DistinctBy(node => node.QualifiedName)
+            .ToDictionary(node => node.QualifiedName, StringComparer.Ordinal);
         var staleRoots = WorkspaceModules(storedNodes)
-            .Where(node => string.IsNullOrWhiteSpace(node.FilePath) && !currentRoots.Contains(node.QualifiedName))
+            .Where(node => string.IsNullOrWhiteSpace(node.FilePath)
+                && (!currentRoots.TryGetValue(node.QualifiedName, out var currentRoot)
+                    || TypeScriptNodeSignature(node) != TypeScriptNodeSignature(currentRoot)))
             .ToList();
         foreach (var staleRoot in staleRoots)
             await _store.UpsertNodeAsync(staleRoot with { FilePath = StaleWorkspaceModuleSlice });
@@ -236,7 +241,9 @@ public partial class IndexingPipeline
 
     private static bool IsTypeScriptPath(string path) =>
         path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase);
+        || path.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".js", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".jsx", StringComparison.OrdinalIgnoreCase);
 
     private static string? TypeScriptNodeText(object? value) => value switch
     {

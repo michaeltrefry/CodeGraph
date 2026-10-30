@@ -66,10 +66,12 @@ public sealed class ExtractionVersionCatalog
     /// method, never a receiver call; Rust → C++ only with C linkage), and a Swift call binds only
     /// within the caller's own module and the modules its file imports (sc-26145).
     /// </summary>
-    public const int PipelineVersion = 4;
+    /// 5 (sc-27973): JS/JSX repository analysis, semantic outgoing-slice reconciliation,
+    /// complete-output preservation and component callable ownership impact traversal.
+    public const int PipelineVersion = 5;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
-    private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];
+    private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];
     private static readonly string[] RustAnalyzerExtensions = [".rs"];
 
     private readonly IReadOnlyList<ICodeExtractor> _extractors;
