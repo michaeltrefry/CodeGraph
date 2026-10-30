@@ -6,6 +6,10 @@ on:
   push:
     branches:
       - main
+    # CodeGraph's own CODEGRAPH.md commits change no code: building them would deploy, and a deploy
+    # restarts the API mid-way through any long run (a Shortcut import takes about 45 minutes).
+    paths-ignore:
+      - '**/CODEGRAPH.md'
 
 permissions:
   contents: read

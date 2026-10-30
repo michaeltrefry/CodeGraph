@@ -432,6 +432,9 @@ public sealed class NextWorkRequest : ISessionArguments
     [Description("Caller-chosen key: a repeat by the same identity in this project returns the same allocation, even after the first answer was lost.")]
     public string? IdempotencyKey { get; init; }
 
+    [Description("Key or id of a Feature of the project: only its items, so a session works through one feature.")]
+    public string? Feature { get; init; }
+
     [Description("Only items of this repository.")]
     public string? Repository { get; init; }
 

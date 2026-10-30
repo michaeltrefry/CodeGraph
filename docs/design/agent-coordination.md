@@ -369,7 +369,7 @@ Sixteen tools. All writes return the resulting object. All schemas reject unknow
 | `start_session` | Register session; return session id + briefing (budget default ~1,500 tokens) |
 | `end_session` | Write handoff, release claims and holds |
 | `get_briefing` | Re-fetch the briefing mid-session (e.g. after compaction), optionally focused on an item or paths |
-| `next_work` | Pick and claim the best Ready, unblocked, unclaimed item for this project (filters: repository, type, labels, needs-resource) |
+| `next_work` | Pick and claim the best Ready, unblocked, unclaimed item for this project (filters: feature, repository, type, labels, needs-resource) |
 | `find_work` | Search/list items and features; small rows by default |
 | `get_work` | The item brief (§5.2): AC, inherited requirements, relevant decisions/rules, touched files/nodes, handoffs, attempts, linked PRs, messages |
 | `create_work` | One item, or a whole plan (feature + requirements + docs + items + deps), idempotent |

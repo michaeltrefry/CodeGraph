@@ -997,6 +997,12 @@ public sealed partial class MySqlWorkStore
             parameters.Add("repository", repository);
         }
 
+        if (spec.FeatureId is { } featureId)
+        {
+            where.Add("i.feature_id = @featureId");
+            parameters.Add("featureId", featureId);
+        }
+
         if (spec.Type is { } type)
         {
             where.Add("i.item_type = @type");

@@ -1021,7 +1021,8 @@ public sealed partial class WorkService(
             request.IdempotencyKey is { } key ? HashKey(actor, key) : null,
             OptionalName(request.Repository, "repository"),
             request.Type,
-            request.Label?.Trim()), actor, ct);
+            request.Label?.Trim(),
+            request.Feature is { } feature ? (await RequireOfProjectAsync(feature, WorkEntityKind.Feature, project, "feature", ct)).Id : null), actor, ct);
     }
 
     // ---- Resources and holds -----------------------------------------------------------------

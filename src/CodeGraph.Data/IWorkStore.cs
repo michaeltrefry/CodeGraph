@@ -384,7 +384,8 @@ public sealed record NextWorkSpec(
     string? KeyHash,
     string? Repository,
     WorkItemType? Type,
-    string? Label);
+    string? Label,
+    Guid? FeatureId = null);
 
 public sealed record FindWorkSpec(
     WorkEntityKind Kind,
