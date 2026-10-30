@@ -1,6 +1,6 @@
-// The largest selected frontend uses about 158M units with weighted route output.
-// Keep measured headroom and one finite allowance shared by all analysis passes.
-export const DEFAULT_EXTRACTION_WORK_LIMIT = 200_000_000;
+// Sized against selected indexed frontends, including relocated checkout snapshots.
+// Keep finite shared work/output bounds with room for normal source growth.
+export const DEFAULT_EXTRACTION_WORK_LIMIT = 400_000_000;
 export interface ExtractionWorkControl {
   maxWork?: number;
   /** Synchronous polling. A timer/AbortSignal cannot preempt CPU while this stack runs. */
