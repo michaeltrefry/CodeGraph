@@ -16,6 +16,10 @@ public sealed class StandaloneIndexerOperationsService(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    public Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+        => QueueRunAsync(IndexerRunOperations.DreamProjects, username, "all",
+            "Queued knowledge dreaming for all projects.", args: null, submissionKey, ct);
+
     public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,
         string repo,
@@ -402,6 +406,7 @@ public sealed class IndexerSubmissionConflictException(string message) : Invalid
 
 public static class IndexerRunOperations
 {
+    public const string DreamProjects = "dream_projects";
     public const string ReAnalyze = "reanalyze";
     public const string ProcessRepositories = "process_repositories";
     public const string ReIndexAll = "reindex_all";

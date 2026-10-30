@@ -11,6 +11,10 @@ namespace CodeGraph.Indexer.Host.Controllers;
 [Route("api/indexer")]
 public class IndexerController(IIndexerOperationsService indexerOperations) : ControllerBase
 {
+    [HttpPost("dream-projects")]
+    public Task<ActionResult<IndexerAcceptedResponse>> DreamProjects(CancellationToken ct)
+        => AcceptSubmissionAsync(() => indexerOperations.StartDreamProjectsAsync(GetUsername(), GetSubmissionKey(), ct));
+
     [HttpPost("repositories/reanalyze")]
     public async Task<ActionResult<IndexerAcceptedResponse>> ReAnalyze(
         [FromBody] ReAnalyzeRequest request,

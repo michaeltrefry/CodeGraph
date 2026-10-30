@@ -20,6 +20,22 @@ namespace CodeGraph.Tests.Services;
 public class StandaloneIndexerOperationsServiceTests
 {
     [Fact]
+    public async Task StartDreamProjects_CreatesDurableAttributedRun()
+    {
+        var runs = new FakeIndexerRunStore();
+        var runner = new RecordingBackgroundRunner();
+        var service = new StandaloneIndexerOperationsService(runs, new FakeDatabaseSourceStore(), runner);
+        var accepted = await service.StartDreamProjectsAsync("codegraph-jobs", "dream-submission");
+        var run = await runs.GetIndexerRunAsync(accepted.RunId!.Value);
+        run.ShouldNotBeNull();
+        run.Operation.ShouldBe(IndexerRunOperations.DreamProjects);
+        run.Target.ShouldBe("all");
+        run.RequestedByUsername.ShouldBe("codegraph-jobs");
+        run.SubmissionKey.ShouldBe("dream-submission");
+        runner.EnqueuedRunIds.ShouldBe([accepted.RunId.Value]);
+    }
+
+    [Fact]
     public async Task StartReAnalyzeRepositoryAsync_CreatesRetrySafeQueuedRun()
     {
         var runs = new FakeIndexerRunStore();

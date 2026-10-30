@@ -168,7 +168,8 @@ public class JobCommandDispatcherTests
             new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)),
             new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()),
             new WorkImportJob(),
-            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()));
+            new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()),
+            new DreamProjectsJob(indexerClient));
     }
 
     private static JobCommandDispatcher CreateDispatcher(
@@ -194,7 +195,8 @@ public class JobCommandDispatcherTests
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
             new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
             new WorkImportJob(importRunner),
-            new IndexerRunRetentionJob(indexerRetention ?? new RecordingIndexerRunRetentionService()));
+            new IndexerRunRetentionJob(indexerRetention ?? new RecordingIndexerRunRetentionService()),
+            new DreamProjectsJob(indexerClient));
     }
 
     private sealed class FakeConventionEmbeddingService : IConventionEmbeddingService

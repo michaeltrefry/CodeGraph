@@ -2,6 +2,7 @@ namespace CodeGraph.Jobs;
 
 public static class JobTypes
 {
+    public const string DreamProjects = "DreamProjects";
     public const string Discover = "Discover";
     public const string ReIndexAll = "ReIndexAll";
     public const string ProcessBatchAnalysis = "ProcessBatchAnalysis";
@@ -17,6 +18,7 @@ public static class JobTypes
 
     public static readonly IReadOnlyList<string> All =
     [
+        DreamProjects,
         Discover,
         ReIndexAll,
         ProcessBatchAnalysis,
