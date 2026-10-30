@@ -239,6 +239,36 @@ public class MariaDbJobQueueStoreTests
             queue.Failed.ShouldBe(0); queue.Running.ShouldBe(1);
         });
 
+    [Fact]
+    public async Task RetentionScheduleSeedIsRestartSafeAndPreservesOperatorSettings_WhenConnectionIsConfigured()
+        => await WithDatabaseAsync(async db =>
+        {
+            var script = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
+                "../../../../../sql/migrations/094_default_indexer_run_retention_schedule.sql"));
+            async Task ApplySeed()
+            {
+                foreach (var statement in MariaDbMigrationRunner.SplitStatements(script))
+                    await db.Database.ExecuteSqlRawAsync(statement);
+            }
+            await ApplySeed();
+            await ApplySeed();
+            var schedule = (await db.JobSchedules.AsNoTracking().ToListAsync()).Single();
+            schedule.JobType.ShouldBe("IndexerRunRetention");
+            schedule.IsEnabled.ShouldBeTrue();
+            schedule.CronExpression.ShouldBe("0 4 * * 0");
+            schedule.TimeZoneId.ShouldBe("UTC");
+            await db.Database.ExecuteSqlRawAsync("""
+                UPDATE job_schedules SET name = 'operator-retention', is_enabled = FALSE,
+                    args_json = '{"retentionDays":7}', cron_expression = '0 2 * * 1'
+                """);
+            await ApplySeed();
+            var preserved = (await db.JobSchedules.AsNoTracking().ToListAsync()).Single();
+            preserved.Name.ShouldBe("operator-retention");
+            preserved.IsEnabled.ShouldBeFalse();
+            preserved.ArgsJson.ShouldContain("7");
+            preserved.CronExpression.ShouldBe("0 2 * * 1");
+        });
+
     private static Task<long> AddRunAsync(MySqlIndexerRunStore store, string status, string operation = "link",
         string? target = "all", DateTime? created = null, string? args = null)
         => store.CreateIndexerRunAsync(new IndexerRunEntity
