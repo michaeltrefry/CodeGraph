@@ -214,3 +214,46 @@ test('dynamic arrays and cyclic spreads report incomplete enumeration instead of
   try { const result = f.analyze(); assert.equal(result.status.complete, false); route(result, '/known'); assert.ok(result.diagnostics.some(message => /dynamic|cyclic/.test(message))); }
   finally { f.dispose(); }
 });
+
+test('Next shared layout edges belong to their source slices across page addition and deletion', () => {
+  const f = fixture({
+    'frontend/package.json': '{"dependencies":{"next":"15"}}',
+    'frontend/next.config.ts': `export default {basePath:'/ui'};`,
+    'frontend/src/app/layout.tsx': 'export default function Root({children}){return <html>{children}</html>}',
+    'frontend/src/app/nested/layout.tsx': 'export default function Nested({children}){return <main>{children}</main>}',
+    'frontend/src/app/page.tsx': 'export default function Home(){return <p/>}',
+  });
+  try {
+    const signature = (result: ReturnType<typeof f.analyze>) => result.edges.filter(edge => edge.properties?.route_kind === 'ui')
+      .map(edge => JSON.stringify(edge)).sort();
+    const before = f.analyze();
+    f.write('frontend/src/app/nested/page.tsx', 'export default function Page(){return <article/>}');
+    const added = f.analyze();
+    const nestedRoute = route(added, '/ui/nested');
+    const source = (suffix: string) => [...added.model.byQN.keys()].find(qn => qn.endsWith(suffix))!;
+    const rootLayout = source('app/layout.tsx#Root');
+    const nestedLayout = source('nested/layout.tsx#Nested');
+    const page = source('nested/page.tsx#Page');
+    const chain = added.edges.find(edge => edge.sourceQN === rootLayout && edge.targetQN === nestedLayout && edge.type === 'RENDERS');
+    assert.ok(chain);
+    assert.equal(chain.properties?.extraction_source_file, 'frontend/src/app/layout.tsx');
+    assert.equal(added.edges.find(edge => edge.sourceQN === nestedLayout && edge.targetQN === page && edge.type === 'RENDERS')?.properties?.extraction_source_file,
+      'frontend/src/app/nested/layout.tsx');
+    assert.equal(added.edges.find(edge => edge.sourceQN === nestedRoute.qualifiedName && edge.targetQN === rootLayout)?.properties?.extraction_source_file,
+      nestedRoute.filePath);
+
+    // A second descendant must share the same layout edge, rather than claiming its own copy.
+    f.write('frontend/src/app/nested/child/page.tsx', 'export default function Child(){return <article/>}');
+    const siblings = f.analyze();
+    assert.deepEqual(siblings.edges.filter(edge => edge.sourceQN === rootLayout && edge.targetQN === nestedLayout && edge.type === 'RENDERS'), [chain]);
+    fs.unlinkSync(path.join(f.root, 'frontend/src/app/nested/page.tsx'));
+    const surviving = f.analyze();
+    assert.deepEqual(surviving.edges.filter(edge => edge.sourceQN === rootLayout && edge.targetQN === nestedLayout && edge.type === 'RENDERS'), [chain]);
+    fs.unlinkSync(path.join(f.root, 'frontend/src/app/nested/child/page.tsx'));
+    const removed = f.analyze();
+    assert.equal(removed.status.complete, true);
+    assert.ok(removed.model.byQN.has(rootLayout) && removed.model.byQN.has(nestedLayout));
+    assert.ok(!removed.edges.some(edge => edge.sourceQN === rootLayout && edge.targetQN === nestedLayout && edge.type === 'RENDERS'));
+    assert.deepEqual(signature(removed), signature(before));
+  } finally { f.dispose(); }
+});

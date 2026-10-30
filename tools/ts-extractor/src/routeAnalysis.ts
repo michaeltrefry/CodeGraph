@@ -101,7 +101,12 @@ class RouteAnalysis {
   }
   private edge(source: string, target: string, type: string, owner: Node, extra: Record<string, unknown> = {}): void {
     if (source === target) return;
-    const properties = { extraction_source_file: this.relative(owner), route_kind: 'ui', ...extra };
+    // Traversal may discover an edge while visiting a descendant page or route literal. Persist
+    // outgoing facts with their actual source slice so signature changes replace that source's
+    // edges, including shared layout chains whose endpoints both outlive the visited page.
+    const declaration = this.model.byQN.get(source);
+    const sourceFile = declaration ? this.relative(declaration) : this.emitted.get(source)?.filePath ?? this.relative(owner);
+    const properties = { extraction_source_file: sourceFile, route_kind: 'ui', ...extra };
     const key = JSON.stringify([source, target, type, properties]);
     if (this.edgeKeys.has(key)) return;
     this.edgeKeys.add(key); this.edges.push({ sourceQN: source, targetQN: target, type, properties });
