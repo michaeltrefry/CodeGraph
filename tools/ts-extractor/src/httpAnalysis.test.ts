@@ -379,3 +379,50 @@ test('bound option parameters and their aliases are guarded before environment l
   assert.deepEqual(routes(result,'Demo:parameters.ts#caller'),[]);
   assert.ok(result.coverage.unresolved>=3);
 });
+
+
+test('destructured object and array aliases retain the selected underlying option binding', () => {
+  const result=fixture({'destructure.ts':`
+    export function objectWrite(){const options={method:'GET'};const holder={options};const {options:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function arrayWrite(){const options={method:'GET'};const holder=[options];const [alias]=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function deepWrite(){const options={method:'GET'};const holder={nested:{value:options}};const {nested:{value:alias}}=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function immutable(){const options={method:'GET'};const holder={options};const {options:alias}=holder;return fetch('/api',options);}
+  `});
+  for (const name of ['objectWrite','arrayWrite','deepWrite']) assert.deepEqual(routes(result,`Demo:destructure.ts#${name}`),[]);
+  assert.deepEqual(routes(result,'Demo:destructure.ts#immutable'),['route:*:GET:/api']);
+});
+
+test('nested container member writes retain bound parameter identity before caller substitution', () => {
+  const result=fixture({'bound-container.ts':`
+    function mutate(options){const holder={options};holder.options.method='DELETE';return fetch('/api',options);}
+    function deep(options){const holder={nested:{value:options}};const alias=holder.nested;alias.value.method='DELETE';return fetch('/api',options);}
+    function destructured(options){const holder={value:options};const {value:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
+    function immutable(options){const holder={options};return fetch('/api',holder.options);}
+    export function caller(){mutate({method:'GET'});deep({method:'GET'});destructured({method:'GET'});}
+    export function good(){return immutable({method:'GET'});}
+  `});
+  assert.deepEqual(routes(result,'Demo:bound-container.ts#caller'),[]);
+  assert.deepEqual(routes(result,'Demo:bound-container.ts#good'),['route:*:GET:/api']);
+});
+
+
+test('rebinding a contained local never poisons an immutable captured endpoint or options object', () => {
+  const result=fixture({'rebindings.ts':`
+    function wrapper({path}){let scratch;scratch={id:'one'};const holder={path,scratch};return fetch(path);}
+    export function caller(){return wrapper({path:'/api/items'});}
+    export function local(){const options={method:'GET'};let scratch;const holder={options,scratch};scratch={id:'two'};return fetch('/api/items',options);}
+  `});
+  assert.deepEqual(routes(result,'Demo:rebindings.ts#caller'),['route:*:GET:/api/items']);
+  assert.deepEqual(routes(result,'Demo:rebindings.ts#local'),['route:*:GET:/api/items']);
+});
+
+
+test('mutable object siblings and external instance member types never alias an immutable endpoint', () => {
+  const result=fixture({'independent.ts':`
+    function wrapper({path,options}){const holder={options};holder.options.method='DELETE';return fetch(path,{method:'POST'});}
+    export function caller(){return wrapper({path:'/api/items',options:{method:'GET'}});}
+    export function instances(){const one=new AbortController();const two=new AbortController();const options={method:'GET',signal:one.signal};const other={signal:two.signal};two.signal.onabort=()=>{};return fetch('/api/items',options);}
+  `});
+  assert.deepEqual(routes(result,'Demo:independent.ts#caller'),['route:*:POST:/api/items']);
+  assert.deepEqual(routes(result,'Demo:independent.ts#instances'),['route:*:GET:/api/items']);
+});
