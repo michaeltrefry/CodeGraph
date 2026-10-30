@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodeGraph.Extractors.TreeSitter;
 using CodeGraph.Extractors.TypeScript;
 using CodeGraph.Models;
@@ -19,6 +20,121 @@ namespace CodeGraph.Tests.Services;
 
 public sealed class FrontendBackendOperationIntegrationTests
 {
+    [Fact]
+    public async Task AngularProviderOnlyRetarget_ReplacesProvisionalCalls_AndMatchesFreshGraph()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-provider-refresh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "package.json"), """{"name":"provider-fixture"}""");
+            File.WriteAllText(Path.Combine(root, "services.ts"), "export class Original {load(){}} export class First {load(){}} export class Second {load(){}}");
+            const string providers = "import {Original, First, Second} from './services'; export const PROVIDERS=[{provide:Original,useClass:First}];";
+            File.WriteAllText(Path.Combine(root, "providers.ts"), providers);
+            File.WriteAllText(Path.Combine(root, "page.ts"), """
+                import {Component} from '@angular/core';
+                import {Original} from './services';
+                import {PROVIDERS} from './providers';
+                @Component({selector:'app-page',template:'',providers:PROVIDERS})
+                export class Page {constructor(private api:Original){} run(){this.api.load();}}
+                """);
+            var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+            using var server = new TypeScriptServerManager(port, NullLogger.Instance);
+            var analyzer = new TypeScriptProjectAnalyzer(server, NullLogger<TypeScriptProjectAnalyzer>.Instance);
+            var store = new InMemoryGraphStore();
+            IndexingPipeline Pipeline(InMemoryGraphStore graph) => new(graph, [], Options.Create(new IndexingOptions()),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: analyzer);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            Task Index() => Pipeline(store).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            void AssertImplementation(string expected)
+            {
+                var run = store.Nodes.Single(node => node.Name == "run" && node.FilePath == "page.ts");
+                var targets = store.Edges.Where(edge => edge.SourceId == run.Id && edge.Type == EdgeType.CALLS)
+                    .Select(edge => store.Nodes.Single(node => node.Id == edge.TargetId).QualifiedName).ToList();
+                targets.ShouldContain(qn => qn.EndsWith($".{expected}.load", StringComparison.Ordinal));
+                targets.ShouldNotContain(qn => qn.EndsWith(".Original.load", StringComparison.Ordinal));
+                targets.ShouldNotContain(qn => qn.EndsWith($".{(expected == "First" ? "Second" : "First")}.load", StringComparison.Ordinal));
+            }
+            await Index();
+            AssertImplementation("First");
+            var pageHash = (await store.GetFileHashRecordsAsync("UI"))["page.ts"].ContentHash;
+            File.WriteAllText(Path.Combine(root, "providers.ts"), providers.Replace("useClass:First", "useClass:Second"));
+            await Index();
+            AssertImplementation("Second");
+            (await store.GetFileHashRecordsAsync("UI"))["page.ts"].ContentHash.ShouldBe(pageHash);
+            var fresh = new InMemoryGraphStore();
+            await Pipeline(fresh).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            ExtractionSnapshot(store).ShouldBe(ExtractionSnapshot(fresh));
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            await Index();
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task NextNestedPageAdditionAndDeletion_RefreshUnchangedLayoutEdges_AndMatchFreshGraph()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-next-layout-refresh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "app", "nested"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "package.json"), """{"name":"next-fixture","dependencies":{"next":"*"}}""");
+            File.WriteAllText(Path.Combine(root, "app", "layout.tsx"), "export default function Root({children}){return <html>{children}</html>}");
+            File.WriteAllText(Path.Combine(root, "app", "page.tsx"), "export default function Home(){return <main/>}");
+            File.WriteAllText(Path.Combine(root, "app", "nested", "layout.tsx"), "export default function Nested({children}){return <section>{children}</section>}");
+            var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+            using var server = new TypeScriptServerManager(port, NullLogger.Instance);
+            var analyzer = new TypeScriptProjectAnalyzer(server, NullLogger<TypeScriptProjectAnalyzer>.Instance);
+            var store = new InMemoryGraphStore();
+            IndexingPipeline Pipeline(InMemoryGraphStore graph) => new(graph, [], Options.Create(new IndexingOptions()),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: analyzer);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            Task Index() => Pipeline(store).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            async Task AssertFresh()
+            {
+                var fresh = new InMemoryGraphStore();
+                await Pipeline(fresh).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+                ExtractionSnapshot(store).ShouldBe(ExtractionSnapshot(fresh));
+            }
+            await Index();
+            File.WriteAllText(Path.Combine(root, "app", "nested", "page.tsx"), "export default function Detail(){return <article/>}");
+            await Index();
+            var layout = store.Nodes.Single(node => node.Name == "Root" && node.FilePath == "app/layout.tsx");
+            var nested = store.Nodes.Single(node => node.Name == "Nested" && node.FilePath == "app/nested/layout.tsx");
+            store.Edges.ShouldContain(edge => edge.SourceId == layout.Id && edge.TargetId == nested.Id && edge.Type == EdgeType.RENDERS);
+            await AssertFresh();
+            File.Delete(Path.Combine(root, "app", "nested", "page.tsx"));
+            await Index();
+            await AssertFresh();
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            await Index();
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static string[] ExtractionSnapshot(InMemoryGraphStore store)
+    {
+        static string Canonical(JsonNode? value) => value switch
+        {
+            JsonObject obj => "{" + string.Join(',', obj.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => JsonSerializer.Serialize(pair.Key) + ":" + Canonical(pair.Value))) + "}",
+            JsonArray array => "[" + string.Join(',', array.Select(Canonical)) + "]",
+            _ => value?.ToJsonString() ?? "null"
+        };
+        return store.Nodes.Where(node => node.Properties.ContainsKey("extraction_owner"))
+            .Select(node => Canonical(JsonSerializer.SerializeToNode(new {kind="node", node.Label, node.Name,
+                node.QualifiedName, node.FilePath, node.StartLine, node.EndLine, node.Properties})))
+            .Concat(store.Edges.Where(edge => edge.Properties.ContainsKey("extraction_owner"))
+                .Select(edge => Canonical(JsonSerializer.SerializeToNode(new {kind="edge",
+                    source=store.Nodes.Single(node => node.Id == edge.SourceId).QualifiedName,
+                    target=store.Nodes.Single(node => node.Id == edge.TargetId).QualifiedName, edge.Type, edge.Properties}))))
+            .Order(StringComparer.Ordinal).ToArray();
+    }
+
     [Theory]
     [InlineData("axum")]
     [InlineData("gin")]
