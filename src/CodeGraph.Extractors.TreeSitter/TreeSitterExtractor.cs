@@ -14,7 +14,7 @@ namespace CodeGraph.Extractors.TreeSitter;
 /// Languages with domain-specific semantics can use a custom extractor hook
 /// for deeper extraction beyond the generic AST walk.
 /// </summary>
-public class TreeSitterExtractor : ICodeExtractor
+public partial class TreeSitterExtractor : ICodeExtractor, IBackendEndpointExtractor
 {
     private readonly ILogger<TreeSitterExtractor> _logger;
 
