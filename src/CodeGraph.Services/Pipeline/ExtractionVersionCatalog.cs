@@ -68,7 +68,7 @@ public sealed class ExtractionVersionCatalog
     /// </summary>
     /// 5 (sc-27973): JS/JSX repository analysis, semantic outgoing-slice reconciliation,
     /// complete-output preservation and component callable ownership impact traversal.
-    public const int PipelineVersion = 5;
+    public const int PipelineVersion = 6;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];

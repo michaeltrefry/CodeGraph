@@ -19,8 +19,9 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// and an import of such a name binds the importer's nearest package.
     /// 4 (sc-27973): JS/JSX components, lexical callables, rendering/context and explicit
     /// extraction ownership/completeness with default configuration and full source accounting.
+    /// 5 (sc-27972): framework routes/templates/providers, HTTP wrappers and Tauri references.
     /// </remarks>
-    public string ExtractionVersion => "4";
+    public string ExtractionVersion => "5";
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;

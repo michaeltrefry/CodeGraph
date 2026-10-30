@@ -42,6 +42,7 @@ exports.buildApp = buildApp;
 const fastify_1 = __importDefault(require("fastify"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const promises_1 = require("stream/promises");
 const extractor_1 = require("./extractor");
 const linter_1 = require("./linter");
 /**
@@ -108,13 +109,17 @@ function buildApp(logsDir = defaultLogsDir) {
                 for (const d of result.diagnostics)
                     log(`  diag: ${d}`);
             }
-            logStream.end();
             return result;
         }
         catch (err) {
             log(`ERROR: ${String(err)}`);
-            logStream.end();
             reply.status(500).send({ error: String(err) });
+        }
+        finally {
+            // Complete the request only after its log has closed. Callers may immediately remove
+            // an ephemeral log directory or inspect diagnostics once extraction has returned.
+            logStream.end();
+            await (0, promises_1.finished)(logStream);
         }
     });
     app.post('/lint-project', async (request) => {

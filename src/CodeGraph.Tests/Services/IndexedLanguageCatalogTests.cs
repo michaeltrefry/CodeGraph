@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using CodeGraph.Api;
 using CodeGraph.Models;
 using CodeGraph.Services;
@@ -44,14 +43,15 @@ public class IndexedLanguageCatalogTests
     [InlineData("src/Legacy.CS", false, "C#")]
     [InlineData("tools/x.PY", false, "Python")]
     // Source languages CodeGraph does not index.
-    [InlineData("src/app/View.tsx", false, "TypeScript")]
+    [InlineData("src/app/View.tsx", true, "TypeScript")]
     [InlineData("Sources/Legacy/Bridge.m", false, "Objective-C")]
     [InlineData("Sources/Legacy/Bridge.mm", false, "Objective-C++")]
     [InlineData("app/src/main/Main.kt", false, "Kotlin")]
     [InlineData("build.gradle.kts", false, "Kotlin")]
     [InlineData("core/Model.scala", false, "Scala")]
     [InlineData("lib/main.dart", false, "Dart")]
-    [InlineData("web/index.js", false, "JavaScript")]
+    [InlineData("web/index.js", true, "JavaScript")]
+    [InlineData("web/View.jsx", true, "JavaScript")]
     // Non-code files: indexed (nothing to miss), no language.
     [InlineData("README.md", true, null)]
     [InlineData("config/settings.json", true, null)]
@@ -69,29 +69,6 @@ public class IndexedLanguageCatalogTests
 
         none.Describe("Model.swift").ShouldBe(new FileLanguage(false, "Swift"));
         none.Describe("README.md").ShouldBe(new FileLanguage(true, null));
-    }
-
-    /// <summary>
-    /// The catalog's TypeScript extensions are the ones the Node.js sidecar actually extracts
-    /// (<c>isTsSourceFile</c> in tools/ts-extractor/src/extractor.ts), so a .tsx file is not
-    /// reported indexed while the sidecar ignores it.
-    /// </summary>
-    [Fact]
-    public void TypeScriptExtensions_MatchWhatTheSidecarExtracts()
-    {
-        var source = File.ReadAllText(Path.Combine(RepoRoot(), "tools", "ts-extractor", "src", "extractor.ts"));
-        var body = Regex.Match(source, @"function isTsSourceFile\(fileName: string\): boolean \{(?<body>.*?)\n\}",
-            RegexOptions.Singleline).Groups["body"].Value;
-        body.ShouldNotBeNullOrWhiteSpace("isTsSourceFile not found in extractor.ts");
-        var sidecar = Regex.Matches(body, @"(?<!!)fileName\.endsWith\('(?<ext>\.[A-Za-z0-9]+)'\)")
-            .Select(match => match.Groups["ext"].Value)
-            .ToHashSet();
-        sidecar.ShouldNotBeEmpty();
-
-        var catalog = ApiCatalog();
-        catalog.IndexedExtensions
-            .Where(extension => catalog.Describe($"file{extension}").Language == "TypeScript")
-            .ShouldBe(sidecar, ignoreOrder: true);
     }
 
     /// <summary>

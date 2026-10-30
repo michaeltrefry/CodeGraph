@@ -721,6 +721,25 @@ public partial class IndexingPipeline
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
+        var endpointSlices = await PrepareBackendEndpointsAsync(repositoryName, rootPath, context, buffer,
+            successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, ct);
+        typeScriptReplacementPaths.AddRange(endpointSlices);
+        var tauriSlices = await PrepareTauriBindingsAsync(repositoryName, rootPath, DiscoverTypeScriptScope(rootPath), buffer,
+            successfullyProcessedFiles.Concat(typeScriptProcessedFiles).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, ct);
+        typeScriptReplacementPaths.AddRange(tauriSlices);
+        foreach (var path in tauriSlices.Where(path => _extensions.IsSupportedExtension(Path.GetExtension(path)) || IsTypeScriptPath(path)))
+        {
+            if (!existingHashes.TryGetValue(path, out var previous) || buffer.AllFileHashes.ContainsKey(path)) continue;
+            if (_fileSystem.FileExists(Path.Combine(rootPath, path)))
+            {
+                // These source bytes were unchanged; preserve their certified hash when only
+                // registration-derived facts caused the source slice to be replaced.
+                buffer.AddFileHash(path, previous.ContentHash);
+                successfullyProcessedFiles.Add(path);
+            }
+        }
+
         if (_nugetExtractor is not null)
             ExtractNuGetReferences(repositoryName, csprojFiles, buffer, replaceExistingGraph);
 
@@ -756,6 +775,9 @@ public partial class IndexingPipeline
             swiftImportRebinding);
         var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
             repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
+        var httpRebinding = await RebindHttpCallsAsync(repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+        if (httpRebinding.ReboundEdges.Count > 0 || !httpRebinding.Retractions.IsEmpty)
+            typeScriptReplacementPaths.Add(HttpBindingSlice);
         CreateStubNodesForExternalTargets(repositoryName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
@@ -794,6 +816,7 @@ public partial class IndexingPipeline
                 replacementPaths,
                 includeRepositoryStructure: existingHashes.Count == 0);
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
+            AppendHttpEdges(buffer, httpRebinding, replacementNodes, replacementEdges);
             if (typeScriptModulesChanged)
                 AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
             // A change-list run can analyze unchanged callers outside its hash discovery list.
@@ -820,7 +843,10 @@ public partial class IndexingPipeline
                 replacementEdges,
                 replacementHashes,
                 replacementVersions,
-                WithOrphanCandidates(swiftRebinding.Retractions, typeScriptOrphanCandidates),
+                WithOrphanCandidates(new GraphSliceRetractions(
+                    swiftRebinding.Retractions.Edges.Concat(httpRebinding.Retractions.Edges).ToList(),
+                    swiftRebinding.Retractions.OrphanCandidateQNs.Concat(httpRebinding.Retractions.OrphanCandidateQNs).Distinct(StringComparer.Ordinal).ToList()),
+                    typeScriptOrphanCandidates),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",

@@ -17,6 +17,7 @@ public class ImpactAnalysisService(
         EdgeType.CONSUMES,
         EdgeType.USES_TYPE,
         EdgeType.INJECTS,
+        EdgeType.REGISTERS,
         EdgeType.IMPLEMENTS,
         EdgeType.INHERITS,
         EdgeType.HANDLES,

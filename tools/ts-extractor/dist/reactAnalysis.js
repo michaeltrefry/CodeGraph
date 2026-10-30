@@ -274,10 +274,4 @@ function analyzeReact(model, nodes, edges, diagnostic) {
                         edges.push({ sourceQN: owner, targetQN: target, type: 'CALLS', properties: { ...properties, call_kind: 'context_default' } });
             }
         }
-    const sourcesByExtension = {};
-    for (const source of model.files) {
-        const extension = source.getFilePath().split('.').pop();
-        sourcesByExtension[extension] = (sourcesByExtension[extension] ?? 0) + 1;
-    }
-    diagnostic(`linkCoverage: ${JSON.stringify({ sources_by_extension: sourcesByExtension, admitted_sources: model.files.length, components: nodes.filter(node => node.label === 'Component').length, renders: renders.length, call_edges: edges.filter(edge => edge.type === 'CALLS').length, contexts: contexts.size, providers: providers.size, context_consumers: consumers.size })}`);
 }

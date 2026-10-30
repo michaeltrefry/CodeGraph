@@ -7,6 +7,7 @@ using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
+using CodeGraph.Services.Extractors;
 using CodeGraph.Services.Pipeline;
 using CodeGraph.Tests.Extractors;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -28,9 +29,11 @@ public sealed class FrontendSidecarIntegrationTests
         try
         {
             await File.WriteAllTextAsync(Path.Combine(root, "package.json"), """{"name":"ui-protocol","dependencies":{"react":"*"}}""");
-            await File.WriteAllTextAsync(Path.Combine(root, "app.jsx"), """
+            Directory.CreateDirectory(Path.Combine(root, "src"));
+            var appPath = Path.Combine(root, "src/app.jsx");
+            await File.WriteAllTextAsync(appPath, """
                 import { useEffect } from 'react';
-                import { load, View } from './barrel.js';
+                import { load, View } from '../barrel.js';
                 export function App() { useEffect(() => { load(); }, []); return <View/>; }
                 """);
             await File.WriteAllTextAsync(Path.Combine(root, "entry.jsx"), "import { View } from './barrel.js'; <View/>;");
@@ -62,13 +65,23 @@ public sealed class FrontendSidecarIntegrationTests
 
             await Index();
             store.Nodes.ShouldContain(node => node.Name == "App" && node.Label == NodeLabel.Component);
-            (await store.GetFileHashRecordsAsync("UI")).Keys.ShouldContain("app.jsx");
+            (await store.GetFileHashRecordsAsync("UI")).Keys.ShouldContain("src/app.jsx");
             var firstId = Id("first");
             store.Edges.ShouldContain(edge => edge.Type == EdgeType.CALLS && edge.TargetId == firstId);
             var impact = new ImpactAnalysisService(store, NullLogger<ImpactAnalysisService>.Instance);
-            var mcp = new CodeGraphMcpServer(null!, null!, store, null!, Options.Create(new RepositorySourceOptions()), null!, impact);
+            var fileExtractor = new TypeScriptExtractor(server, NullLogger<TypeScriptExtractor>.Instance);
+            var singleFile = await fileExtractor.ExtractAsync(appPath, await File.ReadAllTextAsync(appPath),
+                new ExtractorContext { RepositoryName = "UI", RootPath = root }, timeout.Token);
+            singleFile.Succeeded.ShouldBeTrue();
+            singleFile.Nodes.Single(node => node.Name == "App").QualifiedName.ShouldBe(Qn("App"));
+            var mcp = new CodeGraphMcpServer(null!, null!, store, null!, Options.Create(new RepositorySourceOptions()), null!, impact,
+                indexedLanguages: new IndexedLanguageCatalog([fileExtractor]));
             var answer = await mcp.AnalyzeImpact(Qn("first"), "UI", 5);
             string.Join("\n", answer.Content.OfType<TextContentBlock>().Select(block => block.Text)).ShouldContain("App");
+            var fileAnswer = await mcp.AnalyzeImpactFile("UI", "helpers.js", depth: 5);
+            var structured = fileAnswer.StructuredContent.ShouldBeOfType<JsonElement>();
+            structured.GetProperty("languageIndexed").GetBoolean().ShouldBeTrue();
+            structured.GetProperty("found").GetBoolean().ShouldBeTrue();
 
             await File.WriteAllTextAsync(barrel, "export { second as load } from './helpers.js'; export { Two as View } from './panel.jsx';");
             await Index();

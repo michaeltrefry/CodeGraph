@@ -13,8 +13,8 @@ public sealed record FileLanguage(bool Indexed, string? Language);
 /// the registered extractors' <see cref="ICodeExtractor.SupportedExtensions"/>, matched by ordinal
 /// (case-sensitive) comparison through <see cref="ExtractorExtensions"/>, the predicate default-branch
 /// discovery, overlay filtering and extraction dispatch share, so <c>Foo.SWIFT</c> is not indexed. Repository analyzers
-/// add none: they only read discovered files (the TypeScript sidecar reads <c>.ts</c> files only, not
-/// <c>.tsx</c>). <see cref="LanguageNames"/> only names languages. The answer is per language: a file
+/// share the frontend extensions registered by TypeScriptExtractor: JS, JSX, TS and TSX.
+/// <see cref="LanguageNames"/> only names languages. The answer is per language: a file
 /// of an indexed language that discovery excludes (dependency directories, skip patterns), that is
 /// over the size limit, or that an extractor skips (<c>.d.ts</c>, <c>.spec.ts</c>) is still indexed.
 /// </summary>
@@ -31,6 +31,7 @@ public sealed class IndexedLanguageCatalog
             // Indexed by the registered extractors and analyzers.
             [".cs"] = "C#",
             [".ts"] = "TypeScript",
+            [".tsx"] = "TypeScript", [".js"] = "JavaScript", [".jsx"] = "JavaScript",
             [".rs"] = "Rust",
             [".swift"] = "Swift",
             [".py"] = "Python", [".pyw"] = "Python",
@@ -52,8 +53,8 @@ public sealed class IndexedLanguageCatalog
             [".kt"] = "Kotlin", [".kts"] = "Kotlin",
             [".scala"] = "Scala", [".sc"] = "Scala",
             [".dart"] = "Dart",
-            [".js"] = "JavaScript", [".jsx"] = "JavaScript", [".mjs"] = "JavaScript", [".cjs"] = "JavaScript",
-            [".tsx"] = "TypeScript", [".mts"] = "TypeScript", [".cts"] = "TypeScript",
+            [".mjs"] = "JavaScript", [".cjs"] = "JavaScript",
+            [".mts"] = "TypeScript", [".cts"] = "TypeScript",
             [".pyi"] = "Python",
             [".fs"] = "F#", [".fsx"] = "F#", [".fsi"] = "F#",
             [".vb"] = "Visual Basic",

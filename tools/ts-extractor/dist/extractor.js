@@ -42,7 +42,10 @@ const workspaceResolver_1 = require("./workspaceResolver");
 const discoveryScope_1 = require("./discoveryScope");
 const semanticModel_1 = require("./semanticModel");
 const reactAnalysis_1 = require("./reactAnalysis");
-const HTTP_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head']);
+const httpAnalysis_1 = require("./httpAnalysis");
+const routeAnalysis_1 = require("./routeAnalysis");
+const tauriAnalysis_1 = require("./tauriAnalysis");
+const angularAnalysis_1 = require("./angularAnalysis");
 // Angular / framework types that should not produce INJECTS edges
 const FRAMEWORK_TYPE_PREFIXES = [
     'ActivatedRoute', 'Router', 'FormBuilder', 'ChangeDetectorRef',
@@ -137,15 +140,8 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
         }
     }
     diag(`addSourceFiles: ${Date.now() - t0}ms`);
-    t0 = Date.now();
-    buildStaticStringCache(project, rootPath);
-    diag(`buildStaticStringCache: ${Date.now() - t0}ms`);
-    t0 = Date.now();
-    const contractMap = buildApiContractMap(project, rootPath);
-    diag(`buildApiContractMap: ${Date.now() - t0}ms`);
     const serviceName = !scope || scope.includesFile(path.join(rootPath, 'package.json')) ? readBackendServiceName(rootPath) : null;
-    diag(`contractMap: ${contractMap.size} entries, serviceName: ${serviceName ?? '(none)'}`);
-    diag(`staticStringCache: ${_staticStringCache.size} entries`);
+    diag(`serviceName: ${serviceName ?? '(none)'}`);
     t0 = Date.now();
     const parsedFiles = project.getSourceFiles().filter(source => !invalidFiles.has(source.getFilePath()));
     const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !source.getFilePath().includes('.generated.'));
@@ -175,10 +171,9 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
         const fileT0 = Date.now();
         const fileQN = `${repositoryName}:${filePath}`;
         extractImports(sourceFile, fileQN, unresolvedImports);
-        extractClasses(sourceFile, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
+        extractClasses(sourceFile, repositoryName, filePath, nodes, edges, typeRoots);
         extractInterfaces(sourceFile, filePath, nodes);
         extractEnums(sourceFile, filePath, nodes);
-        extractAngularRoutes(sourceFile, repositoryName, filePath, nodes, edges);
         const fileMs = Date.now() - fileT0;
         filesProcessed++;
         if (fileMs > 500)
@@ -190,14 +185,35 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     (0, reactAnalysis_1.analyzeReact)(semantic, nodes, edges, diag);
     // Reconcile legacy Angular targets using declaration identities, never rendered type strings.
     semantic.reconcileAngular(nodes, edges);
+    const angularCoverage = (0, angularAnalysis_1.analyzeAngular)(semantic, nodes, edges, scope, diag);
+    complete && (complete = angularCoverage.complete);
+    const routeCoverage = (0, routeAnalysis_1.analyzeRoutes)(semantic, nodes, edges, scope, diag);
+    complete && (complete = routeCoverage.complete);
+    const httpCoverage = (0, httpAnalysis_1.analyzeHttp)(semantic, nodes, edges, diag, serviceName);
+    complete && (complete = httpCoverage.complete);
+    (0, tauriAnalysis_1.analyzeTauri)(semantic, nodes, edges, diag);
     for (const node of nodes)
         node.properties.extraction_owner = 'typescript';
     for (const edge of edges)
         edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
+    diag(`Link coverage: ${JSON.stringify({
+        admitted_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, tsFiles.filter(file => file.endsWith(extension)).length])),
+        processed_by_extension: Object.fromEntries(['.js', '.jsx', '.ts', '.tsx'].map(extension => [extension, processedFiles.filter(file => file.endsWith(extension)).length])),
+        components: nodes.filter(node => node.label === 'Component').length,
+        pages: nodes.filter(node => node.properties.route_kind === 'ui').length,
+        screens: nodes.filter(node => node.properties.screen_key !== undefined).length,
+        renders: edges.filter(edge => edge.type === 'RENDERS').length,
+        calls: edges.filter(edge => edge.type === 'CALLS').length,
+        contexts: nodes.filter(node => node.properties.context_kind === 'context').length,
+        http: httpCoverage,
+        tauri_references: nodes.filter(node => node.properties.transport === 'tauri').length,
+        providers: edges.filter(edge => edge.type === 'REGISTERS').length,
+        interface_dispatch: edges.filter(edge => edge.properties?.dispatch === 'interface').length,
+    })}`);
     if (workspaceResolution.diagnostics.some(message => (message.startsWith('tsconfig ') && !message.includes('No inputs were found')) ||
         message.includes('stopped after') || message.includes('limited from')))
         complete = false;
-    if (diagnosticCounts.has('contextTraversal') || diagnosticCounts.has('symbolResolutionLimit'))
+    if (diagnosticCounts.has('contextTraversal') || diagnosticCounts.has('symbolResolutionLimit') || diagnosticCounts.has('tauriTraversal'))
         complete = false;
     // Edge type summary
     const edgeTypes = {};
@@ -216,12 +232,12 @@ function extractImports(sourceFile, fileQN, unresolvedImports) {
     }
 }
 // ── Classes ───────────────────────────────────────────────────────────────────
-function extractClasses(sourceFile, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots) {
+function extractClasses(sourceFile, repositoryName, filePath, nodes, edges, typeRoots) {
     for (const cls of sourceFile.getClasses()) {
-        extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots);
+        extractClass(cls, repositoryName, filePath, nodes, edges, typeRoots);
     }
 }
-function extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, serviceName, typeRoots) {
+function extractClass(cls, repositoryName, filePath, nodes, edges, typeRoots) {
     const name = cls.getName() ?? (cls.isDefaultExport() ? 'default' : undefined);
     if (!name)
         return;
@@ -327,8 +343,6 @@ function extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, 
         });
         edges.push({ sourceQN: qn, targetQN: methodQN, type: 'DEFINES_METHOD' });
         // HTTP calls within the method body
-        extractHttpCalls(method, methodQN, edges);
-        extractApiContractCalls(method, methodQN, contractMap, serviceName, edges);
     }
     // Arrow function properties (e.g. searchDomains$ = () => this.httpService.send(...))
     for (const prop of cls.getProperties()) {
@@ -359,8 +373,6 @@ function extractClass(cls, repositoryName, filePath, nodes, edges, contractMap, 
             },
         });
         edges.push({ sourceQN: qn, targetQN: propQN, type: 'DEFINES_METHOD' });
-        extractHttpCalls(init, propQN, edges);
-        extractApiContractCalls(init, propQN, contractMap, serviceName, edges);
     }
     // @Input / @Output properties
     for (const prop of cls.getProperties()) {
@@ -414,134 +426,8 @@ function extractEnums(sourceFile, filePath, nodes) {
     }
 }
 // ── Angular Routes ────────────────────────────────────────────────────────────
-function extractAngularRoutes(sourceFile, repositoryName, filePath, nodes, edges) {
-    for (const varDecl of sourceFile.getVariableDeclarations()) {
-        const typeText = varDecl.getTypeNode()?.getText() ?? '';
-        if (!typeText.includes('Routes') && !typeText.includes('Route[]'))
-            continue;
-        const initializer = varDecl.getInitializer();
-        if (!initializer || !ts_morph_1.Node.isArrayLiteralExpression(initializer))
-            continue;
-        for (const element of initializer.getElements()) {
-            if (!ts_morph_1.Node.isObjectLiteralExpression(element))
-                continue;
-            const routePath = getStringProperty(element, 'path');
-            const componentProp = element.getProperty('component');
-            if (routePath === null || !componentProp)
-                continue;
-            let componentName = '';
-            if (ts_morph_1.Node.isPropertyAssignment(componentProp)) {
-                const init = componentProp.getInitializer();
-                if (init)
-                    componentName = init.getText();
-            }
-            if (!componentName)
-                continue;
-            const routeQN = `route:${repositoryName}:GET:${routePath || '/'}`;
-            nodes.push({
-                label: 'Route',
-                name: `GET /${routePath}`,
-                qualifiedName: routeQN,
-                filePath,
-                startLine: element.getStartLineNumber(),
-                endLine: element.getEndLineNumber(),
-                properties: {
-                    http_method: 'GET',
-                    route_template: routePath,
-                    component: componentName,
-                },
-            });
-            edges.push({ sourceQN: routeQN, targetQN: componentName, type: 'HANDLES' });
-        }
-    }
-}
 // ── HTTP calls ────────────────────────────────────────────────────────────────
-function extractHttpCalls(node, callerQN, edges) {
-    for (const call of node.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
-        const expr = call.getExpression();
-        if (!ts_morph_1.Node.isPropertyAccessExpression(expr))
-            continue;
-        const methodName = expr.getName();
-        if (!HTTP_METHODS.has(methodName))
-            continue;
-        // Check resolved type first; fall back to property name when types don't resolve
-        // (e.g. node_modules not installed in cached repos)
-        const receiverType = expr.getExpression().getType().getText();
-        const receiverName = expr.getExpression().getText().split('.').pop() || '';
-        const isHttpClient = receiverType.includes('HttpClient')
-            || /^_?http(Client)?$/i.test(receiverName);
-        if (!isHttpClient)
-            continue;
-        const args = call.getArguments();
-        if (args.length === 0)
-            continue;
-        const firstArg = args[0];
-        let urlPattern = null;
-        if (ts_morph_1.Node.isStringLiteral(firstArg) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(firstArg)) {
-            urlPattern = firstArg.getLiteralValue();
-        }
-        else if (ts_morph_1.Node.isTemplateExpression(firstArg)) {
-            urlPattern = firstArg.getHead().getLiteralText();
-            for (const span of firstArg.getTemplateSpans()) {
-                urlPattern += '{param}' + span.getLiteral().getLiteralText();
-            }
-        }
-        if (!urlPattern)
-            continue;
-        edges.push({
-            sourceQN: callerQN,
-            targetQN: `route:*:${methodName.toUpperCase()}:${urlPattern}`,
-            type: 'HTTP_CALLS',
-            properties: {
-                http_method: methodName.toUpperCase(),
-                url_pattern: urlPattern,
-                confidence_band: 'high',
-            },
-        });
-    }
-}
 // ── @ApiContract / HttpService.send() detection ──────────────────────────────
-function buildApiContractMap(project, rootPath) {
-    const map = new Map();
-    for (const sourceFile of project.getSourceFiles()) {
-        const absPath = sourceFile.getFilePath();
-        const filePath = path.relative(rootPath, absPath).replace(/\\/g, '/');
-        if (filePath.includes('node_modules') || filePath.endsWith('.d.ts'))
-            continue;
-        for (const cls of sourceFile.getClasses()) {
-            const decorator = cls.getDecorator('ApiContract');
-            if (!decorator)
-                continue;
-            const args = decorator.getArguments();
-            if (args.length === 0 || !ts_morph_1.Node.isObjectLiteralExpression(args[0]))
-                continue;
-            const obj = args[0];
-            const endpoint = resolveStringValue(obj, 'endpoint', project);
-            if (!endpoint)
-                continue;
-            let httpMethod = 'POST';
-            const methodProp = obj.getProperty('httpMethod');
-            if (methodProp && ts_morph_1.Node.isPropertyAssignment(methodProp)) {
-                const init = methodProp.getInitializer();
-                if (init) {
-                    const text = init.getText();
-                    // Handle HttpMethods.get, HttpMethods.post, etc.
-                    if (text.includes('.')) {
-                        httpMethod = text.split('.').pop().toUpperCase();
-                    }
-                    else if (ts_morph_1.Node.isStringLiteral(init)) {
-                        httpMethod = init.getLiteralValue().toUpperCase();
-                    }
-                }
-            }
-            const className = cls.getName();
-            if (className) {
-                map.set(className, { endpoint, httpMethod });
-            }
-        }
-    }
-    return map;
-}
 function readBackendServiceName(rootPath) {
     try {
         const pkgPath = path.join(rootPath, 'package.json');
@@ -551,58 +437,6 @@ function readBackendServiceName(rootPath) {
     }
     catch {
         return null;
-    }
-}
-function extractApiContractCalls(node, callerQN, contractMap, serviceName, edges) {
-    if (contractMap.size === 0)
-        return;
-    for (const call of node.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
-        const expr = call.getExpression();
-        if (!ts_morph_1.Node.isPropertyAccessExpression(expr))
-            continue;
-        if (expr.getName() !== 'send')
-            continue;
-        // Resolve request class name from `new XxxRequest(...)` argument
-        let requestClassName = null;
-        const args = call.getArguments();
-        for (const arg of args) {
-            // Direct: send(new SearchDomainsRequest(...))
-            if (ts_morph_1.Node.isNewExpression(arg)) {
-                requestClassName = arg.getExpression().getText();
-                break;
-            }
-            // Nested: send might be inside a wrapper, check descendants
-            const nested = arg.getDescendantsOfKind(ts_morph_1.SyntaxKind.NewExpression);
-            if (nested.length > 0) {
-                requestClassName = nested[0].getExpression().getText();
-                break;
-            }
-        }
-        // Fallback: try type arguments send<RequestType, ResponseType>(...)
-        if (!requestClassName) {
-            const typeArgs = call.getTypeArguments();
-            if (typeArgs.length > 0) {
-                requestClassName = typeArgs[0].getText();
-            }
-        }
-        if (!requestClassName)
-            continue;
-        const contract = contractMap.get(requestClassName);
-        if (!contract)
-            continue;
-        const targetProject = serviceName ? `TC.${serviceName}` : '*';
-        edges.push({
-            sourceQN: callerQN,
-            targetQN: `route:${targetProject}:${contract.httpMethod}:${contract.endpoint}`,
-            type: 'HTTP_CALLS',
-            properties: {
-                http_method: contract.httpMethod,
-                url_pattern: contract.endpoint,
-                request_dto: requestClassName,
-                confidence_band: 'high',
-                ...(serviceName ? { service_name: serviceName } : {}),
-            },
-        });
     }
 }
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -626,55 +460,8 @@ function getStringProperty(obj, propName) {
 }
 /// Resolve a property value that may be a string literal or a static class reference (Api.name).
 /// Avoids getSymbol()/type checker to prevent expensive resolution on large projects.
-function resolveStringValue(obj, propName, project) {
-    const prop = obj.getProperty(propName);
-    if (!prop || !ts_morph_1.Node.isPropertyAssignment(prop))
-        return null;
-    const init = prop.getInitializer();
-    if (!init)
-        return null;
-    // Direct string literal: endpoint: 'PlaceBid'
-    if (ts_morph_1.Node.isStringLiteral(init) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(init)) {
-        return init.getLiteralValue();
-    }
-    // Property access: endpoint: Api.placeBid → resolve by finding the class manually
-    if (ts_morph_1.Node.isPropertyAccessExpression(init)) {
-        const className = init.getExpression().getText();
-        const memberName = init.getName();
-        // Look up the static property in the project's source files
-        const resolved = _staticStringCache.get(`${className}.${memberName}`);
-        if (resolved !== undefined)
-            return resolved;
-        // Fallback: use the member name (Api.placeBid → 'placeBid')
-        return memberName;
-    }
-    return null;
-}
 /// Pre-scan all classes for static readonly string properties to build a lookup cache.
 /// Called once at the start of extraction to avoid repeated file traversals.
-const _staticStringCache = new Map();
-function buildStaticStringCache(project, rootPath) {
-    _staticStringCache.clear();
-    for (const sourceFile of project.getSourceFiles()) {
-        const absPath = sourceFile.getFilePath();
-        const filePath = path.relative(rootPath, absPath).replace(/\\/g, '/');
-        if (filePath.includes('node_modules') || filePath.endsWith('.d.ts'))
-            continue;
-        for (const cls of sourceFile.getClasses()) {
-            const className = cls.getName();
-            if (!className)
-                continue;
-            for (const prop of cls.getStaticProperties()) {
-                if (!ts_morph_1.Node.isPropertyDeclaration(prop))
-                    continue;
-                const init = prop.getInitializer();
-                if (init && (ts_morph_1.Node.isStringLiteral(init) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(init))) {
-                    _staticStringCache.set(`${className}.${prop.getName()}`, init.getLiteralValue());
-                }
-            }
-        }
-    }
-}
 function isFrameworkType(typeName) {
     return FRAMEWORK_TYPE_PREFIXES.some(prefix => typeName.startsWith(prefix));
 }

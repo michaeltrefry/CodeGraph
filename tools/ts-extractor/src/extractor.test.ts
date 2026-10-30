@@ -498,7 +498,7 @@ import { Component, inject } from '@angular/core'; import { Router } from '@angu
 @Component({selector:'app-page'}) export class Page extends Parent implements Contract {
   service = inject(Svc); constructor(private second: Svc, private router: Router, callback: (x: string) => void) { super(); }
 }`);
-    writeFile(root, 'src/routes.ts', "import { Page as View } from './page'; const routes: Routes = [{path:'home',component:View}];");
+    writeFile(root, 'src/routes.ts', "import { Routes, provideRouter } from '@angular/router'; import { Page as View } from './page'; const routes: Routes = [{path:'home',component:View}]; provideRouter(routes);");
     const result = extractProject('Demo', root, path.join(root, 'tsconfig.json'));
     for (const [type, target] of [['INHERITS', 'base.Base'], ['IMPLEMENTS', 'base.Contract'], ['INJECTS', 'base.Service']] as const) assert.ok(result.edges.some(edge => edge.sourceQN === 'page.Page' && edge.targetQN === target && edge.type === type), `${type} -> ${target}`);
     assert.ok(result.edges.some(edge => edge.type === 'HANDLES' && edge.targetQN === 'page.Page'));

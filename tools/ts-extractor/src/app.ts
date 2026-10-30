@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import * as fs from 'fs';
 import * as path from 'path';
+import { finished } from 'stream/promises';
 import { extractProject } from './extractor';
 import { lintProject } from './linter';
 import type { ExtractProjectRequest, ExtractProjectResponse } from './protocol';
@@ -80,12 +81,15 @@ export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
           for (const d of result.diagnostics) log(`  diag: ${d}`);
         }
 
-        logStream.end();
         return result;
       } catch (err) {
         log(`ERROR: ${String(err)}`);
-        logStream.end();
         reply.status(500).send({ error: String(err) } as never);
+      } finally {
+        // Complete the request only after its log has closed. Callers may immediately remove
+        // an ephemeral log directory or inspect diagnostics once extraction has returned.
+        logStream.end();
+        await finished(logStream);
       }
     },
   );

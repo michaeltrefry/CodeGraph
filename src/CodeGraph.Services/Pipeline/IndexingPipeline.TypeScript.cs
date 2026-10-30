@@ -23,7 +23,8 @@ public partial class IndexingPipeline
     /// </summary>
     private IReadOnlyList<string> DiscoverTypeScriptScope(string rootPath) =>
         DiscoverPaths(rootPath, "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.html",
-                "**/tsconfig*.json", "**/jsconfig*.json", "**/package.json", "**/angular.json", "**/next.config.*", "**/vite.config.*")
+                "**/tsconfig*.json", "**/jsconfig*.json", "**/package.json", "**/angular.json", "**/next.config.*", "**/vite.config.*",
+                "**/*.rs", "**/Cargo.toml", "**/tauri.conf.json", "**/tauri.conf.json5", "**/Tauri.toml")
             .Select(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.Ordinal)
