@@ -261,6 +261,103 @@ public sealed class BackendEndpointExtractorTests
         _extractor.MayContainBackendEndpoints(".go", "r.GET(\"/x\", handler)").ShouldBeTrue();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnyRegistrationsExpandIntoEveryConcreteSupportedMethod(bool rust)
+    {
+        var source = rust ? """
+            use axum::{Router, routing::any};
+            fn handle() {}
+            fn build() { let r = Router::new().route("/wild", any(handle)); }
+            """ : """
+            package main
+            import "github.com/gin-gonic/gin"
+            func handle() {}
+            func main() { r := gin.New(); r.Any("/wild", handle) }
+            """;
+        var result = await Extract(rust ? "src/lib.rs" : "main.go", source);
+        result.Succeeded.ShouldBeTrue(result.FailureReason);
+        result.Nodes.Select(node => node.Properties["http_method"].ToString()).Order().ShouldBe(
+            CodeGraph.Services.Pipeline.CrossRepoLinker.HttpMethods.Order());
+        result.Nodes.ShouldAllBe(node => node.QualifiedName == $"route:app:{node.Properties["http_method"]}:/wild");
+        result.Edges.Count.ShouldBe(9);
+        result.Edges.Select(edge => edge.TargetQN).Distinct().Count().ShouldBe(1);
+    }
+
+    [Theory]
+    [InlineData("any(handle).post(specific)")]
+    [InlineData("any(handle)).route(\"/wild\", post(specific)")]
+    public async Task AxumExplicitMethodOverridesWildcardWithinOneRouterTree(string registration)
+    {
+        var source = $$$"""
+            use axum::{Router, routing::{any, post}};
+            fn handle() {}
+            fn specific() {}
+            fn build() { let r = Router::new().route("/wild", {{{registration}}}); }
+            """;
+        var result = await Extract("src/lib.rs", source);
+        result.Nodes.Count.ShouldBe(9);
+        result.Edges.Count.ShouldBe(9);
+        result.Nodes.Single(node => node.Properties["http_method"].Equals("POST"))
+            .Properties["handler_expression"].ShouldBe("specific");
+        result.Nodes.Where(node => !node.Properties["http_method"].Equals("POST"))
+            .ShouldAllBe(node => node.Properties["handler_expression"].Equals("handle"));
+    }
+
+    [Theory]
+    [InlineData("get(specific)", "specific")]
+    [InlineData("get(specific).head(handle)", "handle")]
+    public async Task AxumWildcardHeadDispatchPrefersExplicitHeadThenGet(string methods, string headHandler)
+    {
+        var source = $$$"""
+            use axum::{Router, routing::any};
+            fn handle() {}
+            fn specific() {}
+            fn build() { let r = Router::new().route("/wild", any(handle).{{{methods}}}); }
+            """;
+        var result = await Extract("src/lib.rs", source);
+        result.Nodes.Count.ShouldBe(9);
+        result.Edges.Count.ShouldBe(9);
+        result.Nodes.Single(node => node.Properties["http_method"].Equals("HEAD"))
+            .Properties["handler_expression"].ShouldBe(headHandler);
+        result.Nodes.Single(node => node.Properties["http_method"].Equals("GET"))
+            .Properties["handler_expression"].ShouldBe("specific");
+    }
+
+    [Fact]
+    public async Task GinConflictingWildcardAndExplicitRegistrationRemainsAmbiguous()
+    {
+        const string source = """
+            package main
+            import "github.com/gin-gonic/gin"
+            func handle() {}
+            func specific() {}
+            func main() { r := gin.New(); r.Any("/wild", handle); r.POST("/wild", specific) }
+            """;
+        var result = await Extract("main.go", source);
+        result.Nodes.Count.ShouldBe(9);
+        result.Nodes.Single(node => node.Properties["http_method"].Equals("POST"))
+            .Properties["resolution_status"].ShouldBe("ambiguous_handler");
+        result.Edges.Count.ShouldBe(8);
+        result.Nodes.Single(node => node.Properties["http_method"].Equals("POST"))
+            .Properties["registration_ambiguous"].ShouldBe(true);
+    }
+
+    [Fact]
+    public async Task GinLiteralAnyMethodIsNotAFrameworkWildcardRegistration()
+    {
+        const string source = """
+            package main
+            import "github.com/gin-gonic/gin"
+            func handle() {}
+            func main() { r := gin.New(); r.Handle("ANY", "/literal", handle) }
+            """;
+        var result = await Extract("main.go", source);
+        result.Nodes.Single().Properties["http_method"].ShouldBe("ANY");
+        result.Nodes.Single().Properties.ShouldNotContainKey("registration_method");
+    }
+
     private async Task<ExtractionResult> Extract(string path, string source)
     {
         var definitions = await _extractor.ExtractAsync("/test/" + path, source, _context);

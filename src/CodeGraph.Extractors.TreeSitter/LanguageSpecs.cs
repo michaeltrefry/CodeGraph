@@ -152,7 +152,7 @@ public static partial class LanguageSpecs
     public static readonly LanguageSpec Go = new()
     {
         LanguageName = "Go",
-        ExtractionVersion = 2, // Gin registration pass (sc-27974).
+        ExtractionVersion = 3, // Gin wildcard registrations expand to concrete HTTP methods.
         Framework = null,
         GetLanguage = () => new Language("Go"),
         FunctionNodeTypes = ["function_declaration", "method_declaration"],
@@ -225,7 +225,7 @@ public static partial class LanguageSpecs
         GetLanguage = () => new Language("Rust"),
         // 2: functions record their foreign ABI (`extern "C" fn` → abi C).
         // 3: only when exported by symbol name (#[no_mangle] / #[export_name]) (sc-26145).
-        ExtractionVersion = 4, // Axum registration pass (sc-27974), including semantic indexing.
+        ExtractionVersion = 5, // Axum wildcard registrations and explicit-method precedence.
         CallableAbiExtractor = GetRustAbi,
         FunctionNodeTypes = ["function_item"],
         ClassNodeTypes = ["struct_item", "enum_item", "trait_item", "impl_item"],

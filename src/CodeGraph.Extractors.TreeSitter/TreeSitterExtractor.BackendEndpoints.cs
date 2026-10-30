@@ -53,7 +53,11 @@ public partial class TreeSitterExtractor
         private string? _goModule;
         private string? _goRoot;
 
-        private sealed record Registration(string? Path, string Verb, Node Handler, Node Origin);
+        // Keep this expansion aligned with the matcher's concrete HTTP methods. A wildcard
+        // registration must use those ordinary route identities to remain matchable.
+        private static readonly string[] WildcardHttpMethods =
+            ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+        private sealed record Registration(string? Path, string Verb, Node Handler, Node Origin, bool Wildcard = false, string? RegistrationMethod = null);
         private sealed class Router
         {
             public List<Registration> Routes { get; } = [];
@@ -93,14 +97,36 @@ public partial class TreeSitterExtractor
                 Process(function.GetChildForField("body"), env);
             }
             foreach (var router in _routers.Where(r => !r.Consumed))
-                foreach (var registration in router.Routes)
-                    Emit(registration);
+            {
+                // Axum's any handler is the MethodRouter fallback: an explicit method wins,
+                // including when Router::route merges registrations for the same static path.
+                // Gin registers every Any method directly, so conflicting entries remain ambiguous.
+                var registrations = router.Routes;
+                if (_rust)
+                {
+                    // Axum tries explicit HEAD, then GET, before its any fallback. Keep the
+                    // wildcard expansion from incorrectly attributing HEAD to that fallback.
+                    var wildcardHeadPaths = registrations.Where(r => r.Wildcard && r.Verb == "HEAD" && r.Path is not null)
+                        .Select(r => r.Path).ToHashSet();
+                    var explicitHeadPaths = registrations.Where(r => !r.Wildcard && r.Verb == "HEAD")
+                        .Select(r => r.Path).ToHashSet();
+                    registrations = registrations.Concat(registrations.Where(r => !r.Wildcard && r.Verb == "GET"
+                            && wildcardHeadPaths.Contains(r.Path) && !explicitHeadPaths.Contains(r.Path))
+                        .Select(r => r with { Verb = "HEAD", RegistrationMethod = "GET" })).ToList();
+                }
+                var explicitMethods = registrations.Where(r => !r.Wildcard && r.Path is not null)
+                    .Select(r => (r.Path, r.Verb)).ToHashSet();
+                foreach (var registration in registrations)
+                    if (!_rust || !registration.Wildcard || !explicitMethods.Contains((registration.Path, registration.Verb)))
+                        Emit(registration);
+            }
             foreach (var duplicate in _nodes.GroupBy(n => n.QualifiedName).Where(g => g.Select(n =>
                          n.Properties.GetValueOrDefault("handler_qualified_name")?.ToString() ?? n.Properties["handler_expression"].ToString()).Distinct().Count() > 1))
             {
                 foreach (var route in duplicate)
                 {
                     route.Properties["resolution_status"] = "ambiguous_handler";
+                    route.Properties["registration_ambiguous"] = true;
                     route.Properties["confidence"] = "low";
                     route.Properties.Remove("handler_qualified_name");
                 }
@@ -227,8 +253,9 @@ public partial class TreeSitterExtractor
                     var offset = method == "Handle" ? 1 : 0;
                     if (arguments.Count < offset + 2) return parent;
                     var verb = method == "Handle" ? Literal(arguments[0])?.ToUpperInvariant() ?? "UNKNOWN" : method == "Any" ? "ANY" : method;
-                    var registration = new Registration(Join(parent.Prefix, Literal(arguments[offset])), verb, arguments[^1], function.GetChildForField("field") ?? node);
-                    var output = NewRouter(); output.Routes.Add(registration);
+                    var registration = new Registration(Join(parent.Prefix, Literal(arguments[offset])), verb, arguments[^1], function.GetChildForField("field") ?? node, Wildcard: method == "Any");
+                    var output = NewRouter();
+                    AddRegistration(output, registration);
                 }
                 return parent;
             }
@@ -237,7 +264,7 @@ public partial class TreeSitterExtractor
             if (method == "route" && arguments.Count >= 2)
             {
                 foreach (var (verb, handler) in MethodHandlers(arguments[1]))
-                    result.Routes.Add(new Registration(Literal(arguments[0]), verb, handler, function.GetChildForField("field") ?? node));
+                    AddRegistration(result, new Registration(Literal(arguments[0]), verb, handler, function.GetChildForField("field") ?? node, Wildcard: verb == "ANY"));
             }
             else if (method is "nest" or "merge" && arguments.Count >= (method == "nest" ? 2 : 1))
             {
@@ -249,6 +276,14 @@ public partial class TreeSitterExtractor
                 }
             }
             return result;
+        }
+
+        private static void AddRegistration(Router router, Registration registration)
+        {
+            if (registration.Wildcard)
+                foreach (var method in WildcardHttpMethods)
+                    router.Routes.Add(registration with { Verb = method, Wildcard = true, RegistrationMethod = "ANY" });
+            else router.Routes.Add(registration);
         }
 
         private Router NewRouter() { var result = new Router(); _routers.Add(result); return result; }
@@ -295,6 +330,7 @@ public partial class TreeSitterExtractor
                 ["resolution_status"] = resolved ? "resolved" : path is null ? "dynamic_path" : registration.Verb == "UNKNOWN" ? "dynamic_method" : targets.Count > 1 ? "ambiguous_handler" : "unresolved_handler",
                 ["confidence"] = resolved ? "high" : "low"
             };
+            if (registration.RegistrationMethod is not null) properties["registration_method"] = registration.RegistrationMethod;
             if (path is not null) properties["route_template"] = path;
             if (resolved) properties["handler_qualified_name"] = targets[0].QualifiedName;
             _nodes.Add(new GraphNode { Repository = context.RepositoryName, Label = NodeLabel.Route,
