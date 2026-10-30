@@ -32,14 +32,10 @@ public partial class IndexingPipeline
             if (Path.GetFileName(path) == "package.json") { sources[path] = ""; continue; }
             try
             {
-                var source = await sourceReader.ReadAsync(Path.Combine(rootPath, path), ct);
-                if (source is null)
-                {
-                    if (IsTauriConfiguration(path) || Path.GetFileName(path) == "Cargo.toml" || oldPaths.Contains(path, StringComparer.OrdinalIgnoreCase))
-                        throw new InvalidOperationException($"Tauri analysis incomplete: required source {path} exceeds its text limit; prior graph and hashes are preserved.");
-                    _logger.LogWarning("Skipping oversized Tauri source {Path}", path);
-                    continue;
-                }
+                // A scoped Rust file can define an event-name constant used elsewhere in the
+                // app without owning a persisted edge. Missing its content cannot prove deletion.
+                var source = await sourceReader.ReadAsync(Path.Combine(rootPath, path), ct)
+                    ?? throw new InvalidOperationException($"Tauri analysis incomplete: required source {path} exceeds its text limit; prior graph and hashes are preserved.");
                 sources[path] = source.Content;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

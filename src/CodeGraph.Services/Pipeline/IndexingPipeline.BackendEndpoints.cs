@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models;
 using CodeGraph.Services.Extractors;
@@ -20,6 +21,11 @@ public partial class IndexingPipeline
             .Where(node => TypeScriptNodeText(node.Properties.GetValueOrDefault("semantic_owner")) == EndpointOwner).ToList();
         var oldPaths = storedRoutes.Where(node => node.FilePath is not null)
             .Select(node => NormalizeRelativePath(node.FilePath!)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // A collapsed ambiguous route stores only one representative FilePath. Every
+        // registration remains a completeness dependency, including JSON-backed properties.
+        foreach (var route in storedRoutes)
+            foreach (var path in EndpointRegistrationSources(route.Properties.GetValueOrDefault("registration_sources")))
+                oldPaths.Add(NormalizeRelativePath(path));
         var protectedPaths = new HashSet<string>(oldPaths, StringComparer.OrdinalIgnoreCase);
         var storedEdges = new List<PendingEdge>();
         foreach (var batch in storedRoutes.Select(node => node.Id).Chunk(500))
@@ -136,4 +142,13 @@ public partial class IndexingPipeline
         _logger.LogInformation("Backend registrations of {Repository}: {Routes} routes; {Slices} changed slices", repository, nodes.Count, changed.Count);
         return changed.ToList();
     }
+    private static IEnumerable<string> EndpointRegistrationSources(object? value) => value switch
+    {
+        JsonElement { ValueKind: JsonValueKind.Array } array => array.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String).Select(item => item.GetString()!)
+            .Where(path => !string.IsNullOrWhiteSpace(path)),
+        IEnumerable<string> paths => paths.Where(path => !string.IsNullOrWhiteSpace(path)),
+        _ => []
+    };
+
 }
